@@ -1,11 +1,10 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { Trade, TraderStats, MarketPosition } from '@/types/trade';
 import { useToast } from '@/hooks/use-toast';
 
 export function useTrades(username: string = 'gabagool22') {
   const { toast } = useToast();
-  const queryClient = useQueryClient();
 
   const tradesQuery = useQuery({
     queryKey: ['trades', username],
@@ -105,9 +104,10 @@ export function useTrades(username: string = 'gabagool22') {
         title: 'Scrape Complete',
         description: `Found ${data.tradesFound} trades`,
       });
-      queryClient.invalidateQueries({ queryKey: ['trades', username] });
-      queryClient.invalidateQueries({ queryKey: ['trader-stats', username] });
-      queryClient.invalidateQueries({ queryKey: ['positions', username] });
+      // Refetch queries after successful scrape
+      tradesQuery.refetch();
+      statsQuery.refetch();
+      positionsQuery.refetch();
     },
     onError: (error) => {
       toast({
