@@ -1,6 +1,5 @@
 import { useState, useMemo } from 'react';
 import { MarketPosition } from '@/types/trade';
-import { PositionCard } from './PositionCard';
 import { Button } from './ui/button';
 import { ChevronLeft, ChevronRight, AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -55,30 +54,10 @@ export function PositionsList({ positions, pageSize = 10 }: PositionsListProps) 
     );
   }, [positions]);
 
-  // Separate into paired and unpaired positions
-  const { pairedMarkets, unpairedPositions } = useMemo(() => {
-    const paired: MarketPair[] = [];
-    const unpaired: MarketPosition[] = [];
-    
-    marketPairs.forEach(pair => {
-      if (pair.yesPosition && pair.noPosition) {
-        paired.push(pair);
-      } else {
-        if (pair.yesPosition) unpaired.push(pair.yesPosition);
-        if (pair.noPosition) unpaired.push(pair.noPosition);
-      }
-    });
-    
-    return { pairedMarkets: paired, unpairedPositions: unpaired };
-  }, [marketPairs]);
-
-  // Combine for pagination: paired first, then unpaired
+  // All markets are shown as market cards (pairs or singles grouped together)
   const allItems = useMemo(() => {
-    const items: Array<{ type: 'pair'; data: MarketPair } | { type: 'single'; data: MarketPosition }> = [];
-    pairedMarkets.forEach(pair => items.push({ type: 'pair', data: pair }));
-    unpairedPositions.forEach(pos => items.push({ type: 'single', data: pos }));
-    return items;
-  }, [pairedMarkets, unpairedPositions]);
+    return marketPairs.map(pair => ({ type: 'market' as const, data: pair }));
+  }, [marketPairs]);
 
   const totalPages = Math.ceil(allItems.length / pageSize);
   
@@ -139,25 +118,13 @@ export function PositionsList({ positions, pageSize = 10 }: PositionsListProps) 
       </div>
 
       <div className="space-y-3">
-        {paginatedItems.map((item, index) => {
-          if (item.type === 'pair') {
-            return (
-              <MarketPairCard 
-                key={item.data.marketSlug} 
-                pair={item.data} 
-                index={index} 
-              />
-            );
-          } else {
-            return (
-              <PositionCard 
-                key={item.data.marketSlug + item.data.outcome} 
-                position={item.data} 
-                index={index} 
-              />
-            );
-          }
-        })}
+        {paginatedItems.map((item, index) => (
+          <MarketPairCard 
+            key={item.data.marketSlug} 
+            pair={item.data} 
+            index={index} 
+          />
+        ))}
       </div>
 
       {totalPages > 1 && (
