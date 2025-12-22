@@ -95,46 +95,39 @@ const BetDetailCard = ({ analysis }: { analysis: MarketAnalysis }) => {
       {/* Expanded content */}
       {expanded && (
         <div className="border-t border-border/50 p-4 space-y-4">
-          {/* Orders per outcome */}
-          {analysis.outcomes.map((og, ogIdx) => {
-            const colors = getOutcomeColor(og.outcome, ogIdx);
-            return (
-              <div key={og.outcome}>
-                <h4 className={`text-xs font-semibold ${colors.text} mb-2 flex items-center gap-2`}>
-                  <span className={`w-2 h-2 rounded-full ${colors.bg}`} />
-                  {og.outcome} Orders ({og.orders.length})
-                </h4>
-                <div className="space-y-2">
-                  {og.orders.map((order) => (
-                    <div key={order.trade.id} className={`flex items-center justify-between ${colors.light} rounded-lg p-3`}>
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <span className="text-xs font-mono text-muted-foreground">
-                            #{order.orderNumber}
+          {/* Orders per outcome - Two column layout */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {analysis.outcomes.map((og, ogIdx) => {
+              const colors = getOutcomeColor(og.outcome, ogIdx);
+              return (
+                <div key={og.outcome} className="flex flex-col">
+                  <h4 className={`text-xs font-semibold ${colors.text} mb-2 flex items-center gap-2`}>
+                    <span className={`w-2 h-2 rounded-full ${colors.bg}`} />
+                    {og.outcome} ({og.orders.length} orders)
+                    <span className="ml-auto font-mono">avg: {(og.avgPrice * 100).toFixed(1)}¢</span>
+                  </h4>
+                  <div className="space-y-1.5 flex-1">
+                    {og.orders.map((order) => (
+                      <div key={order.trade.id} className={`${colors.light} rounded-lg p-2.5 text-xs`}>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-mono text-muted-foreground">#{order.orderNumber}</span>
+                          <span className="font-medium">
+                            {order.trade.shares.toFixed(1)} @ {(order.trade.price * 100).toFixed(1)}¢
                           </span>
-                          <span className="text-sm font-medium">
-                            {order.trade.shares.toFixed(2)} shares @ {(order.trade.price * 100).toFixed(1)}¢
-                          </span>
-                          <span className="text-xs text-muted-foreground">
-                            on {og.outcome}
+                          <span className={`font-mono font-semibold ${colors.text}`}>
+                            → {(order.runningAvgPrice * 100).toFixed(1)}¢
                           </span>
                         </div>
-                        <div className="text-xs text-muted-foreground mt-0.5">
-                          {format(new Date(order.trade.timestamp), 'MMM dd, HH:mm:ss')}
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-xs text-muted-foreground">Running avg:</div>
-                        <div className={`font-mono text-sm font-semibold ${colors.text}`}>
-                          {(order.runningAvgPrice * 100).toFixed(1)}¢
+                        <div className="text-muted-foreground mt-0.5">
+                          {format(new Date(order.trade.timestamp), 'HH:mm:ss')}
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
 
           {/* Combined Score Analysis */}
           <div className={`rounded-lg p-4 border ${getScoreBackground(analysis.combinedScore)}`}>
