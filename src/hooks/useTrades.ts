@@ -8,6 +8,7 @@ export function useTrades(username: string = 'gabagool22') {
 
   const tradesQuery = useQuery({
     queryKey: ['trades', username],
+    refetchInterval: 30000, // Auto-refresh every 30 seconds
     queryFn: async () => {
       // Fetch ALL trades, not just 50
       const { data, error } = await supabase
@@ -35,12 +36,13 @@ export function useTrades(username: string = 'gabagool22') {
 
   const statsQuery = useQuery({
     queryKey: ['trader-stats', username],
+    refetchInterval: 30000, // Auto-refresh every 30 seconds
     queryFn: async () => {
       const { data, error } = await supabase
         .from('trader_stats')
         .select('*')
         .eq('trader_username', username)
-        .single();
+        .maybeSingle();
 
       if (error && error.code !== 'PGRST116') throw error;
 
@@ -68,6 +70,7 @@ export function useTrades(username: string = 'gabagool22') {
 
   const positionsQuery = useQuery({
     queryKey: ['positions', username],
+    refetchInterval: 30000, // Auto-refresh every 30 seconds
     queryFn: async () => {
       const { data, error } = await supabase
         .from('positions')
