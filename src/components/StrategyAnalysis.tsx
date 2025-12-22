@@ -606,63 +606,120 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
   );
 }
 
-// NEW: Entry Price Analysis - relevant for arbitrage detection
+// NEW: Entry Price Analysis - shows extreme odds and near-certain trades
 export function EntryPriceAnalysis({ trades }: StrategyAnalysisProps) {
+  const analysis = useMemo(() => {
+    const buyTrades = trades.filter(t => t.side === 'buy');
+    
+    // Near-certain trades (very high or very low probability)
+    const nearCertain = buyTrades.filter(t => t.price >= 0.90 || t.price <= 0.10);
+    const highProb = buyTrades.filter(t => t.price >= 0.90);
+    const longshots = buyTrades.filter(t => t.price <= 0.10);
+    
+    // Extreme odds breakdown
+    const ultraCertain = buyTrades.filter(t => t.price >= 0.95); // 95%+ probability
+    const almostCertain = buyTrades.filter(t => t.price >= 0.90 && t.price < 0.95);
+    const pennies = buyTrades.filter(t => t.price <= 0.05); // 5% or less
+    const cheapLongshots = buyTrades.filter(t => t.price > 0.05 && t.price <= 0.10);
+    
+    // Mid-range trades
+    const midRange = buyTrades.filter(t => t.price > 0.10 && t.price < 0.90);
+    
+    // Volume calculations
+    const nearCertainVolume = nearCertain.reduce((s, t) => s + t.total, 0);
+    const highProbVolume = highProb.reduce((s, t) => s + t.total, 0);
+    const longshotVolume = longshots.reduce((s, t) => s + t.total, 0);
+    const midRangeVolume = midRange.reduce((s, t) => s + t.total, 0);
+    
+    // Expected profit for near-certain trades
+    // If you buy at 0.95 and it wins, you profit 0.05 per share
+    const expectedProfitHighProb = highProb.reduce((s, t) => s + ((1 - t.price) * t.shares), 0);
+    const expectedProfitLongshots = longshots.reduce((s, t) => s + (t.price * t.shares * (1/t.price - 1)), 0);
+    
+    return {
+      nearCertain,
+      highProb,
+      longshots,
+      ultraCertain,
+      almostCertain,
+      pennies,
+      cheapLongshots,
+      midRange,
+      nearCertainVolume,
+      highProbVolume,
+      longshotVolume,
+      midRangeVolume,
+      expectedProfitHighProb,
+      expectedProfitLongshots,
+      total: buyTrades.length,
+    };
+  }, [trades]);
+
+  // Price distribution for chart
   const priceData = useMemo(() => {
-    // Group trades by price ranges (0.01-0.99)
-    const priceRanges = [
-      { label: '0.01-0.20', min: 0.01, max: 0.20, count: 0, volume: 0 },
-      { label: '0.20-0.40', min: 0.20, max: 0.40, count: 0, volume: 0 },
-      { label: '0.40-0.60', min: 0.40, max: 0.60, count: 0, volume: 0 },
-      { label: '0.60-0.80', min: 0.60, max: 0.80, count: 0, volume: 0 },
-      { label: '0.80-0.99', min: 0.80, max: 0.99, count: 0, volume: 0 },
+    const buyTrades = trades.filter(t => t.side === 'buy');
+    const ranges = [
+      { label: '≤5¢', min: 0, max: 0.05, count: 0, volume: 0, color: 'hsl(280, 65%, 60%)' },
+      { label: '5-10¢', min: 0.05, max: 0.10, count: 0, volume: 0, color: 'hsl(280, 50%, 50%)' },
+      { label: '10-40¢', min: 0.10, max: 0.40, count: 0, volume: 0, color: 'hsl(38, 70%, 50%)' },
+      { label: '40-60¢', min: 0.40, max: 0.60, count: 0, volume: 0, color: 'hsl(215, 50%, 50%)' },
+      { label: '60-90¢', min: 0.60, max: 0.90, count: 0, volume: 0, color: 'hsl(38, 70%, 50%)' },
+      { label: '90-95¢', min: 0.90, max: 0.95, count: 0, volume: 0, color: 'hsl(142, 50%, 50%)' },
+      { label: '≥95¢', min: 0.95, max: 1.01, count: 0, volume: 0, color: 'hsl(142, 70%, 45%)' },
     ];
     
-    trades.forEach(trade => {
-      const range = priceRanges.find(r => trade.price >= r.min && trade.price < r.max);
+    buyTrades.forEach(trade => {
+      const range = ranges.find(r => trade.price >= r.min && trade.price < r.max);
       if (range) {
         range.count++;
         range.volume += trade.total;
       }
     });
     
-    return priceRanges;
+    return ranges;
   }, [trades]);
 
-  // Calculate average entry price
-  const avgPrice = trades.length > 0
-    ? trades.reduce((s, t) => s + t.price, 0) / trades.length
-    : 0;
-
-  // Find if trader prefers low probability (cheap) or high probability (expensive) outcomes
-  const cheapTrades = trades.filter(t => t.price < 0.40);
-  const expensiveTrades = trades.filter(t => t.price >= 0.60);
+  const nearCertainPct = analysis.total > 0 
+    ? ((analysis.nearCertain.length / analysis.total) * 100).toFixed(1)
+    : '0';
 
   return (
     <div className="glass rounded-lg p-4">
       <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">
-        Entry Price Distribution
+        Entry Price & Extreme Odds Analysis
       </h3>
-      <div className="grid grid-cols-3 gap-3 mb-4">
-        <div className="bg-muted/50 rounded-lg p-2 text-center">
-          <p className="text-xs text-muted-foreground">Avg Price</p>
-          <p className="text-lg font-mono font-semibold">${avgPrice.toFixed(2)}</p>
-        </div>
+      
+      {/* Summary Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
         <div className="bg-success/10 rounded-lg p-2 text-center">
-          <p className="text-xs text-muted-foreground">Low Prob</p>
-          <p className="text-lg font-mono font-semibold text-success">{cheapTrades.length}</p>
+          <p className="text-xs text-muted-foreground">Near Certain (≥90¢)</p>
+          <p className="text-lg font-mono font-semibold text-success">{analysis.highProb.length}</p>
+          <p className="text-xs text-muted-foreground">${analysis.highProbVolume.toFixed(0)} vol</p>
         </div>
-        <div className="bg-destructive/10 rounded-lg p-2 text-center">
-          <p className="text-xs text-muted-foreground">High Prob</p>
-          <p className="text-lg font-mono font-semibold text-destructive">{expensiveTrades.length}</p>
+        <div className="bg-purple-500/10 rounded-lg p-2 text-center">
+          <p className="text-xs text-muted-foreground">Longshots (≤10¢)</p>
+          <p className="text-lg font-mono font-semibold text-purple-400">{analysis.longshots.length}</p>
+          <p className="text-xs text-muted-foreground">${analysis.longshotVolume.toFixed(0)} vol</p>
+        </div>
+        <div className="bg-muted/50 rounded-lg p-2 text-center">
+          <p className="text-xs text-muted-foreground">Mid-Range</p>
+          <p className="text-lg font-mono font-semibold">{analysis.midRange.length}</p>
+          <p className="text-xs text-muted-foreground">${analysis.midRangeVolume.toFixed(0)} vol</p>
+        </div>
+        <div className="bg-warning/10 rounded-lg p-2 text-center">
+          <p className="text-xs text-muted-foreground">Extreme %</p>
+          <p className="text-lg font-mono font-semibold text-warning">{nearCertainPct}%</p>
+          <p className="text-xs text-muted-foreground">of all buys</p>
         </div>
       </div>
-      <div className="h-36">
+
+      {/* Price Distribution Chart */}
+      <div className="h-32 mb-4">
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={priceData}>
             <XAxis 
               dataKey="label" 
-              tick={{ fill: 'hsl(215, 15%, 55%)', fontSize: 9, fontFamily: 'JetBrains Mono' }}
+              tick={{ fill: 'hsl(215, 15%, 55%)', fontSize: 8, fontFamily: 'JetBrains Mono' }}
             />
             <YAxis tick={{ fill: 'hsl(215, 15%, 55%)', fontSize: 10 }} />
             <Tooltip
@@ -675,16 +732,90 @@ export function EntryPriceAnalysis({ trades }: StrategyAnalysisProps) {
               }}
               formatter={(value, name) => [value, name === 'count' ? 'Trades' : 'Volume']}
             />
-            <Bar dataKey="count" fill="hsl(38, 92%, 50%)" radius={[4, 4, 0, 0]} />
+            <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+              {priceData.map((entry, index) => (
+                <Cell key={`cell-${index}`} fill={entry.color} />
+              ))}
+            </Bar>
           </BarChart>
         </ResponsiveContainer>
       </div>
-      <p className="text-xs text-muted-foreground mt-2">
-        {avgPrice < 0.40 
-          ? '🎲 Prefers low probability (high risk/reward) entries'
-          : avgPrice > 0.60 
-            ? '🎯 Prefers high probability (low risk/reward) entries'
-            : '⚖️ Balanced approach to entry prices'}
+
+      {/* Near-Certain Trades Detail */}
+      {analysis.highProb.length > 0 && (
+        <div className="mb-4 border-t border-border pt-3">
+          <p className="text-xs font-semibold text-success uppercase tracking-wider mb-2">
+            🎯 Near-Certain Trades (90¢+) - {analysis.highProb.length} trades
+          </p>
+          <div className="grid grid-cols-2 gap-2 mb-2 text-xs">
+            <div className="bg-success/10 rounded p-2">
+              <span className="text-muted-foreground">95¢+ (ultra-certain): </span>
+              <span className="font-mono font-semibold">{analysis.ultraCertain.length}</span>
+            </div>
+            <div className="bg-success/10 rounded p-2">
+              <span className="text-muted-foreground">90-95¢: </span>
+              <span className="font-mono font-semibold">{analysis.almostCertain.length}</span>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            💰 Max profit if all win: <span className="text-success font-mono">${analysis.expectedProfitHighProb.toFixed(0)}</span>
+            <span className="ml-2">(avg {analysis.highProb.length > 0 ? ((1 - analysis.highProb.reduce((s,t) => s + t.price, 0) / analysis.highProb.length) * 100).toFixed(1) : 0}% edge per trade)</span>
+          </p>
+          <div className="max-h-24 overflow-y-auto space-y-1 mt-2">
+            {analysis.ultraCertain.slice(0, 5).map((t, i) => (
+              <div key={i} className="bg-success/5 rounded p-1 text-xs flex justify-between">
+                <span className="truncate max-w-[60%]">{t.market}</span>
+                <span className="font-mono">
+                  {t.outcome} @ <span className="text-success">{(t.price * 100).toFixed(1)}¢</span>
+                  <span className="text-muted-foreground ml-1">(+{((1-t.price)*100).toFixed(1)}%)</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Longshot Trades Detail */}
+      {analysis.longshots.length > 0 && (
+        <div className="border-t border-border pt-3">
+          <p className="text-xs font-semibold text-purple-400 uppercase tracking-wider mb-2">
+            🎲 Longshot Trades (≤10¢) - {analysis.longshots.length} trades
+          </p>
+          <div className="grid grid-cols-2 gap-2 mb-2 text-xs">
+            <div className="bg-purple-500/10 rounded p-2">
+              <span className="text-muted-foreground">≤5¢ (pennies): </span>
+              <span className="font-mono font-semibold">{analysis.pennies.length}</span>
+            </div>
+            <div className="bg-purple-500/10 rounded p-2">
+              <span className="text-muted-foreground">5-10¢: </span>
+              <span className="font-mono font-semibold">{analysis.cheapLongshots.length}</span>
+            </div>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            🎰 Potential payout: <span className="text-purple-400 font-mono">${analysis.longshots.reduce((s,t) => s + t.shares, 0).toFixed(0)}</span>
+            <span className="ml-2">(if all hit)</span>
+          </p>
+          <div className="max-h-24 overflow-y-auto space-y-1 mt-2">
+            {analysis.pennies.slice(0, 5).map((t, i) => (
+              <div key={i} className="bg-purple-500/5 rounded p-1 text-xs flex justify-between">
+                <span className="truncate max-w-[60%]">{t.market}</span>
+                <span className="font-mono">
+                  {t.outcome} @ <span className="text-purple-400">{(t.price * 100).toFixed(1)}¢</span>
+                  <span className="text-muted-foreground ml-1">({(1/t.price).toFixed(0)}x)</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Strategy Summary */}
+      <p className="text-xs text-muted-foreground mt-3 pt-3 border-t border-border">
+        {analysis.nearCertain.length > analysis.midRange.length * 0.5 
+          ? '📊 Strategie: Focus op "near-certain" trades met kleine maar frequente winsten'
+          : analysis.longshots.length > analysis.total * 0.1
+            ? '🎲 Strategie: Mix van longshots voor grote payouts'
+            : '⚖️ Strategie: Gebalanceerde benadering met mid-range odds'}
       </p>
     </div>
   );
