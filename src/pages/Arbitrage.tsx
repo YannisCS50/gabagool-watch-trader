@@ -1,13 +1,13 @@
-import { RefreshCw, ArrowLeft, Target } from 'lucide-react';
+import { RefreshCw, ArrowLeft, Target, AlertCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { useTrades } from '@/hooks/useTrades';
 import { mockTrades, traderStats as mockStats } from '@/data/mockTrades';
 import { format } from 'date-fns';
-import { ArbitrageAnalysis, ClosedBetsHistory } from '@/components/StrategyAnalysis';
+import { ArbitrageAnalysis, ClosedBetsHistory, LiveOpenPositions } from '@/components/StrategyAnalysis';
 
 const Arbitrage = () => {
-  const { trades, stats, scrape, isScraping } = useTrades('gabagool22');
+  const { trades, stats, positions, scrape, isScraping } = useTrades('gabagool22');
 
   const displayTrades = trades.length > 0 ? trades : mockTrades;
   const displayStats = stats?.totalTrades ? stats : mockStats;
@@ -91,6 +91,11 @@ const Arbitrage = () => {
             </div>
           </div>
         </div>
+
+        {/* Live Open Positions from Polymarket */}
+        {positions.length > 0 && (
+          <LiveOpenPositions positions={positions} trades={displayTrades} />
+        )}
 
         {/* Arbitrage Analysis Component */}
         <ArbitrageAnalysis trades={displayTrades} />
