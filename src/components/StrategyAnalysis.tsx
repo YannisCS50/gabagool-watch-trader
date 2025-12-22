@@ -349,6 +349,13 @@ const isNegativeOutcome = (outcome: string): boolean => {
 };
 
 // Arbitrage Analysis - ONLY shows markets where BOTH YES and NO were bought
+// Helper to check if market is crypto-related
+const isCryptoMarket = (market: string): boolean => {
+  const cryptoKeywords = ['bitcoin', 'btc', 'ethereum', 'eth', 'solana', 'sol', 'xrp', 'crypto', 'doge', 'dogecoin'];
+  const lowerMarket = market.toLowerCase();
+  return cryptoKeywords.some(keyword => lowerMarket.includes(keyword));
+};
+
 export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
   // Helper function to calculate arb stats for a given set of trades
   const calculateArbStats = (tradesToAnalyze: Trade[]) => {
@@ -375,6 +382,7 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
       isArbitrage: boolean;
       minShares: number;
       hedgedVolume: number;
+      isCrypto: boolean;
     }> = [];
 
     Object.entries(marketBuyTrades).forEach(([market, outcomeMap]) => {
@@ -406,6 +414,7 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
           isArbitrage: sum < 1,
           minShares,
           hedgedVolume: minShares * sum,
+          isCrypto: isCryptoMarket(market),
         });
       }
     });
@@ -420,7 +429,52 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
     const netProfit = gains - losses;
     const volume = sorted.reduce((s, a) => s + a.hedgedVolume, 0);
 
-    return { arbs: sorted, avgSum, profitable, unprofitable, profit: netProfit, gains, losses, volume, count: sorted.length };
+    // Split by crypto vs other
+    const cryptoArbs = sorted.filter(a => a.isCrypto);
+    const otherArbs = sorted.filter(a => !a.isCrypto);
+    
+    const cryptoAvgSum = cryptoArbs.length > 0 ? cryptoArbs.reduce((s, d) => s + d.sum, 0) / cryptoArbs.length : 0;
+    const otherAvgSum = otherArbs.length > 0 ? otherArbs.reduce((s, d) => s + d.sum, 0) / otherArbs.length : 0;
+    
+    const cryptoProfitable = cryptoArbs.filter(d => d.isArbitrage);
+    const cryptoUnprofitable = cryptoArbs.filter(d => !d.isArbitrage);
+    const cryptoGains = cryptoProfitable.reduce((s, a) => s + (a.spread * a.minShares), 0);
+    const cryptoLosses = cryptoUnprofitable.reduce((s, a) => s + (Math.abs(a.spread) * a.minShares), 0);
+    const cryptoProfit = cryptoGains - cryptoLosses;
+    
+    const otherProfitable = otherArbs.filter(d => d.isArbitrage);
+    const otherUnprofitable = otherArbs.filter(d => !d.isArbitrage);
+    const otherGains = otherProfitable.reduce((s, a) => s + (a.spread * a.minShares), 0);
+    const otherLosses = otherUnprofitable.reduce((s, a) => s + (Math.abs(a.spread) * a.minShares), 0);
+    const otherProfit = otherGains - otherLosses;
+
+    return { 
+      arbs: sorted, 
+      avgSum, 
+      profitable, 
+      unprofitable, 
+      profit: netProfit, 
+      gains, 
+      losses, 
+      volume, 
+      count: sorted.length,
+      crypto: {
+        arbs: cryptoArbs,
+        avgSum: cryptoAvgSum,
+        profit: cryptoProfit,
+        count: cryptoArbs.length,
+        profitable: cryptoProfitable.length,
+        unprofitable: cryptoUnprofitable.length,
+      },
+      other: {
+        arbs: otherArbs,
+        avgSum: otherAvgSum,
+        profit: otherProfit,
+        count: otherArbs.length,
+        profitable: otherProfitable.length,
+        unprofitable: otherUnprofitable.length,
+      }
+    };
   };
 
   // Time-based filtering
@@ -509,6 +563,64 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
         </div>
       </div>
 
+      {/* Crypto vs Other Split */}
+      <div className="mb-6">
+        <p className="text-xs font-semibold text-primary uppercase tracking-wider mb-3">
+          🔀 Crypto vs Andere Arbitrage
+        </p>
+        <div className="grid grid-cols-2 gap-4">
+          {/* Crypto */}
+          <div className="bg-amber-500/10 rounded-lg p-4 border border-amber-500/20">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-lg">₿</span>
+              <p className="text-sm font-semibold">Crypto (BTC/ETH/SOL/XRP)</p>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-center">
+              <div>
+                <p className="text-xs text-muted-foreground">Avg YES+NO</p>
+                <p className={`text-lg font-mono font-semibold ${stats.allTime.crypto.avgSum > 0 ? (stats.allTime.crypto.avgSum < 1 ? 'text-success' : 'text-destructive') : 'text-muted-foreground'}`}>
+                  {stats.allTime.crypto.avgSum > 0 ? stats.allTime.crypto.avgSum.toFixed(3) : '-'}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Profit</p>
+                <p className={`text-lg font-mono font-semibold ${stats.allTime.crypto.profit >= 0 ? 'text-success' : 'text-destructive'}`}>
+                  {stats.allTime.crypto.profit >= 0 ? '+' : ''}${stats.allTime.crypto.profit.toFixed(0)}
+                </p>
+              </div>
+            </div>
+            <div className="mt-2 text-xs text-muted-foreground text-center">
+              {stats.allTime.crypto.count} arbs ({stats.allTime.crypto.profitable} ✓ / {stats.allTime.crypto.unprofitable} ✗)
+            </div>
+          </div>
+
+          {/* Other */}
+          <div className="bg-blue-500/10 rounded-lg p-4 border border-blue-500/20">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-lg">📊</span>
+              <p className="text-sm font-semibold">Andere Markets</p>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-center">
+              <div>
+                <p className="text-xs text-muted-foreground">Avg YES+NO</p>
+                <p className={`text-lg font-mono font-semibold ${stats.allTime.other.avgSum > 0 ? (stats.allTime.other.avgSum < 1 ? 'text-success' : 'text-destructive') : 'text-muted-foreground'}`}>
+                  {stats.allTime.other.avgSum > 0 ? stats.allTime.other.avgSum.toFixed(3) : '-'}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Profit</p>
+                <p className={`text-lg font-mono font-semibold ${stats.allTime.other.profit >= 0 ? 'text-success' : 'text-destructive'}`}>
+                  {stats.allTime.other.profit >= 0 ? '+' : ''}${stats.allTime.other.profit.toFixed(0)}
+                </p>
+              </div>
+            </div>
+            <div className="mt-2 text-xs text-muted-foreground text-center">
+              {stats.allTime.other.count} arbs ({stats.allTime.other.profitable} ✓ / {stats.allTime.other.unprofitable} ✗)
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Summary Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
         <div className="bg-muted/50 rounded-lg p-3 text-center">
@@ -523,9 +635,11 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
           <p className="text-xs text-muted-foreground">Overpaid</p>
           <p className="text-xl font-mono font-semibold text-destructive">{stats.allTime.unprofitable.length}</p>
         </div>
-        <div className="bg-success/10 rounded-lg p-3 text-center">
+        <div className={`${stats.allTime.profit >= 0 ? 'bg-success/10' : 'bg-destructive/10'} rounded-lg p-3 text-center`}>
           <p className="text-xs text-muted-foreground">Net Profit</p>
-          <p className="text-xl font-mono font-semibold text-success">${stats.allTime.profit.toFixed(0)}</p>
+          <p className={`text-xl font-mono font-semibold ${stats.allTime.profit >= 0 ? 'text-success' : 'text-destructive'}`}>
+            {stats.allTime.profit >= 0 ? '+' : ''}${stats.allTime.profit.toFixed(0)}
+          </p>
         </div>
       </div>
 
