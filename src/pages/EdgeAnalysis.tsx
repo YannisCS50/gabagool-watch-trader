@@ -33,6 +33,12 @@ type EdgePoint = {
   edge: number;
   edgeType: EdgeType;
   timestamp: Date;
+  // New entry strategy details
+  hedgeDelayMs: number;
+  sizeA: number;
+  sizeB: number;
+  totalA: number;
+  totalB: number;
 };
 
 const EDGE_META = {
@@ -124,6 +130,11 @@ export default function EdgeAnalysis() {
       const combined = entryPriceA + entryPriceB;
       const edge = 1 - combined;
 
+      // Calculate hedge delay (time between the two entry trades)
+      const hedgeDelayMs = Math.abs(
+        firstTradeA.timestamp.getTime() - firstTradeB.timestamp.getTime()
+      );
+
       // Use the earliest entry timestamp
       const entryTs = new Date(
         Math.min(firstTradeA.timestamp.getTime(), firstTradeB.timestamp.getTime())
@@ -139,6 +150,11 @@ export default function EdgeAnalysis() {
         edge,
         edgeType: combined < 0.98 ? "arbitrage" : combined > 1.02 ? "risk" : "neutral",
         timestamp: entryTs,
+        hedgeDelayMs,
+        sizeA: firstTradeA.shares,
+        sizeB: firstTradeB.shares,
+        totalA: firstTradeA.total,
+        totalB: firstTradeB.total,
       });
     });
 
@@ -208,6 +224,18 @@ export default function EdgeAnalysis() {
     const bestCombined = Math.min(...edgeData.map((e) => e.combined));
     const bestEdgePct = (1 - bestCombined) * 100;
 
+    // Calculate hedge delay stats
+    const arbTrades = edgeData.filter((e) => e.edgeType === "arbitrage");
+    const avgHedgeDelayMs = arbTrades.length
+      ? arbTrades.reduce((sum, e) => sum + e.hedgeDelayMs, 0) / arbTrades.length
+      : 0;
+    const fastestHedgeMs = arbTrades.length
+      ? Math.min(...arbTrades.map((e) => e.hedgeDelayMs))
+      : 0;
+    const avgTotalSize = arbTrades.length
+      ? arbTrades.reduce((sum, e) => sum + e.totalA + e.totalB, 0) / arbTrades.length
+      : 0;
+
     return {
       pieData,
       buckets,
@@ -219,6 +247,9 @@ export default function EdgeAnalysis() {
         riskPercent: ((counts.risk / total) * 100).toFixed(1),
         avgArbitrageEdge: avgArbEdgePct.toFixed(2),
         bestEdge: bestEdgePct.toFixed(2),
+        avgHedgeDelayMs,
+        fastestHedgeMs,
+        avgTotalSize,
       },
     };
   }, [trades]);
@@ -301,7 +332,7 @@ export default function EdgeAnalysis() {
         </section>
 
         {/* Stats */}
-        <section aria-label="Samenvatting" className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+        <section aria-label="Samenvatting" className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 mb-8">
           <Card className="bg-card/50">
             <CardContent className="pt-6">
               <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1">
@@ -326,7 +357,7 @@ export default function EdgeAnalysis() {
             <CardContent className="pt-6">
               <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1">
                 <Zap className="w-4 h-4" />
-                Gem. arbitrage edge
+                Gem. edge
               </div>
               <div className="text-2xl font-bold text-primary">{analysis.stats.avgArbitrageEdge}%</div>
             </CardContent>
@@ -339,6 +370,38 @@ export default function EdgeAnalysis() {
                 Beste edge
               </div>
               <div className="text-2xl font-bold text-chart-3">{analysis.stats.bestEdge}%</div>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-card/50">
+            <CardContent className="pt-6">
+              <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1">
+                <Clock className="w-4 h-4" />
+                Gem. hedge delay
+              </div>
+              <div className="text-2xl font-bold text-chart-4">
+                {analysis.stats.avgHedgeDelayMs < 1000
+                  ? `${Math.round(analysis.stats.avgHedgeDelayMs)}ms`
+                  : analysis.stats.avgHedgeDelayMs < 60000
+                  ? `${(analysis.stats.avgHedgeDelayMs / 1000).toFixed(1)}s`
+                  : `${(analysis.stats.avgHedgeDelayMs / 60000).toFixed(1)}m`}
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">
+                Snelste: {analysis.stats.fastestHedgeMs < 1000
+                  ? `${Math.round(analysis.stats.fastestHedgeMs)}ms`
+                  : `${(analysis.stats.fastestHedgeMs / 1000).toFixed(1)}s`}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-card/50">
+            <CardContent className="pt-6">
+              <div className="flex items-center gap-2 text-muted-foreground text-sm mb-1">
+                <Target className="w-4 h-4" />
+                Gem. inzet
+              </div>
+              <div className="text-2xl font-bold text-chart-5">${analysis.stats.avgTotalSize.toFixed(2)}</div>
+              <div className="text-xs text-muted-foreground mt-1">per markt (beide kanten)</div>
             </CardContent>
           </Card>
         </section>
@@ -449,35 +512,47 @@ export default function EdgeAnalysis() {
             <CardHeader>
               <CardTitle>Top 10 arbitrage opportunities (gevonden)</CardTitle>
             </CardHeader>
-            <CardContent>
+            <CardContent className="overflow-x-auto">
               <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Market</TableHead>
                     <TableHead>Outcome A</TableHead>
                     <TableHead className="text-right">Price A</TableHead>
+                    <TableHead className="text-right">Inzet A</TableHead>
                     <TableHead>Outcome B</TableHead>
                     <TableHead className="text-right">Price B</TableHead>
-                    <TableHead className="text-right">Combined</TableHead>
+                    <TableHead className="text-right">Inzet B</TableHead>
+                    <TableHead className="text-right">Hedge Delay</TableHead>
                     <TableHead className="text-right">Edge</TableHead>
-                    <TableHead>Type</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {analysis.topArbitrage.map((row, i) => (
                     <TableRow key={i}>
-                      <TableCell className="max-w-[320px] truncate font-medium">{row.market}</TableCell>
+                      <TableCell className="max-w-[240px] truncate font-medium">{row.market}</TableCell>
                       <TableCell>{row.outcomeA}</TableCell>
                       <TableCell className="text-right text-chart-1">{(row.priceA * 100).toFixed(1)}¢</TableCell>
+                      <TableCell className="text-right text-muted-foreground">${row.totalA.toFixed(2)}</TableCell>
                       <TableCell>{row.outcomeB}</TableCell>
                       <TableCell className="text-right text-chart-2">{(row.priceB * 100).toFixed(1)}¢</TableCell>
-                      <TableCell className="text-right">{(row.combined * 100).toFixed(1)}%</TableCell>
-                      <TableCell className="text-right font-bold text-primary">{((1 - row.combined) * 100).toFixed(1)}%</TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className="bg-chart-1/10 text-chart-1 border-chart-1/20">
-                          Arbitrage
+                      <TableCell className="text-right text-muted-foreground">${row.totalB.toFixed(2)}</TableCell>
+                      <TableCell className="text-right">
+                        <Badge variant="outline" className={
+                          row.hedgeDelayMs < 1000 
+                            ? "bg-chart-1/10 text-chart-1 border-chart-1/20" 
+                            : row.hedgeDelayMs < 60000 
+                            ? "bg-chart-4/10 text-chart-4 border-chart-4/20"
+                            : "bg-chart-2/10 text-chart-2 border-chart-2/20"
+                        }>
+                          {row.hedgeDelayMs < 1000
+                            ? `${Math.round(row.hedgeDelayMs)}ms`
+                            : row.hedgeDelayMs < 60000
+                            ? `${(row.hedgeDelayMs / 1000).toFixed(1)}s`
+                            : `${(row.hedgeDelayMs / 60000).toFixed(1)}m`}
                         </Badge>
                       </TableCell>
+                      <TableCell className="text-right font-bold text-primary">{((1 - row.combined) * 100).toFixed(1)}%</TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
