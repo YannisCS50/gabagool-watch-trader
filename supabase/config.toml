@@ -1,1 +1,4 @@
 project_id = "iuzpdjplasndyvbzhlzd"
+
+[functions.scrape-polymarket]
+verify_jwt = false
