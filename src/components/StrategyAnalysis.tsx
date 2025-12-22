@@ -691,67 +691,98 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
             </ResponsiveContainer>
           </div>
           
-          {/* Show profitable arbs */}
+          {/* Show profitable arbs - COMPACT VIEW */}
           {stats.allTime.profitable.length > 0 && (
             <div className="mt-4">
               <p className="text-xs font-semibold text-success mb-2">✅ Profitable ({stats.allTime.profitable.length})</p>
-              <div className="max-h-48 overflow-y-auto space-y-2">
-                {stats.allTime.profitable.map((arb, i) => (
-                  <div key={i} className="bg-success/10 border border-success/20 rounded-lg p-3">
-                    <p className="text-xs truncate mb-2 font-medium">{arb.fullMarket}</p>
-                    <div className="grid grid-cols-2 gap-2 text-xs font-mono mb-2">
-                      <div className="bg-success/10 rounded p-2">
-                        <span className="text-muted-foreground">{arb.outcome1}: </span>
-                        <span className="text-success">${arb.price1.toFixed(3)}</span>
-                        <span className="text-muted-foreground ml-1">({arb.shares1.toFixed(0)} sh)</span>
-                        <div className="text-primary font-semibold mt-1">Value: ${arb.value1.toFixed(2)}</div>
-                      </div>
-                      <div className="bg-destructive/10 rounded p-2">
-                        <span className="text-muted-foreground">{arb.outcome2}: </span>
-                        <span className="text-destructive">${arb.price2.toFixed(3)}</span>
-                        <span className="text-muted-foreground ml-1">({arb.shares2.toFixed(0)} sh)</span>
-                        <div className="text-primary font-semibold mt-1">Value: ${arb.value2.toFixed(2)}</div>
-                      </div>
-                    </div>
-                    <div className="flex justify-between text-xs">
-                      <span className="text-muted-foreground">
-                        Sum: <span className="text-success font-semibold font-mono">{arb.sum.toFixed(3)}</span>
-                      </span>
-                      <span className="text-muted-foreground">
-                        Total: <span className="text-warning font-semibold font-mono">${(arb.value1 + arb.value2).toFixed(2)}</span>
-                      </span>
-                      <span className="text-muted-foreground">
-                        Edge: <span className="text-success font-semibold font-mono">+{(arb.spread * 100).toFixed(2)}%</span>
-                      </span>
-                      <span className="text-muted-foreground">
-                        Profit: <span className="text-warning font-semibold font-mono">${(arb.spread * arb.minShares).toFixed(2)}</span>
-                      </span>
-                    </div>
-                  </div>
-                ))}
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-border/50 text-muted-foreground">
+                      <th className="text-left py-2 pr-2">Market</th>
+                      <th className="text-right py-2 px-2">Up/Yes</th>
+                      <th className="text-right py-2 px-2">Down/No</th>
+                      <th className="text-right py-2 px-2">Sum</th>
+                      <th className="text-right py-2 px-2">Edge</th>
+                      <th className="text-right py-2 px-2">Shares</th>
+                      <th className="text-right py-2 pl-2">Profit</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stats.allTime.profitable.map((arb, i) => (
+                      <tr key={i} className="border-b border-border/30 hover:bg-success/5">
+                        <td className="py-2 pr-2 max-w-[200px] truncate" title={arb.fullMarket}>
+                          {arb.market.length > 35 ? arb.market.substring(0, 35) + '...' : arb.market}
+                        </td>
+                        <td className="text-right py-2 px-2 font-mono text-success">{arb.price1.toFixed(2)}</td>
+                        <td className="text-right py-2 px-2 font-mono text-destructive">{arb.price2.toFixed(2)}</td>
+                        <td className="text-right py-2 px-2 font-mono font-semibold text-success">{arb.sum.toFixed(3)}</td>
+                        <td className="text-right py-2 px-2 font-mono text-warning">+{(arb.spread * 100).toFixed(1)}%</td>
+                        <td className="text-right py-2 px-2 font-mono text-muted-foreground">{arb.minShares.toFixed(0)}</td>
+                        <td className="text-right py-2 pl-2 font-mono font-semibold text-success">
+                          +${(arb.spread * arb.minShares).toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t border-border font-semibold">
+                      <td className="py-2 pr-2">Totaal</td>
+                      <td colSpan={5}></td>
+                      <td className="text-right py-2 pl-2 font-mono text-success">
+                        +${stats.allTime.gains.toFixed(2)}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
               </div>
             </div>
           )}
 
-          {/* Show unprofitable arbs */}
+          {/* Show unprofitable arbs - COMPACT VIEW */}
           {stats.allTime.unprofitable.length > 0 && (
             <div className="mt-4">
               <p className="text-xs font-semibold text-destructive mb-2">
                 ⚠️ Overpaid / sum &gt; 1 ({stats.allTime.unprofitable.length})
               </p>
-              <div className="max-h-32 overflow-y-auto space-y-2">
-                {stats.allTime.unprofitable.slice(0, 5).map((arb, i) => (
-                  <div key={i} className="bg-destructive/10 border border-destructive/20 rounded-lg p-2 text-xs">
-                    <p className="truncate mb-1">{arb.fullMarket}</p>
-                    <div className="flex justify-between font-mono flex-wrap gap-1">
-                      <span>{arb.outcome1}: ${arb.price1.toFixed(3)} <span className="text-primary">(${arb.value1.toFixed(0)})</span></span>
-                      <span>{arb.outcome2}: ${arb.price2.toFixed(3)} <span className="text-primary">(${arb.value2.toFixed(0)})</span></span>
-                      <span className="text-destructive font-semibold">
-                        Σ: {arb.sum.toFixed(3)} ({((arb.sum - 1) * 100).toFixed(1)}% loss)
-                      </span>
-                    </div>
-                  </div>
-                ))}
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-border/50 text-muted-foreground">
+                      <th className="text-left py-2 pr-2">Market</th>
+                      <th className="text-right py-2 px-2">Up/Yes</th>
+                      <th className="text-right py-2 px-2">Down/No</th>
+                      <th className="text-right py-2 px-2">Sum</th>
+                      <th className="text-right py-2 px-2">Loss %</th>
+                      <th className="text-right py-2 pl-2">Loss $</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stats.allTime.unprofitable.map((arb, i) => (
+                      <tr key={i} className="border-b border-border/30 hover:bg-destructive/5">
+                        <td className="py-2 pr-2 max-w-[200px] truncate" title={arb.fullMarket}>
+                          {arb.market.length > 35 ? arb.market.substring(0, 35) + '...' : arb.market}
+                        </td>
+                        <td className="text-right py-2 px-2 font-mono">{arb.price1.toFixed(2)}</td>
+                        <td className="text-right py-2 px-2 font-mono">{arb.price2.toFixed(2)}</td>
+                        <td className="text-right py-2 px-2 font-mono font-semibold text-destructive">{arb.sum.toFixed(3)}</td>
+                        <td className="text-right py-2 px-2 font-mono text-destructive">-{((arb.sum - 1) * 100).toFixed(1)}%</td>
+                        <td className="text-right py-2 pl-2 font-mono font-semibold text-destructive">
+                          -${(Math.abs(arb.spread) * arb.minShares).toFixed(2)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                  <tfoot>
+                    <tr className="border-t border-border font-semibold">
+                      <td className="py-2 pr-2">Totaal</td>
+                      <td colSpan={4}></td>
+                      <td className="text-right py-2 pl-2 font-mono text-destructive">
+                        -${stats.allTime.losses.toFixed(2)}
+                      </td>
+                    </tr>
+                  </tfoot>
+                </table>
               </div>
             </div>
           )}
