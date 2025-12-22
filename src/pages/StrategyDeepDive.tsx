@@ -647,57 +647,66 @@ const StrategyDeepDive = () => {
                   </AccordionTrigger>
                   <AccordionContent className="space-y-4 pt-2">
                     <div className="p-4 rounded-lg bg-muted/50 border border-border">
-                      <h4 className="font-semibold text-sm mb-3 text-primary">Het Kernprincipe: Gegarandeerde Winst door Arbitrage</h4>
+                      <h4 className="font-semibold text-sm mb-3 text-primary">Het Kernprincipe: Hybride Arbitrage + Directional Betting</h4>
                       <p className="text-sm text-muted-foreground leading-relaxed mb-4">
-                        Deze bot exploiteert een fundamentele eigenschap van prediction markets: <strong>de uitkomsten zijn binair</strong>. 
-                        Bij een markt over Bitcoin prijs zijn er maar twee mogelijkheden: de prijs gaat omhoog (Up) óf naar beneden (Down). 
-                        Eén van deze twee zal altijd uitbetalen op $1.00.
+                        Deze bot opereert <strong>exclusief op crypto prediction markets</strong> - specifiek 
+                        <strong className="text-chart-4"> Bitcoin (BTC)</strong> en <strong className="text-primary"> Ethereum (ETH)</strong> 
+                        Up/Down markten. De strategie combineert twee benaderingen:
                       </p>
                       
+                      <div className="grid grid-cols-2 gap-3 mb-4">
+                        <div className="p-3 bg-chart-4/10 rounded-lg border border-chart-4/20 text-center">
+                          <p className="text-2xl font-bold">₿</p>
+                          <p className="text-sm font-medium">Bitcoin Markets</p>
+                          <p className="text-xs text-muted-foreground">{analysis?.btcStats.count || 0} trades</p>
+                        </div>
+                        <div className="p-3 bg-primary/10 rounded-lg border border-primary/20 text-center">
+                          <p className="text-2xl font-bold">Ξ</p>
+                          <p className="text-sm font-medium">Ethereum Markets</p>
+                          <p className="text-xs text-muted-foreground">{analysis?.ethStats.count || 0} trades</p>
+                        </div>
+                      </div>
+                      
                       <div className="p-3 bg-success/10 rounded-lg border border-success/20 mb-4">
-                        <p className="text-sm font-medium text-success mb-2">💡 De Arbitrage Logica:</p>
+                        <p className="text-sm font-medium text-success mb-2">💰 Strategie 1: Arbitrage ({"<"}98¢ combined)</p>
                         <p className="text-sm text-muted-foreground">
-                          Als je <strong>Up shares koopt voor $0.45</strong> en <strong>Down shares koopt voor $0.50</strong>, 
-                          dan is je totale investering $0.95. Maar één van de twee betaalt gegarandeerd $1.00 uit. 
-                          <strong className="text-success"> Dat is 5.26% gegarandeerde winst!</strong>
+                          Koop beide kanten zodat combined {"<"} $0.98. Gegarandeerde 2%+ winst ongeacht uitkomst.
+                          <strong className="text-success"> {analysis?.arbitrageCount || 0} trades ({analysis ? Math.round((analysis.arbitrageCount / analysis.totalPairs) * 100) : 0}%)</strong>
                         </p>
                       </div>
 
-                      <h4 className="font-semibold text-sm mb-2">Waarom DCA (Dollar Cost Averaging)?</h4>
-                      <p className="text-sm text-muted-foreground leading-relaxed mb-3">
-                        In plaats van één grote order te plaatsen (wat de markt kan bewegen en het moeilijker maakt om beide 
-                        kanten te vullen), koopt de bot systematisch kleine batches van 5-20 shares. Dit heeft meerdere voordelen:
-                      </p>
-                      <ul className="space-y-2 text-sm text-muted-foreground">
-                        <li className="flex items-start gap-2">
-                          <CheckCircle2 className="w-4 h-4 text-success mt-0.5 shrink-0" />
-                          <span><strong>Prijsverbetering:</strong> {dcaAnalysis?.priceImprovementRate?.toFixed(0) || '?'}% van vervolgaankopen is goedkoper dan de eerste entry</span>
-                        </li>
-                        <li className="flex items-start gap-2">
-                          <CheckCircle2 className="w-4 h-4 text-success mt-0.5 shrink-0" />
-                          <span><strong>Lagere marktimpact:</strong> Kleine orders bewegen de prijs minder dan grote orders</span>
-                        </li>
-                        <li className="flex items-start gap-2">
-                          <CheckCircle2 className="w-4 h-4 text-success mt-0.5 shrink-0" />
-                          <span><strong>Flexibiliteit:</strong> Je kunt stoppen met kopen als de prijs ongunstig wordt</span>
-                        </li>
-                        <li className="flex items-start gap-2">
-                          <CheckCircle2 className="w-4 h-4 text-success mt-0.5 shrink-0" />
-                          <span><strong>Betere gemiddelde prijs:</strong> Door te spreiden over prijsniveaus krijg je een betere average</span>
-                        </li>
-                      </ul>
+                      <div className="p-3 bg-destructive/10 rounded-lg border border-destructive/20 mb-4">
+                        <p className="text-sm font-medium text-destructive mb-2">🎯 Strategie 2: Directional Bets ({">"}102¢ combined)</p>
+                        <p className="text-sm text-muted-foreground">
+                          Bewust risico nemen met ongebalanceerde posities. Als de bot denkt dat één kant waarschijnlijker is, 
+                          accepteert hij een combined price {">"} $1.02 voor potentieel hogere returns.
+                          <strong className="text-destructive"> {analysis?.riskCount || 0} trades ({analysis ? Math.round((analysis.riskCount / analysis.totalPairs) * 100) : 0}%)</strong>
+                        </p>
+                      </div>
+
+                      <div className="p-3 bg-chart-4/10 rounded-lg border border-chart-4/20">
+                        <p className="text-sm font-medium text-chart-4 mb-2">⚖️ Strategie 3: Neutral (98-102¢)</p>
+                        <p className="text-sm text-muted-foreground">
+                          Breakeven trades als opstap - wachten op betere prijzen om te converteren naar arbitrage.
+                          <strong className="text-chart-4"> {analysis?.neutralCount || 0} trades ({analysis ? Math.round((analysis.neutralCount / analysis.totalPairs) * 100) : 0}%)</strong>
+                        </p>
+                      </div>
                     </div>
 
                     <div className="p-4 rounded-lg bg-warning/10 border border-warning/20">
                       <h4 className="font-semibold text-sm mb-2 flex items-center gap-2 text-warning">
                         <AlertTriangle className="w-4 h-4" />
-                        Belangrijke Risicos
+                        Belangrijke Nuance: Dit is GEEN Pure Arbitrage Bot
                       </h4>
+                      <p className="text-sm text-muted-foreground mb-3">
+                        Anders dan een pure arbitrage bot die alleen {"<"}$1.00 combined trades neemt, neemt Gabagool22 
+                        bewust directional risk. De data laat zien:
+                      </p>
                       <ul className="space-y-1 text-sm text-muted-foreground">
-                        <li>• <strong>Onvolledige hedges:</strong> Als je maar één kant kunt kopen, heb je directional exposure</li>
-                        <li>• <strong>Liquiditeit:</strong> Niet altijd genoeg volume om beide kanten snel te vullen</li>
-                        <li>• <strong>Timing:</strong> Prijzen kunnen bewegen voordat je de hedge completeert</li>
-                        <li>• <strong>Fees:</strong> Transactiekosten eten in je edge</li>
+                        <li>• <strong>{analysis ? Math.round((analysis.riskCount / analysis.totalPairs) * 100) : 0}% van trades zijn "risk trades"</strong> - gecombineerde prijs {">"} $1.02</li>
+                        <li>• Dit suggereert <strong>bewuste directional bets</strong> op crypto prijsbewegingen</li>
+                        <li>• Mogelijk gebaseerd op <strong>market sentiment of technische analyse</strong></li>
+                        <li>• Hogere potentiële returns, maar ook <strong>reëel verliesrisico</strong></li>
                       </ul>
                     </div>
                   </AccordionContent>
@@ -749,30 +758,44 @@ const StrategyDeepDive = () => {
                       <div className="p-4 rounded-lg bg-gradient-to-r from-primary/10 to-transparent border-l-4 border-primary">
                         <h4 className="font-semibold text-sm flex items-center gap-2">
                           <span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">1</span>
-                          Market Scanning
+                          Market Scanning (Alleen BTC & ETH)
                         </h4>
                         <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
-                          De bot monitort continu alle actieve prediction markets. Voor elke markt haalt hij de laagste 
-                          vraagprijs (lowest ask) op voor beide uitkomsten. Markten worden geprioriteerd op basis van 
-                          de combined price - hoe lager de som van Up + Down, hoe aantrekkelijker de opportunity.
+                          De bot focust <strong>exclusief op crypto markten</strong>: Bitcoin en Ethereum Up/Down prediction markets.
+                          Geen politiek, geen sports - alleen crypto price action.
                         </p>
                         <div className="mt-3 p-3 bg-background/80 rounded font-mono text-xs overflow-x-auto">
-                          <div className="text-muted-foreground">// Opportunity Detection</div>
-                          <div><span className="text-primary">for each</span> market <span className="text-primary">in</span> activeMarkets:</div>
+                          <div className="text-muted-foreground">// Market Filter - Crypto Only</div>
+                          <div>ALLOWED_MARKETS = [</div>
+                          <div className="pl-4"><span className="text-chart-4">"Bitcoin"</span>, <span className="text-chart-4">"BTC"</span>,</div>
+                          <div className="pl-4"><span className="text-primary">"Ethereum"</span>, <span className="text-primary">"ETH"</span></div>
+                          <div>]</div>
+                          <div className="mt-2"><span className="text-primary">for each</span> market <span className="text-primary">in</span> activeMarkets:</div>
+                          <div className="pl-4"><span className="text-primary">if not</span> market.name.containsAny(ALLOWED_MARKETS):</div>
+                          <div className="pl-8"><span className="text-primary">continue</span> <span className="text-muted-foreground">// Skip non-crypto</span></div>
+                          <div className="pl-4"></div>
                           <div className="pl-4">upAsk = orderbook.getLowestAsk(<span className="text-success">"Up"</span>)</div>
                           <div className="pl-4">downAsk = orderbook.getLowestAsk(<span className="text-success">"Down"</span>)</div>
                           <div className="pl-4">combined = upAsk + downAsk</div>
                           <div className="pl-4"></div>
-                          <div className="pl-4"><span className="text-primary">if</span> combined {"<"} <span className="text-chart-4">0.98</span>:</div>
-                          <div className="pl-8">priority = <span className="text-success">HIGH</span> <span className="text-muted-foreground">// 2%+ edge</span></div>
-                          <div className="pl-4"><span className="text-primary">elif</span> combined {"<"} <span className="text-chart-4">1.00</span>:</div>
-                          <div className="pl-8">priority = <span className="text-chart-4">MEDIUM</span></div>
+                          <div className="pl-4"><span className="text-muted-foreground">// BELANGRIJK: Bot neemt OOK {">"} 1.02 trades!</span></div>
+                          <div className="pl-4"><span className="text-primary">if</span> combined {"<"} <span className="text-success">0.98</span>:</div>
+                          <div className="pl-8">action = <span className="text-success">ARBITRAGE</span></div>
+                          <div className="pl-4"><span className="text-primary">elif</span> combined {"<"} <span className="text-chart-4">1.02</span>:</div>
+                          <div className="pl-8">action = <span className="text-chart-4">NEUTRAL_DCA</span></div>
                           <div className="pl-4"><span className="text-primary">else</span>:</div>
-                          <div className="pl-8">priority = <span className="text-warning">LOW</span> <span className="text-muted-foreground">// No immediate arb</span></div>
+                          <div className="pl-8">action = <span className="text-destructive">DIRECTIONAL_BET</span> <span className="text-muted-foreground">// Intentional risk!</span></div>
                         </div>
-                        <p className="text-xs text-muted-foreground mt-2">
-                          <strong>Live data:</strong> Momenteel {analysis?.totalPairs || 0} hedge pairs geïdentificeerd
-                        </p>
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          <div className="p-2 bg-chart-4/10 rounded text-center">
+                            <p className="text-sm font-bold">₿ {analysis?.btcStats.count || 0}</p>
+                            <p className="text-xs text-muted-foreground">BTC trades</p>
+                          </div>
+                          <div className="p-2 bg-primary/10 rounded text-center">
+                            <p className="text-sm font-bold">Ξ {analysis?.ethStats.count || 0}</p>
+                            <p className="text-xs text-muted-foreground">ETH trades</p>
+                          </div>
+                        </div>
                       </div>
 
                       <div className="p-4 rounded-lg bg-gradient-to-r from-chart-4/10 to-transparent border-l-4 border-chart-4">
