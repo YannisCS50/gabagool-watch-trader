@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, Brain, AlertCircle, Calculator, ChevronDown, Book, Cpu } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { StatCard } from '@/components/StatCard';
@@ -18,6 +19,50 @@ import {
 
 const Index = () => {
   const { trades, stats, positions, isLoading, scrape, isScraping } = useTrades('gabagool22');
+
+  // Calculate arbitrage success rate client-side (same logic as StrategyDeepDive)
+  const arbitrageWinRate = useMemo(() => {
+    if (trades.length === 0) return 0;
+
+    // Group trades by market
+    const marketGroups = new Map<string, typeof trades>();
+    trades.forEach(t => {
+      if (!marketGroups.has(t.market)) marketGroups.set(t.market, []);
+      marketGroups.get(t.market)!.push(t);
+    });
+
+    let arbitrageCount = 0;
+    let totalPairs = 0;
+
+    marketGroups.forEach((marketTrades) => {
+      const buys = marketTrades.filter(t => t.side === 'buy');
+      const upBuys = buys.filter(t => 
+        t.outcome === 'Yes' || t.outcome.toLowerCase().includes('up') || t.outcome.toLowerCase().includes('above')
+      );
+      const downBuys = buys.filter(t => 
+        t.outcome === 'No' || t.outcome.toLowerCase().includes('down') || t.outcome.toLowerCase().includes('below')
+      );
+
+      if (upBuys.length > 0 && downBuys.length > 0) {
+        // Match pairs by time proximity
+        upBuys.forEach(upBuy => {
+          const closestDown = downBuys.reduce((closest, down) => {
+            const currentDiff = Math.abs(down.timestamp.getTime() - upBuy.timestamp.getTime());
+            const closestDiff = closest ? Math.abs(closest.timestamp.getTime() - upBuy.timestamp.getTime()) : Infinity;
+            return currentDiff < closestDiff ? down : closest;
+          }, null as typeof downBuys[0] | null);
+
+          if (closestDown) {
+            const combinedPrice = upBuy.price + closestDown.price;
+            totalPairs++;
+            if (combinedPrice < 0.98) arbitrageCount++;
+          }
+        });
+      }
+    });
+
+    return totalPairs > 0 ? Math.round((arbitrageCount / totalPairs) * 100) : 0;
+  }, [trades]);
 
   // Use actual data - no mock fallback
   const hasData = trades.length > 0 || (stats?.totalTrades ?? 0) > 0;
@@ -132,10 +177,9 @@ const Index = () => {
             icon={<DollarSign className="w-5 h-5" />}
           />
           <StatCard
-            label="Win Rate"
-            value={`${displayStats.winRate}%`}
+            label="Arbitrage Rate"
+            value={`${arbitrageWinRate}%`}
             icon={<Target className="w-5 h-5" />}
-            trend={{ value: 2.3, isPositive: true }}
           />
           <StatCard
             label="Avg Trade"
