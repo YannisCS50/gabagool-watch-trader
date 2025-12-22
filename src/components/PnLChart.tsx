@@ -35,26 +35,30 @@ function detectArbitragePairs(trades: Trade[]): ArbitragePair[] {
     byMarket.get(key)!.push(trade);
   });
 
-  // Find Yes/No pairs within each market
+  // Find opposing outcome pairs within each market (Yes/No or Up/Down)
   byMarket.forEach((marketTrades, market) => {
-    const yesTrades = marketTrades.filter(t => t.outcome.toLowerCase() === 'yes');
-    const noTrades = marketTrades.filter(t => t.outcome.toLowerCase() === 'no');
+    const outcome1 = marketTrades.filter(t => 
+      t.outcome.toLowerCase() === 'yes' || t.outcome.toLowerCase() === 'up'
+    );
+    const outcome2 = marketTrades.filter(t => 
+      t.outcome.toLowerCase() === 'no' || t.outcome.toLowerCase() === 'down'
+    );
     
-    const usedNoIndices = new Set<number>();
+    const usedOutcome2Indices = new Set<number>();
     
-    yesTrades.forEach(yesTrade => {
-      // Find matching No trade within 5 minutes
-      const matchIdx = noTrades.findIndex((noTrade, idx) => {
-        if (usedNoIndices.has(idx)) return false;
-        const timeDiff = Math.abs(differenceInMinutes(yesTrade.timestamp, noTrade.timestamp));
+    outcome1.forEach(trade1 => {
+      // Find matching opposite outcome trade within 5 minutes
+      const matchIdx = outcome2.findIndex((trade2, idx) => {
+        if (usedOutcome2Indices.has(idx)) return false;
+        const timeDiff = Math.abs(differenceInMinutes(trade1.timestamp, trade2.timestamp));
         return timeDiff <= 5;
       });
       
       if (matchIdx !== -1) {
-        usedNoIndices.add(matchIdx);
-        const noTrade = noTrades[matchIdx];
-        const shares = Math.min(yesTrade.shares, noTrade.shares);
-        const totalCost = yesTrade.price + noTrade.price;
+        usedOutcome2Indices.add(matchIdx);
+        const trade2 = outcome2[matchIdx];
+        const shares = Math.min(trade1.shares, trade2.shares);
+        const totalCost = trade1.price + trade2.price;
         
         // Arbitrage profit: $1.00 payout - cost per share
         const profitPerShare = 1.0 - totalCost;
@@ -62,9 +66,9 @@ function detectArbitragePairs(trades: Trade[]): ArbitragePair[] {
         
         pairs.push({
           market,
-          timestamp: yesTrade.timestamp,
-          yesPrice: yesTrade.price,
-          noPrice: noTrade.price,
+          timestamp: trade1.timestamp,
+          yesPrice: trade1.price,
+          noPrice: trade2.price,
           shares,
           profit,
         });
