@@ -19,8 +19,15 @@ import {
   Layers,
   ArrowRight,
   CheckCircle2,
-  XCircle
+  XCircle,
+  BookOpen,
+  Code2,
+  Lightbulb,
+  Scale,
+  Repeat,
+  PieChart as PieChartIcon
 } from 'lucide-react';
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { useTrades } from '@/hooks/useTrades';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -592,436 +599,545 @@ const StrategyDeepDive = () => {
             Strategy Decision Flow
           </h2>
 
-          {/* Developer Documentation Card */}
+          {/* Developer Documentation Card with Accordions */}
           <Card className="glass border-primary/30">
             <CardHeader className="pb-2">
               <CardTitle className="text-sm flex items-center gap-2">
-                <Layers className="w-4 h-4 text-primary" />
-                Strategy Architecture Overview
+                <BookOpen className="w-4 h-4 text-primary" />
+                Gabagool22 Strategy Documentation
               </CardTitle>
               <CardDescription>
-                Technical documentation for developers implementing similar strategies
+                Klik op een sectie om de volledige technische documentatie te bekijken
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-4">
-              {/* Core Strategy Explanation */}
-              <div className="p-4 rounded-lg bg-muted/50 border border-border">
-                <h4 className="font-semibold text-sm mb-2 text-primary">Core Mechanism: DCA Market Making</h4>
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  This bot implements a <strong>Dollar Cost Averaging (DCA) market-making strategy</strong> on prediction markets. 
-                  Instead of placing single large orders, it systematically buys small batches (5-20 shares) across a wide price range. 
-                  The goal is to <strong>accumulate positions on both sides</strong> of a binary market (Up/Down, Yes/No) at prices 
-                  that combined are below $1.00, locking in guaranteed profit regardless of outcome.
-                </p>
-              </div>
-
-              {/* Technical Flow Steps */}
-              <div className="grid gap-3">
-                <div className="p-4 rounded-lg bg-gradient-to-r from-primary/10 to-transparent border-l-4 border-primary">
-                  <div className="flex items-start gap-3">
-                    <div className="w-8 h-8 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-sm font-bold shrink-0">1</div>
-                    <div className="flex-1">
-                      <h4 className="font-semibold text-sm">Market Scanning & Selection</h4>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        <strong>Trigger:</strong> Continuous monitoring of all active prediction markets.
-                      </p>
-                      <div className="mt-2 p-2 bg-background/80 rounded font-mono text-xs">
-                        <div className="text-muted-foreground">// Pseudocode</div>
-                        <div><span className="text-primary">for each</span> market <span className="text-primary">in</span> activeMarkets:</div>
-                        <div className="pl-4">upPrice = getLowestAsk(<span className="text-success">"Up"</span>)</div>
-                        <div className="pl-4">downPrice = getLowestAsk(<span className="text-success">"Down"</span>)</div>
-                        <div className="pl-4"><span className="text-primary">if</span> upPrice + downPrice {"<"} <span className="text-chart-4">0.98</span>:</div>
-                        <div className="pl-8">addToOpportunities(market)</div>
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-2">
-                        <strong>Currently tracking:</strong> {analysis?.totalPairs || 0} hedge pair opportunities
-                      </p>
-                    </div>
-                  </div>
+            <CardContent>
+              {/* Quick Stats Overview - Always Visible */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4 p-4 rounded-lg bg-secondary/30 border border-border">
+                <div className="text-center">
+                  <p className="text-2xl font-mono font-bold text-success">{analysis ? Math.round((analysis.arbitrageCount / analysis.totalPairs) * 100) : 0}%</p>
+                  <p className="text-xs text-muted-foreground">Arbitrage Success</p>
                 </div>
-
-                <div className="p-4 rounded-lg bg-gradient-to-r from-chart-4/10 to-transparent border-l-4 border-chart-4">
-                  <div className="flex items-start gap-3">
-                    <div className="w-8 h-8 rounded-full bg-chart-4 text-primary-foreground flex items-center justify-center text-sm font-bold shrink-0">2</div>
-                    <div className="flex-1">
-                      <h4 className="font-semibold text-sm">Price Analysis & Aggressiveness Scaling</h4>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        <strong>Logic:</strong> Entry aggressiveness inversely correlates with price. Lower prices = larger positions.
-                      </p>
-                      <div className="mt-2 grid grid-cols-2 gap-2">
-                        <div className="p-2 bg-success/10 rounded border border-success/20">
-                          <div className="text-xs font-mono text-success font-bold">{"<"} $0.35</div>
-                          <div className="text-xs text-muted-foreground">Max batch: 20 shares</div>
-                          <div className="text-xs text-muted-foreground">Most aggressive</div>
-                        </div>
-                        <div className="p-2 bg-chart-4/10 rounded border border-chart-4/20">
-                          <div className="text-xs font-mono text-chart-4 font-bold">$0.35 - $0.50</div>
-                          <div className="text-xs text-muted-foreground">Medium: 10-14 shares</div>
-                          <div className="text-xs text-muted-foreground">Standard DCA</div>
-                        </div>
-                        <div className="p-2 bg-warning/10 rounded border border-warning/20">
-                          <div className="text-xs font-mono text-warning font-bold">$0.50 - $0.55</div>
-                          <div className="text-xs text-muted-foreground">Small: 5-8 shares</div>
-                          <div className="text-xs text-muted-foreground">Cautious entry</div>
-                        </div>
-                        <div className="p-2 bg-destructive/10 rounded border border-destructive/20">
-                          <div className="text-xs font-mono text-destructive font-bold">{">"} $0.55</div>
-                          <div className="text-xs text-muted-foreground">Minimal: 2-5 shares</div>
-                          <div className="text-xs text-muted-foreground">Rebalancing only</div>
-                        </div>
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-2">
-                        <strong>Observed:</strong> Avg entry at {dcaAnalysis ? (dcaAnalysis.avgBuyPrice * 100).toFixed(0) : '?'}¢ with {dcaAnalysis?.avgShareSize?.toFixed(1) || '?'} shares per trade
-                      </p>
-                    </div>
-                  </div>
+                <div className="text-center">
+                  <p className="text-2xl font-mono font-bold text-chart-4">{analysis?.avgDelay?.toFixed(0) || 0}s</p>
+                  <p className="text-xs text-muted-foreground">Avg Hedge Time</p>
                 </div>
-
-                <div className="p-4 rounded-lg bg-gradient-to-r from-success/10 to-transparent border-l-4 border-success">
-                  <div className="flex items-start gap-3">
-                    <div className="w-8 h-8 rounded-full bg-success text-success-foreground flex items-center justify-center text-sm font-bold shrink-0">3</div>
-                    <div className="flex-1">
-                      <h4 className="font-semibold text-sm">Entry Execution: Buy Cheaper Side First</h4>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        <strong>Rule:</strong> Always start accumulation on the side with the lower price.
-                      </p>
-                      <div className="mt-2 p-2 bg-background/80 rounded font-mono text-xs">
-                        <div className="text-muted-foreground">// Entry Decision Logic</div>
-                        <div><span className="text-primary">function</span> selectEntrySide(upPrice, downPrice):</div>
-                        <div className="pl-4"><span className="text-primary">if</span> downPrice {"<"} upPrice:</div>
-                        <div className="pl-8"><span className="text-primary">return</span> <span className="text-success">"Down"</span>  <span className="text-muted-foreground">// More common ({analysis ? Math.round((analysis.downFirst / analysis.totalPairs) * 100) : '?'}%)</span></div>
-                        <div className="pl-4"><span className="text-primary">else</span>:</div>
-                        <div className="pl-8"><span className="text-primary">return</span> <span className="text-success">"Up"</span>    <span className="text-muted-foreground">// Less common ({analysis ? Math.round((analysis.upFirst / analysis.totalPairs) * 100) : '?'}%)</span></div>
-                      </div>
-                      <p className="text-xs text-muted-foreground mt-2">
-                        <strong>Why?</strong> Starting with the cheaper side maximizes the probability of completing a profitable hedge. 
-                        If the cheap side moves up, you've already locked in a good entry. If it stays cheap, you DCA down further.
-                      </p>
-                    </div>
-                  </div>
+                <div className="text-center">
+                  <p className="text-2xl font-mono font-bold">{dcaAnalysis ? (dcaAnalysis.avgBuyPrice * 100).toFixed(0) : 0}¢</p>
+                  <p className="text-xs text-muted-foreground">Avg Entry Price</p>
                 </div>
-
-                <div className="p-4 rounded-lg bg-gradient-to-r from-warning/10 to-transparent border-l-4 border-warning">
-                  <div className="flex items-start gap-3">
-                    <div className="w-8 h-8 rounded-full bg-warning text-warning-foreground flex items-center justify-center text-sm font-bold shrink-0">4</div>
-                    <div className="flex-1">
-                      <h4 className="font-semibold text-sm">Hedge Execution: Complete the Arbitrage</h4>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        <strong>Goal:</strong> Buy the opposite side so combined cost {"<"} $1.00, guaranteeing profit.
-                      </p>
-                      <div className="mt-2 p-2 bg-background/80 rounded font-mono text-xs">
-                        <div className="text-muted-foreground">// Hedge Decision Logic</div>
-                        <div><span className="text-primary">function</span> shouldHedge(existingPosition, otherSidePrice):</div>
-                        <div className="pl-4">avgEntry = existingPosition.avgPrice</div>
-                        <div className="pl-4">combined = avgEntry + otherSidePrice</div>
-                        <div className="pl-4"></div>
-                        <div className="pl-4"><span className="text-primary">if</span> combined {"<"} <span className="text-success">0.98</span>:  <span className="text-muted-foreground">// 2%+ edge</span></div>
-                        <div className="pl-8"><span className="text-primary">return</span> <span className="text-success">EXECUTE_HEDGE</span></div>
-                        <div className="pl-4"><span className="text-primary">elif</span> combined {"<"} <span className="text-chart-4">1.00</span>:  <span className="text-muted-foreground">// Positive edge</span></div>
-                        <div className="pl-8"><span className="text-primary">return</span> <span className="text-chart-4">PARTIAL_HEDGE</span></div>
-                        <div className="pl-4"><span className="text-primary">else</span>:</div>
-                        <div className="pl-8"><span className="text-primary">return</span> <span className="text-warning">WAIT_FOR_BETTER_PRICE</span></div>
-                      </div>
-                      <div className="mt-3 grid grid-cols-3 gap-2 text-center">
-                        <div className="p-2 bg-success/10 rounded">
-                          <div className="text-lg font-mono font-bold text-success">{analysis?.arbitrageCount || 0}</div>
-                          <div className="text-xs text-muted-foreground">Arbitrage ({"<"}98¢)</div>
-                        </div>
-                        <div className="p-2 bg-chart-4/10 rounded">
-                          <div className="text-lg font-mono font-bold text-chart-4">{analysis?.neutralCount || 0}</div>
-                          <div className="text-xs text-muted-foreground">Neutral (98-102¢)</div>
-                        </div>
-                        <div className="p-2 bg-destructive/10 rounded">
-                          <div className="text-lg font-mono font-bold text-destructive">{analysis?.riskCount || 0}</div>
-                          <div className="text-xs text-muted-foreground">Risk ({">"}102¢)</div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+                <div className="text-center">
+                  <p className="text-2xl font-mono font-bold text-primary">{dcaAnalysis?.priceImprovementRate?.toFixed(0) || 0}%</p>
+                  <p className="text-xs text-muted-foreground">DCA Improvement</p>
                 </div>
               </div>
 
-              {/* Key Metrics Summary */}
-              <div className="p-4 rounded-lg bg-secondary/50 border border-border mt-4">
-                <h4 className="font-semibold text-sm mb-3 flex items-center gap-2">
-                  <Activity className="w-4 h-4" />
-                  Key Strategy Metrics (Live Data)
-                </h4>
-                <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 text-center">
-                  <div>
-                    <p className="text-2xl font-mono font-bold text-success">{analysis ? Math.round((analysis.arbitrageCount / analysis.totalPairs) * 100) : 0}%</p>
-                    <p className="text-xs text-muted-foreground">Arbitrage Success Rate</p>
-                  </div>
-                  <div>
-                    <p className="text-2xl font-mono font-bold text-chart-4">{analysis?.avgDelay?.toFixed(0) || 0}s</p>
-                    <p className="text-xs text-muted-foreground">Avg Time to Hedge</p>
-                  </div>
-                  <div>
-                    <p className="text-2xl font-mono font-bold">{dcaAnalysis ? (dcaAnalysis.avgBuyPrice * 100).toFixed(0) : 0}¢</p>
-                    <p className="text-xs text-muted-foreground">Avg Entry Price</p>
-                  </div>
-                  <div>
-                    <p className="text-2xl font-mono font-bold text-primary">{dcaAnalysis?.priceImprovementRate?.toFixed(0) || 0}%</p>
-                    <p className="text-xs text-muted-foreground">DCA Price Improvement</p>
-                  </div>
-                </div>
-              </div>
+              <Accordion type="multiple" className="space-y-2">
+                {/* Section 1: Strategy Overview */}
+                <AccordionItem value="overview" className="border border-border rounded-lg px-4 bg-card/50">
+                  <AccordionTrigger className="hover:no-underline">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center">
+                        <Lightbulb className="w-4 h-4 text-primary" />
+                      </div>
+                      <div className="text-left">
+                        <p className="font-semibold text-sm">Wat is deze strategie?</p>
+                        <p className="text-xs text-muted-foreground font-normal">DCA Market Making op prediction markets uitgelegd</p>
+                      </div>
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent className="space-y-4 pt-2">
+                    <div className="p-4 rounded-lg bg-muted/50 border border-border">
+                      <h4 className="font-semibold text-sm mb-3 text-primary">Het Kernprincipe: Gegarandeerde Winst door Arbitrage</h4>
+                      <p className="text-sm text-muted-foreground leading-relaxed mb-4">
+                        Deze bot exploiteert een fundamentele eigenschap van prediction markets: <strong>de uitkomsten zijn binair</strong>. 
+                        Bij een markt over Bitcoin prijs zijn er maar twee mogelijkheden: de prijs gaat omhoog (Up) óf naar beneden (Down). 
+                        Eén van deze twee zal altijd uitbetalen op $1.00.
+                      </p>
+                      
+                      <div className="p-3 bg-success/10 rounded-lg border border-success/20 mb-4">
+                        <p className="text-sm font-medium text-success mb-2">💡 De Arbitrage Logica:</p>
+                        <p className="text-sm text-muted-foreground">
+                          Als je <strong>Up shares koopt voor $0.45</strong> en <strong>Down shares koopt voor $0.50</strong>, 
+                          dan is je totale investering $0.95. Maar één van de twee betaalt gegarandeerd $1.00 uit. 
+                          <strong className="text-success"> Dat is 5.26% gegarandeerde winst!</strong>
+                        </p>
+                      </div>
 
-              {/* Developer Implementation Notes */}
-              <div className="p-4 rounded-lg bg-muted/30 border border-border">
-                <h4 className="font-semibold text-sm mb-2 flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 text-warning" />
-                  Implementation Considerations
-                </h4>
-                <ul className="text-xs text-muted-foreground space-y-2">
-                  <li className="flex items-start gap-2">
-                    <span className="text-primary mt-0.5">•</span>
-                    <span><strong>Latency matters:</strong> Faster hedge execution (avg {analysis?.avgDelay?.toFixed(0) || '?'}s) correlates with better edge. Sub-5s hedges show highest profitability.</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <span className="text-primary mt-0.5">•</span>
-                    <span><strong>DCA reduces risk:</strong> {dcaAnalysis?.priceImprovementRate?.toFixed(0) || '?'}% of follow-up buys are at better prices than initial entry, validating the averaging approach.</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <span className="text-primary mt-0.5">•</span>
-                    <span><strong>Asymmetric bias:</strong> Down side is chosen first {analysis ? Math.round((analysis.downFirst / analysis.totalPairs) * 100) : '?'}% of the time, suggesting systematically cheaper Down pricing in these markets.</span>
-                  </li>
-                  <li className="flex items-start gap-2">
-                    <span className="text-primary mt-0.5">•</span>
-                    <span><strong>Risk tolerance:</strong> {analysis?.riskCount || 0} trades ({analysis ? Math.round((analysis.riskCount / analysis.totalPairs) * 100) : '?'}%) executed at loss-risk combined prices, indicating intentional directional exposure.</span>
-                  </li>
-                </ul>
-              </div>
+                      <h4 className="font-semibold text-sm mb-2">Waarom DCA (Dollar Cost Averaging)?</h4>
+                      <p className="text-sm text-muted-foreground leading-relaxed mb-3">
+                        In plaats van één grote order te plaatsen (wat de markt kan bewegen en het moeilijker maakt om beide 
+                        kanten te vullen), koopt de bot systematisch kleine batches van 5-20 shares. Dit heeft meerdere voordelen:
+                      </p>
+                      <ul className="space-y-2 text-sm text-muted-foreground">
+                        <li className="flex items-start gap-2">
+                          <CheckCircle2 className="w-4 h-4 text-success mt-0.5 shrink-0" />
+                          <span><strong>Prijsverbetering:</strong> {dcaAnalysis?.priceImprovementRate?.toFixed(0) || '?'}% van vervolgaankopen is goedkoper dan de eerste entry</span>
+                        </li>
+                        <li className="flex items-start gap-2">
+                          <CheckCircle2 className="w-4 h-4 text-success mt-0.5 shrink-0" />
+                          <span><strong>Lagere marktimpact:</strong> Kleine orders bewegen de prijs minder dan grote orders</span>
+                        </li>
+                        <li className="flex items-start gap-2">
+                          <CheckCircle2 className="w-4 h-4 text-success mt-0.5 shrink-0" />
+                          <span><strong>Flexibiliteit:</strong> Je kunt stoppen met kopen als de prijs ongunstig wordt</span>
+                        </li>
+                        <li className="flex items-start gap-2">
+                          <CheckCircle2 className="w-4 h-4 text-success mt-0.5 shrink-0" />
+                          <span><strong>Betere gemiddelde prijs:</strong> Door te spreiden over prijsniveaus krijg je een betere average</span>
+                        </li>
+                      </ul>
+                    </div>
+
+                    <div className="p-4 rounded-lg bg-warning/10 border border-warning/20">
+                      <h4 className="font-semibold text-sm mb-2 flex items-center gap-2 text-warning">
+                        <AlertTriangle className="w-4 h-4" />
+                        Belangrijke Risicos
+                      </h4>
+                      <ul className="space-y-1 text-sm text-muted-foreground">
+                        <li>• <strong>Onvolledige hedges:</strong> Als je maar één kant kunt kopen, heb je directional exposure</li>
+                        <li>• <strong>Liquiditeit:</strong> Niet altijd genoeg volume om beide kanten snel te vullen</li>
+                        <li>• <strong>Timing:</strong> Prijzen kunnen bewegen voordat je de hedge completeert</li>
+                        <li>• <strong>Fees:</strong> Transactiekosten eten in je edge</li>
+                      </ul>
+                    </div>
+                  </AccordionContent>
+                </AccordionItem>
+
+                {/* Section 2: The 4-Step Flow */}
+                <AccordionItem value="flow" className="border border-border rounded-lg px-4 bg-card/50">
+                  <AccordionTrigger className="hover:no-underline">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full bg-chart-4/20 flex items-center justify-center">
+                        <GitBranch className="w-4 h-4 text-chart-4" />
+                      </div>
+                      <div className="text-left">
+                        <p className="font-semibold text-sm">De 4-Stappen Decision Flow</p>
+                        <p className="text-xs text-muted-foreground font-normal">Scan → Analyze → Entry → Hedge</p>
+                      </div>
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent className="space-y-4 pt-2">
+                    {/* Visual Flow Diagram */}
+                    <div className="flex flex-col lg:flex-row items-stretch gap-2">
+                      <div className="flex-1 p-3 rounded-lg bg-primary/10 border border-primary/30 text-center">
+                        <Target className="w-6 h-6 text-primary mx-auto mb-1" />
+                        <p className="text-xs font-bold">1. SCAN</p>
+                        <p className="text-xs text-muted-foreground">Monitor markets</p>
+                      </div>
+                      <ArrowRight className="w-4 h-4 text-muted-foreground self-center hidden lg:block" />
+                      <div className="flex-1 p-3 rounded-lg bg-chart-4/10 border border-chart-4/30 text-center">
+                        <BarChart3 className="w-6 h-6 text-chart-4 mx-auto mb-1" />
+                        <p className="text-xs font-bold">2. ANALYZE</p>
+                        <p className="text-xs text-muted-foreground">Check prices</p>
+                      </div>
+                      <ArrowRight className="w-4 h-4 text-muted-foreground self-center hidden lg:block" />
+                      <div className="flex-1 p-3 rounded-lg bg-success/10 border border-success/30 text-center">
+                        <TrendingDown className="w-6 h-6 text-success mx-auto mb-1" />
+                        <p className="text-xs font-bold">3. ENTRY</p>
+                        <p className="text-xs text-muted-foreground">Buy cheap side</p>
+                      </div>
+                      <ArrowRight className="w-4 h-4 text-muted-foreground self-center hidden lg:block" />
+                      <div className="flex-1 p-3 rounded-lg bg-warning/10 border border-warning/30 text-center">
+                        <Shield className="w-6 h-6 text-warning mx-auto mb-1" />
+                        <p className="text-xs font-bold">4. HEDGE</p>
+                        <p className="text-xs text-muted-foreground">Complete arb</p>
+                      </div>
+                    </div>
+
+                    {/* Detailed Step Explanations */}
+                    <div className="space-y-3">
+                      <div className="p-4 rounded-lg bg-gradient-to-r from-primary/10 to-transparent border-l-4 border-primary">
+                        <h4 className="font-semibold text-sm flex items-center gap-2">
+                          <span className="w-6 h-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-bold">1</span>
+                          Market Scanning
+                        </h4>
+                        <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
+                          De bot monitort continu alle actieve prediction markets. Voor elke markt haalt hij de laagste 
+                          vraagprijs (lowest ask) op voor beide uitkomsten. Markten worden geprioriteerd op basis van 
+                          de combined price - hoe lager de som van Up + Down, hoe aantrekkelijker de opportunity.
+                        </p>
+                        <div className="mt-3 p-3 bg-background/80 rounded font-mono text-xs overflow-x-auto">
+                          <div className="text-muted-foreground">// Opportunity Detection</div>
+                          <div><span className="text-primary">for each</span> market <span className="text-primary">in</span> activeMarkets:</div>
+                          <div className="pl-4">upAsk = orderbook.getLowestAsk(<span className="text-success">"Up"</span>)</div>
+                          <div className="pl-4">downAsk = orderbook.getLowestAsk(<span className="text-success">"Down"</span>)</div>
+                          <div className="pl-4">combined = upAsk + downAsk</div>
+                          <div className="pl-4"></div>
+                          <div className="pl-4"><span className="text-primary">if</span> combined {"<"} <span className="text-chart-4">0.98</span>:</div>
+                          <div className="pl-8">priority = <span className="text-success">HIGH</span> <span className="text-muted-foreground">// 2%+ edge</span></div>
+                          <div className="pl-4"><span className="text-primary">elif</span> combined {"<"} <span className="text-chart-4">1.00</span>:</div>
+                          <div className="pl-8">priority = <span className="text-chart-4">MEDIUM</span></div>
+                          <div className="pl-4"><span className="text-primary">else</span>:</div>
+                          <div className="pl-8">priority = <span className="text-warning">LOW</span> <span className="text-muted-foreground">// No immediate arb</span></div>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-2">
+                          <strong>Live data:</strong> Momenteel {analysis?.totalPairs || 0} hedge pairs geïdentificeerd
+                        </p>
+                      </div>
+
+                      <div className="p-4 rounded-lg bg-gradient-to-r from-chart-4/10 to-transparent border-l-4 border-chart-4">
+                        <h4 className="font-semibold text-sm flex items-center gap-2">
+                          <span className="w-6 h-6 rounded-full bg-chart-4 text-primary-foreground flex items-center justify-center text-xs font-bold">2</span>
+                          Price Analysis & Position Sizing
+                        </h4>
+                        <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
+                          De agressiviteit van de bot schaalt omgekeerd met de prijs. Bij lagere prijzen is het risico 
+                          lager en de potentiële opbrengst hoger, dus worden grotere posities genomen.
+                        </p>
+                        <div className="mt-3 grid grid-cols-2 lg:grid-cols-4 gap-2">
+                          <div className="p-3 bg-success/10 rounded border border-success/20">
+                            <div className="text-sm font-mono text-success font-bold">{"<"} 35¢</div>
+                            <div className="text-xs text-muted-foreground mt-1">Max: 20 shares</div>
+                            <div className="text-xs text-success">AGGRESSIVE</div>
+                          </div>
+                          <div className="p-3 bg-chart-4/10 rounded border border-chart-4/20">
+                            <div className="text-sm font-mono text-chart-4 font-bold">35-50¢</div>
+                            <div className="text-xs text-muted-foreground mt-1">10-14 shares</div>
+                            <div className="text-xs text-chart-4">STANDARD</div>
+                          </div>
+                          <div className="p-3 bg-warning/10 rounded border border-warning/20">
+                            <div className="text-sm font-mono text-warning font-bold">50-55¢</div>
+                            <div className="text-xs text-muted-foreground mt-1">5-8 shares</div>
+                            <div className="text-xs text-warning">CAUTIOUS</div>
+                          </div>
+                          <div className="p-3 bg-destructive/10 rounded border border-destructive/20">
+                            <div className="text-sm font-mono text-destructive font-bold">{">"}55¢</div>
+                            <div className="text-xs text-muted-foreground mt-1">2-5 shares</div>
+                            <div className="text-xs text-destructive">MINIMAL</div>
+                          </div>
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-3">
+                          <strong>Waarom?</strong> Bij een prijs van 30¢ heb je maximaal $0.30 risico per share maar 
+                          $0.70 potentiële winst (als die kant wint). Bij 55¢ is dat $0.55 risico voor $0.45 winst - veel minder aantrekkelijk.
+                        </p>
+                      </div>
+
+                      <div className="p-4 rounded-lg bg-gradient-to-r from-success/10 to-transparent border-l-4 border-success">
+                        <h4 className="font-semibold text-sm flex items-center gap-2">
+                          <span className="w-6 h-6 rounded-full bg-success text-success-foreground flex items-center justify-center text-xs font-bold">3</span>
+                          Entry: Koop de Goedkoopste Kant Eerst
+                        </h4>
+                        <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
+                          De bot begint altijd met de kant die het goedkoopst is. Dit maximaliseert de kans om 
+                          een profitable hedge te completeren. Als de goedkope kant later duurder wordt, heb je 
+                          al een goede entry. Als hij goedkoop blijft, kun je DCA-en.
+                        </p>
+                        <div className="mt-3 grid grid-cols-2 gap-3">
+                          <div className="p-3 bg-background/50 rounded border border-border">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-sm font-medium">Down First</span>
+                              <span className="text-lg font-mono font-bold text-primary">{analysis ? Math.round((analysis.downFirst / analysis.totalPairs) * 100) : '?'}%</span>
+                            </div>
+                            <p className="text-xs text-muted-foreground">Vaker goedkoper - mogelijk sentiment bias</p>
+                          </div>
+                          <div className="p-3 bg-background/50 rounded border border-border">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-sm font-medium">Up First</span>
+                              <span className="text-lg font-mono font-bold">{analysis ? Math.round((analysis.upFirst / analysis.totalPairs) * 100) : '?'}%</span>
+                            </div>
+                            <p className="text-xs text-muted-foreground">Minder vaak de goedkoopste optie</p>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="p-4 rounded-lg bg-gradient-to-r from-warning/10 to-transparent border-l-4 border-warning">
+                        <h4 className="font-semibold text-sm flex items-center gap-2">
+                          <span className="w-6 h-6 rounded-full bg-warning text-warning-foreground flex items-center justify-center text-xs font-bold">4</span>
+                          Hedge: Completeer de Arbitrage
+                        </h4>
+                        <p className="text-sm text-muted-foreground mt-2 leading-relaxed">
+                          Zodra er een positie is op één kant, zoekt de bot naar mogelijkheden om de andere kant 
+                          te kopen zodat de gecombineerde prijs onder $1.00 komt. Dit is waar de gegarandeerde winst wordt gelocked.
+                        </p>
+                        <div className="mt-3 p-3 bg-background/80 rounded font-mono text-xs overflow-x-auto">
+                          <div className="text-muted-foreground">// Hedge Decision Tree</div>
+                          <div><span className="text-primary">function</span> evaluateHedge(myAvgPrice, otherSideAsk):</div>
+                          <div className="pl-4">combined = myAvgPrice + otherSideAsk</div>
+                          <div className="pl-4">edge = (1.00 - combined) * 100  <span className="text-muted-foreground">// % profit</span></div>
+                          <div className="pl-4"></div>
+                          <div className="pl-4"><span className="text-primary">if</span> combined {"<"} <span className="text-success">0.95</span>:</div>
+                          <div className="pl-8"><span className="text-primary">return</span> <span className="text-success">EXECUTE_MAX</span>  <span className="text-muted-foreground">// {">"} 5% edge, go all in</span></div>
+                          <div className="pl-4"><span className="text-primary">elif</span> combined {"<"} <span className="text-success">0.98</span>:</div>
+                          <div className="pl-8"><span className="text-primary">return</span> <span className="text-success">EXECUTE</span>  <span className="text-muted-foreground">// 2-5% edge, solid trade</span></div>
+                          <div className="pl-4"><span className="text-primary">elif</span> combined {"<"} <span className="text-chart-4">1.00</span>:</div>
+                          <div className="pl-8"><span className="text-primary">return</span> <span className="text-chart-4">PARTIAL</span>  <span className="text-muted-foreground">// Small edge, partial fill</span></div>
+                          <div className="pl-4"><span className="text-primary">else</span>:</div>
+                          <div className="pl-8"><span className="text-primary">return</span> <span className="text-warning">WAIT</span>  <span className="text-muted-foreground">// No profit, hold position</span></div>
+                        </div>
+                        <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+                          <div className="p-2 bg-success/10 rounded">
+                            <div className="text-lg font-mono font-bold text-success">{analysis?.arbitrageCount || 0}</div>
+                            <div className="text-xs text-muted-foreground">Profitable ({"<"}98¢)</div>
+                          </div>
+                          <div className="p-2 bg-chart-4/10 rounded">
+                            <div className="text-lg font-mono font-bold text-chart-4">{analysis?.neutralCount || 0}</div>
+                            <div className="text-xs text-muted-foreground">Neutral</div>
+                          </div>
+                          <div className="p-2 bg-destructive/10 rounded">
+                            <div className="text-lg font-mono font-bold text-destructive">{analysis?.riskCount || 0}</div>
+                            <div className="text-xs text-muted-foreground">At Risk ({">"}102¢)</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </AccordionContent>
+                </AccordionItem>
+
+                {/* Section 3: DCA Deep Dive */}
+                <AccordionItem value="dca" className="border border-border rounded-lg px-4 bg-card/50">
+                  <AccordionTrigger className="hover:no-underline">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full bg-success/20 flex items-center justify-center">
+                        <Repeat className="w-4 h-4 text-success" />
+                      </div>
+                      <div className="text-left">
+                        <p className="font-semibold text-sm">DCA Mechaniek in Detail</p>
+                        <p className="text-xs text-muted-foreground font-normal">Waarom kleine batches beter werken dan grote orders</p>
+                      </div>
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent className="space-y-4 pt-2">
+                    <div className="p-4 rounded-lg bg-muted/50 border border-border">
+                      <h4 className="font-semibold text-sm mb-3">Het DCA Principe Toegepast op Prediction Markets</h4>
+                      <p className="text-sm text-muted-foreground leading-relaxed mb-4">
+                        Dollar Cost Averaging is een bekende strategie in traditionele finance: in plaats van al je geld 
+                        in één keer te investeren, spreid je je aankopen over tijd. Dit werkt bijzonder goed op prediction 
+                        markets omdat prijzen volatiel zijn en er vaak geen duidelijke trend richting is.
+                      </p>
+                      
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        <div className="p-3 bg-background/50 rounded border border-border">
+                          <h5 className="font-medium text-sm mb-2 flex items-center gap-2">
+                            <TrendingDown className="w-4 h-4 text-success" />
+                            Voordelen van DCA
+                          </h5>
+                          <ul className="space-y-1 text-xs text-muted-foreground">
+                            <li>• Vermindert timing risico</li>
+                            <li>• Betere average entry price</li>
+                            <li>• Flexibiliteit om te stoppen</li>
+                            <li>• Minder marktimpact per trade</li>
+                            <li>• Emotie uit de beslissing</li>
+                          </ul>
+                        </div>
+                        <div className="p-3 bg-background/50 rounded border border-border">
+                          <h5 className="font-medium text-sm mb-2 flex items-center gap-2">
+                            <AlertTriangle className="w-4 h-4 text-warning" />
+                            Nadelen van DCA
+                          </h5>
+                          <ul className="space-y-1 text-xs text-muted-foreground">
+                            <li>• Meer transacties = meer fees</li>
+                            <li>• Kan langzamer zijn dan nodig</li>
+                            <li>• Mist soms de beste prijs</li>
+                            <li>• Complexere execution logic</li>
+                            <li>• Vereist constante monitoring</li>
+                          </ul>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="p-4 rounded-lg bg-success/10 border border-success/20">
+                      <h4 className="font-semibold text-sm mb-2 flex items-center gap-2 text-success">
+                        <CheckCircle2 className="w-4 h-4" />
+                        DCA Performance van Gabagool22
+                      </h4>
+                      <div className="grid grid-cols-3 gap-4 mt-3">
+                        <div className="text-center">
+                          <p className="text-2xl font-mono font-bold text-success">{dcaAnalysis?.priceImprovementRate?.toFixed(0) || '?'}%</p>
+                          <p className="text-xs text-muted-foreground">Vervolgkopen goedkoper</p>
+                        </div>
+                        <div className="text-center">
+                          <p className="text-2xl font-mono font-bold">{dcaAnalysis?.avgShareSize?.toFixed(1) || '?'}</p>
+                          <p className="text-xs text-muted-foreground">Gem. shares per trade</p>
+                        </div>
+                        <div className="text-center">
+                          <p className="text-2xl font-mono font-bold">{dcaAnalysis?.totalBuys || '?'}</p>
+                          <p className="text-xs text-muted-foreground">Totaal buy trades</p>
+                        </div>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-3">
+                        Dit betekent dat in {dcaAnalysis?.priceImprovementRate?.toFixed(0) || '?'}% van de gevallen waar de bot 
+                        een tweede (of latere) aankoop deed, die aankoop goedkoper was dan de eerste entry. 
+                        Dit valideert de DCA approach.
+                      </p>
+                    </div>
+                  </AccordionContent>
+                </AccordionItem>
+
+                {/* Section 4: Risk Management */}
+                <AccordionItem value="risk" className="border border-border rounded-lg px-4 bg-card/50">
+                  <AccordionTrigger className="hover:no-underline">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full bg-warning/20 flex items-center justify-center">
+                        <Scale className="w-4 h-4 text-warning" />
+                      </div>
+                      <div className="text-left">
+                        <p className="font-semibold text-sm">Risk Management & Exposure</p>
+                        <p className="text-xs text-muted-foreground font-normal">Hoe de bot risico beheert en exposure limiteert</p>
+                      </div>
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent className="space-y-4 pt-2">
+                    <div className="p-4 rounded-lg bg-muted/50 border border-border">
+                      <h4 className="font-semibold text-sm mb-3">Hedged vs Exposed Capital</h4>
+                      <p className="text-sm text-muted-foreground leading-relaxed mb-4">
+                        Niet alle posities zijn volledig gehedged. Sommige markten hebben een onbalans tussen 
+                        Up en Down shares. Dit exposed capital heeft directional risk - als de verkeerde kant wint, 
+                        verlies je dat bedrag.
+                      </p>
+                      
+                      {exposureAnalysis && (
+                        <div className="grid grid-cols-2 gap-4">
+                          <div className="p-3 bg-success/10 rounded border border-success/20 text-center">
+                            <Shield className="w-6 h-6 text-success mx-auto mb-2" />
+                            <p className="text-xl font-mono font-bold text-success">${exposureAnalysis.totalHedgedCapital.toFixed(0)}</p>
+                            <p className="text-xs text-muted-foreground">Hedged Capital</p>
+                            <p className="text-xs text-success">{(100 - exposureAnalysis.exposurePercent).toFixed(1)}% beschermd</p>
+                          </div>
+                          <div className="p-3 bg-warning/10 rounded border border-warning/20 text-center">
+                            <ShieldAlert className="w-6 h-6 text-warning mx-auto mb-2" />
+                            <p className="text-xl font-mono font-bold text-warning">${exposureAnalysis.totalExposedCapital.toFixed(0)}</p>
+                            <p className="text-xs text-muted-foreground">Exposed Capital</p>
+                            <p className="text-xs text-warning">{exposureAnalysis.exposurePercent.toFixed(1)}% at risk</p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="p-4 rounded-lg bg-background/50 border border-border">
+                      <h4 className="font-semibold text-sm mb-3">Risk Categorieën</h4>
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between p-2 bg-success/10 rounded">
+                          <div className="flex items-center gap-2">
+                            <CheckCircle2 className="w-4 h-4 text-success" />
+                            <span className="text-sm">Arbitrage Trades ({"<"}98¢)</span>
+                          </div>
+                          <span className="font-mono text-sm text-success">{analysis?.arbitrageCount || 0} trades</span>
+                        </div>
+                        <p className="text-xs text-muted-foreground px-2">
+                          Gegarandeerde winst van 2%+ ongeacht uitkomst. Dit is het doel van de strategie.
+                        </p>
+                        
+                        <div className="flex items-center justify-between p-2 bg-chart-4/10 rounded mt-3">
+                          <div className="flex items-center gap-2">
+                            <Activity className="w-4 h-4 text-chart-4" />
+                            <span className="text-sm">Neutral Trades (98-102¢)</span>
+                          </div>
+                          <span className="font-mono text-sm text-chart-4">{analysis?.neutralCount || 0} trades</span>
+                        </div>
+                        <p className="text-xs text-muted-foreground px-2">
+                          Breakeven of kleine winst/verlies. Acceptabel als opstap naar betere prijzen.
+                        </p>
+                        
+                        <div className="flex items-center justify-between p-2 bg-destructive/10 rounded mt-3">
+                          <div className="flex items-center gap-2">
+                            <XCircle className="w-4 h-4 text-destructive" />
+                            <span className="text-sm">Risk Trades ({">"}102¢)</span>
+                          </div>
+                          <span className="font-mono text-sm text-destructive">{analysis?.riskCount || 0} trades</span>
+                        </div>
+                        <p className="text-xs text-muted-foreground px-2">
+                          Gegarandeerd verlies als beide kanten tot expiry worden gehouden. Kan wijzen op 
+                          directional bets of timing issues.
+                        </p>
+                      </div>
+                    </div>
+                  </AccordionContent>
+                </AccordionItem>
+
+                {/* Section 5: Developer Implementation Guide */}
+                <AccordionItem value="implementation" className="border border-border rounded-lg px-4 bg-card/50">
+                  <AccordionTrigger className="hover:no-underline">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full bg-destructive/20 flex items-center justify-center">
+                        <Code2 className="w-4 h-4 text-destructive" />
+                      </div>
+                      <div className="text-left">
+                        <p className="font-semibold text-sm">Developer Implementation Guide</p>
+                        <p className="text-xs text-muted-foreground font-normal">Technische details voor het bouwen van vergelijkbare bots</p>
+                      </div>
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent className="space-y-4 pt-2">
+                    <div className="p-4 rounded-lg bg-muted/50 border border-border">
+                      <h4 className="font-semibold text-sm mb-3 flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4 text-warning" />
+                        Kritieke Implementatie Overwegingen
+                      </h4>
+                      <div className="space-y-3">
+                        <div className="p-3 bg-background/50 rounded border-l-4 border-primary">
+                          <h5 className="font-medium text-sm text-primary">1. Latency is Cruciaal</h5>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            De gemiddelde hedge delay is {analysis?.avgDelay?.toFixed(0) || '?'} seconden. Trades met {"<"}5s delay 
+                            hebben significant betere edges. Investeer in snelle API connections en co-location indien mogelijk.
+                          </p>
+                        </div>
+                        
+                        <div className="p-3 bg-background/50 rounded border-l-4 border-chart-4">
+                          <h5 className="font-medium text-sm text-chart-4">2. Order Book Monitoring</h5>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Real-time orderbook data is essentieel. Gebruik WebSocket connections in plaats van REST polling. 
+                            Track niet alleen de beste prijzen maar ook de diepte om je order sizing te bepalen.
+                          </p>
+                        </div>
+                        
+                        <div className="p-3 bg-background/50 rounded border-l-4 border-success">
+                          <h5 className="font-medium text-sm text-success">3. Position Tracking</h5>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Houd per markt bij: totale shares per kant, gemiddelde entry prijs, en de unrealized P&L. 
+                            Dit bepaalt je hedge sizing en urgentie.
+                          </p>
+                        </div>
+                        
+                        <div className="p-3 bg-background/50 rounded border-l-4 border-warning">
+                          <h5 className="font-medium text-sm text-warning">4. Error Handling</h5>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            API failures, partial fills, en rejected orders komen voor. Bouw robuuste retry logic 
+                            en zorg dat je nooit in een inconsistente state terechtkomt.
+                          </p>
+                        </div>
+                        
+                        <div className="p-3 bg-background/50 rounded border-l-4 border-destructive">
+                          <h5 className="font-medium text-sm text-destructive">5. Risk Limits</h5>
+                          <p className="text-xs text-muted-foreground mt-1">
+                            Implementeer harde limieten: max exposed capital per markt, max totale exposure, 
+                            en circuit breakers bij onverwacht gedrag.
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="p-4 rounded-lg bg-primary/10 border border-primary/20">
+                      <h4 className="font-semibold text-sm mb-2 flex items-center gap-2 text-primary">
+                        <Code2 className="w-4 h-4" />
+                        Aanbevolen Tech Stack
+                      </h4>
+                      <div className="grid grid-cols-2 gap-3 mt-3 text-xs">
+                        <div>
+                          <p className="font-medium">Language</p>
+                          <p className="text-muted-foreground">Python (snelle prototyping) of Rust (productie latency)</p>
+                        </div>
+                        <div>
+                          <p className="font-medium">Data Store</p>
+                          <p className="text-muted-foreground">Redis voor real-time state, PostgreSQL voor history</p>
+                        </div>
+                        <div>
+                          <p className="font-medium">Messaging</p>
+                          <p className="text-muted-foreground">WebSockets voor orderbook, async queues voor orders</p>
+                        </div>
+                        <div>
+                          <p className="font-medium">Monitoring</p>
+                          <p className="text-muted-foreground">Prometheus + Grafana voor real-time metrics</p>
+                        </div>
+                      </div>
+                    </div>
+                  </AccordionContent>
+                </AccordionItem>
+              </Accordion>
             </CardContent>
           </Card>
         </section>
 
-        {/* Position Exposure Monitor - NEW */}
-        {exposureAnalysis && (
-          <section className="space-y-4">
-            <h2 className="text-lg font-semibold flex items-center gap-2">
-              <ShieldAlert className="w-5 h-5 text-warning" />
-              Position Exposure Monitor
-            </h2>
-
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-              <Card className="glass">
-                <CardContent className="pt-6">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-xs text-muted-foreground">Exposed Capital</p>
-                      <p className="text-2xl font-mono font-bold text-warning">
-                        ${exposureAnalysis.totalExposedCapital.toFixed(0)}
-                      </p>
-                    </div>
-                    <div className="p-2 rounded-lg bg-warning/10">
-                      <ShieldAlert className="w-5 h-5 text-warning" />
-                    </div>
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-2">
-                    {exposureAnalysis.exposurePercent.toFixed(1)}% of total
-                  </p>
-                </CardContent>
-              </Card>
-
-              <Card className="glass">
-                <CardContent className="pt-6">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-xs text-muted-foreground">Hedged Capital</p>
-                      <p className="text-2xl font-mono font-bold text-success">
-                        ${exposureAnalysis.totalHedgedCapital.toFixed(0)}
-                      </p>
-                    </div>
-                    <div className="p-2 rounded-lg bg-success/10">
-                      <Shield className="w-5 h-5 text-success" />
-                    </div>
-                  </div>
-                  <p className="text-xs text-muted-foreground mt-2">
-                    {(100 - exposureAnalysis.exposurePercent).toFixed(1)}% protected
-                  </p>
-                </CardContent>
-              </Card>
-
-              <Card className="glass">
-                <CardContent className="pt-6">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-xs text-muted-foreground">Unrealized P&L</p>
-                      <p className={`text-2xl font-mono font-bold ${exposureAnalysis.totalPnl >= 0 ? 'text-success' : 'text-destructive'}`}>
-                        {exposureAnalysis.totalPnl >= 0 ? '+' : ''}{exposureAnalysis.totalPnl.toFixed(2)}
-                      </p>
-                    </div>
-                    <div className={`p-2 rounded-lg ${exposureAnalysis.totalPnl >= 0 ? 'bg-success/10' : 'bg-destructive/10'}`}>
-                      <DollarSign className={`w-5 h-5 ${exposureAnalysis.totalPnl >= 0 ? 'text-success' : 'text-destructive'}`} />
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-
-              <Card className="glass">
-                <CardContent className="pt-6">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-xs text-muted-foreground">Win/Loss Ratio</p>
-                      <p className="text-2xl font-mono font-bold">
-                        <span className="text-success">{exposureAnalysis.winningCount}</span>
-                        <span className="text-muted-foreground">/</span>
-                        <span className="text-destructive">{exposureAnalysis.losingCount}</span>
-                      </p>
-                    </div>
-                    <div className="p-2 rounded-lg bg-chart-4/10">
-                      <TrendingUp className="w-5 h-5 text-chart-4" />
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-
-            <div className="grid lg:grid-cols-2 gap-4">
-              {/* Exposure Distribution */}
-              <Card className="glass">
-                <CardHeader>
-                  <CardTitle className="text-sm">Exposure by Side</CardTitle>
-                  <CardDescription>Unhedged shares distribution</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="h-[200px]">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <PieChart>
-                        <Pie
-                          data={[
-                            { name: 'Up Exposed', value: exposureAnalysis.upExposedValue, color: 'hsl(var(--chart-4))' },
-                            { name: 'Down Exposed', value: exposureAnalysis.downExposedValue, color: 'hsl(var(--warning))' },
-                            { name: 'Hedged', value: exposureAnalysis.totalHedgedCapital, color: 'hsl(var(--success))' },
-                          ]}
-                          cx="50%"
-                          cy="50%"
-                          innerRadius={50}
-                          outerRadius={75}
-                          dataKey="value"
-                          label={({ name, percent }) => percent > 0.05 ? `${name.split(' ')[0]} ${(percent * 100).toFixed(0)}%` : ''}
-                        >
-                          <Cell fill="hsl(var(--chart-4))" />
-                          <Cell fill="hsl(var(--warning))" />
-                          <Cell fill="hsl(var(--success))" />
-                        </Pie>
-                        <Tooltip 
-                          contentStyle={{ 
-                            backgroundColor: 'hsl(var(--card))', 
-                            border: '1px solid hsl(var(--border))',
-                            borderRadius: '8px'
-                          }}
-                          formatter={(value: number) => [`$${value.toFixed(2)}`, 'Value']}
-                        />
-                        <Legend />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  </div>
-                  <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
-                    <div className="p-2 rounded bg-chart-4/10 flex items-center justify-between">
-                      <span>Up Exposure</span>
-                      <span className="font-mono">{exposureAnalysis.upExposedShares} shares</span>
-                    </div>
-                    <div className="p-2 rounded bg-warning/10 flex items-center justify-between">
-                      <span>Down Exposure</span>
-                      <span className="font-mono">{exposureAnalysis.downExposedShares} shares</span>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Top Exposed Positions */}
-              <Card className="glass">
-                <CardHeader>
-                  <CardTitle className="text-sm">Top Exposed Positions</CardTitle>
-                  <CardDescription>Largest unhedged positions by value</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="overflow-x-auto max-h-[280px]">
-                    <table className="w-full text-xs">
-                      <thead className="sticky top-0 bg-card">
-                        <tr className="border-b border-border">
-                          <th className="text-left p-2 font-medium text-muted-foreground">Market</th>
-                          <th className="text-right p-2 font-medium text-muted-foreground">Side</th>
-                          <th className="text-right p-2 font-medium text-muted-foreground">Exposed</th>
-                          <th className="text-right p-2 font-medium text-muted-foreground">P&L</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {exposureAnalysis.topExposed.map((pos, i) => (
-                          <tr key={i} className="border-b border-border/50 hover:bg-secondary/30">
-                            <td className="p-2 font-mono truncate max-w-[150px]">{pos.market}</td>
-                            <td className="p-2 text-right">
-                              <Badge variant="outline" className={pos.side === 'Up' ? 'text-chart-4 border-chart-4/50' : 'text-warning border-warning/50'}>
-                                {pos.side}
-                              </Badge>
-                            </td>
-                            <td className="p-2 text-right font-mono">${pos.exposedValue.toFixed(2)}</td>
-                            <td className={`p-2 text-right font-mono ${pos.pnl >= 0 ? 'text-success' : 'text-destructive'}`}>
-                              {pos.pnl >= 0 ? '+' : ''}{pos.pnl.toFixed(2)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-
-            {/* P&L Breakdown */}
-            <Card className="glass">
-              <CardHeader>
-                <CardTitle className="text-sm">Unrealized P&L Breakdown</CardTitle>
-                <CardDescription>Top winners and losers in current positions</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="grid lg:grid-cols-2 gap-6">
-                  {/* Top Winners */}
-                  <div>
-                    <h4 className="text-xs font-medium text-success mb-3 flex items-center gap-2">
-                      <TrendingUp className="w-4 h-4" />
-                      Top Winners (+${exposureAnalysis.totalWinning.toFixed(2)})
-                    </h4>
-                    <div className="space-y-2">
-                      {exposureAnalysis.topWinners.map((pos, i) => (
-                        <div key={i} className="flex items-center justify-between p-2 rounded bg-success/5 border border-success/20">
-                          <span className="text-xs truncate max-w-[200px]">{pos.market}</span>
-                          <span className="text-xs font-mono text-success">+${(pos.pnl || 0).toFixed(2)}</span>
-                        </div>
-                      ))}
-                      {exposureAnalysis.topWinners.length === 0 && (
-                        <p className="text-xs text-muted-foreground text-center py-4">No winning positions</p>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Top Losers */}
-                  <div>
-                    <h4 className="text-xs font-medium text-destructive mb-3 flex items-center gap-2">
-                      <TrendingDown className="w-4 h-4" />
-                      Top Losers ({exposureAnalysis.totalLosing >= 0 ? '+' : ''}{exposureAnalysis.totalLosing.toFixed(2)})
-                    </h4>
-                    <div className="space-y-2">
-                      {exposureAnalysis.topLosers.map((pos, i) => (
-                        <div key={i} className="flex items-center justify-between p-2 rounded bg-destructive/5 border border-destructive/20">
-                          <span className="text-xs truncate max-w-[200px]">{pos.market}</span>
-                          <span className="text-xs font-mono text-destructive">${(pos.pnl || 0).toFixed(2)}</span>
-                        </div>
-                      ))}
-                      {exposureAnalysis.topLosers.length === 0 && (
-                        <p className="text-xs text-muted-foreground text-center py-4">No losing positions</p>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </section>
-        )}
-
-        {/* DCA & Sizing Analysis - NEW */}
+        {/* DCA & Sizing Analysis */}
         {dcaAnalysis && (
           <section className="space-y-4">
             <h2 className="text-lg font-semibold flex items-center gap-2">
