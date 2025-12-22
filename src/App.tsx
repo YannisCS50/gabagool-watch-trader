@@ -11,6 +11,7 @@ import DevGuide from "./pages/DevGuide";
 import TradingStrategies from "./pages/TradingStrategies";
 import RustStrategy from "./pages/RustStrategy";
 import HFTBuildGuide from "./pages/HFTBuildGuide";
+import EdgeAnalysis from "./pages/EdgeAnalysis";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -30,6 +31,7 @@ const App = () => (
           <Route path="/trading-strategies" element={<TradingStrategies />} />
           <Route path="/rust-strategy" element={<RustStrategy />} />
           <Route path="/hft-build-guide" element={<HFTBuildGuide />} />
+          <Route path="/edge-analysis" element={<EdgeAnalysis />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>
