@@ -88,6 +88,12 @@ const Index = () => {
                       Rust Implementation
                     </Link>
                   </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <Link to="/strategy-deep-dive" className="flex items-center gap-2">
+                      <TrendingUp className="w-4 h-4" />
+                      Strategy Deep Dive
+                    </Link>
+                  </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
               <Button
