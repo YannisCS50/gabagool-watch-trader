@@ -358,23 +358,29 @@ Deno.serve(async (req) => {
             const clobTrades = clobData.data || clobData;
             
             if (Array.isArray(clobTrades) && clobTrades.length > 0) {
-              const existingHashes = new Set(trades.map(t => t.transactionHash || t.id));
+              const existingHashes = new Set(trades.map(t => t.transactionHash));
               const newTrades = clobTrades.filter((t: any) => 
                 !existingHashes.has(t.id) && !existingHashes.has(t.transaction_hash)
               );
               
               // Map CLOB format to our format
-              const mappedTrades = newTrades.map((t: any) => ({
-                transactionHash: t.id || t.transaction_hash,
-                side: t.side,
+              const mappedTrades: PolymarketTrade[] = newTrades.map((t: any) => ({
+                proxyWallet: userAddress || '',
+                side: t.side === 'BUY' ? 'BUY' : 'SELL',
+                asset: t.asset_id || '',
+                conditionId: t.condition_id || t.asset_id || '',
                 size: parseFloat(t.size || t.amount || '0'),
                 price: parseFloat(t.price || '0'),
                 timestamp: t.created_at ? new Date(t.created_at).getTime() / 1000 : (t.match_time || Date.now() / 1000),
                 title: t.market || t.condition_id || 'CLOB Trade',
                 slug: t.market_slug || '',
+                icon: '',
+                eventSlug: '',
                 outcome: t.outcome || (t.asset_id?.includes('YES') ? 'Yes' : 'No'),
-                conditionId: t.condition_id || t.asset_id,
+                outcomeIndex: 0,
+                name: t.market || '',
                 pseudonym: username,
+                transactionHash: t.id || t.transaction_hash || '',
                 usdcSize: parseFloat(t.size || '0') * parseFloat(t.price || '0'),
               }));
               
@@ -424,22 +430,28 @@ Deno.serve(async (req) => {
             const clobTrades = clobData.data || clobData;
             
             if (Array.isArray(clobTrades) && clobTrades.length > 0) {
-              const existingHashes = new Set(trades.map(t => t.transactionHash || t.id));
+              const existingHashes = new Set(trades.map(t => t.transactionHash));
               const newTrades = clobTrades.filter((t: any) => 
                 !existingHashes.has(t.id) && !existingHashes.has(t.transaction_hash)
               );
               
-              const mappedTrades = newTrades.map((t: any) => ({
-                transactionHash: t.id || t.transaction_hash,
-                side: t.side,
+              const mappedTrades: PolymarketTrade[] = newTrades.map((t: any) => ({
+                proxyWallet: userAddress || '',
+                side: t.side === 'BUY' ? 'BUY' : 'SELL',
+                asset: t.asset_id || '',
+                conditionId: t.condition_id || t.asset_id || '',
                 size: parseFloat(t.size || t.amount || '0'),
                 price: parseFloat(t.price || '0'),
                 timestamp: t.created_at ? new Date(t.created_at).getTime() / 1000 : (t.match_time || Date.now() / 1000),
                 title: t.market || t.condition_id || 'CLOB Trade',
                 slug: t.market_slug || '',
+                icon: '',
+                eventSlug: '',
                 outcome: t.outcome || (t.asset_id?.includes('YES') ? 'Yes' : 'No'),
-                conditionId: t.condition_id || t.asset_id,
+                outcomeIndex: 0,
+                name: t.market || '',
                 pseudonym: username,
+                transactionHash: t.id || t.transaction_hash || '',
                 usdcSize: parseFloat(t.size || '0') * parseFloat(t.price || '0'),
               }));
               
