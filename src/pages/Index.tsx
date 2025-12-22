@@ -1,4 +1,4 @@
-import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, Brain, AlertCircle, Calculator, ChevronDown } from 'lucide-react';
+import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, Brain, AlertCircle, Calculator, ChevronDown, Book } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { StatCard } from '@/components/StatCard';
 import { TradesTable } from '@/components/TradesTable';
@@ -73,6 +73,12 @@ const Index = () => {
                     <Link to="/entry-analysis" className="flex items-center gap-2">
                       <Calculator className="w-4 h-4" />
                       Entry Price Analysis
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <Link to="/dev-guide" className="flex items-center gap-2">
+                      <Book className="w-4 h-4" />
+                      Developer Guide
                     </Link>
                   </DropdownMenuItem>
                 </DropdownMenuContent>
