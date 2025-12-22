@@ -280,6 +280,202 @@ const StrategyDeepDive = () => {
     };
   }, [trades]);
 
+  // Expiry/Time-to-Resolution Analysis
+  const expiryAnalysis = useMemo(() => {
+    if (trades.length === 0) return null;
+
+    // Parse expiry time from market name
+    // Format examples: "December 22, 3:45PM-4:00PM ET" or "December 22, 3PM ET"
+    const parseExpiryFromMarket = (market: string, tradeTimestamp: Date): Date | null => {
+      try {
+        // Extract date and time pattern
+        const dateTimeMatch = market.match(/(\w+)\s+(\d{1,2}),?\s+(\d{1,2}):?(\d{2})?(AM|PM)(?:-(\d{1,2}):?(\d{2})?(AM|PM))?\s*(ET|EST|EDT)?/i);
+        
+        if (!dateTimeMatch) return null;
+        
+        const [, month, day, hour1, min1 = '00', ampm1, hour2, min2, ampm2] = dateTimeMatch;
+        
+        // Use the end time if it's a range, otherwise use the single time
+        const targetHour = hour2 ? parseInt(hour2) : parseInt(hour1);
+        const targetMin = hour2 ? parseInt(min2 || '00') : parseInt(min1);
+        const targetAmPm = ampm2 || ampm1;
+        
+        // Convert to 24h format
+        let hour24 = targetHour;
+        if (targetAmPm?.toUpperCase() === 'PM' && targetHour !== 12) hour24 += 12;
+        if (targetAmPm?.toUpperCase() === 'AM' && targetHour === 12) hour24 = 0;
+        
+        // Get month number
+        const months: Record<string, number> = {
+          'january': 0, 'february': 1, 'march': 2, 'april': 3, 'may': 4, 'june': 5,
+          'july': 6, 'august': 7, 'september': 8, 'october': 9, 'november': 10, 'december': 11
+        };
+        const monthNum = months[month.toLowerCase()];
+        if (monthNum === undefined) return null;
+        
+        // Create expiry date (assume same year as trade, ET = UTC-5)
+        const expiry = new Date(tradeTimestamp.getFullYear(), monthNum, parseInt(day), hour24, targetMin);
+        // Convert ET to UTC (add 5 hours)
+        expiry.setHours(expiry.getHours() + 5);
+        
+        return expiry;
+      } catch {
+        return null;
+      }
+    };
+
+    // Analyze each trade for time to expiry
+    interface TradeWithExpiry {
+      trade: typeof trades[0];
+      expiry: Date;
+      minutesToExpiry: number;
+      category: 'immediate' | 'short' | 'medium' | 'early';
+    }
+
+    const tradesWithExpiry: TradeWithExpiry[] = [];
+    
+    trades.forEach(trade => {
+      const expiry = parseExpiryFromMarket(trade.market, trade.timestamp);
+      if (expiry && expiry > trade.timestamp) {
+        const minutesToExpiry = (expiry.getTime() - trade.timestamp.getTime()) / (1000 * 60);
+        
+        let category: 'immediate' | 'short' | 'medium' | 'early' = 'early';
+        if (minutesToExpiry <= 5) category = 'immediate';
+        else if (minutesToExpiry <= 15) category = 'short';
+        else if (minutesToExpiry <= 30) category = 'medium';
+        
+        tradesWithExpiry.push({
+          trade,
+          expiry,
+          minutesToExpiry,
+          category
+        });
+      }
+    });
+
+    if (tradesWithExpiry.length === 0) return null;
+
+    // Categorize by time buckets
+    const timeBuckets = [
+      { label: '0-2 min', min: 0, max: 2, count: 0, trades: [] as TradeWithExpiry[], avgPrice: 0, avgShares: 0 },
+      { label: '2-5 min', min: 2, max: 5, count: 0, trades: [] as TradeWithExpiry[], avgPrice: 0, avgShares: 0 },
+      { label: '5-10 min', min: 5, max: 10, count: 0, trades: [] as TradeWithExpiry[], avgPrice: 0, avgShares: 0 },
+      { label: '10-15 min', min: 10, max: 15, count: 0, trades: [] as TradeWithExpiry[], avgPrice: 0, avgShares: 0 },
+      { label: '15-30 min', min: 15, max: 30, count: 0, trades: [] as TradeWithExpiry[], avgPrice: 0, avgShares: 0 },
+      { label: '30-60 min', min: 30, max: 60, count: 0, trades: [] as TradeWithExpiry[], avgPrice: 0, avgShares: 0 },
+      { label: '>60 min', min: 60, max: Infinity, count: 0, trades: [] as TradeWithExpiry[], avgPrice: 0, avgShares: 0 },
+    ];
+
+    tradesWithExpiry.forEach(t => {
+      const bucket = timeBuckets.find(b => t.minutesToExpiry >= b.min && t.minutesToExpiry < b.max);
+      if (bucket) {
+        bucket.count++;
+        bucket.trades.push(t);
+      }
+    });
+
+    // Calculate averages for each bucket
+    timeBuckets.forEach(b => {
+      if (b.trades.length > 0) {
+        b.avgPrice = b.trades.reduce((sum, t) => sum + t.trade.price, 0) / b.trades.length;
+        b.avgShares = b.trades.reduce((sum, t) => sum + t.trade.shares, 0) / b.trades.length;
+      }
+    });
+
+    // Category breakdown
+    const immediateCount = tradesWithExpiry.filter(t => t.category === 'immediate').length;
+    const shortCount = tradesWithExpiry.filter(t => t.category === 'short').length;
+    const mediumCount = tradesWithExpiry.filter(t => t.category === 'medium').length;
+    const earlyCount = tradesWithExpiry.filter(t => t.category === 'early').length;
+
+    // Analyze by strategy type
+    const analyzeByExpiry = (categoryTrades: TradeWithExpiry[]) => {
+      if (categoryTrades.length === 0) return { avgMinutes: 0, distribution: [] as { label: string; percent: number }[] };
+      
+      const avgMinutes = categoryTrades.reduce((sum, t) => sum + t.minutesToExpiry, 0) / categoryTrades.length;
+      const immediatePct = (categoryTrades.filter(t => t.category === 'immediate').length / categoryTrades.length) * 100;
+      const shortPct = (categoryTrades.filter(t => t.category === 'short').length / categoryTrades.length) * 100;
+      const mediumPct = (categoryTrades.filter(t => t.category === 'medium').length / categoryTrades.length) * 100;
+      const earlyPct = (categoryTrades.filter(t => t.category === 'early').length / categoryTrades.length) * 100;
+      
+      return {
+        avgMinutes,
+        distribution: [
+          { label: '<5 min', percent: immediatePct + shortPct },
+          { label: '5-30 min', percent: mediumPct },
+          { label: '>30 min', percent: earlyPct }
+        ]
+      };
+    };
+
+    // Price behavior by time to expiry
+    const priceByExpiry = timeBuckets.filter(b => b.count > 0).map(b => ({
+      label: b.label,
+      count: b.count,
+      avgPrice: b.avgPrice,
+      avgShares: b.avgShares
+    }));
+
+    // Overall stats
+    const avgMinutesToExpiry = tradesWithExpiry.reduce((sum, t) => sum + t.minutesToExpiry, 0) / tradesWithExpiry.length;
+    const medianMinutes = [...tradesWithExpiry].sort((a, b) => a.minutesToExpiry - b.minutesToExpiry)[Math.floor(tradesWithExpiry.length / 2)]?.minutesToExpiry || 0;
+
+    // Trading style classification
+    let tradingStyle = 'Mixed';
+    if (immediateCount + shortCount > tradesWithExpiry.length * 0.6) tradingStyle = 'Last-Minute Sniper';
+    else if (earlyCount > tradesWithExpiry.length * 0.5) tradingStyle = 'Early Bird Accumulator';
+    else if (mediumCount > tradesWithExpiry.length * 0.4) tradingStyle = 'Mid-Range Strategist';
+
+    // Insights generation
+    const insights: string[] = [];
+    
+    if (immediateCount + shortCount > tradesWithExpiry.length * 0.5) {
+      insights.push(`${((immediateCount + shortCount) / tradesWithExpiry.length * 100).toFixed(0)}% van trades binnen 5 minuten voor expiry - "last minute" strategie`);
+    }
+    
+    const lastMinuteBucket = timeBuckets.find(b => b.label === '0-2 min');
+    const earlyBucket = timeBuckets.find(b => b.label === '>60 min');
+    if (lastMinuteBucket && earlyBucket && lastMinuteBucket.avgPrice > earlyBucket.avgPrice) {
+      insights.push(`Last-minute trades hebben hogere prijzen (${(lastMinuteBucket.avgPrice * 100).toFixed(0)}¢ vs ${(earlyBucket.avgPrice * 100).toFixed(0)}¢) - meer zekerheid = hogere prijs`);
+    }
+    
+    if (medianMinutes < 15) {
+      insights.push('Mediaan tijd tot expiry is <15 min - bot wacht tot prijzen stabiliseren');
+    }
+
+    // Hypotheses
+    const hypotheses: string[] = [];
+    if (immediateCount > tradesWithExpiry.length * 0.2) {
+      hypotheses.push('Wacht tot laatste moment voor maximale informatie over crypto prijs');
+    }
+    if (earlyCount > tradesWithExpiry.length * 0.3) {
+      hypotheses.push('Bouwt posities op vroeg als prijzen aantrekkelijk zijn (DCA over tijd)');
+    }
+    hypotheses.push('Combineert mogelijk early entry + late topping up voor beste avg price');
+    if (lastMinuteBucket && lastMinuteBucket.avgShares > 10) {
+      hypotheses.push('Grote last-minute trades = hoge conviction wanneer uitkomst bijna zeker is');
+    }
+
+    return {
+      totalAnalyzed: tradesWithExpiry.length,
+      avgMinutesToExpiry,
+      medianMinutes,
+      immediateCount,
+      shortCount,
+      mediumCount,
+      earlyCount,
+      timeBuckets: priceByExpiry,
+      tradingStyle,
+      insights,
+      hypotheses,
+      categoryBreakdown: [
+        { label: '0-5 min (Immediate)', count: immediateCount + shortCount, percent: ((immediateCount + shortCount) / tradesWithExpiry.length) * 100 },
+        { label: '5-30 min (Medium)', count: mediumCount, percent: (mediumCount / tradesWithExpiry.length) * 100 },
+        { label: '>30 min (Early)', count: earlyCount, percent: (earlyCount / tradesWithExpiry.length) * 100 },
+      ]
+    };
+  }, [trades]);
+
   const analysis = useMemo(() => {
     if (trades.length === 0) return null;
 
@@ -1829,6 +2025,240 @@ const StrategyDeepDive = () => {
                     </div>
                   </AccordionContent>
                 </AccordionItem>
+
+                {/* Section 7: Time-to-Expiry Analysis */}
+                {expiryAnalysis && (
+                  <AccordionItem value="expiry-analysis" className="border border-warning/50 rounded-lg px-4 bg-gradient-to-r from-warning/5 to-transparent">
+                    <AccordionTrigger className="hover:no-underline">
+                      <div className="flex items-center gap-3">
+                        <div className="w-8 h-8 rounded-full bg-warning/30 flex items-center justify-center">
+                          <Timer className="w-4 h-4 text-warning" />
+                        </div>
+                        <div className="text-left">
+                          <p className="font-semibold text-sm">⏱️ Tijd tot Expiry Analyse</p>
+                          <p className="text-xs text-muted-foreground font-normal">Wanneer plaatst de bot zijn bets ten opzichte van market expiry?</p>
+                        </div>
+                      </div>
+                    </AccordionTrigger>
+                    <AccordionContent className="space-y-6 pt-4">
+                      {/* Trading Style Classification */}
+                      <div className="p-5 rounded-xl bg-gradient-to-br from-warning/10 via-warning/5 to-transparent border-2 border-warning/30">
+                        <div className="flex items-center justify-between mb-4">
+                          <h4 className="font-bold text-base flex items-center gap-2">
+                            <Clock className="w-5 h-5 text-warning" />
+                            Trading Stijl: {expiryAnalysis.tradingStyle}
+                          </h4>
+                          <Badge variant="outline" className="border-warning text-warning">
+                            {expiryAnalysis.totalAnalyzed} trades geanalyseerd
+                          </Badge>
+                        </div>
+
+                        {/* Key Metrics */}
+                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+                          <div className="p-3 bg-background/50 rounded-lg text-center border border-border">
+                            <p className="text-xl font-mono font-bold text-warning">{expiryAnalysis.avgMinutesToExpiry.toFixed(1)}</p>
+                            <p className="text-xs text-muted-foreground">Gem. Min. tot Expiry</p>
+                          </div>
+                          <div className="p-3 bg-background/50 rounded-lg text-center border border-border">
+                            <p className="text-xl font-mono font-bold">{expiryAnalysis.medianMinutes.toFixed(1)}</p>
+                            <p className="text-xs text-muted-foreground">Mediaan Minuten</p>
+                          </div>
+                          <div className="p-3 bg-background/50 rounded-lg text-center border border-border">
+                            <p className="text-xl font-mono font-bold text-destructive">{expiryAnalysis.immediateCount + expiryAnalysis.shortCount}</p>
+                            <p className="text-xs text-muted-foreground">Last-Minute ({"<"}5min)</p>
+                          </div>
+                          <div className="p-3 bg-background/50 rounded-lg text-center border border-border">
+                            <p className="text-xl font-mono font-bold text-success">{expiryAnalysis.earlyCount}</p>
+                            <p className="text-xs text-muted-foreground">Early Entry ({">"}30min)</p>
+                          </div>
+                        </div>
+
+                        {/* Time Distribution Visualization */}
+                        <div className="mb-4">
+                          <p className="text-sm font-medium mb-3">Verdeling Tijd tot Expiry</p>
+                          <div className="space-y-2">
+                            {expiryAnalysis.categoryBreakdown.map((cat, i) => (
+                              <div key={i} className="flex items-center gap-3">
+                                <div className="w-28 text-xs text-muted-foreground">{cat.label}</div>
+                                <div className="flex-1 bg-secondary/50 rounded-full h-6 overflow-hidden">
+                                  <div 
+                                    className={`h-full rounded-full flex items-center justify-end px-2 text-xs font-mono text-white ${
+                                      i === 0 ? 'bg-destructive' : i === 1 ? 'bg-warning' : 'bg-success'
+                                    }`}
+                                    style={{ width: `${Math.max(cat.percent, 5)}%` }}
+                                  >
+                                    {cat.percent.toFixed(0)}%
+                                  </div>
+                                </div>
+                                <div className="w-16 text-right text-xs font-mono">{cat.count} trades</div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* Detailed Time Buckets Chart */}
+                        <div className="p-4 bg-background/30 rounded-lg border border-border mb-4">
+                          <h5 className="font-semibold text-sm mb-3">Gedetailleerde Tijd Buckets</h5>
+                          <div className="h-[200px]">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart data={expiryAnalysis.timeBuckets}>
+                                <XAxis dataKey="label" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }} />
+                                <YAxis tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }} />
+                                <Tooltip 
+                                  contentStyle={{ 
+                                    backgroundColor: 'hsl(var(--card))', 
+                                    border: '1px solid hsl(var(--border))',
+                                    borderRadius: '8px'
+                                  }}
+                                  formatter={(value: number, name: string) => {
+                                    if (name === 'count') return [`${value} trades`, 'Aantal'];
+                                    if (name === 'avgPrice') return [`${(value * 100).toFixed(1)}¢`, 'Gem. Prijs'];
+                                    return [value, name];
+                                  }}
+                                />
+                                <Legend />
+                                <Bar dataKey="count" fill="hsl(var(--warning))" name="Aantal Trades" radius={[4, 4, 0, 0]} />
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+
+                        {/* Price by Time to Expiry */}
+                        <div className="p-4 bg-background/30 rounded-lg border border-border mb-4">
+                          <h5 className="font-semibold text-sm mb-3 flex items-center gap-2">
+                            <DollarSign className="w-4 h-4 text-primary" />
+                            Prijs vs Tijd tot Expiry
+                          </h5>
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                              <thead>
+                                <tr className="border-b border-border">
+                                  <th className="text-left p-2 font-medium">Tijd tot Expiry</th>
+                                  <th className="text-center p-2 font-medium">Trades</th>
+                                  <th className="text-center p-2 font-medium">Gem. Prijs</th>
+                                  <th className="text-center p-2 font-medium">Gem. Shares</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {expiryAnalysis.timeBuckets.map((bucket, i) => (
+                                  <tr key={i} className="border-b border-border/50">
+                                    <td className="p-2 text-muted-foreground">{bucket.label}</td>
+                                    <td className="p-2 text-center font-mono">{bucket.count}</td>
+                                    <td className="p-2 text-center font-mono">{(bucket.avgPrice * 100).toFixed(1)}¢</td>
+                                    <td className="p-2 text-center font-mono">{bucket.avgShares.toFixed(1)}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Insights & Hypotheses */}
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        {expiryAnalysis.insights.length > 0 && (
+                          <div className="p-4 bg-chart-4/10 rounded-lg border border-chart-4/20">
+                            <p className="text-sm font-semibold text-chart-4 mb-3 flex items-center gap-2">
+                              <Lightbulb className="w-4 h-4" />
+                              Observaties uit de Data
+                            </p>
+                            <ul className="space-y-2">
+                              {expiryAnalysis.insights.map((insight, i) => (
+                                <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
+                                  <span className="text-chart-4">•</span>
+                                  {insight}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+
+                        <div className="p-4 bg-primary/10 rounded-lg border border-primary/20">
+                          <p className="text-sm font-semibold text-primary mb-3 flex items-center gap-2">
+                            <Target className="w-4 h-4" />
+                            Mogelijke Overwegingen
+                          </p>
+                          <ul className="space-y-2">
+                            {expiryAnalysis.hypotheses.map((hypothesis, i) => (
+                              <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
+                                <span className="text-primary">•</span>
+                                {hypothesis}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+
+                      {/* Explanation Box */}
+                      <div className="p-4 bg-secondary/30 rounded-lg border border-border">
+                        <h5 className="font-semibold text-sm mb-3 flex items-center gap-2">
+                          <BookOpen className="w-4 h-4 text-muted-foreground" />
+                          Waarom is Timing Belangrijk?
+                        </h5>
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 text-sm text-muted-foreground">
+                          <div className="p-3 bg-background/50 rounded border border-border">
+                            <p className="font-medium text-destructive mb-1">🎯 Last-Minute Trading ({"<"}5min)</p>
+                            <p className="text-xs">
+                              Maximale informatie beschikbaar. Crypto prijs is bijna zeker. Hogere prijzen maar lager risico.
+                              Ideaal voor <strong>confirmation plays</strong>.
+                            </p>
+                          </div>
+                          <div className="p-3 bg-background/50 rounded border border-border">
+                            <p className="font-medium text-warning mb-1">⚖️ Mid-Range (5-30min)</p>
+                            <p className="text-xs">
+                              Balans tussen informatie en prijs. Kan nog DCA'en als prijs beweegt. 
+                              Ideaal voor <strong>position building</strong>.
+                            </p>
+                          </div>
+                          <div className="p-3 bg-background/50 rounded border border-border">
+                            <p className="font-medium text-success mb-1">🌱 Early Entry ({">"}30min)</p>
+                            <p className="text-xs">
+                              Lagere prijzen, meer onzekerheid. Tijd om te DCA'en of uit te stappen. 
+                              Ideaal voor <strong>value accumulation</strong>.
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Trading Style Explanation */}
+                      <div className="p-4 bg-warning/10 rounded-lg border border-warning/20">
+                        <h5 className="font-semibold text-sm mb-2 flex items-center gap-2 text-warning">
+                          <Activity className="w-4 h-4" />
+                          Gabagool22's Timing Profiel: {expiryAnalysis.tradingStyle}
+                        </h5>
+                        <p className="text-sm text-muted-foreground leading-relaxed">
+                          {expiryAnalysis.tradingStyle === 'Last-Minute Sniper' && (
+                            <>
+                              De bot wacht tot het laatste moment om te traden. Dit suggereert een strategie gebaseerd op 
+                              <strong> maximale zekerheid</strong> - de crypto prijs is bijna bepaald, dus het risico is minimaal. 
+                              De trade-off is dat prijzen hoger zijn (minder edge) maar de win-rate is ook hoger.
+                            </>
+                          )}
+                          {expiryAnalysis.tradingStyle === 'Early Bird Accumulator' && (
+                            <>
+                              De bot bouwt posities vroeg op wanneer prijzen aantrekkelijker zijn. Dit is een 
+                              <strong> value-driven strategie</strong> - accepteer meer onzekerheid voor betere prijzen. 
+                              Combineert goed met DCA om gemiddelde entry te optimaliseren.
+                            </>
+                          )}
+                          {expiryAnalysis.tradingStyle === 'Mid-Range Strategist' && (
+                            <>
+                              De bot opereert vooral in het 5-30 minuten window. Dit is een <strong>balanced approach</strong> - 
+                              genoeg informatie om informed decisions te maken, maar nog ruimte voor DCA en position adjustment.
+                            </>
+                          )}
+                          {expiryAnalysis.tradingStyle === 'Mixed' && (
+                            <>
+                              De bot gebruikt een <strong>gemixte timing strategie</strong> - early entries voor value, 
+                              mid-range voor position building, en last-minute voor confirmation. Dit suggereert een 
+                              adaptive approach die reageert op marktcondities.
+                            </>
+                          )}
+                        </p>
+                      </div>
+                    </AccordionContent>
+                  </AccordionItem>
+                )}
               </Accordion>
             </CardContent>
           </Card>
