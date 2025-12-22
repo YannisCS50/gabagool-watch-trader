@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Trade } from '@/types/trade';
+import { Trade, MarketPosition } from '@/types/trade';
 import { format, getHours, getDay, differenceInMinutes } from 'date-fns';
 import { 
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -1552,6 +1552,159 @@ export function ClosedBetsHistory({ trades }: StrategyAnalysisProps) {
           <p className="text-muted-foreground mb-2">Geen gesloten posities</p>
           <p className="text-xs text-muted-foreground">
             Er zijn nog geen SELL trades gevonden. Alle posities zijn nog open.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// NEW: Live Open Positions from Polymarket API
+interface LiveOpenPositionsProps {
+  positions: MarketPosition[];
+  trades: Trade[];
+}
+
+export function LiveOpenPositions({ positions, trades }: LiveOpenPositionsProps) {
+  // Compare with calculated positions
+  const calculatedPositions = useMemo(() => {
+    const positionMap: Record<string, { buyShares: number; sellShares: number; buyVolume: number }> = {};
+    
+    trades.forEach(trade => {
+      const key = `${trade.market}|||${trade.outcome}`;
+      if (!positionMap[key]) {
+        positionMap[key] = { buyShares: 0, sellShares: 0, buyVolume: 0 };
+      }
+      if (trade.side === 'buy') {
+        positionMap[key].buyShares += trade.shares;
+        positionMap[key].buyVolume += trade.total;
+      } else {
+        positionMap[key].sellShares += trade.shares;
+      }
+    });
+    
+    return Object.entries(positionMap)
+      .map(([key, data]) => {
+        const [market, outcome] = key.split('|||');
+        const netShares = data.buyShares - data.sellShares;
+        const avgPrice = data.buyShares > 0 ? data.buyVolume / data.buyShares : 0;
+        return { market, outcome, netShares, avgPrice };
+      })
+      .filter(p => p.netShares > 0.01);
+  }, [trades]);
+
+  // Sort positions by value
+  const sortedPositions = useMemo(() => {
+    return [...positions].sort((a, b) => {
+      const aValue = a.shares * a.currentPrice;
+      const bValue = b.shares * b.currentPrice;
+      return bValue - aValue;
+    });
+  }, [positions]);
+
+  const totalValue = positions.reduce((s, p) => s + (p.shares * p.currentPrice), 0);
+  const totalPnL = positions.reduce((s, p) => s + p.pnl, 0);
+  const totalCost = positions.reduce((s, p) => s + (p.shares * p.avgPrice), 0);
+
+  return (
+    <div className="glass rounded-lg p-6">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-semibold flex items-center gap-2">
+          📊 Live Open Positions (Polymarket)
+          <span className="text-xs px-2 py-0.5 rounded-full bg-success/20 text-success font-mono">
+            {positions.length} positions
+          </span>
+        </h2>
+        <div className="text-right text-xs">
+          <p className="text-muted-foreground">Total Value</p>
+          <p className="font-mono font-semibold text-lg">${totalValue.toFixed(2)}</p>
+          <p className={`font-mono ${totalPnL >= 0 ? 'text-success' : 'text-destructive'}`}>
+            {totalPnL >= 0 ? '+' : ''}${totalPnL.toFixed(2)} P&L
+          </p>
+        </div>
+      </div>
+
+      {/* Summary Stats */}
+      <div className="grid grid-cols-4 gap-3 mb-4">
+        <div className="bg-muted/30 rounded-lg p-3 text-center">
+          <p className="text-xs text-muted-foreground">Positions</p>
+          <p className="text-xl font-mono font-semibold">{positions.length}</p>
+        </div>
+        <div className="bg-muted/30 rounded-lg p-3 text-center">
+          <p className="text-xs text-muted-foreground">Total Cost</p>
+          <p className="text-xl font-mono font-semibold">${totalCost.toFixed(2)}</p>
+        </div>
+        <div className="bg-muted/30 rounded-lg p-3 text-center">
+          <p className="text-xs text-muted-foreground">Current Value</p>
+          <p className="text-xl font-mono font-semibold">${totalValue.toFixed(2)}</p>
+        </div>
+        <div className={`rounded-lg p-3 text-center ${totalPnL >= 0 ? 'bg-success/10' : 'bg-destructive/10'}`}>
+          <p className="text-xs text-muted-foreground">Unrealized P&L</p>
+          <p className={`text-xl font-mono font-semibold ${totalPnL >= 0 ? 'text-success' : 'text-destructive'}`}>
+            {totalPnL >= 0 ? '+' : ''}{((totalPnL / totalCost) * 100).toFixed(1)}%
+          </p>
+        </div>
+      </div>
+
+      {/* Positions List */}
+      <div className="space-y-2 max-h-96 overflow-y-auto">
+        {sortedPositions.map((pos, i) => {
+          const value = pos.shares * pos.currentPrice;
+          const cost = pos.shares * pos.avgPrice;
+          const pnlPct = pos.avgPrice > 0 ? ((pos.currentPrice - pos.avgPrice) / pos.avgPrice) * 100 : 0;
+          
+          // Find matching calculated position
+          const calculated = calculatedPositions.find(
+            c => c.market === pos.market && c.outcome === pos.outcome
+          );
+          const hasDiscrepancy = calculated && Math.abs(calculated.netShares - pos.shares) > 0.1;
+          
+          return (
+            <div 
+              key={i} 
+              className={`p-3 rounded-lg border ${hasDiscrepancy ? 'border-warning/50 bg-warning/5' : 'border-border/50 bg-muted/20'}`}
+            >
+              <div className="flex items-start justify-between">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium truncate">{pos.market}</p>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className={`text-xs px-1.5 py-0.5 rounded ${
+                      pos.outcome === 'Yes' || pos.outcome.toLowerCase().includes('up') 
+                        ? 'bg-success/20 text-success' 
+                        : 'bg-destructive/20 text-destructive'
+                    }`}>
+                      {pos.outcome}
+                    </span>
+                    <span className="text-xs font-mono text-muted-foreground">
+                      {pos.shares.toFixed(1)} shares @ {(pos.avgPrice * 100).toFixed(0)}¢
+                    </span>
+                    {hasDiscrepancy && (
+                      <span className="text-xs text-warning flex items-center gap-1">
+                        ⚠️ Berekend: {calculated?.netShares.toFixed(1)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="text-right ml-3">
+                  <p className="text-sm font-mono">${value.toFixed(2)}</p>
+                  <p className="text-xs text-muted-foreground">
+                    Now: {(pos.currentPrice * 100).toFixed(0)}¢
+                  </p>
+                  <p className={`text-xs font-mono ${pnlPct >= 0 ? 'text-success' : 'text-destructive'}`}>
+                    {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(1)}%
+                  </p>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {positions.length === 0 && (
+        <div className="text-center py-8">
+          <p className="text-muted-foreground mb-2">Geen live posities gevonden</p>
+          <p className="text-xs text-muted-foreground">
+            Klik op "Refresh Data" om posities op te halen van Polymarket.
           </p>
         </div>
       )}

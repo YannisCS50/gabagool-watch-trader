@@ -597,15 +597,88 @@ Deno.serve(async (req) => {
       }
     }
 
+    // Fetch positions directly from Polymarket API
+    let positionsFound = 0;
+    try {
+      console.log('Fetching positions from Polymarket...');
+      
+      // First get the user's wallet address
+      const gammaUserUrl = `${POLYMARKET_GAMMA_API}/users?username=${username}`;
+      const gammaResp = await fetch(gammaUserUrl, {
+        headers: { 'Accept': 'application/json', 'User-Agent': 'PolyTracker/1.0' },
+      });
+      
+      if (gammaResp.ok) {
+        const userData = await gammaResp.json();
+        const walletAddress = userData?.proxyWallet || userData?.address;
+        
+        if (walletAddress) {
+          // Fetch positions using the data API
+          const positionsUrl = `${POLYMARKET_DATA_API}/positions?user=${username}`;
+          console.log('Fetching positions:', positionsUrl);
+          
+          const posResp = await fetch(positionsUrl, {
+            headers: { 'Accept': 'application/json', 'User-Agent': 'PolyTracker/1.0' },
+          });
+          
+          if (posResp.ok) {
+            const positionsData = await posResp.json();
+            console.log(`Received ${Array.isArray(positionsData) ? positionsData.length : 0} positions`);
+            
+            if (Array.isArray(positionsData) && positionsData.length > 0) {
+              // First, clear old positions for this user
+              await supabase
+                .from('positions')
+                .delete()
+                .eq('trader_username', username);
+              
+              // Process and store new positions
+              const processedPositions = positionsData.map((pos: any) => ({
+                trader_username: username,
+                market: pos.title || pos.market || 'Unknown',
+                market_slug: pos.slug || pos.eventSlug || '',
+                outcome: pos.outcome || (pos.outcomeIndex === 0 ? 'Yes' : 'No'),
+                shares: parseFloat(pos.size || pos.shares || '0'),
+                avg_price: parseFloat(pos.avgPrice || pos.averagePrice || pos.price || '0'),
+                current_price: parseFloat(pos.curPrice || pos.currentPrice || pos.price || '0'),
+                pnl: parseFloat(pos.pnl || pos.unrealizedPnl || '0'),
+                pnl_percent: parseFloat(pos.pnlPercent || pos.unrealizedPnlPercent || '0'),
+                updated_at: new Date().toISOString(),
+              })).filter((p: any) => p.shares > 0.001); // Filter out dust positions
+              
+              if (processedPositions.length > 0) {
+                const { error: posError } = await supabase
+                  .from('positions')
+                  .insert(processedPositions);
+                  
+                if (posError) {
+                  console.error('Error inserting positions:', posError);
+                } else {
+                  positionsFound = processedPositions.length;
+                  console.log(`Stored ${positionsFound} positions`);
+                }
+              }
+            }
+          } else {
+            console.log('Positions endpoint status:', posResp.status);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Error fetching positions:', e);
+    }
+
     // Return response with sample data for debugging
     return new Response(
       JSON.stringify({ 
         success: true, 
         tradesFound: processedTrades.length,
+        positionsFound,
         sample: processedTrades.slice(0, 3),
         apiEndpointsTried: [
           `${POLYMARKET_DATA_API}/trades?user=${username}`,
-          `${POLYMARKET_DATA_API}/activity?user=${username}`
+          `${POLYMARKET_DATA_API}/activity?user=${username}`,
+          `${POLYMARKET_DATA_API}/positions?user=${username}`
         ]
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
