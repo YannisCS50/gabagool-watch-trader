@@ -176,6 +176,9 @@ const BetDetailCard = ({ analysis }: { analysis: MarketAnalysis }) => {
                           <span className="font-medium">
                             {event.trade.shares.toFixed(1)} @ {(event.trade.price * 100).toFixed(1)}¢
                           </span>
+                          <span className="text-muted-foreground">
+                            = ${event.trade.total.toFixed(2)}
+                          </span>
                         </div>
                         
                         {/* Reason/Formula */}
