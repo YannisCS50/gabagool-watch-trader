@@ -1,4 +1,4 @@
-import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, Brain, AlertCircle } from 'lucide-react';
+import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, Brain, AlertCircle, Calculator, ChevronDown } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { StatCard } from '@/components/StatCard';
 import { TradesTable } from '@/components/TradesTable';
@@ -8,6 +8,12 @@ import { TraderHeader } from '@/components/TraderHeader';
 import { Button } from '@/components/ui/button';
 import { useTrades } from '@/hooks/useTrades';
 import { format } from 'date-fns';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
 const Index = () => {
   const { trades, stats, positions, isLoading, scrape, isScraping } = useTrades('gabagool22');
@@ -42,12 +48,35 @@ const Index = () => {
               )}
             </div>
             <div className="flex items-center gap-4">
-              <Link to="/strategy">
-                <Button variant="secondary" size="sm" className="font-mono text-xs">
-                  <Brain className="w-3 h-3 mr-2" />
-                  Strategy Analysis
-                </Button>
-              </Link>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="secondary" size="sm" className="font-mono text-xs">
+                    <Brain className="w-3 h-3 mr-2" />
+                    Analysis
+                    <ChevronDown className="w-3 h-3 ml-2" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem asChild>
+                    <Link to="/strategy" className="flex items-center gap-2">
+                      <Brain className="w-4 h-4" />
+                      Strategy Analysis
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <Link to="/arbitrage" className="flex items-center gap-2">
+                      <Target className="w-4 h-4" />
+                      Arbitrage Analysis
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <Link to="/entry-analysis" className="flex items-center gap-2">
+                      <Calculator className="w-4 h-4" />
+                      Entry Price Analysis
+                    </Link>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <Button
                 variant="outline"
                 size="sm"
