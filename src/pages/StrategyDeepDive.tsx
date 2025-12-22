@@ -32,6 +32,8 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/
 import { useTrades } from '@/hooks/useTrades';
 import { OpeningTradeAnalysis } from '@/components/OpeningTradeAnalysis';
 import { DCAArbitrageAnalysis } from '@/components/DCAArbitrageAnalysis';
+import { TradeSizeEvolutionChart } from '@/components/TradeSizeEvolutionChart';
+import { VolatilityAnalysis } from '@/components/VolatilityAnalysis';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { 
@@ -1197,8 +1199,14 @@ const StrategyDeepDive = () => {
         {/* Opening Trade Analysis */}
         <OpeningTradeAnalysis trades={trades} />
 
+        {/* Trade Size Evolution - Two-Phase Strategy */}
+        <TradeSizeEvolutionChart trades={trades} />
+
         {/* DCA & Arbitrage Strategy Analysis */}
         <DCAArbitrageAnalysis trades={trades} />
+
+        {/* Volatility Analysis */}
+        <VolatilityAnalysis trades={trades} />
 
         {/* Strategy Flow Diagram - ENHANCED FOR DEVELOPERS */}
         <section className="space-y-4">
