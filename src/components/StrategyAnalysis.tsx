@@ -414,10 +414,13 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
     const avgSum = sorted.length > 0 ? sorted.reduce((s, d) => s + d.sum, 0) / sorted.length : 0;
     const profitable = sorted.filter(d => d.isArbitrage);
     const unprofitable = sorted.filter(d => !d.isArbitrage);
-    const profit = profitable.reduce((s, a) => s + (a.spread * a.minShares), 0);
+    // Calculate net profit: gains from profitable arbs minus losses from unprofitable arbs
+    const gains = profitable.reduce((s, a) => s + (a.spread * a.minShares), 0);
+    const losses = unprofitable.reduce((s, a) => s + (Math.abs(a.spread) * a.minShares), 0);
+    const netProfit = gains - losses;
     const volume = sorted.reduce((s, a) => s + a.hedgedVolume, 0);
 
-    return { arbs: sorted, avgSum, profitable, unprofitable, profit, volume, count: sorted.length };
+    return { arbs: sorted, avgSum, profitable, unprofitable, profit: netProfit, gains, losses, volume, count: sorted.length };
   };
 
   // Time-based filtering
@@ -471,7 +474,7 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
               {stats.today.avgSum > 0 ? stats.today.avgSum.toFixed(3) : '-'}
             </p>
             <p className="text-xs text-muted-foreground">{stats.today.count} arbs</p>
-            <p className="text-xs font-mono text-success">+${stats.today.profit.toFixed(0)}</p>
+            <p className={`text-xs font-mono ${stats.today.profit >= 0 ? 'text-success' : 'text-destructive'}`}>{stats.today.profit >= 0 ? '+' : ''}${stats.today.profit.toFixed(0)}</p>
           </div>
           
           {/* 7 Days */}
@@ -481,7 +484,7 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
               {stats.week.avgSum > 0 ? stats.week.avgSum.toFixed(3) : '-'}
             </p>
             <p className="text-xs text-muted-foreground">{stats.week.count} arbs</p>
-            <p className="text-xs font-mono text-success">+${stats.week.profit.toFixed(0)}</p>
+            <p className={`text-xs font-mono ${stats.week.profit >= 0 ? 'text-success' : 'text-destructive'}`}>{stats.week.profit >= 0 ? '+' : ''}${stats.week.profit.toFixed(0)}</p>
           </div>
           
           {/* 30 Days */}
@@ -491,7 +494,7 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
               {stats.month.avgSum > 0 ? stats.month.avgSum.toFixed(3) : '-'}
             </p>
             <p className="text-xs text-muted-foreground">{stats.month.count} arbs</p>
-            <p className="text-xs font-mono text-success">+${stats.month.profit.toFixed(0)}</p>
+            <p className={`text-xs font-mono ${stats.month.profit >= 0 ? 'text-success' : 'text-destructive'}`}>{stats.month.profit >= 0 ? '+' : ''}${stats.month.profit.toFixed(0)}</p>
           </div>
           
           {/* All Time */}
@@ -501,7 +504,7 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
               {stats.allTime.avgSum > 0 ? stats.allTime.avgSum.toFixed(3) : '-'}
             </p>
             <p className="text-xs text-muted-foreground">{stats.allTime.count} arbs</p>
-            <p className="text-xs font-mono text-success">+${stats.allTime.profit.toFixed(0)}</p>
+            <p className={`text-xs font-mono ${stats.allTime.profit >= 0 ? 'text-success' : 'text-destructive'}`}>{stats.allTime.profit >= 0 ? '+' : ''}${stats.allTime.profit.toFixed(0)}</p>
           </div>
         </div>
       </div>
