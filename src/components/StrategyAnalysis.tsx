@@ -416,15 +416,16 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
     return arbTrades.sort((a, b) => a.sum - b.sum);
   }, [trades]);
 
-  // All trades analysis for markets with multiple outcomes
+  // Only analyze markets where trader BOUGHT BOTH outcomes (actual arbitrage attempts)
   const arbitrageData = useMemo(() => {
-    const marketTrades: Record<string, Record<string, Trade[]>> = {};
+    const marketBuyTrades: Record<string, Record<string, Trade[]>> = {};
     
-    trades.forEach(trade => {
+    // Only consider BUY trades for arbitrage analysis
+    trades.filter(t => t.side === 'buy').forEach(trade => {
       const key = trade.market;
-      if (!marketTrades[key]) marketTrades[key] = {};
-      if (!marketTrades[key][trade.outcome]) marketTrades[key][trade.outcome] = [];
-      marketTrades[key][trade.outcome].push(trade);
+      if (!marketBuyTrades[key]) marketBuyTrades[key] = {};
+      if (!marketBuyTrades[key][trade.outcome]) marketBuyTrades[key][trade.outcome] = [];
+      marketBuyTrades[key][trade.outcome].push(trade);
     });
 
     const opportunities: Array<{
@@ -438,33 +439,38 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
       isArbitrage: boolean;
     }> = [];
 
-    Object.entries(marketTrades).forEach(([market, outcomeMap]) => {
+    Object.entries(marketBuyTrades).forEach(([market, outcomeMap]) => {
       const outcomes = Object.keys(outcomeMap);
       
-      // For binary markets, check if both outcomes sum to < 1
-      if (outcomes.length === 2) {
-        const [outcome1, outcome2] = outcomes;
-        const avgPrice1 = outcomeMap[outcome1].reduce((s, t) => s + t.price, 0) / outcomeMap[outcome1].length;
-        const avgPrice2 = outcomeMap[outcome2].reduce((s, t) => s + t.price, 0) / outcomeMap[outcome2].length;
-        const sum = avgPrice1 + avgPrice2;
+      // Only include markets where trader BOUGHT BOTH outcomes
+      if (outcomes.length >= 2) {
+        // Find positive and negative outcomes
+        const positiveOutcome = outcomes.find(o => isPositiveOutcome(o));
+        const negativeOutcome = outcomes.find(o => isNegativeOutcome(o));
         
-        opportunities.push({
-          market: market.substring(0, 50),
-          outcome1,
-          outcome2,
-          price1: avgPrice1,
-          price2: avgPrice2,
-          sum,
-          spread: 1 - sum,
-          isArbitrage: sum < 1,
-        });
+        if (positiveOutcome && negativeOutcome) {
+          const avgPrice1 = outcomeMap[positiveOutcome].reduce((s, t) => s + t.price, 0) / outcomeMap[positiveOutcome].length;
+          const avgPrice2 = outcomeMap[negativeOutcome].reduce((s, t) => s + t.price, 0) / outcomeMap[negativeOutcome].length;
+          const sum = avgPrice1 + avgPrice2;
+          
+          opportunities.push({
+            market: market.substring(0, 50),
+            outcome1: positiveOutcome,
+            outcome2: negativeOutcome,
+            price1: avgPrice1,
+            price2: avgPrice2,
+            sum,
+            spread: 1 - sum,
+            isArbitrage: sum < 1,
+          });
+        }
       }
     });
 
     return opportunities.sort((a, b) => a.sum - b.sum);
   }, [trades]);
 
-  // Stats
+  // Stats - only based on actual arbitrage pairs
   const avgSum = arbitrageData.length > 0
     ? arbitrageData.reduce((s, d) => s + d.sum, 0) / arbitrageData.length
     : 0;
