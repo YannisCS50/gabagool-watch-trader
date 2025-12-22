@@ -43,13 +43,18 @@ interface PolymarketPosition {
   pnlPercent: number;
 }
 
+// Known wallet addresses for usernames (Polymarket API doesn't filter by username properly)
+const KNOWN_WALLETS: Record<string, string> = {
+  'gabagool22': '0x6031b6eed1c97e853c6e0f03ad3ce3529351f96d',
+};
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    const { username = 'gabagool22' } = await req.json().catch(() => ({}));
+    const { username = 'gabagool22', walletAddress } = await req.json().catch(() => ({}));
     
     const SUPABASE_URL = Deno.env.get('SUPABASE_URL');
     const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
@@ -64,9 +69,36 @@ Deno.serve(async (req) => {
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    console.log(`Fetching ALL Polymarket trades for @${username}...`);
+    // Use provided wallet, known wallet mapping, or try to resolve via Gamma API
+    let proxyWallet = walletAddress || KNOWN_WALLETS[username];
+    
+    if (!proxyWallet) {
+      // Try to get wallet from Gamma API
+      console.log(`Looking up wallet for @${username} via Gamma API...`);
+      try {
+        const gammaUrl = `${POLYMARKET_GAMMA_API}/users?username=${username}`;
+        const gammaResp = await fetch(gammaUrl, {
+          headers: { 'Accept': 'application/json', 'User-Agent': 'PolyTracker/1.0' },
+        });
+        if (gammaResp.ok) {
+          const userData = await gammaResp.json();
+          proxyWallet = userData?.proxyWallet || userData?.address;
+        }
+      } catch (e) {
+        console.error('Gamma API lookup failed:', e);
+      }
+    }
 
-    // Fetch trades with pagination to get ALL historical data
+    if (!proxyWallet) {
+      return new Response(
+        JSON.stringify({ success: false, error: `Could not find wallet for @${username}. Please provide walletAddress.` }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    console.log(`Fetching ALL Polymarket trades for @${username} (wallet: ${proxyWallet})...`);
+
+    // Fetch trades with pagination using proxyWallet filter
     let trades: PolymarketTrade[] = [];
     let offset = 0;
     const limit = 100;
@@ -74,12 +106,12 @@ Deno.serve(async (req) => {
     let attempts = 0;
     const maxAttempts = 100; // Max 10,000 trades
     
-    // Method 1: Paginate through /trades endpoint with timestamp-based pagination
-    // First, try to get trades going back in time
+    // Method 1: Paginate through /trades endpoint with proxyWallet filter
     let oldestTimestamp: number | null = null;
     
     while (hasMore && attempts < maxAttempts) {
-      let tradesUrl = `${POLYMARKET_DATA_API}/trades?user=${username}&limit=${limit}&offset=${offset}`;
+      // CRITICAL: Use proxyWallet instead of user parameter!
+      let tradesUrl = `${POLYMARKET_DATA_API}/trades?proxyWallet=${proxyWallet}&limit=${limit}&offset=${offset}`;
       
       console.log(`Fetching page ${attempts + 1}: offset=${offset}`);
       
@@ -143,7 +175,7 @@ Deno.serve(async (req) => {
       let beforeTimestamp = oldestTimestamp;
       
       while (historicalAttempts < 50) {
-        const historyUrl = `${POLYMARKET_DATA_API}/trades?user=${username}&limit=${limit}&before=${beforeTimestamp}`;
+        const historyUrl = `${POLYMARKET_DATA_API}/trades?proxyWallet=${proxyWallet}&limit=${limit}&before=${beforeTimestamp}`;
         console.log(`Fetching historical trades before ${new Date(beforeTimestamp * 1000).toISOString()}`);
         
         try {
@@ -203,7 +235,7 @@ Deno.serve(async (req) => {
       attempts = 0;
       
       while (hasMore && attempts < maxAttempts) {
-        const activityUrl = `${POLYMARKET_DATA_API}/activity?user=${username}&limit=${limit}&offset=${offset}&sortBy=TIMESTAMP&sortDirection=DESC`;
+        const activityUrl = `${POLYMARKET_DATA_API}/activity?proxyWallet=${proxyWallet}&limit=${limit}&offset=${offset}&sortBy=TIMESTAMP&sortDirection=DESC`;
         console.log(`Fetching activity page ${attempts + 1}: offset=${offset}`);
         
         try {
@@ -597,72 +629,58 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Fetch positions directly from Polymarket API
+    // Fetch positions directly from Polymarket API using proxyWallet
     let positionsFound = 0;
     try {
-      console.log('Fetching positions from Polymarket...');
+      console.log(`Fetching positions from Polymarket for wallet ${proxyWallet}...`);
       
-      // First get the user's wallet address
-      const gammaUserUrl = `${POLYMARKET_GAMMA_API}/users?username=${username}`;
-      const gammaResp = await fetch(gammaUserUrl, {
+      const positionsUrl = `${POLYMARKET_DATA_API}/positions?proxyWallet=${proxyWallet}`;
+      console.log('Fetching positions:', positionsUrl);
+      
+      const posResp = await fetch(positionsUrl, {
         headers: { 'Accept': 'application/json', 'User-Agent': 'PolyTracker/1.0' },
       });
       
-      if (gammaResp.ok) {
-        const userData = await gammaResp.json();
-        const walletAddress = userData?.proxyWallet || userData?.address;
+      if (posResp.ok) {
+        const positionsData = await posResp.json();
+        console.log(`Received ${Array.isArray(positionsData) ? positionsData.length : 0} positions`);
         
-        if (walletAddress) {
-          // Fetch positions using the data API
-          const positionsUrl = `${POLYMARKET_DATA_API}/positions?user=${username}`;
-          console.log('Fetching positions:', positionsUrl);
+        if (Array.isArray(positionsData) && positionsData.length > 0) {
+          // First, clear old positions for this user
+          await supabase
+            .from('positions')
+            .delete()
+            .eq('trader_username', username);
           
-          const posResp = await fetch(positionsUrl, {
-            headers: { 'Accept': 'application/json', 'User-Agent': 'PolyTracker/1.0' },
-          });
+          // Process and store new positions
+          const processedPositions = positionsData.map((pos: any) => ({
+            trader_username: username,
+            market: pos.title || pos.market || 'Unknown',
+            market_slug: pos.slug || pos.eventSlug || '',
+            outcome: pos.outcome || (pos.outcomeIndex === 0 ? 'Yes' : 'No'),
+            shares: parseFloat(pos.size || pos.shares || '0'),
+            avg_price: parseFloat(pos.avgPrice || pos.averagePrice || pos.price || '0'),
+            current_price: parseFloat(pos.curPrice || pos.currentPrice || pos.price || '0'),
+            pnl: parseFloat(pos.pnl || pos.unrealizedPnl || '0'),
+            pnl_percent: parseFloat(pos.pnlPercent || pos.unrealizedPnlPercent || '0'),
+            updated_at: new Date().toISOString(),
+          })).filter((p: any) => p.shares > 0.001); // Filter out dust positions
           
-          if (posResp.ok) {
-            const positionsData = await posResp.json();
-            console.log(`Received ${Array.isArray(positionsData) ? positionsData.length : 0} positions`);
-            
-            if (Array.isArray(positionsData) && positionsData.length > 0) {
-              // First, clear old positions for this user
-              await supabase
-                .from('positions')
-                .delete()
-                .eq('trader_username', username);
+          if (processedPositions.length > 0) {
+            const { error: posError } = await supabase
+              .from('positions')
+              .insert(processedPositions);
               
-              // Process and store new positions
-              const processedPositions = positionsData.map((pos: any) => ({
-                trader_username: username,
-                market: pos.title || pos.market || 'Unknown',
-                market_slug: pos.slug || pos.eventSlug || '',
-                outcome: pos.outcome || (pos.outcomeIndex === 0 ? 'Yes' : 'No'),
-                shares: parseFloat(pos.size || pos.shares || '0'),
-                avg_price: parseFloat(pos.avgPrice || pos.averagePrice || pos.price || '0'),
-                current_price: parseFloat(pos.curPrice || pos.currentPrice || pos.price || '0'),
-                pnl: parseFloat(pos.pnl || pos.unrealizedPnl || '0'),
-                pnl_percent: parseFloat(pos.pnlPercent || pos.unrealizedPnlPercent || '0'),
-                updated_at: new Date().toISOString(),
-              })).filter((p: any) => p.shares > 0.001); // Filter out dust positions
-              
-              if (processedPositions.length > 0) {
-                const { error: posError } = await supabase
-                  .from('positions')
-                  .insert(processedPositions);
-                  
-                if (posError) {
-                  console.error('Error inserting positions:', posError);
-                } else {
-                  positionsFound = processedPositions.length;
-                  console.log(`Stored ${positionsFound} positions`);
-                }
-              }
+            if (posError) {
+              console.error('Error inserting positions:', posError);
+            } else {
+              positionsFound = processedPositions.length;
+              console.log(`Stored ${positionsFound} positions`);
             }
-          } else {
-            console.log('Positions endpoint status:', posResp.status);
           }
         }
+      } else {
+        console.log('Positions endpoint status:', posResp.status);
       }
     } catch (e) {
       console.error('Error fetching positions:', e);
@@ -676,10 +694,11 @@ Deno.serve(async (req) => {
         positionsFound,
         sample: processedTrades.slice(0, 3),
         apiEndpointsTried: [
-          `${POLYMARKET_DATA_API}/trades?user=${username}`,
-          `${POLYMARKET_DATA_API}/activity?user=${username}`,
-          `${POLYMARKET_DATA_API}/positions?user=${username}`
-        ]
+          `${POLYMARKET_DATA_API}/trades?proxyWallet=${proxyWallet}`,
+          `${POLYMARKET_DATA_API}/activity?proxyWallet=${proxyWallet}`,
+          `${POLYMARKET_DATA_API}/positions?proxyWallet=${proxyWallet}`
+        ],
+        walletUsed: proxyWallet
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
