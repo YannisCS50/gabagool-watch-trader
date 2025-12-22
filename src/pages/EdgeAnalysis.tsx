@@ -92,9 +92,14 @@ export default function EdgeAnalysis() {
       // Market name to display (prefer the verbose market title)
       const marketName = marketTrades[0]?.market ?? "";
 
+      // Sort trades by timestamp ascending to find the FIRST trades (entry strategy)
+      const sortedTrades = [...marketTrades].sort(
+        (a, b) => a.timestamp.getTime() - b.timestamp.getTime()
+      );
+
       // Group by outcome label (these are often "Up" / "Down", not "Yes" / "No")
-      const outcomeGroups = new Map<string, typeof marketTrades>();
-      for (const t of marketTrades) {
+      const outcomeGroups = new Map<string, typeof sortedTrades>();
+      for (const t of sortedTrades) {
         const key = String(t.outcome);
         const group = outcomeGroups.get(key);
         if (group) group.push(t);
@@ -110,28 +115,30 @@ export default function EdgeAnalysis() {
 
       const [a, b] = outcomes;
 
-      const avgA = a.list.reduce((sum, t) => sum + t.price, 0) / a.list.length;
-      const avgB = b.list.reduce((sum, t) => sum + t.price, 0) / b.list.length;
-      const combined = avgA + avgB;
+      // Get the FIRST trade for each outcome (entry price)
+      const firstTradeA = a.list[0];
+      const firstTradeB = b.list[0];
+
+      const entryPriceA = firstTradeA.price;
+      const entryPriceB = firstTradeB.price;
+      const combined = entryPriceA + entryPriceB;
       const edge = 1 - combined;
 
-      const latestTs = new Date(
-        Math.max(
-          ...a.list.map((t) => t.timestamp.getTime()),
-          ...b.list.map((t) => t.timestamp.getTime()),
-        ),
+      // Use the earliest entry timestamp
+      const entryTs = new Date(
+        Math.min(firstTradeA.timestamp.getTime(), firstTradeB.timestamp.getTime())
       );
 
       edgeData.push({
         market: marketName,
         outcomeA: a.outcome,
         outcomeB: b.outcome,
-        priceA: avgA,
-        priceB: avgB,
+        priceA: entryPriceA,
+        priceB: entryPriceB,
         combined,
         edge,
         edgeType: combined < 0.98 ? "arbitrage" : combined > 1.02 ? "risk" : "neutral",
-        timestamp: latestTs,
+        timestamp: entryTs,
       });
     });
 
