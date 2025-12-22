@@ -30,6 +30,8 @@ import {
 } from 'lucide-react';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { useTrades } from '@/hooks/useTrades';
+import { OpeningTradeAnalysis } from '@/components/OpeningTradeAnalysis';
+import { DCAArbitrageAnalysis } from '@/components/DCAArbitrageAnalysis';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { 
@@ -1191,6 +1193,12 @@ const StrategyDeepDive = () => {
             </CardContent>
           </Card>
         </section>
+
+        {/* Opening Trade Analysis */}
+        <OpeningTradeAnalysis trades={trades} />
+
+        {/* DCA & Arbitrage Strategy Analysis */}
+        <DCAArbitrageAnalysis trades={trades} />
 
         {/* Strategy Flow Diagram - ENHANCED FOR DEVELOPERS */}
         <section className="space-y-4">
