@@ -339,8 +339,64 @@ export function PositionSizing({ trades }: StrategyAnalysisProps) {
 
 // NEW: Arbitrage/Risk Analysis - detects when YES + NO < 1
 export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
+  // Find historical arbitrage trades - YES and NO bought close together in time
+  const historicalArbitrage = useMemo(() => {
+    const sorted = [...trades].sort((a, b) => 
+      new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+
+    const arbTrades: Array<{
+      market: string;
+      yesTrade: Trade;
+      noTrade: Trade;
+      sum: number;
+      profit: number;
+      timeDiff: number;
+    }> = [];
+
+    // For each market, find YES and NO trades that happened within 24 hours of each other
+    const marketTrades: Record<string, Trade[]> = {};
+    sorted.forEach(trade => {
+      const key = trade.market;
+      if (!marketTrades[key]) marketTrades[key] = [];
+      marketTrades[key].push(trade);
+    });
+
+    Object.entries(marketTrades).forEach(([market, mTrades]) => {
+      const yesTrades = mTrades.filter(t => t.outcome === 'Yes' && t.side === 'buy');
+      const noTrades = mTrades.filter(t => t.outcome === 'No' && t.side === 'buy');
+
+      // Match YES and NO trades that are close in time
+      yesTrades.forEach(yesTrade => {
+        noTrades.forEach(noTrade => {
+          const timeDiff = Math.abs(
+            new Date(yesTrade.timestamp).getTime() - new Date(noTrade.timestamp).getTime()
+          );
+          const hoursDiff = timeDiff / (1000 * 60 * 60);
+          
+          // If trades are within 24 hours, consider it a potential arbitrage pair
+          if (hoursDiff <= 24) {
+            const sum = yesTrade.price + noTrade.price;
+            if (sum < 1) {
+              arbTrades.push({
+                market,
+                yesTrade,
+                noTrade,
+                sum,
+                profit: (1 - sum) * Math.min(yesTrade.shares, noTrade.shares),
+                timeDiff: hoursDiff,
+              });
+            }
+          }
+        });
+      });
+    });
+
+    return arbTrades.sort((a, b) => a.sum - b.sum);
+  }, [trades]);
+
+  // All trades analysis (current + historical)
   const arbitrageData = useMemo(() => {
-    // Group trades by market to find YES/NO pairs
     const marketTrades: Record<string, { yes: Trade[]; no: Trade[] }> = {};
     
     trades.forEach(trade => {
@@ -355,7 +411,6 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
       }
     });
 
-    // Analyze each market for arbitrage opportunities
     const opportunities: Array<{
       market: string;
       yesPrice: number;
@@ -367,7 +422,6 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
 
     Object.entries(marketTrades).forEach(([market, { yes, no }]) => {
       if (yes.length > 0 && no.length > 0) {
-        // Get average prices for this market
         const avgYes = yes.reduce((s, t) => s + t.price, 0) / yes.length;
         const avgNo = no.reduce((s, t) => s + t.price, 0) / no.length;
         const sum = avgYes + avgNo;
@@ -380,38 +434,20 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
           spread: 1 - sum,
           isArbitrage: sum < 1,
         });
-      } else if (yes.length > 0 || no.length > 0) {
-        // Single-side trades - analyze entry price
-        const singleTrades = yes.length > 0 ? yes : no;
-        const avgPrice = singleTrades.reduce((s, t) => s + t.price, 0) / singleTrades.length;
-        // Assume the other side would be around (1 - avgPrice) in a fair market
-        const estimatedSum = avgPrice + (1 - avgPrice);
-        
-        opportunities.push({
-          market: market.substring(0, 50),
-          yesPrice: yes.length > 0 ? avgPrice : 1 - avgPrice,
-          noPrice: no.length > 0 ? avgPrice : 1 - avgPrice,
-          sum: estimatedSum,
-          spread: 0,
-          isArbitrage: false,
-        });
       }
     });
 
     return opportunities.sort((a, b) => a.sum - b.sum);
   }, [trades]);
 
-  // Calculate average risk metrics
+  // Stats
   const avgSum = arbitrageData.length > 0
     ? arbitrageData.reduce((s, d) => s + d.sum, 0) / arbitrageData.length
     : 0;
 
   const arbitrageCount = arbitrageData.filter(d => d.isArbitrage).length;
-  const avgSpread = arbitrageData.filter(d => d.isArbitrage).length > 0
-    ? arbitrageData.filter(d => d.isArbitrage).reduce((s, d) => s + d.spread, 0) / arbitrageCount
-    : 0;
+  const totalArbProfit = historicalArbitrage.reduce((s, a) => s + a.profit, 0);
 
-  // Distribution of YES+NO sums
   const sumDistribution = useMemo(() => {
     const ranges = [
       { label: '<0.90', min: 0, max: 0.90, count: 0, color: 'hsl(142, 70%, 45%)' },
@@ -435,7 +471,7 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
         Arbitrage & Risk Analysis (YES + NO)
       </h3>
       
-      <div className="grid grid-cols-3 gap-3 mb-4">
+      <div className="grid grid-cols-4 gap-3 mb-4">
         <div className="bg-muted/50 rounded-lg p-3 text-center">
           <p className="text-xs text-muted-foreground">Avg YES+NO</p>
           <p className={`text-xl font-mono font-semibold ${avgSum < 1 ? 'text-success' : 'text-destructive'}`}>
@@ -443,14 +479,16 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
           </p>
         </div>
         <div className="bg-success/10 rounded-lg p-3 text-center">
-          <p className="text-xs text-muted-foreground">Arbitrage Found</p>
+          <p className="text-xs text-muted-foreground">Arb Markets</p>
           <p className="text-xl font-mono font-semibold text-success">{arbitrageCount}</p>
         </div>
         <div className="bg-primary/10 rounded-lg p-3 text-center">
-          <p className="text-xs text-muted-foreground">Avg Spread</p>
-          <p className="text-xl font-mono font-semibold text-primary">
-            {(avgSpread * 100).toFixed(1)}%
-          </p>
+          <p className="text-xs text-muted-foreground">Historische Arb</p>
+          <p className="text-xl font-mono font-semibold text-primary">{historicalArbitrage.length}</p>
+        </div>
+        <div className="bg-warning/10 rounded-lg p-3 text-center">
+          <p className="text-xs text-muted-foreground">Est. Profit</p>
+          <p className="text-xl font-mono font-semibold text-warning">${totalArbProfit.toFixed(0)}</p>
         </div>
       </div>
 
@@ -482,13 +520,55 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
         </ResponsiveContainer>
       </div>
 
-      {/* Arbitrage Opportunities List */}
+      {/* Historical Arbitrage Trades */}
+      {historicalArbitrage.length > 0 && (
+        <div className="space-y-2 mb-4">
+          <p className="text-xs font-semibold text-primary uppercase tracking-wider">
+            📜 Historische Arbitrage Trades (YES + NO &lt; 1)
+          </p>
+          <div className="max-h-48 overflow-y-auto space-y-2">
+            {historicalArbitrage.slice(0, 10).map((arb, i) => (
+              <div key={i} className="bg-primary/10 border border-primary/20 rounded-lg p-3">
+                <p className="text-xs truncate mb-2 font-medium">{arb.market.substring(0, 60)}...</p>
+                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                  <div className="bg-success/10 rounded p-2">
+                    <span className="text-muted-foreground">YES: </span>
+                    <span className="text-success">${arb.yesTrade.price.toFixed(2)}</span>
+                    <span className="text-muted-foreground ml-1">({arb.yesTrade.shares.toFixed(0)} shares)</span>
+                  </div>
+                  <div className="bg-destructive/10 rounded p-2">
+                    <span className="text-muted-foreground">NO: </span>
+                    <span className="text-destructive">${arb.noTrade.price.toFixed(2)}</span>
+                    <span className="text-muted-foreground ml-1">({arb.noTrade.shares.toFixed(0)} shares)</span>
+                  </div>
+                </div>
+                <div className="flex justify-between mt-2 text-xs">
+                  <span className="text-muted-foreground">
+                    Σ: <span className="text-success font-semibold">{arb.sum.toFixed(3)}</span>
+                  </span>
+                  <span className="text-muted-foreground">
+                    Spread: <span className="text-success font-semibold">{((1 - arb.sum) * 100).toFixed(1)}%</span>
+                  </span>
+                  <span className="text-muted-foreground">
+                    Est. Profit: <span className="text-warning font-semibold">${arb.profit.toFixed(2)}</span>
+                  </span>
+                  <span className="text-muted-foreground">
+                    Δt: {arb.timeDiff.toFixed(1)}h
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Current Arbitrage Opportunities */}
       {arbitrageData.filter(d => d.isArbitrage).length > 0 && (
         <div className="space-y-2">
           <p className="text-xs font-semibold text-success uppercase tracking-wider">
-            Detected Arbitrage Opportunities
+            ✅ Markets met YES+NO &lt; 1
           </p>
-          <div className="max-h-40 overflow-y-auto space-y-2">
+          <div className="max-h-32 overflow-y-auto space-y-2">
             {arbitrageData.filter(d => d.isArbitrage).slice(0, 5).map((opp, i) => (
               <div key={i} className="bg-success/10 border border-success/20 rounded-lg p-2">
                 <p className="text-xs truncate mb-1">{opp.market}...</p>
@@ -496,7 +576,7 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
                   <span>YES: ${opp.yesPrice.toFixed(2)}</span>
                   <span>NO: ${opp.noPrice.toFixed(2)}</span>
                   <span className="text-success font-semibold">
-                    Σ: {opp.sum.toFixed(3)} ({(opp.spread * 100).toFixed(1)}% profit)
+                    Σ: {opp.sum.toFixed(3)} ({(opp.spread * 100).toFixed(1)}%)
                   </span>
                 </div>
               </div>
@@ -506,11 +586,11 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
       )}
 
       <p className="text-xs text-muted-foreground mt-3">
-        {avgSum < 0.98 
-          ? '💰 Trader actively exploits arbitrage when YES + NO < 1'
+        {historicalArbitrage.length > 0 
+          ? `💰 ${historicalArbitrage.length} historische arbitrage trades gevonden waar YES + NO < 1`
           : avgSum < 1 
-            ? '📊 Some arbitrage opportunities detected in trading history'
-            : '⚖️ No clear arbitrage pattern - may use other strategies'}
+            ? '📊 Mogelijke arbitrage kansen gedetecteerd in trading history'
+            : '⚖️ Geen duidelijk arbitrage patroon - mogelijk andere strategie'}
       </p>
     </div>
   );
