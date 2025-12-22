@@ -337,9 +337,20 @@ export function PositionSizing({ trades }: StrategyAnalysisProps) {
   );
 }
 
-// NEW: Arbitrage/Risk Analysis - detects when YES + NO < 1
+// Helper to determine if an outcome is the "positive" side of a binary market
+const isPositiveOutcome = (outcome: string): boolean => {
+  const positive = ['yes', 'up', 'over', 'true', 'win', 'higher', 'above'];
+  return positive.some(p => outcome.toLowerCase().includes(p));
+};
+
+const isNegativeOutcome = (outcome: string): boolean => {
+  const negative = ['no', 'down', 'under', 'false', 'lose', 'lower', 'below'];
+  return negative.some(p => outcome.toLowerCase().includes(p));
+};
+
+// NEW: Arbitrage/Risk Analysis - detects when OUTCOME_A + OUTCOME_B < 1
 export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
-  // Find historical arbitrage trades - YES and NO bought close together in time
+  // Find historical arbitrage trades - opposite outcomes bought close together in time
   const historicalArbitrage = useMemo(() => {
     const sorted = [...trades].sort((a, b) => 
       new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
@@ -347,14 +358,14 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
 
     const arbTrades: Array<{
       market: string;
-      yesTrade: Trade;
-      noTrade: Trade;
+      positiveTrade: Trade;
+      negativeTrade: Trade;
       sum: number;
       profit: number;
       timeDiff: number;
     }> = [];
 
-    // For each market, find YES and NO trades that happened within 24 hours of each other
+    // For each market, find opposite outcome trades that happened within 24 hours
     const marketTrades: Record<string, Trade[]> = {};
     sorted.forEach(trade => {
       const key = trade.market;
@@ -363,73 +374,86 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
     });
 
     Object.entries(marketTrades).forEach(([market, mTrades]) => {
-      const yesTrades = mTrades.filter(t => t.outcome === 'Yes' && t.side === 'buy');
-      const noTrades = mTrades.filter(t => t.outcome === 'No' && t.side === 'buy');
+      // Get unique outcomes in this market
+      const outcomes = [...new Set(mTrades.map(t => t.outcome))];
+      
+      // For binary markets (2 outcomes), check arbitrage
+      if (outcomes.length === 2) {
+        const outcome1Trades = mTrades.filter(t => t.outcome === outcomes[0] && t.side === 'buy');
+        const outcome2Trades = mTrades.filter(t => t.outcome === outcomes[1] && t.side === 'buy');
 
-      // Match YES and NO trades that are close in time
-      yesTrades.forEach(yesTrade => {
-        noTrades.forEach(noTrade => {
-          const timeDiff = Math.abs(
-            new Date(yesTrade.timestamp).getTime() - new Date(noTrade.timestamp).getTime()
-          );
-          const hoursDiff = timeDiff / (1000 * 60 * 60);
-          
-          // If trades are within 24 hours, consider it a potential arbitrage pair
-          if (hoursDiff <= 24) {
-            const sum = yesTrade.price + noTrade.price;
-            if (sum < 1) {
-              arbTrades.push({
-                market,
-                yesTrade,
-                noTrade,
-                sum,
-                profit: (1 - sum) * Math.min(yesTrade.shares, noTrade.shares),
-                timeDiff: hoursDiff,
-              });
+        // Match trades from opposite outcomes that are close in time
+        outcome1Trades.forEach(trade1 => {
+          outcome2Trades.forEach(trade2 => {
+            const timeDiff = Math.abs(
+              new Date(trade1.timestamp).getTime() - new Date(trade2.timestamp).getTime()
+            );
+            const hoursDiff = timeDiff / (1000 * 60 * 60);
+            
+            // If trades are within 24 hours, consider it a potential arbitrage pair
+            if (hoursDiff <= 24) {
+              const sum = trade1.price + trade2.price;
+              if (sum < 1) {
+                // Determine which is positive/negative for display
+                const positiveTrade = isPositiveOutcome(trade1.outcome) ? trade1 : trade2;
+                const negativeTrade = isPositiveOutcome(trade1.outcome) ? trade2 : trade1;
+                
+                arbTrades.push({
+                  market,
+                  positiveTrade,
+                  negativeTrade,
+                  sum,
+                  profit: (1 - sum) * Math.min(trade1.shares, trade2.shares),
+                  timeDiff: hoursDiff,
+                });
+              }
             }
-          }
+          });
         });
-      });
+      }
     });
 
     return arbTrades.sort((a, b) => a.sum - b.sum);
   }, [trades]);
 
-  // All trades analysis (current + historical)
+  // All trades analysis for markets with multiple outcomes
   const arbitrageData = useMemo(() => {
-    const marketTrades: Record<string, { yes: Trade[]; no: Trade[] }> = {};
+    const marketTrades: Record<string, Record<string, Trade[]>> = {};
     
     trades.forEach(trade => {
       const key = trade.market;
-      if (!marketTrades[key]) {
-        marketTrades[key] = { yes: [], no: [] };
-      }
-      if (trade.outcome === 'Yes') {
-        marketTrades[key].yes.push(trade);
-      } else {
-        marketTrades[key].no.push(trade);
-      }
+      if (!marketTrades[key]) marketTrades[key] = {};
+      if (!marketTrades[key][trade.outcome]) marketTrades[key][trade.outcome] = [];
+      marketTrades[key][trade.outcome].push(trade);
     });
 
     const opportunities: Array<{
       market: string;
-      yesPrice: number;
-      noPrice: number;
+      outcome1: string;
+      outcome2: string;
+      price1: number;
+      price2: number;
       sum: number;
       spread: number;
       isArbitrage: boolean;
     }> = [];
 
-    Object.entries(marketTrades).forEach(([market, { yes, no }]) => {
-      if (yes.length > 0 && no.length > 0) {
-        const avgYes = yes.reduce((s, t) => s + t.price, 0) / yes.length;
-        const avgNo = no.reduce((s, t) => s + t.price, 0) / no.length;
-        const sum = avgYes + avgNo;
+    Object.entries(marketTrades).forEach(([market, outcomeMap]) => {
+      const outcomes = Object.keys(outcomeMap);
+      
+      // For binary markets, check if both outcomes sum to < 1
+      if (outcomes.length === 2) {
+        const [outcome1, outcome2] = outcomes;
+        const avgPrice1 = outcomeMap[outcome1].reduce((s, t) => s + t.price, 0) / outcomeMap[outcome1].length;
+        const avgPrice2 = outcomeMap[outcome2].reduce((s, t) => s + t.price, 0) / outcomeMap[outcome2].length;
+        const sum = avgPrice1 + avgPrice2;
         
         opportunities.push({
           market: market.substring(0, 50),
-          yesPrice: avgYes,
-          noPrice: avgNo,
+          outcome1,
+          outcome2,
+          price1: avgPrice1,
+          price2: avgPrice2,
           sum,
           spread: 1 - sum,
           isArbitrage: sum < 1,
@@ -532,14 +556,14 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
                 <p className="text-xs truncate mb-2 font-medium">{arb.market.substring(0, 60)}...</p>
                 <div className="grid grid-cols-2 gap-2 text-xs font-mono">
                   <div className="bg-success/10 rounded p-2">
-                    <span className="text-muted-foreground">YES: </span>
-                    <span className="text-success">${arb.yesTrade.price.toFixed(2)}</span>
-                    <span className="text-muted-foreground ml-1">({arb.yesTrade.shares.toFixed(0)} shares)</span>
+                    <span className="text-muted-foreground">{arb.positiveTrade.outcome}: </span>
+                    <span className="text-success">${arb.positiveTrade.price.toFixed(2)}</span>
+                    <span className="text-muted-foreground ml-1">({arb.positiveTrade.shares.toFixed(0)} shares)</span>
                   </div>
                   <div className="bg-destructive/10 rounded p-2">
-                    <span className="text-muted-foreground">NO: </span>
-                    <span className="text-destructive">${arb.noTrade.price.toFixed(2)}</span>
-                    <span className="text-muted-foreground ml-1">({arb.noTrade.shares.toFixed(0)} shares)</span>
+                    <span className="text-muted-foreground">{arb.negativeTrade.outcome}: </span>
+                    <span className="text-destructive">${arb.negativeTrade.price.toFixed(2)}</span>
+                    <span className="text-muted-foreground ml-1">({arb.negativeTrade.shares.toFixed(0)} shares)</span>
                   </div>
                 </div>
                 <div className="flex justify-between mt-2 text-xs">
@@ -566,15 +590,15 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
       {arbitrageData.filter(d => d.isArbitrage).length > 0 && (
         <div className="space-y-2">
           <p className="text-xs font-semibold text-success uppercase tracking-wider">
-            ✅ Markets met YES+NO &lt; 1
+            ✅ Markets met {'{'}Outcome1{'}'} + {'{'}Outcome2{'}'} &lt; 1
           </p>
           <div className="max-h-32 overflow-y-auto space-y-2">
             {arbitrageData.filter(d => d.isArbitrage).slice(0, 5).map((opp, i) => (
               <div key={i} className="bg-success/10 border border-success/20 rounded-lg p-2">
                 <p className="text-xs truncate mb-1">{opp.market}...</p>
                 <div className="flex justify-between text-xs font-mono">
-                  <span>YES: ${opp.yesPrice.toFixed(2)}</span>
-                  <span>NO: ${opp.noPrice.toFixed(2)}</span>
+                  <span>{opp.outcome1}: ${opp.price1.toFixed(2)}</span>
+                  <span>{opp.outcome2}: ${opp.price2.toFixed(2)}</span>
                   <span className="text-success font-semibold">
                     Σ: {opp.sum.toFixed(3)} ({(opp.spread * 100).toFixed(1)}%)
                   </span>
