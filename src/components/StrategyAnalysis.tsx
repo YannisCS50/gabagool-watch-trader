@@ -1597,138 +1597,218 @@ interface LiveOpenPositionsProps {
 }
 
 export function LiveOpenPositions({ positions, trades }: LiveOpenPositionsProps) {
-  // Compare with calculated positions
-  const calculatedPositions = useMemo(() => {
-    const positionMap: Record<string, { buyShares: number; sellShares: number; buyVolume: number }> = {};
+  // Group positions by market and pair Yes/No or Up/Down
+  const groupedPositions = useMemo(() => {
+    const marketMap: Record<string, { 
+      market: string; 
+      yesPos?: MarketPosition; 
+      noPos?: MarketPosition;
+    }> = {};
     
-    trades.forEach(trade => {
-      const key = `${trade.market}|||${trade.outcome}`;
-      if (!positionMap[key]) {
-        positionMap[key] = { buyShares: 0, sellShares: 0, buyVolume: 0 };
+    positions.forEach(pos => {
+      const marketKey = pos.market;
+      if (!marketMap[marketKey]) {
+        marketMap[marketKey] = { market: marketKey };
       }
-      if (trade.side === 'buy') {
-        positionMap[key].buyShares += trade.shares;
-        positionMap[key].buyVolume += trade.total;
+      
+      const isYes = pos.outcome === 'Yes' || pos.outcome.toLowerCase().includes('up');
+      if (isYes) {
+        marketMap[marketKey].yesPos = pos;
       } else {
-        positionMap[key].sellShares += trade.shares;
+        marketMap[marketKey].noPos = pos;
       }
     });
     
-    return Object.entries(positionMap)
-      .map(([key, data]) => {
-        const [market, outcome] = key.split('|||');
-        const netShares = data.buyShares - data.sellShares;
-        const avgPrice = data.buyShares > 0 ? data.buyVolume / data.buyShares : 0;
-        return { market, outcome, netShares, avgPrice };
-      })
-      .filter(p => p.netShares > 0.01);
-  }, [trades]);
-
-  // Sort positions by value
-  const sortedPositions = useMemo(() => {
-    return [...positions].sort((a, b) => {
-      const aValue = a.shares * a.currentPrice;
-      const bValue = b.shares * b.currentPrice;
-      return bValue - aValue;
+    return Object.values(marketMap).map(group => {
+      const yesShares = group.yesPos?.shares || 0;
+      const noShares = group.noPos?.shares || 0;
+      const yesPrice = group.yesPos?.avgPrice || 0;
+      const noPrice = group.noPos?.avgPrice || 0;
+      const yesCurrent = group.yesPos?.currentPrice || 0;
+      const noCurrent = group.noPos?.currentPrice || 0;
+      
+      const isPair = yesShares > 0 && noShares > 0;
+      const pairShares = isPair ? Math.min(yesShares, noShares) : 0;
+      const priceSum = yesPrice + noPrice;
+      const edge = isPair ? 1.00 - priceSum : 0;
+      const guaranteedProfit = pairShares * edge;
+      
+      const totalCost = (yesShares * yesPrice) + (noShares * noPrice);
+      const totalValue = (yesShares * yesCurrent) + (noShares * noCurrent);
+      const unrealizedPnL = totalValue - totalCost;
+      
+      return {
+        ...group,
+        isPair,
+        pairShares,
+        yesShares,
+        noShares,
+        yesPrice,
+        noPrice,
+        yesCurrent,
+        noCurrent,
+        priceSum,
+        edge,
+        guaranteedProfit,
+        totalCost,
+        totalValue,
+        unrealizedPnL,
+      };
+    }).sort((a, b) => {
+      // Pairs first, then by value
+      if (a.isPair !== b.isPair) return a.isPair ? -1 : 1;
+      return b.totalValue - a.totalValue;
     });
   }, [positions]);
 
   const totalValue = positions.reduce((s, p) => s + (p.shares * p.currentPrice), 0);
   const totalPnL = positions.reduce((s, p) => s + p.pnl, 0);
   const totalCost = positions.reduce((s, p) => s + (p.shares * p.avgPrice), 0);
+  
+  const pairCount = groupedPositions.filter(g => g.isPair).length;
+  const totalGuaranteed = groupedPositions.reduce((s, g) => s + g.guaranteedProfit, 0);
 
   return (
     <div className="glass rounded-lg p-6">
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-lg font-semibold flex items-center gap-2">
-          📊 Live Open Positions (Polymarket)
+          📊 Live Open Positions
           <span className="text-xs px-2 py-0.5 rounded-full bg-success/20 text-success font-mono">
-            {positions.length} positions
+            {groupedPositions.length} markets
           </span>
+          {pairCount > 0 && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-primary/20 text-primary font-mono">
+              {pairCount} pairs
+            </span>
+          )}
         </h2>
         <div className="text-right text-xs">
           <p className="text-muted-foreground">Total Value</p>
           <p className="font-mono font-semibold text-lg">${totalValue.toFixed(2)}</p>
-          <p className={`font-mono ${totalPnL >= 0 ? 'text-success' : 'text-destructive'}`}>
-            {totalPnL >= 0 ? '+' : ''}${totalPnL.toFixed(2)} P&L
-          </p>
+          {totalGuaranteed > 0 && (
+            <p className="font-mono text-success">
+              +${totalGuaranteed.toFixed(2)} guaranteed
+            </p>
+          )}
         </div>
       </div>
 
       {/* Summary Stats */}
       <div className="grid grid-cols-4 gap-3 mb-4">
         <div className="bg-muted/30 rounded-lg p-3 text-center">
-          <p className="text-xs text-muted-foreground">Positions</p>
-          <p className="text-xl font-mono font-semibold">{positions.length}</p>
+          <p className="text-xs text-muted-foreground">Markets</p>
+          <p className="text-xl font-mono font-semibold">{groupedPositions.length}</p>
         </div>
         <div className="bg-muted/30 rounded-lg p-3 text-center">
           <p className="text-xs text-muted-foreground">Total Cost</p>
           <p className="text-xl font-mono font-semibold">${totalCost.toFixed(2)}</p>
         </div>
         <div className="bg-muted/30 rounded-lg p-3 text-center">
-          <p className="text-xs text-muted-foreground">Current Value</p>
-          <p className="text-xl font-mono font-semibold">${totalValue.toFixed(2)}</p>
+          <p className="text-xs text-muted-foreground">Arb Pairs</p>
+          <p className="text-xl font-mono font-semibold">{pairCount}</p>
         </div>
-        <div className={`rounded-lg p-3 text-center ${totalPnL >= 0 ? 'bg-success/10' : 'bg-destructive/10'}`}>
-          <p className="text-xs text-muted-foreground">Unrealized P&L</p>
-          <p className={`text-xl font-mono font-semibold ${totalPnL >= 0 ? 'text-success' : 'text-destructive'}`}>
-            {totalPnL >= 0 ? '+' : ''}{((totalPnL / totalCost) * 100).toFixed(1)}%
+        <div className={`rounded-lg p-3 text-center ${totalGuaranteed >= 0 ? 'bg-success/10' : 'bg-destructive/10'}`}>
+          <p className="text-xs text-muted-foreground">Guaranteed</p>
+          <p className={`text-xl font-mono font-semibold ${totalGuaranteed >= 0 ? 'text-success' : 'text-destructive'}`}>
+            +${totalGuaranteed.toFixed(2)}
           </p>
         </div>
       </div>
 
-      {/* Positions List */}
-      <div className="space-y-2 max-h-96 overflow-y-auto">
-        {sortedPositions.map((pos, i) => {
-          const value = pos.shares * pos.currentPrice;
-          const cost = pos.shares * pos.avgPrice;
-          const pnlPct = pos.avgPrice > 0 ? ((pos.currentPrice - pos.avgPrice) / pos.avgPrice) * 100 : 0;
-          
-          // Find matching calculated position
-          const calculated = calculatedPositions.find(
-            c => c.market === pos.market && c.outcome === pos.outcome
-          );
-          const hasDiscrepancy = calculated && Math.abs(calculated.netShares - pos.shares) > 0.1;
-          
-          return (
-            <div 
-              key={i} 
-              className={`p-3 rounded-lg border ${hasDiscrepancy ? 'border-warning/50 bg-warning/5' : 'border-border/50 bg-muted/20'}`}
-            >
-              <div className="flex items-start justify-between">
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium truncate">{pos.market}</p>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className={`text-xs px-1.5 py-0.5 rounded ${
-                      pos.outcome === 'Yes' || pos.outcome.toLowerCase().includes('up') 
-                        ? 'bg-success/20 text-success' 
-                        : 'bg-destructive/20 text-destructive'
-                    }`}>
-                      {pos.outcome}
-                    </span>
-                    <span className="text-xs font-mono text-muted-foreground">
-                      {pos.shares.toFixed(1)} shares @ {(pos.avgPrice * 100).toFixed(0)}¢
-                    </span>
-                    {hasDiscrepancy && (
-                      <span className="text-xs text-warning flex items-center gap-1">
-                        ⚠️ Berekend: {calculated?.netShares.toFixed(1)}
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <div className="text-right ml-3">
-                  <p className="text-sm font-mono">${value.toFixed(2)}</p>
-                  <p className="text-xs text-muted-foreground">
-                    Now: {(pos.currentPrice * 100).toFixed(0)}¢
+      {/* Compact Table */}
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs">
+          <thead>
+            <tr className="border-b border-border/50 text-muted-foreground">
+              <th className="text-left py-2 pr-2">Market</th>
+              <th className="text-center px-2">Up/Yes</th>
+              <th className="text-center px-2">Down/No</th>
+              <th className="text-center px-2">Sum</th>
+              <th className="text-center px-2">Edge</th>
+              <th className="text-center px-2">Shares</th>
+              <th className="text-right pl-2">Profit</th>
+            </tr>
+          </thead>
+          <tbody>
+            {groupedPositions.map((group, i) => (
+              <tr 
+                key={i} 
+                className={`border-b border-border/30 ${group.isPair ? 'bg-success/5' : ''}`}
+              >
+                <td className="py-2 pr-2 max-w-[200px]">
+                  <p className="truncate font-medium" title={group.market}>
+                    {group.market.length > 35 ? group.market.slice(0, 35) + '...' : group.market}
                   </p>
-                  <p className={`text-xs font-mono ${pnlPct >= 0 ? 'text-success' : 'text-destructive'}`}>
-                    {pnlPct >= 0 ? '+' : ''}{pnlPct.toFixed(1)}%
-                  </p>
-                </div>
-              </div>
-            </div>
-          );
-        })}
+                </td>
+                <td className="text-center px-2">
+                  {group.yesPos ? (
+                    <span className="font-mono">
+                      {(group.yesPrice * 100).toFixed(0)}¢
+                      <span className="text-muted-foreground ml-1">({group.yesShares.toFixed(0)})</span>
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground">-</span>
+                  )}
+                </td>
+                <td className="text-center px-2">
+                  {group.noPos ? (
+                    <span className="font-mono">
+                      {(group.noPrice * 100).toFixed(0)}¢
+                      <span className="text-muted-foreground ml-1">({group.noShares.toFixed(0)})</span>
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground">-</span>
+                  )}
+                </td>
+                <td className="text-center px-2">
+                  {group.isPair ? (
+                    <span className={`font-mono ${group.priceSum < 1 ? 'text-success' : 'text-destructive'}`}>
+                      {(group.priceSum * 100).toFixed(0)}¢
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground">-</span>
+                  )}
+                </td>
+                <td className="text-center px-2">
+                  {group.isPair ? (
+                    <span className={`font-mono ${group.edge > 0 ? 'text-success' : 'text-destructive'}`}>
+                      {(group.edge * 100).toFixed(1)}%
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground">-</span>
+                  )}
+                </td>
+                <td className="text-center px-2 font-mono">
+                  {group.isPair ? group.pairShares.toFixed(0) : '-'}
+                </td>
+                <td className="text-right pl-2">
+                  {group.isPair ? (
+                    <span className={`font-mono font-semibold ${group.guaranteedProfit > 0 ? 'text-success' : 'text-destructive'}`}>
+                      {group.guaranteedProfit >= 0 ? '+' : ''}${group.guaranteedProfit.toFixed(2)}
+                    </span>
+                  ) : (
+                    <span className="text-muted-foreground font-mono">
+                      ${group.totalValue.toFixed(2)}
+                    </span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+          {pairCount > 0 && (
+            <tfoot>
+              <tr className="border-t-2 border-success/30 bg-success/10 font-semibold">
+                <td colSpan={5} className="py-2 pr-2">Totaal Arbitrage Winst</td>
+                <td className="text-center px-2 font-mono">
+                  {groupedPositions.filter(g => g.isPair).reduce((s, g) => s + g.pairShares, 0).toFixed(0)}
+                </td>
+                <td className="text-right pl-2 font-mono text-success">
+                  +${totalGuaranteed.toFixed(2)}
+                </td>
+              </tr>
+            </tfoot>
+          )}
+        </table>
       </div>
 
       {positions.length === 0 && (
