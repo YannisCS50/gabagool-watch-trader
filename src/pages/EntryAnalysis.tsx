@@ -1,99 +1,333 @@
-import { ArrowLeft, DollarSign, TrendingDown, Calculator, Target, AlertCircle } from 'lucide-react';
+import { ArrowLeft, DollarSign, TrendingDown, Calculator, Target, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useTrades } from '@/hooks/useTrades';
 import { Trade } from '@/types/trade';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
+import { format } from 'date-fns';
 
-interface MarketFirstBuy {
-  market: string;
-  marketSlug: string;
-  outcome: 'Yes' | 'No';
-  firstBuyPrice: number;
-  firstBuyDate: Date;
-  totalShares: number;
-  avgPrice: number;
-  requiredOppositePrice: number;
-  currentSpread: number;
-  status: 'profitable' | 'breakeven' | 'loss';
+interface OrderWithRunning {
+  trade: Trade;
+  orderNumber: number;
+  runningShares: number;
+  runningCost: number;
+  runningAvgPrice: number;
 }
 
-const EntryAnalysis = () => {
-  const { trades, positions } = useTrades('gabagool22');
+interface MarketAnalysis {
+  market: string;
+  marketSlug: string;
+  yesOrders: OrderWithRunning[];
+  noOrders: OrderWithRunning[];
+  yesAvgPrice: number;
+  noAvgPrice: number;
+  yesTotalShares: number;
+  noTotalShares: number;
+  combinedScore: number;
+  status: 'profitable' | 'breakeven' | 'loss' | 'exposed';
+}
 
-  const marketFirstBuys = useMemo(() => {
-    // Groepeer trades per markt en vind de eerste buy
+const BetDetailCard = ({ analysis }: { analysis: MarketAnalysis }) => {
+  const [expanded, setExpanded] = useState(false);
+
+  const getScoreColor = (score: number) => {
+    if (score === 0) return 'text-muted-foreground';
+    if (score < 0.99) return 'text-success';
+    if (score > 1.01) return 'text-destructive';
+    return 'text-warning';
+  };
+
+  const getScoreBackground = (score: number) => {
+    if (score === 0) return 'bg-muted/30';
+    if (score < 0.99) return 'bg-success/20 border-success/30';
+    if (score > 1.01) return 'bg-destructive/20 border-destructive/30';
+    return 'bg-warning/20 border-warning/30';
+  };
+
+  return (
+    <div className="glass rounded-lg overflow-hidden">
+      {/* Header - clickable */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full p-4 flex items-center justify-between hover:bg-muted/10 transition-colors"
+      >
+        <div className="flex-1 text-left">
+          <h3 className="font-semibold text-sm truncate pr-4">{analysis.market}</h3>
+          <div className="flex items-center gap-4 mt-1 text-xs text-muted-foreground">
+            {analysis.yesTotalShares > 0 && (
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-success" />
+                YES: {analysis.yesTotalShares.toFixed(0)} @ {(analysis.yesAvgPrice * 100).toFixed(1)}¢
+              </span>
+            )}
+            {analysis.noTotalShares > 0 && (
+              <span className="flex items-center gap-1">
+                <span className="w-2 h-2 rounded-full bg-destructive" />
+                NO: {analysis.noTotalShares.toFixed(0)} @ {(analysis.noAvgPrice * 100).toFixed(1)}¢
+              </span>
+            )}
+          </div>
+        </div>
+        
+        {/* Score badge */}
+        <div className="flex items-center gap-3">
+          <div className={`px-3 py-1.5 rounded-lg border ${getScoreBackground(analysis.combinedScore)}`}>
+            <span className={`font-mono font-bold ${getScoreColor(analysis.combinedScore)}`}>
+              {analysis.combinedScore === 0 
+                ? 'EXPOSED' 
+                : `${(analysis.combinedScore * 100).toFixed(1)}¢`}
+            </span>
+            {analysis.combinedScore > 0 && (
+              <span className={`ml-2 text-xs ${getScoreColor(analysis.combinedScore)}`}>
+                {analysis.combinedScore < 1 ? '< $1' : '> $1'}
+              </span>
+            )}
+          </div>
+          {expanded ? (
+            <ChevronUp className="w-5 h-5 text-muted-foreground" />
+          ) : (
+            <ChevronDown className="w-5 h-5 text-muted-foreground" />
+          )}
+        </div>
+      </button>
+
+      {/* Expanded content */}
+      {expanded && (
+        <div className="border-t border-border/50 p-4 space-y-4">
+          {/* YES Orders */}
+          {analysis.yesOrders.length > 0 && (
+            <div>
+              <h4 className="text-xs font-semibold text-success mb-2 flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-success" />
+                YES Orders ({analysis.yesOrders.length})
+              </h4>
+              <div className="space-y-2">
+                {analysis.yesOrders.map((order, idx) => (
+                  <div key={order.trade.id} className="flex items-center justify-between bg-success/5 rounded-lg p-3">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-mono text-muted-foreground">
+                          #{order.orderNumber}
+                        </span>
+                        <span className="text-sm font-medium">
+                          {order.trade.shares.toFixed(0)} shares @ {(order.trade.price * 100).toFixed(1)}¢
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          on YES
+                        </span>
+                      </div>
+                      <div className="text-xs text-muted-foreground mt-0.5">
+                        {format(new Date(order.trade.timestamp), 'MMM dd, HH:mm')}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-xs text-muted-foreground">Running avg:</div>
+                      <div className="font-mono text-sm font-semibold text-success">
+                        {(order.runningAvgPrice * 100).toFixed(1)}¢
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* NO Orders */}
+          {analysis.noOrders.length > 0 && (
+            <div>
+              <h4 className="text-xs font-semibold text-destructive mb-2 flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-destructive" />
+                NO Orders ({analysis.noOrders.length})
+              </h4>
+              <div className="space-y-2">
+                {analysis.noOrders.map((order, idx) => (
+                  <div key={order.trade.id} className="flex items-center justify-between bg-destructive/5 rounded-lg p-3">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-mono text-muted-foreground">
+                          #{order.orderNumber}
+                        </span>
+                        <span className="text-sm font-medium">
+                          {order.trade.shares.toFixed(0)} shares @ {(order.trade.price * 100).toFixed(1)}¢
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          on NO
+                        </span>
+                      </div>
+                      <div className="text-xs text-muted-foreground mt-0.5">
+                        {format(new Date(order.trade.timestamp), 'MMM dd, HH:mm')}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-xs text-muted-foreground">Running avg:</div>
+                      <div className="font-mono text-sm font-semibold text-destructive">
+                        {(order.runningAvgPrice * 100).toFixed(1)}¢
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Combined Score Analysis */}
+          <div className={`rounded-lg p-4 border ${getScoreBackground(analysis.combinedScore)}`}>
+            <h4 className="text-xs font-semibold mb-3">📊 Arbitrage Score Berekening</h4>
+            <div className="space-y-2 font-mono text-sm">
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">YES gem. entry:</span>
+                <span className="text-success">
+                  {analysis.yesAvgPrice > 0 ? `${(analysis.yesAvgPrice * 100).toFixed(1)}¢` : '—'}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">NO gem. entry:</span>
+                <span className="text-destructive">
+                  {analysis.noAvgPrice > 0 ? `${(analysis.noAvgPrice * 100).toFixed(1)}¢` : '—'}
+                </span>
+              </div>
+              <div className="border-t border-border/50 pt-2 flex justify-between font-bold">
+                <span>Totaal:</span>
+                <span className={getScoreColor(analysis.combinedScore)}>
+                  {analysis.combinedScore > 0 
+                    ? `${(analysis.combinedScore * 100).toFixed(1)}¢`
+                    : 'EXPOSED (alleen 1 kant)'}
+                </span>
+              </div>
+              {analysis.combinedScore > 0 && (
+                <div className="text-xs mt-2">
+                  {analysis.combinedScore < 0.99 && (
+                    <p className="text-success">
+                      ✓ Gegarandeerde winst van {((1 - analysis.combinedScore) * 100).toFixed(1)}¢ per share!
+                    </p>
+                  )}
+                  {analysis.combinedScore >= 0.99 && analysis.combinedScore <= 1.01 && (
+                    <p className="text-warning">
+                      ≈ Breakeven (rekening houden met fees)
+                    </p>
+                  )}
+                  {analysis.combinedScore > 1.01 && (
+                    <p className="text-destructive">
+                      ✗ Verlies van {((analysis.combinedScore - 1) * 100).toFixed(1)}¢ per share
+                    </p>
+                  )}
+                </div>
+              )}
+              {analysis.combinedScore === 0 && (
+                <div className="text-xs mt-2 text-muted-foreground">
+                  {analysis.yesAvgPrice > 0 && (
+                    <p>→ Koop NO voor ≤ {((1 - analysis.yesAvgPrice) * 100).toFixed(1)}¢ voor arbitrage</p>
+                  )}
+                  {analysis.noAvgPrice > 0 && (
+                    <p>→ Koop YES voor ≤ {((1 - analysis.noAvgPrice) * 100).toFixed(1)}¢ voor arbitrage</p>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const EntryAnalysis = () => {
+  const { trades } = useTrades('gabagool22');
+
+  const marketAnalyses = useMemo(() => {
+    // Groepeer trades per markt
     const marketMap = new Map<string, Trade[]>();
     
     trades
       .filter(t => t.side === 'buy' && t.status === 'filled')
       .forEach(trade => {
-        const key = `${trade.market}-${trade.outcome}`;
-        if (!marketMap.has(key)) {
-          marketMap.set(key, []);
+        if (!marketMap.has(trade.market)) {
+          marketMap.set(trade.market, []);
         }
-        marketMap.get(key)!.push(trade);
+        marketMap.get(trade.market)!.push(trade);
       });
 
-    const results: MarketFirstBuy[] = [];
+    const results: MarketAnalysis[] = [];
 
-    marketMap.forEach((marketTrades, key) => {
-      // Sorteer op datum (oudste eerst)
-      const sorted = marketTrades.sort((a, b) => 
-        new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
-      );
+    marketMap.forEach((marketTrades, marketName) => {
+      // Split YES en NO trades
+      const yesTrades = marketTrades
+        .filter(t => t.outcome === 'Yes')
+        .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+      
+      const noTrades = marketTrades
+        .filter(t => t.outcome === 'No')
+        .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
-      const firstBuy = sorted[0];
-      const totalShares = sorted.reduce((sum, t) => sum + t.shares, 0);
-      const totalCost = sorted.reduce((sum, t) => sum + t.total, 0);
-      const avgPrice = totalCost / totalShares;
-      
-      // Bereken welke prijs de tegenovergestelde positie moet hebben voor arbitrage
-      const requiredOppositePrice = 1 - avgPrice;
-      
-      // Check of er een opposite positie is
-      const oppositeTrades = trades.filter(t => 
-        t.market === firstBuy.market && 
-        t.outcome !== firstBuy.outcome &&
-        t.side === 'buy'
-      );
-      
-      const oppositeAvgPrice = oppositeTrades.length > 0
-        ? oppositeTrades.reduce((sum, t) => sum + t.total, 0) / 
-          oppositeTrades.reduce((sum, t) => sum + t.shares, 0)
-        : 0;
+      // Build YES orders with running totals
+      const yesOrders: OrderWithRunning[] = [];
+      let yesRunningShares = 0;
+      let yesRunningCost = 0;
+      yesTrades.forEach((trade, idx) => {
+        yesRunningShares += trade.shares;
+        yesRunningCost += trade.total;
+        yesOrders.push({
+          trade,
+          orderNumber: idx + 1,
+          runningShares: yesRunningShares,
+          runningCost: yesRunningCost,
+          runningAvgPrice: yesRunningCost / yesRunningShares,
+        });
+      });
 
-      const currentSpread = avgPrice + oppositeAvgPrice;
-      
-      let status: 'profitable' | 'breakeven' | 'loss' = 'breakeven';
-      if (oppositeAvgPrice > 0) {
-        if (currentSpread < 0.99) status = 'profitable';
-        else if (currentSpread > 1.01) status = 'loss';
+      // Build NO orders with running totals
+      const noOrders: OrderWithRunning[] = [];
+      let noRunningShares = 0;
+      let noRunningCost = 0;
+      noTrades.forEach((trade, idx) => {
+        noRunningShares += trade.shares;
+        noRunningCost += trade.total;
+        noOrders.push({
+          trade,
+          orderNumber: idx + 1,
+          runningShares: noRunningShares,
+          runningCost: noRunningCost,
+          runningAvgPrice: noRunningCost / noRunningShares,
+        });
+      });
+
+      const yesAvgPrice = yesRunningShares > 0 ? yesRunningCost / yesRunningShares : 0;
+      const noAvgPrice = noRunningShares > 0 ? noRunningCost / noRunningShares : 0;
+      const combinedScore = yesAvgPrice > 0 && noAvgPrice > 0 ? yesAvgPrice + noAvgPrice : 0;
+
+      let status: 'profitable' | 'breakeven' | 'loss' | 'exposed' = 'exposed';
+      if (combinedScore > 0) {
+        if (combinedScore < 0.99) status = 'profitable';
+        else if (combinedScore > 1.01) status = 'loss';
+        else status = 'breakeven';
       }
 
       results.push({
-        market: firstBuy.market,
-        marketSlug: firstBuy.marketSlug,
-        outcome: firstBuy.outcome,
-        firstBuyPrice: firstBuy.price,
-        firstBuyDate: firstBuy.timestamp,
-        totalShares: totalShares,
-        avgPrice: avgPrice,
-        requiredOppositePrice: requiredOppositePrice,
-        currentSpread: oppositeAvgPrice > 0 ? currentSpread : 0,
-        status: status,
+        market: marketName,
+        marketSlug: marketTrades[0]?.marketSlug || '',
+        yesOrders,
+        noOrders,
+        yesAvgPrice,
+        noAvgPrice,
+        yesTotalShares: yesRunningShares,
+        noTotalShares: noRunningShares,
+        combinedScore,
+        status,
       });
     });
 
-    return results.sort((a, b) => b.avgPrice - a.avgPrice);
+    // Sorteer: eerst profitable, dan exposed, dan breakeven, dan loss
+    return results.sort((a, b) => {
+      const order = { profitable: 0, exposed: 1, breakeven: 2, loss: 3 };
+      return order[a.status] - order[b.status];
+    });
   }, [trades]);
 
-  const avgFirstBuyPrice = marketFirstBuys.length > 0
-    ? marketFirstBuys.reduce((sum, m) => sum + m.firstBuyPrice, 0) / marketFirstBuys.length
-    : 0;
-
-  const avgEntryPrice = marketFirstBuys.length > 0
-    ? marketFirstBuys.reduce((sum, m) => sum + m.avgPrice, 0) / marketFirstBuys.length
-    : 0;
+  const stats = useMemo(() => {
+    const profitable = marketAnalyses.filter(m => m.status === 'profitable').length;
+    const exposed = marketAnalyses.filter(m => m.status === 'exposed').length;
+    const loss = marketAnalyses.filter(m => m.status === 'loss').length;
+    return { profitable, exposed, loss, total: marketAnalyses.length };
+  }, [marketAnalyses]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -116,168 +350,80 @@ const EntryAnalysis = () => {
 
       <main className="container mx-auto px-4 py-6 space-y-6">
         {/* Stats Overview */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="glass rounded-lg p-6">
-            <div className="flex items-center gap-3 mb-2">
-              <DollarSign className="w-5 h-5 text-primary" />
-              <span className="text-sm text-muted-foreground">Gem. Eerste Buy Prijs</span>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="glass rounded-lg p-4">
+            <div className="flex items-center gap-2 mb-1">
+              <Target className="w-4 h-4 text-primary" />
+              <span className="text-xs text-muted-foreground">Totaal Bets</span>
             </div>
-            <p className="text-3xl font-mono font-bold">{(avgFirstBuyPrice * 100).toFixed(1)}¢</p>
-            <p className="text-xs text-muted-foreground mt-1">Eerste aankoop per markt</p>
+            <p className="text-2xl font-mono font-bold">{stats.total}</p>
           </div>
           
-          <div className="glass rounded-lg p-6">
-            <div className="flex items-center gap-3 mb-2">
-              <TrendingDown className="w-5 h-5 text-success" />
-              <span className="text-sm text-muted-foreground">Gem. Entry Prijs (na middelen)</span>
+          <div className="glass rounded-lg p-4">
+            <div className="flex items-center gap-2 mb-1">
+              <DollarSign className="w-4 h-4 text-success" />
+              <span className="text-xs text-muted-foreground">Winstgevend</span>
             </div>
-            <p className="text-3xl font-mono font-bold">{(avgEntryPrice * 100).toFixed(1)}¢</p>
-            <p className="text-xs text-muted-foreground mt-1">Inclusief alle bijkopen</p>
+            <p className="text-2xl font-mono font-bold text-success">{stats.profitable}</p>
           </div>
 
-          <div className="glass rounded-lg p-6">
-            <div className="flex items-center gap-3 mb-2">
-              <Target className="w-5 h-5 text-warning" />
-              <span className="text-sm text-muted-foreground">Markten Geanalyseerd</span>
+          <div className="glass rounded-lg p-4">
+            <div className="flex items-center gap-2 mb-1">
+              <AlertCircle className="w-4 h-4 text-warning" />
+              <span className="text-xs text-muted-foreground">Exposed</span>
             </div>
-            <p className="text-3xl font-mono font-bold">{marketFirstBuys.length}</p>
-            <p className="text-xs text-muted-foreground mt-1">Unieke posities</p>
+            <p className="text-2xl font-mono font-bold text-warning">{stats.exposed}</p>
+          </div>
+
+          <div className="glass rounded-lg p-4">
+            <div className="flex items-center gap-2 mb-1">
+              <TrendingDown className="w-4 h-4 text-destructive" />
+              <span className="text-xs text-muted-foreground">Verlies</span>
+            </div>
+            <p className="text-2xl font-mono font-bold text-destructive">{stats.loss}</p>
           </div>
         </div>
 
-        {/* Explanation Card */}
-        <div className="glass rounded-lg p-6 border-l-4 border-primary">
-          <h2 className="text-lg font-semibold mb-3 flex items-center gap-2">
-            <Calculator className="w-5 h-5" />
-            📊 Hoe Arbitrage & Middelen Werkt
-          </h2>
-          
-          <div className="space-y-4 text-sm">
-            <div className="bg-card/50 rounded-lg p-4">
-              <h3 className="font-semibold text-foreground mb-2">🎯 Doel: Totale kosten &lt; $1.00</h3>
-              <p className="text-muted-foreground">
-                Bij prediction markets betaalt de winnende kant altijd $1.00 uit. Als je YES + NO samen 
-                voor minder dan $1.00 kunt kopen, maak je gegarandeerd winst.
-              </p>
+        {/* Legend */}
+        <div className="glass rounded-lg p-4">
+          <h3 className="text-sm font-semibold mb-2">📖 Score Uitleg</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+            <div className="flex items-center gap-2">
+              <span className="w-3 h-3 rounded bg-success/30 border border-success/50" />
+              <span>&lt; 100¢ = Winst</span>
             </div>
-
-            <div className="bg-card/50 rounded-lg p-4">
-              <h3 className="font-semibold text-foreground mb-2">📉 Middelen (Dollar Cost Averaging)</h3>
-              <p className="text-muted-foreground mb-2">
-                Als je eerste buy te hoog was, kun je bijkopen bij lagere prijzen om je gemiddelde entry te verlagen:
-              </p>
-              <div className="bg-background/50 rounded p-3 font-mono text-xs">
-                <p className="text-muted-foreground">Voorbeeld:</p>
-                <p>• 1e buy: 100 shares @ 60¢ = $60</p>
-                <p>• 2e buy: 100 shares @ 40¢ = $40</p>
-                <p className="text-success mt-1">→ Totaal: 200 shares @ 50¢ gemiddeld</p>
-              </div>
+            <div className="flex items-center gap-2">
+              <span className="w-3 h-3 rounded bg-warning/30 border border-warning/50" />
+              <span>≈ 100¢ = Breakeven</span>
             </div>
-
-            <div className="bg-card/50 rounded-lg p-4">
-              <h3 className="font-semibold text-foreground mb-2">⚖️ Arbitrage Strategie</h3>
-              <div className="space-y-2 text-muted-foreground">
-                <p><strong className="text-foreground">Stap 1:</strong> Koop YES voor prijs X</p>
-                <p><strong className="text-foreground">Stap 2:</strong> Wacht tot NO zakt onder (100¢ - X)</p>
-                <p><strong className="text-foreground">Stap 3:</strong> Koop gelijke hoeveelheid NO</p>
-                <p className="text-success font-medium mt-2">
-                  ✓ Als YES + NO &lt; 100¢ → Gegarandeerde winst!
-                </p>
-              </div>
+            <div className="flex items-center gap-2">
+              <span className="w-3 h-3 rounded bg-destructive/30 border border-destructive/50" />
+              <span>&gt; 100¢ = Verlies</span>
             </div>
-
-            <div className="bg-success/10 rounded-lg p-4 border border-success/20">
-              <h3 className="font-semibold text-success mb-2">💡 Pro Tip</h3>
-              <p className="text-muted-foreground">
-                Kijk naar de "Benodigde Opposite Prijs" hieronder. Dit is de maximale prijs die je 
-                voor de tegenovergestelde positie mag betalen om break-even of winst te maken.
-              </p>
+            <div className="flex items-center gap-2">
+              <span className="w-3 h-3 rounded bg-muted/50 border border-muted" />
+              <span>Exposed = 1 kant</span>
             </div>
           </div>
         </div>
 
-        {/* Market Entry Analysis Table */}
-        <div className="glass rounded-lg overflow-hidden">
-          <div className="p-4 border-b border-border/50">
-            <h2 className="font-semibold">Entry Prijzen per Markt</h2>
-            <p className="text-xs text-muted-foreground">Eerste buy en gemiddelde entry na middelen</p>
+        {/* Market Cards */}
+        {marketAnalyses.length === 0 ? (
+          <div className="glass rounded-lg p-8 text-center">
+            <AlertCircle className="w-12 h-12 text-muted-foreground mx-auto mb-3" />
+            <p className="text-muted-foreground">Geen trades gevonden</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Klik op "Refresh Data" op de arbitrage pagina
+            </p>
           </div>
-
-          {marketFirstBuys.length === 0 ? (
-            <div className="p-8 text-center">
-              <AlertCircle className="w-12 h-12 text-muted-foreground mx-auto mb-3" />
-              <p className="text-muted-foreground">Geen trades gevonden</p>
-              <p className="text-xs text-muted-foreground mt-1">Klik op "Refresh Data" op de arbitrage pagina</p>
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full">
-                <thead className="bg-muted/30">
-                  <tr className="text-xs text-muted-foreground">
-                    <th className="text-left p-3">Markt</th>
-                    <th className="text-center p-3">Positie</th>
-                    <th className="text-right p-3">1e Buy</th>
-                    <th className="text-right p-3">Gem. Entry</th>
-                    <th className="text-right p-3">Shares</th>
-                    <th className="text-right p-3">Max Opposite</th>
-                    <th className="text-center p-3">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/30">
-                  {marketFirstBuys.map((market, idx) => (
-                    <tr key={idx} className="hover:bg-muted/10 transition-colors">
-                      <td className="p-3">
-                        <p className="font-medium text-sm truncate max-w-[200px]">{market.market}</p>
-                      </td>
-                      <td className="p-3 text-center">
-                        <span className={`px-2 py-0.5 rounded text-xs font-mono ${
-                          market.outcome === 'Yes' 
-                            ? 'bg-success/20 text-success' 
-                            : 'bg-destructive/20 text-destructive'
-                        }`}>
-                          {market.outcome}
-                        </span>
-                      </td>
-                      <td className="p-3 text-right font-mono text-sm">
-                        {(market.firstBuyPrice * 100).toFixed(1)}¢
-                      </td>
-                      <td className="p-3 text-right font-mono text-sm">
-                        <span className={market.avgPrice < market.firstBuyPrice ? 'text-success' : ''}>
-                          {(market.avgPrice * 100).toFixed(1)}¢
-                        </span>
-                      </td>
-                      <td className="p-3 text-right font-mono text-sm text-muted-foreground">
-                        {market.totalShares.toFixed(0)}
-                      </td>
-                      <td className="p-3 text-right">
-                        <span className="font-mono text-sm text-warning">
-                          ≤ {(market.requiredOppositePrice * 100).toFixed(1)}¢
-                        </span>
-                      </td>
-                      <td className="p-3 text-center">
-                        {market.currentSpread > 0 ? (
-                          <span className={`px-2 py-0.5 rounded text-xs ${
-                            market.status === 'profitable' 
-                              ? 'bg-success/20 text-success'
-                              : market.status === 'loss'
-                              ? 'bg-destructive/20 text-destructive'
-                              : 'bg-muted text-muted-foreground'
-                          }`}>
-                            {market.status === 'profitable' && '✓ Winst'}
-                            {market.status === 'breakeven' && '— Breakeven'}
-                            {market.status === 'loss' && '✗ Verlies'}
-                          </span>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">Exposed</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+        ) : (
+          <div className="space-y-3">
+            <h2 className="font-semibold">Alle Bets ({marketAnalyses.length})</h2>
+            {marketAnalyses.map((analysis) => (
+              <BetDetailCard key={analysis.market} analysis={analysis} />
+            ))}
+          </div>
+        )}
 
         {/* Footer */}
         <div className="text-center py-4">
