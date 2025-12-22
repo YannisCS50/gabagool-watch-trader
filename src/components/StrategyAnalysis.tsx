@@ -1161,24 +1161,26 @@ export function StrategyInsights({ trades }: StrategyAnalysisProps) {
 
 // NEW: Closed Bets History - shows markets where positions were sold/closed
 export function ClosedBetsHistory({ trades }: StrategyAnalysisProps) {
-  const closedBets = useMemo(() => {
-    // Group trades by market
-    const marketTrades: Record<string, { buys: Trade[]; sells: Trade[] }> = {};
+  const analysis = useMemo(() => {
+    // Group trades by market AND outcome for proper tracking
+    const positionTrades: Record<string, { buys: Trade[]; sells: Trade[] }> = {};
     
     trades.forEach(trade => {
-      const key = trade.market;
-      if (!marketTrades[key]) marketTrades[key] = { buys: [], sells: [] };
+      const key = `${trade.market}|||${trade.outcome}`;
+      if (!positionTrades[key]) positionTrades[key] = { buys: [], sells: [] };
       if (trade.side === 'buy') {
-        marketTrades[key].buys.push(trade);
+        positionTrades[key].buys.push(trade);
       } else {
-        marketTrades[key].sells.push(trade);
+        positionTrades[key].sells.push(trade);
       }
     });
     
-    // Find markets where we have sells (closed positions)
-    const closed = Object.entries(marketTrades)
+    // Process all positions with sells
+    const allPositions = Object.entries(positionTrades)
       .filter(([_, data]) => data.sells.length > 0)
-      .map(([market, data]) => {
+      .map(([key, data]) => {
+        const [market, outcome] = key.split('|||');
+        
         const buyVolume = data.buys.reduce((s, t) => s + t.total, 0);
         const buyShares = data.buys.reduce((s, t) => s + t.shares, 0);
         const avgBuyPrice = buyShares > 0 ? buyVolume / buyShares : 0;
@@ -1187,13 +1189,14 @@ export function ClosedBetsHistory({ trades }: StrategyAnalysisProps) {
         const sellShares = data.sells.reduce((s, t) => s + t.shares, 0);
         const avgSellPrice = sellShares > 0 ? sellVolume / sellShares : 0;
         
-        // Calculate realized P&L
+        // Realized P&L based on matched shares
         const closedShares = Math.min(buyShares, sellShares);
-        const realizedPnL = closedShares * (avgSellPrice - avgBuyPrice);
+        const realizedPnL = sellVolume - (closedShares * avgBuyPrice);
         const pnlPercent = avgBuyPrice > 0 ? ((avgSellPrice - avgBuyPrice) / avgBuyPrice) * 100 : 0;
         
-        // Get outcome info
-        const outcomes = [...new Set([...data.buys, ...data.sells].map(t => t.outcome))];
+        const remainingShares = buyShares - sellShares;
+        const isFullyClosed = remainingShares <= 0.01; // Tolerance for rounding
+        
         const lastSellTime = data.sells.reduce((max, t) => {
           const time = new Date(t.timestamp).getTime();
           return time > max ? time : max;
@@ -1201,7 +1204,7 @@ export function ClosedBetsHistory({ trades }: StrategyAnalysisProps) {
         
         return {
           market,
-          outcomes,
+          outcome,
           buyVolume,
           buyShares,
           avgBuyPrice,
@@ -1212,16 +1215,53 @@ export function ClosedBetsHistory({ trades }: StrategyAnalysisProps) {
           realizedPnL,
           pnlPercent,
           lastSellTime,
-          remainingShares: buyShares - sellShares,
+          remainingShares: Math.max(0, remainingShares),
+          isFullyClosed,
         };
       })
-      .sort((a, b) => b.lastSellTime - a.lastSellTime); // Most recent first
+      .sort((a, b) => b.lastSellTime - a.lastSellTime);
     
-    const totalRealized = closed.reduce((s, c) => s + c.realizedPnL, 0);
-    const winningBets = closed.filter(c => c.realizedPnL > 0);
-    const losingBets = closed.filter(c => c.realizedPnL < 0);
+    // Split into fully closed and partially closed
+    const fullyClosed = allPositions.filter(p => p.isFullyClosed);
+    const partiallyClosed = allPositions.filter(p => !p.isFullyClosed);
     
-    return { closed, totalRealized, winningBets, losingBets };
+    // Performance metrics
+    const totalRealizedClosed = fullyClosed.reduce((s, c) => s + c.realizedPnL, 0);
+    const totalRealizedPartial = partiallyClosed.reduce((s, c) => s + c.realizedPnL, 0);
+    const totalRealized = totalRealizedClosed + totalRealizedPartial;
+    
+    const winningClosed = fullyClosed.filter(c => c.realizedPnL > 0);
+    const losingClosed = fullyClosed.filter(c => c.realizedPnL < 0);
+    
+    const winRate = fullyClosed.length > 0 
+      ? (winningClosed.length / fullyClosed.length) * 100 
+      : 0;
+    
+    const avgWin = winningClosed.length > 0 
+      ? winningClosed.reduce((s, c) => s + c.realizedPnL, 0) / winningClosed.length 
+      : 0;
+    
+    const avgLoss = losingClosed.length > 0 
+      ? losingClosed.reduce((s, c) => s + c.realizedPnL, 0) / losingClosed.length 
+      : 0;
+    
+    const profitFactor = avgLoss !== 0 
+      ? Math.abs(avgWin / avgLoss) 
+      : avgWin > 0 ? Infinity : 0;
+    
+    return { 
+      fullyClosed, 
+      partiallyClosed, 
+      totalRealized, 
+      totalRealizedClosed,
+      totalRealizedPartial,
+      winningClosed, 
+      losingClosed,
+      winRate,
+      avgWin,
+      avgLoss,
+      profitFactor,
+    };
   }, [trades]);
 
   return (
@@ -1230,77 +1270,158 @@ export function ClosedBetsHistory({ trades }: StrategyAnalysisProps) {
         📜 Gesloten Posities
       </h3>
       
+      {/* Performance Summary */}
+      <div className="mb-4 p-3 bg-primary/5 border border-primary/20 rounded-lg">
+        <p className="text-xs font-semibold text-primary uppercase tracking-wider mb-3">📊 Performance</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="text-center">
+            <p className="text-xs text-muted-foreground">Win Rate</p>
+            <p className={`text-lg font-mono font-semibold ${analysis.winRate >= 50 ? 'text-success' : 'text-destructive'}`}>
+              {analysis.winRate.toFixed(1)}%
+            </p>
+          </div>
+          <div className="text-center">
+            <p className="text-xs text-muted-foreground">Profit Factor</p>
+            <p className={`text-lg font-mono font-semibold ${analysis.profitFactor >= 1 ? 'text-success' : 'text-destructive'}`}>
+              {analysis.profitFactor === Infinity ? '∞' : analysis.profitFactor.toFixed(2)}
+            </p>
+          </div>
+          <div className="text-center">
+            <p className="text-xs text-muted-foreground">Avg Win</p>
+            <p className="text-lg font-mono font-semibold text-success">
+              +${analysis.avgWin.toFixed(2)}
+            </p>
+          </div>
+          <div className="text-center">
+            <p className="text-xs text-muted-foreground">Avg Loss</p>
+            <p className="text-lg font-mono font-semibold text-destructive">
+              ${analysis.avgLoss.toFixed(2)}
+            </p>
+          </div>
+        </div>
+      </div>
+      
       {/* Summary stats */}
       <div className="grid grid-cols-4 gap-3 mb-4">
         <div className="bg-muted/50 rounded-lg p-3 text-center">
-          <p className="text-xs text-muted-foreground">Gesloten</p>
-          <p className="text-xl font-mono font-semibold text-primary">{closedBets.closed.length}</p>
+          <p className="text-xs text-muted-foreground">Volledig Gesloten</p>
+          <p className="text-xl font-mono font-semibold text-primary">{analysis.fullyClosed.length}</p>
         </div>
         <div className="bg-success/10 rounded-lg p-3 text-center">
           <p className="text-xs text-muted-foreground">Winst</p>
-          <p className="text-xl font-mono font-semibold text-success">{closedBets.winningBets.length}</p>
+          <p className="text-xl font-mono font-semibold text-success">{analysis.winningClosed.length}</p>
         </div>
         <div className="bg-destructive/10 rounded-lg p-3 text-center">
           <p className="text-xs text-muted-foreground">Verlies</p>
-          <p className="text-xl font-mono font-semibold text-destructive">{closedBets.losingBets.length}</p>
+          <p className="text-xl font-mono font-semibold text-destructive">{analysis.losingClosed.length}</p>
         </div>
-        <div className={`${closedBets.totalRealized >= 0 ? 'bg-success/10' : 'bg-destructive/10'} rounded-lg p-3 text-center`}>
+        <div className={`${analysis.totalRealizedClosed >= 0 ? 'bg-success/10' : 'bg-destructive/10'} rounded-lg p-3 text-center`}>
           <p className="text-xs text-muted-foreground">Realized P&L</p>
-          <p className={`text-xl font-mono font-semibold ${closedBets.totalRealized >= 0 ? 'text-success' : 'text-destructive'}`}>
-            {closedBets.totalRealized >= 0 ? '+' : ''}${closedBets.totalRealized.toFixed(2)}
+          <p className={`text-xl font-mono font-semibold ${analysis.totalRealizedClosed >= 0 ? 'text-success' : 'text-destructive'}`}>
+            {analysis.totalRealizedClosed >= 0 ? '+' : ''}${analysis.totalRealizedClosed.toFixed(2)}
           </p>
         </div>
       </div>
       
-      {/* Closed bets list */}
-      {closedBets.closed.length > 0 ? (
-        <div className="max-h-96 overflow-y-auto space-y-2">
-          {closedBets.closed.map((bet, i) => (
-            <div 
-              key={i} 
-              className={`${bet.realizedPnL >= 0 ? 'bg-success/5 border-success/20' : 'bg-destructive/5 border-destructive/20'} border rounded-lg p-3`}
-            >
-              <div className="flex justify-between items-start mb-2">
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs font-medium truncate">{bet.market}</p>
-                  <p className="text-xs text-muted-foreground">
-                    {bet.outcomes.join(', ')} • {format(new Date(bet.lastSellTime), 'MMM dd HH:mm')}
-                  </p>
+      {/* Fully Closed positions */}
+      {analysis.fullyClosed.length > 0 && (
+        <div className="mb-4">
+          <p className="text-xs font-semibold text-success mb-2">✅ Volledig Gesloten ({analysis.fullyClosed.length})</p>
+          <div className="max-h-64 overflow-y-auto space-y-2">
+            {analysis.fullyClosed.map((bet, i) => (
+              <div 
+                key={i} 
+                className={`${bet.realizedPnL >= 0 ? 'bg-success/5 border-success/20' : 'bg-destructive/5 border-destructive/20'} border rounded-lg p-3`}
+              >
+                <div className="flex justify-between items-start mb-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium truncate">{bet.market}</p>
+                    <p className="text-xs text-muted-foreground">
+                      <span className={bet.outcome.toLowerCase().includes('yes') || bet.outcome.toLowerCase().includes('up') ? 'text-success' : 'text-destructive'}>
+                        {bet.outcome}
+                      </span>
+                      {' • '}{format(new Date(bet.lastSellTime), 'MMM dd HH:mm')}
+                    </p>
+                  </div>
+                  <div className={`text-right ml-2 ${bet.realizedPnL >= 0 ? 'text-success' : 'text-destructive'}`}>
+                    <p className="font-mono font-semibold">
+                      {bet.realizedPnL >= 0 ? '+' : ''}${bet.realizedPnL.toFixed(2)}
+                    </p>
+                    <p className="text-xs font-mono">
+                      {bet.pnlPercent >= 0 ? '+' : ''}{bet.pnlPercent.toFixed(1)}%
+                    </p>
+                  </div>
                 </div>
-                <div className={`text-right ml-2 ${bet.realizedPnL >= 0 ? 'text-success' : 'text-destructive'}`}>
-                  <p className="font-mono font-semibold">
-                    {bet.realizedPnL >= 0 ? '+' : ''}${bet.realizedPnL.toFixed(2)}
-                  </p>
-                  <p className="text-xs font-mono">
-                    {bet.pnlPercent >= 0 ? '+' : ''}{bet.pnlPercent.toFixed(1)}%
-                  </p>
+                
+                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                  <div className="bg-muted/30 rounded p-2">
+                    <span className="text-muted-foreground">Buy: </span>
+                    <span>${bet.avgBuyPrice.toFixed(3)}</span>
+                    <span className="text-muted-foreground"> × {bet.buyShares.toFixed(0)}</span>
+                    <div className="text-primary">Total: ${bet.buyVolume.toFixed(2)}</div>
+                  </div>
+                  <div className="bg-muted/30 rounded p-2">
+                    <span className="text-muted-foreground">Sell: </span>
+                    <span>${bet.avgSellPrice.toFixed(3)}</span>
+                    <span className="text-muted-foreground"> × {bet.sellShares.toFixed(0)}</span>
+                    <div className="text-primary">Total: ${bet.sellVolume.toFixed(2)}</div>
+                  </div>
                 </div>
               </div>
-              
-              <div className="grid grid-cols-2 gap-2 text-xs font-mono">
-                <div className="bg-muted/30 rounded p-2">
-                  <span className="text-muted-foreground">Buy: </span>
-                  <span>${bet.avgBuyPrice.toFixed(3)}</span>
-                  <span className="text-muted-foreground"> × {bet.buyShares.toFixed(0)}</span>
-                  <div className="text-primary">Total: ${bet.buyVolume.toFixed(2)}</div>
-                </div>
-                <div className="bg-muted/30 rounded p-2">
-                  <span className="text-muted-foreground">Sell: </span>
-                  <span>${bet.avgSellPrice.toFixed(3)}</span>
-                  <span className="text-muted-foreground"> × {bet.sellShares.toFixed(0)}</span>
-                  <div className="text-primary">Total: ${bet.sellVolume.toFixed(2)}</div>
-                </div>
-              </div>
-              
-              {bet.remainingShares > 0 && (
-                <p className="text-xs text-warning mt-2 font-mono">
-                  ⚠️ Nog {bet.remainingShares.toFixed(0)} shares open
-                </p>
-              )}
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
-      ) : (
+      )}
+      
+      {/* Partially Closed positions */}
+      {analysis.partiallyClosed.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-warning mb-2">⏳ Deels Gesloten ({analysis.partiallyClosed.length})</p>
+          <div className="max-h-48 overflow-y-auto space-y-2">
+            {analysis.partiallyClosed.map((bet, i) => (
+              <div 
+                key={i} 
+                className="bg-warning/5 border border-warning/20 rounded-lg p-3"
+              >
+                <div className="flex justify-between items-start mb-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium truncate">{bet.market}</p>
+                    <p className="text-xs text-muted-foreground">
+                      <span className={bet.outcome.toLowerCase().includes('yes') || bet.outcome.toLowerCase().includes('up') ? 'text-success' : 'text-destructive'}>
+                        {bet.outcome}
+                      </span>
+                      {' • '}{format(new Date(bet.lastSellTime), 'MMM dd HH:mm')}
+                    </p>
+                  </div>
+                  <div className={`text-right ml-2 ${bet.realizedPnL >= 0 ? 'text-success' : 'text-destructive'}`}>
+                    <p className="font-mono font-semibold">
+                      {bet.realizedPnL >= 0 ? '+' : ''}${bet.realizedPnL.toFixed(2)}
+                    </p>
+                    <p className="text-xs font-mono text-warning">
+                      {bet.remainingShares.toFixed(0)} open
+                    </p>
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-2 text-xs font-mono">
+                  <div className="bg-muted/30 rounded p-2">
+                    <span className="text-muted-foreground">Bought: </span>
+                    <span>{bet.buyShares.toFixed(0)} @ ${bet.avgBuyPrice.toFixed(3)}</span>
+                    <div className="text-primary">${bet.buyVolume.toFixed(2)}</div>
+                  </div>
+                  <div className="bg-muted/30 rounded p-2">
+                    <span className="text-muted-foreground">Sold: </span>
+                    <span>{bet.sellShares.toFixed(0)} @ ${bet.avgSellPrice.toFixed(3)}</span>
+                    <div className="text-primary">${bet.sellVolume.toFixed(2)}</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      
+      {analysis.fullyClosed.length === 0 && analysis.partiallyClosed.length === 0 && (
         <div className="text-center py-8">
           <p className="text-muted-foreground mb-2">Geen gesloten posities</p>
           <p className="text-xs text-muted-foreground">
