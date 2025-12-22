@@ -63,6 +63,26 @@ interface HedgePair {
   hourOfDay: number;
 }
 
+interface StrategyAnalysisData {
+  category: 'arbitrage' | 'neutral' | 'risk';
+  pairs: HedgePair[];
+  avgCombinedPrice: number;
+  avgEdge: number;
+  avgDelay: number;
+  avgFirstEntryPrice: number;
+  avgSecondEntryPrice: number;
+  avgShareSize: number;
+  upFirstPercent: number;
+  btcPercent: number;
+  ethPercent: number;
+  hourDistribution: { hour: number; count: number }[];
+  priceSpread: number;
+  avgTotalInvested: number;
+  successIndicators: string[];
+  riskFactors: string[];
+  hypotheses: string[];
+}
+
 const StrategyDeepDive = () => {
   const { trades, positions } = useTrades('gabagool22');
 
@@ -404,6 +424,121 @@ const StrategyDeepDive = () => {
       category: p.category
     }));
 
+    // Deep Strategy Analysis per category
+    const analyzeCategory = (pairs: HedgePair[], category: 'arbitrage' | 'neutral' | 'risk'): StrategyAnalysisData => {
+      if (pairs.length === 0) {
+        return {
+          category,
+          pairs: [],
+          avgCombinedPrice: 0,
+          avgEdge: 0,
+          avgDelay: 0,
+          avgFirstEntryPrice: 0,
+          avgSecondEntryPrice: 0,
+          avgShareSize: 0,
+          upFirstPercent: 0,
+          btcPercent: 0,
+          ethPercent: 0,
+          hourDistribution: [],
+          priceSpread: 0,
+          avgTotalInvested: 0,
+          successIndicators: [],
+          riskFactors: [],
+          hypotheses: []
+        };
+      }
+
+      const avgCombinedPrice = pairs.reduce((sum, p) => sum + p.combinedPrice, 0) / pairs.length;
+      const avgEdgeCat = pairs.reduce((sum, p) => sum + p.edge, 0) / pairs.length;
+      const avgDelayCat = pairs.reduce((sum, p) => sum + p.delaySeconds, 0) / pairs.length;
+      const avgFirstEntryPrice = pairs.reduce((sum, p) => sum + p.trade1.price, 0) / pairs.length;
+      const avgSecondEntryPrice = pairs.reduce((sum, p) => sum + p.trade2.price, 0) / pairs.length;
+      const avgShareSize = pairs.reduce((sum, p) => sum + (p.trade1.shares + p.trade2.shares) / 2, 0) / pairs.length;
+      const upFirstCount = pairs.filter(p => p.firstSide === 'Up').length;
+      const btcCount = pairs.filter(p => p.asset === 'BTC').length;
+      const ethCount = pairs.filter(p => p.asset === 'ETH').length;
+      const priceSpread = Math.abs(avgFirstEntryPrice - avgSecondEntryPrice);
+      const avgTotalInvested = pairs.reduce((sum, p) => sum + (p.trade1.price * p.trade1.shares) + (p.trade2.price * p.trade2.shares), 0) / pairs.length;
+
+      // Hour distribution
+      const hourCounts = new Map<number, number>();
+      pairs.forEach(p => {
+        hourCounts.set(p.hourOfDay, (hourCounts.get(p.hourOfDay) || 0) + 1);
+      });
+      const hourDistribution = Array.from(hourCounts.entries())
+        .map(([hour, count]) => ({ hour, count }))
+        .sort((a, b) => b.count - a.count);
+
+      // Generate insights based on category
+      const successIndicators: string[] = [];
+      const riskFactors: string[] = [];
+      const hypotheses: string[] = [];
+
+      if (category === 'arbitrage') {
+        if (avgEdgeCat > 3) successIndicators.push(`Hoge gemiddelde edge van ${avgEdgeCat.toFixed(1)}%`);
+        if (avgDelayCat < 30) successIndicators.push(`Snelle hedge executie (${avgDelayCat.toFixed(0)}s)`);
+        if (priceSpread < 0.05) successIndicators.push('Goed gebalanceerde entry prijzen');
+        
+        if (avgDelayCat > 60) riskFactors.push('Langzame hedge verhoogt slippage risico');
+        if (priceSpread > 0.10) riskFactors.push('Grote spread tussen entry prijzen');
+        
+        hypotheses.push('Bot wacht op moment dat BEIDE kanten ondergewaardeerd zijn');
+        hypotheses.push(`Prefereert ${btcCount > ethCount ? 'BTC' : 'ETH'} markten voor arbitrage (${Math.max(btcCount, ethCount)} trades)`);
+        if (upFirstCount > pairs.length * 0.6) hypotheses.push('Up-side vaak goedkoper → market verwacht bearish');
+        if (upFirstCount < pairs.length * 0.4) hypotheses.push('Down-side vaak goedkoper → market verwacht bullish');
+      } else if (category === 'neutral') {
+        if (avgDelayCat > 60) successIndicators.push('Geduldig wachten op betere prijzen');
+        successIndicators.push('Breakeven base om later te DCA\'en');
+        
+        riskFactors.push('Geen directe winst, alleen risicoreductie');
+        if (avgShareSize > 15) riskFactors.push('Grote posities in neutrale trades');
+        
+        hypotheses.push('Neutral trades = staging area voor latere arbitrage conversie');
+        hypotheses.push('Bot koopt nu, verwacht dat combined prijs later daalt naar <98¢');
+        hypotheses.push('DCA strategie: spreidt risico over tijd');
+      } else if (category === 'risk') {
+        if (priceSpread > 0.15) successIndicators.push(`Grote spread (${(priceSpread * 100).toFixed(0)}¢) suggereert sterke directional conviction`);
+        
+        riskFactors.push(`Combined price >${avgCombinedPrice.toFixed(2)} = gegarandeerd verlies als beide kanten gekocht`);
+        riskFactors.push('Exposed naar price movement');
+        if (avgShareSize > 10) riskFactors.push('Grote posities verhogen loss potentieel');
+        
+        const peakHour = hourDistribution[0]?.hour;
+        if (peakHour !== undefined) {
+          hypotheses.push(`Peak activiteit rond ${peakHour}:00 UTC - mogelijk reagerend op news events`);
+        }
+        hypotheses.push('Bewuste directional bet op crypto prijsbeweging');
+        hypotheses.push('Accepteert overpaying voor één kant als die wint');
+        if (btcCount > ethCount * 1.5) hypotheses.push('Sterkere conviction in BTC price movements');
+        if (ethCount > btcCount * 1.5) hypotheses.push('Sterkere conviction in ETH price movements');
+        hypotheses.push('Mogelijk gebaseerd op technische analyse of market sentiment');
+      }
+
+      return {
+        category,
+        pairs,
+        avgCombinedPrice,
+        avgEdge: avgEdgeCat,
+        avgDelay: avgDelayCat,
+        avgFirstEntryPrice,
+        avgSecondEntryPrice,
+        avgShareSize,
+        upFirstPercent: (upFirstCount / pairs.length) * 100,
+        btcPercent: (btcCount / pairs.length) * 100,
+        ethPercent: (ethCount / pairs.length) * 100,
+        hourDistribution,
+        priceSpread,
+        avgTotalInvested,
+        successIndicators,
+        riskFactors,
+        hypotheses
+      };
+    };
+
+    const arbitrageAnalysis = analyzeCategory(arbitragePairs, 'arbitrage');
+    const neutralAnalysis = analyzeCategory(neutralPairs, 'neutral');
+    const riskAnalysis = analyzeCategory(riskPairs, 'risk');
+
     return {
       totalPairs,
       arbitrageCount: arbitragePairs.length,
@@ -422,7 +557,12 @@ const StrategyDeepDive = () => {
       bestOpportunities,
       riskTrades,
       scatterData,
-      hedgePairs
+      hedgePairs,
+      strategyAnalysis: {
+        arbitrage: arbitrageAnalysis,
+        neutral: neutralAnalysis,
+        risk: riskAnalysis
+      }
     };
   }, [trades]);
 
@@ -1151,6 +1291,540 @@ const StrategyDeepDive = () => {
                           <p className="font-medium">Monitoring</p>
                           <p className="text-muted-foreground">Prometheus + Grafana voor real-time metrics</p>
                         </div>
+                      </div>
+                    </div>
+                  </AccordionContent>
+                </AccordionItem>
+
+                {/* Section 6: Deep Strategy Analysis per Category */}
+                <AccordionItem value="deep-analysis" className="border border-primary/50 rounded-lg px-4 bg-gradient-to-r from-primary/5 to-transparent">
+                  <AccordionTrigger className="hover:no-underline">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full bg-primary/30 flex items-center justify-center">
+                        <PieChartIcon className="w-4 h-4 text-primary" />
+                      </div>
+                      <div className="text-left">
+                        <p className="font-semibold text-sm">🔬 Diepte-Analyse per Strategie Type</p>
+                        <p className="text-xs text-muted-foreground font-normal">Wat zijn de overwegingen achter Arbitrage, Neutral en Directional trades?</p>
+                      </div>
+                    </div>
+                  </AccordionTrigger>
+                  <AccordionContent className="space-y-6 pt-4">
+                    {/* Strategy 1: Arbitrage Deep Dive */}
+                    {analysis?.strategyAnalysis?.arbitrage && (
+                      <div className="p-5 rounded-xl bg-gradient-to-br from-success/10 via-success/5 to-transparent border-2 border-success/30">
+                        <div className="flex items-center justify-between mb-4">
+                          <h4 className="font-bold text-base flex items-center gap-2 text-success">
+                            <CheckCircle2 className="w-5 h-5" />
+                            Strategie 1: Arbitrage Trades
+                          </h4>
+                          <Badge variant="outline" className="border-success text-success">
+                            {analysis.strategyAnalysis.arbitrage.pairs.length} trades ({Math.round((analysis.strategyAnalysis.arbitrage.pairs.length / analysis.totalPairs) * 100)}%)
+                          </Badge>
+                        </div>
+                        
+                        <p className="text-sm text-muted-foreground mb-4">
+                          Combined price {"<"} $0.98 = gegarandeerde {">"}2% winst ongeacht welke kant wint.
+                        </p>
+
+                        {/* Key Metrics Grid */}
+                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+                          <div className="p-3 bg-background/50 rounded-lg text-center border border-border">
+                            <p className="text-xl font-mono font-bold text-success">{(analysis.strategyAnalysis.arbitrage.avgCombinedPrice * 100).toFixed(1)}¢</p>
+                            <p className="text-xs text-muted-foreground">Gem. Combined</p>
+                          </div>
+                          <div className="p-3 bg-background/50 rounded-lg text-center border border-border">
+                            <p className="text-xl font-mono font-bold text-success">+{analysis.strategyAnalysis.arbitrage.avgEdge.toFixed(1)}%</p>
+                            <p className="text-xs text-muted-foreground">Gem. Edge</p>
+                          </div>
+                          <div className="p-3 bg-background/50 rounded-lg text-center border border-border">
+                            <p className="text-xl font-mono font-bold">{analysis.strategyAnalysis.arbitrage.avgDelay.toFixed(0)}s</p>
+                            <p className="text-xs text-muted-foreground">Gem. Hedge Delay</p>
+                          </div>
+                          <div className="p-3 bg-background/50 rounded-lg text-center border border-border">
+                            <p className="text-xl font-mono font-bold">${analysis.strategyAnalysis.arbitrage.avgTotalInvested.toFixed(2)}</p>
+                            <p className="text-xs text-muted-foreground">Gem. Investering</p>
+                          </div>
+                        </div>
+
+                        {/* Entry Pattern Analysis */}
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+                          <div className="p-4 bg-background/30 rounded-lg border border-border">
+                            <h5 className="font-semibold text-sm mb-3 flex items-center gap-2">
+                              <Target className="w-4 h-4 text-success" />
+                              Entry Patroon
+                            </h5>
+                            <div className="space-y-2 text-sm">
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">First entry prijs:</span>
+                                <span className="font-mono">{(analysis.strategyAnalysis.arbitrage.avgFirstEntryPrice * 100).toFixed(1)}¢</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Second entry prijs:</span>
+                                <span className="font-mono">{(analysis.strategyAnalysis.arbitrage.avgSecondEntryPrice * 100).toFixed(1)}¢</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Price spread:</span>
+                                <span className="font-mono">{(analysis.strategyAnalysis.arbitrage.priceSpread * 100).toFixed(1)}¢</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Gem. share size:</span>
+                                <span className="font-mono">{analysis.strategyAnalysis.arbitrage.avgShareSize.toFixed(1)} shares</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="p-4 bg-background/30 rounded-lg border border-border">
+                            <h5 className="font-semibold text-sm mb-3 flex items-center gap-2">
+                              <BarChart3 className="w-4 h-4 text-success" />
+                              Asset & Side Verdeling
+                            </h5>
+                            <div className="space-y-2 text-sm">
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Up eerst gekocht:</span>
+                                <span className="font-mono">{analysis.strategyAnalysis.arbitrage.upFirstPercent.toFixed(0)}%</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Down eerst gekocht:</span>
+                                <span className="font-mono">{(100 - analysis.strategyAnalysis.arbitrage.upFirstPercent).toFixed(0)}%</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Bitcoin (BTC):</span>
+                                <span className="font-mono text-chart-4">{analysis.strategyAnalysis.arbitrage.btcPercent.toFixed(0)}%</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Ethereum (ETH):</span>
+                                <span className="font-mono text-primary">{analysis.strategyAnalysis.arbitrage.ethPercent.toFixed(0)}%</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Hypotheses & Insights */}
+                        <div className="space-y-3">
+                          {analysis.strategyAnalysis.arbitrage.successIndicators.length > 0 && (
+                            <div className="p-3 bg-success/10 rounded-lg border border-success/20">
+                              <p className="text-xs font-semibold text-success mb-2">✅ Waarom dit werkt:</p>
+                              <ul className="space-y-1">
+                                {analysis.strategyAnalysis.arbitrage.successIndicators.map((indicator, i) => (
+                                  <li key={i} className="text-xs text-muted-foreground">• {indicator}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+
+                          <div className="p-3 bg-primary/10 rounded-lg border border-primary/20">
+                            <p className="text-xs font-semibold text-primary mb-2">🧠 Mogelijke Overwegingen/Hypotheses:</p>
+                            <ul className="space-y-1">
+                              {analysis.strategyAnalysis.arbitrage.hypotheses.map((hypothesis, i) => (
+                                <li key={i} className="text-xs text-muted-foreground">• {hypothesis}</li>
+                              ))}
+                            </ul>
+                          </div>
+
+                          {analysis.strategyAnalysis.arbitrage.riskFactors.length > 0 && (
+                            <div className="p-3 bg-warning/10 rounded-lg border border-warning/20">
+                              <p className="text-xs font-semibold text-warning mb-2">⚠️ Aandachtspunten:</p>
+                              <ul className="space-y-1">
+                                {analysis.strategyAnalysis.arbitrage.riskFactors.map((risk, i) => (
+                                  <li key={i} className="text-xs text-muted-foreground">• {risk}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Peak Hours */}
+                        {analysis.strategyAnalysis.arbitrage.hourDistribution.length > 0 && (
+                          <div className="mt-4 p-3 bg-background/30 rounded-lg border border-border">
+                            <p className="text-xs font-semibold mb-2">⏰ Piek Trading Uren (UTC):</p>
+                            <div className="flex flex-wrap gap-2">
+                              {analysis.strategyAnalysis.arbitrage.hourDistribution.slice(0, 5).map((h, i) => (
+                                <Badge key={i} variant="secondary" className="font-mono">
+                                  {h.hour.toString().padStart(2, '0')}:00 ({h.count}x)
+                                </Badge>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Strategy 2: Neutral Deep Dive */}
+                    {analysis?.strategyAnalysis?.neutral && (
+                      <div className="p-5 rounded-xl bg-gradient-to-br from-chart-4/10 via-chart-4/5 to-transparent border-2 border-chart-4/30">
+                        <div className="flex items-center justify-between mb-4">
+                          <h4 className="font-bold text-base flex items-center gap-2 text-chart-4">
+                            <Activity className="w-5 h-5" />
+                            Strategie 2: Neutral Trades
+                          </h4>
+                          <Badge variant="outline" className="border-chart-4 text-chart-4">
+                            {analysis.strategyAnalysis.neutral.pairs.length} trades ({Math.round((analysis.strategyAnalysis.neutral.pairs.length / analysis.totalPairs) * 100)}%)
+                          </Badge>
+                        </div>
+                        
+                        <p className="text-sm text-muted-foreground mb-4">
+                          Combined price 98-102¢ = breakeven zone. Dient als opstap voor latere DCA naar arbitrage.
+                        </p>
+
+                        {/* Key Metrics Grid */}
+                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+                          <div className="p-3 bg-background/50 rounded-lg text-center border border-border">
+                            <p className="text-xl font-mono font-bold text-chart-4">{(analysis.strategyAnalysis.neutral.avgCombinedPrice * 100).toFixed(1)}¢</p>
+                            <p className="text-xs text-muted-foreground">Gem. Combined</p>
+                          </div>
+                          <div className="p-3 bg-background/50 rounded-lg text-center border border-border">
+                            <p className="text-xl font-mono font-bold text-chart-4">{analysis.strategyAnalysis.neutral.avgEdge >= 0 ? '+' : ''}{analysis.strategyAnalysis.neutral.avgEdge.toFixed(1)}%</p>
+                            <p className="text-xs text-muted-foreground">Gem. Edge</p>
+                          </div>
+                          <div className="p-3 bg-background/50 rounded-lg text-center border border-border">
+                            <p className="text-xl font-mono font-bold">{analysis.strategyAnalysis.neutral.avgDelay.toFixed(0)}s</p>
+                            <p className="text-xs text-muted-foreground">Gem. Hedge Delay</p>
+                          </div>
+                          <div className="p-3 bg-background/50 rounded-lg text-center border border-border">
+                            <p className="text-xl font-mono font-bold">${analysis.strategyAnalysis.neutral.avgTotalInvested.toFixed(2)}</p>
+                            <p className="text-xs text-muted-foreground">Gem. Investering</p>
+                          </div>
+                        </div>
+
+                        {/* Entry Pattern Analysis */}
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+                          <div className="p-4 bg-background/30 rounded-lg border border-border">
+                            <h5 className="font-semibold text-sm mb-3 flex items-center gap-2">
+                              <Target className="w-4 h-4 text-chart-4" />
+                              Entry Patroon
+                            </h5>
+                            <div className="space-y-2 text-sm">
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">First entry prijs:</span>
+                                <span className="font-mono">{(analysis.strategyAnalysis.neutral.avgFirstEntryPrice * 100).toFixed(1)}¢</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Second entry prijs:</span>
+                                <span className="font-mono">{(analysis.strategyAnalysis.neutral.avgSecondEntryPrice * 100).toFixed(1)}¢</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Price spread:</span>
+                                <span className="font-mono">{(analysis.strategyAnalysis.neutral.priceSpread * 100).toFixed(1)}¢</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Gem. share size:</span>
+                                <span className="font-mono">{analysis.strategyAnalysis.neutral.avgShareSize.toFixed(1)} shares</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="p-4 bg-background/30 rounded-lg border border-border">
+                            <h5 className="font-semibold text-sm mb-3 flex items-center gap-2">
+                              <BarChart3 className="w-4 h-4 text-chart-4" />
+                              Asset & Side Verdeling
+                            </h5>
+                            <div className="space-y-2 text-sm">
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Up eerst gekocht:</span>
+                                <span className="font-mono">{analysis.strategyAnalysis.neutral.upFirstPercent.toFixed(0)}%</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Down eerst gekocht:</span>
+                                <span className="font-mono">{(100 - analysis.strategyAnalysis.neutral.upFirstPercent).toFixed(0)}%</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Bitcoin (BTC):</span>
+                                <span className="font-mono text-chart-4">{analysis.strategyAnalysis.neutral.btcPercent.toFixed(0)}%</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Ethereum (ETH):</span>
+                                <span className="font-mono text-primary">{analysis.strategyAnalysis.neutral.ethPercent.toFixed(0)}%</span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Hypotheses & Insights */}
+                        <div className="space-y-3">
+                          {analysis.strategyAnalysis.neutral.successIndicators.length > 0 && (
+                            <div className="p-3 bg-chart-4/10 rounded-lg border border-chart-4/20">
+                              <p className="text-xs font-semibold text-chart-4 mb-2">✅ Waarom dit gedaan wordt:</p>
+                              <ul className="space-y-1">
+                                {analysis.strategyAnalysis.neutral.successIndicators.map((indicator, i) => (
+                                  <li key={i} className="text-xs text-muted-foreground">• {indicator}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+
+                          <div className="p-3 bg-primary/10 rounded-lg border border-primary/20">
+                            <p className="text-xs font-semibold text-primary mb-2">🧠 Mogelijke Overwegingen/Hypotheses:</p>
+                            <ul className="space-y-1">
+                              {analysis.strategyAnalysis.neutral.hypotheses.map((hypothesis, i) => (
+                                <li key={i} className="text-xs text-muted-foreground">• {hypothesis}</li>
+                              ))}
+                            </ul>
+                          </div>
+
+                          {analysis.strategyAnalysis.neutral.riskFactors.length > 0 && (
+                            <div className="p-3 bg-warning/10 rounded-lg border border-warning/20">
+                              <p className="text-xs font-semibold text-warning mb-2">⚠️ Aandachtspunten:</p>
+                              <ul className="space-y-1">
+                                {analysis.strategyAnalysis.neutral.riskFactors.map((risk, i) => (
+                                  <li key={i} className="text-xs text-muted-foreground">• {risk}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Peak Hours */}
+                        {analysis.strategyAnalysis.neutral.hourDistribution.length > 0 && (
+                          <div className="mt-4 p-3 bg-background/30 rounded-lg border border-border">
+                            <p className="text-xs font-semibold mb-2">⏰ Piek Trading Uren (UTC):</p>
+                            <div className="flex flex-wrap gap-2">
+                              {analysis.strategyAnalysis.neutral.hourDistribution.slice(0, 5).map((h, i) => (
+                                <Badge key={i} variant="secondary" className="font-mono">
+                                  {h.hour.toString().padStart(2, '0')}:00 ({h.count}x)
+                                </Badge>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Strategy 3: Directional/Risk Deep Dive */}
+                    {analysis?.strategyAnalysis?.risk && (
+                      <div className="p-5 rounded-xl bg-gradient-to-br from-destructive/10 via-destructive/5 to-transparent border-2 border-destructive/30">
+                        <div className="flex items-center justify-between mb-4">
+                          <h4 className="font-bold text-base flex items-center gap-2 text-destructive">
+                            <TrendingUp className="w-5 h-5" />
+                            Strategie 3: Directional Bets (Risk Trades)
+                          </h4>
+                          <Badge variant="outline" className="border-destructive text-destructive">
+                            {analysis.strategyAnalysis.risk.pairs.length} trades ({Math.round((analysis.strategyAnalysis.risk.pairs.length / analysis.totalPairs) * 100)}%)
+                          </Badge>
+                        </div>
+                        
+                        <p className="text-sm text-muted-foreground mb-4">
+                          Combined price {">"} $1.02 = bewust risico nemen. De bot accepteert een gegarandeerd verlies 
+                          als beide kanten worden gehouden, maar gokt op een specifieke uitkomst.
+                        </p>
+
+                        {/* Key Metrics Grid */}
+                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+                          <div className="p-3 bg-background/50 rounded-lg text-center border border-border">
+                            <p className="text-xl font-mono font-bold text-destructive">{(analysis.strategyAnalysis.risk.avgCombinedPrice * 100).toFixed(1)}¢</p>
+                            <p className="text-xs text-muted-foreground">Gem. Combined</p>
+                          </div>
+                          <div className="p-3 bg-background/50 rounded-lg text-center border border-border">
+                            <p className="text-xl font-mono font-bold text-destructive">{analysis.strategyAnalysis.risk.avgEdge.toFixed(1)}%</p>
+                            <p className="text-xs text-muted-foreground">Gem. "Loss" Rate</p>
+                          </div>
+                          <div className="p-3 bg-background/50 rounded-lg text-center border border-border">
+                            <p className="text-xl font-mono font-bold">{analysis.strategyAnalysis.risk.avgDelay.toFixed(0)}s</p>
+                            <p className="text-xs text-muted-foreground">Gem. Hedge Delay</p>
+                          </div>
+                          <div className="p-3 bg-background/50 rounded-lg text-center border border-border">
+                            <p className="text-xl font-mono font-bold">${analysis.strategyAnalysis.risk.avgTotalInvested.toFixed(2)}</p>
+                            <p className="text-xs text-muted-foreground">Gem. Investering</p>
+                          </div>
+                        </div>
+
+                        {/* Entry Pattern Analysis */}
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+                          <div className="p-4 bg-background/30 rounded-lg border border-border">
+                            <h5 className="font-semibold text-sm mb-3 flex items-center gap-2">
+                              <Target className="w-4 h-4 text-destructive" />
+                              Entry Patroon
+                            </h5>
+                            <div className="space-y-2 text-sm">
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">First entry prijs:</span>
+                                <span className="font-mono">{(analysis.strategyAnalysis.risk.avgFirstEntryPrice * 100).toFixed(1)}¢</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Second entry prijs:</span>
+                                <span className="font-mono">{(analysis.strategyAnalysis.risk.avgSecondEntryPrice * 100).toFixed(1)}¢</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Price spread:</span>
+                                <span className="font-mono font-bold text-destructive">{(analysis.strategyAnalysis.risk.priceSpread * 100).toFixed(1)}¢</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Gem. share size:</span>
+                                <span className="font-mono">{analysis.strategyAnalysis.risk.avgShareSize.toFixed(1)} shares</span>
+                              </div>
+                            </div>
+                            <p className="text-xs text-muted-foreground mt-3 p-2 bg-destructive/10 rounded">
+                              💡 Hoge price spread = sterke conviction over richting
+                            </p>
+                          </div>
+
+                          <div className="p-4 bg-background/30 rounded-lg border border-border">
+                            <h5 className="font-semibold text-sm mb-3 flex items-center gap-2">
+                              <BarChart3 className="w-4 h-4 text-destructive" />
+                              Asset & Side Verdeling
+                            </h5>
+                            <div className="space-y-2 text-sm">
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Up eerst gekocht:</span>
+                                <span className="font-mono">{analysis.strategyAnalysis.risk.upFirstPercent.toFixed(0)}%</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Down eerst gekocht:</span>
+                                <span className="font-mono">{(100 - analysis.strategyAnalysis.risk.upFirstPercent).toFixed(0)}%</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Bitcoin (BTC):</span>
+                                <span className="font-mono text-chart-4">{analysis.strategyAnalysis.risk.btcPercent.toFixed(0)}%</span>
+                              </div>
+                              <div className="flex justify-between">
+                                <span className="text-muted-foreground">Ethereum (ETH):</span>
+                                <span className="font-mono text-primary">{analysis.strategyAnalysis.risk.ethPercent.toFixed(0)}%</span>
+                              </div>
+                            </div>
+                            <p className="text-xs text-muted-foreground mt-3 p-2 bg-primary/10 rounded">
+                              💡 {analysis.strategyAnalysis.risk.upFirstPercent > 50 
+                                ? 'Voorkeur voor Up-side = bullish sentiment'
+                                : 'Voorkeur voor Down-side = bearish sentiment'}
+                            </p>
+                          </div>
+                        </div>
+
+                        {/* Hypotheses & Insights */}
+                        <div className="space-y-3">
+                          {analysis.strategyAnalysis.risk.successIndicators.length > 0 && (
+                            <div className="p-3 bg-success/10 rounded-lg border border-success/20">
+                              <p className="text-xs font-semibold text-success mb-2">📈 Potentiële upside:</p>
+                              <ul className="space-y-1">
+                                {analysis.strategyAnalysis.risk.successIndicators.map((indicator, i) => (
+                                  <li key={i} className="text-xs text-muted-foreground">• {indicator}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+
+                          <div className="p-3 bg-primary/10 rounded-lg border border-primary/20">
+                            <p className="text-xs font-semibold text-primary mb-2">🧠 Mogelijke Overwegingen/Hypotheses:</p>
+                            <ul className="space-y-1">
+                              {analysis.strategyAnalysis.risk.hypotheses.map((hypothesis, i) => (
+                                <li key={i} className="text-xs text-muted-foreground">• {hypothesis}</li>
+                              ))}
+                            </ul>
+                          </div>
+
+                          {analysis.strategyAnalysis.risk.riskFactors.length > 0 && (
+                            <div className="p-3 bg-destructive/10 rounded-lg border border-destructive/20">
+                              <p className="text-xs font-semibold text-destructive mb-2">🚨 Risico's:</p>
+                              <ul className="space-y-1">
+                                {analysis.strategyAnalysis.risk.riskFactors.map((risk, i) => (
+                                  <li key={i} className="text-xs text-muted-foreground">• {risk}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Peak Hours */}
+                        {analysis.strategyAnalysis.risk.hourDistribution.length > 0 && (
+                          <div className="mt-4 p-3 bg-background/30 rounded-lg border border-border">
+                            <p className="text-xs font-semibold mb-2">⏰ Piek Trading Uren (UTC) - Mogelijk gekoppeld aan news events:</p>
+                            <div className="flex flex-wrap gap-2">
+                              {analysis.strategyAnalysis.risk.hourDistribution.slice(0, 5).map((h, i) => (
+                                <Badge key={i} variant="secondary" className="font-mono">
+                                  {h.hour.toString().padStart(2, '0')}:00 ({h.count}x)
+                                </Badge>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Why take these risks? */}
+                        <div className="mt-4 p-4 bg-warning/10 rounded-lg border border-warning/20">
+                          <h5 className="font-semibold text-sm mb-2 flex items-center gap-2 text-warning">
+                            <Lightbulb className="w-4 h-4" />
+                            Waarom neemt de bot deze risico's?
+                          </h5>
+                          <p className="text-sm text-muted-foreground leading-relaxed">
+                            De data suggereert dat dit <strong>geen fout is</strong>, maar een bewuste keuze. 
+                            Mogelijke redenen:
+                          </p>
+                          <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
+                            <li>• <strong>Information edge:</strong> Bot heeft mogelijk betere informatie/analyse over crypto prijsbewegingen</li>
+                            <li>• <strong>Portfolio balancing:</strong> Risk trades compenseren mogelijk voor verloren posities elders</li>
+                            <li>• <strong>Market timing:</strong> Pieken rond specifieke uren suggereren reactie op news/events</li>
+                            <li>• <strong>Expected value:</strong> Als de bot {">"}50% van deze trades wint, is het netto positief</li>
+                          </ul>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Comparison Summary */}
+                    <div className="p-5 rounded-xl bg-gradient-to-br from-secondary/50 to-transparent border border-border">
+                      <h4 className="font-bold text-base flex items-center gap-2 mb-4">
+                        <Scale className="w-5 h-5 text-primary" />
+                        Strategie Vergelijking
+                      </h4>
+                      
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="border-b border-border">
+                              <th className="text-left p-2 font-medium">Metric</th>
+                              <th className="text-center p-2 font-medium text-success">Arbitrage</th>
+                              <th className="text-center p-2 font-medium text-chart-4">Neutral</th>
+                              <th className="text-center p-2 font-medium text-destructive">Directional</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr className="border-b border-border/50">
+                              <td className="p-2 text-muted-foreground">Aantal trades</td>
+                              <td className="p-2 text-center font-mono">{analysis?.strategyAnalysis?.arbitrage?.pairs.length || 0}</td>
+                              <td className="p-2 text-center font-mono">{analysis?.strategyAnalysis?.neutral?.pairs.length || 0}</td>
+                              <td className="p-2 text-center font-mono">{analysis?.strategyAnalysis?.risk?.pairs.length || 0}</td>
+                            </tr>
+                            <tr className="border-b border-border/50">
+                              <td className="p-2 text-muted-foreground">Gem. Combined Price</td>
+                              <td className="p-2 text-center font-mono text-success">{((analysis?.strategyAnalysis?.arbitrage?.avgCombinedPrice || 0) * 100).toFixed(1)}¢</td>
+                              <td className="p-2 text-center font-mono text-chart-4">{((analysis?.strategyAnalysis?.neutral?.avgCombinedPrice || 0) * 100).toFixed(1)}¢</td>
+                              <td className="p-2 text-center font-mono text-destructive">{((analysis?.strategyAnalysis?.risk?.avgCombinedPrice || 0) * 100).toFixed(1)}¢</td>
+                            </tr>
+                            <tr className="border-b border-border/50">
+                              <td className="p-2 text-muted-foreground">Gem. Hedge Delay</td>
+                              <td className="p-2 text-center font-mono">{(analysis?.strategyAnalysis?.arbitrage?.avgDelay || 0).toFixed(0)}s</td>
+                              <td className="p-2 text-center font-mono">{(analysis?.strategyAnalysis?.neutral?.avgDelay || 0).toFixed(0)}s</td>
+                              <td className="p-2 text-center font-mono">{(analysis?.strategyAnalysis?.risk?.avgDelay || 0).toFixed(0)}s</td>
+                            </tr>
+                            <tr className="border-b border-border/50">
+                              <td className="p-2 text-muted-foreground">Gem. Share Size</td>
+                              <td className="p-2 text-center font-mono">{(analysis?.strategyAnalysis?.arbitrage?.avgShareSize || 0).toFixed(1)}</td>
+                              <td className="p-2 text-center font-mono">{(analysis?.strategyAnalysis?.neutral?.avgShareSize || 0).toFixed(1)}</td>
+                              <td className="p-2 text-center font-mono">{(analysis?.strategyAnalysis?.risk?.avgShareSize || 0).toFixed(1)}</td>
+                            </tr>
+                            <tr className="border-b border-border/50">
+                              <td className="p-2 text-muted-foreground">Up First %</td>
+                              <td className="p-2 text-center font-mono">{(analysis?.strategyAnalysis?.arbitrage?.upFirstPercent || 0).toFixed(0)}%</td>
+                              <td className="p-2 text-center font-mono">{(analysis?.strategyAnalysis?.neutral?.upFirstPercent || 0).toFixed(0)}%</td>
+                              <td className="p-2 text-center font-mono">{(analysis?.strategyAnalysis?.risk?.upFirstPercent || 0).toFixed(0)}%</td>
+                            </tr>
+                            <tr>
+                              <td className="p-2 text-muted-foreground">BTC vs ETH</td>
+                              <td className="p-2 text-center font-mono text-xs">
+                                <span className="text-chart-4">{(analysis?.strategyAnalysis?.arbitrage?.btcPercent || 0).toFixed(0)}%</span>
+                                {' / '}
+                                <span className="text-primary">{(analysis?.strategyAnalysis?.arbitrage?.ethPercent || 0).toFixed(0)}%</span>
+                              </td>
+                              <td className="p-2 text-center font-mono text-xs">
+                                <span className="text-chart-4">{(analysis?.strategyAnalysis?.neutral?.btcPercent || 0).toFixed(0)}%</span>
+                                {' / '}
+                                <span className="text-primary">{(analysis?.strategyAnalysis?.neutral?.ethPercent || 0).toFixed(0)}%</span>
+                              </td>
+                              <td className="p-2 text-center font-mono text-xs">
+                                <span className="text-chart-4">{(analysis?.strategyAnalysis?.risk?.btcPercent || 0).toFixed(0)}%</span>
+                                {' / '}
+                                <span className="text-primary">{(analysis?.strategyAnalysis?.risk?.ethPercent || 0).toFixed(0)}%</span>
+                              </td>
+                            </tr>
+                          </tbody>
+                        </table>
                       </div>
                     </div>
                   </AccordionContent>
