@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { 
   ArrowLeft, 
@@ -25,7 +25,8 @@ import {
   Lightbulb,
   Scale,
   Repeat,
-  PieChart as PieChartIcon
+  PieChart as PieChartIcon,
+  Loader2
 } from 'lucide-react';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 import { useTrades } from '@/hooks/useTrades';
@@ -83,8 +84,12 @@ interface StrategyAnalysisData {
   hypotheses: string[];
 }
 
+// Maximum trades to analyze to prevent browser freeze
+const MAX_TRADES_FOR_ANALYSIS = 5000;
+
 const StrategyDeepDive = () => {
-  const { trades, positions } = useTrades('gabagool22');
+  // Use limit option to fetch only the trades we need - much faster!
+  const { trades, positions, isLoading } = useTrades('gabagool22', { limit: MAX_TRADES_FOR_ANALYSIS });
 
   // Calculate position exposure and unrealized P&L
   const exposureAnalysis = useMemo(() => {
@@ -762,10 +767,23 @@ const StrategyDeepDive = () => {
     };
   }, [trades]);
 
-  if (!analysis) {
+  // Show loading state with progress
+  if (isLoading || !analysis) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="text-muted-foreground">Loading analysis...</div>
+        <div className="text-center space-y-4">
+          <Loader2 className="w-8 h-8 animate-spin mx-auto text-primary" />
+          <div className="text-muted-foreground">Analyse laden...</div>
+          <div className="text-xs text-muted-foreground">
+            {trades.length > 0 ? (
+              <span>
+                {trades.length.toLocaleString()} trades geladen (max {MAX_TRADES_FOR_ANALYSIS.toLocaleString()})
+              </span>
+            ) : (
+              <span>Trades ophalen...</span>
+            )}
+          </div>
+        </div>
       </div>
     );
   }
@@ -891,232 +909,250 @@ const StrategyDeepDive = () => {
           </div>
 
           {/* TIME TO EXPIRY ANALYSIS - PROMINENT SECTION */}
-          {expiryAnalysis && (
-            <Card className="glass border-2 border-warning/30 bg-gradient-to-br from-warning/5 via-background to-background">
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-warning/20 flex items-center justify-center">
-                      <Timer className="w-5 h-5 text-warning" />
-                    </div>
-                    <div>
-                      <CardTitle className="text-base flex items-center gap-2">
-                        ⏱️ Tijd tot Expiry Analyse
-                      </CardTitle>
-                      <CardDescription>Wanneer plaatst de bot zijn bets ten opzichte van market expiry?</CardDescription>
-                    </div>
+          <Card className="glass border-2 border-warning/30 bg-gradient-to-br from-warning/5 via-background to-background">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-warning/20 flex items-center justify-center">
+                    <Timer className="w-5 h-5 text-warning" />
                   </div>
+                  <div>
+                    <CardTitle className="text-base flex items-center gap-2">
+                      ⏱️ Tijd tot Expiry Analyse
+                    </CardTitle>
+                    <CardDescription>Wanneer plaatst de bot zijn bets ten opzichte van market expiry?</CardDescription>
+                  </div>
+                </div>
+                {expiryAnalysis && (
                   <Badge variant="outline" className="border-warning text-warning">
                     {expiryAnalysis.totalAnalyzed} trades
                   </Badge>
+                )}
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {!expiryAnalysis ? (
+                <div className="p-6 rounded-xl bg-muted/30 border border-border text-center">
+                  <AlertTriangle className="w-8 h-8 text-muted-foreground mx-auto mb-3" />
+                  <p className="text-sm text-muted-foreground mb-2">
+                    Geen expiry data beschikbaar
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    De marktnamen bevatten geen parseable tijdsinformatie, of de trades zijn nog aan het laden.
+                    <br />
+                    <span className="text-primary">
+                      Geladen: {trades.length.toLocaleString()} trades
+                    </span>
+                  </p>
                 </div>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                {/* Trading Style Header */}
-                <div className="p-4 rounded-xl bg-warning/10 border border-warning/20">
-                  <div className="flex items-center justify-between mb-4">
-                    <h4 className="font-bold text-lg flex items-center gap-2">
-                      <Activity className="w-5 h-5 text-warning" />
-                      Trading Stijl: {expiryAnalysis.tradingStyle}
-                    </h4>
-                  </div>
+              ) : (
+                <>
+                  {/* Trading Style Header */}
+                  <div className="p-4 rounded-xl bg-warning/10 border border-warning/20">
+                    <div className="flex items-center justify-between mb-4">
+                      <h4 className="font-bold text-lg flex items-center gap-2">
+                        <Activity className="w-5 h-5 text-warning" />
+                        Trading Stijl: {expiryAnalysis.tradingStyle}
+                      </h4>
+                    </div>
 
-                  {/* Key Metrics Grid */}
-                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                    <div className="p-3 bg-background/60 rounded-lg text-center border border-border">
-                      <p className="text-2xl font-mono font-bold text-warning">{expiryAnalysis.avgMinutesToExpiry.toFixed(1)}</p>
-                      <p className="text-xs text-muted-foreground">Gem. Min. tot Expiry</p>
-                    </div>
-                    <div className="p-3 bg-background/60 rounded-lg text-center border border-border">
-                      <p className="text-2xl font-mono font-bold">{expiryAnalysis.medianMinutes.toFixed(1)}</p>
-                      <p className="text-xs text-muted-foreground">Mediaan Minuten</p>
-                    </div>
-                    <div className="p-3 bg-background/60 rounded-lg text-center border border-border">
-                      <p className="text-2xl font-mono font-bold text-destructive">{expiryAnalysis.immediateCount + expiryAnalysis.shortCount}</p>
-                      <p className="text-xs text-muted-foreground">Last-Minute ({"<"}5min)</p>
-                    </div>
-                    <div className="p-3 bg-background/60 rounded-lg text-center border border-border">
-                      <p className="text-2xl font-mono font-bold text-success">{expiryAnalysis.earlyCount}</p>
-                      <p className="text-xs text-muted-foreground">Early Entry ({">"}30min)</p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Distribution Bars */}
-                <div>
-                  <p className="text-sm font-medium mb-3">Verdeling Tijd tot Expiry</p>
-                  <div className="space-y-2">
-                    {expiryAnalysis.categoryBreakdown.map((cat, i) => (
-                      <div key={i} className="flex items-center gap-3">
-                        <div className="w-28 text-xs text-muted-foreground">{cat.label}</div>
-                        <div className="flex-1 bg-secondary/50 rounded-full h-7 overflow-hidden">
-                          <div 
-                            className={`h-full rounded-full flex items-center justify-end px-2 text-xs font-mono text-white ${
-                              i === 0 ? 'bg-destructive' : i === 1 ? 'bg-warning' : 'bg-success'
-                            }`}
-                            style={{ width: `${Math.max(cat.percent, 5)}%` }}
-                          >
-                            {cat.percent.toFixed(0)}%
-                          </div>
-                        </div>
-                        <div className="w-20 text-right text-xs font-mono">{cat.count} trades</div>
+                    {/* Key Metrics Grid */}
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                      <div className="p-3 bg-background/60 rounded-lg text-center border border-border">
+                        <p className="text-2xl font-mono font-bold text-warning">{expiryAnalysis.avgMinutesToExpiry.toFixed(1)}</p>
+                        <p className="text-xs text-muted-foreground">Gem. Min. tot Expiry</p>
                       </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Charts Row */}
-                <div className="grid lg:grid-cols-2 gap-4">
-                  {/* Time Buckets Bar Chart */}
-                  <div className="p-4 bg-secondary/20 rounded-lg border border-border">
-                    <h5 className="font-semibold text-sm mb-3">Gedetailleerde Tijd Buckets</h5>
-                    <div className="h-[200px]">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={expiryAnalysis.timeBuckets}>
-                          <XAxis dataKey="label" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }} />
-                          <YAxis tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }} />
-                          <Tooltip 
-                            contentStyle={{ 
-                              backgroundColor: 'hsl(var(--card))', 
-                              border: '1px solid hsl(var(--border))',
-                              borderRadius: '8px'
-                            }}
-                            formatter={(value: number, name: string) => {
-                              if (name === 'count') return [`${value} trades`, 'Aantal'];
-                              if (name === 'avgPrice') return [`${(value * 100).toFixed(1)}¢`, 'Gem. Prijs'];
-                              return [value, name];
-                            }}
-                          />
-                          <Bar dataKey="count" fill="hsl(var(--warning))" name="Aantal Trades" radius={[4, 4, 0, 0]} />
-                        </BarChart>
-                      </ResponsiveContainer>
+                      <div className="p-3 bg-background/60 rounded-lg text-center border border-border">
+                        <p className="text-2xl font-mono font-bold">{expiryAnalysis.medianMinutes.toFixed(1)}</p>
+                        <p className="text-xs text-muted-foreground">Mediaan Minuten</p>
+                      </div>
+                      <div className="p-3 bg-background/60 rounded-lg text-center border border-border">
+                        <p className="text-2xl font-mono font-bold text-destructive">{expiryAnalysis.immediateCount + expiryAnalysis.shortCount}</p>
+                        <p className="text-xs text-muted-foreground">Last-Minute ({"<"}5min)</p>
+                      </div>
+                      <div className="p-3 bg-background/60 rounded-lg text-center border border-border">
+                        <p className="text-2xl font-mono font-bold text-success">{expiryAnalysis.earlyCount}</p>
+                        <p className="text-xs text-muted-foreground">Early Entry ({">"}30min)</p>
+                      </div>
                     </div>
                   </div>
 
-                  {/* Price by Time Table */}
-                  <div className="p-4 bg-secondary/20 rounded-lg border border-border">
-                    <h5 className="font-semibold text-sm mb-3 flex items-center gap-2">
-                      <DollarSign className="w-4 h-4 text-primary" />
-                      Prijs vs Tijd tot Expiry
-                    </h5>
-                    <div className="overflow-x-auto max-h-[200px]">
-                      <table className="w-full text-sm">
-                        <thead className="sticky top-0 bg-background">
-                          <tr className="border-b border-border">
-                            <th className="text-left p-2 font-medium">Tijd</th>
-                            <th className="text-center p-2 font-medium">Trades</th>
-                            <th className="text-center p-2 font-medium">Gem. Prijs</th>
-                            <th className="text-center p-2 font-medium">Gem. Shares</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {expiryAnalysis.timeBuckets.map((bucket, i) => (
-                            <tr key={i} className="border-b border-border/50">
-                              <td className="p-2 text-muted-foreground">{bucket.label}</td>
-                              <td className="p-2 text-center font-mono">{bucket.count}</td>
-                              <td className="p-2 text-center font-mono">{(bucket.avgPrice * 100).toFixed(1)}¢</td>
-                              <td className="p-2 text-center font-mono">{bucket.avgShares.toFixed(1)}</td>
+                  {/* Distribution Bars */}
+                  <div>
+                    <p className="text-sm font-medium mb-3">Verdeling Tijd tot Expiry</p>
+                    <div className="space-y-2">
+                      {expiryAnalysis.categoryBreakdown.map((cat, i) => (
+                        <div key={i} className="flex items-center gap-3">
+                          <div className="w-28 text-xs text-muted-foreground">{cat.label}</div>
+                          <div className="flex-1 bg-secondary/50 rounded-full h-7 overflow-hidden">
+                            <div 
+                              className={`h-full rounded-full flex items-center justify-end px-2 text-xs font-mono text-white ${
+                                i === 0 ? 'bg-destructive' : i === 1 ? 'bg-warning' : 'bg-success'
+                              }`}
+                              style={{ width: `${Math.max(cat.percent, 5)}%` }}
+                            >
+                              {cat.percent.toFixed(0)}%
+                            </div>
+                          </div>
+                          <div className="w-20 text-right text-xs font-mono">{cat.count} trades</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Charts Row */}
+                  <div className="grid lg:grid-cols-2 gap-4">
+                    {/* Time Buckets Bar Chart */}
+                    <div className="p-4 bg-secondary/20 rounded-lg border border-border">
+                      <h5 className="font-semibold text-sm mb-3">Gedetailleerde Tijd Buckets</h5>
+                      <div className="h-[200px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={expiryAnalysis.timeBuckets}>
+                            <XAxis dataKey="label" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }} />
+                            <YAxis tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }} />
+                            <Tooltip 
+                              contentStyle={{ 
+                                backgroundColor: 'hsl(var(--card))', 
+                                border: '1px solid hsl(var(--border))',
+                                borderRadius: '8px'
+                              }}
+                              formatter={(value: number, name: string) => {
+                                if (name === 'count') return [`${value} trades`, 'Aantal'];
+                                if (name === 'avgPrice') return [`${(value * 100).toFixed(1)}¢`, 'Gem. Prijs'];
+                                return [value, name];
+                              }}
+                            />
+                            <Bar dataKey="count" fill="hsl(var(--warning))" name="Aantal Trades" radius={[4, 4, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+
+                    {/* Price by Time Table */}
+                    <div className="p-4 bg-secondary/20 rounded-lg border border-border">
+                      <h5 className="font-semibold text-sm mb-3 flex items-center gap-2">
+                        <DollarSign className="w-4 h-4 text-primary" />
+                        Prijs vs Tijd tot Expiry
+                      </h5>
+                      <div className="overflow-x-auto max-h-[200px]">
+                        <table className="w-full text-sm">
+                          <thead className="sticky top-0 bg-background">
+                            <tr className="border-b border-border">
+                              <th className="text-left p-2 font-medium">Tijd</th>
+                              <th className="text-center p-2 font-medium">Trades</th>
+                              <th className="text-center p-2 font-medium">Gem. Prijs</th>
+                              <th className="text-center p-2 font-medium">Gem. Shares</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                          </thead>
+                          <tbody>
+                            {expiryAnalysis.timeBuckets.map((bucket, i) => (
+                              <tr key={i} className="border-b border-border/50">
+                                <td className="p-2 text-muted-foreground">{bucket.label}</td>
+                                <td className="p-2 text-center font-mono">{bucket.count}</td>
+                                <td className="p-2 text-center font-mono">{(bucket.avgPrice * 100).toFixed(1)}¢</td>
+                                <td className="p-2 text-center font-mono">{bucket.avgShares.toFixed(1)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                {/* Insights & Hypotheses */}
-                <div className="grid lg:grid-cols-2 gap-4">
-                  {expiryAnalysis.insights.length > 0 && (
-                    <div className="p-4 bg-chart-4/10 rounded-lg border border-chart-4/20">
-                      <p className="text-sm font-semibold text-chart-4 mb-3 flex items-center gap-2">
-                        <Lightbulb className="w-4 h-4" />
-                        Observaties uit de Data
+                  {/* Insights & Hypotheses */}
+                  <div className="grid lg:grid-cols-2 gap-4">
+                    {expiryAnalysis.insights.length > 0 && (
+                      <div className="p-4 bg-chart-4/10 rounded-lg border border-chart-4/20">
+                        <p className="text-sm font-semibold text-chart-4 mb-3 flex items-center gap-2">
+                          <Lightbulb className="w-4 h-4" />
+                          Observaties uit de Data
+                        </p>
+                        <ul className="space-y-2">
+                          {expiryAnalysis.insights.map((insight, i) => (
+                            <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
+                              <span className="text-chart-4">•</span>
+                              {insight}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    <div className="p-4 bg-primary/10 rounded-lg border border-primary/20">
+                      <p className="text-sm font-semibold text-primary mb-3 flex items-center gap-2">
+                        <Target className="w-4 h-4" />
+                        Mogelijke Overwegingen
                       </p>
                       <ul className="space-y-2">
-                        {expiryAnalysis.insights.map((insight, i) => (
+                        {expiryAnalysis.hypotheses.map((hypothesis, i) => (
                           <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
-                            <span className="text-chart-4">•</span>
-                            {insight}
+                            <span className="text-primary">•</span>
+                            {hypothesis}
                           </li>
                         ))}
                       </ul>
                     </div>
-                  )}
+                  </div>
 
-                  <div className="p-4 bg-primary/10 rounded-lg border border-primary/20">
-                    <p className="text-sm font-semibold text-primary mb-3 flex items-center gap-2">
-                      <Target className="w-4 h-4" />
-                      Mogelijke Overwegingen
-                    </p>
-                    <ul className="space-y-2">
-                      {expiryAnalysis.hypotheses.map((hypothesis, i) => (
-                        <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
-                          <span className="text-primary">•</span>
-                          {hypothesis}
-                        </li>
-                      ))}
-                    </ul>
+                  {/* Timing Explanation */}
+                  <div className="grid lg:grid-cols-3 gap-3 text-sm">
+                    <div className="p-3 bg-destructive/10 rounded-lg border border-destructive/20">
+                      <p className="font-medium text-destructive mb-1">🎯 Last-Minute ({"<"}5min)</p>
+                      <p className="text-xs text-muted-foreground">
+                        Maximale informatie. Hogere prijzen maar lager risico. Ideaal voor <strong>confirmation plays</strong>.
+                      </p>
+                    </div>
+                    <div className="p-3 bg-warning/10 rounded-lg border border-warning/20">
+                      <p className="font-medium text-warning mb-1">⚖️ Mid-Range (5-30min)</p>
+                      <p className="text-xs text-muted-foreground">
+                        Balans tussen info en prijs. Ruimte voor DCA. Ideaal voor <strong>position building</strong>.
+                      </p>
+                    </div>
+                    <div className="p-3 bg-success/10 rounded-lg border border-success/20">
+                      <p className="font-medium text-success mb-1">🌱 Early Entry ({">"}30min)</p>
+                      <p className="text-xs text-muted-foreground">
+                        Lagere prijzen, meer onzekerheid. Ideaal voor <strong>value accumulation</strong>.
+                      </p>
+                    </div>
                   </div>
-                </div>
 
-                {/* Timing Explanation */}
-                <div className="grid lg:grid-cols-3 gap-3 text-sm">
-                  <div className="p-3 bg-destructive/10 rounded-lg border border-destructive/20">
-                    <p className="font-medium text-destructive mb-1">🎯 Last-Minute ({"<"}5min)</p>
-                    <p className="text-xs text-muted-foreground">
-                      Maximale informatie. Hogere prijzen maar lager risico. Ideaal voor <strong>confirmation plays</strong>.
+                  {/* Trading Style Summary */}
+                  <div className="p-4 bg-warning/10 rounded-lg border border-warning/20">
+                    <h5 className="font-semibold text-sm mb-2 flex items-center gap-2 text-warning">
+                      <Activity className="w-4 h-4" />
+                      Gabagool22's Timing Profiel
+                    </h5>
+                    <p className="text-sm text-muted-foreground leading-relaxed">
+                      {expiryAnalysis.tradingStyle === 'Last-Minute Sniper' && (
+                        <>
+                          De bot wacht tot het laatste moment om te traden. Dit suggereert een strategie gebaseerd op 
+                          <strong> maximale zekerheid</strong> - de crypto prijs is bijna bepaald, dus het risico is minimaal.
+                        </>
+                      )}
+                      {expiryAnalysis.tradingStyle === 'Early Bird Accumulator' && (
+                        <>
+                          De bot bouwt vroeg posities op tegen lagere prijzen. Dit is een <strong>value-focused strategie</strong> - 
+                          meer onzekerheid accepteren voor betere prijzen en meer tijd voor DCA.
+                        </>
+                      )}
+                      {expiryAnalysis.tradingStyle === 'Mid-Range Strategist' && (
+                        <>
+                          De bot opereert vooral in het 5-30 minuten window. Dit is een <strong>balanced approach</strong> - 
+                          genoeg informatie om informed decisions te maken, maar nog ruimte voor DCA.
+                        </>
+                      )}
+                      {expiryAnalysis.tradingStyle === 'Mixed' && (
+                        <>
+                          De bot gebruikt een <strong>gemixte timing strategie</strong> - early entries voor value, 
+                          mid-range voor position building, en last-minute voor confirmation.
+                        </>
+                      )}
                     </p>
                   </div>
-                  <div className="p-3 bg-warning/10 rounded-lg border border-warning/20">
-                    <p className="font-medium text-warning mb-1">⚖️ Mid-Range (5-30min)</p>
-                    <p className="text-xs text-muted-foreground">
-                      Balans tussen info en prijs. Ruimte voor DCA. Ideaal voor <strong>position building</strong>.
-                    </p>
-                  </div>
-                  <div className="p-3 bg-success/10 rounded-lg border border-success/20">
-                    <p className="font-medium text-success mb-1">🌱 Early Entry ({">"}30min)</p>
-                    <p className="text-xs text-muted-foreground">
-                      Lagere prijzen, meer onzekerheid. Ideaal voor <strong>value accumulation</strong>.
-                    </p>
-                  </div>
-                </div>
-
-                {/* Trading Style Summary */}
-                <div className="p-4 bg-warning/10 rounded-lg border border-warning/20">
-                  <h5 className="font-semibold text-sm mb-2 flex items-center gap-2 text-warning">
-                    <Activity className="w-4 h-4" />
-                    Gabagool22's Timing Profiel
-                  </h5>
-                  <p className="text-sm text-muted-foreground leading-relaxed">
-                    {expiryAnalysis.tradingStyle === 'Last-Minute Sniper' && (
-                      <>
-                        De bot wacht tot het laatste moment om te traden. Dit suggereert een strategie gebaseerd op 
-                        <strong> maximale zekerheid</strong> - de crypto prijs is bijna bepaald, dus het risico is minimaal.
-                      </>
-                    )}
-                    {expiryAnalysis.tradingStyle === 'Early Bird Accumulator' && (
-                      <>
-                        De bot bouwt posities vroeg op wanneer prijzen aantrekkelijker zijn. Dit is een 
-                        <strong> value-driven strategie</strong> - accepteer meer onzekerheid voor betere prijzen.
-                      </>
-                    )}
-                    {expiryAnalysis.tradingStyle === 'Mid-Range Strategist' && (
-                      <>
-                        De bot opereert vooral in het 5-30 minuten window. Dit is een <strong>balanced approach</strong> - 
-                        genoeg informatie om informed decisions te maken, maar nog ruimte voor DCA.
-                      </>
-                    )}
-                    {expiryAnalysis.tradingStyle === 'Mixed' && (
-                      <>
-                        De bot gebruikt een <strong>gemixte timing strategie</strong> - early entries voor value, 
-                        mid-range voor position building, en last-minute voor confirmation.
-                      </>
-                    )}
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
-          )}
+                </>
+              )}
+            </CardContent>
+          </Card>
 
           {/* Distribution Pie Chart */}
           <Card className="glass">

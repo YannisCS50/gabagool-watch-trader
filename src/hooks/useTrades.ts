@@ -3,15 +3,41 @@ import { supabase } from '@/integrations/supabase/client';
 import { Trade, TraderStats, MarketPosition } from '@/types/trade';
 import { useToast } from '@/hooks/use-toast';
 
-export function useTrades(username: string = 'gabagool22') {
+export function useTrades(username: string = 'gabagool22', options?: { limit?: number }) {
   const { toast } = useToast();
+  const limit = options?.limit;
 
   const tradesQuery = useQuery({
-    queryKey: ['trades', username],
+    queryKey: ['trades', username, limit],
     refetchInterval: 5 * 60 * 1000, // Refresh every 5 minutes
     staleTime: 4 * 60 * 1000, // Consider data fresh for 4 minutes
     queryFn: async () => {
-      // Fetch ALL trades with pagination
+      // If limit is specified, fetch only that many trades
+      if (limit) {
+        const { data, error } = await supabase
+          .from('trades')
+          .select('*')
+          .eq('trader_username', username)
+          .order('timestamp', { ascending: false })
+          .limit(limit);
+
+        if (error) throw error;
+
+        return (data || []).map((t): Trade => ({
+          id: t.id,
+          timestamp: new Date(t.timestamp),
+          market: t.market,
+          marketSlug: t.market_slug || '',
+          outcome: t.outcome as 'Yes' | 'No',
+          side: t.side as 'buy' | 'sell',
+          shares: Number(t.shares),
+          price: Number(t.price),
+          total: Number(t.total),
+          status: t.status as 'filled' | 'pending' | 'cancelled',
+        }));
+      }
+
+      // Fetch ALL trades with pagination (for pages that need full history)
       let allTrades: any[] = [];
       let offset = 0;
       const pageSize = 1000;
