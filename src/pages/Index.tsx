@@ -1,4 +1,5 @@
-import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw } from 'lucide-react';
+import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, Brain } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { mockTrades, traderStats as mockStats, positions as mockPositions } from '@/data/mockTrades';
 import { StatCard } from '@/components/StatCard';
 import { TradesTable } from '@/components/TradesTable';
@@ -36,6 +37,12 @@ const Index = () => {
               )}
             </div>
             <div className="flex items-center gap-4">
+              <Link to="/strategy">
+                <Button variant="secondary" size="sm" className="font-mono text-xs">
+                  <Brain className="w-3 h-3 mr-2" />
+                  Strategy Analysis
+                </Button>
+              </Link>
               <Button
                 variant="outline"
                 size="sm"
