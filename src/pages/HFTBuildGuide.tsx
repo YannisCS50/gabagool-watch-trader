@@ -3,7 +3,6 @@ import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { useState } from 'react';
 import { Badge } from '@/components/ui/badge';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 const HFTBuildGuide = () => {
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
@@ -834,7 +833,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &hash_asset_id(&market.no_token_id),
                     ) {
                         println!(
-                            "🎯 ARBITRAGE DETECTED | Edge: {}bps | Size: ${:.2}",
+                            "🎯 ARBITRAGE DETECTED | Edge: {}bps | Size: \${:.2}",
                             signal.edge_bps,
                             signal.size as f64 / 100_000_000.0
                         );
