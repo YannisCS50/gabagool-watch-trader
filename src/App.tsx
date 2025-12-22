@@ -10,6 +10,7 @@ import EntryAnalysis from "./pages/EntryAnalysis";
 import DevGuide from "./pages/DevGuide";
 import TradingStrategies from "./pages/TradingStrategies";
 import RustStrategy from "./pages/RustStrategy";
+import HFTBuildGuide from "./pages/HFTBuildGuide";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -28,6 +29,7 @@ const App = () => (
           <Route path="/dev-guide" element={<DevGuide />} />
           <Route path="/trading-strategies" element={<TradingStrategies />} />
           <Route path="/rust-strategy" element={<RustStrategy />} />
+          <Route path="/hft-build-guide" element={<HFTBuildGuide />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>
