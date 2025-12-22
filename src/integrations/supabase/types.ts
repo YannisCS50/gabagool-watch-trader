@@ -14,7 +14,135 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      positions: {
+        Row: {
+          avg_price: number
+          created_at: string
+          current_price: number | null
+          id: string
+          market: string
+          market_slug: string | null
+          outcome: string
+          pnl: number | null
+          pnl_percent: number | null
+          shares: number
+          trader_username: string
+          updated_at: string
+        }
+        Insert: {
+          avg_price: number
+          created_at?: string
+          current_price?: number | null
+          id?: string
+          market: string
+          market_slug?: string | null
+          outcome: string
+          pnl?: number | null
+          pnl_percent?: number | null
+          shares: number
+          trader_username?: string
+          updated_at?: string
+        }
+        Update: {
+          avg_price?: number
+          created_at?: string
+          current_price?: number | null
+          id?: string
+          market?: string
+          market_slug?: string | null
+          outcome?: string
+          pnl?: number | null
+          pnl_percent?: number | null
+          shares?: number
+          trader_username?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      trader_stats: {
+        Row: {
+          active_since: string | null
+          avg_trade_size: number | null
+          id: string
+          last_active: string | null
+          total_trades: number | null
+          total_volume: number | null
+          trader_username: string
+          updated_at: string
+          win_rate: number | null
+        }
+        Insert: {
+          active_since?: string | null
+          avg_trade_size?: number | null
+          id?: string
+          last_active?: string | null
+          total_trades?: number | null
+          total_volume?: number | null
+          trader_username?: string
+          updated_at?: string
+          win_rate?: number | null
+        }
+        Update: {
+          active_since?: string | null
+          avg_trade_size?: number | null
+          id?: string
+          last_active?: string | null
+          total_trades?: number | null
+          total_volume?: number | null
+          trader_username?: string
+          updated_at?: string
+          win_rate?: number | null
+        }
+        Relationships: []
+      }
+      trades: {
+        Row: {
+          created_at: string
+          external_id: string | null
+          id: string
+          market: string
+          market_slug: string | null
+          outcome: string
+          price: number
+          shares: number
+          side: string
+          status: string | null
+          timestamp: string
+          total: number
+          trader_username: string
+        }
+        Insert: {
+          created_at?: string
+          external_id?: string | null
+          id?: string
+          market: string
+          market_slug?: string | null
+          outcome: string
+          price: number
+          shares: number
+          side: string
+          status?: string | null
+          timestamp: string
+          total: number
+          trader_username?: string
+        }
+        Update: {
+          created_at?: string
+          external_id?: string | null
+          id?: string
+          market?: string
+          market_slug?: string | null
+          outcome?: string
+          price?: number
+          shares?: number
+          side?: string
+          status?: string | null
+          timestamp?: string
+          total?: number
+          trader_username?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
