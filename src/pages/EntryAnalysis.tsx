@@ -20,10 +20,23 @@ interface OutcomeGroup {
   totalShares: number;
 }
 
+interface TimelineEvent {
+  timestamp: Date;
+  outcome: string;
+  trade: Trade;
+  outcomeAvgPrice: number;
+  outcomeShares: number;
+  otherOutcomeAvgPrice: number;
+  otherOutcomeShares: number;
+  arbitrageScore: number;
+  reason: string;
+}
+
 interface MarketAnalysis {
   market: string;
   marketSlug: string;
   outcomes: OutcomeGroup[];
+  timeline: TimelineEvent[];
   combinedScore: number;
   status: 'profitable' | 'breakeven' | 'loss' | 'exposed';
 }
@@ -129,15 +142,79 @@ const BetDetailCard = ({ analysis }: { analysis: MarketAnalysis }) => {
             })}
           </div>
 
+          {/* Chronological Timeline */}
+          {analysis.timeline.length > 0 && (
+            <div className="bg-card/30 rounded-lg p-4 border border-border/30">
+              <h4 className="text-xs font-semibold mb-3 flex items-center gap-2">
+                ⏱️ Chronologische Tijdlijn
+                <span className="text-muted-foreground font-normal">({analysis.timeline.length} trades)</span>
+              </h4>
+              <div className="space-y-2 max-h-80 overflow-y-auto">
+                {analysis.timeline.map((event, idx) => {
+                  const outcomeIdx = analysis.outcomes.findIndex(o => o.outcome === event.outcome);
+                  const colors = getOutcomeColor(event.outcome, outcomeIdx);
+                  
+                  return (
+                    <div key={event.trade.id} className="flex gap-3 text-xs">
+                      {/* Timeline indicator */}
+                      <div className="flex flex-col items-center">
+                        <div className={`w-3 h-3 rounded-full ${colors.bg} flex-shrink-0`} />
+                        {idx < analysis.timeline.length - 1 && (
+                          <div className="w-0.5 flex-1 bg-border/50 min-h-[20px]" />
+                        )}
+                      </div>
+                      
+                      {/* Event content */}
+                      <div className="flex-1 pb-3">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-mono text-muted-foreground">
+                            {format(new Date(event.timestamp), 'HH:mm:ss')}
+                          </span>
+                          <span className={`px-1.5 py-0.5 rounded ${colors.light} ${colors.text} font-semibold`}>
+                            {event.outcome}
+                          </span>
+                          <span className="font-medium">
+                            {event.trade.shares.toFixed(1)} @ {(event.trade.price * 100).toFixed(1)}¢
+                          </span>
+                        </div>
+                        
+                        {/* Reason/Formula */}
+                        <div className="text-muted-foreground mt-1">
+                          {event.reason}
+                        </div>
+                        
+                        {/* Running score */}
+                        <div className="mt-1 flex items-center gap-2 font-mono">
+                          <span className="text-muted-foreground">Score:</span>
+                          {event.arbitrageScore > 0 ? (
+                            <span className={`font-semibold ${getScoreColor(event.arbitrageScore)}`}>
+                              {(event.outcomeAvgPrice * 100).toFixed(1)}¢ + {(event.otherOutcomeAvgPrice * 100).toFixed(1)}¢ = {(event.arbitrageScore * 100).toFixed(1)}¢
+                              {event.arbitrageScore < 1 && <span className="text-success ml-1">✓</span>}
+                              {event.arbitrageScore > 1 && <span className="text-destructive ml-1">✗</span>}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">
+                              {(event.outcomeAvgPrice * 100).toFixed(1)}¢ + ? = EXPOSED
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Combined Score Analysis */}
           <div className={`rounded-lg p-4 border ${getScoreBackground(analysis.combinedScore)}`}>
-            <h4 className="text-xs font-semibold mb-3">📊 Arbitrage Score Berekening</h4>
+            <h4 className="text-xs font-semibold mb-3">📊 Eindresultaat</h4>
             <div className="space-y-2 font-mono text-sm">
               {analysis.outcomes.map((og, idx) => {
                 const colors = getOutcomeColor(og.outcome, idx);
                 return (
                   <div key={og.outcome} className="flex justify-between">
-                    <span className="text-muted-foreground">{og.outcome} gem. entry:</span>
+                    <span className="text-muted-foreground">{og.outcome} ({og.totalShares.toFixed(0)} shares):</span>
                     <span className={colors.text}>
                       {(og.avgPrice * 100).toFixed(1)}¢
                     </span>
@@ -245,6 +322,71 @@ const EntryAnalysis = () => {
         });
       });
 
+      // Build chronological timeline with arbitrage score at each step
+      const allTrades = marketTrades.sort((a, b) => 
+        new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+      );
+
+      const timeline: TimelineEvent[] = [];
+      const runningState: Record<string, { shares: number; cost: number }> = {};
+      
+      allTrades.forEach((trade) => {
+        // Initialize outcome if not exists
+        if (!runningState[trade.outcome]) {
+          runningState[trade.outcome] = { shares: 0, cost: 0 };
+        }
+        
+        const prevAvg = runningState[trade.outcome].shares > 0 
+          ? runningState[trade.outcome].cost / runningState[trade.outcome].shares 
+          : 0;
+        
+        // Update running state
+        runningState[trade.outcome].shares += trade.shares;
+        runningState[trade.outcome].cost += trade.total;
+        
+        const newAvg = runningState[trade.outcome].cost / runningState[trade.outcome].shares;
+        
+        // Find other outcome
+        const outcomeNames = Object.keys(runningState);
+        const otherOutcome = outcomeNames.find(o => o !== trade.outcome);
+        const otherAvg = otherOutcome && runningState[otherOutcome].shares > 0
+          ? runningState[otherOutcome].cost / runningState[otherOutcome].shares
+          : 0;
+        const otherShares = otherOutcome ? runningState[otherOutcome].shares : 0;
+        
+        // Calculate arbitrage score
+        const arbScore = otherAvg > 0 ? newAvg + otherAvg : 0;
+        
+        // Determine reason for trade
+        let reason = '';
+        if (!otherOutcome || otherAvg === 0) {
+          reason = `Eerste ${trade.outcome} positie @ ${(trade.price * 100).toFixed(1)}¢`;
+        } else if (prevAvg === 0) {
+          const targetPrice = 1 - otherAvg;
+          if (trade.price <= targetPrice) {
+            reason = `Start ${trade.outcome} voor arbitrage (max ${(targetPrice * 100).toFixed(1)}¢, gekocht @ ${(trade.price * 100).toFixed(1)}¢)`;
+          } else {
+            reason = `Start ${trade.outcome} @ ${(trade.price * 100).toFixed(1)}¢ (boven target ${(targetPrice * 100).toFixed(1)}¢)`;
+          }
+        } else if (trade.price < prevAvg) {
+          reason = `Middelen ${trade.outcome}: ${(prevAvg * 100).toFixed(1)}¢ → ${(newAvg * 100).toFixed(1)}¢`;
+        } else {
+          reason = `Bijkopen ${trade.outcome} @ ${(trade.price * 100).toFixed(1)}¢ (avg: ${(newAvg * 100).toFixed(1)}¢)`;
+        }
+        
+        timeline.push({
+          timestamp: trade.timestamp,
+          outcome: trade.outcome,
+          trade,
+          outcomeAvgPrice: newAvg,
+          outcomeShares: runningState[trade.outcome].shares,
+          otherOutcomeAvgPrice: otherAvg,
+          otherOutcomeShares: otherShares,
+          arbitrageScore: arbScore,
+          reason,
+        });
+      });
+
       // Bereken combined score - alleen als we precies 2 outcomes hebben (binary market)
       let combinedScore = 0;
       if (outcomes.length === 2) {
@@ -262,6 +404,7 @@ const EntryAnalysis = () => {
         market: marketName,
         marketSlug: marketTrades[0]?.marketSlug || '',
         outcomes,
+        timeline,
         combinedScore,
         status,
       });
