@@ -5,14 +5,13 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Polymarket API endpoints based on official documentation
+// Polymarket Data API - no authentication required for read-only data
 const POLYMARKET_DATA_API = 'https://data-api.polymarket.com';
 const POLYMARKET_GAMMA_API = 'https://gamma-api.polymarket.com';
-const POLYMARKET_CLOB_API = 'https://clob.polymarket.com';
 
-interface PolymarketTrade {
+interface PolymarketActivity {
   proxyWallet: string;
-  side: 'BUY' | 'SELL';
+  side: string;
   asset: string;
   conditionId: string;
   size: number;
@@ -20,30 +19,15 @@ interface PolymarketTrade {
   timestamp: number;
   title: string;
   slug: string;
-  icon: string;
   eventSlug: string;
   outcome: string;
   outcomeIndex: number;
-  name: string;
-  pseudonym: string;
   transactionHash: string;
-  usdcSize?: number;
+  usdcSize: number;
+  type: string;
 }
 
-interface PolymarketPosition {
-  proxyWallet: string;
-  conditionId: string;
-  size: number;
-  avgPrice: number;
-  currentPrice: number;
-  title: string;
-  slug: string;
-  outcome: string;
-  pnl: number;
-  pnlPercent: number;
-}
-
-// Known wallet addresses for usernames (Polymarket API doesn't filter by username properly)
+// Known wallet addresses for usernames
 const KNOWN_WALLETS: Record<string, string> = {
   'gabagool22': '0x6031b6eed1c97e853c6e0f03ad3ce3529351f96d',
 };
@@ -96,156 +80,72 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log(`Fetching ALL Polymarket trades for @${username} (wallet: ${proxyWallet})...`);
+    console.log(`Fetching Polymarket data for @${username} (wallet: ${proxyWallet})...`);
 
-    // Fetch trades - use CLOB API only.
-    // The Data API endpoints (/trades, /activity) have proven unreliable for filtering by username/wallet.
-    let trades: PolymarketTrade[] = [];
-    console.log('Using CLOB API only for user-scoped trades');
-
-    // Method 4: CLOB API - The official REST API for ALL historical trades
-    // Per Polymarket docs: "All historical trades can be fetched via the Polymarket CLOB REST API"
+    // ========== FETCH ACTIVITY (TRADES) ==========
+    // Use Data API /activity endpoint with 'user' parameter (NOT proxyWallet)
+    let allActivities: PolymarketActivity[] = [];
+    
     try {
-      console.log('Fetching ALL historical trades via CLOB API...');
-      let clobCursor: string | null = null;
-      let clobAttempts = 0;
-      const clobMaxAttempts = 200; // Up to 100,000 trades
-      
-      // CLOB API is address-scoped, so this reliably returns only this wallet's trades.
-      const userAddress: string = proxyWallet;
-      console.log('Using CLOB API address:', userAddress);
+      // Try multiple endpoints and parameters
+      const endpoints = [
+        `${POLYMARKET_DATA_API}/activity?user=${proxyWallet}&limit=500`,
+        `${POLYMARKET_DATA_API}/activity?proxyWallet=${proxyWallet}&limit=500`,
+        `${POLYMARKET_DATA_API}/trades?user=${proxyWallet}&limit=500`,
+      ];
 
-      if (userAddress) {
-        while (clobAttempts < clobMaxAttempts) {
-          // CLOB API uses maker or taker address
-          let clobUrl = `${POLYMARKET_CLOB_API}/trades?maker_address=${userAddress}&limit=500`;
-          if (clobCursor) {
-            clobUrl += `&next_cursor=${clobCursor}`;
-          }
+      for (const url of endpoints) {
+        console.log(`Trying: ${url}`);
+        const resp = await fetch(url, {
+          headers: { 'Accept': 'application/json', 'User-Agent': 'PolyTracker/1.0' },
+        });
+        
+        console.log(`Response status: ${resp.status}`);
+        
+        if (resp.ok) {
+          const data = await resp.json();
+          console.log(`Response data type: ${Array.isArray(data) ? 'array' : typeof data}, length: ${Array.isArray(data) ? data.length : 'N/A'}`);
           
-          console.log(`CLOB API page ${clobAttempts + 1}${clobCursor ? ` (cursor: ${clobCursor.slice(0, 20)}...)` : ''}`);
-          
-          const clobResponse = await fetch(clobUrl, {
-            headers: {
-              'Accept': 'application/json',
-              'User-Agent': 'PolyTracker/1.0',
-            },
-          });
-          
-          if (clobResponse.ok) {
-            const clobData = await clobResponse.json();
+          if (Array.isArray(data) && data.length > 0) {
+            // Filter to only trades for this wallet
+            const walletActivities = data.filter((item: any) => 
+              item.proxyWallet?.toLowerCase() === proxyWallet.toLowerCase() ||
+              item.user?.toLowerCase() === proxyWallet.toLowerCase()
+            );
             
-            // CLOB API returns { data: [...trades], next_cursor: "..." }
-            const clobTrades = clobData.data || clobData;
+            console.log(`Found ${walletActivities.length} activities for wallet`);
             
-            if (Array.isArray(clobTrades) && clobTrades.length > 0) {
-              const existingHashes = new Set(trades.map(t => t.transactionHash));
-              const newTrades = clobTrades.filter((t: any) => 
-                !existingHashes.has(t.id) && !existingHashes.has(t.transaction_hash)
-              );
-              
-              // Map CLOB format to our format
-              const mappedTrades: PolymarketTrade[] = newTrades.map((t: any) => ({
-                proxyWallet: userAddress || '',
-                side: t.side === 'BUY' ? 'BUY' : 'SELL',
-                asset: t.asset_id || '',
-                conditionId: t.condition_id || t.asset_id || '',
-                size: parseFloat(t.size || t.amount || '0'),
-                price: parseFloat(t.price || '0'),
-                timestamp: t.created_at ? new Date(t.created_at).getTime() / 1000 : (t.match_time || Date.now() / 1000),
-                title: t.market || t.condition_id || 'CLOB Trade',
-                slug: t.market_slug || '',
-                icon: '',
-                eventSlug: '',
-                outcome: t.outcome || (t.asset_id?.includes('YES') ? 'Yes' : 'No'),
-                outcomeIndex: 0,
-                name: t.market || '',
-                pseudonym: username,
-                transactionHash: t.id || t.transaction_hash || '',
-                usdcSize: parseFloat(t.size || '0') * parseFloat(t.price || '0'),
-              }));
-              
-              trades = [...trades, ...mappedTrades];
-              console.log(`CLOB API: Got ${newTrades.length} new trades (total: ${trades.length})`);
-              
-              // Check for next page
-              clobCursor = clobData.next_cursor || null;
-              if (!clobCursor || clobTrades.length < 500) {
-                console.log('CLOB API: No more pages as maker');
-                break;
-              }
-              
-              clobAttempts++;
-              await new Promise(resolve => setTimeout(resolve, 100));
-            } else {
-              console.log('CLOB API: No more trades as maker');
+            if (walletActivities.length > 0) {
+              allActivities = walletActivities;
               break;
             }
-          } else {
-            console.log('CLOB API failed:', clobResponse.status, await clobResponse.text());
-            break;
           }
+        } else {
+          const errorText = await resp.text();
+          console.log(`Error response: ${errorText.slice(0, 200)}`);
         }
-        
-        // Also try as taker
-        clobCursor = null;
-        clobAttempts = 0;
-        
-        while (clobAttempts < clobMaxAttempts) {
-          let clobUrl = `${POLYMARKET_CLOB_API}/trades?taker_address=${userAddress}&limit=500`;
-          if (clobCursor) {
-            clobUrl += `&next_cursor=${clobCursor}`;
-          }
+      }
+
+      // Paginate if we got results
+      if (allActivities.length === 500) {
+        let offset = 500;
+        while (offset < 10000) { // Safety limit
+          const url = `${POLYMARKET_DATA_API}/activity?user=${proxyWallet}&limit=500&offset=${offset}`;
+          console.log(`Fetching page at offset ${offset}...`);
           
-          console.log(`CLOB API (taker) page ${clobAttempts + 1}`);
-          
-          const clobResponse = await fetch(clobUrl, {
-            headers: {
-              'Accept': 'application/json',
-              'User-Agent': 'PolyTracker/1.0',
-            },
+          const resp = await fetch(url, {
+            headers: { 'Accept': 'application/json', 'User-Agent': 'PolyTracker/1.0' },
           });
           
-          if (clobResponse.ok) {
-            const clobData = await clobResponse.json();
-            const clobTrades = clobData.data || clobData;
-            
-            if (Array.isArray(clobTrades) && clobTrades.length > 0) {
-              const existingHashes = new Set(trades.map(t => t.transactionHash));
-              const newTrades = clobTrades.filter((t: any) => 
-                !existingHashes.has(t.id) && !existingHashes.has(t.transaction_hash)
+          if (resp.ok) {
+            const data = await resp.json();
+            if (Array.isArray(data) && data.length > 0) {
+              const filtered = data.filter((item: any) => 
+                item.proxyWallet?.toLowerCase() === proxyWallet.toLowerCase()
               );
-              
-              const mappedTrades: PolymarketTrade[] = newTrades.map((t: any) => ({
-                proxyWallet: userAddress || '',
-                side: t.side === 'BUY' ? 'BUY' : 'SELL',
-                asset: t.asset_id || '',
-                conditionId: t.condition_id || t.asset_id || '',
-                size: parseFloat(t.size || t.amount || '0'),
-                price: parseFloat(t.price || '0'),
-                timestamp: t.created_at ? new Date(t.created_at).getTime() / 1000 : (t.match_time || Date.now() / 1000),
-                title: t.market || t.condition_id || 'CLOB Trade',
-                slug: t.market_slug || '',
-                icon: '',
-                eventSlug: '',
-                outcome: t.outcome || (t.asset_id?.includes('YES') ? 'Yes' : 'No'),
-                outcomeIndex: 0,
-                name: t.market || '',
-                pseudonym: username,
-                transactionHash: t.id || t.transaction_hash || '',
-                usdcSize: parseFloat(t.size || '0') * parseFloat(t.price || '0'),
-              }));
-              
-              trades = [...trades, ...mappedTrades];
-              console.log(`CLOB API (taker): Got ${newTrades.length} new trades (total: ${trades.length})`);
-              
-              clobCursor = clobData.next_cursor || null;
-              if (!clobCursor || clobTrades.length < 500) {
-                break;
-              }
-              
-              clobAttempts++;
-              await new Promise(resolve => setTimeout(resolve, 100));
+              allActivities = [...allActivities, ...filtered];
+              if (data.length < 500) break;
+              offset += 500;
             } else {
               break;
             }
@@ -255,52 +155,56 @@ Deno.serve(async (req) => {
         }
       }
       
-      console.log(`Total trades after CLOB API: ${trades.length}`);
+      console.log(`Total activities fetched: ${allActivities.length}`);
     } catch (e) {
-      console.error('CLOB API error:', e);
+      console.error('Activity fetch error:', e);
     }
 
-    console.log(`Final total: ${trades.length} unique trades`);
-
-    // Deduplicate trades by transactionHash
-    const uniqueTrades = Array.from(
-      new Map(trades.map(t => [t.transactionHash || `${t.conditionId}-${t.timestamp}`, t])).values()
-    );
-    console.log(`After deduplication: ${uniqueTrades.length} trades`);
-    trades = uniqueTrades as PolymarketTrade[];
-
-    // Process and store trades
-    const processedTrades = [];
+    // Process activities into trades
+    const processedTrades: any[] = [];
     
-    for (const trade of trades) {
-      // Calculate USDC size if not provided
-      const usdcSize = trade.usdcSize || (trade.size * trade.price);
+    for (const activity of allActivities) {
+      // Only include BUY/SELL activities (not deposits, withdrawals, etc.)
+      const activityType = activity.type?.toLowerCase() || '';
+      const side = activity.side?.toUpperCase() || '';
       
-      const processedTrade = {
-        external_id: trade.transactionHash || `${trade.conditionId}-${trade.timestamp}-${Math.random().toString(36).substr(2, 9)}`,
-        trader_username: trade.pseudonym || username,
-        timestamp: new Date(trade.timestamp * 1000).toISOString(),
-        market: trade.title || 'Unknown Market',
-        market_slug: trade.slug || trade.eventSlug || '',
-        outcome: trade.outcome || (trade.outcomeIndex === 0 ? 'Yes' : 'No'),
-        side: (trade.side || 'BUY').toLowerCase(),
-        shares: trade.size || 0,
-        price: trade.price || 0,
+      if (side !== 'BUY' && side !== 'SELL') {
+        continue;
+      }
+      
+      const usdcSize = activity.usdcSize || (activity.size * activity.price);
+      const timestamp = typeof activity.timestamp === 'number' 
+        ? (activity.timestamp > 1e12 ? activity.timestamp : activity.timestamp * 1000)
+        : new Date(activity.timestamp).getTime();
+      
+      processedTrades.push({
+        external_id: activity.transactionHash || `${activity.conditionId}-${timestamp}-${Math.random().toString(36).substr(2, 9)}`,
+        trader_username: username,
+        timestamp: new Date(timestamp).toISOString(),
+        market: activity.title || 'Unknown Market',
+        market_slug: activity.slug || activity.eventSlug || '',
+        outcome: activity.outcome || (activity.outcomeIndex === 0 ? 'Yes' : 'No'),
+        side: side.toLowerCase(),
+        shares: activity.size || 0,
+        price: activity.price || 0,
         total: usdcSize,
         status: 'filled',
-        // Additional fields for analysis
-      };
-      
-      processedTrades.push(processedTrade);
+      });
     }
 
     console.log(`Processed ${processedTrades.length} trades for storage`);
 
-    if (processedTrades.length > 0) {
+    // Deduplicate by external_id
+    const uniqueTrades = Array.from(
+      new Map(processedTrades.map(t => [t.external_id, t])).values()
+    );
+    console.log(`After deduplication: ${uniqueTrades.length} trades`);
+
+    if (uniqueTrades.length > 0) {
       // Insert trades into database (upsert to avoid duplicates)
       const { error: insertError } = await supabase
         .from('trades')
-        .upsert(processedTrades, { 
+        .upsert(uniqueTrades, { 
           onConflict: 'external_id',
           ignoreDuplicates: true 
         });
@@ -311,7 +215,7 @@ Deno.serve(async (req) => {
         console.log(`Successfully stored trades`);
       }
 
-      // Update trader stats with analytics - fetch ALL trades (bypass 1000 row limit)
+      // Update trader stats
       let allTrades: any[] = [];
       let offset = 0;
       const batchSize = 1000;
@@ -327,9 +231,7 @@ Deno.serve(async (req) => {
         if (batch && batch.length > 0) {
           allTrades = [...allTrades, ...batch];
           offset += batchSize;
-          if (batch.length < batchSize) {
-            hasMore = false;
-          }
+          if (batch.length < batchSize) hasMore = false;
         } else {
           hasMore = false;
         }
@@ -337,27 +239,23 @@ Deno.serve(async (req) => {
       
       console.log(`Fetched ${allTrades.length} trades for stats calculation`);
 
-      if (allTrades && allTrades.length > 0) {
+      if (allTrades.length > 0) {
         const totalTrades = allTrades.length;
         const totalVolume = allTrades.reduce((sum: number, t: any) => sum + Number(t.total), 0);
         const avgTradeSize = totalVolume / totalTrades;
         
-        // Calculate win rate based on sell trades (simplified)
         const buys = allTrades.filter((t: any) => t.side === 'buy');
         const sells = allTrades.filter((t: any) => t.side === 'sell');
         
-        // Estimate win rate: if more sells than buys, trader is taking profits
         const estimatedWinRate = sells.length > 0 
-          ? Math.min(95, 50 + (sells.length / buys.length) * 20) 
+          ? Math.min(95, 50 + (sells.length / Math.max(buys.length, 1)) * 20) 
           : 50;
 
-        // Get latest trade timestamp
         const latestTrade = allTrades.reduce((latest: number, t: any) => {
           const tTime = new Date(t.timestamp).getTime();
           return tTime > latest ? tTime : latest;
         }, 0);
 
-        // Get earliest trade for active_since
         const earliestTrade = allTrades.reduce((earliest: number, t: any) => {
           const tTime = new Date(t.timestamp).getTime();
           return earliest === 0 || tTime < earliest ? tTime : earliest;
@@ -378,17 +276,20 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Fetch positions directly from Polymarket API using proxyWallet
+    // ========== FETCH POSITIONS ==========
     let positionsFound = 0;
     try {
-      console.log(`Fetching positions from Polymarket for wallet ${proxyWallet}...`);
+      console.log(`Fetching positions for wallet ${proxyWallet}...`);
       
-      const positionsUrl = `${POLYMARKET_DATA_API}/positions?proxyWallet=${proxyWallet}`;
+      // Use 'user' parameter as per documentation
+      const positionsUrl = `${POLYMARKET_DATA_API}/positions?user=${proxyWallet}&sizeThreshold=0.01&limit=500`;
       console.log('Fetching positions:', positionsUrl);
       
       const posResp = await fetch(positionsUrl, {
         headers: { 'Accept': 'application/json', 'User-Agent': 'PolyTracker/1.0' },
       });
+      
+      console.log('Positions response status:', posResp.status);
       
       if (posResp.ok) {
         const positionsData = await posResp.json();
@@ -410,10 +311,10 @@ Deno.serve(async (req) => {
             shares: parseFloat(pos.size || pos.shares || '0'),
             avg_price: parseFloat(pos.avgPrice || pos.averagePrice || pos.price || '0'),
             current_price: parseFloat(pos.curPrice || pos.currentPrice || pos.price || '0'),
-            pnl: parseFloat(pos.pnl || pos.unrealizedPnl || '0'),
-            pnl_percent: parseFloat(pos.pnlPercent || pos.unrealizedPnlPercent || '0'),
+            pnl: parseFloat(pos.cashPnl || pos.pnl || pos.unrealizedPnl || '0'),
+            pnl_percent: parseFloat(pos.percentPnl || pos.pnlPercent || '0'),
             updated_at: new Date().toISOString(),
-          })).filter((p: any) => p.shares > 0.001); // Filter out dust positions
+          })).filter((p: any) => p.shares > 0.001);
           
           if (processedPositions.length > 0) {
             const { error: posError } = await supabase
@@ -429,33 +330,29 @@ Deno.serve(async (req) => {
           }
         }
       } else {
-        console.log('Positions endpoint status:', posResp.status);
+        const errorText = await posResp.text();
+        console.log('Positions endpoint error:', errorText.slice(0, 200));
       }
     } catch (e) {
       console.error('Error fetching positions:', e);
     }
 
-    // Return response with sample data for debugging
     return new Response(
       JSON.stringify({ 
         success: true, 
-        tradesFound: processedTrades.length,
+        tradesFound: uniqueTrades.length,
         positionsFound,
-        sample: processedTrades.slice(0, 3),
-        apiEndpointsTried: [
-          `${POLYMARKET_DATA_API}/trades?proxyWallet=${proxyWallet}`,
-          `${POLYMARKET_DATA_API}/activity?proxyWallet=${proxyWallet}`,
-          `${POLYMARKET_DATA_API}/positions?proxyWallet=${proxyWallet}`
-        ],
+        sample: uniqueTrades.slice(0, 3),
         walletUsed: proxyWallet
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
-  } catch (error) {
-    console.error('Error in scrape-polymarket:', error);
+  } catch (error: unknown) {
+    console.error('Scraper error:', error);
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     return new Response(
-      JSON.stringify({ success: false, error: error instanceof Error ? error.message : 'Unknown error' }),
+      JSON.stringify({ success: false, error: errorMessage }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }

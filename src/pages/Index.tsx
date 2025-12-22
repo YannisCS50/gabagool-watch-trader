@@ -1,6 +1,5 @@
-import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, Brain } from 'lucide-react';
+import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, Brain, AlertCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { mockTrades, traderStats as mockStats, positions as mockPositions } from '@/data/mockTrades';
 import { StatCard } from '@/components/StatCard';
 import { TradesTable } from '@/components/TradesTable';
 import { PositionCard } from '@/components/PositionCard';
@@ -13,11 +12,17 @@ import { format } from 'date-fns';
 const Index = () => {
   const { trades, stats, positions, isLoading, scrape, isScraping } = useTrades('gabagool22');
 
-  // Use live data if available, fallback to mock data
-  const displayTrades = trades.length > 0 ? trades : mockTrades;
-  const displayStats = stats?.totalTrades ? stats : mockStats;
-  const displayPositions = positions.length > 0 ? positions : mockPositions;
-  const isLiveData = trades.length > 0;
+  // Use actual data - no mock fallback
+  const hasData = trades.length > 0 || (stats?.totalTrades ?? 0) > 0;
+  const defaultStats = {
+    totalTrades: 0,
+    totalVolume: 0,
+    winRate: 0,
+    avgTradeSize: 0,
+    activeSince: new Date(),
+    lastActive: new Date(),
+  };
+  const displayStats = stats?.totalTrades ? stats : defaultStats;
 
   return (
     <div className="min-h-screen bg-background">
@@ -30,7 +35,7 @@ const Index = () => {
                 <BarChart3 className="w-4 h-4 text-primary-foreground" />
               </div>
               <span className="font-semibold text-lg">PolyTracker</span>
-              {isLiveData && (
+              {hasData && (
                 <span className="text-xs px-2 py-0.5 rounded-full bg-success/20 text-success font-mono">
                   LIVE
                 </span>
@@ -94,17 +99,24 @@ const Index = () => {
         {/* Chart & Positions */}
         <div className="grid lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2">
-            <ActivityChart trades={displayTrades} />
+            <ActivityChart trades={trades} />
           </div>
           <div className="space-y-4">
             <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
               Active Positions
             </h2>
-            <div className="space-y-3">
-              {displayPositions.slice(0, 3).map((position, index) => (
-                <PositionCard key={position.marketSlug + position.outcome} position={position} index={index} />
-              ))}
-            </div>
+            {positions.length > 0 ? (
+              <div className="space-y-3">
+                {positions.slice(0, 3).map((position, index) => (
+                  <PositionCard key={position.marketSlug + position.outcome} position={position} index={index} />
+                ))}
+              </div>
+            ) : (
+              <div className="glass rounded-lg p-6 text-center">
+                <AlertCircle className="w-8 h-8 mx-auto mb-2 text-muted-foreground/50" />
+                <p className="text-sm text-muted-foreground">No open positions</p>
+              </div>
+            )}
           </div>
         </div>
 
@@ -113,16 +125,22 @@ const Index = () => {
           <div className="glass rounded-lg p-8 text-center">
             <div className="animate-pulse text-muted-foreground">Loading trades...</div>
           </div>
+        ) : trades.length > 0 ? (
+          <TradesTable trades={trades} />
         ) : (
-          <TradesTable trades={displayTrades} />
+          <div className="glass rounded-lg p-8 text-center">
+            <AlertCircle className="w-10 h-10 mx-auto mb-3 text-muted-foreground/50" />
+            <p className="text-muted-foreground mb-2">No trades found</p>
+            <p className="text-xs text-muted-foreground/70">Click "Refresh Data" to fetch trades from Polymarket</p>
+          </div>
         )}
 
         {/* Footer Note */}
         <div className="text-center py-8">
           <p className="text-xs text-muted-foreground">
-            {isLiveData 
+            {hasData 
               ? 'Showing live data from Polymarket. Click "Refresh Data" to update.'
-              : 'Showing demo data. Click "Refresh Data" to fetch live trades from Polymarket.'
+              : 'No data yet. Click "Refresh Data" to fetch live trades from Polymarket.'
             }
           </p>
         </div>
