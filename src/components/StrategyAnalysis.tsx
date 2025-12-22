@@ -1742,20 +1742,30 @@ export function LiveOpenPositions({ positions, trades }: LiveOpenPositionsProps)
                 </td>
                 <td className="text-center px-2">
                   {group.yesPos ? (
-                    <span className="font-mono">
-                      {(group.yesPrice * 100).toFixed(0)}¢
-                      <span className="text-muted-foreground ml-1">({group.yesShares.toFixed(0)})</span>
-                    </span>
+                    <div className="font-mono">
+                      <div>
+                        {(group.yesPrice * 100).toFixed(0)}¢
+                        <span className="text-muted-foreground ml-1">({group.yesShares.toFixed(0)})</span>
+                      </div>
+                      <div className="text-[10px] text-muted-foreground">
+                        ${(group.yesShares * group.yesPrice).toFixed(2)}
+                      </div>
+                    </div>
                   ) : (
                     <span className="text-muted-foreground">-</span>
                   )}
                 </td>
                 <td className="text-center px-2">
                   {group.noPos ? (
-                    <span className="font-mono">
-                      {(group.noPrice * 100).toFixed(0)}¢
-                      <span className="text-muted-foreground ml-1">({group.noShares.toFixed(0)})</span>
-                    </span>
+                    <div className="font-mono">
+                      <div>
+                        {(group.noPrice * 100).toFixed(0)}¢
+                        <span className="text-muted-foreground ml-1">({group.noShares.toFixed(0)})</span>
+                      </div>
+                      <div className="text-[10px] text-muted-foreground">
+                        ${(group.noShares * group.noPrice).toFixed(2)}
+                      </div>
+                    </div>
                   ) : (
                     <span className="text-muted-foreground">-</span>
                   )}
