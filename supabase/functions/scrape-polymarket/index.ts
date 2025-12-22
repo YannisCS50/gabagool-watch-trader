@@ -71,7 +71,7 @@ Deno.serve(async (req) => {
     const limit = 100;
     let hasMore = true;
     let attempts = 0;
-    const maxAttempts = 50; // Max 5000 trades
+    const maxAttempts = 100; // Max 10,000 trades
     
     // Method 1: Paginate through /trades endpoint
     while (hasMore && attempts < maxAttempts) {
@@ -168,26 +168,32 @@ Deno.serve(async (req) => {
       console.log(`Total trades from /activity endpoint: ${trades.length}`);
     }
 
-    // Method 3: Also try the Gamma API for additional trades
-    if (trades.length < 100) {
-      try {
-        const gammaUrl = `${POLYMARKET_GAMMA_API}/users?username=${username}`;
-        console.log('Trying Gamma API for user data:', gammaUrl);
+    // Method 3: Try the Gamma API for additional trades via wallet address
+    try {
+      const gammaUrl = `${POLYMARKET_GAMMA_API}/users?username=${username}`;
+      console.log('Trying Gamma API for user data:', gammaUrl);
+      
+      const gammaResponse = await fetch(gammaUrl, {
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'PolyTracker/1.0',
+        },
+      });
+      
+      if (gammaResponse.ok) {
+        const userData = await gammaResponse.json();
+        console.log('Gamma API user data:', JSON.stringify(userData).slice(0, 200));
         
-        const gammaResponse = await fetch(gammaUrl, {
-          headers: {
-            'Accept': 'application/json',
-            'User-Agent': 'PolyTracker/1.0',
-          },
-        });
-        
-        if (gammaResponse.ok) {
-          const userData = await gammaResponse.json();
-          console.log('Gamma API user data:', JSON.stringify(userData).slice(0, 200));
+        // If we get a proxyWallet, try fetching ALL trades by wallet with pagination
+        if (userData && userData.proxyWallet) {
+          let walletOffset = 0;
+          let walletHasMore = true;
+          let walletAttempts = 0;
           
-          // If we get a proxyWallet, try fetching trades by wallet
-          if (userData && userData.proxyWallet) {
-            const walletTradesUrl = `${POLYMARKET_DATA_API}/trades?proxyWallet=${userData.proxyWallet}&limit=500`;
+          while (walletHasMore && walletAttempts < maxAttempts) {
+            const walletTradesUrl = `${POLYMARKET_DATA_API}/trades?proxyWallet=${userData.proxyWallet}&limit=${limit}&offset=${walletOffset}`;
+            console.log(`Fetching wallet trades page ${walletAttempts + 1}: offset=${walletOffset}`);
+            
             const walletResponse = await fetch(walletTradesUrl, {
               headers: {
                 'Accept': 'application/json',
@@ -197,19 +203,61 @@ Deno.serve(async (req) => {
             
             if (walletResponse.ok) {
               const walletTrades = await walletResponse.json();
-              if (Array.isArray(walletTrades)) {
-                console.log(`Got ${walletTrades.length} trades from wallet lookup`);
+              if (Array.isArray(walletTrades) && walletTrades.length > 0) {
                 // Merge with existing trades, avoiding duplicates
                 const existingHashes = new Set(trades.map(t => t.transactionHash));
                 const newTrades = walletTrades.filter((t: any) => !existingHashes.has(t.transactionHash));
                 trades = [...trades, ...newTrades];
+                console.log(`Got ${newTrades.length} new wallet trades (total: ${trades.length})`);
+                
+                walletOffset += limit;
+                walletAttempts++;
+                
+                if (walletTrades.length < limit) {
+                  walletHasMore = false;
+                }
+              } else {
+                walletHasMore = false;
               }
+            } else {
+              console.log('Wallet trades endpoint failed:', walletResponse.status);
+              walletHasMore = false;
+            }
+            
+            if (walletHasMore) {
+              await new Promise(resolve => setTimeout(resolve, 200));
             }
           }
+          console.log(`Total trades after wallet lookup: ${trades.length}`);
         }
-      } catch (e) {
-        console.error('Gamma API error:', e);
       }
+    } catch (e) {
+      console.error('Gamma API error:', e);
+    }
+
+    // Method 4: Try CLOB API for even more historical data
+    try {
+      const clobUrl = `https://clob.polymarket.com/trades?username=${username}&limit=500`;
+      console.log('Trying CLOB API:', clobUrl);
+      
+      const clobResponse = await fetch(clobUrl, {
+        headers: {
+          'Accept': 'application/json',
+          'User-Agent': 'PolyTracker/1.0',
+        },
+      });
+      
+      if (clobResponse.ok) {
+        const clobData = await clobResponse.json();
+        if (Array.isArray(clobData)) {
+          const existingHashes = new Set(trades.map(t => t.transactionHash));
+          const newTrades = clobData.filter((t: any) => !existingHashes.has(t.transactionHash));
+          trades = [...trades, ...newTrades];
+          console.log(`Got ${newTrades.length} trades from CLOB API (total: ${trades.length})`);
+        }
+      }
+    } catch (e) {
+      console.error('CLOB API error:', e);
     }
 
     console.log(`Final total: ${trades.length} unique trades`);
