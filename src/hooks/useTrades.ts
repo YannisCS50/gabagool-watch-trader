@@ -3,25 +3,36 @@ import { supabase } from '@/integrations/supabase/client';
 import { Trade, TraderStats, MarketPosition } from '@/types/trade';
 import { useToast } from '@/hooks/use-toast';
 
-export function useTrades(username: string = 'gabagool22', limit: number = 2000) {
+export function useTrades(username: string = 'gabagool22') {
   const { toast } = useToast();
 
   const tradesQuery = useQuery({
-    queryKey: ['trades', username, limit],
-    refetchInterval: 30000, // Auto-refresh every 30 seconds
-    staleTime: 25000, // Consider data fresh for 25 seconds
+    queryKey: ['trades', username],
+    refetchInterval: 5 * 60 * 1000, // Refresh every 5 minutes
+    staleTime: 4 * 60 * 1000, // Consider data fresh for 4 minutes
     queryFn: async () => {
-      // Fetch trades with a limit for better performance
-      const { data, error } = await supabase
-        .from('trades')
-        .select('*')
-        .eq('trader_username', username)
-        .order('timestamp', { ascending: false })
-        .limit(limit);
+      // Fetch ALL trades with pagination
+      let allTrades: any[] = [];
+      let offset = 0;
+      const pageSize = 1000;
+      
+      while (true) {
+        const { data, error } = await supabase
+          .from('trades')
+          .select('*')
+          .eq('trader_username', username)
+          .order('timestamp', { ascending: false })
+          .range(offset, offset + pageSize - 1);
 
-      if (error) throw error;
+        if (error) throw error;
+        if (!data || data.length === 0) break;
+        
+        allTrades = [...allTrades, ...data];
+        if (data.length < pageSize) break;
+        offset += pageSize;
+      }
 
-      return (data || []).map((t): Trade => ({
+      return allTrades.map((t): Trade => ({
         id: t.id,
         timestamp: new Date(t.timestamp),
         market: t.market,
@@ -38,7 +49,8 @@ export function useTrades(username: string = 'gabagool22', limit: number = 2000)
 
   const statsQuery = useQuery({
     queryKey: ['trader-stats', username],
-    refetchInterval: 30000, // Auto-refresh every 30 seconds
+    refetchInterval: 5 * 60 * 1000, // Refresh every 5 minutes
+    staleTime: 4 * 60 * 1000, // Consider data fresh for 4 minutes
     queryFn: async () => {
       const { data, error } = await supabase
         .from('trader_stats')
@@ -72,7 +84,8 @@ export function useTrades(username: string = 'gabagool22', limit: number = 2000)
 
   const positionsQuery = useQuery({
     queryKey: ['positions', username],
-    refetchInterval: 30000, // Auto-refresh every 30 seconds
+    refetchInterval: 5 * 60 * 1000, // Refresh every 5 minutes
+    staleTime: 4 * 60 * 1000, // Consider data fresh for 4 minutes
     queryFn: async () => {
       const { data, error } = await supabase
         .from('positions')
