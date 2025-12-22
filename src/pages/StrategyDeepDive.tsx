@@ -11,7 +11,15 @@ import {
   GitBranch,
   Coins,
   Timer,
-  Activity
+  Activity,
+  Shield,
+  ShieldAlert,
+  DollarSign,
+  TrendingDown,
+  Layers,
+  ArrowRight,
+  CheckCircle2,
+  XCircle
 } from 'lucide-react';
 import { useTrades } from '@/hooks/useTrades';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -49,7 +57,201 @@ interface HedgePair {
 }
 
 const StrategyDeepDive = () => {
-  const { trades } = useTrades('gabagool22');
+  const { trades, positions } = useTrades('gabagool22');
+
+  // Calculate position exposure and unrealized P&L
+  const exposureAnalysis = useMemo(() => {
+    if (positions.length === 0) return null;
+
+    // Group positions by market
+    const marketPositions = new Map<string, typeof positions>();
+    positions.forEach(p => {
+      if (!marketPositions.has(p.market)) marketPositions.set(p.market, []);
+      marketPositions.get(p.market)!.push(p);
+    });
+
+    let totalExposedCapital = 0;
+    let totalHedgedCapital = 0;
+    let upExposedShares = 0;
+    let downExposedShares = 0;
+    let upExposedValue = 0;
+    let downExposedValue = 0;
+    const exposedPositions: Array<{
+      market: string;
+      side: string;
+      exposedShares: number;
+      exposedValue: number;
+      pnl: number;
+      avgPrice: number;
+      currentPrice: number;
+    }> = [];
+
+    marketPositions.forEach((marketPos, market) => {
+      const upPos = marketPos.find(p => 
+        p.outcome === 'Yes' || p.outcome.toLowerCase().includes('up') || p.outcome.toLowerCase().includes('above')
+      );
+      const downPos = marketPos.find(p => 
+        p.outcome === 'No' || p.outcome.toLowerCase().includes('down') || p.outcome.toLowerCase().includes('below')
+      );
+
+      const upShares = upPos?.shares || 0;
+      const downShares = downPos?.shares || 0;
+      const minShares = Math.min(upShares, downShares);
+      
+      // Hedged capital (matched shares)
+      const hedgedValue = minShares * ((upPos?.avgPrice || 0) + (downPos?.avgPrice || 0));
+      totalHedgedCapital += hedgedValue;
+
+      // Exposed capital (unmatched shares)
+      if (upShares > downShares && upPos) {
+        const exposed = upShares - downShares;
+        const exposedVal = exposed * upPos.avgPrice;
+        upExposedShares += exposed;
+        upExposedValue += exposedVal;
+        totalExposedCapital += exposedVal;
+        
+        exposedPositions.push({
+          market,
+          side: 'Up',
+          exposedShares: exposed,
+          exposedValue: exposedVal,
+          pnl: upPos.pnl || 0,
+          avgPrice: upPos.avgPrice,
+          currentPrice: upPos.currentPrice
+        });
+      } else if (downShares > upShares && downPos) {
+        const exposed = downShares - upShares;
+        const exposedVal = exposed * downPos.avgPrice;
+        downExposedShares += exposed;
+        downExposedValue += exposedVal;
+        totalExposedCapital += exposedVal;
+        
+        exposedPositions.push({
+          market,
+          side: 'Down',
+          exposedShares: exposed,
+          exposedValue: exposedVal,
+          pnl: downPos.pnl || 0,
+          avgPrice: downPos.avgPrice,
+          currentPrice: downPos.currentPrice
+        });
+      }
+    });
+
+    // Sort by exposure value
+    const topExposed = [...exposedPositions].sort((a, b) => b.exposedValue - a.exposedValue).slice(0, 10);
+
+    // Calculate total unrealized P&L
+    const totalPnl = positions.reduce((sum, p) => sum + (p.pnl || 0), 0);
+    const winningPositions = positions.filter(p => (p.pnl || 0) > 0);
+    const losingPositions = positions.filter(p => (p.pnl || 0) < 0);
+    const totalWinning = winningPositions.reduce((sum, p) => sum + (p.pnl || 0), 0);
+    const totalLosing = losingPositions.reduce((sum, p) => sum + (p.pnl || 0), 0);
+
+    // Top winners and losers
+    const topWinners = [...positions].filter(p => (p.pnl || 0) > 0).sort((a, b) => (b.pnl || 0) - (a.pnl || 0)).slice(0, 5);
+    const topLosers = [...positions].filter(p => (p.pnl || 0) < 0).sort((a, b) => (a.pnl || 0) - (b.pnl || 0)).slice(0, 5);
+
+    return {
+      totalExposedCapital,
+      totalHedgedCapital,
+      exposurePercent: totalHedgedCapital + totalExposedCapital > 0 
+        ? (totalExposedCapital / (totalHedgedCapital + totalExposedCapital)) * 100 
+        : 0,
+      upExposedShares,
+      downExposedShares,
+      upExposedValue,
+      downExposedValue,
+      topExposed,
+      totalPnl,
+      winningCount: winningPositions.length,
+      losingCount: losingPositions.length,
+      totalWinning,
+      totalLosing,
+      topWinners,
+      topLosers
+    };
+  }, [positions]);
+
+  // DCA Analysis - analyze buy patterns by price bucket
+  const dcaAnalysis = useMemo(() => {
+    if (trades.length === 0) return null;
+
+    const buyTrades = trades.filter(t => t.side === 'buy');
+    
+    // Price buckets for entry analysis
+    const priceBuckets = [
+      { label: '< 20¢', min: 0, max: 0.20, count: 0, totalShares: 0, totalValue: 0, avgSize: 0 },
+      { label: '20-35¢', min: 0.20, max: 0.35, count: 0, totalShares: 0, totalValue: 0, avgSize: 0 },
+      { label: '35-45¢', min: 0.35, max: 0.45, count: 0, totalShares: 0, totalValue: 0, avgSize: 0 },
+      { label: '45-50¢', min: 0.45, max: 0.50, count: 0, totalShares: 0, totalValue: 0, avgSize: 0 },
+      { label: '50-55¢', min: 0.50, max: 0.55, count: 0, totalShares: 0, totalValue: 0, avgSize: 0 },
+      { label: '> 55¢', min: 0.55, max: 1.0, count: 0, totalShares: 0, totalValue: 0, avgSize: 0 },
+    ];
+
+    buyTrades.forEach(t => {
+      const bucket = priceBuckets.find(b => t.price >= b.min && t.price < b.max);
+      if (bucket) {
+        bucket.count++;
+        bucket.totalShares += t.shares;
+        bucket.totalValue += t.total;
+      }
+    });
+
+    priceBuckets.forEach(b => {
+      b.avgSize = b.count > 0 ? b.totalShares / b.count : 0;
+    });
+
+    // Share size distribution
+    const sizeBuckets = [
+      { label: '1-5', min: 1, max: 5, count: 0 },
+      { label: '6-10', min: 6, max: 10, count: 0 },
+      { label: '11-15', min: 11, max: 15, count: 0 },
+      { label: '16-20', min: 16, max: 20, count: 0 },
+      { label: '> 20', min: 21, max: Infinity, count: 0 },
+    ];
+
+    buyTrades.forEach(t => {
+      const bucket = sizeBuckets.find(b => t.shares >= b.min && t.shares <= b.max);
+      if (bucket) bucket.count++;
+    });
+
+    // Calculate price improvement rate (DCA success)
+    // Group by market and check if subsequent buys are at better prices
+    const marketBuys = new Map<string, typeof buyTrades>();
+    buyTrades.forEach(t => {
+      const key = `${t.market}-${t.outcome}`;
+      if (!marketBuys.has(key)) marketBuys.set(key, []);
+      marketBuys.get(key)!.push(t);
+    });
+
+    let improvedBuys = 0;
+    let subsequentBuys = 0;
+    
+    marketBuys.forEach((buys) => {
+      if (buys.length < 2) return;
+      
+      // Sort by timestamp
+      const sorted = [...buys].sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+      const firstPrice = sorted[0].price;
+      
+      sorted.slice(1).forEach(buy => {
+        subsequentBuys++;
+        if (buy.price < firstPrice) improvedBuys++;
+      });
+    });
+
+    const priceImprovementRate = subsequentBuys > 0 ? (improvedBuys / subsequentBuys) * 100 : 0;
+
+    return {
+      priceBuckets,
+      sizeBuckets,
+      priceImprovementRate,
+      totalBuys: buyTrades.length,
+      avgBuyPrice: buyTrades.reduce((sum, t) => sum + t.price, 0) / buyTrades.length,
+      avgShareSize: buyTrades.reduce((sum, t) => sum + t.shares, 0) / buyTrades.length
+    };
+  }, [trades]);
 
   const analysis = useMemo(() => {
     if (trades.length === 0) return null;
@@ -382,6 +584,533 @@ const StrategyDeepDive = () => {
             </CardContent>
           </Card>
         </section>
+
+        {/* Strategy Flow Diagram - NEW */}
+        <section className="space-y-4">
+          <h2 className="text-lg font-semibold flex items-center gap-2">
+            <GitBranch className="w-5 h-5 text-primary" />
+            Strategy Decision Flow
+          </h2>
+
+          <Card className="glass overflow-hidden">
+            <CardContent className="pt-6">
+              <div className="relative">
+                {/* Flow diagram */}
+                <div className="flex flex-col lg:flex-row items-stretch gap-4">
+                  {/* Step 1 - Scan */}
+                  <div className="flex-1 p-4 rounded-lg bg-gradient-to-br from-primary/20 to-primary/5 border border-primary/30 relative">
+                    <div className="absolute -top-3 left-4 px-2 py-0.5 bg-primary text-primary-foreground text-xs font-bold rounded">
+                      SCAN
+                    </div>
+                    <div className="flex items-center gap-3 mt-2">
+                      <Target className="w-8 h-8 text-primary" />
+                      <div>
+                        <p className="font-medium text-sm">Monitor Markets</p>
+                        <p className="text-xs text-muted-foreground">Find pricing inefficiencies</p>
+                      </div>
+                    </div>
+                    <div className="mt-3 text-xs font-mono bg-background/50 p-2 rounded">
+                      Active: {analysis?.totalPairs || 0} markets tracked
+                    </div>
+                  </div>
+
+                  <ArrowRight className="w-6 h-6 text-muted-foreground self-center hidden lg:block" />
+                  <div className="h-6 w-0.5 bg-muted-foreground/30 self-center lg:hidden" />
+
+                  {/* Step 2 - Analyze */}
+                  <div className="flex-1 p-4 rounded-lg bg-gradient-to-br from-chart-4/20 to-chart-4/5 border border-chart-4/30 relative">
+                    <div className="absolute -top-3 left-4 px-2 py-0.5 bg-chart-4 text-primary-foreground text-xs font-bold rounded">
+                      ANALYZE
+                    </div>
+                    <div className="flex items-center gap-3 mt-2">
+                      <BarChart3 className="w-8 h-8 text-chart-4" />
+                      <div>
+                        <p className="font-medium text-sm">Price Analysis</p>
+                        <p className="text-xs text-muted-foreground">Evaluate both sides</p>
+                      </div>
+                    </div>
+                    <div className="mt-3 space-y-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-muted-foreground">&lt; 40¢</span>
+                        <span className="text-success font-mono">Aggressive Buy</span>
+                      </div>
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-muted-foreground">40-50¢</span>
+                        <span className="text-chart-4 font-mono">Standard DCA</span>
+                      </div>
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-muted-foreground">&gt; 50¢</span>
+                        <span className="text-warning font-mono">Cautious</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <ArrowRight className="w-6 h-6 text-muted-foreground self-center hidden lg:block" />
+                  <div className="h-6 w-0.5 bg-muted-foreground/30 self-center lg:hidden" />
+
+                  {/* Step 3 - Entry */}
+                  <div className="flex-1 p-4 rounded-lg bg-gradient-to-br from-success/20 to-success/5 border border-success/30 relative">
+                    <div className="absolute -top-3 left-4 px-2 py-0.5 bg-success text-success-foreground text-xs font-bold rounded">
+                      ENTRY
+                    </div>
+                    <div className="flex items-center gap-3 mt-2">
+                      <TrendingDown className="w-8 h-8 text-success" />
+                      <div>
+                        <p className="font-medium text-sm">Buy Cheaper Side</p>
+                        <p className="text-xs text-muted-foreground">Start with lowest price</p>
+                      </div>
+                    </div>
+                    <div className="mt-3 text-xs font-mono bg-background/50 p-2 rounded">
+                      {analysis ? (
+                        <>
+                          {analysis.downFirst > analysis.upFirst ? 'Down' : 'Up'} first: {Math.round((Math.max(analysis.downFirst, analysis.upFirst) / analysis.totalPairs) * 100)}%
+                        </>
+                      ) : '...'}
+                    </div>
+                  </div>
+
+                  <ArrowRight className="w-6 h-6 text-muted-foreground self-center hidden lg:block" />
+                  <div className="h-6 w-0.5 bg-muted-foreground/30 self-center lg:hidden" />
+
+                  {/* Step 4 - Hedge */}
+                  <div className="flex-1 p-4 rounded-lg bg-gradient-to-br from-warning/20 to-warning/5 border border-warning/30 relative">
+                    <div className="absolute -top-3 left-4 px-2 py-0.5 bg-warning text-warning-foreground text-xs font-bold rounded">
+                      HEDGE
+                    </div>
+                    <div className="flex items-center gap-3 mt-2">
+                      <Shield className="w-8 h-8 text-warning" />
+                      <div>
+                        <p className="font-medium text-sm">Lock Arbitrage</p>
+                        <p className="text-xs text-muted-foreground">Target combined &lt; 98¢</p>
+                      </div>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                      <div className="flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3 text-success" />
+                        <span className="font-mono text-success">{analysis?.arbitrageCount || 0}</span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <XCircle className="w-3 h-3 text-destructive" />
+                        <span className="font-mono text-destructive">{analysis?.riskCount || 0}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Decision summary */}
+                <div className="mt-6 grid grid-cols-2 lg:grid-cols-4 gap-3">
+                  <div className="p-3 rounded-lg bg-secondary/50 text-center">
+                    <p className="text-2xl font-mono font-bold text-success">{analysis ? Math.round((analysis.arbitrageCount / analysis.totalPairs) * 100) : 0}%</p>
+                    <p className="text-xs text-muted-foreground">Arbitrage Success</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-secondary/50 text-center">
+                    <p className="text-2xl font-mono font-bold text-chart-4">{analysis?.avgDelay?.toFixed(0) || 0}s</p>
+                    <p className="text-xs text-muted-foreground">Avg Hedge Delay</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-secondary/50 text-center">
+                    <p className="text-2xl font-mono font-bold">{dcaAnalysis ? (dcaAnalysis.avgBuyPrice * 100).toFixed(0) : 0}¢</p>
+                    <p className="text-xs text-muted-foreground">Avg Entry Price</p>
+                  </div>
+                  <div className="p-3 rounded-lg bg-secondary/50 text-center">
+                    <p className="text-2xl font-mono font-bold">{dcaAnalysis?.avgShareSize?.toFixed(1) || 0}</p>
+                    <p className="text-xs text-muted-foreground">Avg Share Size</p>
+                  </div>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </section>
+
+        {/* Position Exposure Monitor - NEW */}
+        {exposureAnalysis && (
+          <section className="space-y-4">
+            <h2 className="text-lg font-semibold flex items-center gap-2">
+              <ShieldAlert className="w-5 h-5 text-warning" />
+              Position Exposure Monitor
+            </h2>
+
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              <Card className="glass">
+                <CardContent className="pt-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Exposed Capital</p>
+                      <p className="text-2xl font-mono font-bold text-warning">
+                        ${exposureAnalysis.totalExposedCapital.toFixed(0)}
+                      </p>
+                    </div>
+                    <div className="p-2 rounded-lg bg-warning/10">
+                      <ShieldAlert className="w-5 h-5 text-warning" />
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    {exposureAnalysis.exposurePercent.toFixed(1)}% of total
+                  </p>
+                </CardContent>
+              </Card>
+
+              <Card className="glass">
+                <CardContent className="pt-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Hedged Capital</p>
+                      <p className="text-2xl font-mono font-bold text-success">
+                        ${exposureAnalysis.totalHedgedCapital.toFixed(0)}
+                      </p>
+                    </div>
+                    <div className="p-2 rounded-lg bg-success/10">
+                      <Shield className="w-5 h-5 text-success" />
+                    </div>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-2">
+                    {(100 - exposureAnalysis.exposurePercent).toFixed(1)}% protected
+                  </p>
+                </CardContent>
+              </Card>
+
+              <Card className="glass">
+                <CardContent className="pt-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Unrealized P&L</p>
+                      <p className={`text-2xl font-mono font-bold ${exposureAnalysis.totalPnl >= 0 ? 'text-success' : 'text-destructive'}`}>
+                        {exposureAnalysis.totalPnl >= 0 ? '+' : ''}{exposureAnalysis.totalPnl.toFixed(2)}
+                      </p>
+                    </div>
+                    <div className={`p-2 rounded-lg ${exposureAnalysis.totalPnl >= 0 ? 'bg-success/10' : 'bg-destructive/10'}`}>
+                      <DollarSign className={`w-5 h-5 ${exposureAnalysis.totalPnl >= 0 ? 'text-success' : 'text-destructive'}`} />
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="glass">
+                <CardContent className="pt-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Win/Loss Ratio</p>
+                      <p className="text-2xl font-mono font-bold">
+                        <span className="text-success">{exposureAnalysis.winningCount}</span>
+                        <span className="text-muted-foreground">/</span>
+                        <span className="text-destructive">{exposureAnalysis.losingCount}</span>
+                      </p>
+                    </div>
+                    <div className="p-2 rounded-lg bg-chart-4/10">
+                      <TrendingUp className="w-5 h-5 text-chart-4" />
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            <div className="grid lg:grid-cols-2 gap-4">
+              {/* Exposure Distribution */}
+              <Card className="glass">
+                <CardHeader>
+                  <CardTitle className="text-sm">Exposure by Side</CardTitle>
+                  <CardDescription>Unhedged shares distribution</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="h-[200px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={[
+                            { name: 'Up Exposed', value: exposureAnalysis.upExposedValue, color: 'hsl(var(--chart-4))' },
+                            { name: 'Down Exposed', value: exposureAnalysis.downExposedValue, color: 'hsl(var(--warning))' },
+                            { name: 'Hedged', value: exposureAnalysis.totalHedgedCapital, color: 'hsl(var(--success))' },
+                          ]}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={50}
+                          outerRadius={75}
+                          dataKey="value"
+                          label={({ name, percent }) => percent > 0.05 ? `${name.split(' ')[0]} ${(percent * 100).toFixed(0)}%` : ''}
+                        >
+                          <Cell fill="hsl(var(--chart-4))" />
+                          <Cell fill="hsl(var(--warning))" />
+                          <Cell fill="hsl(var(--success))" />
+                        </Pie>
+                        <Tooltip 
+                          contentStyle={{ 
+                            backgroundColor: 'hsl(var(--card))', 
+                            border: '1px solid hsl(var(--border))',
+                            borderRadius: '8px'
+                          }}
+                          formatter={(value: number) => [`$${value.toFixed(2)}`, 'Value']}
+                        />
+                        <Legend />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
+                    <div className="p-2 rounded bg-chart-4/10 flex items-center justify-between">
+                      <span>Up Exposure</span>
+                      <span className="font-mono">{exposureAnalysis.upExposedShares} shares</span>
+                    </div>
+                    <div className="p-2 rounded bg-warning/10 flex items-center justify-between">
+                      <span>Down Exposure</span>
+                      <span className="font-mono">{exposureAnalysis.downExposedShares} shares</span>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Top Exposed Positions */}
+              <Card className="glass">
+                <CardHeader>
+                  <CardTitle className="text-sm">Top Exposed Positions</CardTitle>
+                  <CardDescription>Largest unhedged positions by value</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="overflow-x-auto max-h-[280px]">
+                    <table className="w-full text-xs">
+                      <thead className="sticky top-0 bg-card">
+                        <tr className="border-b border-border">
+                          <th className="text-left p-2 font-medium text-muted-foreground">Market</th>
+                          <th className="text-right p-2 font-medium text-muted-foreground">Side</th>
+                          <th className="text-right p-2 font-medium text-muted-foreground">Exposed</th>
+                          <th className="text-right p-2 font-medium text-muted-foreground">P&L</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {exposureAnalysis.topExposed.map((pos, i) => (
+                          <tr key={i} className="border-b border-border/50 hover:bg-secondary/30">
+                            <td className="p-2 font-mono truncate max-w-[150px]">{pos.market}</td>
+                            <td className="p-2 text-right">
+                              <Badge variant="outline" className={pos.side === 'Up' ? 'text-chart-4 border-chart-4/50' : 'text-warning border-warning/50'}>
+                                {pos.side}
+                              </Badge>
+                            </td>
+                            <td className="p-2 text-right font-mono">${pos.exposedValue.toFixed(2)}</td>
+                            <td className={`p-2 text-right font-mono ${pos.pnl >= 0 ? 'text-success' : 'text-destructive'}`}>
+                              {pos.pnl >= 0 ? '+' : ''}{pos.pnl.toFixed(2)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* P&L Breakdown */}
+            <Card className="glass">
+              <CardHeader>
+                <CardTitle className="text-sm">Unrealized P&L Breakdown</CardTitle>
+                <CardDescription>Top winners and losers in current positions</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="grid lg:grid-cols-2 gap-6">
+                  {/* Top Winners */}
+                  <div>
+                    <h4 className="text-xs font-medium text-success mb-3 flex items-center gap-2">
+                      <TrendingUp className="w-4 h-4" />
+                      Top Winners (+${exposureAnalysis.totalWinning.toFixed(2)})
+                    </h4>
+                    <div className="space-y-2">
+                      {exposureAnalysis.topWinners.map((pos, i) => (
+                        <div key={i} className="flex items-center justify-between p-2 rounded bg-success/5 border border-success/20">
+                          <span className="text-xs truncate max-w-[200px]">{pos.market}</span>
+                          <span className="text-xs font-mono text-success">+${(pos.pnl || 0).toFixed(2)}</span>
+                        </div>
+                      ))}
+                      {exposureAnalysis.topWinners.length === 0 && (
+                        <p className="text-xs text-muted-foreground text-center py-4">No winning positions</p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Top Losers */}
+                  <div>
+                    <h4 className="text-xs font-medium text-destructive mb-3 flex items-center gap-2">
+                      <TrendingDown className="w-4 h-4" />
+                      Top Losers ({exposureAnalysis.totalLosing >= 0 ? '+' : ''}{exposureAnalysis.totalLosing.toFixed(2)})
+                    </h4>
+                    <div className="space-y-2">
+                      {exposureAnalysis.topLosers.map((pos, i) => (
+                        <div key={i} className="flex items-center justify-between p-2 rounded bg-destructive/5 border border-destructive/20">
+                          <span className="text-xs truncate max-w-[200px]">{pos.market}</span>
+                          <span className="text-xs font-mono text-destructive">${(pos.pnl || 0).toFixed(2)}</span>
+                        </div>
+                      ))}
+                      {exposureAnalysis.topLosers.length === 0 && (
+                        <p className="text-xs text-muted-foreground text-center py-4">No losing positions</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </section>
+        )}
+
+        {/* DCA & Sizing Analysis - NEW */}
+        {dcaAnalysis && (
+          <section className="space-y-4">
+            <h2 className="text-lg font-semibold flex items-center gap-2">
+              <Layers className="w-5 h-5 text-primary" />
+              DCA & Sizing Analysis
+            </h2>
+
+            <div className="grid lg:grid-cols-2 gap-4">
+              {/* Price Bucket Distribution */}
+              <Card className="glass">
+                <CardHeader>
+                  <CardTitle className="text-sm">Entry Price Distribution</CardTitle>
+                  <CardDescription>Buy volume by price range</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="h-[250px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={dcaAnalysis.priceBuckets}>
+                        <XAxis dataKey="label" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }} />
+                        <YAxis tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }} />
+                        <Tooltip 
+                          contentStyle={{ 
+                            backgroundColor: 'hsl(var(--card))', 
+                            border: '1px solid hsl(var(--border))',
+                            borderRadius: '8px'
+                          }}
+                          formatter={(value: number, name: string) => {
+                            if (name === 'count') return [`${value} trades`, 'Trades'];
+                            if (name === 'totalValue') return [`$${value.toFixed(2)}`, 'Volume'];
+                            return [value, name];
+                          }}
+                        />
+                        <Legend />
+                        <Bar dataKey="count" fill="hsl(var(--primary))" name="Trades" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="mt-4 p-3 rounded-lg bg-secondary/50">
+                    <p className="text-xs text-muted-foreground">
+                      <strong>Pattern:</strong> {dcaAnalysis.priceBuckets[0].count + dcaAnalysis.priceBuckets[1].count > dcaAnalysis.priceBuckets[4].count + dcaAnalysis.priceBuckets[5].count
+                        ? 'More aggressive buying at lower prices (<35¢)'
+                        : 'Conservative approach with buys spread across price ranges'
+                      }
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Share Size Distribution */}
+              <Card className="glass">
+                <CardHeader>
+                  <CardTitle className="text-sm">Position Sizing Strategy</CardTitle>
+                  <CardDescription>Share size per trade</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="h-[250px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={dcaAnalysis.sizeBuckets} layout="vertical">
+                        <XAxis type="number" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }} />
+                        <YAxis type="category" dataKey="label" tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 12 }} width={50} />
+                        <Tooltip 
+                          contentStyle={{ 
+                            backgroundColor: 'hsl(var(--card))', 
+                            border: '1px solid hsl(var(--border))',
+                            borderRadius: '8px'
+                          }}
+                          formatter={(value: number) => [`${value} trades`, 'Count']}
+                        />
+                        <Bar dataKey="count" fill="hsl(var(--chart-4))" name="Trades" radius={[0, 4, 4, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="mt-4 grid grid-cols-2 gap-4 text-center">
+                    <div className="p-3 rounded-lg bg-secondary/50">
+                      <p className="text-xs text-muted-foreground">Avg Size</p>
+                      <p className="text-lg font-mono font-bold">{dcaAnalysis.avgShareSize.toFixed(1)}</p>
+                    </div>
+                    <div className="p-3 rounded-lg bg-secondary/50">
+                      <p className="text-xs text-muted-foreground">Total Buys</p>
+                      <p className="text-lg font-mono font-bold">{dcaAnalysis.totalBuys.toLocaleString()}</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* DCA Performance */}
+            <Card className="glass">
+              <CardHeader>
+                <CardTitle className="text-sm">DCA Price Improvement</CardTitle>
+                <CardDescription>How often does averaging down result in better entry prices?</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center gap-6">
+                  <div className="relative w-32 h-32">
+                    <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90">
+                      <circle
+                        cx="50"
+                        cy="50"
+                        r="40"
+                        fill="none"
+                        stroke="hsl(var(--secondary))"
+                        strokeWidth="12"
+                      />
+                      <circle
+                        cx="50"
+                        cy="50"
+                        r="40"
+                        fill="none"
+                        stroke="hsl(var(--success))"
+                        strokeWidth="12"
+                        strokeDasharray={`${dcaAnalysis.priceImprovementRate * 2.51} 251`}
+                        strokeLinecap="round"
+                      />
+                    </svg>
+                    <div className="absolute inset-0 flex items-center justify-center">
+                      <span className="text-2xl font-mono font-bold">{dcaAnalysis.priceImprovementRate.toFixed(0)}%</span>
+                    </div>
+                  </div>
+                  <div className="flex-1 space-y-4">
+                    <div>
+                      <p className="text-sm font-medium">Price Improvement Rate</p>
+                      <p className="text-xs text-muted-foreground">
+                        {dcaAnalysis.priceImprovementRate.toFixed(0)}% of subsequent DCA buys are at a better price than the initial entry
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="p-3 rounded-lg bg-success/10 border border-success/20">
+                        <p className="text-xs text-muted-foreground">Avg Entry</p>
+                        <p className="text-lg font-mono font-bold text-success">{(dcaAnalysis.avgBuyPrice * 100).toFixed(1)}¢</p>
+                      </div>
+                      <div className="p-3 rounded-lg bg-chart-4/10 border border-chart-4/20">
+                        <p className="text-xs text-muted-foreground">Entry Target</p>
+                        <p className="text-lg font-mono font-bold text-chart-4">&lt; 50¢</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Sizing Rules */}
+                <div className="mt-6 p-4 rounded-lg bg-secondary/30 border border-border/50">
+                  <h4 className="text-sm font-medium mb-3 flex items-center gap-2">
+                    <Coins className="w-4 h-4 text-primary" />
+                    Inferred Sizing Rules
+                  </h4>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+                    <div className="flex items-center gap-2 p-2 rounded bg-success/10">
+                      <div className="w-2 h-2 rounded-full bg-success" />
+                      <span>&lt; 35¢: Max batch (~{dcaAnalysis.priceBuckets[0].avgSize.toFixed(0)}-{dcaAnalysis.priceBuckets[1].avgSize.toFixed(0)} shares)</span>
+                    </div>
+                    <div className="flex items-center gap-2 p-2 rounded bg-chart-4/10">
+                      <div className="w-2 h-2 rounded-full bg-chart-4" />
+                      <span>35-50¢: Medium (~{dcaAnalysis.priceBuckets[2].avgSize.toFixed(0)}-{dcaAnalysis.priceBuckets[3].avgSize.toFixed(0)} shares)</span>
+                    </div>
+                    <div className="flex items-center gap-2 p-2 rounded bg-warning/10">
+                      <div className="w-2 h-2 rounded-full bg-warning" />
+                      <span>&gt; 50¢: Small (~{dcaAnalysis.priceBuckets[4].avgSize.toFixed(0)}-{dcaAnalysis.priceBuckets[5].avgSize.toFixed(0)} shares)</span>
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </section>
+        )}
 
         {/* Timing Analysis */}
         <section className="space-y-4">
