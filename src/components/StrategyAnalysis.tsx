@@ -1159,9 +1159,31 @@ export function StrategyInsights({ trades }: StrategyAnalysisProps) {
   );
 }
 
+// Helper to determine if an outcome is positive or negative
+const isPositiveOutcomeForClosed = (outcome: string): boolean => {
+  const positive = ['yes', 'up', 'over', 'true', 'win', 'higher', 'above'];
+  return positive.some(p => outcome.toLowerCase().includes(p));
+};
+
 // NEW: Closed Bets History - shows markets where positions were sold/closed
 export function ClosedBetsHistory({ trades }: StrategyAnalysisProps) {
   const analysis = useMemo(() => {
+    // First, build a map of all buy trades per market per outcome for arbitrage calculation
+    const marketBuyPrices: Record<string, Record<string, number>> = {};
+    
+    trades.filter(t => t.side === 'buy').forEach(trade => {
+      if (!marketBuyPrices[trade.market]) marketBuyPrices[trade.market] = {};
+      
+      // Calculate weighted average price for this market/outcome
+      const existing = marketBuyPrices[trade.market][trade.outcome];
+      if (!existing) {
+        marketBuyPrices[trade.market][trade.outcome] = trade.price;
+      } else {
+        // Keep track of weighted average (simplified)
+        marketBuyPrices[trade.market][trade.outcome] = (existing + trade.price) / 2;
+      }
+    });
+    
     // Group trades by market AND outcome for proper tracking
     const positionTrades: Record<string, { buys: Trade[]; sells: Trade[] }> = {};
     
@@ -1202,6 +1224,30 @@ export function ClosedBetsHistory({ trades }: StrategyAnalysisProps) {
           return time > max ? time : max;
         }, 0);
         
+        // Calculate arbitrage score: find opposite outcome in same market
+        let arbScore: number | null = null;
+        let oppositeOutcome: string | null = null;
+        let oppositePrice: number | null = null;
+        
+        const marketOutcomes = marketBuyPrices[market];
+        if (marketOutcomes) {
+          const outcomes = Object.keys(marketOutcomes);
+          const isPositive = isPositiveOutcomeForClosed(outcome);
+          
+          // Find the opposite outcome
+          const opposite = outcomes.find(o => {
+            if (o === outcome) return false;
+            const oppIsPositive = isPositiveOutcomeForClosed(o);
+            return isPositive !== oppIsPositive;
+          });
+          
+          if (opposite) {
+            oppositeOutcome = opposite;
+            oppositePrice = marketOutcomes[opposite];
+            arbScore = avgBuyPrice + oppositePrice;
+          }
+        }
+        
         return {
           market,
           outcome,
@@ -1217,6 +1263,9 @@ export function ClosedBetsHistory({ trades }: StrategyAnalysisProps) {
           lastSellTime,
           remainingShares: Math.max(0, remainingShares),
           isFullyClosed,
+          arbScore,
+          oppositeOutcome,
+          oppositePrice,
         };
       })
       .sort((a, b) => b.lastSellTime - a.lastSellTime);
@@ -1367,6 +1416,20 @@ export function ClosedBetsHistory({ trades }: StrategyAnalysisProps) {
                     <div className="text-primary">Total: ${bet.sellVolume.toFixed(2)}</div>
                   </div>
                 </div>
+                
+                {/* Arbitrage Score */}
+                {bet.arbScore !== null && (
+                  <div className={`mt-2 p-2 rounded text-xs font-mono ${bet.arbScore < 1 ? 'bg-success/10 border border-success/20' : 'bg-destructive/10 border border-destructive/20'}`}>
+                    <div className="flex justify-between items-center">
+                      <span className="text-muted-foreground">
+                        Arb Score: {bet.outcome} (${bet.avgBuyPrice.toFixed(3)}) + {bet.oppositeOutcome} (${bet.oppositePrice?.toFixed(3)})
+                      </span>
+                      <span className={`font-semibold ${bet.arbScore < 1 ? 'text-success' : 'text-destructive'}`}>
+                        Σ {bet.arbScore.toFixed(3)} {bet.arbScore < 1 ? '✓' : '✗'}
+                      </span>
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -1415,6 +1478,19 @@ export function ClosedBetsHistory({ trades }: StrategyAnalysisProps) {
                     <div className="text-primary">${bet.sellVolume.toFixed(2)}</div>
                   </div>
                 </div>
+                {/* Arbitrage Score */}
+                {bet.arbScore !== null && (
+                  <div className={`mt-2 p-2 rounded text-xs font-mono ${bet.arbScore < 1 ? 'bg-success/10 border border-success/20' : 'bg-destructive/10 border border-destructive/20'}`}>
+                    <div className="flex justify-between items-center">
+                      <span className="text-muted-foreground">
+                        Arb: {bet.outcome} + {bet.oppositeOutcome}
+                      </span>
+                      <span className={`font-semibold ${bet.arbScore < 1 ? 'text-success' : 'text-destructive'}`}>
+                        Σ {bet.arbScore.toFixed(3)} {bet.arbScore < 1 ? '✓' : '✗'}
+                      </span>
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
           </div>
