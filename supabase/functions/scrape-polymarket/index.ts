@@ -63,69 +63,163 @@ Deno.serve(async (req) => {
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    console.log(`Fetching Polymarket trades for @${username}...`);
+    console.log(`Fetching ALL Polymarket trades for @${username}...`);
 
-    // Try multiple API endpoints to get user trades
+    // Fetch trades with pagination to get ALL historical data
     let trades: PolymarketTrade[] = [];
+    let offset = 0;
+    const limit = 100;
+    let hasMore = true;
+    let attempts = 0;
+    const maxAttempts = 50; // Max 5000 trades
     
-    // Method 1: Try the /trades endpoint with pseudonym filter
-    const tradesUrl = `${POLYMARKET_DATA_API}/trades?user=${username}&limit=100`;
-    console.log('Fetching from:', tradesUrl);
-    
-    const tradesResponse = await fetch(tradesUrl, {
-      headers: {
-        'Accept': 'application/json',
-        'User-Agent': 'PolyTracker/1.0',
-      },
-    });
-
-    if (tradesResponse.ok) {
-      const data = await tradesResponse.json();
-      if (Array.isArray(data) && data.length > 0) {
-        trades = data;
-        console.log(`Got ${trades.length} trades from /trades endpoint`);
-      }
-    } else {
-      console.log('Trades endpoint failed:', tradesResponse.status);
-    }
-
-    // Method 2: If no trades, try activity endpoint
-    if (trades.length === 0) {
-      const activityUrl = `${POLYMARKET_DATA_API}/activity?user=${username}&limit=100&sortBy=TIMESTAMP&sortDirection=DESC`;
-      console.log('Trying activity endpoint:', activityUrl);
+    // Method 1: Paginate through /trades endpoint
+    while (hasMore && attempts < maxAttempts) {
+      const tradesUrl = `${POLYMARKET_DATA_API}/trades?user=${username}&limit=${limit}&offset=${offset}`;
+      console.log(`Fetching page ${attempts + 1}: offset=${offset}`);
       
-      const activityResponse = await fetch(activityUrl, {
-        headers: {
-          'Accept': 'application/json',
-          'User-Agent': 'PolyTracker/1.0',
-        },
-      });
+      try {
+        const tradesResponse = await fetch(tradesUrl, {
+          headers: {
+            'Accept': 'application/json',
+            'User-Agent': 'PolyTracker/1.0',
+          },
+        });
 
-      if (activityResponse.ok) {
-        const activityData = await activityResponse.json();
-        if (Array.isArray(activityData)) {
-          trades = activityData.filter((a: any) => a.type === 'TRADE' || !a.type);
-          console.log(`Got ${trades.length} activities from /activity endpoint`);
+        if (tradesResponse.ok) {
+          const data = await tradesResponse.json();
+          if (Array.isArray(data) && data.length > 0) {
+            trades = [...trades, ...data];
+            console.log(`Got ${data.length} trades (total: ${trades.length})`);
+            offset += limit;
+            attempts++;
+            
+            // If we got fewer than limit, we've reached the end
+            if (data.length < limit) {
+              hasMore = false;
+            }
+          } else {
+            hasMore = false;
+          }
+        } else {
+          console.log('Trades endpoint failed:', tradesResponse.status);
+          hasMore = false;
         }
-      } else {
-        console.log('Activity endpoint failed:', activityResponse.status);
+      } catch (e) {
+        console.error('Error fetching trades page:', e);
+        hasMore = false;
+      }
+      
+      // Small delay to avoid rate limiting
+      if (hasMore) {
+        await new Promise(resolve => setTimeout(resolve, 200));
       }
     }
 
-    // Method 3: Try with proxyWallet if we have it stored
+    console.log(`Total trades from /trades endpoint: ${trades.length}`);
+
+    // Method 2: If no trades from /trades, try activity endpoint with pagination
     if (trades.length === 0) {
-      // Check if we have a cached wallet address
-      const { data: existingTrades } = await supabase
-        .from('trades')
-        .select('external_id')
-        .eq('trader_username', username)
-        .limit(1);
+      offset = 0;
+      hasMore = true;
+      attempts = 0;
       
-      if (existingTrades && existingTrades.length > 0) {
-        // Extract wallet from previous trade's transactionHash if available
-        console.log('Checking for cached wallet address from previous trades...');
+      while (hasMore && attempts < maxAttempts) {
+        const activityUrl = `${POLYMARKET_DATA_API}/activity?user=${username}&limit=${limit}&offset=${offset}&sortBy=TIMESTAMP&sortDirection=DESC`;
+        console.log(`Fetching activity page ${attempts + 1}: offset=${offset}`);
+        
+        try {
+          const activityResponse = await fetch(activityUrl, {
+            headers: {
+              'Accept': 'application/json',
+              'User-Agent': 'PolyTracker/1.0',
+            },
+          });
+
+          if (activityResponse.ok) {
+            const activityData = await activityResponse.json();
+            if (Array.isArray(activityData) && activityData.length > 0) {
+              const tradesToAdd = activityData.filter((a: any) => a.type === 'TRADE' || !a.type);
+              trades = [...trades, ...tradesToAdd];
+              console.log(`Got ${tradesToAdd.length} activities (total: ${trades.length})`);
+              offset += limit;
+              attempts++;
+              
+              if (activityData.length < limit) {
+                hasMore = false;
+              }
+            } else {
+              hasMore = false;
+            }
+          } else {
+            console.log('Activity endpoint failed:', activityResponse.status);
+            hasMore = false;
+          }
+        } catch (e) {
+          console.error('Error fetching activity page:', e);
+          hasMore = false;
+        }
+        
+        if (hasMore) {
+          await new Promise(resolve => setTimeout(resolve, 200));
+        }
+      }
+      
+      console.log(`Total trades from /activity endpoint: ${trades.length}`);
+    }
+
+    // Method 3: Also try the Gamma API for additional trades
+    if (trades.length < 100) {
+      try {
+        const gammaUrl = `${POLYMARKET_GAMMA_API}/users?username=${username}`;
+        console.log('Trying Gamma API for user data:', gammaUrl);
+        
+        const gammaResponse = await fetch(gammaUrl, {
+          headers: {
+            'Accept': 'application/json',
+            'User-Agent': 'PolyTracker/1.0',
+          },
+        });
+        
+        if (gammaResponse.ok) {
+          const userData = await gammaResponse.json();
+          console.log('Gamma API user data:', JSON.stringify(userData).slice(0, 200));
+          
+          // If we get a proxyWallet, try fetching trades by wallet
+          if (userData && userData.proxyWallet) {
+            const walletTradesUrl = `${POLYMARKET_DATA_API}/trades?proxyWallet=${userData.proxyWallet}&limit=500`;
+            const walletResponse = await fetch(walletTradesUrl, {
+              headers: {
+                'Accept': 'application/json',
+                'User-Agent': 'PolyTracker/1.0',
+              },
+            });
+            
+            if (walletResponse.ok) {
+              const walletTrades = await walletResponse.json();
+              if (Array.isArray(walletTrades)) {
+                console.log(`Got ${walletTrades.length} trades from wallet lookup`);
+                // Merge with existing trades, avoiding duplicates
+                const existingHashes = new Set(trades.map(t => t.transactionHash));
+                const newTrades = walletTrades.filter((t: any) => !existingHashes.has(t.transactionHash));
+                trades = [...trades, ...newTrades];
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.error('Gamma API error:', e);
       }
     }
+
+    console.log(`Final total: ${trades.length} unique trades`);
+
+    // Deduplicate trades by transactionHash
+    const uniqueTrades = Array.from(
+      new Map(trades.map(t => [t.transactionHash || `${t.conditionId}-${t.timestamp}`, t])).values()
+    );
+    console.log(`After deduplication: ${uniqueTrades.length} trades`);
+    trades = uniqueTrades as PolymarketTrade[];
 
     // Process and store trades
     const processedTrades = [];
