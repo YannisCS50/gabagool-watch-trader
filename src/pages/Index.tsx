@@ -2,7 +2,7 @@ import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, Brain, AlertCircl
 import { Link } from 'react-router-dom';
 import { StatCard } from '@/components/StatCard';
 import { TradesTable } from '@/components/TradesTable';
-import { PositionCard } from '@/components/PositionCard';
+import { PositionsList } from '@/components/PositionsList';
 import { ActivityChart } from '@/components/ActivityChart';
 import { PnLChart } from '@/components/PnLChart';
 import { TraderHeader } from '@/components/TraderHeader';
@@ -135,29 +135,11 @@ const Index = () => {
         {/* PnL Chart */}
         <PnLChart trades={trades} />
 
-        {/* Chart & Positions */}
-        <div className="grid lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-2">
-            <ActivityChart trades={trades} />
-          </div>
-          <div className="space-y-4">
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-              Active Positions
-            </h2>
-            {positions.length > 0 ? (
-              <div className="space-y-3">
-                {positions.slice(0, 3).map((position, index) => (
-                  <PositionCard key={position.marketSlug + position.outcome} position={position} index={index} />
-                ))}
-              </div>
-            ) : (
-              <div className="glass rounded-lg p-6 text-center">
-                <AlertCircle className="w-8 h-8 mx-auto mb-2 text-muted-foreground/50" />
-                <p className="text-sm text-muted-foreground">No open positions</p>
-              </div>
-            )}
-          </div>
-        </div>
+        {/* Chart */}
+        <ActivityChart trades={trades} />
+
+        {/* All Positions */}
+        <PositionsList positions={positions} />
 
         {/* Trades Table */}
         {isLoading ? (
