@@ -2,7 +2,7 @@ import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, Brain, AlertCircl
 import { Link } from 'react-router-dom';
 import { StatCard } from '@/components/StatCard';
 import { TradesTable } from '@/components/TradesTable';
-import { PositionsList } from '@/components/PositionsList';
+import { LiveOpenPositions } from '@/components/StrategyAnalysis';
 import { ActivityChart } from '@/components/ActivityChart';
 import { PnLChart } from '@/components/PnLChart';
 import { TraderHeader } from '@/components/TraderHeader';
@@ -138,8 +138,10 @@ const Index = () => {
         {/* Chart */}
         <ActivityChart trades={trades} />
 
-        {/* All Positions */}
-        <PositionsList positions={positions} />
+        {/* All Positions - Same display as /arbitrage */}
+        {positions.length > 0 && (
+          <LiveOpenPositions positions={positions} trades={trades} />
+        )}
 
         {/* Trades Table */}
         {isLoading ? (
