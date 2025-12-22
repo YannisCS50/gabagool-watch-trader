@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { useTrades } from '@/hooks/useTrades';
 import { mockTrades, traderStats as mockStats } from '@/data/mockTrades';
 import { format } from 'date-fns';
-import { ArbitrageAnalysis } from '@/components/StrategyAnalysis';
+import { ArbitrageAnalysis, ClosedBetsHistory } from '@/components/StrategyAnalysis';
 
 const Arbitrage = () => {
   const { trades, stats, scrape, isScraping } = useTrades('gabagool22');
@@ -94,6 +94,9 @@ const Arbitrage = () => {
 
         {/* Arbitrage Analysis Component */}
         <ArbitrageAnalysis trades={displayTrades} />
+
+        {/* Closed Bets History */}
+        <ClosedBetsHistory trades={displayTrades} />
 
         {/* Tips */}
         <div className="glass rounded-lg p-6">
