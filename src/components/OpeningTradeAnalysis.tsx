@@ -194,8 +194,46 @@ export function OpeningTradeAnalysis({ trades }: OpeningTradeAnalysisProps) {
       </h2>
       
       <p className="text-sm text-muted-foreground">
-        Analyse van Gabagool22's eerste trades per markt: vaste order sizes, partial fills, en timing patronen.
+        Analyse van Gabagool22's eerste trades per markt: partial fills, timing patronen, en <strong>twee-fasen strategie</strong>.
       </p>
+
+      {/* Key Discovery Alert */}
+      <Card className="glass border-chart-4/30 bg-chart-4/5">
+        <CardContent className="py-4">
+          <div className="flex items-start gap-3">
+            <div className="p-2 rounded-lg bg-chart-4/10 shrink-0">
+              <Zap className="w-5 h-5 text-chart-4" />
+            </div>
+            <div>
+              <h4 className="font-semibold text-sm text-chart-4 mb-1">Ontdekking: Twee-Fasen Strategie</h4>
+              <p className="text-sm text-muted-foreground">
+                Trade 1 & 2 zijn <strong>~140 shares</strong> (groot), daarna schakelt de bot over naar 
+                kleinere DCA trades van <strong>~15 shares</strong>. Dit is geen "vaste order size" - 
+                het is een initiële positie-opbouw gevolgd door opportunistisch bijkopen.
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Updated insight about first trade side */}
+      <Card className="glass border-warning/30 bg-warning/5">
+        <CardContent className="py-4">
+          <div className="flex items-start gap-3">
+            <div className="p-2 rounded-lg bg-warning/10 shrink-0">
+              <AlertCircle className="w-5 h-5 text-warning" />
+            </div>
+            <div>
+              <h4 className="font-semibold text-sm text-warning mb-1">Niet Altijd Goedkoopste Eerst</h4>
+              <p className="text-sm text-muted-foreground">
+                De ~50/50 verdeling van Up vs Down eerste trades is <strong>willekeurig</strong>, niet strategisch.
+                In ~52% van de markten startte de bot met de "duurdere" kant. De 50/50 split komt door 
+                de random verdeling van welke kant goedkoper is, niet door een "koop altijd goedkoopst" regel.
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Key Metrics Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
@@ -203,12 +241,12 @@ export function OpeningTradeAnalysis({ trades }: OpeningTradeAnalysisProps) {
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-muted-foreground">Bitcoin Order</p>
-                <p className="text-2xl font-mono font-bold text-chart-4">20 shares</p>
-                <p className="text-xs text-muted-foreground mt-1">~$10 per order</p>
+                <p className="text-xs text-muted-foreground">Fase 1 Size</p>
+                <p className="text-2xl font-mono font-bold text-chart-4">~140 sh</p>
+                <p className="text-xs text-muted-foreground mt-1">Trade 1 & 2</p>
               </div>
               <div className="p-2 rounded-lg bg-chart-4/10">
-                <span className="text-2xl">₿</span>
+                <Zap className="w-5 h-5 text-chart-4" />
               </div>
             </div>
           </CardContent>
@@ -218,12 +256,12 @@ export function OpeningTradeAnalysis({ trades }: OpeningTradeAnalysisProps) {
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-muted-foreground">Ethereum Order</p>
-                <p className="text-2xl font-mono font-bold text-primary">14 shares</p>
-                <p className="text-xs text-muted-foreground mt-1">~$7 per order</p>
+                <p className="text-xs text-muted-foreground">Fase 2 Size</p>
+                <p className="text-2xl font-mono font-bold text-primary">~15 sh</p>
+                <p className="text-xs text-muted-foreground mt-1">Trade 3+</p>
               </div>
               <div className="p-2 rounded-lg bg-primary/10">
-                <span className="text-2xl">Ξ</span>
+                <TrendingUp className="w-5 h-5 text-primary" />
               </div>
             </div>
           </CardContent>
@@ -266,19 +304,19 @@ export function OpeningTradeAnalysis({ trades }: OpeningTradeAnalysisProps) {
       <div className="flex flex-wrap gap-2">
         <Badge variant="outline" className="bg-chart-4/10 border-chart-4/30 text-chart-4">
           <Zap className="w-3 h-3 mr-1" />
-          BTC: 20 shares standaard
+          Fase 1: ~140 shares (initieel)
         </Badge>
         <Badge variant="outline" className="bg-primary/10 border-primary/30 text-primary">
-          <Zap className="w-3 h-3 mr-1" />
-          ETH: 14 shares standaard
+          <TrendingUp className="w-3 h-3 mr-1" />
+          Fase 2: ~15 shares (DCA)
         </Badge>
         <Badge variant="outline" className="bg-warning/10 border-warning/30 text-warning">
           <Timer className="w-3 h-3 mr-1" />
           Fixed 19s delay
         </Badge>
         <Badge variant="outline" className="bg-secondary border-border">
-          <TrendingUp className="w-3 h-3 mr-1" />
-          Partial fills = trade bursts
+          <CheckCircle2 className="w-3 h-3 mr-1" />
+          Partial fills = limit orders
         </Badge>
       </div>
 
