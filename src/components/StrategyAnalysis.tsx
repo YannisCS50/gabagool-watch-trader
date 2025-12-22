@@ -337,6 +337,185 @@ export function PositionSizing({ trades }: StrategyAnalysisProps) {
   );
 }
 
+// NEW: Arbitrage/Risk Analysis - detects when YES + NO < 1
+export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
+  const arbitrageData = useMemo(() => {
+    // Group trades by market to find YES/NO pairs
+    const marketTrades: Record<string, { yes: Trade[]; no: Trade[] }> = {};
+    
+    trades.forEach(trade => {
+      const key = trade.market;
+      if (!marketTrades[key]) {
+        marketTrades[key] = { yes: [], no: [] };
+      }
+      if (trade.outcome === 'Yes') {
+        marketTrades[key].yes.push(trade);
+      } else {
+        marketTrades[key].no.push(trade);
+      }
+    });
+
+    // Analyze each market for arbitrage opportunities
+    const opportunities: Array<{
+      market: string;
+      yesPrice: number;
+      noPrice: number;
+      sum: number;
+      spread: number;
+      isArbitrage: boolean;
+    }> = [];
+
+    Object.entries(marketTrades).forEach(([market, { yes, no }]) => {
+      if (yes.length > 0 && no.length > 0) {
+        // Get average prices for this market
+        const avgYes = yes.reduce((s, t) => s + t.price, 0) / yes.length;
+        const avgNo = no.reduce((s, t) => s + t.price, 0) / no.length;
+        const sum = avgYes + avgNo;
+        
+        opportunities.push({
+          market: market.substring(0, 50),
+          yesPrice: avgYes,
+          noPrice: avgNo,
+          sum,
+          spread: 1 - sum,
+          isArbitrage: sum < 1,
+        });
+      } else if (yes.length > 0 || no.length > 0) {
+        // Single-side trades - analyze entry price
+        const singleTrades = yes.length > 0 ? yes : no;
+        const avgPrice = singleTrades.reduce((s, t) => s + t.price, 0) / singleTrades.length;
+        // Assume the other side would be around (1 - avgPrice) in a fair market
+        const estimatedSum = avgPrice + (1 - avgPrice);
+        
+        opportunities.push({
+          market: market.substring(0, 50),
+          yesPrice: yes.length > 0 ? avgPrice : 1 - avgPrice,
+          noPrice: no.length > 0 ? avgPrice : 1 - avgPrice,
+          sum: estimatedSum,
+          spread: 0,
+          isArbitrage: false,
+        });
+      }
+    });
+
+    return opportunities.sort((a, b) => a.sum - b.sum);
+  }, [trades]);
+
+  // Calculate average risk metrics
+  const avgSum = arbitrageData.length > 0
+    ? arbitrageData.reduce((s, d) => s + d.sum, 0) / arbitrageData.length
+    : 0;
+
+  const arbitrageCount = arbitrageData.filter(d => d.isArbitrage).length;
+  const avgSpread = arbitrageData.filter(d => d.isArbitrage).length > 0
+    ? arbitrageData.filter(d => d.isArbitrage).reduce((s, d) => s + d.spread, 0) / arbitrageCount
+    : 0;
+
+  // Distribution of YES+NO sums
+  const sumDistribution = useMemo(() => {
+    const ranges = [
+      { label: '<0.90', min: 0, max: 0.90, count: 0, color: 'hsl(142, 70%, 45%)' },
+      { label: '0.90-0.95', min: 0.90, max: 0.95, count: 0, color: 'hsl(142, 70%, 55%)' },
+      { label: '0.95-1.00', min: 0.95, max: 1.00, count: 0, color: 'hsl(38, 92%, 50%)' },
+      { label: '1.00-1.05', min: 1.00, max: 1.05, count: 0, color: 'hsl(0, 60%, 50%)' },
+      { label: '>1.05', min: 1.05, max: 2, count: 0, color: 'hsl(0, 72%, 51%)' },
+    ];
+
+    arbitrageData.forEach(d => {
+      const range = ranges.find(r => d.sum >= r.min && d.sum < r.max);
+      if (range) range.count++;
+    });
+
+    return ranges;
+  }, [arbitrageData]);
+
+  return (
+    <div className="glass rounded-lg p-4">
+      <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">
+        Arbitrage & Risk Analysis (YES + NO)
+      </h3>
+      
+      <div className="grid grid-cols-3 gap-3 mb-4">
+        <div className="bg-muted/50 rounded-lg p-3 text-center">
+          <p className="text-xs text-muted-foreground">Avg YES+NO</p>
+          <p className={`text-xl font-mono font-semibold ${avgSum < 1 ? 'text-success' : 'text-destructive'}`}>
+            {avgSum.toFixed(3)}
+          </p>
+        </div>
+        <div className="bg-success/10 rounded-lg p-3 text-center">
+          <p className="text-xs text-muted-foreground">Arbitrage Found</p>
+          <p className="text-xl font-mono font-semibold text-success">{arbitrageCount}</p>
+        </div>
+        <div className="bg-primary/10 rounded-lg p-3 text-center">
+          <p className="text-xs text-muted-foreground">Avg Spread</p>
+          <p className="text-xl font-mono font-semibold text-primary">
+            {(avgSpread * 100).toFixed(1)}%
+          </p>
+        </div>
+      </div>
+
+      {/* Distribution Chart */}
+      <div className="h-32 mb-4">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={sumDistribution}>
+            <XAxis 
+              dataKey="label" 
+              tick={{ fill: 'hsl(215, 15%, 55%)', fontSize: 9, fontFamily: 'JetBrains Mono' }}
+            />
+            <YAxis tick={{ fill: 'hsl(215, 15%, 55%)', fontSize: 10 }} />
+            <Tooltip
+              contentStyle={{
+                backgroundColor: 'hsl(220, 18%, 10%)',
+                border: '1px solid hsl(220, 15%, 18%)',
+                borderRadius: '8px',
+                fontFamily: 'JetBrains Mono',
+                fontSize: '12px',
+              }}
+              formatter={(value) => [value, 'Markets']}
+            />
+            <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+              {sumDistribution.map((entry, index) => (
+                <Cell key={`cell-${index}`} fill={entry.color} />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+      {/* Arbitrage Opportunities List */}
+      {arbitrageData.filter(d => d.isArbitrage).length > 0 && (
+        <div className="space-y-2">
+          <p className="text-xs font-semibold text-success uppercase tracking-wider">
+            Detected Arbitrage Opportunities
+          </p>
+          <div className="max-h-40 overflow-y-auto space-y-2">
+            {arbitrageData.filter(d => d.isArbitrage).slice(0, 5).map((opp, i) => (
+              <div key={i} className="bg-success/10 border border-success/20 rounded-lg p-2">
+                <p className="text-xs truncate mb-1">{opp.market}...</p>
+                <div className="flex justify-between text-xs font-mono">
+                  <span>YES: ${opp.yesPrice.toFixed(2)}</span>
+                  <span>NO: ${opp.noPrice.toFixed(2)}</span>
+                  <span className="text-success font-semibold">
+                    Σ: {opp.sum.toFixed(3)} ({(opp.spread * 100).toFixed(1)}% profit)
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <p className="text-xs text-muted-foreground mt-3">
+        {avgSum < 0.98 
+          ? '💰 Trader actively exploits arbitrage when YES + NO < 1'
+          : avgSum < 1 
+            ? '📊 Some arbitrage opportunities detected in trading history'
+            : '⚖️ No clear arbitrage pattern - may use other strategies'}
+      </p>
+    </div>
+  );
+}
+
 // NEW: Entry Price Analysis - relevant for arbitrage detection
 export function EntryPriceAnalysis({ trades }: StrategyAnalysisProps) {
   const priceData = useMemo(() => {
