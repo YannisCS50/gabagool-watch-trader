@@ -1279,6 +1279,12 @@ export function ClosedBetsHistory({ trades }: StrategyAnalysisProps) {
     const totalRealizedPartial = partiallyClosed.reduce((s, c) => s + c.realizedPnL, 0);
     const totalRealized = totalRealizedClosed + totalRealizedPartial;
     
+    // Volume totals
+    const totalBuyVolumeClosed = fullyClosed.reduce((s, c) => s + c.buyVolume, 0);
+    const totalSellVolumeClosed = fullyClosed.reduce((s, c) => s + c.sellVolume, 0);
+    const totalBuyVolumePartial = partiallyClosed.reduce((s, c) => s + c.buyVolume, 0);
+    const totalSellVolumePartial = partiallyClosed.reduce((s, c) => s + c.sellVolume, 0);
+    
     const winningClosed = fullyClosed.filter(c => c.realizedPnL > 0);
     const losingClosed = fullyClosed.filter(c => c.realizedPnL < 0);
     
@@ -1304,6 +1310,10 @@ export function ClosedBetsHistory({ trades }: StrategyAnalysisProps) {
       totalRealized, 
       totalRealizedClosed,
       totalRealizedPartial,
+      totalBuyVolumeClosed,
+      totalSellVolumeClosed,
+      totalBuyVolumePartial,
+      totalSellVolumePartial,
       winningClosed, 
       losingClosed,
       winRate,
@@ -1433,6 +1443,26 @@ export function ClosedBetsHistory({ trades }: StrategyAnalysisProps) {
               </div>
             ))}
           </div>
+          
+          {/* Totals for Fully Closed */}
+          <div className="mt-3 p-3 bg-muted/30 rounded-lg border border-border/50">
+            <div className="grid grid-cols-3 gap-4 text-xs font-mono text-center">
+              <div>
+                <p className="text-muted-foreground mb-1">Total Buy</p>
+                <p className="font-semibold text-foreground">${analysis.totalBuyVolumeClosed.toFixed(2)}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground mb-1">Total Sell</p>
+                <p className="font-semibold text-foreground">${analysis.totalSellVolumeClosed.toFixed(2)}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground mb-1">Net P&L</p>
+                <p className={`font-semibold ${analysis.totalRealizedClosed >= 0 ? 'text-success' : 'text-destructive'}`}>
+                  {analysis.totalRealizedClosed >= 0 ? '+' : ''}${analysis.totalRealizedClosed.toFixed(2)}
+                </p>
+              </div>
+            </div>
+          </div>
         </div>
       )}
       
@@ -1493,6 +1523,26 @@ export function ClosedBetsHistory({ trades }: StrategyAnalysisProps) {
                 )}
               </div>
             ))}
+          </div>
+          
+          {/* Totals for Partially Closed */}
+          <div className="mt-3 p-3 bg-muted/30 rounded-lg border border-border/50">
+            <div className="grid grid-cols-3 gap-4 text-xs font-mono text-center">
+              <div>
+                <p className="text-muted-foreground mb-1">Total Buy</p>
+                <p className="font-semibold text-foreground">${analysis.totalBuyVolumePartial.toFixed(2)}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground mb-1">Total Sell</p>
+                <p className="font-semibold text-foreground">${analysis.totalSellVolumePartial.toFixed(2)}</p>
+              </div>
+              <div>
+                <p className="text-muted-foreground mb-1">Realized P&L</p>
+                <p className={`font-semibold ${analysis.totalRealizedPartial >= 0 ? 'text-success' : 'text-destructive'}`}>
+                  {analysis.totalRealizedPartial >= 0 ? '+' : ''}${analysis.totalRealizedPartial.toFixed(2)}
+                </p>
+              </div>
+            </div>
           </div>
         </div>
       )}
