@@ -1,9 +1,9 @@
 import { useMemo } from 'react';
 import { Trade } from '@/types/trade';
-import { format, getHours, getDay } from 'date-fns';
+import { format, getHours, getDay, differenceInMinutes } from 'date-fns';
 import { 
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis
+  PieChart, Pie, Cell, LineChart, Line, ScatterChart, Scatter, ZAxis
 } from 'recharts';
 
 interface StrategyAnalysisProps {
@@ -139,7 +139,7 @@ export function OutcomeAnalysis({ trades }: StrategyAnalysisProps) {
                 outerRadius={70}
                 paddingAngle={5}
                 dataKey="value"
-                label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                label={({ name, percent }) => `${name.split(' ')[0]} ${(percent * 100).toFixed(0)}%`}
                 labelLine={false}
               >
                 {outcomeData.map((_, index) => (
@@ -337,6 +337,186 @@ export function PositionSizing({ trades }: StrategyAnalysisProps) {
   );
 }
 
+// NEW: Entry Price Analysis - relevant for arbitrage detection
+export function EntryPriceAnalysis({ trades }: StrategyAnalysisProps) {
+  const priceData = useMemo(() => {
+    // Group trades by price ranges (0.01-0.99)
+    const priceRanges = [
+      { label: '0.01-0.20', min: 0.01, max: 0.20, count: 0, volume: 0 },
+      { label: '0.20-0.40', min: 0.20, max: 0.40, count: 0, volume: 0 },
+      { label: '0.40-0.60', min: 0.40, max: 0.60, count: 0, volume: 0 },
+      { label: '0.60-0.80', min: 0.60, max: 0.80, count: 0, volume: 0 },
+      { label: '0.80-0.99', min: 0.80, max: 0.99, count: 0, volume: 0 },
+    ];
+    
+    trades.forEach(trade => {
+      const range = priceRanges.find(r => trade.price >= r.min && trade.price < r.max);
+      if (range) {
+        range.count++;
+        range.volume += trade.total;
+      }
+    });
+    
+    return priceRanges;
+  }, [trades]);
+
+  // Calculate average entry price
+  const avgPrice = trades.length > 0
+    ? trades.reduce((s, t) => s + t.price, 0) / trades.length
+    : 0;
+
+  // Find if trader prefers low probability (cheap) or high probability (expensive) outcomes
+  const cheapTrades = trades.filter(t => t.price < 0.40);
+  const expensiveTrades = trades.filter(t => t.price >= 0.60);
+
+  return (
+    <div className="glass rounded-lg p-4">
+      <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">
+        Entry Price Distribution
+      </h3>
+      <div className="grid grid-cols-3 gap-3 mb-4">
+        <div className="bg-muted/50 rounded-lg p-2 text-center">
+          <p className="text-xs text-muted-foreground">Avg Price</p>
+          <p className="text-lg font-mono font-semibold">${avgPrice.toFixed(2)}</p>
+        </div>
+        <div className="bg-success/10 rounded-lg p-2 text-center">
+          <p className="text-xs text-muted-foreground">Low Prob</p>
+          <p className="text-lg font-mono font-semibold text-success">{cheapTrades.length}</p>
+        </div>
+        <div className="bg-destructive/10 rounded-lg p-2 text-center">
+          <p className="text-xs text-muted-foreground">High Prob</p>
+          <p className="text-lg font-mono font-semibold text-destructive">{expensiveTrades.length}</p>
+        </div>
+      </div>
+      <div className="h-36">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={priceData}>
+            <XAxis 
+              dataKey="label" 
+              tick={{ fill: 'hsl(215, 15%, 55%)', fontSize: 9, fontFamily: 'JetBrains Mono' }}
+            />
+            <YAxis tick={{ fill: 'hsl(215, 15%, 55%)', fontSize: 10 }} />
+            <Tooltip
+              contentStyle={{
+                backgroundColor: 'hsl(220, 18%, 10%)',
+                border: '1px solid hsl(220, 15%, 18%)',
+                borderRadius: '8px',
+                fontFamily: 'JetBrains Mono',
+                fontSize: '12px',
+              }}
+              formatter={(value, name) => [value, name === 'count' ? 'Trades' : 'Volume']}
+            />
+            <Bar dataKey="count" fill="hsl(38, 92%, 50%)" radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+      <p className="text-xs text-muted-foreground mt-2">
+        {avgPrice < 0.40 
+          ? '🎲 Prefers low probability (high risk/reward) entries'
+          : avgPrice > 0.60 
+            ? '🎯 Prefers high probability (low risk/reward) entries'
+            : '⚖️ Balanced approach to entry prices'}
+      </p>
+    </div>
+  );
+}
+
+// NEW: Trade Velocity - how quickly does the trader execute
+export function TradeVelocity({ trades }: StrategyAnalysisProps) {
+  const velocityData = useMemo(() => {
+    if (trades.length < 2) return [];
+    
+    const sorted = [...trades].sort((a, b) => 
+      new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+    
+    const intervals: number[] = [];
+    for (let i = 1; i < sorted.length; i++) {
+      const diff = differenceInMinutes(sorted[i].timestamp, sorted[i-1].timestamp);
+      if (diff > 0 && diff < 1440) { // Ignore gaps > 24 hours
+        intervals.push(diff);
+      }
+    }
+    
+    // Group intervals
+    const groups = [
+      { label: '<5m', min: 0, max: 5, count: 0 },
+      { label: '5-15m', min: 5, max: 15, count: 0 },
+      { label: '15m-1h', min: 15, max: 60, count: 0 },
+      { label: '1-4h', min: 60, max: 240, count: 0 },
+      { label: '>4h', min: 240, max: Infinity, count: 0 },
+    ];
+    
+    intervals.forEach(interval => {
+      const group = groups.find(g => interval >= g.min && interval < g.max);
+      if (group) group.count++;
+    });
+    
+    return groups;
+  }, [trades]);
+
+  const avgInterval = useMemo(() => {
+    if (trades.length < 2) return 0;
+    const sorted = [...trades].sort((a, b) => 
+      new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+    );
+    let total = 0;
+    let count = 0;
+    for (let i = 1; i < sorted.length; i++) {
+      const diff = differenceInMinutes(sorted[i].timestamp, sorted[i-1].timestamp);
+      if (diff > 0 && diff < 1440) {
+        total += diff;
+        count++;
+      }
+    }
+    return count > 0 ? total / count : 0;
+  }, [trades]);
+
+  return (
+    <div className="glass rounded-lg p-4">
+      <h3 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-4">
+        Trade Velocity
+      </h3>
+      <div className="bg-muted/50 rounded-lg p-3 text-center mb-4">
+        <p className="text-xs text-muted-foreground">Avg Time Between Trades</p>
+        <p className="text-xl font-mono font-semibold">
+          {avgInterval < 60 
+            ? `${avgInterval.toFixed(0)} min`
+            : `${(avgInterval / 60).toFixed(1)} hrs`}
+        </p>
+      </div>
+      <div className="h-32">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={velocityData}>
+            <XAxis 
+              dataKey="label" 
+              tick={{ fill: 'hsl(215, 15%, 55%)', fontSize: 9, fontFamily: 'JetBrains Mono' }}
+            />
+            <YAxis tick={{ fill: 'hsl(215, 15%, 55%)', fontSize: 10 }} />
+            <Tooltip
+              contentStyle={{
+                backgroundColor: 'hsl(220, 18%, 10%)',
+                border: '1px solid hsl(220, 15%, 18%)',
+                borderRadius: '8px',
+                fontFamily: 'JetBrains Mono',
+                fontSize: '12px',
+              }}
+            />
+            <Bar dataKey="count" fill="hsl(142, 70%, 45%)" radius={[4, 4, 0, 0]} />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+      <p className="text-xs text-muted-foreground mt-2">
+        {avgInterval < 30 
+          ? '⚡ High-frequency trader - acts quickly on opportunities'
+          : avgInterval < 120 
+            ? '🎯 Active trader - monitors markets regularly'
+            : '🧘 Patient trader - waits for clear setups'}
+      </p>
+    </div>
+  );
+}
+
 export function StrategyInsights({ trades }: StrategyAnalysisProps) {
   const insights = useMemo(() => {
     if (trades.length === 0) return [];
@@ -372,6 +552,16 @@ export function StrategyInsights({ trades }: StrategyAnalysisProps) {
       results.push(`💰 High-conviction sizing: Average position $${avgSize.toFixed(0)}`);
     } else if (avgSize < 200) {
       results.push(`🎲 Small position sizing: Testing markets with ~$${avgSize.toFixed(0)} average`);
+    }
+    
+    // Price preference - NEW: relevant for arbitrage
+    const avgPrice = trades.reduce((s, t) => s + t.price, 0) / trades.length;
+    if (avgPrice < 0.35) {
+      results.push(`🎰 Prefers long-shot bets (avg entry $${avgPrice.toFixed(2)}) - high risk/reward`);
+    } else if (avgPrice > 0.65) {
+      results.push(`🛡️ Prefers safe bets (avg entry $${avgPrice.toFixed(2)}) - low risk/consistent`);
+    } else {
+      results.push(`⚖️ Balanced risk profile (avg entry $${avgPrice.toFixed(2)})`);
     }
     
     // Trading frequency
