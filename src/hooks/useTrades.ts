@@ -9,12 +9,12 @@ export function useTrades(username: string = 'gabagool22') {
   const tradesQuery = useQuery({
     queryKey: ['trades', username],
     queryFn: async () => {
+      // Fetch ALL trades, not just 50
       const { data, error } = await supabase
         .from('trades')
         .select('*')
         .eq('trader_username', username)
-        .order('timestamp', { ascending: false })
-        .limit(50);
+        .order('timestamp', { ascending: false });
 
       if (error) throw error;
 
