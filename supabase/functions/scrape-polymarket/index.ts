@@ -530,11 +530,31 @@ Deno.serve(async (req) => {
         console.log(`Successfully stored trades`);
       }
 
-      // Update trader stats with analytics
-      const { data: allTrades } = await supabase
-        .from('trades')
-        .select('*')
-        .eq('trader_username', username);
+      // Update trader stats with analytics - fetch ALL trades (bypass 1000 row limit)
+      let allTrades: any[] = [];
+      let offset = 0;
+      const batchSize = 1000;
+      let hasMore = true;
+      
+      while (hasMore) {
+        const { data: batch } = await supabase
+          .from('trades')
+          .select('*')
+          .eq('trader_username', username)
+          .range(offset, offset + batchSize - 1);
+        
+        if (batch && batch.length > 0) {
+          allTrades = [...allTrades, ...batch];
+          offset += batchSize;
+          if (batch.length < batchSize) {
+            hasMore = false;
+          }
+        } else {
+          hasMore = false;
+        }
+      }
+      
+      console.log(`Fetched ${allTrades.length} trades for stats calculation`);
 
       if (allTrades && allTrades.length > 0) {
         const totalTrades = allTrades.length;
