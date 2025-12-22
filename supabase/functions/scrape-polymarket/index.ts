@@ -73,9 +73,13 @@ Deno.serve(async (req) => {
     let attempts = 0;
     const maxAttempts = 100; // Max 10,000 trades
     
-    // Method 1: Paginate through /trades endpoint
+    // Method 1: Paginate through /trades endpoint with timestamp-based pagination
+    // First, try to get trades going back in time
+    let oldestTimestamp: number | null = null;
+    
     while (hasMore && attempts < maxAttempts) {
-      const tradesUrl = `${POLYMARKET_DATA_API}/trades?user=${username}&limit=${limit}&offset=${offset}`;
+      let tradesUrl = `${POLYMARKET_DATA_API}/trades?user=${username}&limit=${limit}&offset=${offset}`;
+      
       console.log(`Fetching page ${attempts + 1}: offset=${offset}`);
       
       try {
@@ -91,6 +95,16 @@ Deno.serve(async (req) => {
           if (Array.isArray(data) && data.length > 0) {
             trades = [...trades, ...data];
             console.log(`Got ${data.length} trades (total: ${trades.length})`);
+            
+            // Track oldest timestamp for potential further historical fetching
+            const timestamps = data.map((t: any) => t.timestamp).filter(Boolean);
+            if (timestamps.length > 0) {
+              const minTs = Math.min(...timestamps);
+              if (!oldestTimestamp || minTs < oldestTimestamp) {
+                oldestTimestamp = minTs;
+              }
+            }
+            
             offset += limit;
             attempts++;
             
@@ -112,11 +126,74 @@ Deno.serve(async (req) => {
       
       // Small delay to avoid rate limiting
       if (hasMore) {
-        await new Promise(resolve => setTimeout(resolve, 200));
+        await new Promise(resolve => setTimeout(resolve, 150));
       }
     }
 
     console.log(`Total trades from /trades endpoint: ${trades.length}`);
+    if (oldestTimestamp) {
+      console.log(`Oldest trade timestamp: ${new Date(oldestTimestamp * 1000).toISOString()}`);
+    }
+
+    // Method 1b: Try fetching historical trades using 'before' timestamp parameter
+    if (oldestTimestamp && trades.length >= 100) {
+      console.log('Attempting to fetch older historical trades...');
+      let historicalAttempts = 0;
+      let beforeTimestamp = oldestTimestamp;
+      
+      while (historicalAttempts < 50) {
+        const historyUrl = `${POLYMARKET_DATA_API}/trades?user=${username}&limit=${limit}&before=${beforeTimestamp}`;
+        console.log(`Fetching historical trades before ${new Date(beforeTimestamp * 1000).toISOString()}`);
+        
+        try {
+          const histResponse = await fetch(historyUrl, {
+            headers: {
+              'Accept': 'application/json',
+              'User-Agent': 'PolyTracker/1.0',
+            },
+          });
+
+          if (histResponse.ok) {
+            const histData = await histResponse.json();
+            if (Array.isArray(histData) && histData.length > 0) {
+              const existingHashes = new Set(trades.map(t => t.transactionHash));
+              const newTrades = histData.filter((t: any) => !existingHashes.has(t.transactionHash));
+              
+              if (newTrades.length === 0) {
+                console.log('No new historical trades found');
+                break;
+              }
+              
+              trades = [...trades, ...newTrades];
+              console.log(`Got ${newTrades.length} historical trades (total: ${trades.length})`);
+              
+              // Update beforeTimestamp to oldest in this batch
+              const timestamps = histData.map((t: any) => t.timestamp).filter(Boolean);
+              if (timestamps.length > 0) {
+                beforeTimestamp = Math.min(...timestamps);
+              } else {
+                break;
+              }
+              
+              historicalAttempts++;
+            } else {
+              console.log('No more historical trades available');
+              break;
+            }
+          } else {
+            console.log('Historical trades endpoint failed:', histResponse.status);
+            break;
+          }
+        } catch (e) {
+          console.error('Error fetching historical trades:', e);
+          break;
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, 150));
+      }
+    }
+
+    console.log(`Total trades after historical fetch: ${trades.length}`);
 
     // Method 2: If no trades from /trades, try activity endpoint with pagination
     if (trades.length === 0) {
