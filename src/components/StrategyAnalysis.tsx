@@ -350,19 +350,18 @@ const isNegativeOutcome = (outcome: string): boolean => {
 
 // Arbitrage Analysis - ONLY shows markets where BOTH YES and NO were bought
 export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
-  // Only analyze markets where BOTH outcomes were bought (actual arbitrage)
-  const completeArbs = useMemo(() => {
+  // Helper function to calculate arb stats for a given set of trades
+  const calculateArbStats = (tradesToAnalyze: Trade[]) => {
     const marketBuyTrades: Record<string, Record<string, Trade[]>> = {};
     
-    // Only consider BUY trades
-    trades.filter(t => t.side === 'buy').forEach(trade => {
+    tradesToAnalyze.filter(t => t.side === 'buy').forEach(trade => {
       const key = trade.market;
       if (!marketBuyTrades[key]) marketBuyTrades[key] = {};
       if (!marketBuyTrades[key][trade.outcome]) marketBuyTrades[key][trade.outcome] = [];
       marketBuyTrades[key][trade.outcome].push(trade);
     });
 
-    const complete: Array<{
+    const arbs: Array<{
       market: string;
       fullMarket: string;
       outcome1: string;
@@ -380,12 +379,9 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
 
     Object.entries(marketBuyTrades).forEach(([market, outcomeMap]) => {
       const outcomes = Object.keys(outcomeMap);
-      
-      // Find positive and negative outcomes
       const positiveOutcome = outcomes.find(o => isPositiveOutcome(o));
       const negativeOutcome = outcomes.find(o => isNegativeOutcome(o));
       
-      // ONLY include if BOTH sides were bought
       if (positiveOutcome && negativeOutcome) {
         const posTrades = outcomeMap[positiveOutcome];
         const negTrades = outcomeMap[negativeOutcome];
@@ -396,7 +392,7 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
         const sum = avgPrice1 + avgPrice2;
         const minShares = Math.min(shares1, shares2);
         
-        complete.push({
+        arbs.push({
           market: market.substring(0, 50),
           fullMarket: market,
           outcome1: positiveOutcome,
@@ -414,19 +410,30 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
       }
     });
 
-    return complete.sort((a, b) => a.sum - b.sum);
+    const sorted = arbs.sort((a, b) => a.sum - b.sum);
+    const avgSum = sorted.length > 0 ? sorted.reduce((s, d) => s + d.sum, 0) / sorted.length : 0;
+    const profitable = sorted.filter(d => d.isArbitrage);
+    const unprofitable = sorted.filter(d => !d.isArbitrage);
+    const profit = profitable.reduce((s, a) => s + (a.spread * a.minShares), 0);
+    const volume = sorted.reduce((s, a) => s + a.hedgedVolume, 0);
+
+    return { arbs: sorted, avgSum, profitable, unprofitable, profit, volume, count: sorted.length };
+  };
+
+  // Time-based filtering
+  const now = new Date();
+  const oneDayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+
+  const stats = useMemo(() => {
+    const allTime = calculateArbStats(trades);
+    const today = calculateArbStats(trades.filter(t => new Date(t.timestamp) >= oneDayAgo));
+    const week = calculateArbStats(trades.filter(t => new Date(t.timestamp) >= sevenDaysAgo));
+    const month = calculateArbStats(trades.filter(t => new Date(t.timestamp) >= thirtyDaysAgo));
+    
+    return { allTime, today, week, month };
   }, [trades]);
-
-  // Stats for complete arbs only
-  const avgSum = completeArbs.length > 0
-    ? completeArbs.reduce((s, d) => s + d.sum, 0) / completeArbs.length
-    : 0;
-
-  const profitableArbs = completeArbs.filter(d => d.isArbitrage);
-  const unprofitableArbs = completeArbs.filter(d => !d.isArbitrage);
-  
-  const totalArbProfit = profitableArbs.reduce((s, a) => s + (a.spread * a.minShares), 0);
-  const totalHedgedVolume = completeArbs.reduce((s, a) => s + a.hedgedVolume, 0);
 
   const sumDistribution = useMemo(() => {
     const ranges = [
@@ -437,13 +444,13 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
       { label: '>1.05', min: 1.05, max: 2, count: 0, color: 'hsl(0, 72%, 51%)' },
     ];
 
-    completeArbs.forEach(d => {
+    stats.allTime.arbs.forEach(d => {
       const range = ranges.find(r => d.sum >= r.min && d.sum < r.max);
       if (range) range.count++;
     });
 
     return ranges;
-  }, [completeArbs]);
+  }, [stats.allTime.arbs]);
 
   return (
     <div className="glass rounded-lg p-4">
@@ -451,25 +458,71 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
         Arbitrage Analysis (YES + NO Pairs Only)
       </h3>
       
+      {/* Time Period Stats */}
+      <div className="mb-6">
+        <p className="text-xs font-semibold text-primary uppercase tracking-wider mb-3">
+          📅 Performance per Periode
+        </p>
+        <div className="grid grid-cols-4 gap-2">
+          {/* Today */}
+          <div className="bg-muted/50 rounded-lg p-3 text-center">
+            <p className="text-xs text-muted-foreground mb-1">24 uur</p>
+            <p className={`text-lg font-mono font-semibold ${stats.today.avgSum > 0 ? (stats.today.avgSum < 1 ? 'text-success' : 'text-destructive') : 'text-muted-foreground'}`}>
+              {stats.today.avgSum > 0 ? stats.today.avgSum.toFixed(3) : '-'}
+            </p>
+            <p className="text-xs text-muted-foreground">{stats.today.count} arbs</p>
+            <p className="text-xs font-mono text-success">+${stats.today.profit.toFixed(0)}</p>
+          </div>
+          
+          {/* 7 Days */}
+          <div className="bg-muted/50 rounded-lg p-3 text-center">
+            <p className="text-xs text-muted-foreground mb-1">7 dagen</p>
+            <p className={`text-lg font-mono font-semibold ${stats.week.avgSum > 0 ? (stats.week.avgSum < 1 ? 'text-success' : 'text-destructive') : 'text-muted-foreground'}`}>
+              {stats.week.avgSum > 0 ? stats.week.avgSum.toFixed(3) : '-'}
+            </p>
+            <p className="text-xs text-muted-foreground">{stats.week.count} arbs</p>
+            <p className="text-xs font-mono text-success">+${stats.week.profit.toFixed(0)}</p>
+          </div>
+          
+          {/* 30 Days */}
+          <div className="bg-muted/50 rounded-lg p-3 text-center">
+            <p className="text-xs text-muted-foreground mb-1">30 dagen</p>
+            <p className={`text-lg font-mono font-semibold ${stats.month.avgSum > 0 ? (stats.month.avgSum < 1 ? 'text-success' : 'text-destructive') : 'text-muted-foreground'}`}>
+              {stats.month.avgSum > 0 ? stats.month.avgSum.toFixed(3) : '-'}
+            </p>
+            <p className="text-xs text-muted-foreground">{stats.month.count} arbs</p>
+            <p className="text-xs font-mono text-success">+${stats.month.profit.toFixed(0)}</p>
+          </div>
+          
+          {/* All Time */}
+          <div className="bg-primary/10 rounded-lg p-3 text-center border border-primary/20">
+            <p className="text-xs text-muted-foreground mb-1">All Time</p>
+            <p className={`text-lg font-mono font-semibold ${stats.allTime.avgSum > 0 ? (stats.allTime.avgSum < 1 ? 'text-success' : 'text-destructive') : 'text-muted-foreground'}`}>
+              {stats.allTime.avgSum > 0 ? stats.allTime.avgSum.toFixed(3) : '-'}
+            </p>
+            <p className="text-xs text-muted-foreground">{stats.allTime.count} arbs</p>
+            <p className="text-xs font-mono text-success">+${stats.allTime.profit.toFixed(0)}</p>
+          </div>
+        </div>
+      </div>
+
       {/* Summary Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
         <div className="bg-muted/50 rounded-lg p-3 text-center">
-          <p className="text-xs text-muted-foreground">Arb Markets</p>
-          <p className="text-xl font-mono font-semibold text-primary">{completeArbs.length}</p>
+          <p className="text-xs text-muted-foreground">Total Arb Markets</p>
+          <p className="text-xl font-mono font-semibold text-primary">{stats.allTime.count}</p>
         </div>
         <div className="bg-success/10 rounded-lg p-3 text-center">
           <p className="text-xs text-muted-foreground">Profitable</p>
-          <p className="text-xl font-mono font-semibold text-success">{profitableArbs.length}</p>
+          <p className="text-xl font-mono font-semibold text-success">{stats.allTime.profitable.length}</p>
         </div>
-        <div className={`${avgSum < 1 ? 'bg-success/10' : 'bg-destructive/10'} rounded-lg p-3 text-center`}>
-          <p className="text-xs text-muted-foreground">Avg YES+NO</p>
-          <p className={`text-xl font-mono font-semibold ${avgSum < 1 ? 'text-success' : 'text-destructive'}`}>
-            {avgSum > 0 ? avgSum.toFixed(3) : '-'}
-          </p>
+        <div className="bg-destructive/10 rounded-lg p-3 text-center">
+          <p className="text-xs text-muted-foreground">Overpaid</p>
+          <p className="text-xl font-mono font-semibold text-destructive">{stats.allTime.unprofitable.length}</p>
         </div>
         <div className="bg-success/10 rounded-lg p-3 text-center">
-          <p className="text-xs text-muted-foreground">Est. Profit</p>
-          <p className="text-xl font-mono font-semibold text-success">${totalArbProfit.toFixed(0)}</p>
+          <p className="text-xs text-muted-foreground">Net Profit</p>
+          <p className="text-xl font-mono font-semibold text-success">${stats.allTime.profit.toFixed(0)}</p>
         </div>
       </div>
 
@@ -477,19 +530,16 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
       <div className="bg-muted/30 rounded-lg p-3 mb-4 text-xs text-muted-foreground">
         <p className="font-semibold text-foreground mb-1">ℹ️ Alleen echte arbitrage pairs</p>
         <p>
-          Deze analyse toont alleen markets waar zowel YES als NO gekocht zijn. 
-          Trades met slechts 1 outcome (directional bets) worden getoond in Trading Strategies.
-        </p>
-        <p className="mt-1">
-          Totaal hedged volume: <span className="font-mono text-primary">${totalHedgedVolume.toFixed(0)}</span>
+          Toont alleen markets waar zowel YES als NO gekocht zijn. 
+          Hedged volume: <span className="font-mono text-primary">${stats.allTime.volume.toFixed(0)}</span>
         </p>
       </div>
 
       {/* Distribution Chart for Complete Arbs */}
-      {completeArbs.length > 0 && (
+      {stats.allTime.arbs.length > 0 && (
         <div className="mb-4">
           <p className="text-xs font-semibold text-primary uppercase tracking-wider mb-2">
-            📊 Sum Distribution - {completeArbs.length} arbitrage markets
+            📊 Sum Distribution - {stats.allTime.arbs.length} arbitrage markets
           </p>
           <div className="h-28">
             <ResponsiveContainer width="100%" height="100%">
@@ -519,11 +569,11 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
           </div>
           
           {/* Show profitable arbs */}
-          {profitableArbs.length > 0 && (
+          {stats.allTime.profitable.length > 0 && (
             <div className="mt-4">
-              <p className="text-xs font-semibold text-success mb-2">✅ Profitable ({profitableArbs.length})</p>
+              <p className="text-xs font-semibold text-success mb-2">✅ Profitable ({stats.allTime.profitable.length})</p>
               <div className="max-h-48 overflow-y-auto space-y-2">
-                {profitableArbs.map((arb, i) => (
+                {stats.allTime.profitable.map((arb, i) => (
                   <div key={i} className="bg-success/10 border border-success/20 rounded-lg p-3">
                     <p className="text-xs truncate mb-2 font-medium">{arb.fullMarket}</p>
                     <div className="grid grid-cols-2 gap-2 text-xs font-mono mb-2">
@@ -556,13 +606,13 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
           )}
 
           {/* Show unprofitable arbs */}
-          {unprofitableArbs.length > 0 && (
+          {stats.allTime.unprofitable.length > 0 && (
             <div className="mt-4">
               <p className="text-xs font-semibold text-destructive mb-2">
-                ⚠️ Overpaid / sum &gt; 1 ({unprofitableArbs.length})
+                ⚠️ Overpaid / sum &gt; 1 ({stats.allTime.unprofitable.length})
               </p>
               <div className="max-h-32 overflow-y-auto space-y-2">
-                {unprofitableArbs.slice(0, 5).map((arb, i) => (
+                {stats.allTime.unprofitable.slice(0, 5).map((arb, i) => (
                   <div key={i} className="bg-destructive/10 border border-destructive/20 rounded-lg p-2 text-xs">
                     <p className="truncate mb-1">{arb.fullMarket}</p>
                     <div className="flex justify-between font-mono">
@@ -580,7 +630,7 @@ export function ArbitrageAnalysis({ trades }: StrategyAnalysisProps) {
         </div>
       )}
 
-      {completeArbs.length === 0 && (
+      {stats.allTime.arbs.length === 0 && (
         <div className="text-center py-8">
           <p className="text-muted-foreground mb-2">Geen arbitrage pairs gevonden</p>
           <p className="text-xs text-muted-foreground">
