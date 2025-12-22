@@ -9,7 +9,9 @@ import {
   OutcomeAnalysis, 
   MarketAnalysis, 
   PositionSizing,
-  StrategyInsights 
+  StrategyInsights,
+  EntryPriceAnalysis,
+  TradeVelocity
 } from '@/components/StrategyAnalysis';
 
 const Strategy = () => {
@@ -99,6 +101,17 @@ const Strategy = () => {
         <div className="grid lg:grid-cols-2 gap-6">
           <MarketAnalysis trades={displayTrades} />
           <PositionSizing trades={displayTrades} />
+        </div>
+
+        {/* Entry Price & Velocity Analysis - NEW */}
+        <div>
+          <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
+            <span className="text-primary">⚡</span> Execution Analysis
+          </h2>
+          <div className="grid lg:grid-cols-2 gap-6">
+            <EntryPriceAnalysis trades={displayTrades} />
+            <TradeVelocity trades={displayTrades} />
+          </div>
         </div>
 
         {/* How to Copy */}
