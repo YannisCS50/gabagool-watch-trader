@@ -8,6 +8,7 @@ const corsHeaders = {
 // Polymarket API endpoints based on official documentation
 const POLYMARKET_DATA_API = 'https://data-api.polymarket.com';
 const POLYMARKET_GAMMA_API = 'https://gamma-api.polymarket.com';
+const POLYMARKET_CLOB_API = 'https://clob.polymarket.com';
 
 interface PolymarketTrade {
   proxyWallet: string;
@@ -312,27 +313,156 @@ Deno.serve(async (req) => {
       console.error('Gamma API error:', e);
     }
 
-    // Method 4: Try CLOB API for even more historical data
+    // Method 4: CLOB API - The official REST API for ALL historical trades
+    // Per Polymarket docs: "All historical trades can be fetched via the Polymarket CLOB REST API"
     try {
-      const clobUrl = `https://clob.polymarket.com/trades?username=${username}&limit=500`;
-      console.log('Trying CLOB API:', clobUrl);
+      console.log('Fetching ALL historical trades via CLOB API...');
+      let clobCursor: string | null = null;
+      let clobAttempts = 0;
+      const clobMaxAttempts = 200; // Up to 100,000 trades
       
-      const clobResponse = await fetch(clobUrl, {
-        headers: {
-          'Accept': 'application/json',
-          'User-Agent': 'PolyTracker/1.0',
-        },
+      // First, we need the maker_address or taker_address - get from Gamma API
+      const gammaUserUrl = `${POLYMARKET_GAMMA_API}/users?username=${username}`;
+      const gammaUserResponse = await fetch(gammaUserUrl, {
+        headers: { 'Accept': 'application/json', 'User-Agent': 'PolyTracker/1.0' },
       });
       
-      if (clobResponse.ok) {
-        const clobData = await clobResponse.json();
-        if (Array.isArray(clobData)) {
-          const existingHashes = new Set(trades.map(t => t.transactionHash));
-          const newTrades = clobData.filter((t: any) => !existingHashes.has(t.transactionHash));
-          trades = [...trades, ...newTrades];
-          console.log(`Got ${newTrades.length} trades from CLOB API (total: ${trades.length})`);
+      let userAddress: string | null = null;
+      if (gammaUserResponse.ok) {
+        const userData = await gammaUserResponse.json();
+        userAddress = userData?.proxyWallet || userData?.address || null;
+        console.log('Got user address for CLOB API:', userAddress);
+      }
+      
+      if (userAddress) {
+        while (clobAttempts < clobMaxAttempts) {
+          // CLOB API uses maker or taker address
+          let clobUrl = `${POLYMARKET_CLOB_API}/trades?maker_address=${userAddress}&limit=500`;
+          if (clobCursor) {
+            clobUrl += `&next_cursor=${clobCursor}`;
+          }
+          
+          console.log(`CLOB API page ${clobAttempts + 1}${clobCursor ? ` (cursor: ${clobCursor.slice(0, 20)}...)` : ''}`);
+          
+          const clobResponse = await fetch(clobUrl, {
+            headers: {
+              'Accept': 'application/json',
+              'User-Agent': 'PolyTracker/1.0',
+            },
+          });
+          
+          if (clobResponse.ok) {
+            const clobData = await clobResponse.json();
+            
+            // CLOB API returns { data: [...trades], next_cursor: "..." }
+            const clobTrades = clobData.data || clobData;
+            
+            if (Array.isArray(clobTrades) && clobTrades.length > 0) {
+              const existingHashes = new Set(trades.map(t => t.transactionHash || t.id));
+              const newTrades = clobTrades.filter((t: any) => 
+                !existingHashes.has(t.id) && !existingHashes.has(t.transaction_hash)
+              );
+              
+              // Map CLOB format to our format
+              const mappedTrades = newTrades.map((t: any) => ({
+                transactionHash: t.id || t.transaction_hash,
+                side: t.side,
+                size: parseFloat(t.size || t.amount || '0'),
+                price: parseFloat(t.price || '0'),
+                timestamp: t.created_at ? new Date(t.created_at).getTime() / 1000 : (t.match_time || Date.now() / 1000),
+                title: t.market || t.condition_id || 'CLOB Trade',
+                slug: t.market_slug || '',
+                outcome: t.outcome || (t.asset_id?.includes('YES') ? 'Yes' : 'No'),
+                conditionId: t.condition_id || t.asset_id,
+                pseudonym: username,
+                usdcSize: parseFloat(t.size || '0') * parseFloat(t.price || '0'),
+              }));
+              
+              trades = [...trades, ...mappedTrades];
+              console.log(`CLOB API: Got ${newTrades.length} new trades (total: ${trades.length})`);
+              
+              // Check for next page
+              clobCursor = clobData.next_cursor || null;
+              if (!clobCursor || clobTrades.length < 500) {
+                console.log('CLOB API: No more pages as maker');
+                break;
+              }
+              
+              clobAttempts++;
+              await new Promise(resolve => setTimeout(resolve, 100));
+            } else {
+              console.log('CLOB API: No more trades as maker');
+              break;
+            }
+          } else {
+            console.log('CLOB API failed:', clobResponse.status, await clobResponse.text());
+            break;
+          }
+        }
+        
+        // Also try as taker
+        clobCursor = null;
+        clobAttempts = 0;
+        
+        while (clobAttempts < clobMaxAttempts) {
+          let clobUrl = `${POLYMARKET_CLOB_API}/trades?taker_address=${userAddress}&limit=500`;
+          if (clobCursor) {
+            clobUrl += `&next_cursor=${clobCursor}`;
+          }
+          
+          console.log(`CLOB API (taker) page ${clobAttempts + 1}`);
+          
+          const clobResponse = await fetch(clobUrl, {
+            headers: {
+              'Accept': 'application/json',
+              'User-Agent': 'PolyTracker/1.0',
+            },
+          });
+          
+          if (clobResponse.ok) {
+            const clobData = await clobResponse.json();
+            const clobTrades = clobData.data || clobData;
+            
+            if (Array.isArray(clobTrades) && clobTrades.length > 0) {
+              const existingHashes = new Set(trades.map(t => t.transactionHash || t.id));
+              const newTrades = clobTrades.filter((t: any) => 
+                !existingHashes.has(t.id) && !existingHashes.has(t.transaction_hash)
+              );
+              
+              const mappedTrades = newTrades.map((t: any) => ({
+                transactionHash: t.id || t.transaction_hash,
+                side: t.side,
+                size: parseFloat(t.size || t.amount || '0'),
+                price: parseFloat(t.price || '0'),
+                timestamp: t.created_at ? new Date(t.created_at).getTime() / 1000 : (t.match_time || Date.now() / 1000),
+                title: t.market || t.condition_id || 'CLOB Trade',
+                slug: t.market_slug || '',
+                outcome: t.outcome || (t.asset_id?.includes('YES') ? 'Yes' : 'No'),
+                conditionId: t.condition_id || t.asset_id,
+                pseudonym: username,
+                usdcSize: parseFloat(t.size || '0') * parseFloat(t.price || '0'),
+              }));
+              
+              trades = [...trades, ...mappedTrades];
+              console.log(`CLOB API (taker): Got ${newTrades.length} new trades (total: ${trades.length})`);
+              
+              clobCursor = clobData.next_cursor || null;
+              if (!clobCursor || clobTrades.length < 500) {
+                break;
+              }
+              
+              clobAttempts++;
+              await new Promise(resolve => setTimeout(resolve, 100));
+            } else {
+              break;
+            }
+          } else {
+            break;
+          }
         }
       }
+      
+      console.log(`Total trades after CLOB API: ${trades.length}`);
     } catch (e) {
       console.error('CLOB API error:', e);
     }
