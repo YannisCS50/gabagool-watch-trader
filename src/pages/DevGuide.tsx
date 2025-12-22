@@ -1,15 +1,13 @@
-import { ArrowLeft, Book, Code, Database, Server, TrendingUp, Zap, Shield, RefreshCw, Calculator } from 'lucide-react';
-import { Link } from 'react-router-dom';
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from '@/components/ui/accordion';
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import { ArrowLeft, BookOpen, Code, Database, Zap, Shield, TrendingUp, Bell, TestTube, Rocket } from "lucide-react";
+import { Link } from "react-router-dom";
 
-const CodeBlock = ({ children, language = 'typescript' }: { children: string; language?: string }) => (
-  <pre className="bg-background/80 border border-border/50 rounded-lg p-4 overflow-x-auto text-xs font-mono">
-    <code>{children}</code>
+const CodeBlock = ({ children, language = "rust" }: { children: string; language?: string }) => (
+  <pre className="bg-muted/50 border border-border rounded-lg p-4 overflow-x-auto text-sm font-mono">
+    <code className={`language-${language}`}>{children}</code>
   </pre>
 );
 
@@ -17,1076 +15,1673 @@ const DevGuide = () => {
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
-      <header className="border-b border-border/50 bg-card/50 backdrop-blur-xl sticky top-0 z-50">
-        <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center gap-3">
-            <Link to="/" className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors">
-              <ArrowLeft className="w-4 h-4" />
+      <div className="border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-10">
+        <div className="max-w-5xl mx-auto px-6 py-4">
+          <div className="flex items-center gap-4">
+            <Link to="/" className="text-muted-foreground hover:text-foreground transition-colors">
+              <ArrowLeft className="h-5 w-5" />
             </Link>
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-purple-500 flex items-center justify-center">
-              <Book className="w-4 h-4 text-primary-foreground" />
+            <div>
+              <h1 className="text-2xl font-bold text-foreground">Gabagool22 Bot Strategie</h1>
+              <p className="text-muted-foreground text-sm">Rust-based Polymarket Arbitrage Trading Bot</p>
             </div>
-            <span className="font-semibold text-lg">Developer Guide</span>
           </div>
         </div>
-      </header>
+      </div>
 
-      <main className="container mx-auto px-4 py-8 max-w-4xl">
-        {/* Intro */}
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold mb-4">Polymarket Trading Bot - Developer Guide</h1>
-          <p className="text-muted-foreground text-lg">
-            Een complete handleiding voor het bouwen van een Polymarket arbitrage trading bot met real-time data, 
-            automatische analyse en position tracking.
-          </p>
+      {/* Content */}
+      <div className="max-w-5xl mx-auto px-6 py-8">
+        {/* Quick Stats */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+          <Card className="bg-card/50">
+            <CardContent className="p-4 text-center">
+              <div className="text-2xl font-bold text-primary">$28M+</div>
+              <div className="text-xs text-muted-foreground">Total Volume</div>
+            </CardContent>
+          </Card>
+          <Card className="bg-card/50">
+            <CardContent className="p-4 text-center">
+              <div className="text-2xl font-bold text-chart-1">2.3%</div>
+              <div className="text-xs text-muted-foreground">Gemiddelde Marge</div>
+            </CardContent>
+          </Card>
+          <Card className="bg-card/50">
+            <CardContent className="p-4 text-center">
+              <div className="text-2xl font-bold text-chart-2">~1000</div>
+              <div className="text-xs text-muted-foreground">Trades/Dag</div>
+            </CardContent>
+          </Card>
+          <Card className="bg-card/50">
+            <CardContent className="p-4 text-center">
+              <div className="text-2xl font-bold text-chart-3">Rust</div>
+              <div className="text-xs text-muted-foreground">Programmeertaal</div>
+            </CardContent>
+          </Card>
         </div>
 
         {/* Table of Contents */}
-        <div className="glass rounded-lg p-6 mb-8">
-          <h2 className="font-semibold mb-4">📚 Inhoudsopgave</h2>
-          <ol className="space-y-2 text-sm">
-            <li><a href="#architectuur" className="text-primary hover:underline">1. Architectuur Overzicht</a></li>
-            <li><a href="#polymarket-api" className="text-primary hover:underline">2. Polymarket Data API</a></li>
-            <li><a href="#database" className="text-primary hover:underline">3. Database Design (Supabase)</a></li>
-            <li><a href="#edge-functions" className="text-primary hover:underline">4. Edge Functions & Scraping</a></li>
-            <li><a href="#frontend" className="text-primary hover:underline">5. Frontend Implementatie</a></li>
-            <li><a href="#arbitrage" className="text-primary hover:underline">6. Arbitrage Strategie</a></li>
-            <li><a href="#dca" className="text-primary hover:underline">7. Dollar Cost Averaging (DCA)</a></li>
-            <li><a href="#realtime" className="text-primary hover:underline">8. Real-time Updates</a></li>
-            <li><a href="#deployment" className="text-primary hover:underline">9. Deployment & Monitoring</a></li>
-          </ol>
-        </div>
+        <Card className="mb-8 bg-card/50">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <BookOpen className="h-5 w-5 text-primary" />
+              Inhoudsopgave
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid md:grid-cols-2 gap-2 text-sm">
+              <a href="#ch1" className="text-muted-foreground hover:text-primary transition-colors">1. Strategie Overzicht</a>
+              <a href="#ch2" className="text-muted-foreground hover:text-primary transition-colors">2. Arbitrage Conditie</a>
+              <a href="#ch3" className="text-muted-foreground hover:text-primary transition-colors">3. Polymarket CLOB API</a>
+              <a href="#ch4" className="text-muted-foreground hover:text-primary transition-colors">4. Rust Implementatie</a>
+              <a href="#ch5" className="text-muted-foreground hover:text-primary transition-colors">5. Order Management</a>
+              <a href="#ch6" className="text-muted-foreground hover:text-primary transition-colors">6. Risk Management</a>
+              <a href="#ch7" className="text-muted-foreground hover:text-primary transition-colors">7. Telegram Integratie</a>
+              <a href="#ch8" className="text-muted-foreground hover:text-primary transition-colors">8. Testing & Deployment</a>
+            </div>
+          </CardContent>
+        </Card>
 
-        {/* Chapters */}
-        <div className="space-y-6">
+        {/* Chapter 1: Strategy Overview */}
+        <section id="ch1" className="mb-8">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="h-10 w-10 rounded-lg bg-primary/20 flex items-center justify-center">
+              <TrendingUp className="h-5 w-5 text-primary" />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-foreground">1. Strategie Overzicht</h2>
+              <p className="text-sm text-muted-foreground">De kern van Gabagool22's trading bot</p>
+            </div>
+          </div>
           
-          {/* Chapter 1: Architecture */}
-          <section id="architectuur" className="glass rounded-lg overflow-hidden">
-            <div className="p-6 border-b border-border/50 flex items-center gap-3">
-              <Zap className="w-5 h-5 text-primary" />
-              <h2 className="text-xl font-bold">1. Architectuur Overzicht</h2>
-            </div>
-            <div className="p-6">
-              <Accordion type="multiple" className="space-y-2">
-                <AccordionItem value="tech-stack">
-                  <AccordionTrigger className="text-sm font-semibold">1.1 Technology Stack</AccordionTrigger>
+          <Card className="bg-card/50">
+            <CardContent className="p-6">
+              <Accordion type="multiple" className="w-full">
+                <AccordionItem value="wat-is-arbitrage">
+                  <AccordionTrigger>Wat is Polymarket Arbitrage?</AccordionTrigger>
                   <AccordionContent className="space-y-4">
-                    <p className="text-muted-foreground">De bot is gebouwd met de volgende technologieën:</p>
-                    <div className="grid grid-cols-2 gap-4 text-sm">
-                      <div className="bg-card/50 rounded-lg p-4">
-                        <h4 className="font-semibold mb-2">Frontend</h4>
-                        <ul className="space-y-1 text-muted-foreground">
-                          <li>• React 18 + TypeScript</li>
-                          <li>• Vite (build tool)</li>
-                          <li>• TailwindCSS (styling)</li>
-                          <li>• Shadcn/UI (components)</li>
-                          <li>• TanStack Query (data fetching)</li>
-                          <li>• React Router (navigation)</li>
-                        </ul>
-                      </div>
-                      <div className="bg-card/50 rounded-lg p-4">
-                        <h4 className="font-semibold mb-2">Backend</h4>
-                        <ul className="space-y-1 text-muted-foreground">
-                          <li>• Supabase (database + auth)</li>
-                          <li>• Deno Edge Functions</li>
-                          <li>• PostgreSQL (data storage)</li>
-                          <li>• Row Level Security (RLS)</li>
-                        </ul>
-                      </div>
+                    <p>
+                      Polymarket biedt binaire markten aan waarbij je kunt wedden op "Ja" of "Nee" uitkomsten. 
+                      In een efficiënte markt zou de som van de beste ask-prijzen voor beide uitkomsten precies 
+                      $1.00 moeten zijn. Wanneer dit niet het geval is, ontstaat er een arbitrage-mogelijkheid.
+                    </p>
+                    
+                    <div className="bg-muted/30 rounded-lg p-4">
+                      <h4 className="font-semibold mb-2">Voorbeeld:</h4>
+                      <ul className="space-y-1 text-sm">
+                        <li>• Markt: "Wordt Bitcoin $100k in 2025?"</li>
+                        <li>• Ask prijs "Yes": $0.48</li>
+                        <li>• Ask prijs "No": $0.50</li>
+                        <li>• <strong>Totaal: $0.98</strong> (minder dan $1.00!)</li>
+                        <li>• <strong>Arbitrage winst: $0.02 per paar</strong> (2% rendement)</li>
+                      </ul>
                     </div>
+
+                    <p className="text-sm text-muted-foreground">
+                      Door beide zijden tegelijk te kopen voor $0.98, ben je gegarandeerd van $1.00 
+                      uitbetaling ongeacht de uitkomst - een risicoloze winst van $0.02.
+                    </p>
                   </AccordionContent>
                 </AccordionItem>
 
-                <AccordionItem value="data-flow">
-                  <AccordionTrigger className="text-sm font-semibold">1.2 Data Flow</AccordionTrigger>
+                <AccordionItem value="gabagool-approach">
+                  <AccordionTrigger>Gabagool22's Aanpak</AccordionTrigger>
                   <AccordionContent className="space-y-4">
-                    <div className="bg-card/50 rounded-lg p-4 font-mono text-xs">
-                      <pre>{`┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   Polymarket    │────▶│  Edge Function   │────▶│    Supabase     │
-│    Data API     │     │  (scraper)       │     │    Database     │
-└─────────────────┘     └──────────────────┘     └────────┬────────┘
-                                                          │
-                                                          ▼
-┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
-│   React App     │◀────│  TanStack Query  │◀────│  Supabase SDK   │
-│   (Frontend)    │     │  (caching)       │     │  (real-time)    │
-└─────────────────┘     └──────────────────┘     └─────────────────┘`}</pre>
-                    </div>
-                    <ol className="space-y-2 text-sm text-muted-foreground">
-                      <li><strong>1.</strong> Edge Function haalt data op van Polymarket Data API</li>
-                      <li><strong>2.</strong> Data wordt verwerkt en opgeslagen in Supabase</li>
-                      <li><strong>3.</strong> Frontend haalt data op via Supabase SDK</li>
-                      <li><strong>4.</strong> TanStack Query cachet en refresht automatisch</li>
-                    </ol>
-                  </AccordionContent>
-                </AccordionItem>
-              </Accordion>
-            </div>
-          </section>
-
-          {/* Chapter 2: Polymarket API */}
-          <section id="polymarket-api" className="glass rounded-lg overflow-hidden">
-            <div className="p-6 border-b border-border/50 flex items-center gap-3">
-              <Server className="w-5 h-5 text-primary" />
-              <h2 className="text-xl font-bold">2. Polymarket Data API</h2>
-            </div>
-            <div className="p-6">
-              <Accordion type="multiple" className="space-y-2">
-                <AccordionItem value="api-overview">
-                  <AccordionTrigger className="text-sm font-semibold">2.1 API Endpoints</AccordionTrigger>
-                  <AccordionContent className="space-y-4">
-                    <p className="text-muted-foreground">Polymarket heeft twee APIs:</p>
-                    <div className="space-y-3">
-                      <div className="bg-destructive/10 border border-destructive/30 rounded-lg p-4">
-                        <h4 className="font-semibold text-destructive mb-2">❌ CLOB API (vereist authenticatie)</h4>
-                        <p className="text-sm text-muted-foreground">
-                          <code>https://clob.polymarket.com</code> - Vereist L2 wallet signatures en API keys.
-                          Te complex voor basic trade tracking.
+                    <div className="grid md:grid-cols-2 gap-4">
+                      <div className="bg-chart-1/10 rounded-lg p-4 border border-chart-1/20">
+                        <h4 className="font-semibold text-chart-1 mb-2">Snelheid</h4>
+                        <p className="text-sm">
+                          Geschreven in Rust voor maximale performance. WebSocket streams voor 
+                          real-time orderbook updates met sub-milliseconde latency.
                         </p>
                       </div>
-                      <div className="bg-success/10 border border-success/30 rounded-lg p-4">
-                        <h4 className="font-semibold text-success mb-2">✓ Data API (publiek)</h4>
-                        <p className="text-sm text-muted-foreground">
-                          <code>https://data-api.polymarket.com</code> - Geen authenticatie nodig.
-                          Ideaal voor het ophalen van trades en posities.
+                      <div className="bg-chart-2/10 rounded-lg p-4 border border-chart-2/20">
+                        <h4 className="font-semibold text-chart-2 mb-2">Volume</h4>
+                        <p className="text-sm">
+                          ~1000 trades per dag, $28M+ totaal volume. Kleine marges (1-3%) 
+                          maar hoge frequentie zorgt voor consistente winst.
+                        </p>
+                      </div>
+                      <div className="bg-chart-3/10 rounded-lg p-4 border border-chart-3/20">
+                        <h4 className="font-semibold text-chart-3 mb-2">Risk Management</h4>
+                        <p className="text-sm">
+                          Altijd beide zijden kopen. Buffer margin voor slippage en fees. 
+                          Partial fill handling voorkomt eenzijdige posities.
+                        </p>
+                      </div>
+                      <div className="bg-chart-4/10 rounded-lg p-4 border border-chart-4/20">
+                        <h4 className="font-semibold text-chart-4 mb-2">Monitoring</h4>
+                        <p className="text-sm">
+                          Telegram bot voor real-time alerts, pause/resume functionaliteit, 
+                          en status monitoring van actieve posities.
                         </p>
                       </div>
                     </div>
                   </AccordionContent>
                 </AccordionItem>
 
-                <AccordionItem value="activity-endpoint">
-                  <AccordionTrigger className="text-sm font-semibold">2.2 Activity Endpoint (Trades)</AccordionTrigger>
+                <AccordionItem value="winst-analyse">
+                  <AccordionTrigger>Winstgevendheid Analyse</AccordionTrigger>
                   <AccordionContent className="space-y-4">
-                    <p className="text-muted-foreground">Haal alle trades op voor een wallet address:</p>
-                    <CodeBlock>{`// Activity endpoint - alle trades voor een wallet
-const WALLET = '0x6031b6eed1c97e853c6e0f03ad3ce3529351f96d';
-const url = \`https://data-api.polymarket.com/activity?user=\${WALLET}&limit=500\`;
-
-const response = await fetch(url);
-const activities = await response.json();
-
-// Response structuur:
-interface Activity {
-  id: string;
-  timestamp: string;           // ISO datetime
-  type: 'TRADE' | 'REDEEM';    // Trade of uitbetaling
-  market: string;              // Markt naam
-  slug: string;                // Market slug (URL-friendly)
-  outcome: string;             // 'Yes', 'No', 'Up', 'Down', etc.
-  side: string;                // 'BUY' of 'SELL'
-  size: string;                // Aantal shares (string!)
-  price: string;               // Prijs per share (0-1)
-  usdcSize: string;            // Totale waarde in USDC
-}`}</CodeBlock>
-                    <div className="bg-warning/10 border border-warning/30 rounded-lg p-4 text-sm">
-                      <strong className="text-warning">⚠️ Paginatie:</strong>
-                      <p className="text-muted-foreground mt-1">
-                        De API retourneert max 500 items per request. Gebruik <code>offset</code> parameter voor meer:
-                      </p>
-                      <code className="text-xs">{`?user=${'{wallet}'}&limit=500&offset=500`}</code>
-                    </div>
-                  </AccordionContent>
-                </AccordionItem>
-
-                <AccordionItem value="positions-endpoint">
-                  <AccordionTrigger className="text-sm font-semibold">2.3 Positions Endpoint</AccordionTrigger>
-                  <AccordionContent className="space-y-4">
-                    <p className="text-muted-foreground">Haal huidige open posities op:</p>
-                    <CodeBlock>{`// Positions endpoint - huidige holdings
-const url = \`https://data-api.polymarket.com/positions?user=\${WALLET}&sizeThreshold=0.01&limit=500\`;
-
-const response = await fetch(url);
-const positions = await response.json();
-
-// Response structuur:
-interface Position {
-  market: string;              // Markt naam
-  slug: string;                // Market slug
-  outcome: string;             // Outcome naam
-  size: string;                // Aantal shares
-  avgPrice: string;            // Gemiddelde aankoopprijs
-  curPrice: string;            // Huidige marktprijs
-  pnl: string;                 // Profit/Loss in USDC
-  pnlPercent: string;          // P/L percentage
-}`}</CodeBlock>
-                  </AccordionContent>
-                </AccordionItem>
-
-                <AccordionItem value="wallet-lookup">
-                  <AccordionTrigger className="text-sm font-semibold">2.4 Username → Wallet Lookup</AccordionTrigger>
-                  <AccordionContent className="space-y-4">
-                    <p className="text-muted-foreground">
-                      De Data API werkt met wallet addresses, niet usernames. Je hebt een mapping nodig:
+                    <p>
+                      Gebaseerd op Gabagool22's publieke trading data kunnen we de volgende metrics afleiden:
                     </p>
-                    <CodeBlock>{`// Hardcoded mapping (eenvoudig)
-const WALLET_MAP: Record<string, string> = {
-  'gabagool22': '0x6031b6eed1c97e853c6e0f03ad3ce3529351f96d',
-  'andere_user': '0x...',
-};
+                    
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-border">
+                            <th className="text-left py-2 text-muted-foreground">Metric</th>
+                            <th className="text-right py-2 text-muted-foreground">Waarde</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr className="border-b border-border/50">
+                            <td className="py-2">Totaal Volume</td>
+                            <td className="text-right font-mono">$28,000,000+</td>
+                          </tr>
+                          <tr className="border-b border-border/50">
+                            <td className="py-2">Gemiddelde Trade Size</td>
+                            <td className="text-right font-mono">$500 - $2,000</td>
+                          </tr>
+                          <tr className="border-b border-border/50">
+                            <td className="py-2">Gemiddelde Marge</td>
+                            <td className="text-right font-mono">1.5% - 3%</td>
+                          </tr>
+                          <tr className="border-b border-border/50">
+                            <td className="py-2">Trades per Dag</td>
+                            <td className="text-right font-mono">~1,000</td>
+                          </tr>
+                          <tr>
+                            <td className="py-2">Geschatte Dagelijkse Winst</td>
+                            <td className="text-right font-mono text-chart-1">$5,000 - $15,000</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
 
-// Of: Scrape van profile page met Firecrawl
-const profileUrl = \`https://polymarket.com/profile/\${username}\`;
-// Parse de wallet address uit de HTML`}</CodeBlock>
-                    <div className="bg-primary/10 border border-primary/30 rounded-lg p-4 text-sm">
-                      <strong className="text-primary">💡 Tip:</strong>
-                      <p className="text-muted-foreground mt-1">
-                        Het wallet address is te vinden in de URL van de profielpagina of door de HTML te scrapen.
-                      </p>
+                    <div className="bg-muted/30 rounded-lg p-4 text-sm">
+                      <strong>Let op:</strong> Deze cijfers zijn schattingen gebaseerd op publieke data. 
+                      Werkelijke resultaten variëren afhankelijk van marktcondities, competitie, en fees.
                     </div>
                   </AccordionContent>
                 </AccordionItem>
               </Accordion>
+            </CardContent>
+          </Card>
+        </section>
+
+        {/* Chapter 2: Arbitrage Condition */}
+        <section id="ch2" className="mb-8">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="h-10 w-10 rounded-lg bg-chart-1/20 flex items-center justify-center">
+              <Zap className="h-5 w-5 text-chart-1" />
             </div>
-          </section>
-
-          {/* Chapter 3: Database */}
-          <section id="database" className="glass rounded-lg overflow-hidden">
-            <div className="p-6 border-b border-border/50 flex items-center gap-3">
-              <Database className="w-5 h-5 text-primary" />
-              <h2 className="text-xl font-bold">3. Database Design (Supabase)</h2>
+            <div>
+              <h2 className="text-xl font-bold text-foreground">2. Arbitrage Conditie</h2>
+              <p className="text-sm text-muted-foreground">De wiskundige formule achter de strategie</p>
             </div>
-            <div className="p-6">
-              <Accordion type="multiple" className="space-y-2">
-                <AccordionItem value="schema">
-                  <AccordionTrigger className="text-sm font-semibold">3.1 Database Schema</AccordionTrigger>
+          </div>
+          
+          <Card className="bg-card/50">
+            <CardContent className="p-6">
+              <Accordion type="multiple" className="w-full">
+                <AccordionItem value="formule">
+                  <AccordionTrigger>De Kernformule</AccordionTrigger>
                   <AccordionContent className="space-y-4">
-                    <p className="text-muted-foreground">Drie hoofdtabellen voor trade tracking:</p>
-                    <CodeBlock>{`-- Trades tabel: alle individuele trades
-CREATE TABLE public.trades (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  trader_username TEXT NOT NULL DEFAULT 'gabagool22',
-  external_id TEXT,                    -- Polymarket trade ID
-  timestamp TIMESTAMPTZ NOT NULL,
-  market TEXT NOT NULL,
-  market_slug TEXT,
-  outcome TEXT NOT NULL,               -- 'Yes', 'No', 'Up', 'Down'
-  side TEXT NOT NULL,                  -- 'buy', 'sell'
-  shares NUMERIC NOT NULL,
-  price NUMERIC NOT NULL,              -- 0-1
-  total NUMERIC NOT NULL,              -- shares * price
-  status TEXT DEFAULT 'filled',
-  created_at TIMESTAMPTZ DEFAULT now(),
-  
-  -- Voorkom duplicates
-  UNIQUE(trader_username, external_id)
-);
-
--- Positions tabel: huidige open posities
-CREATE TABLE public.positions (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  trader_username TEXT NOT NULL DEFAULT 'gabagool22',
-  market TEXT NOT NULL,
-  market_slug TEXT,
-  outcome TEXT NOT NULL,
-  shares NUMERIC NOT NULL,
-  avg_price NUMERIC NOT NULL,
-  current_price NUMERIC,
-  pnl NUMERIC DEFAULT 0,
-  pnl_percent NUMERIC DEFAULT 0,
-  created_at TIMESTAMPTZ DEFAULT now(),
-  updated_at TIMESTAMPTZ DEFAULT now(),
-  
-  UNIQUE(trader_username, market, outcome)
-);
-
--- Trader stats tabel: aggregated statistieken
-CREATE TABLE public.trader_stats (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  trader_username TEXT NOT NULL UNIQUE DEFAULT 'gabagool22',
-  total_trades INTEGER DEFAULT 0,
-  total_volume NUMERIC DEFAULT 0,
-  win_rate NUMERIC DEFAULT 0,
-  avg_trade_size NUMERIC DEFAULT 0,
-  active_since TIMESTAMPTZ,
-  last_active TIMESTAMPTZ,
-  updated_at TIMESTAMPTZ DEFAULT now()
-);`}</CodeBlock>
-                  </AccordionContent>
-                </AccordionItem>
-
-                <AccordionItem value="rls">
-                  <AccordionTrigger className="text-sm font-semibold">3.2 Row Level Security (RLS)</AccordionTrigger>
-                  <AccordionContent className="space-y-4">
-                    <p className="text-muted-foreground">
-                      Configureer RLS voor publieke lees-toegang (de scraper schrijft via service role):
-                    </p>
-                    <CodeBlock>{`-- Enable RLS
-ALTER TABLE public.trades ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.positions ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.trader_stats ENABLE ROW LEVEL SECURITY;
-
--- Publieke lees-toegang
-CREATE POLICY "Public read access for trades"
-ON public.trades FOR SELECT
-USING (true);
-
-CREATE POLICY "Public read access for positions"
-ON public.positions FOR SELECT
-USING (true);
-
-CREATE POLICY "Public read access for trader_stats"
-ON public.trader_stats FOR SELECT
-USING (true);
-
--- Schrijf-toegang alleen via service role (Edge Functions)`}</CodeBlock>
-                    <div className="bg-warning/10 border border-warning/30 rounded-lg p-4 text-sm">
-                      <strong className="text-warning">⚠️ Security:</strong>
-                      <p className="text-muted-foreground mt-1">
-                        In productie wil je mogelijk per-user RLS policies als je meerdere traders tracked.
-                      </p>
+                    <div className="bg-primary/10 border border-primary/20 rounded-lg p-6 text-center">
+                      <code className="text-lg font-mono font-bold text-primary">
+                        ask(Yes) + ask(No) &lt; 1.00 - buffer
+                      </code>
                     </div>
-                  </AccordionContent>
-                </AccordionItem>
+                    
+                    <div className="space-y-3 mt-4">
+                      <div className="flex items-start gap-3">
+                        <Badge variant="outline" className="mt-0.5">ask(Yes)</Badge>
+                        <p className="text-sm">Laagste verkoopprijs voor de "Yes" uitkomst in het orderbook</p>
+                      </div>
+                      <div className="flex items-start gap-3">
+                        <Badge variant="outline" className="mt-0.5">ask(No)</Badge>
+                        <p className="text-sm">Laagste verkoopprijs voor de "No" uitkomst in het orderbook</p>
+                      </div>
+                      <div className="flex items-start gap-3">
+                        <Badge variant="outline" className="mt-0.5">buffer</Badge>
+                        <p className="text-sm">Veiligheidsmarge voor fees, slippage, en partial fills (typisch 0.5% - 1%)</p>
+                      </div>
+                    </div>
 
-                <AccordionItem value="indexes">
-                  <AccordionTrigger className="text-sm font-semibold">3.3 Indexes voor Performance</AccordionTrigger>
-                  <AccordionContent className="space-y-4">
-                    <CodeBlock>{`-- Indexes voor snelle queries
-CREATE INDEX idx_trades_username ON trades(trader_username);
-CREATE INDEX idx_trades_timestamp ON trades(timestamp DESC);
-CREATE INDEX idx_trades_market ON trades(market);
-CREATE INDEX idx_positions_username ON positions(trader_username);
-CREATE INDEX idx_positions_market ON positions(market);`}</CodeBlock>
-                  </AccordionContent>
-                </AccordionItem>
-              </Accordion>
-            </div>
-          </section>
-
-          {/* Chapter 4: Edge Functions */}
-          <section id="edge-functions" className="glass rounded-lg overflow-hidden">
-            <div className="p-6 border-b border-border/50 flex items-center gap-3">
-              <Code className="w-5 h-5 text-primary" />
-              <h2 className="text-xl font-bold">4. Edge Functions & Scraping</h2>
-            </div>
-            <div className="p-6">
-              <Accordion type="multiple" className="space-y-2">
-                <AccordionItem value="scraper-function">
-                  <AccordionTrigger className="text-sm font-semibold">4.1 Scraper Edge Function</AccordionTrigger>
-                  <AccordionContent className="space-y-4">
-                    <p className="text-muted-foreground">De kern van de bot - haalt data op en slaat op in Supabase:</p>
-                    <CodeBlock>{`// supabase/functions/scrape-polymarket/index.ts
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
-};
-
-// Username → Wallet mapping
-const WALLET_MAP: Record<string, string> = {
-  'gabagool22': '0x6031b6eed1c97e853c6e0f03ad3ce3529351f96d',
-};
-
-serve(async (req) => {
-  if (req.method === 'OPTIONS') {
-    return new Response(null, { headers: corsHeaders });
-  }
-
-  try {
-    const { username = 'gabagool22' } = await req.json();
-    const wallet = WALLET_MAP[username];
+                    <CodeBlock language="rust">{`// Arbitrage check implementatie
+fn check_arbitrage(market: &Market, buffer: f64) -> Option<ArbitrageOpportunity> {
+    let ask_yes = market.orderbook_yes.best_ask()?;
+    let ask_no = market.orderbook_no.best_ask()?;
     
-    if (!wallet) {
-      throw new Error(\`Unknown username: \${username}\`);
-    }
-
-    // Supabase client met service role (voor schrijven)
-    const supabase = createClient(
-      Deno.env.get('SUPABASE_URL')!,
-      Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
-    );
-
-    // 1. Fetch activities met paginatie
-    const activities = await fetchAllActivities(wallet);
+    let total_cost = ask_yes.price + ask_no.price;
+    let threshold = 1.0 - buffer;
     
-    // 2. Filter & transform trades
-    const trades = activities
-      .filter(a => a.type === 'TRADE')
-      .map(a => ({
-        trader_username: username,
-        external_id: a.id,
-        timestamp: a.timestamp,
-        market: a.market,
-        market_slug: a.slug,
-        outcome: a.outcome,
-        side: a.side.toLowerCase(),
-        shares: parseFloat(a.size),
-        price: parseFloat(a.price),
-        total: parseFloat(a.usdcSize),
-        status: 'filled',
-      }));
-
-    // 3. Upsert trades (voorkom duplicates)
-    const { error: tradesError } = await supabase
-      .from('trades')
-      .upsert(trades, { 
-        onConflict: 'trader_username,external_id',
-        ignoreDuplicates: true 
-      });
-
-    if (tradesError) throw tradesError;
-
-    // 4. Fetch & store positions
-    await fetchAndStorePositions(supabase, username, wallet);
-
-    // 5. Update stats
-    await updateTraderStats(supabase, username);
-
-    return new Response(
-      JSON.stringify({ 
-        success: true, 
-        tradesFound: trades.length 
-      }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
-
-  } catch (error) {
-    console.error('Scrape error:', error);
-    return new Response(
-      JSON.stringify({ error: error.message }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
-  }
-});
-
-async function fetchAllActivities(wallet: string) {
-  const activities: any[] = [];
-  let offset = 0;
-  const limit = 500;
-
-  while (true) {
-    const url = \`https://data-api.polymarket.com/activity?user=\${wallet}&limit=\${limit}&offset=\${offset}\`;
-    const response = await fetch(url);
-    const data = await response.json();
-    
-    if (!data || data.length === 0) break;
-    
-    activities.push(...data);
-    if (data.length < limit) break;
-    
-    offset += limit;
-    // Rate limiting
-    await new Promise(r => setTimeout(r, 100));
-  }
-
-  return activities;
-}`}</CodeBlock>
-                  </AccordionContent>
-                </AccordionItem>
-
-                <AccordionItem value="config-toml">
-                  <AccordionTrigger className="text-sm font-semibold">4.2 Config.toml Configuratie</AccordionTrigger>
-                  <AccordionContent className="space-y-4">
-                    <CodeBlock>{`# supabase/config.toml
-project_id = "your-project-id"
-
-[functions.scrape-polymarket]
-verify_jwt = false  # Publiek toegankelijk (of true voor auth)`}</CodeBlock>
-                  </AccordionContent>
-                </AccordionItem>
-
-                <AccordionItem value="calling-function">
-                  <AccordionTrigger className="text-sm font-semibold">4.3 Edge Function Aanroepen</AccordionTrigger>
-                  <AccordionContent className="space-y-4">
-                    <CodeBlock>{`// Vanuit React component
-import { supabase } from '@/integrations/supabase/client';
-
-const scrapeTrades = async (username: string) => {
-  const { data, error } = await supabase.functions.invoke(
-    'scrape-polymarket',
-    { body: { username } }
-  );
-
-  if (error) throw error;
-  return data;
-};
-
-// Met TanStack Query mutation
-const scrapeMutation = useMutation({
-  mutationFn: async () => {
-    const response = await supabase.functions.invoke('scrape-polymarket', {
-      body: { username: 'gabagool22' },
-    });
-    if (response.error) throw response.error;
-    return response.data;
-  },
-  onSuccess: () => {
-    // Refetch queries na succesvolle scrape
-    queryClient.invalidateQueries({ queryKey: ['trades'] });
-  },
-});`}</CodeBlock>
-                  </AccordionContent>
-                </AccordionItem>
-              </Accordion>
-            </div>
-          </section>
-
-          {/* Chapter 5: Frontend */}
-          <section id="frontend" className="glass rounded-lg overflow-hidden">
-            <div className="p-6 border-b border-border/50 flex items-center gap-3">
-              <Code className="w-5 h-5 text-primary" />
-              <h2 className="text-xl font-bold">5. Frontend Implementatie</h2>
-            </div>
-            <div className="p-6">
-              <Accordion type="multiple" className="space-y-2">
-                <AccordionItem value="use-trades-hook">
-                  <AccordionTrigger className="text-sm font-semibold">5.1 useTrades Hook</AccordionTrigger>
-                  <AccordionContent className="space-y-4">
-                    <p className="text-muted-foreground">Custom hook voor data fetching met TanStack Query:</p>
-                    <CodeBlock>{`// src/hooks/useTrades.ts
-import { useQuery, useMutation } from '@tanstack/react-query';
-import { supabase } from '@/integrations/supabase/client';
-
-export function useTrades(username: string = 'gabagool22') {
-  // Trades query met auto-refresh
-  const tradesQuery = useQuery({
-    queryKey: ['trades', username],
-    refetchInterval: 30000, // Elke 30 seconden
-    queryFn: async () => {
-      // Paginatie voor >1000 trades
-      let allTrades: any[] = [];
-      let offset = 0;
-      const pageSize = 1000;
-      
-      while (true) {
-        const { data, error } = await supabase
-          .from('trades')
-          .select('*')
-          .eq('trader_username', username)
-          .order('timestamp', { ascending: false })
-          .range(offset, offset + pageSize - 1);
-
-        if (error) throw error;
-        if (!data || data.length === 0) break;
+    if total_cost < threshold {
+        let profit_margin = 1.0 - total_cost;
+        let max_size = ask_yes.size.min(ask_no.size);
         
-        allTrades = [...allTrades, ...data];
-        if (data.length < pageSize) break;
-        offset += pageSize;
-      }
-
-      return allTrades.map(t => ({
-        id: t.id,
-        timestamp: new Date(t.timestamp),
-        market: t.market,
-        outcome: t.outcome,
-        side: t.side,
-        shares: Number(t.shares),
-        price: Number(t.price),
-        total: Number(t.total),
-      }));
-    },
-  });
-
-  // Scrape mutation
-  const scrapeMutation = useMutation({
-    mutationFn: async () => {
-      const response = await supabase.functions.invoke('scrape-polymarket', {
-        body: { username },
-      });
-      if (response.error) throw response.error;
-      return response.data;
-    },
-    onSuccess: () => {
-      tradesQuery.refetch();
-    },
-  });
-
-  return {
-    trades: tradesQuery.data || [],
-    isLoading: tradesQuery.isLoading,
-    scrape: scrapeMutation.mutate,
-    isScraping: scrapeMutation.isPending,
-  };
-}`}</CodeBlock>
-                  </AccordionContent>
-                </AccordionItem>
-
-                <AccordionItem value="types">
-                  <AccordionTrigger className="text-sm font-semibold">5.2 TypeScript Types</AccordionTrigger>
-                  <AccordionContent className="space-y-4">
-                    <CodeBlock>{`// src/types/trade.ts
-export interface Trade {
-  id: string;
-  timestamp: Date;
-  market: string;
-  marketSlug: string;
-  outcome: 'Yes' | 'No' | string; // Kan ook 'Up', 'Down' zijn
-  side: 'buy' | 'sell';
-  shares: number;
-  price: number;     // 0-1
-  total: number;     // shares * price
-  status: 'filled' | 'pending' | 'cancelled';
-}
-
-export interface MarketPosition {
-  market: string;
-  marketSlug: string;
-  outcome: string;
-  shares: number;
-  avgPrice: number;
-  currentPrice: number;
-  pnl: number;
-  pnlPercent: number;
-}
-
-export interface TraderStats {
-  totalTrades: number;
-  totalVolume: number;
-  winRate: number;
-  avgTradeSize: number;
-  activeSince: Date;
-  lastActive: Date;
-}`}</CodeBlock>
-                  </AccordionContent>
-                </AccordionItem>
-              </Accordion>
-            </div>
-          </section>
-
-          {/* Chapter 6: Arbitrage */}
-          <section id="arbitrage" className="glass rounded-lg overflow-hidden">
-            <div className="p-6 border-b border-border/50 flex items-center gap-3">
-              <TrendingUp className="w-5 h-5 text-primary" />
-              <h2 className="text-xl font-bold">6. Arbitrage Strategie</h2>
-            </div>
-            <div className="p-6">
-              <Accordion type="multiple" className="space-y-2">
-                <AccordionItem value="arb-basics">
-                  <AccordionTrigger className="text-sm font-semibold">6.1 Basis Concept</AccordionTrigger>
-                  <AccordionContent className="space-y-4">
-                    <div className="bg-card/50 rounded-lg p-4">
-                      <p className="text-muted-foreground mb-4">
-                        Bij prediction markets betaalt de winnende kant altijd <strong>$1.00</strong> uit per share.
-                        Arbitrage is mogelijk als je beide kanten voor minder dan $1.00 kunt kopen.
-                      </p>
-                      <div className="grid grid-cols-3 gap-4 text-center text-sm">
-                        <div className="bg-success/10 rounded-lg p-3">
-                          <p className="font-mono font-bold text-success">YES + NO &lt; $1.00</p>
-                          <p className="text-xs text-muted-foreground mt-1">Gegarandeerde winst</p>
-                        </div>
-                        <div className="bg-warning/10 rounded-lg p-3">
-                          <p className="font-mono font-bold text-warning">YES + NO = $1.00</p>
-                          <p className="text-xs text-muted-foreground mt-1">Breakeven</p>
-                        </div>
-                        <div className="bg-destructive/10 rounded-lg p-3">
-                          <p className="font-mono font-bold text-destructive">YES + NO &gt; $1.00</p>
-                          <p className="text-xs text-muted-foreground mt-1">Gegarandeerd verlies</p>
-                        </div>
-                      </div>
-                    </div>
-                  </AccordionContent>
-                </AccordionItem>
-
-                <AccordionItem value="arb-detection">
-                  <AccordionTrigger className="text-sm font-semibold">6.2 Arbitrage Detectie Algoritme</AccordionTrigger>
-                  <AccordionContent className="space-y-4">
-                    <CodeBlock>{`// Analyseer trades per markt voor arbitrage opportunities
-interface MarketAnalysis {
-  market: string;
-  outcomes: {
-    outcome: string;
-    avgPrice: number;
-    totalShares: number;
-  }[];
-  combinedScore: number;  // YES avg + NO avg
-  status: 'profitable' | 'breakeven' | 'loss' | 'exposed';
-}
-
-function analyzeMarketForArbitrage(trades: Trade[]): MarketAnalysis[] {
-  // Groepeer per markt
-  const marketMap = new Map<string, Trade[]>();
-  trades.filter(t => t.side === 'buy').forEach(trade => {
-    if (!marketMap.has(trade.market)) {
-      marketMap.set(trade.market, []);
-    }
-    marketMap.get(trade.market)!.push(trade);
-  });
-
-  const results: MarketAnalysis[] = [];
-
-  marketMap.forEach((marketTrades, marketName) => {
-    // Groepeer per outcome
-    const outcomeMap = new Map<string, Trade[]>();
-    marketTrades.forEach(t => {
-      if (!outcomeMap.has(t.outcome)) {
-        outcomeMap.set(t.outcome, []);
-      }
-      outcomeMap.get(t.outcome)!.push(t);
-    });
-
-    // Bereken gemiddelde prijs per outcome
-    const outcomes = Array.from(outcomeMap.entries()).map(([outcome, trades]) => {
-      const totalCost = trades.reduce((sum, t) => sum + t.total, 0);
-      const totalShares = trades.reduce((sum, t) => sum + t.shares, 0);
-      return {
-        outcome,
-        avgPrice: totalCost / totalShares,
-        totalShares,
-      };
-    });
-
-    // Bereken combined score (alleen voor binary markets)
-    let combinedScore = 0;
-    let status: MarketAnalysis['status'] = 'exposed';
-    
-    if (outcomes.length === 2) {
-      combinedScore = outcomes.reduce((sum, o) => sum + o.avgPrice, 0);
-      
-      if (combinedScore < 0.99) status = 'profitable';
-      else if (combinedScore > 1.01) status = 'loss';
-      else status = 'breakeven';
-    }
-
-    results.push({ market: marketName, outcomes, combinedScore, status });
-  });
-
-  return results;
-}`}</CodeBlock>
-                  </AccordionContent>
-                </AccordionItem>
-
-                <AccordionItem value="arb-timeline">
-                  <AccordionTrigger className="text-sm font-semibold">6.3 Chronologische Timeline</AccordionTrigger>
-                  <AccordionContent className="space-y-4">
-                    <p className="text-muted-foreground">
-                      Track de arbitrage score na elke trade om te zien hoe de positie evolueert:
-                    </p>
-                    <CodeBlock>{`interface TimelineEvent {
-  timestamp: Date;
-  outcome: string;
-  trade: Trade;
-  outcomeAvgPrice: number;      // Running avg voor dit outcome
-  otherOutcomeAvgPrice: number; // Running avg voor andere kant
-  arbitrageScore: number;       // Som van beide averages
-  reason: string;               // Uitleg waarom deze trade
-}
-
-function buildTimeline(trades: Trade[]): TimelineEvent[] {
-  const sorted = trades.sort((a, b) => 
-    a.timestamp.getTime() - b.timestamp.getTime()
-  );
-
-  const timeline: TimelineEvent[] = [];
-  const runningState: Record<string, { shares: number; cost: number }> = {};
-
-  sorted.forEach(trade => {
-    // Initialize if needed
-    if (!runningState[trade.outcome]) {
-      runningState[trade.outcome] = { shares: 0, cost: 0 };
-    }
-
-    const prevAvg = runningState[trade.outcome].shares > 0
-      ? runningState[trade.outcome].cost / runningState[trade.outcome].shares
-      : 0;
-
-    // Update running state
-    runningState[trade.outcome].shares += trade.shares;
-    runningState[trade.outcome].cost += trade.total;
-
-    const newAvg = runningState[trade.outcome].cost / 
-                   runningState[trade.outcome].shares;
-
-    // Find other outcome
-    const otherOutcome = Object.keys(runningState)
-      .find(o => o !== trade.outcome);
-    const otherAvg = otherOutcome && runningState[otherOutcome].shares > 0
-      ? runningState[otherOutcome].cost / runningState[otherOutcome].shares
-      : 0;
-
-    // Calculate score
-    const arbScore = otherAvg > 0 ? newAvg + otherAvg : 0;
-
-    // Determine reason
-    let reason = '';
-    if (prevAvg === 0) {
-      reason = \`Eerste \${trade.outcome} positie\`;
-    } else if (trade.price < prevAvg) {
-      reason = \`Middelen: \${(prevAvg*100).toFixed(1)}¢ → \${(newAvg*100).toFixed(1)}¢\`;
+        Some(ArbitrageOpportunity {
+            market_id: market.id.clone(),
+            ask_yes: ask_yes.price,
+            ask_no: ask_no.price,
+            profit_margin,
+            max_size,
+            expected_profit: max_size * profit_margin,
+        })
     } else {
-      reason = \`Bijkopen @ \${(trade.price*100).toFixed(1)}¢\`;
+        None
+    }
+}`}</CodeBlock>
+                  </AccordionContent>
+                </AccordionItem>
+
+                <AccordionItem value="buffer-berekening">
+                  <AccordionTrigger>Buffer Berekening</AccordionTrigger>
+                  <AccordionContent className="space-y-4">
+                    <p>
+                      De buffer is cruciaal om winstgevend te blijven na aftrek van alle kosten:
+                    </p>
+                    
+                    <div className="space-y-3">
+                      <div className="bg-muted/30 rounded-lg p-4">
+                        <h4 className="font-semibold mb-2">Kostencomponenten:</h4>
+                        <ul className="space-y-2 text-sm">
+                          <li className="flex justify-between">
+                            <span>Polymarket Trading Fee (taker)</span>
+                            <span className="font-mono">~0.1%</span>
+                          </li>
+                          <li className="flex justify-between">
+                            <span>Slippage bij market orders</span>
+                            <span className="font-mono">0.1% - 0.3%</span>
+                          </li>
+                          <li className="flex justify-between">
+                            <span>Partial fill risk buffer</span>
+                            <span className="font-mono">0.2% - 0.5%</span>
+                          </li>
+                          <li className="flex justify-between border-t border-border pt-2 font-semibold">
+                            <span>Aanbevolen minimum buffer</span>
+                            <span className="font-mono text-primary">0.5% - 1.0%</span>
+                          </li>
+                        </ul>
+                      </div>
+                    </div>
+
+                    <CodeBlock language="rust">{`// Buffer configuratie
+#[derive(Clone)]
+pub struct ArbitrageConfig {
+    /// Minimum profit margin na fees (bijv. 0.005 = 0.5%)
+    pub min_buffer: f64,
+    
+    /// Maximum position size per trade in USD
+    pub max_position_size: f64,
+    
+    /// Minimum liquiditeit vereist aan beide kanten
+    pub min_liquidity: f64,
+    
+    /// Tijd in ms om beide orders te plaatsen
+    pub execution_timeout_ms: u64,
+}
+
+impl Default for ArbitrageConfig {
+    fn default() -> Self {
+        Self {
+            min_buffer: 0.008,  // 0.8% buffer
+            max_position_size: 2000.0,
+            min_liquidity: 500.0,
+            execution_timeout_ms: 1000,
+        }
+    }
+}`}</CodeBlock>
+                  </AccordionContent>
+                </AccordionItem>
+
+                <AccordionItem value="opportunity-ranking">
+                  <AccordionTrigger>Opportunity Ranking</AccordionTrigger>
+                  <AccordionContent className="space-y-4">
+                    <p>
+                      Wanneer meerdere arbitrage-mogelijkheden tegelijk bestaan, moet de bot 
+                      prioriteren op basis van verwachte winst:
+                    </p>
+
+                    <CodeBlock language="rust">{`#[derive(Clone, PartialEq)]
+pub struct ArbitrageOpportunity {
+    pub market_id: String,
+    pub ask_yes: f64,
+    pub ask_no: f64,
+    pub profit_margin: f64,
+    pub max_size: f64,
+    pub expected_profit: f64,
+    pub liquidity_score: f64,
+}
+
+impl ArbitrageOpportunity {
+    /// Bereken een score voor prioritering
+    pub fn priority_score(&self) -> f64 {
+        // Weeg expected profit zwaarder dan margin alleen
+        let profit_weight = self.expected_profit * 2.0;
+        
+        // Bonus voor hogere liquiditeit (minder slippage risico)
+        let liquidity_bonus = (self.liquidity_score / 1000.0).min(1.0);
+        
+        // Penalty voor zeer kleine of zeer grote margins (outliers)
+        let margin_penalty = if self.profit_margin > 0.05 {
+            0.5  // Te mooi om waar te zijn, mogelijk stale data
+        } else {
+            1.0
+        };
+        
+        profit_weight * liquidity_bonus * margin_penalty
+    }
+}
+
+// Sorteer opportunities op priority score
+fn rank_opportunities(mut opps: Vec<ArbitrageOpportunity>) -> Vec<ArbitrageOpportunity> {
+    opps.sort_by(|a, b| {
+        b.priority_score()
+            .partial_cmp(&a.priority_score())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    opps
+}`}</CodeBlock>
+                  </AccordionContent>
+                </AccordionItem>
+              </Accordion>
+            </CardContent>
+          </Card>
+        </section>
+
+        {/* Chapter 3: Polymarket CLOB API */}
+        <section id="ch3" className="mb-8">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="h-10 w-10 rounded-lg bg-chart-2/20 flex items-center justify-center">
+              <Database className="h-5 w-5 text-chart-2" />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-foreground">3. Polymarket CLOB API</h2>
+              <p className="text-sm text-muted-foreground">Real-time data streaming en order execution</p>
+            </div>
+          </div>
+          
+          <Card className="bg-card/50">
+            <CardContent className="p-6">
+              <Accordion type="multiple" className="w-full">
+                <AccordionItem value="api-overview">
+                  <AccordionTrigger>API Overzicht</AccordionTrigger>
+                  <AccordionContent className="space-y-4">
+                    <p>
+                      Polymarket gebruikt een Central Limit Order Book (CLOB) systeem via hun 
+                      eigen API. De bot heeft twee hoofdinterfaces nodig:
+                    </p>
+                    
+                    <div className="grid md:grid-cols-2 gap-4">
+                      <div className="bg-muted/30 rounded-lg p-4">
+                        <h4 className="font-semibold mb-2 flex items-center gap-2">
+                          <Badge variant="secondary">REST</Badge>
+                          Order Placement
+                        </h4>
+                        <ul className="text-sm space-y-1">
+                          <li>• POST /order - Plaats nieuwe orders</li>
+                          <li>• DELETE /order - Cancel orders</li>
+                          <li>• GET /orders - Actieve orders</li>
+                          <li>• GET /trades - Trade history</li>
+                        </ul>
+                      </div>
+                      <div className="bg-muted/30 rounded-lg p-4">
+                        <h4 className="font-semibold mb-2 flex items-center gap-2">
+                          <Badge variant="secondary">WebSocket</Badge>
+                          Real-time Data
+                        </h4>
+                        <ul className="text-sm space-y-1">
+                          <li>• book - Orderbook updates</li>
+                          <li>• price - Prijswijzigingen</li>
+                          <li>• user - Order/fill updates</li>
+                          <li>• market - Market metadata</li>
+                        </ul>
+                      </div>
+                    </div>
+
+                    <div className="bg-muted/30 rounded-lg p-4 text-sm">
+                      <strong>Base URLs:</strong>
+                      <ul className="mt-2 font-mono text-xs">
+                        <li>REST: https://clob.polymarket.com</li>
+                        <li>WebSocket: wss://ws-subscriptions-clob.polymarket.com/ws</li>
+                      </ul>
+                    </div>
+                  </AccordionContent>
+                </AccordionItem>
+
+                <AccordionItem value="websocket-streams">
+                  <AccordionTrigger>WebSocket Streaming</AccordionTrigger>
+                  <AccordionContent className="space-y-4">
+                    <p>
+                      Real-time orderbook updates zijn essentieel voor snelle arbitrage detectie:
+                    </p>
+
+                    <CodeBlock language="rust">{`use tokio_tungstenite::{connect_async, tungstenite::Message};
+use futures_util::{StreamExt, SinkExt};
+use serde::{Deserialize, Serialize};
+
+const WS_URL: &str = "wss://ws-subscriptions-clob.polymarket.com/ws";
+
+#[derive(Serialize)]
+struct SubscribeMessage {
+    auth: Option<AuthPayload>,
+    markets: Vec<String>,
+    assets_ids: Vec<String>,
+    #[serde(rename = "type")]
+    msg_type: String,
+}
+
+#[derive(Deserialize, Debug)]
+struct BookUpdate {
+    market: String,
+    asset_id: String,
+    bids: Vec<PriceLevel>,
+    asks: Vec<PriceLevel>,
+    timestamp: u64,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+struct PriceLevel {
+    price: String,
+    size: String,
+}
+
+pub async fn connect_orderbook_stream(
+    market_ids: Vec<String>,
+    tx: tokio::sync::mpsc::Sender<BookUpdate>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (ws_stream, _) = connect_async(WS_URL).await?;
+    let (mut write, mut read) = ws_stream.split();
+
+    // Subscribe to orderbook updates
+    let subscribe_msg = SubscribeMessage {
+        auth: None,
+        markets: market_ids.clone(),
+        assets_ids: vec![],
+        msg_type: "subscribe".to_string(),
+    };
+    
+    write.send(Message::Text(
+        serde_json::to_string(&subscribe_msg)?
+    )).await?;
+
+    // Process incoming messages
+    while let Some(msg) = read.next().await {
+        match msg? {
+            Message::Text(text) => {
+                if let Ok(update) = serde_json::from_str::<BookUpdate>(&text) {
+                    tx.send(update).await?;
+                }
+            }
+            Message::Ping(data) => {
+                write.send(Message::Pong(data)).await?;
+            }
+            _ => {}
+        }
+    }
+    
+    Ok(())
+}`}</CodeBlock>
+                  </AccordionContent>
+                </AccordionItem>
+
+                <AccordionItem value="orderbook-management">
+                  <AccordionTrigger>Orderbook Management</AccordionTrigger>
+                  <AccordionContent className="space-y-4">
+                    <p>
+                      Maintain een lokale kopie van het orderbook voor snelle arbitrage checks:
+                    </p>
+
+                    <CodeBlock language="rust">{`use std::collections::BTreeMap;
+use parking_lot::RwLock;
+use std::sync::Arc;
+
+#[derive(Clone)]
+pub struct OrderBook {
+    /// Bids: prijs -> size (hoogste prijs eerst)
+    pub bids: BTreeMap<OrderedFloat<f64>, f64>,
+    /// Asks: prijs -> size (laagste prijs eerst)  
+    pub asks: BTreeMap<OrderedFloat<f64>, f64>,
+    pub last_update: u64,
+}
+
+impl OrderBook {
+    pub fn new() -> Self {
+        Self {
+            bids: BTreeMap::new(),
+            asks: BTreeMap::new(),
+            last_update: 0,
+        }
     }
 
-    timeline.push({
-      timestamp: trade.timestamp,
-      outcome: trade.outcome,
-      trade,
-      outcomeAvgPrice: newAvg,
-      otherOutcomeAvgPrice: otherAvg,
-      arbitrageScore: arbScore,
-      reason,
-    });
-  });
+    pub fn best_bid(&self) -> Option<(f64, f64)> {
+        self.bids.iter().next_back().map(|(p, s)| (p.0, *s))
+    }
 
-  return timeline;
-}`}</CodeBlock>
-                  </AccordionContent>
-                </AccordionItem>
-              </Accordion>
-            </div>
-          </section>
+    pub fn best_ask(&self) -> Option<(f64, f64)> {
+        self.asks.iter().next().map(|(p, s)| (p.0, *s))
+    }
 
-          {/* Chapter 7: DCA */}
-          <section id="dca" className="glass rounded-lg overflow-hidden">
-            <div className="p-6 border-b border-border/50 flex items-center gap-3">
-              <Calculator className="w-5 h-5 text-primary" />
-              <h2 className="text-xl font-bold">7. Dollar Cost Averaging (DCA)</h2>
-            </div>
-            <div className="p-6">
-              <Accordion type="multiple" className="space-y-2">
-                <AccordionItem value="dca-concept">
-                  <AccordionTrigger className="text-sm font-semibold">7.1 Concept</AccordionTrigger>
-                  <AccordionContent className="space-y-4">
-                    <p className="text-muted-foreground">
-                      DCA betekent bijkopen bij lagere prijzen om je gemiddelde entry te verlagen:
-                    </p>
-                    <div className="bg-card/50 rounded-lg p-4 font-mono text-sm">
-                      <p className="text-muted-foreground mb-2">Voorbeeld:</p>
-                      <p>• 1e buy: 100 shares @ 60¢ = $60.00</p>
-                      <p>• 2e buy: 100 shares @ 40¢ = $40.00</p>
-                      <p className="border-t border-border/50 mt-2 pt-2 text-success">
-                        → Totaal: 200 shares @ 50¢ gemiddeld (was 60¢)
-                      </p>
-                    </div>
-                  </AccordionContent>
-                </AccordionItem>
+    pub fn apply_update(&mut self, update: &BookUpdate) {
+        // Clear and rebuild - Polymarket sends full snapshots
+        self.bids.clear();
+        self.asks.clear();
 
-                <AccordionItem value="dca-formula">
-                  <AccordionTrigger className="text-sm font-semibold">7.2 Formule</AccordionTrigger>
-                  <AccordionContent className="space-y-4">
-                    <CodeBlock>{`// Bereken nieuwe gemiddelde prijs na bijkopen
-function calculateNewAverage(
-  currentShares: number,
-  currentAvgPrice: number,
-  newShares: number,
-  newPrice: number
-): number {
-  const currentCost = currentShares * currentAvgPrice;
-  const newCost = newShares * newPrice;
-  const totalShares = currentShares + newShares;
-  const totalCost = currentCost + newCost;
-  
-  return totalCost / totalShares;
-}
-
-// Voorbeeld:
-const newAvg = calculateNewAverage(100, 0.60, 100, 0.40);
-// Result: 0.50 (50¢)`}</CodeBlock>
-                  </AccordionContent>
-                </AccordionItem>
-
-                <AccordionItem value="dca-target">
-                  <AccordionTrigger className="text-sm font-semibold">7.3 Target Prijs Berekenen</AccordionTrigger>
-                  <AccordionContent className="space-y-4">
-                    <p className="text-muted-foreground">
-                      Bereken hoeveel je moet bijkopen om een target gemiddelde te bereiken:
-                    </p>
-                    <CodeBlock>{`// Bereken hoeveel shares je moet kopen bij prijs X
-// om gemiddelde te verlagen naar target Y
-function calculateSharesNeeded(
-  currentShares: number,
-  currentAvgPrice: number,
-  buyPrice: number,
-  targetAvgPrice: number
-): number {
-  // Formule: (currentShares * currentAvg + newShares * buyPrice) / 
-  //          (currentShares + newShares) = targetAvg
-  
-  // Oplossen voor newShares:
-  const numerator = currentShares * (currentAvgPrice - targetAvgPrice);
-  const denominator = targetAvgPrice - buyPrice;
-  
-  if (denominator <= 0) {
-    throw new Error('Buy price must be lower than target average');
-  }
-  
-  return numerator / denominator;
-}
-
-// Voorbeeld: Je hebt 100 shares @ 60¢, prijs is nu 35¢
-// Hoeveel kopen om gemiddelde naar 45¢ te krijgen?
-const needed = calculateSharesNeeded(100, 0.60, 0.35, 0.45);
-// Result: 150 shares`}</CodeBlock>
-                  </AccordionContent>
-                </AccordionItem>
-              </Accordion>
-            </div>
-          </section>
-
-          {/* Chapter 8: Real-time */}
-          <section id="realtime" className="glass rounded-lg overflow-hidden">
-            <div className="p-6 border-b border-border/50 flex items-center gap-3">
-              <RefreshCw className="w-5 h-5 text-primary" />
-              <h2 className="text-xl font-bold">8. Real-time Updates</h2>
-            </div>
-            <div className="p-6">
-              <Accordion type="multiple" className="space-y-2">
-                <AccordionItem value="polling">
-                  <AccordionTrigger className="text-sm font-semibold">8.1 Polling met TanStack Query</AccordionTrigger>
-                  <AccordionContent className="space-y-4">
-                    <CodeBlock>{`// Auto-refresh elke 30 seconden
-const tradesQuery = useQuery({
-  queryKey: ['trades', username],
-  refetchInterval: 30000,  // 30 seconden
-  refetchIntervalInBackground: true,  // Ook als tab niet actief
-  queryFn: async () => {
-    // ... fetch logic
-  },
-});`}</CodeBlock>
-                  </AccordionContent>
-                </AccordionItem>
-
-                <AccordionItem value="supabase-realtime">
-                  <AccordionTrigger className="text-sm font-semibold">8.2 Supabase Realtime (Geavanceerd)</AccordionTrigger>
-                  <AccordionContent className="space-y-4">
-                    <p className="text-muted-foreground">
-                      Voor instant updates zonder polling, gebruik Supabase Realtime:
-                    </p>
-                    <CodeBlock>{`// Enable realtime op de tabel (SQL)
-ALTER PUBLICATION supabase_realtime ADD TABLE public.trades;
-
-// React hook voor realtime updates
-function useRealtimeTrades(username: string) {
-  const [trades, setTrades] = useState<Trade[]>([]);
-
-  useEffect(() => {
-    // Initial fetch
-    fetchTrades().then(setTrades);
-
-    // Subscribe to changes
-    const channel = supabase
-      .channel('trades-changes')
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'trades',
-          filter: \`trader_username=eq.\${username}\`,
-        },
-        (payload) => {
-          setTrades(prev => [payload.new as Trade, ...prev]);
+        for level in &update.bids {
+            let price: f64 = level.price.parse().unwrap_or(0.0);
+            let size: f64 = level.size.parse().unwrap_or(0.0);
+            if size > 0.0 {
+                self.bids.insert(OrderedFloat(price), size);
+            }
         }
-      )
-      .subscribe();
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [username]);
+        for level in &update.asks {
+            let price: f64 = level.price.parse().unwrap_or(0.0);
+            let size: f64 = level.size.parse().unwrap_or(0.0);
+            if size > 0.0 {
+                self.asks.insert(OrderedFloat(price), size);
+            }
+        }
 
-  return trades;
+        self.last_update = update.timestamp;
+    }
+}
+
+// Thread-safe market state
+pub struct MarketState {
+    pub yes_book: Arc<RwLock<OrderBook>>,
+    pub no_book: Arc<RwLock<OrderBook>>,
+    pub market_id: String,
+}`}</CodeBlock>
+                  </AccordionContent>
+                </AccordionItem>
+
+                <AccordionItem value="authentication">
+                  <AccordionTrigger>API Authenticatie (EIP-712)</AccordionTrigger>
+                  <AccordionContent className="space-y-4">
+                    <p>
+                      Polymarket gebruikt Ethereum-style signing voor order authenticatie. 
+                      Orders worden gesigned met EIP-712 typed data:
+                    </p>
+
+                    <CodeBlock language="rust">{`use ethers::signers::{LocalWallet, Signer};
+use ethers::types::{H256, Signature};
+use sha3::{Digest, Keccak256};
+
+#[derive(Clone)]
+pub struct PolymarketAuth {
+    wallet: LocalWallet,
+    api_key: String,
+    api_secret: String,
+}
+
+impl PolymarketAuth {
+    pub fn new(private_key: &str, api_key: String, api_secret: String) -> Result<Self, Box<dyn std::error::Error>> {
+        let wallet: LocalWallet = private_key.parse()?;
+        Ok(Self { wallet, api_key, api_secret })
+    }
+
+    /// Genereer L1 authenticatie headers voor REST API
+    pub async fn generate_auth_headers(&self, method: &str, path: &str, body: &str) -> Vec<(String, String)> {
+        let timestamp = chrono::Utc::now().timestamp_millis().to_string();
+        
+        // Create signature payload
+        let message = format!("{}{}{}{}", timestamp, method, path, body);
+        let signature = self.sign_message(&message).await;
+        
+        vec![
+            ("POLY_ADDRESS".to_string(), format!("{:?}", self.wallet.address())),
+            ("POLY_SIGNATURE".to_string(), signature),
+            ("POLY_TIMESTAMP".to_string(), timestamp),
+            ("POLY_API_KEY".to_string(), self.api_key.clone()),
+        ]
+    }
+
+    /// Sign een bericht met de wallet
+    async fn sign_message(&self, message: &str) -> String {
+        let hash = Keccak256::digest(message.as_bytes());
+        let signature = self.wallet
+            .sign_message(H256::from_slice(&hash))
+            .await
+            .expect("Failed to sign message");
+        format!("0x{}", hex::encode(signature.to_vec()))
+    }
+
+    /// Sign een order voor de CLOB
+    pub async fn sign_order(&self, order: &Order) -> String {
+        // EIP-712 typed data signing
+        let domain_separator = self.compute_domain_separator();
+        let order_hash = order.compute_hash();
+        
+        let digest = Keccak256::digest(
+            &[&[0x19, 0x01], domain_separator.as_bytes(), order_hash.as_bytes()].concat()
+        );
+        
+        let signature = self.wallet
+            .sign_message(H256::from_slice(&digest))
+            .await
+            .expect("Failed to sign order");
+            
+        format!("0x{}", hex::encode(signature.to_vec()))
+    }
+
+    fn compute_domain_separator(&self) -> H256 {
+        // Polymarket CLOB domain separator
+        // Chain ID: 137 (Polygon)
+        let type_hash = Keccak256::digest(
+            b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+        );
+        // ... implementation details
+        H256::zero() // Placeholder
+    }
 }`}</CodeBlock>
                   </AccordionContent>
                 </AccordionItem>
               </Accordion>
-            </div>
-          </section>
+            </CardContent>
+          </Card>
+        </section>
 
-          {/* Chapter 9: Deployment */}
-          <section id="deployment" className="glass rounded-lg overflow-hidden">
-            <div className="p-6 border-b border-border/50 flex items-center gap-3">
-              <Shield className="w-5 h-5 text-primary" />
-              <h2 className="text-xl font-bold">9. Deployment & Monitoring</h2>
+        {/* Chapter 4: Rust Implementation */}
+        <section id="ch4" className="mb-8">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="h-10 w-10 rounded-lg bg-chart-3/20 flex items-center justify-center">
+              <Code className="h-5 w-5 text-chart-3" />
             </div>
-            <div className="p-6">
-              <Accordion type="multiple" className="space-y-2">
-                <AccordionItem value="lovable-deploy">
-                  <AccordionTrigger className="text-sm font-semibold">9.1 Lovable Deployment</AccordionTrigger>
+            <div>
+              <h2 className="text-xl font-bold text-foreground">4. Rust Implementatie</h2>
+              <p className="text-sm text-muted-foreground">Core bot architectuur en modules</p>
+            </div>
+          </div>
+          
+          <Card className="bg-card/50">
+            <CardContent className="p-6">
+              <Accordion type="multiple" className="w-full">
+                <AccordionItem value="project-structure">
+                  <AccordionTrigger>Project Structuur</AccordionTrigger>
                   <AccordionContent className="space-y-4">
-                    <p className="text-muted-foreground">
-                      Bij Lovable worden Edge Functions automatisch gedeployed wanneer je code pusht.
-                      Frontend changes vereisen een expliciete "Update" via de Publish knop.
+                    <CodeBlock language="bash">{`polymarket-arb-bot/
+├── Cargo.toml
+├── src/
+│   ├── main.rs           # Entry point, async runtime setup
+│   ├── lib.rs            # Library exports
+│   ├── config.rs         # Configuration management
+│   ├── api/
+│   │   ├── mod.rs
+│   │   ├── rest.rs       # REST API client
+│   │   ├── websocket.rs  # WebSocket streaming
+│   │   └── auth.rs       # EIP-712 signing
+│   ├── orderbook/
+│   │   ├── mod.rs
+│   │   ├── book.rs       # Orderbook data structure
+│   │   └── manager.rs    # Multi-market orderbook state
+│   ├── strategy/
+│   │   ├── mod.rs
+│   │   ├── arbitrage.rs  # Arbitrage detection logic
+│   │   └── executor.rs   # Trade execution
+│   ├── risk/
+│   │   ├── mod.rs
+│   │   ├── position.rs   # Position tracking
+│   │   └── limits.rs     # Risk limits
+│   ├── telegram/
+│   │   ├── mod.rs
+│   │   └── bot.rs        # Telegram commands
+│   └── utils/
+│       ├── mod.rs
+│       └── logging.rs    # Structured logging
+├── config/
+│   └── default.toml      # Default configuration
+└── tests/
+    └── integration/      # Integration tests`}</CodeBlock>
+                  </AccordionContent>
+                </AccordionItem>
+
+                <AccordionItem value="cargo-toml">
+                  <AccordionTrigger>Cargo.toml Dependencies</AccordionTrigger>
+                  <AccordionContent className="space-y-4">
+                    <CodeBlock language="toml">{`[package]
+name = "polymarket-arb-bot"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full"] }
+futures-util = "0.3"
+
+# HTTP & WebSocket
+reqwest = { version = "0.11", features = ["json"] }
+tokio-tungstenite = { version = "0.21", features = ["native-tls"] }
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Ethereum signing
+ethers = { version = "2.0", features = ["legacy"] }
+sha3 = "0.10"
+hex = "0.4"
+
+# Utilities
+ordered-float = "4.2"
+parking_lot = "0.12"
+chrono = "0.4"
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Configuration
+config = "0.14"
+dotenv = "0.15"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Telegram
+teloxide = { version = "0.12", features = ["macros"] }
+
+# Testing
+tokio-test = "0.4"
+
+[dev-dependencies]
+mockall = "0.12"
+wiremock = "0.5"`}</CodeBlock>
+                  </AccordionContent>
+                </AccordionItem>
+
+                <AccordionItem value="main-loop">
+                  <AccordionTrigger>Main Event Loop</AccordionTrigger>
+                  <AccordionContent className="space-y-4">
+                    <CodeBlock language="rust">{`use tokio::sync::mpsc;
+use std::sync::Arc;
+use parking_lot::RwLock;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logging
+    tracing_subscriber::fmt()
+        .with_env_filter("polymarket_arb_bot=debug,info")
+        .init();
+
+    // Load configuration
+    let config = Config::load()?;
+    
+    // Initialize authentication
+    let auth = PolymarketAuth::new(
+        &config.private_key,
+        config.api_key.clone(),
+        config.api_secret.clone(),
+    )?;
+
+    // Create shared state
+    let state = Arc::new(BotState::new(config.clone()));
+    
+    // Create channels for communication
+    let (orderbook_tx, orderbook_rx) = mpsc::channel::<BookUpdate>(1000);
+    let (trade_tx, trade_rx) = mpsc::channel::<TradeSignal>(100);
+    let (telegram_tx, telegram_rx) = mpsc::channel::<TelegramCommand>(50);
+
+    // Spawn WebSocket stream handler
+    let ws_state = state.clone();
+    let ws_handle = tokio::spawn(async move {
+        loop {
+            if let Err(e) = run_websocket_stream(
+                ws_state.clone(),
+                orderbook_tx.clone(),
+            ).await {
+                tracing::error!("WebSocket error: {}, reconnecting...", e);
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+        }
+    });
+
+    // Spawn arbitrage detector
+    let arb_state = state.clone();
+    let arb_handle = tokio::spawn(async move {
+        run_arbitrage_detector(arb_state, orderbook_rx, trade_tx).await
+    });
+
+    // Spawn trade executor
+    let exec_state = state.clone();
+    let exec_auth = auth.clone();
+    let exec_handle = tokio::spawn(async move {
+        run_trade_executor(exec_state, exec_auth, trade_rx).await
+    });
+
+    // Spawn Telegram bot
+    let tg_state = state.clone();
+    let tg_handle = tokio::spawn(async move {
+        run_telegram_bot(tg_state, telegram_rx).await
+    });
+
+    // Wait for all tasks
+    tokio::select! {
+        _ = ws_handle => tracing::error!("WebSocket handler exited"),
+        _ = arb_handle => tracing::error!("Arbitrage detector exited"),
+        _ = exec_handle => tracing::error!("Trade executor exited"),
+        _ = tg_handle => tracing::error!("Telegram bot exited"),
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("Shutdown signal received");
+        }
+    }
+
+    Ok(())
+}`}</CodeBlock>
+                  </AccordionContent>
+                </AccordionItem>
+
+                <AccordionItem value="arbitrage-detector">
+                  <AccordionTrigger>Arbitrage Detector</AccordionTrigger>
+                  <AccordionContent className="space-y-4">
+                    <CodeBlock language="rust">{`pub async fn run_arbitrage_detector(
+    state: Arc<BotState>,
+    mut orderbook_rx: mpsc::Receiver<BookUpdate>,
+    trade_tx: mpsc::Sender<TradeSignal>,
+) {
+    tracing::info!("Arbitrage detector started");
+
+    while let Some(update) = orderbook_rx.recv().await {
+        // Skip if bot is paused
+        if state.is_paused() {
+            continue;
+        }
+
+        // Update local orderbook
+        state.update_orderbook(&update);
+
+        // Check for arbitrage opportunity
+        if let Some(opportunity) = check_arbitrage_opportunity(&state, &update.market) {
+            tracing::info!(
+                market = %opportunity.market_id,
+                margin = %opportunity.profit_margin,
+                size = %opportunity.max_size,
+                "Arbitrage opportunity detected"
+            );
+
+            // Validate opportunity
+            if validate_opportunity(&state, &opportunity) {
+                // Send trade signal
+                if let Err(e) = trade_tx.send(TradeSignal::Execute(opportunity)).await {
+                    tracing::error!("Failed to send trade signal: {}", e);
+                }
+            }
+        }
+    }
+}
+
+fn check_arbitrage_opportunity(
+    state: &BotState,
+    market_id: &str,
+) -> Option<ArbitrageOpportunity> {
+    let market = state.get_market(market_id)?;
+    let config = state.config();
+
+    let yes_book = market.yes_book.read();
+    let no_book = market.no_book.read();
+
+    let (ask_yes_price, ask_yes_size) = yes_book.best_ask()?;
+    let (ask_no_price, ask_no_size) = no_book.best_ask()?;
+
+    let total_cost = ask_yes_price + ask_no_price;
+    let threshold = 1.0 - config.min_buffer;
+
+    if total_cost < threshold {
+        let profit_margin = 1.0 - total_cost;
+        let max_size = ask_yes_size
+            .min(ask_no_size)
+            .min(config.max_position_size / total_cost);
+
+        Some(ArbitrageOpportunity {
+            market_id: market_id.to_string(),
+            yes_asset_id: market.yes_asset_id.clone(),
+            no_asset_id: market.no_asset_id.clone(),
+            ask_yes: ask_yes_price,
+            ask_no: ask_no_price,
+            profit_margin,
+            max_size,
+            expected_profit: max_size * profit_margin,
+            liquidity_score: ask_yes_size + ask_no_size,
+            detected_at: chrono::Utc::now(),
+        })
+    } else {
+        None
+    }
+}
+
+fn validate_opportunity(state: &BotState, opp: &ArbitrageOpportunity) -> bool {
+    let config = state.config();
+
+    // Check minimum profit threshold
+    if opp.expected_profit < config.min_profit_threshold {
+        return false;
+    }
+
+    // Check if we already have position in this market
+    if state.has_pending_orders(&opp.market_id) {
+        return false;
+    }
+
+    // Check daily trade limits
+    if state.daily_trade_count() >= config.max_daily_trades {
+        return false;
+    }
+
+    // Check maximum exposure
+    let current_exposure = state.total_exposure();
+    let new_exposure = opp.max_size * (opp.ask_yes + opp.ask_no);
+    if current_exposure + new_exposure > config.max_total_exposure {
+        return false;
+    }
+
+    true
+}`}</CodeBlock>
+                  </AccordionContent>
+                </AccordionItem>
+              </Accordion>
+            </CardContent>
+          </Card>
+        </section>
+
+        {/* Chapter 5: Order Management */}
+        <section id="ch5" className="mb-8">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="h-10 w-10 rounded-lg bg-chart-4/20 flex items-center justify-center">
+              <Zap className="h-5 w-5 text-chart-4" />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-foreground">5. Order Management</h2>
+              <p className="text-sm text-muted-foreground">Atomic execution en partial fill handling</p>
+            </div>
+          </div>
+          
+          <Card className="bg-card/50">
+            <CardContent className="p-6">
+              <Accordion type="multiple" className="w-full">
+                <AccordionItem value="order-structure">
+                  <AccordionTrigger>Order Structuur</AccordionTrigger>
+                  <AccordionContent className="space-y-4">
+                    <CodeBlock language="rust">{`#[derive(Clone, Serialize, Deserialize)]
+pub struct Order {
+    /// Asset ID (Yes of No token)
+    pub asset_id: String,
+    
+    /// BUY of SELL
+    pub side: OrderSide,
+    
+    /// Prijs per share (0.01 - 0.99)
+    pub price: f64,
+    
+    /// Aantal shares
+    pub size: f64,
+    
+    /// Order type: GTC, FOK, IOC
+    pub order_type: OrderType,
+    
+    /// Expiration timestamp (unix ms)
+    pub expiration: u64,
+    
+    /// Nonce voor deduplicatie
+    pub nonce: u64,
+    
+    /// EIP-712 signature
+    pub signature: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "UPPERCASE")]
+pub enum OrderSide {
+    Buy,
+    Sell,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub enum OrderType {
+    #[serde(rename = "GTC")]
+    GoodTillCancel,
+    #[serde(rename = "FOK")]
+    FillOrKill,
+    #[serde(rename = "IOC")]
+    ImmediateOrCancel,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct OrderResponse {
+    pub order_id: String,
+    pub status: OrderStatus,
+    pub filled_size: f64,
+    pub remaining_size: f64,
+    pub avg_fill_price: Option<f64>,
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+pub enum OrderStatus {
+    Pending,
+    Open,
+    Filled,
+    PartiallyFilled,
+    Cancelled,
+    Expired,
+    Failed,
+}`}</CodeBlock>
+                  </AccordionContent>
+                </AccordionItem>
+
+                <AccordionItem value="atomic-execution">
+                  <AccordionTrigger>Atomic Execution Strategy</AccordionTrigger>
+                  <AccordionContent className="space-y-4">
+                    <p>
+                      Voor arbitrage is het cruciaal dat beide zijden tegelijk worden uitgevoerd. 
+                      We gebruiken IOC (Immediate or Cancel) orders om partial fills te minimaliseren:
                     </p>
-                    <div className="grid grid-cols-2 gap-4 text-sm">
-                      <div className="bg-card/50 rounded-lg p-4">
-                        <h4 className="font-semibold text-success mb-2">✓ Automatisch</h4>
-                        <ul className="space-y-1 text-muted-foreground">
-                          <li>• Edge Functions</li>
-                          <li>• Database migraties</li>
-                        </ul>
+
+                    <CodeBlock language="rust">{`pub async fn execute_arbitrage(
+    state: Arc<BotState>,
+    auth: &PolymarketAuth,
+    opp: ArbitrageOpportunity,
+) -> Result<ArbitrageResult, ExecutionError> {
+    let client = state.api_client();
+    
+    // Bereid beide orders voor
+    let yes_order = Order {
+        asset_id: opp.yes_asset_id.clone(),
+        side: OrderSide::Buy,
+        price: opp.ask_yes,
+        size: opp.max_size,
+        order_type: OrderType::ImmediateOrCancel,
+        expiration: chrono::Utc::now().timestamp_millis() as u64 + 60_000,
+        nonce: generate_nonce(),
+        signature: String::new(),
+    };
+
+    let no_order = Order {
+        asset_id: opp.no_asset_id.clone(),
+        side: OrderSide::Buy,
+        price: opp.ask_no,
+        size: opp.max_size,
+        order_type: OrderType::ImmediateOrCancel,
+        expiration: chrono::Utc::now().timestamp_millis() as u64 + 60_000,
+        nonce: generate_nonce(),
+        signature: String::new(),
+    };
+
+    // Sign beide orders
+    let signed_yes = sign_order(auth, yes_order).await?;
+    let signed_no = sign_order(auth, no_order).await?;
+
+    // Plaats beide orders tegelijk
+    let (yes_result, no_result) = tokio::join!(
+        client.place_order(&signed_yes),
+        client.place_order(&signed_no),
+    );
+
+    // Analyseer resultaten
+    let yes_response = yes_result?;
+    let no_response = no_result?;
+
+    // Handle partial fills
+    handle_partial_fills(
+        state.clone(),
+        auth,
+        &opp,
+        &yes_response,
+        &no_response,
+    ).await
+}
+
+async fn handle_partial_fills(
+    state: Arc<BotState>,
+    auth: &PolymarketAuth,
+    opp: &ArbitrageOpportunity,
+    yes_resp: &OrderResponse,
+    no_resp: &OrderResponse,
+) -> Result<ArbitrageResult, ExecutionError> {
+    let yes_filled = yes_resp.filled_size;
+    let no_filled = no_resp.filled_size;
+
+    // Perfect fill - beide orders volledig gevuld
+    if yes_filled == opp.max_size && no_filled == opp.max_size {
+        return Ok(ArbitrageResult::Success {
+            yes_filled,
+            no_filled,
+            profit: opp.expected_profit,
+        });
+    }
+
+    // Partial fill - probeer te balanceren
+    let min_filled = yes_filled.min(no_filled);
+    
+    if min_filled > 0.0 {
+        let balanced_profit = min_filled * opp.profit_margin;
+        
+        // Verkoop de overschot
+        let excess_yes = yes_filled - min_filled;
+        let excess_no = no_filled - min_filled;
+        
+        if excess_yes > 0.0 {
+            let sell_order = create_sell_order(
+                &opp.yes_asset_id,
+                excess_yes,
+                opp.ask_yes * 0.99,
+            );
+            let signed = sign_order(auth, sell_order).await?;
+            state.api_client().place_order(&signed).await?;
+        }
+        
+        if excess_no > 0.0 {
+            let sell_order = create_sell_order(
+                &opp.no_asset_id,
+                excess_no,
+                opp.ask_no * 0.99,
+            );
+            let signed = sign_order(auth, sell_order).await?;
+            state.api_client().place_order(&signed).await?;
+        }
+
+        return Ok(ArbitrageResult::PartialSuccess {
+            balanced_size: min_filled,
+            profit: balanced_profit,
+            unwind_pending: excess_yes + excess_no,
+        });
+    }
+
+    Ok(ArbitrageResult::NoFill)
+}`}</CodeBlock>
+                  </AccordionContent>
+                </AccordionItem>
+              </Accordion>
+            </CardContent>
+          </Card>
+        </section>
+
+        {/* Chapter 6: Risk Management */}
+        <section id="ch6" className="mb-8">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="h-10 w-10 rounded-lg bg-destructive/20 flex items-center justify-center">
+              <Shield className="h-5 w-5 text-destructive" />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-foreground">6. Risk Management</h2>
+              <p className="text-sm text-muted-foreground">Limieten, monitoring en fail-safes</p>
+            </div>
+          </div>
+          
+          <Card className="bg-card/50">
+            <CardContent className="p-6">
+              <Accordion type="multiple" className="w-full">
+                <AccordionItem value="risk-limits">
+                  <AccordionTrigger>Risk Limieten</AccordionTrigger>
+                  <AccordionContent className="space-y-4">
+                    <CodeBlock language="rust">{`#[derive(Clone)]
+pub struct RiskLimits {
+    /// Maximum positie grootte per trade (USD)
+    pub max_position_size: f64,
+    
+    /// Maximum totale exposure (USD)
+    pub max_total_exposure: f64,
+    
+    /// Maximum aantal trades per dag
+    pub max_daily_trades: u32,
+    
+    /// Maximum verlies per dag (USD)
+    pub max_daily_loss: f64,
+    
+    /// Maximum exposure per markt (USD)
+    pub max_market_exposure: f64,
+    
+    /// Minimum liquiditeit vereist
+    pub min_liquidity: f64,
+    
+    /// Maximum unbalanced position time (sec)
+    pub max_unbalance_duration: u64,
+    
+    /// Cooldown na failed trade (sec)
+    pub trade_cooldown: u64,
+}
+
+impl Default for RiskLimits {
+    fn default() -> Self {
+        Self {
+            max_position_size: 2000.0,
+            max_total_exposure: 50000.0,
+            max_daily_trades: 1000,
+            max_daily_loss: 500.0,
+            max_market_exposure: 10000.0,
+            min_liquidity: 500.0,
+            max_unbalance_duration: 300,
+            trade_cooldown: 5,
+        }
+    }
+}
+
+pub struct RiskManager {
+    limits: RiskLimits,
+    daily_pnl: f64,
+    daily_trade_count: u32,
+    market_exposures: HashMap<String, f64>,
+    is_halted: bool,
+}
+
+impl RiskManager {
+    pub fn can_trade(&self, opp: &ArbitrageOpportunity) -> Result<(), RiskCheckError> {
+        if self.is_halted {
+            return Err(RiskCheckError::BotHalted);
+        }
+
+        if self.daily_pnl < -self.limits.max_daily_loss {
+            return Err(RiskCheckError::DailyLossExceeded);
+        }
+
+        if self.daily_trade_count >= self.limits.max_daily_trades {
+            return Err(RiskCheckError::DailyTradeLimit);
+        }
+
+        let trade_size = opp.max_size * (opp.ask_yes + opp.ask_no);
+        if trade_size > self.limits.max_position_size {
+            return Err(RiskCheckError::PositionTooLarge);
+        }
+
+        let total_exposure: f64 = self.market_exposures.values().sum();
+        if total_exposure + trade_size > self.limits.max_total_exposure {
+            return Err(RiskCheckError::TotalExposureExceeded);
+        }
+
+        if opp.liquidity_score < self.limits.min_liquidity {
+            return Err(RiskCheckError::InsufficientLiquidity);
+        }
+
+        Ok(())
+    }
+}`}</CodeBlock>
+                  </AccordionContent>
+                </AccordionItem>
+
+                <AccordionItem value="circuit-breakers">
+                  <AccordionTrigger>Circuit Breakers</AccordionTrigger>
+                  <AccordionContent className="space-y-4">
+                    <CodeBlock language="rust">{`pub struct CircuitBreaker {
+    consecutive_failures: u32,
+    last_failure_time: Option<chrono::DateTime<chrono::Utc>>,
+    max_failures: u32,
+    cooldown_duration: Duration,
+    state: CircuitState,
+}
+
+#[derive(Clone, PartialEq)]
+pub enum CircuitState {
+    Closed,     // Normal operation
+    Open,       // Tripped - no trades
+    HalfOpen,   // Testing recovery
+}
+
+impl CircuitBreaker {
+    pub fn record_success(&mut self) {
+        self.consecutive_failures = 0;
+        if self.state == CircuitState::HalfOpen {
+            self.state = CircuitState::Closed;
+            tracing::info!("Circuit breaker closed");
+        }
+    }
+
+    pub fn record_failure(&mut self) -> CircuitState {
+        self.consecutive_failures += 1;
+        self.last_failure_time = Some(chrono::Utc::now());
+
+        if self.consecutive_failures >= self.max_failures {
+            self.state = CircuitState::Open;
+            tracing::error!(
+                failures = self.consecutive_failures,
+                "Circuit breaker OPEN"
+            );
+        }
+
+        self.state.clone()
+    }
+
+    pub fn can_proceed(&mut self) -> bool {
+        match self.state {
+            CircuitState::Closed => true,
+            CircuitState::Open => {
+                if let Some(last) = self.last_failure_time {
+                    if chrono::Utc::now() - last > self.cooldown_duration {
+                        self.state = CircuitState::HalfOpen;
+                        return true;
+                    }
+                }
+                false
+            }
+            CircuitState::HalfOpen => true,
+        }
+    }
+}`}</CodeBlock>
+                  </AccordionContent>
+                </AccordionItem>
+              </Accordion>
+            </CardContent>
+          </Card>
+        </section>
+
+        {/* Chapter 7: Telegram Integration */}
+        <section id="ch7" className="mb-8">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="h-10 w-10 rounded-lg bg-blue-500/20 flex items-center justify-center">
+              <Bell className="h-5 w-5 text-blue-500" />
+            </div>
+            <div>
+              <h2 className="text-xl font-bold text-foreground">7. Telegram Integratie</h2>
+              <p className="text-sm text-muted-foreground">Real-time alerts en bot control</p>
+            </div>
+          </div>
+          
+          <Card className="bg-card/50">
+            <CardContent className="p-6">
+              <Accordion type="multiple" className="w-full">
+                <AccordionItem value="telegram-commands">
+                  <AccordionTrigger>Beschikbare Commands</AccordionTrigger>
+                  <AccordionContent className="space-y-4">
+                    <div className="grid gap-3">
+                      <div className="bg-muted/30 rounded-lg p-3 flex items-center gap-3">
+                        <Badge variant="outline" className="font-mono">/status</Badge>
+                        <span className="text-sm">Bekijk huidige bot status, PnL, en actieve posities</span>
                       </div>
-                      <div className="bg-card/50 rounded-lg p-4">
-                        <h4 className="font-semibold text-warning mb-2">⚡ Handmatig</h4>
-                        <ul className="space-y-1 text-muted-foreground">
-                          <li>• Frontend (Publish → Update)</li>
-                        </ul>
+                      <div className="bg-muted/30 rounded-lg p-3 flex items-center gap-3">
+                        <Badge variant="outline" className="font-mono">/pause</Badge>
+                        <span className="text-sm">Pauzeer alle trading activiteit</span>
+                      </div>
+                      <div className="bg-muted/30 rounded-lg p-3 flex items-center gap-3">
+                        <Badge variant="outline" className="font-mono">/resume</Badge>
+                        <span className="text-sm">Hervat trading activiteit</span>
+                      </div>
+                      <div className="bg-muted/30 rounded-lg p-3 flex items-center gap-3">
+                        <Badge variant="outline" className="font-mono">/positions</Badge>
+                        <span className="text-sm">Lijst alle open posities</span>
+                      </div>
+                      <div className="bg-muted/30 rounded-lg p-3 flex items-center gap-3">
+                        <Badge variant="outline" className="font-mono">/pnl</Badge>
+                        <span className="text-sm">Bekijk dagelijkse en totale PnL</span>
+                      </div>
+                      <div className="bg-muted/30 rounded-lg p-3 flex items-center gap-3">
+                        <Badge variant="outline" className="font-mono">/set buffer 0.01</Badge>
+                        <span className="text-sm">Pas configuratie aan runtime aan</span>
                       </div>
                     </div>
                   </AccordionContent>
                 </AccordionItem>
 
-                <AccordionItem value="monitoring">
-                  <AccordionTrigger className="text-sm font-semibold">9.2 Logging & Monitoring</AccordionTrigger>
+                <AccordionItem value="telegram-implementation">
+                  <AccordionTrigger>Implementatie</AccordionTrigger>
                   <AccordionContent className="space-y-4">
-                    <CodeBlock>{`// Goede logging in Edge Functions
-serve(async (req) => {
-  console.info(\`[scrape-polymarket] Starting for \${username}\`);
-  
-  try {
-    const activities = await fetchAllActivities(wallet);
-    console.info(\`[scrape-polymarket] Fetched \${activities.length} activities\`);
-    
-    // ... processing
-    
-    console.info(\`[scrape-polymarket] Stored \${trades.length} trades\`);
-    
-  } catch (error) {
-    console.error(\`[scrape-polymarket] Error:\`, error);
-    // Logs zijn zichtbaar in Supabase Dashboard → Logs
-  }
-});`}</CodeBlock>
-                  </AccordionContent>
-                </AccordionItem>
+                    <CodeBlock language="rust">{`use teloxide::prelude::*;
+use teloxide::utils::command::BotCommands;
 
-                <AccordionItem value="cron">
-                  <AccordionTrigger className="text-sm font-semibold">9.3 Scheduled Scraping (Cron)</AccordionTrigger>
-                  <AccordionContent className="space-y-4">
-                    <p className="text-muted-foreground">
-                      Automatisch scrapen met pg_cron:
-                    </p>
-                    <CodeBlock>{`-- Enable extensions (eenmalig)
-CREATE EXTENSION IF NOT EXISTS pg_cron;
-CREATE EXTENSION IF NOT EXISTS pg_net;
+#[derive(BotCommands, Clone)]
+#[command(rename_rule = "lowercase")]
+enum Command {
+    #[command(description = "Bekijk bot status")]
+    Status,
+    #[command(description = "Pauzeer trading")]
+    Pause,
+    #[command(description = "Hervat trading")]
+    Resume,
+    #[command(description = "Bekijk open posities")]
+    Positions,
+    #[command(description = "Bekijk PnL")]
+    Pnl,
+    #[command(description = "Pas setting aan")]
+    Set { key: String, value: String },
+}
 
--- Schedule scrape elke 5 minuten
-SELECT cron.schedule(
-  'scrape-polymarket-every-5-min',
-  '*/5 * * * *',
-  $$
-  SELECT net.http_post(
-    url := 'https://your-project.supabase.co/functions/v1/scrape-polymarket',
-    headers := '{"Content-Type": "application/json", "Authorization": "Bearer YOUR_ANON_KEY"}'::jsonb,
-    body := '{"username": "gabagool22"}'::jsonb
-  );
-  $$
-);
+pub async fn run_telegram_bot(
+    state: Arc<BotState>,
+    bot_token: String,
+    allowed_chat_id: i64,
+) {
+    let bot = Bot::new(bot_token);
 
--- Bekijk scheduled jobs
-SELECT * FROM cron.job;
+    let handler = Update::filter_message()
+        .filter_command::<Command>()
+        .endpoint(move |bot: Bot, msg: Message, cmd: Command| {
+            let state = state.clone();
+            async move {
+                if msg.chat.id.0 != allowed_chat_id {
+                    return Ok(());
+                }
 
--- Verwijder een job
-SELECT cron.unschedule('scrape-polymarket-every-5-min');`}</CodeBlock>
+                let response = match cmd {
+                    Command::Status => handle_status(&state).await,
+                    Command::Pause => handle_pause(&state).await,
+                    Command::Resume => handle_resume(&state).await,
+                    Command::Positions => handle_positions(&state).await,
+                    Command::Pnl => handle_pnl(&state).await,
+                    Command::Set { key, value } => handle_set(&state, &key, &value).await,
+                };
+
+                bot.send_message(msg.chat.id, response).await?;
+                Ok(())
+            }
+        });
+
+    Dispatcher::builder(bot, handler)
+        .enable_ctrlc_handler()
+        .build()
+        .dispatch()
+        .await;
+}
+
+async fn handle_status(state: &BotState) -> String {
+    let is_paused = state.is_paused();
+    let daily_pnl = state.daily_pnl();
+    let trade_count = state.daily_trade_count();
+
+    format!(
+        "🤖 *Bot Status*\\n\\n\
+         Status: {}\\n\
+         Daily PnL: $\{:.2}\\n\
+         Trades Today: {}",
+        if is_paused { "⏸️ Paused" } else { "▶️ Running" },
+        daily_pnl,
+        trade_count
+    )
+}
+
+async fn handle_pause(state: &BotState) -> String {
+    state.set_paused(true);
+    "⏸️ Bot paused.".to_string()
+}
+
+async fn handle_resume(state: &BotState) -> String {
+    state.set_paused(false);
+    "▶️ Bot resumed.".to_string()
+}`}</CodeBlock>
                   </AccordionContent>
                 </AccordionItem>
               </Accordion>
+            </CardContent>
+          </Card>
+        </section>
+
+        {/* Chapter 8: Testing & Deployment */}
+        <section id="ch8" className="mb-8">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="h-10 w-10 rounded-lg bg-chart-5/20 flex items-center justify-center">
+              <TestTube className="h-5 w-5 text-chart-5" />
             </div>
-          </section>
+            <div>
+              <h2 className="text-xl font-bold text-foreground">8. Testing & Deployment</h2>
+              <p className="text-sm text-muted-foreground">Teststrategieën en productie deployment</p>
+            </div>
+          </div>
+          
+          <Card className="bg-card/50">
+            <CardContent className="p-6">
+              <Accordion type="multiple" className="w-full">
+                <AccordionItem value="testing-strategy">
+                  <AccordionTrigger>Testing Strategie</AccordionTrigger>
+                  <AccordionContent className="space-y-4">
+                    <div className="grid md:grid-cols-3 gap-4 mb-4">
+                      <div className="bg-muted/30 rounded-lg p-4">
+                        <h4 className="font-semibold mb-2">Unit Tests</h4>
+                        <p className="text-sm text-muted-foreground">
+                          Test individuele componenten: orderbook logic, arbitrage detection.
+                        </p>
+                      </div>
+                      <div className="bg-muted/30 rounded-lg p-4">
+                        <h4 className="font-semibold mb-2">Integration Tests</h4>
+                        <p className="text-sm text-muted-foreground">
+                          Test API integratie met mock servers, WebSocket handling.
+                        </p>
+                      </div>
+                      <div className="bg-muted/30 rounded-lg p-4">
+                        <h4 className="font-semibold mb-2">Paper Trading</h4>
+                        <p className="text-sm text-muted-foreground">
+                          Simuleer trades met real market data zonder echte orders.
+                        </p>
+                      </div>
+                    </div>
 
-        </div>
+                    <CodeBlock language="rust">{`#[cfg(test)]
+mod tests {
+    use super::*;
 
-        {/* Footer */}
-        <div className="mt-12 text-center py-8 border-t border-border/50">
-          <p className="text-sm text-muted-foreground">
-            Vragen? Check de broncode of open een issue op GitHub.
-          </p>
-          <Link to="/" className="text-sm text-primary hover:underline mt-2 inline-block">
-            ← Terug naar Dashboard
-          </Link>
+    #[test]
+    fn test_arbitrage_detection() {
+        let mut yes_book = OrderBook::new();
+        let mut no_book = OrderBook::new();
+        
+        // Setup with arbitrage opportunity
+        yes_book.asks.insert(OrderedFloat(0.48), 1000.0);
+        no_book.asks.insert(OrderedFloat(0.50), 1000.0);
+        // Total: 0.98, profit: 2%
+
+        let config = ArbitrageConfig {
+            min_buffer: 0.01,
+            ..Default::default()
+        };
+
+        let opportunity = check_arbitrage(&market, &config);
+        
+        assert!(opportunity.is_some());
+        let opp = opportunity.unwrap();
+        assert!((opp.profit_margin - 0.02).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_no_arbitrage_when_prices_equal() {
+        let mut yes_book = OrderBook::new();
+        let mut no_book = OrderBook::new();
+        
+        // No arbitrage: total = 1.00
+        yes_book.asks.insert(OrderedFloat(0.50), 1000.0);
+        no_book.asks.insert(OrderedFloat(0.50), 1000.0);
+
+        let config = ArbitrageConfig::default();
+        let opportunity = check_arbitrage(&market, &config);
+        
+        assert!(opportunity.is_none());
+    }
+}`}</CodeBlock>
+                  </AccordionContent>
+                </AccordionItem>
+
+                <AccordionItem value="deployment">
+                  <AccordionTrigger>Production Deployment</AccordionTrigger>
+                  <AccordionContent className="space-y-4">
+                    <div className="bg-muted/30 rounded-lg p-4 mb-4">
+                      <h4 className="font-semibold mb-2">Deployment Checklist</h4>
+                      <ul className="space-y-2 text-sm">
+                        <li className="flex items-center gap-2">
+                          <span className="text-chart-1">✓</span>
+                          <span>All unit tests passing</span>
+                        </li>
+                        <li className="flex items-center gap-2">
+                          <span className="text-chart-1">✓</span>
+                          <span>Paper trading validated (1+ week)</span>
+                        </li>
+                        <li className="flex items-center gap-2">
+                          <span className="text-chart-1">✓</span>
+                          <span>Risk limits configured conservatively</span>
+                        </li>
+                        <li className="flex items-center gap-2">
+                          <span className="text-chart-1">✓</span>
+                          <span>Telegram alerts working</span>
+                        </li>
+                        <li className="flex items-center gap-2">
+                          <span className="text-chart-1">✓</span>
+                          <span>Secrets securely stored</span>
+                        </li>
+                      </ul>
+                    </div>
+
+                    <CodeBlock language="dockerfile">{`# Dockerfile
+FROM rust:1.75-slim as builder
+WORKDIR /app
+COPY . .
+RUN cargo build --release
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y \\
+    ca-certificates libssl3 \\
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/target/release/polymarket-arb-bot /usr/local/bin/
+
+RUN useradd -r -s /bin/false botuser
+USER botuser
+
+ENTRYPOINT ["polymarket-arb-bot"]`}</CodeBlock>
+
+                    <CodeBlock language="yaml">{`# docker-compose.yml
+version: '3.8'
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    environment:
+      - RUST_LOG=info
+      - PRIVATE_KEY=\${PRIVATE_KEY}
+      - POLYMARKET_API_KEY=\${POLYMARKET_API_KEY}
+      - TELEGRAM_BOT_TOKEN=\${TELEGRAM_BOT_TOKEN}
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 512M`}</CodeBlock>
+                  </AccordionContent>
+                </AccordionItem>
+              </Accordion>
+            </CardContent>
+          </Card>
+        </section>
+
+        {/* Final Notes */}
+        <Card className="bg-primary/5 border-primary/20">
+          <CardContent className="p-6">
+            <div className="flex items-start gap-4">
+              <div className="h-10 w-10 rounded-lg bg-primary/20 flex items-center justify-center shrink-0">
+                <Rocket className="h-5 w-5 text-primary" />
+              </div>
+              <div>
+                <h3 className="font-bold text-lg mb-2">Belangrijke Opmerkingen</h3>
+                <ul className="space-y-2 text-sm text-muted-foreground">
+                  <li>• <strong>Start klein:</strong> Begin met lage limieten en verhoog geleidelijk.</li>
+                  <li>• <strong>Monitor continu:</strong> Arbitrage-condities veranderen snel door competitie.</li>
+                  <li>• <strong>Fees:</strong> Houd rekening met Polymarket fees (~0.1%) en gas costs.</li>
+                  <li>• <strong>Latency:</strong> Overweeg VPS dicht bij Polymarket servers.</li>
+                  <li>• <strong>Disclaimer:</strong> Dit is geen financieel advies. Trading brengt risico's.</li>
+                </ul>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Separator className="my-8" />
+        
+        <div className="text-center text-muted-foreground text-sm">
+          <p>Gebaseerd op analyse van Gabagool22's trading strategie</p>
+          <p>Laatste update: December 2024</p>
         </div>
-      </main>
+      </div>
     </div>
   );
 };
