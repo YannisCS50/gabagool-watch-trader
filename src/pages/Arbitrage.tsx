@@ -124,6 +124,12 @@ const Arbitrage = () => {
               om volledig gehedged te zijn.
             </p>
           </div>
+          <Link 
+            to="/entry-analysis" 
+            className="inline-flex items-center gap-2 mt-4 text-sm text-primary hover:underline"
+          >
+            📊 Bekijk Entry Price Analysis →
+          </Link>
         </div>
 
         {/* Footer */}

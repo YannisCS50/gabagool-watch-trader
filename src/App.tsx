@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import Index from "./pages/Index";
 import Strategy from "./pages/Strategy";
 import Arbitrage from "./pages/Arbitrage";
+import EntryAnalysis from "./pages/EntryAnalysis";
 import TradingStrategies from "./pages/TradingStrategies";
 import NotFound from "./pages/NotFound";
 
@@ -21,6 +22,7 @@ const App = () => (
           <Route path="/" element={<Index />} />
           <Route path="/strategy" element={<Strategy />} />
           <Route path="/arbitrage" element={<Arbitrage />} />
+          <Route path="/entry-analysis" element={<EntryAnalysis />} />
           <Route path="/trading-strategies" element={<TradingStrategies />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
