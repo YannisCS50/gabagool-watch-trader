@@ -11,7 +11,8 @@ import {
   PositionSizing,
   StrategyInsights,
   EntryPriceAnalysis,
-  TradeVelocity
+  TradeVelocity,
+  ArbitrageAnalysis
 } from '@/components/StrategyAnalysis';
 
 const Strategy = () => {
@@ -76,6 +77,14 @@ const Strategy = () => {
               </p>
             </div>
           </div>
+        </div>
+
+        {/* Arbitrage & Risk Analysis - NEW */}
+        <div>
+          <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
+            <span className="text-primary">💰</span> Arbitrage & Risico Analyse
+          </h2>
+          <ArbitrageAnalysis trades={displayTrades} />
         </div>
 
         {/* Strategy Insights */}
