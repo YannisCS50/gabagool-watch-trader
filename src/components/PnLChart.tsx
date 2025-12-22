@@ -1,7 +1,7 @@
 import { Trade } from '@/types/trade';
 import { useMemo, useState } from 'react';
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
-import { format, subDays, subHours, startOfDay, startOfHour, isSameDay, isSameHour } from 'date-fns';
+import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, BarChart, Bar } from 'recharts';
+import { format, subDays, subHours, startOfDay, startOfHour, differenceInMinutes } from 'date-fns';
 import { Button } from '@/components/ui/button';
 import { TrendingUp, TrendingDown } from 'lucide-react';
 
@@ -11,36 +11,101 @@ interface PnLChartProps {
 
 type TimeFrame = 'hourly' | 'daily';
 
+interface ArbitragePair {
+  market: string;
+  timestamp: Date;
+  yesPrice: number;
+  noPrice: number;
+  shares: number;
+  profit: number;
+}
+
+// Detect arbitrage pairs: Yes + No buys in the same market within 5 minutes
+function detectArbitragePairs(trades: Trade[]): ArbitragePair[] {
+  const pairs: ArbitragePair[] = [];
+  const buyTrades = trades.filter(t => t.side === 'buy');
+  
+  // Group by market
+  const byMarket = new Map<string, Trade[]>();
+  buyTrades.forEach(trade => {
+    const key = trade.market;
+    if (!byMarket.has(key)) {
+      byMarket.set(key, []);
+    }
+    byMarket.get(key)!.push(trade);
+  });
+
+  // Find Yes/No pairs within each market
+  byMarket.forEach((marketTrades, market) => {
+    const yesTrades = marketTrades.filter(t => t.outcome.toLowerCase() === 'yes');
+    const noTrades = marketTrades.filter(t => t.outcome.toLowerCase() === 'no');
+    
+    const usedNoIndices = new Set<number>();
+    
+    yesTrades.forEach(yesTrade => {
+      // Find matching No trade within 5 minutes
+      const matchIdx = noTrades.findIndex((noTrade, idx) => {
+        if (usedNoIndices.has(idx)) return false;
+        const timeDiff = Math.abs(differenceInMinutes(yesTrade.timestamp, noTrade.timestamp));
+        return timeDiff <= 5;
+      });
+      
+      if (matchIdx !== -1) {
+        usedNoIndices.add(matchIdx);
+        const noTrade = noTrades[matchIdx];
+        const shares = Math.min(yesTrade.shares, noTrade.shares);
+        const totalCost = yesTrade.price + noTrade.price;
+        
+        // Arbitrage profit: $1.00 payout - cost per share
+        const profitPerShare = 1.0 - totalCost;
+        const profit = shares * profitPerShare;
+        
+        pairs.push({
+          market,
+          timestamp: yesTrade.timestamp,
+          yesPrice: yesTrade.price,
+          noPrice: noTrade.price,
+          shares,
+          profit,
+        });
+      }
+    });
+  });
+
+  return pairs;
+}
+
 export function PnLChart({ trades }: PnLChartProps) {
   const [timeFrame, setTimeFrame] = useState<TimeFrame>('daily');
 
-  const { chartData, totalPnL, isPositive } = useMemo(() => {
+  const { chartData, totalPnL, isPositive, pairCount, avgMargin } = useMemo(() => {
+    // Detect arbitrage pairs
+    const pairs = detectArbitragePairs(trades);
+    
+    const now = new Date();
+    
     if (timeFrame === 'hourly') {
       // Last 24 hours
-      const last24Hours = Array.from({ length: 24 }, (_, i) => {
-        const hour = startOfHour(subHours(new Date(), 23 - i));
-        const hourTrades = trades.filter(t => isSameHour(t.timestamp, hour));
+      const hours = Array.from({ length: 24 }, (_, i) => {
+        const hour = startOfHour(subHours(now, 23 - i));
+        const nextHour = startOfHour(subHours(now, 22 - i));
         
-        // Calculate PnL: for arbitrage, estimate based on buy/sell pairs
-        // Simplified: buys are negative, sells are positive
-        const pnl = hourTrades.reduce((sum, t) => {
-          if (t.side === 'sell') {
-            return sum + t.total;
-          } else {
-            return sum - t.total;
-          }
-        }, 0);
+        const hourPairs = pairs.filter(p => 
+          p.timestamp >= hour && p.timestamp < nextHour
+        );
+        
+        const periodPnL = hourPairs.reduce((sum, p) => sum + p.profit, 0);
         
         return {
           label: format(hour, 'HH:mm'),
-          pnl: Math.round(pnl * 100) / 100,
-          trades: hourTrades.length,
+          pnl: Math.round(periodPnL * 100) / 100,
+          pairs: hourPairs.length,
         };
       });
       
-      // Calculate cumulative PnL
+      // Calculate cumulative
       let cumulative = 0;
-      const withCumulative = last24Hours.map(item => {
+      const withCumulative = hours.map(item => {
         cumulative += item.pnl;
         return {
           ...item,
@@ -48,38 +113,44 @@ export function PnLChart({ trades }: PnLChartProps) {
         };
       });
       
-      const total = withCumulative[withCumulative.length - 1]?.cumulativePnL || 0;
+      const total = cumulative;
+      const totalPairs = pairs.filter(p => p.timestamp >= subHours(now, 24)).length;
+      const margins = pairs
+        .filter(p => p.timestamp >= subHours(now, 24))
+        .map(p => 1 - (p.yesPrice + p.noPrice));
+      const avgMarg = margins.length > 0 
+        ? (margins.reduce((a, b) => a + b, 0) / margins.length) * 100 
+        : 0;
       
       return {
         chartData: withCumulative,
         totalPnL: total,
         isPositive: total >= 0,
+        pairCount: totalPairs,
+        avgMargin: avgMarg,
       };
     } else {
       // Last 7 days
-      const last7Days = Array.from({ length: 7 }, (_, i) => {
-        const date = startOfDay(subDays(new Date(), 6 - i));
-        const dayTrades = trades.filter(t => isSameDay(t.timestamp, date));
+      const days = Array.from({ length: 7 }, (_, i) => {
+        const day = startOfDay(subDays(now, 6 - i));
+        const nextDay = startOfDay(subDays(now, 5 - i));
         
-        // Calculate PnL
-        const pnl = dayTrades.reduce((sum, t) => {
-          if (t.side === 'sell') {
-            return sum + t.total;
-          } else {
-            return sum - t.total;
-          }
-        }, 0);
+        const dayPairs = pairs.filter(p => 
+          p.timestamp >= day && p.timestamp < nextDay
+        );
+        
+        const periodPnL = dayPairs.reduce((sum, p) => sum + p.profit, 0);
         
         return {
-          label: format(date, 'MMM dd'),
-          pnl: Math.round(pnl * 100) / 100,
-          trades: dayTrades.length,
+          label: format(day, 'MMM dd'),
+          pnl: Math.round(periodPnL * 100) / 100,
+          pairs: dayPairs.length,
         };
       });
       
-      // Calculate cumulative PnL
+      // Calculate cumulative
       let cumulative = 0;
-      const withCumulative = last7Days.map(item => {
+      const withCumulative = days.map(item => {
         cumulative += item.pnl;
         return {
           ...item,
@@ -87,12 +158,21 @@ export function PnLChart({ trades }: PnLChartProps) {
         };
       });
       
-      const total = withCumulative[withCumulative.length - 1]?.cumulativePnL || 0;
+      const total = cumulative;
+      const totalPairs = pairs.filter(p => p.timestamp >= subDays(now, 7)).length;
+      const margins = pairs
+        .filter(p => p.timestamp >= subDays(now, 7))
+        .map(p => 1 - (p.yesPrice + p.noPrice));
+      const avgMarg = margins.length > 0 
+        ? (margins.reduce((a, b) => a + b, 0) / margins.length) * 100 
+        : 0;
       
       return {
         chartData: withCumulative,
         totalPnL: total,
         isPositive: total >= 0,
+        pairCount: totalPairs,
+        avgMargin: avgMarg,
       };
     }
   }, [trades, timeFrame]);
@@ -103,9 +183,9 @@ export function PnLChart({ trades }: PnLChartProps) {
   return (
     <div className="glass rounded-lg p-4 animate-fade-in">
       <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">
-            Profit / Loss
+            Arbitrage P/L
           </h2>
           <div className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-mono ${
             isPositive 
@@ -118,6 +198,9 @@ export function PnLChart({ trades }: PnLChartProps) {
               <TrendingDown className="w-3 h-3" />
             )}
             {isPositive ? '+' : ''}{totalPnL.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}
+          </div>
+          <div className="text-xs text-muted-foreground font-mono">
+            {pairCount} pairs • {avgMargin.toFixed(2)}% avg margin
           </div>
         </div>
         <div className="flex gap-1">
@@ -140,7 +223,8 @@ export function PnLChart({ trades }: PnLChartProps) {
         </div>
       </div>
       
-      <div className="h-48">
+      {/* Main Chart - Cumulative P/L */}
+      <div className="h-40">
         <ResponsiveContainer width="100%" height="100%">
           <AreaChart data={chartData}>
             <defs>
@@ -180,9 +264,6 @@ export function PnLChart({ trades }: PnLChartProps) {
                 if (name === 'cumulativePnL') {
                   return [`$${value.toFixed(2)}`, 'Cumulative P/L'];
                 }
-                if (name === 'pnl') {
-                  return [`$${value.toFixed(2)}`, 'Period P/L'];
-                }
                 return [value, name];
               }}
             />
@@ -196,20 +277,63 @@ export function PnLChart({ trades }: PnLChartProps) {
           </AreaChart>
         </ResponsiveContainer>
       </div>
+
+      {/* Period Bar Chart */}
+      <div className="h-20 mt-2">
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={chartData}>
+            <XAxis 
+              dataKey="label" 
+              axisLine={false}
+              tickLine={false}
+              tick={{ fill: 'hsl(215, 15%, 55%)', fontSize: 9, fontFamily: 'JetBrains Mono' }}
+              interval={timeFrame === 'hourly' ? 5 : 0}
+            />
+            <Tooltip
+              contentStyle={{
+                backgroundColor: 'hsl(220, 18%, 10%)',
+                border: '1px solid hsl(220, 15%, 18%)',
+                borderRadius: '8px',
+                fontFamily: 'JetBrains Mono',
+                fontSize: '11px',
+              }}
+              formatter={(value: number, name: string) => {
+                if (name === 'pnl') {
+                  return [`$${value.toFixed(2)}`, 'Period P/L'];
+                }
+                if (name === 'pairs') {
+                  return [value, 'Arb Pairs'];
+                }
+                return [value, name];
+              }}
+            />
+            <Bar 
+              dataKey="pnl" 
+              fill="hsl(215, 70%, 50%)"
+              radius={[2, 2, 0, 0]}
+            />
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
       
-      {/* Period breakdown */}
-      <div className="mt-4 grid grid-cols-4 gap-2">
+      {/* Summary Stats */}
+      <div className="mt-3 grid grid-cols-4 gap-2 text-center">
         {chartData.slice(-4).map((item, idx) => (
-          <div key={idx} className="text-center p-2 rounded-lg bg-muted/30">
+          <div key={idx} className="p-2 rounded-lg bg-muted/30">
             <div className="text-[10px] text-muted-foreground font-mono">{item.label}</div>
             <div className={`text-xs font-mono font-semibold ${
               item.pnl >= 0 ? 'text-success' : 'text-destructive'
             }`}>
-              {item.pnl >= 0 ? '+' : ''}{item.pnl.toFixed(0)}
+              {item.pnl >= 0 ? '+' : ''}${item.pnl.toFixed(0)}
             </div>
-            <div className="text-[10px] text-muted-foreground">{item.trades} trades</div>
+            <div className="text-[10px] text-muted-foreground">{item.pairs} pairs</div>
           </div>
         ))}
+      </div>
+
+      {/* Formula Explanation */}
+      <div className="mt-3 text-[10px] text-muted-foreground text-center font-mono">
+        P/L = shares × (1.00 - (ask_yes + ask_no))
       </div>
     </div>
   );
