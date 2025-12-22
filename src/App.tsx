@@ -9,6 +9,7 @@ import Arbitrage from "./pages/Arbitrage";
 import EntryAnalysis from "./pages/EntryAnalysis";
 import DevGuide from "./pages/DevGuide";
 import TradingStrategies from "./pages/TradingStrategies";
+import RustStrategy from "./pages/RustStrategy";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -26,6 +27,7 @@ const App = () => (
           <Route path="/entry-analysis" element={<EntryAnalysis />} />
           <Route path="/dev-guide" element={<DevGuide />} />
           <Route path="/trading-strategies" element={<TradingStrategies />} />
+          <Route path="/rust-strategy" element={<RustStrategy />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>
