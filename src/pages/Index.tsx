@@ -4,6 +4,7 @@ import { StatCard } from '@/components/StatCard';
 import { TradesTable } from '@/components/TradesTable';
 import { PositionCard } from '@/components/PositionCard';
 import { ActivityChart } from '@/components/ActivityChart';
+import { PnLChart } from '@/components/PnLChart';
 import { TraderHeader } from '@/components/TraderHeader';
 import { Button } from '@/components/ui/button';
 import { useTrades } from '@/hooks/useTrades';
@@ -130,6 +131,9 @@ const Index = () => {
             icon={<BarChart3 className="w-5 h-5" />}
           />
         </div>
+
+        {/* PnL Chart */}
+        <PnLChart trades={trades} />
 
         {/* Chart & Positions */}
         <div className="grid lg:grid-cols-3 gap-6">
