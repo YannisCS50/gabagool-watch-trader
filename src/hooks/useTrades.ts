@@ -3,35 +3,25 @@ import { supabase } from '@/integrations/supabase/client';
 import { Trade, TraderStats, MarketPosition } from '@/types/trade';
 import { useToast } from '@/hooks/use-toast';
 
-export function useTrades(username: string = 'gabagool22') {
+export function useTrades(username: string = 'gabagool22', limit: number = 2000) {
   const { toast } = useToast();
 
   const tradesQuery = useQuery({
-    queryKey: ['trades', username],
+    queryKey: ['trades', username, limit],
     refetchInterval: 30000, // Auto-refresh every 30 seconds
+    staleTime: 25000, // Consider data fresh for 25 seconds
     queryFn: async () => {
-      // Fetch ALL trades - Supabase has a default limit of 1000, so we need to paginate
-      let allTrades: any[] = [];
-      let offset = 0;
-      const pageSize = 1000;
-      
-      while (true) {
-        const { data, error } = await supabase
-          .from('trades')
-          .select('*')
-          .eq('trader_username', username)
-          .order('timestamp', { ascending: false })
-          .range(offset, offset + pageSize - 1);
+      // Fetch trades with a limit for better performance
+      const { data, error } = await supabase
+        .from('trades')
+        .select('*')
+        .eq('trader_username', username)
+        .order('timestamp', { ascending: false })
+        .limit(limit);
 
-        if (error) throw error;
-        if (!data || data.length === 0) break;
-        
-        allTrades = [...allTrades, ...data];
-        if (data.length < pageSize) break;
-        offset += pageSize;
-      }
+      if (error) throw error;
 
-      return allTrades.map((t): Trade => ({
+      return (data || []).map((t): Trade => ({
         id: t.id,
         timestamp: new Date(t.timestamp),
         market: t.market,
