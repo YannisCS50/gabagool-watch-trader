@@ -20,17 +20,22 @@ interface GabagoolTradesSummaryProps {
   marketSlug: string;
   upClobPrice: number;
   downClobPrice: number;
+  compact?: boolean;
+  actualResult?: 'UP' | 'DOWN' | null;
 }
 
 export const GabagoolTradesSummary = memo(({ 
   marketSlug, 
   upClobPrice, 
-  downClobPrice 
+  downClobPrice,
+  compact = false,
+  actualResult = null,
 }: GabagoolTradesSummaryProps) => {
   const { summary, isLoading, tradesCount } = useGabagoolLiveTrades(marketSlug);
   const [isOpen, setIsOpen] = useState(false);
 
   if (isLoading || !summary) return null;
+  if (compact && summary.totalInvested === 0) return null;
 
   const { 
     up, down, totalInvested, 
@@ -55,6 +60,44 @@ export const GabagoolTradesSummary = memo(({
   const formatTime = (date: Date) => {
     return date.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   };
+
+  // Determine actual P/L if result is known
+  const actualPnL = actualResult === 'UP' ? profitIfUpWins : actualResult === 'DOWN' ? profitIfDownWins : null;
+  const actualPnLPercent = actualResult === 'UP' ? profitIfUpPercent : actualResult === 'DOWN' ? profitIfDownPercent : null;
+
+  // Compact version for expired markets
+  if (compact) {
+    return (
+      <div className="mt-2 p-2 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-2">
+          <span className="text-sm">🎰</span>
+          <span className="text-xs font-medium text-muted-foreground">Gabagool22</span>
+          {isDualSide && (
+            <Badge variant="outline" className="text-purple-400 border-purple-500/30 text-[10px] px-1 py-0">
+              <Shuffle className="w-2.5 h-2.5 mr-0.5" />
+              Dual
+            </Badge>
+          )}
+        </div>
+        
+        <div className="flex items-center gap-3 text-xs">
+          <span className="text-muted-foreground">
+            ${totalInvested.toFixed(2)} invested
+          </span>
+          
+          {actualPnL !== null && actualPnLPercent !== null ? (
+            <span className={`font-mono font-bold ${actualPnL >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+              {actualPnL >= 0 ? '+' : ''}${actualPnL.toFixed(2)} ({actualPnLPercent >= 0 ? '+' : ''}{actualPnLPercent.toFixed(0)}%)
+            </span>
+          ) : (
+            <span className="text-muted-foreground font-mono">
+              {tradesCount} trades
+            </span>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="mt-3 p-3 rounded-lg bg-gradient-to-br from-purple-500/10 to-pink-500/10 border border-purple-500/30">
