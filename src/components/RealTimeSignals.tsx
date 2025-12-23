@@ -13,13 +13,16 @@ import {
   Clock,
   DollarSign,
   Wifi,
-  WifiOff
+  WifiOff,
+  Timer
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
+import { LiveCountdown } from './LiveCountdown';
 
 interface TradingSignal {
   market: string;
   marketSlug: string;
+  asset: 'BTC' | 'ETH';
   priceToBeat: number | null;
   currentPrice: number | null;
   priceDelta: number | null;
@@ -34,6 +37,11 @@ interface TradingSignal {
   arbitrageEdge: number;
   confidence: 'high' | 'medium' | 'low';
   signalType: string;
+  action: string;
+  eventStartTime: string;
+  eventEndTime: string;
+  remainingSeconds: number;
+  remainingFormatted: string;
   timestamp: string;
 }
 
@@ -45,23 +53,29 @@ interface RealTimeData {
     ETH: number | null;
   };
   marketsAnalyzed: number;
+  liveMarkets: TradingSignal[];
+  soonUpcoming: TradingSignal[];
+  laterMarkets: TradingSignal[];
   signals: TradingSignal[];
   summary: {
     highConfidenceCount: number;
     arbitrageOpportunityCount: number;
+    liveCount: number;
+    soonCount: number;
+    laterCount: number;
     avgCombinedPrice: number;
     avgArbitrageEdge: number;
   };
 }
 
-const REFRESH_INTERVAL = 10000; // 10 seconds for live updates
+const REFRESH_INTERVAL = 5000; // 5 seconds for live updates
 
 export const RealTimeSignals = () => {
   const [data, setData] = useState<RealTimeData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [isLive, setIsLive] = useState(true); // Start live by default
+  const [isLive, setIsLive] = useState(true);
   const [secondsSinceUpdate, setSecondsSinceUpdate] = useState(0);
 
   const fetchSignals = useCallback(async () => {
@@ -86,20 +100,16 @@ export const RealTimeSignals = () => {
     }
   }, []);
 
-  // Initial fetch
   useEffect(() => {
     fetchSignals();
   }, [fetchSignals]);
 
-  // Live auto-refresh
   useEffect(() => {
     if (!isLive) return;
-    
     const interval = setInterval(fetchSignals, REFRESH_INTERVAL);
     return () => clearInterval(interval);
   }, [isLive, fetchSignals]);
 
-  // Update seconds counter
   useEffect(() => {
     const interval = setInterval(() => {
       setSecondsSinceUpdate(prev => prev + 1);
@@ -120,21 +130,15 @@ export const RealTimeSignals = () => {
 
   const getSignalTypeBadge = (signalType: string) => {
     switch (signalType) {
-      case 'uncertainty_high':
-        return <Badge variant="outline" className="text-purple-400 border-purple-500/30">Uncertainty Zone</Badge>;
-      case 'close_to_strike':
-        return <Badge variant="outline" className="text-blue-400 border-blue-500/30">Near Strike</Badge>;
-      case 'arbitrage_opportunity':
+      case 'dual_side':
+        return <Badge variant="outline" className="text-purple-400 border-purple-500/30">Dual Side</Badge>;
+      case 'arbitrage':
         return <Badge variant="outline" className="text-emerald-400 border-emerald-500/30">Arbitrage</Badge>;
+      case 'single_side':
+        return <Badge variant="outline" className="text-blue-400 border-blue-500/30">Single Side</Badge>;
       default:
-        return <Badge variant="outline" className="text-muted-foreground">Directional</Badge>;
+        return <Badge variant="outline" className="text-muted-foreground">Wait</Badge>;
     }
-  };
-
-  const formatPrice = (price: number | null): string => {
-    if (price === null) return '-';
-    if (price > 1000) return `$${price.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
-    return `${(price * 100).toFixed(1)}¢`;
   };
 
   const formatDelta = (delta: number | null, percent: number | null): string => {
@@ -172,10 +176,10 @@ export const RealTimeSignals = () => {
                   )}
                 </CardTitle>
                 <CardDescription className="flex items-center gap-2">
-                  Live Price to Beat vs Current Price analyse
+                  Live Chainlink Price to Beat vs Current Price
                   {lastUpdate && (
                     <span className="text-xs">
-                      • Updated {secondsSinceUpdate}s ago
+                      • Data {secondsSinceUpdate}s old
                     </span>
                   )}
                 </CardDescription>
@@ -256,11 +260,11 @@ export const RealTimeSignals = () => {
             <Card>
               <CardContent className="pt-6">
                 <div className="flex items-center gap-2 text-muted-foreground mb-1">
-                  <Zap className="w-4 h-4" />
-                  <span className="text-sm">High Confidence</span>
+                  <Timer className="w-4 h-4" />
+                  <span className="text-sm">Live Now</span>
                 </div>
                 <div className="text-2xl font-bold text-emerald-400">
-                  {data.summary.highConfidenceCount}
+                  {data.liveMarkets?.length || 0}
                 </div>
               </CardContent>
             </Card>
@@ -268,133 +272,209 @@ export const RealTimeSignals = () => {
             <Card>
               <CardContent className="pt-6">
                 <div className="flex items-center gap-2 text-muted-foreground mb-1">
-                  <Target className="w-4 h-4" />
-                  <span className="text-sm">Arbitrage Ops</span>
+                  <Zap className="w-4 h-4" />
+                  <span className="text-sm">High Confidence</span>
                 </div>
                 <div className="text-2xl font-bold text-primary">
-                  {data.summary.arbitrageOpportunityCount}
+                  {data.summary.highConfidenceCount}
                 </div>
               </CardContent>
             </Card>
           </div>
 
-          {/* Signal Cards */}
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <CardTitle className="text-lg">Active Signals ({data.signals.length})</CardTitle>
-                {lastUpdate && (
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Clock className="w-4 h-4" />
-                    {lastUpdate.toLocaleTimeString()}
-                  </div>
-                )}
-              </div>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                {data.signals.slice(0, 10).map((signal, index) => (
-                  <div
-                    key={index}
-                    className={`p-4 rounded-lg border ${
-                      signal.confidence === 'high' 
-                        ? 'border-emerald-500/30 bg-emerald-500/5' 
-                        : signal.confidence === 'medium'
-                        ? 'border-yellow-500/30 bg-yellow-500/5'
-                        : 'border-border bg-muted/5'
-                    }`}
-                  >
-                    <div className="flex items-start justify-between mb-3">
-                      <div className="flex-1">
-                        <div className="font-medium text-sm line-clamp-1 mb-2">
-                          {signal.market}
+          {/* LIVE NOW Section - Priority Display */}
+          {data.liveMarkets && data.liveMarkets.length > 0 && (
+            <Card className="border-emerald-500/50 bg-gradient-to-br from-emerald-500/10 to-transparent">
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <div className="relative">
+                      <Timer className="w-5 h-5 text-emerald-400" />
+                      <span className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-500 rounded-full animate-ping" />
+                    </div>
+                    <span className="text-emerald-400">LIVE NOW</span>
+                    <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30">
+                      {data.liveMarkets.length}
+                    </Badge>
+                  </CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {data.liveMarkets.map((signal) => (
+                    <div
+                      key={`live-${signal.marketSlug}`}
+                      className={`p-4 rounded-lg border-2 ${
+                        signal.confidence === 'high' 
+                          ? 'border-emerald-500/50 bg-emerald-500/10' 
+                          : signal.confidence === 'medium'
+                          ? 'border-yellow-500/50 bg-yellow-500/10'
+                          : 'border-emerald-500/30 bg-muted/10'
+                      }`}
+                    >
+                      {/* Top row: Asset + Countdown */}
+                      <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-center gap-3">
+                          <Badge 
+                            className={`text-lg px-3 py-1 ${
+                              signal.asset === 'BTC' 
+                                ? 'bg-orange-500/20 text-orange-400 border-orange-500/30' 
+                                : 'bg-blue-500/20 text-blue-400 border-blue-500/30'
+                            }`}
+                          >
+                            {signal.asset}
+                          </Badge>
+                          <span className="text-sm text-muted-foreground">15-min market</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm text-muted-foreground">Ends in:</span>
+                          <LiveCountdown 
+                            eventEndTime={signal.eventEndTime} 
+                            className="text-2xl font-bold"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Price comparison row */}
+                      <div className="grid grid-cols-3 gap-4 mb-4">
+                        <div className="text-center p-3 bg-background/50 rounded-lg">
+                          <div className="text-xs text-muted-foreground mb-1">Price to Beat (Chainlink)</div>
+                          <div className="font-mono font-bold text-lg">
+                            {signal.priceToBeat 
+                              ? `$${signal.priceToBeat.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` 
+                              : '-'}
+                          </div>
+                        </div>
+                        <div className="text-center p-3 bg-background/50 rounded-lg">
+                          <div className="text-xs text-muted-foreground mb-1">Current</div>
+                          <div className={`font-mono font-bold text-lg ${
+                            signal.priceDelta !== null 
+                              ? signal.priceDelta >= 0 ? 'text-emerald-400' : 'text-red-400'
+                              : ''
+                          }`}>
+                            {signal.currentPrice 
+                              ? `$${signal.currentPrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` 
+                              : '-'}
+                          </div>
+                        </div>
+                        <div className="text-center p-3 bg-background/50 rounded-lg">
+                          <div className="text-xs text-muted-foreground mb-1">Delta</div>
+                          <div className={`font-mono font-bold text-lg ${
+                            signal.priceDeltaPercent !== null 
+                              ? signal.priceDeltaPercent >= 0 ? 'text-emerald-400' : 'text-red-400'
+                              : ''
+                          }`}>
+                            {signal.priceDeltaPercent !== null 
+                              ? `${signal.priceDeltaPercent >= 0 ? '+' : ''}${signal.priceDeltaPercent.toFixed(3)}%`
+                              : '-'}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Market prices + Signal */}
+                      <div className="flex items-center justify-between p-3 bg-background/30 rounded-lg">
+                        <div className="flex items-center gap-6 text-sm">
+                          <div>
+                            <TrendingUp className="w-4 h-4 text-emerald-400 inline mr-1" />
+                            <span className="text-muted-foreground">Up: </span>
+                            <span className="font-mono text-emerald-400 font-medium">{(signal.upPrice * 100).toFixed(1)}¢</span>
+                          </div>
+                          <div>
+                            <TrendingDown className="w-4 h-4 text-red-400 inline mr-1" />
+                            <span className="text-muted-foreground">Down: </span>
+                            <span className="font-mono text-red-400 font-medium">{(signal.downPrice * 100).toFixed(1)}¢</span>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">Combined: </span>
+                            <span className={`font-mono font-medium ${signal.combinedPrice < 1 ? 'text-emerald-400' : 'text-muted-foreground'}`}>
+                              {(signal.combinedPrice * 100).toFixed(1)}¢
+                            </span>
+                          </div>
                         </div>
                         <div className="flex items-center gap-2">
                           {getConfidenceBadge(signal.confidence)}
-                          {getSignalTypeBadge(signal.signalType)}
-                        </div>
-                      </div>
-                    </div>
-                    
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                      {/* Price to Beat */}
-                      <div>
-                        <div className="text-muted-foreground mb-1">Price to Beat</div>
-                        <div className="font-mono font-medium">
-                          {signal.priceToBeat ? `$${signal.priceToBeat.toLocaleString()}` : '-'}
-                        </div>
-                      </div>
-                      
-                      {/* Current Price */}
-                      <div>
-                        <div className="text-muted-foreground mb-1">Current Price</div>
-                        <div className="font-mono font-medium">
-                          {signal.currentPrice ? `$${signal.currentPrice.toLocaleString()}` : '-'}
-                        </div>
-                      </div>
-                      
-                      {/* Delta */}
-                      <div>
-                        <div className="text-muted-foreground mb-1">Delta</div>
-                        <div className={`font-mono font-medium ${
-                          signal.priceDelta !== null 
-                            ? signal.priceDelta >= 0 ? 'text-emerald-400' : 'text-red-400'
-                            : ''
-                        }`}>
-                          {formatDelta(signal.priceDelta, signal.priceDeltaPercent)}
-                        </div>
-                      </div>
-                      
-                      {/* Cheaper Side */}
-                      <div>
-                        <div className="text-muted-foreground mb-1">Underpriced</div>
-                        <div className="flex items-center gap-2">
-                          {signal.cheaperSide === 'Up' ? (
-                            <TrendingUp className="w-4 h-4 text-emerald-400" />
-                          ) : (
-                            <TrendingDown className="w-4 h-4 text-red-400" />
+                          {signal.arbitrageEdge > 0 && (
+                            <Badge className="bg-primary/20 text-primary border-primary/30">
+                              +{signal.arbitrageEdge.toFixed(1)}% edge
+                            </Badge>
                           )}
-                          <span className="font-mono">
-                            {signal.cheaperSide} @ {(signal.cheaperPrice * 100).toFixed(1)}¢
-                          </span>
                         </div>
                       </div>
+
+                      {/* Action recommendation */}
+                      {signal.action && signal.confidence !== 'low' && (
+                        <div className="mt-3 p-2 bg-primary/10 rounded text-sm text-center font-medium text-primary">
+                          {signal.action}
+                        </div>
+                      )}
                     </div>
-                    
-                    {/* Bottom row with prices */}
-                    <div className="grid grid-cols-4 gap-4 mt-3 pt-3 border-t border-border/50 text-xs">
-                      <div>
-                        <span className="text-muted-foreground">Up: </span>
-                        <span className="font-mono text-emerald-400">{(signal.upPrice * 100).toFixed(1)}¢</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">Down: </span>
-                        <span className="font-mono text-red-400">{(signal.downPrice * 100).toFixed(1)}¢</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">Combined: </span>
-                        <span className={`font-mono ${signal.combinedPrice < 1 ? 'text-emerald-400' : 'text-muted-foreground'}`}>
-                          {(signal.combinedPrice * 100).toFixed(1)}¢
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Coming Soon Section */}
+          {data.soonUpcoming && data.soonUpcoming.length > 0 && (
+            <Card className="border-blue-500/30">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <Clock className="w-5 h-5 text-blue-400" />
+                  <span>Coming Soon</span>
+                  <Badge variant="outline" className="text-blue-400 border-blue-500/30">
+                    {data.soonUpcoming.length}
+                  </Badge>
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid gap-3">
+                  {data.soonUpcoming.slice(0, 4).map((signal) => (
+                    <div 
+                      key={`soon-${signal.marketSlug}`}
+                      className="flex items-center justify-between p-3 rounded-lg bg-muted/20 border border-border/50"
+                    >
+                      <div className="flex items-center gap-3">
+                        <Badge 
+                          variant="outline"
+                          className={signal.asset === 'BTC' 
+                            ? 'text-orange-400 border-orange-500/30' 
+                            : 'text-blue-400 border-blue-500/30'
+                          }
+                        >
+                          {signal.asset}
+                        </Badge>
+                        <span className="text-sm text-muted-foreground">
+                          Starts: {new Date(signal.eventStartTime).toLocaleTimeString()}
                         </span>
                       </div>
-                      <div>
-                        <span className="text-muted-foreground">Edge: </span>
-                        <span className={`font-mono ${signal.arbitrageEdge > 0 ? 'text-primary' : 'text-muted-foreground'}`}>
-                          {signal.arbitrageEdge.toFixed(1)}%
-                        </span>
-                      </div>
+                      <LiveCountdown 
+                        eventEndTime={signal.eventEndTime} 
+                        showMilliseconds={false}
+                        className="text-lg"
+                      />
                     </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* No live markets message */}
+          {(!data.liveMarkets || data.liveMarkets.length === 0) && (
+            <Card className="border-muted">
+              <CardContent className="py-12">
+                <div className="flex flex-col items-center justify-center gap-4 text-center">
+                  <Timer className="w-12 h-12 text-muted-foreground/50" />
+                  <div>
+                    <h3 className="font-medium text-lg">No Live Markets</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Waiting for the next 15-minute market window...
+                    </p>
                   </div>
-                ))}
-                
-                {data.signals.length === 0 && (
-                  <div className="text-center py-8 text-muted-foreground">
-                    No active crypto markets found
-                  </div>
-                )}
-              </div>
-            </CardContent>
-          </Card>
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Gabagool Hypothesis Card */}
           <Card className="border-purple-500/30 bg-gradient-to-br from-purple-500/5 to-transparent">
@@ -409,7 +489,7 @@ export const RealTimeSignals = () => {
                 <h4 className="font-medium mb-2">De Theorie:</h4>
                 <p className="text-sm text-muted-foreground">
                   Gabagool koopt wanneer de <span className="text-purple-400 font-medium">Current Price</span> zeer 
-                  dicht bij de <span className="text-purple-400 font-medium">Price to Beat</span> ligt. 
+                  dicht bij de <span className="text-purple-400 font-medium">Price to Beat (Chainlink)</span> ligt. 
                   Dit creëert maximale onzekerheid, waardoor beide kanten (Up/Down) goedkoop zijn.
                 </p>
               </div>
@@ -417,32 +497,27 @@ export const RealTimeSignals = () => {
               <div className="grid grid-cols-3 gap-4">
                 <div className="p-3 bg-emerald-500/10 rounded-lg border border-emerald-500/20 text-center">
                   <div className="text-2xl font-bold text-emerald-400">
-                    {data.signals.filter(s => s.confidence === 'high').length}
+                    {data.signals?.filter(s => s.confidence === 'high').length || 0}
                   </div>
                   <div className="text-xs text-muted-foreground">High Uncertainty</div>
-                  <div className="text-xs text-emerald-400">Delta &lt; 0.05%</div>
+                  <div className="text-xs text-emerald-400">Delta &lt; 0.03%</div>
                 </div>
                 
                 <div className="p-3 bg-yellow-500/10 rounded-lg border border-yellow-500/20 text-center">
                   <div className="text-2xl font-bold text-yellow-400">
-                    {data.signals.filter(s => s.confidence === 'medium').length}
+                    {data.signals?.filter(s => s.confidence === 'medium').length || 0}
                   </div>
                   <div className="text-xs text-muted-foreground">Near Strike</div>
-                  <div className="text-xs text-yellow-400">Delta &lt; 0.2%</div>
+                  <div className="text-xs text-yellow-400">Delta &lt; 0.1%</div>
                 </div>
                 
                 <div className="p-3 bg-muted/50 rounded-lg border border-border text-center">
                   <div className="text-2xl font-bold text-muted-foreground">
-                    {data.signals.filter(s => s.confidence === 'low').length}
+                    {data.signals?.filter(s => s.confidence === 'low').length || 0}
                   </div>
                   <div className="text-xs text-muted-foreground">Directional</div>
-                  <div className="text-xs text-muted-foreground">Delta &gt; 0.2%</div>
+                  <div className="text-xs text-muted-foreground">Delta &gt; 0.1%</div>
                 </div>
-              </div>
-              
-              <div className="text-sm text-muted-foreground">
-                <strong>Volgende stap:</strong> Valideer of Gabagool's historische trades correleren met 
-                kleine price delta's op moment van aankoop.
               </div>
             </CardContent>
           </Card>
