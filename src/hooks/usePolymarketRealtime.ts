@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 
 /**
- * True realtime pricing for Polymarket crypto markets via CLOB WebSocket.
+ * Rebuilt: reliable top-of-book (bid/ask) + mid (market) pricing using backend polling.
+ * No WebSocket dependency.
  */
 
 type ConnectionState = "disconnected" | "connecting" | "connected" | "discovering" | "error";
 
 interface PricePoint {
-  price: number;
+  price: number | null; // mid/last fallback
   bestAsk: number | null;
   bestBid: number | null;
   timestampMs: number;
@@ -24,9 +25,9 @@ export interface MarketInfo {
   eventStartTime: Date;
   eventEndTime: Date;
   marketType: "price_above" | "price_target" | "15min" | "other";
-  openPrice: number | null;     // The "Price to Beat" (oracle open price)
-  strikePrice: number | null;   // Legacy alias for openPrice
-  previousClosePrice: number | null; // Previous bet's close price (= next bet's target)
+  openPrice: number | null;
+  strikePrice: number | null;
+  previousClosePrice: number | null;
 }
 
 export interface ExpiredMarket {
@@ -35,9 +36,9 @@ export interface ExpiredMarket {
   question: string;
   eventStartTime: Date;
   eventEndTime: Date;
-  openPrice: number | null;      // The "Price to Beat" at market start
-  strikePrice: number | null;    // Legacy alias
-  closePrice: number | null;     // Settlement price at market end
+  openPrice: number | null;
+  strikePrice: number | null;
+  closePrice: number | null;
   upPriceAtClose: number | null;
   downPriceAtClose: number | null;
   result: "UP" | "DOWN" | "UNKNOWN" | null;
@@ -59,110 +60,86 @@ interface UsePolymarketRealtimeResult {
   timeSinceLastUpdate: number;
 }
 
-const MARKET_TOKENS_URL = "https://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/get-market-tokens";
-const CLOB_WS_PROXY_URL = "wss://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/clob-proxy";
-const CLOB_PRICES_URL = "https://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/clob-prices";
-const SAVE_EXPIRED_URL = "https://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/save-expired-market";
-const MARKET_REFRESH_INTERVAL_MS = 60000;
+const FUNCTIONS_BASE_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
+const MARKET_TOKENS_URL = `${FUNCTIONS_BASE_URL}/get-market-tokens`;
+const CLOB_PRICES_URL = `${FUNCTIONS_BASE_URL}/clob-prices`;
+const SAVE_EXPIRED_URL = `${FUNCTIONS_BASE_URL}/save-expired-market`;
+
+const MARKET_REFRESH_INTERVAL_MS = 60_000;
+const PRICES_POLL_INTERVAL_MS = 1_000;
 
 const normalizeOutcome = (o: string) => o.trim().toLowerCase();
 
 async function fetchActiveMarkets(): Promise<MarketInfo[]> {
-  console.log("[Market Discovery] Fetching from edge function...");
-  
   try {
     const response = await fetch(MARKET_TOKENS_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({})
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
     });
-    
-    if (!response.ok) {
-      console.error("[Market Discovery] Edge function error:", response.status);
-      return [];
-    }
-    
+
+    if (!response.ok) return [];
+
     const data = await response.json();
-    
-    if (!data.success || !Array.isArray(data.markets)) {
-      console.error("[Market Discovery] Invalid response format");
-      return [];
-    }
-    
-    const markets: MarketInfo[] = data.markets.map((m: any) => ({
+    if (!data?.success || !Array.isArray(data?.markets)) return [];
+
+    return data.markets.map((m: any) => ({
       slug: m.slug,
-      question: m.question || '',
+      question: m.question || "",
       asset: m.asset as "BTC" | "ETH" | "SOL" | "XRP",
-      conditionId: m.conditionId || '',
-      upTokenId: m.upTokenId,
-      downTokenId: m.downTokenId,
+      conditionId: m.conditionId || "",
+      upTokenId: String(m.upTokenId),
+      downTokenId: String(m.downTokenId),
       eventStartTime: new Date(m.eventStartTime),
       eventEndTime: new Date(m.eventEndTime),
-      marketType: m.marketType || 'other',
+      marketType: m.marketType || "other",
       openPrice: m.openPrice ?? m.strikePrice ?? null,
-      strikePrice: m.openPrice ?? m.strikePrice ?? null, // Legacy alias
+      strikePrice: m.openPrice ?? m.strikePrice ?? null,
       previousClosePrice: m.previousClosePrice ?? null,
     }));
-    
-    console.log("[Market Discovery] Found", markets.length, "markets");
-    return markets;
-    
-  } catch (error) {
-    console.error("[Market Discovery] Error:", error);
+  } catch {
     return [];
   }
 }
 
 async function fetchExpiredMarketsFromDB(): Promise<ExpiredMarket[]> {
-  console.log("[History] Fetching expired markets from database...");
-  
   try {
     const { data, error } = await supabase
-      .from('market_history')
-      .select('*')
-      .order('event_end_time', { ascending: false })
+      .from("market_history")
+      .select("*")
+      .order("event_end_time", { ascending: false })
       .limit(50);
-    
-    if (error) {
-      console.error("[History] Error fetching:", error);
-      return [];
-    }
-    
-    const expired: ExpiredMarket[] = (data || []).map((m: any) => ({
+
+    if (error) return [];
+
+    return (data || []).map((m: any) => ({
       slug: m.slug,
       asset: m.asset as "BTC" | "ETH",
-      question: m.question || '',
+      question: m.question || "",
       eventStartTime: new Date(m.event_start_time),
       eventEndTime: new Date(m.event_end_time),
       openPrice: m.open_price ?? m.strike_price ?? null,
-      strikePrice: m.open_price ?? m.strike_price ?? null, // Legacy alias
+      strikePrice: m.open_price ?? m.strike_price ?? null,
       closePrice: m.close_price,
       upPriceAtClose: m.up_price_at_close,
       downPriceAtClose: m.down_price_at_close,
       result: m.result as "UP" | "DOWN" | "UNKNOWN" | null,
     }));
-    
-    console.log("[History] Loaded", expired.length, "expired markets");
-    return expired;
-    
-  } catch (error) {
-    console.error("[History] Error:", error);
+  } catch {
     return [];
   }
 }
 
 async function saveExpiredMarket(
-  market: MarketInfo, 
-  upPrice: number | null, 
+  market: MarketInfo,
+  upPrice: number | null,
   downPrice: number | null,
-  closePrice: number | null
+  closePrice: number | null,
 ): Promise<void> {
-  console.log("[History] Saving expired market:", market.slug);
-  
   try {
     await fetch(SAVE_EXPIRED_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         slug: market.slug,
         asset: market.asset,
@@ -170,570 +147,287 @@ async function saveExpiredMarket(
         eventStartTime: market.eventStartTime.toISOString(),
         eventEndTime: market.eventEndTime.toISOString(),
         strikePrice: market.strikePrice,
-        closePrice: closePrice,
+        closePrice,
         upPriceAtClose: upPrice,
         downPriceAtClose: downPrice,
         upTokenId: market.upTokenId,
         downTokenId: market.downTokenId,
-      })
+      }),
     });
-    console.log("[History] Saved:", market.slug);
-  } catch (error) {
-    console.error("[History] Error saving:", error);
+  } catch {
+    // ignore
   }
 }
 
+function midpoint(bid: number | null, ask: number | null): number | null {
+  if (bid !== null && ask !== null) return (bid + ask) / 2;
+  return ask ?? bid ?? null;
+}
+
 export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRealtimeResult {
-  // All state declarations at the top - stable order
   const [markets, setMarkets] = useState<MarketInfo[]>([]);
   const [expiredMarkets, setExpiredMarkets] = useState<ExpiredMarket[]>([]);
+
   const [isConnected, setIsConnected] = useState(false);
   const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected");
   const [updateCount, setUpdateCount] = useState(0);
   const [lastUpdateTime, setLastUpdateTime] = useState(Date.now());
   const [latencyMs, setLatencyMs] = useState(0);
-  
-  // STAP 1: pricesVersion state om UI re-renders te forceren
   const [pricesVersion, setPricesVersion] = useState(0);
 
-  // All refs
-  const pricesRef = useRef<Map<string, Map<string, PricePoint>>>(new Map());
-  const tokenToMarketRef = useRef<Map<string, { slug: string; outcome: "up" | "down" }>>(new Map());
-  const wsRef = useRef<WebSocket | null>(null);
-  const marketRefreshIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const pricesPollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const marketsRef = useRef<MarketInfo[]>([]);
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const enabledRef = useRef(enabled);
-  const uiUpdateIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const lastPriceUpdateRef = useRef<number>(Date.now());
-  const lastCountedPriceUpdateRef = useRef<number>(0);
+  const marketsRef = useRef<MarketInfo[]>([]);
+  const tokenToMarketRef = useRef<Map<string, { slug: string; outcome: "up" | "down" }>>(new Map());
+  const pricesRef = useRef<Map<string, Map<string, PricePoint>>>(new Map());
+
+  const pricesPollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const marketRefreshIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
   const savedExpiredSlugsRef = useRef<Set<string>>(new Set());
   const chainlinkPricesRef = useRef<{ btc: number | null; eth: number | null }>({ btc: null, eth: null });
-  
-  // Keep enabledRef in sync
+
+  const [manualEnabled, setManualEnabled] = useState(true);
+
   useEffect(() => {
     enabledRef.current = enabled;
   }, [enabled]);
-  
-  // Load expired markets from database on mount
+
   useEffect(() => {
     if (enabled) {
-      fetchExpiredMarketsFromDB().then(expired => {
+      fetchExpiredMarketsFromDB().then((expired) => {
         setExpiredMarkets(expired);
-        // Mark these slugs as already saved
-        for (const m of expired) {
-          savedExpiredSlugsRef.current.add(m.slug);
-        }
+        for (const m of expired) savedExpiredSlugsRef.current.add(m.slug);
       });
     }
   }, [enabled]);
 
-  // Get midpoint price (average of bid and ask) - this is what Polymarket UI shows
-  const getPrice = useCallback((marketSlug: string, outcome: string) => {
-    const market = pricesRef.current.get(marketSlug);
-    if (!market) {
-      return null;
+  const rebuildTokenMap = useCallback((list: MarketInfo[]) => {
+    const mapping = new Map<string, { slug: string; outcome: "up" | "down" }>();
+    for (const m of list) {
+      if (m.upTokenId) mapping.set(String(m.upTokenId), { slug: m.slug, outcome: "up" });
+      if (m.downTokenId) mapping.set(String(m.downTokenId), { slug: m.slug, outcome: "down" });
     }
-    const normalizedOutcome = normalizeOutcome(outcome);
-    const point = market.get(normalizedOutcome);
-    if (!point) return null;
-    
-    // Calculate midpoint if we have both bid and ask
-    if (point.bestBid !== null && point.bestAsk !== null) {
-      return (point.bestBid + point.bestAsk) / 2;
-    }
-    // Fallback to ask or price if we don't have bid
-    return point.bestAsk ?? point.price ?? null;
-  }, [pricesVersion]); // Depend on pricesVersion to re-create when prices update
+    tokenToMarketRef.current = mapping;
+  }, []);
 
-  // Get orderbook bid/ask for a market outcome
-  const getOrderbook = useCallback((marketSlug: string, outcome: string): { bid: number | null; ask: number | null } | null => {
-    const market = pricesRef.current.get(marketSlug);
-    if (!market) return null;
-    
-    const normalizedOutcome = normalizeOutcome(outcome);
-    const point = market.get(normalizedOutcome);
-    if (!point) return null;
-    
-    return {
-      bid: point.bestBid,
-      ask: point.bestAsk,
-    };
-  }, [pricesVersion]);
-
-  const disconnect = useCallback(() => {
-    console.log("[WS] Disconnecting...");
-    
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-    
-    if (marketRefreshIntervalRef.current) {
-      clearInterval(marketRefreshIntervalRef.current);
-      marketRefreshIntervalRef.current = null;
-    }
-
+  const stopIntervals = useCallback(() => {
     if (pricesPollIntervalRef.current) {
       clearInterval(pricesPollIntervalRef.current);
       pricesPollIntervalRef.current = null;
     }
-    
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
+    if (marketRefreshIntervalRef.current) {
+      clearInterval(marketRefreshIntervalRef.current);
+      marketRefreshIntervalRef.current = null;
     }
-    
-    if (uiUpdateIntervalRef.current) {
-      clearInterval(uiUpdateIntervalRef.current);
-      uiUpdateIntervalRef.current = null;
+  }, []);
+
+  const pollPricesOnce = useCallback(async () => {
+    const tokenIds: string[] = [];
+    for (const m of marketsRef.current) {
+      if (m.upTokenId) tokenIds.push(String(m.upTokenId));
+      if (m.downTokenId) tokenIds.push(String(m.downTokenId));
+    }
+    const uniqueTokenIds = Array.from(new Set(tokenIds));
+    if (uniqueTokenIds.length === 0) return { ok: true, updatedAny: false, latency: 0 };
+
+    const started = performance.now();
+    const res = await fetch(CLOB_PRICES_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tokenIds: uniqueTokenIds }),
+    });
+    const ended = performance.now();
+
+    if (!res.ok) return { ok: false, updatedAny: false, latency: Math.round(ended - started) };
+
+    const json = await res.json();
+    const prices: Record<string, any> = json?.prices || {};
+
+    const now = Date.now();
+    let updatedAny = false;
+
+    for (const [tokenId, raw] of Object.entries(prices)) {
+      const marketInfo = tokenToMarketRef.current.get(String(tokenId));
+      if (!marketInfo) continue;
+
+      const bestAsk = typeof raw?.bestAsk === "number" ? raw.bestAsk : null;
+      const bestBid = typeof raw?.bestBid === "number" ? raw.bestBid : null;
+      const price = typeof raw?.price === "number" ? raw.price : null;
+
+      if (bestAsk === null && bestBid === null && price === null) continue;
+
+      let marketMap = pricesRef.current.get(marketInfo.slug);
+      if (!marketMap) {
+        marketMap = new Map();
+        pricesRef.current.set(marketInfo.slug, marketMap);
+      }
+
+      const point: PricePoint = {
+        price: price ?? midpoint(bestBid, bestAsk),
+        bestAsk,
+        bestBid,
+        timestampMs: now,
+      };
+
+      marketMap.set(marketInfo.outcome, point);
+      if (marketInfo.outcome === "up") marketMap.set("yes", point);
+      if (marketInfo.outcome === "down") marketMap.set("no", point);
+
+      updatedAny = true;
     }
 
-    setIsConnected(false);
-    setConnectionState("disconnected");
+    if (updatedAny) {
+      setPricesVersion((v) => v + 1);
+      setUpdateCount((c) => c + 1);
+      setLastUpdateTime(now);
+    }
+
+    return { ok: true, updatedAny, latency: Math.round(ended - started) };
   }, []);
 
   const connect = useCallback(async () => {
-    if (!enabledRef.current) return;
-    
-    // Discover markets first
+    if (!enabledRef.current || !manualEnabled) return;
+
     setConnectionState("discovering");
     const discovered = await fetchActiveMarkets();
-    
+
     setMarkets(discovered);
     marketsRef.current = discovered;
-    
-    // Build token -> market mapping
-    const tokenMapping = new Map<string, { slug: string; outcome: "up" | "down" }>();
-    for (const m of discovered) {
-      if (m.upTokenId) {
-        tokenMapping.set(String(m.upTokenId), { slug: m.slug, outcome: "up" });
-        console.log(`[Token Map] ${String(m.upTokenId).slice(0,20)}... -> ${m.slug} UP`);
-      }
-      if (m.downTokenId) {
-        tokenMapping.set(String(m.downTokenId), { slug: m.slug, outcome: "down" });
-        console.log(`[Token Map] ${String(m.downTokenId).slice(0,20)}... -> ${m.slug} DOWN`);
-      }
-    }
-    tokenToMarketRef.current = tokenMapping;
-    
-    if (discovered.length === 0) {
-      console.log("[CLOB] No active markets found");
-      setConnectionState("connected");
-      setIsConnected(true);
-      return;
-    }
+    rebuildTokenMap(discovered);
 
-    // Close existing connection
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-
-    console.log("[WS] Connecting to CLOB proxy...");
     setConnectionState("connecting");
-    
-    const ws = new WebSocket(CLOB_WS_PROXY_URL);
-    wsRef.current = ws;
-    
-    ws.onopen = () => {
-      console.log("[WS] Connected to proxy");
-    };
-    
-    ws.onmessage = (event) => {
+
+    // Prime one poll (so we can show "connected" immediately after first success)
+    try {
+      const first = await pollPricesOnce();
+      setLatencyMs(first.latency);
+      setIsConnected(first.ok);
+      setConnectionState(first.ok ? "connected" : "error");
+    } catch {
+      setIsConnected(false);
+      setConnectionState("error");
+    }
+
+    stopIntervals();
+
+    pricesPollIntervalRef.current = setInterval(async () => {
+      if (!enabledRef.current || !manualEnabled) return;
       try {
-        const data = JSON.parse(event.data);
-        const now = Date.now();
-        
-        // Handle proxy status messages
-        if (data.type === 'proxy_connected') {
-          console.log("[WS] Proxy connected to CLOB, subscribing...");
+        const r = await pollPricesOnce();
+        setLatencyMs(r.latency);
+        if (!r.ok) {
+          setIsConnected(false);
+          setConnectionState("error");
+        } else {
           setIsConnected(true);
           setConnectionState("connected");
-          
-          // Subscribe to market channel (this single channel streams both price_change and book)
-          const tokenIds: string[] = [];
-          for (const m of marketsRef.current) {
-            if (m.upTokenId) tokenIds.push(m.upTokenId);
-            if (m.downTokenId) tokenIds.push(m.downTokenId);
-          }
-
-          const uniqueTokenIds = Array.from(new Set(tokenIds));
-
-          if (uniqueTokenIds.length > 0 && ws.readyState === WebSocket.OPEN) {
-            // Polymarket CLOB Market Channel subscription format
-            // See: https://docs.polymarket.com/developers/CLOB/websocket/market-channel
-            const subscribeMsg = { type: "market", assets_ids: uniqueTokenIds };
-            console.log(`[WS] Subscribing to ${uniqueTokenIds.length} tokens (market channel)`);
-            ws.send(JSON.stringify(subscribeMsg));
-          }
-          return;
-        }
-        
-        if (data.type === 'proxy_disconnected') {
-          console.log("[WS] Proxy disconnected");
-          setIsConnected(false);
-          setConnectionState("disconnected");
-          return;
-        }
-        
-        if (data.type === 'proxy_error') {
-          console.error("[WS] Proxy error:", data.error);
-          setConnectionState("error");
-          return;
-        }
-        
-        // Process price_change events - ONLY update .price (last trade), NOT bid/ask
-        // Bid/ask come exclusively from book events
-        if (data.event_type === "price_change" && Array.isArray((data as any).price_changes)) {
-          let updatedAny = false;
-
-          for (const change of (data as any).price_changes as any[]) {
-            const tokenId = String(change.asset_id ?? change.assetId ?? "");
-            const marketInfo = tokenToMarketRef.current.get(tokenId);
-            if (!marketInfo) continue;
-
-            const price = parseFloat(String(change.price));
-            if (Number.isNaN(price)) continue;
-
-            let marketMap = pricesRef.current.get(marketInfo.slug);
-            if (!marketMap) {
-              marketMap = new Map();
-              pricesRef.current.set(marketInfo.slug, marketMap);
-            }
-
-            // Preserve existing bid/ask from book events - only update last trade price
-            const existing = marketMap.get(marketInfo.outcome);
-
-            const pricePoint: PricePoint = {
-              price, // Last trade price
-              bestAsk: existing?.bestAsk ?? null, // Keep book data
-              bestBid: existing?.bestBid ?? null, // Keep book data
-              timestampMs: now,
-            };
-
-            marketMap.set(marketInfo.outcome, pricePoint);
-            if (marketInfo.outcome === "up") marketMap.set("yes", pricePoint);
-            if (marketInfo.outcome === "down") marketMap.set("no", pricePoint);
-
-            updatedAny = true;
-          }
-
-          if (updatedAny) {
-            // Just update the ref - the 100ms interval timer handles UI updates
-            lastPriceUpdateRef.current = now;
-          }
-        }
-
-        // Also process book events (backup) - with robust parsing to avoid NaN
-        if (data.event_type === 'book' && data.asset_id) {
-          const tokenId = String(data.asset_id);
-          const marketInfo = tokenToMarketRef.current.get(tokenId);
-          
-          if (marketInfo) {
-            // Robust parsing: bids/asks can be arrays of arrays OR arrays of objects (per Polymarket docs)
-            const rawAsks = Array.isArray(data.asks) ? data.asks : [];
-            const rawBids = Array.isArray(data.bids) ? data.bids : [];
-
-            const parseBestLevelPrice = (levels: any[]): number | null => {
-              if (!Array.isArray(levels) || levels.length === 0) return null;
-              const first = levels[0];
-
-              // Format A: [[price, size], ...]
-              if (Array.isArray(first) && first.length > 0) {
-                const parsed = parseFloat(first[0]);
-                return !isNaN(parsed) && parsed > 0 ? parsed : null;
-              }
-
-              // Format B: [{ price: ".52", size: "25" }, ...]
-              if (first && typeof first === "object" && "price" in first) {
-                const parsed = parseFloat((first as any).price);
-                return !isNaN(parsed) && parsed > 0 ? parsed : null;
-              }
-
-              // Format C: ["0.52", ...]
-              if (typeof first === "string" || typeof first === "number") {
-                const parsed = parseFloat(String(first));
-                return !isNaN(parsed) && parsed > 0 ? parsed : null;
-              }
-
-              return null;
-            };
-
-            const bestAsk = parseBestLevelPrice(rawAsks);
-            const bestBid = parseBestLevelPrice(rawBids);
-            
-            // Only update if we have valid data (not NaN)
-            if (bestAsk !== null || bestBid !== null) {
-              console.log(`[BOOK] ${marketInfo.slug} ${marketInfo.outcome}: ask=${bestAsk} bid=${bestBid}`);
-              
-              let marketMap = pricesRef.current.get(marketInfo.slug);
-              if (!marketMap) {
-                marketMap = new Map();
-                pricesRef.current.set(marketInfo.slug, marketMap);
-              }
-              
-              const pricePoint: PricePoint = {
-                price: bestAsk ?? bestBid ?? 0.5,
-                bestAsk,
-                bestBid,
-                timestampMs: now,
-              };
-              
-              marketMap.set(marketInfo.outcome, pricePoint);
-              if (marketInfo.outcome === "up") marketMap.set("yes", pricePoint);
-              if (marketInfo.outcome === "down") marketMap.set("no", pricePoint);
-              
-              setPricesVersion(v => v + 1);
-              setUpdateCount(c => c + 1);
-              setLastUpdateTime(now);
-              lastPriceUpdateRef.current = now;
-            }
-          }
-        }
-        
-        // Handle last_trade_price events too
-        if (data.event_type === "last_trade_price" && Array.isArray((data as any).price_changes)) {
-          let updatedAny = false;
-
-          for (const change of (data as any).price_changes as any[]) {
-            const tokenId = String(change.asset_id ?? change.assetId ?? "");
-            const marketInfo = tokenToMarketRef.current.get(tokenId);
-            if (!marketInfo) continue;
-
-            const price = parseFloat(String(change.price));
-            if (Number.isNaN(price)) continue;
-
-            console.log(`[TRADE] ${marketInfo.slug} ${marketInfo.outcome}: ${(price * 100).toFixed(1)}¢`);
-
-            let marketMap = pricesRef.current.get(marketInfo.slug);
-            if (!marketMap) {
-              marketMap = new Map();
-              pricesRef.current.set(marketInfo.slug, marketMap);
-            }
-
-            // Only update if we don't have a recent price yet
-            const existing = marketMap.get(marketInfo.outcome);
-            if (!existing || now - existing.timestampMs > 5000) {
-              const pricePoint: PricePoint = {
-                price,
-                bestAsk: price,
-                bestBid: existing?.bestBid ?? null,
-                timestampMs: now,
-              };
-
-              marketMap.set(marketInfo.outcome, pricePoint);
-              if (marketInfo.outcome === "up") marketMap.set("yes", pricePoint);
-              if (marketInfo.outcome === "down") marketMap.set("no", pricePoint);
-
-              updatedAny = true;
-            }
-          }
-
-          if (updatedAny) {
-            lastPriceUpdateRef.current = now;
-          }
         }
       } catch {
-        // Non-JSON message (like PONG)
+        setIsConnected(false);
+        setConnectionState("error");
       }
-    };
-    
-    ws.onerror = (error) => {
-      console.error("[WS] Error:", error);
-      setConnectionState("error");
-    };
-    
-    ws.onclose = (event) => {
-      console.log("[WS] Closed:", event.code);
-      setIsConnected(false);
-      setConnectionState("disconnected");
-      wsRef.current = null;
-      
-      // Reconnect after 3 seconds if still enabled
-      if (enabledRef.current) {
-        reconnectTimeoutRef.current = setTimeout(() => {
-          console.log("[WS] Reconnecting...");
-          connect();
-        }, 3000);
-      }
-    };
-    
-    // STAP 3: Timer voor smooth UI updates (elke 100ms)
-    if (uiUpdateIntervalRef.current) {
-      clearInterval(uiUpdateIntervalRef.current);
-    }
-    uiUpdateIntervalRef.current = setInterval(() => {
-      // Flush exactly once per incoming price update so the UI never "stalls"
-      const lastPriceTs = lastPriceUpdateRef.current;
-      if (lastPriceTs && lastPriceTs !== lastCountedPriceUpdateRef.current) {
-        lastCountedPriceUpdateRef.current = lastPriceTs;
-        setPricesVersion((v) => v + 1);
-        setUpdateCount((c) => c + 1);
-        setLastUpdateTime(Date.now());
-      }
-    }, 100);
+    }, PRICES_POLL_INTERVAL_MS);
 
-    // Fallback polling (fix for "stuck at 50c"): fetch best bid/ask via REST every second.
-    // This makes UP/DOWN updates as reliable as the BTC live price even when BOOK is empty.
-    if (pricesPollIntervalRef.current) {
-      clearInterval(pricesPollIntervalRef.current);
-    }
-    pricesPollIntervalRef.current = setInterval(async () => {
-      try {
-        const tokenIds: string[] = [];
-        for (const m of marketsRef.current) {
-          if (m.upTokenId) tokenIds.push(String(m.upTokenId));
-          if (m.downTokenId) tokenIds.push(String(m.downTokenId));
-        }
-        const uniqueTokenIds = Array.from(new Set(tokenIds));
-        if (uniqueTokenIds.length === 0) return;
-
-        const res = await fetch(CLOB_PRICES_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ tokenIds: uniqueTokenIds }),
-        });
-        if (!res.ok) return;
-
-        const json = await res.json();
-        const prices: Record<string, any> = json?.prices || {};
-
-        let updatedAny = false;
-        for (const [tokenId, p] of Object.entries(prices)) {
-          const marketInfo = tokenToMarketRef.current.get(String(tokenId));
-          if (!marketInfo) continue;
-
-          const bestAsk = typeof (p as any).bestAsk === "number" ? (p as any).bestAsk : null;
-          const bestBid = typeof (p as any).bestBid === "number" ? (p as any).bestBid : null;
-          const price = typeof (p as any).price === "number" ? (p as any).price : null;
-
-          if (bestAsk === null && bestBid === null && price === null) continue;
-
-          let marketMap = pricesRef.current.get(marketInfo.slug);
-          if (!marketMap) {
-            marketMap = new Map();
-            pricesRef.current.set(marketInfo.slug, marketMap);
-          }
-
-          const point: PricePoint = {
-            price: price ?? bestAsk ?? bestBid ?? 0.5,
-            bestAsk: bestAsk ?? null,
-            bestBid: bestBid ?? null,
-            timestampMs: Date.now(),
-          };
-
-          marketMap.set(marketInfo.outcome, point);
-          if (marketInfo.outcome === "up") marketMap.set("yes", point);
-          if (marketInfo.outcome === "down") marketMap.set("no", point);
-
-          updatedAny = true;
-        }
-
-        if (updatedAny) {
-          lastPriceUpdateRef.current = Date.now();
-        }
-      } catch {
-        // ignore
-      }
-    }, 1000);
-    
-    // Set up market refresh interval
-    if (marketRefreshIntervalRef.current) {
-      clearInterval(marketRefreshIntervalRef.current);
-    }
     marketRefreshIntervalRef.current = setInterval(async () => {
-      console.log("[Market Discovery] Refreshing...");
+      if (!enabledRef.current || !manualEnabled) return;
       const refreshed = await fetchActiveMarkets();
       setMarkets(refreshed);
       marketsRef.current = refreshed;
-      
-      const newMapping = new Map<string, { slug: string; outcome: "up" | "down" }>();
-      for (const m of refreshed) {
-        if (m.upTokenId) newMapping.set(String(m.upTokenId), { slug: m.slug, outcome: "up" });
-        if (m.downTokenId) newMapping.set(String(m.downTokenId), { slug: m.slug, outcome: "down" });
-      }
-      tokenToMarketRef.current = newMapping;
+      rebuildTokenMap(refreshed);
     }, MARKET_REFRESH_INTERVAL_MS);
-    
-  }, []);
+  }, [manualEnabled, pollPricesOnce, rebuildTokenMap, stopIntervals]);
 
-  // Main effect - connect on mount
+  const disconnect = useCallback(() => {
+    stopIntervals();
+    setIsConnected(false);
+    setConnectionState("disconnected");
+  }, [stopIntervals]);
+
+  // Main effect
   useEffect(() => {
-    if (enabled) {
+    if (enabled && manualEnabled) {
       connect();
+      return () => disconnect();
     }
-    
-    return () => {
-      disconnect();
-    };
-  }, [enabled, connect, disconnect]);
+    disconnect();
+    return;
+  }, [enabled, manualEnabled, connect, disconnect]);
 
-  // STAP 5: Calculate time since last update for debugging
-  const timeSinceLastUpdate = Date.now() - lastUpdateTime;
-  
-  // Check for expired markets and save them
+  const getPrice = useCallback(
+    (marketSlug: string, outcome: string) => {
+      const market = pricesRef.current.get(marketSlug);
+      if (!market) return null;
+      const point = market.get(normalizeOutcome(outcome));
+      if (!point) return null;
+
+      const mid = midpoint(point.bestBid, point.bestAsk);
+      return mid ?? point.price ?? null;
+    },
+    [pricesVersion],
+  );
+
+  const getOrderbook = useCallback(
+    (marketSlug: string, outcome: string) => {
+      const market = pricesRef.current.get(marketSlug);
+      if (!market) return null;
+      const point = market.get(normalizeOutcome(outcome));
+      if (!point) return null;
+      return { bid: point.bestBid, ask: point.bestAsk };
+    },
+    [pricesVersion],
+  );
+
+  const timeSinceLastUpdate = useMemo(() => Date.now() - lastUpdateTime, [lastUpdateTime, pricesVersion]);
+
+  // Expiry saving (unchanged behavior)
   useEffect(() => {
     const checkExpired = () => {
       const now = Date.now();
       for (const market of marketsRef.current) {
         const isExpired = market.eventEndTime.getTime() <= now;
         const alreadySaved = savedExpiredSlugsRef.current.has(market.slug);
-        
-        if (isExpired && !alreadySaved) {
-          console.log("[Expiry] Market expired:", market.slug);
-          savedExpiredSlugsRef.current.add(market.slug);
-          
-          // Get final prices
-          const upPrice = pricesRef.current.get(market.slug)?.get("up")?.price ?? null;
-          const downPrice = pricesRef.current.get(market.slug)?.get("down")?.price ?? null;
-          
-          // Get close price from chainlink (would need to be passed in)
-          const closePrice = market.asset === 'BTC' 
-            ? chainlinkPricesRef.current.btc 
-            : chainlinkPricesRef.current.eth;
-          
-          // Save to database
-          saveExpiredMarket(market, upPrice, downPrice, closePrice);
-          
-          // Add to local expired list
-          setExpiredMarkets(prev => {
-            const exists = prev.some(m => m.slug === market.slug);
-            if (exists) return prev;
-            
-            const openPrice = market.openPrice ?? market.strikePrice;
-            let result: "UP" | "DOWN" | "UNKNOWN" = "UNKNOWN";
-            if (closePrice && openPrice) {
-              result = closePrice > openPrice ? "UP" : "DOWN";
-            }
-            
-            return [{
+        if (!isExpired || alreadySaved) continue;
+
+        savedExpiredSlugsRef.current.add(market.slug);
+
+        const upPrice = pricesRef.current.get(market.slug)?.get("up")?.price ?? null;
+        const downPrice = pricesRef.current.get(market.slug)?.get("down")?.price ?? null;
+
+        const closePrice = market.asset === "BTC" ? chainlinkPricesRef.current.btc : chainlinkPricesRef.current.eth;
+
+        saveExpiredMarket(market, upPrice, downPrice, closePrice);
+
+        setExpiredMarkets((prev) => {
+          const exists = prev.some((m) => m.slug === market.slug);
+          if (exists) return prev;
+
+          const openPrice = market.openPrice ?? market.strikePrice;
+          let result: "UP" | "DOWN" | "UNKNOWN" = "UNKNOWN";
+          if (closePrice && openPrice) result = closePrice > openPrice ? "UP" : "DOWN";
+
+          return [
+            {
               slug: market.slug,
               asset: market.asset as "BTC" | "ETH",
               question: market.question,
               eventStartTime: market.eventStartTime,
               eventEndTime: market.eventEndTime,
               openPrice,
-              strikePrice: openPrice, // Legacy alias
+              strikePrice: openPrice,
               closePrice,
               upPriceAtClose: upPrice,
               downPriceAtClose: downPrice,
               result,
-            }, ...prev].slice(0, 50);
-          });
-        }
+            },
+            ...prev,
+          ].slice(0, 50);
+        });
       }
     };
-    
-    const interval = setInterval(checkExpired, 5000);
+
+    const interval = setInterval(checkExpired, 5_000);
     return () => clearInterval(interval);
   }, [markets]);
-  
-  // Method to update chainlink prices from outside
-  const updateChainlinkPrices = useCallback((btc: number | null, eth: number | null) => {
-    chainlinkPricesRef.current = { btc, eth };
-  }, []);
 
   return {
     markets,
@@ -745,8 +439,8 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
     updateCount,
     lastUpdateTime,
     latencyMs,
-    connect,
-    disconnect,
+    connect: () => setManualEnabled(true),
+    disconnect: () => setManualEnabled(false),
     pricesVersion,
     timeSinceLastUpdate,
   };

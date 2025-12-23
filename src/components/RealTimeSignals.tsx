@@ -2,8 +2,15 @@ import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useEffect, useMemo, useState } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Activity,
+  BookOpen,
+  ChevronDown,
+  ChevronUp,
   DollarSign,
   Layers,
   Radio,
@@ -18,6 +25,7 @@ import {
   Zap,
 } from "lucide-react";
 import { LivePrice } from "@/components/LivePrice";
+import { OrderbookDepth, type OrderbookLevel } from "@/components/OrderbookDepth";
 import { useChainlinkRealtime } from "@/hooks/useChainlinkRealtime";
 import { usePolymarketRealtime } from "@/hooks/usePolymarketRealtime";
 
@@ -39,16 +47,42 @@ export const RealTimeSignals = () => {
   const [isLive, setIsLive] = useState(true);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
+  type DepthPayload = { bids: OrderbookLevel[]; asks: OrderbookLevel[] };
+
+  const [depthOpen, setDepthOpen] = useState<Record<string, boolean>>({});
+  const [depthByTokenId, setDepthByTokenId] = useState<Record<string, DepthPayload>>({});
+  const [depthLoadingBySlug, setDepthLoadingBySlug] = useState<Record<string, boolean>>({});
+  const [depthErrorBySlug, setDepthErrorBySlug] = useState<Record<string, string | null>>({});
+
   // Drive countdowns
   useEffect(() => {
     const id = setInterval(() => setNowMs(Date.now()), 500);
     return () => clearInterval(id);
   }, []);
 
+  const FUNCTIONS_BASE_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
+
+  const fetchDepth = async (tokenId: string): Promise<DepthPayload | null> => {
+    const res = await fetch(`${FUNCTIONS_BASE_URL}/clob-orderbook`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tokenId, depth: 12 }),
+    });
+
+    const json = await res.json().catch(() => null);
+    if (!res.ok || !json?.success) return null;
+
+    return {
+      bids: Array.isArray(json.bids) ? json.bids : [],
+      asks: Array.isArray(json.asks) ? json.asks : [],
+    };
+  };
+
   // Polymarket CLOB for Up/Down prices
   const {
     markets: discoveredMarkets,
     getPrice: getTradePrice,
+    getOrderbook: getTopOfBook,
     isConnected: clobConnected,
     connectionState: clobState,
     updateCount: clobUpdates,
@@ -62,6 +96,10 @@ export const RealTimeSignals = () => {
     isConnected: chainlinkConnected,
     updateCount: chainlinkUpdates,
   } = useChainlinkRealtime(isLive);
+
+  const marketMetaBySlug = useMemo(() => {
+    return new Map(discoveredMarkets.map((m) => [m.slug, m] as const));
+  }, [discoveredMarkets]);
 
   const readUpDown = (slug: string) => {
     const up = getTradePrice(slug, "up") ?? getTradePrice(slug, "yes");
@@ -360,13 +398,13 @@ export const RealTimeSignals = () => {
                       >
                         {market.asset}
                       </Badge>
-                      <Badge 
-                        variant="outline" 
-                        className={market.marketType === '15min' 
-                          ? "text-emerald-400 border-emerald-500/30" 
-                          : "text-muted-foreground"}
+                      <Badge
+                        variant="outline"
+                        className={
+                          market.marketType === "15min" ? "text-emerald-400 border-emerald-500/30" : "text-muted-foreground"
+                        }
                       >
-                        {market.marketType === '15min' ? '15m' : 'Daily'}
+                        {market.marketType === "15min" ? "15m" : "Daily"}
                       </Badge>
                       <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/30 text-xs flex items-center gap-1">
                         <Radio className="w-2.5 h-2.5" />
@@ -381,67 +419,180 @@ export const RealTimeSignals = () => {
                         {formatTime(market.remainingSeconds)}
                       </div>
                     </div>
-                    <Badge
-                      className={
-                        confidence === "high"
-                          ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
-                          : confidence === "medium"
-                            ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30"
-                            : "bg-muted text-muted-foreground"
-                      }
-                    >
-                      {confidence.toUpperCase()}
-                    </Badge>
+
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={async () => {
+                          const meta = marketMetaBySlug.get(market.slug);
+                          if (!meta) return;
+
+                          const nextOpen = !depthOpen[market.slug];
+                          setDepthOpen((p) => ({ ...p, [market.slug]: nextOpen }));
+                          if (!nextOpen) return;
+
+                          setDepthErrorBySlug((p) => ({ ...p, [market.slug]: null }));
+
+                          const upTokenId = meta.upTokenId;
+                          const downTokenId = meta.downTokenId;
+                          const hasUp = !!upTokenId;
+                          const hasDown = !!downTokenId;
+
+                          // Only fetch once per token (cached)
+                          const needsUp = hasUp && !depthByTokenId[upTokenId];
+                          const needsDown = hasDown && !depthByTokenId[downTokenId];
+
+                          if (!needsUp && !needsDown) return;
+
+                          setDepthLoadingBySlug((p) => ({ ...p, [market.slug]: true }));
+                          try {
+                            const [upDepth, downDepth] = await Promise.all([
+                              needsUp && upTokenId ? fetchDepth(upTokenId) : Promise.resolve(null),
+                              needsDown && downTokenId ? fetchDepth(downTokenId) : Promise.resolve(null),
+                            ]);
+
+                            setDepthByTokenId((p) => ({
+                              ...p,
+                              ...(upTokenId && upDepth ? { [upTokenId]: upDepth } : {}),
+                              ...(downTokenId && downDepth ? { [downTokenId]: downDepth } : {}),
+                            }));
+                          } catch (e) {
+                            setDepthErrorBySlug((p) => ({
+                              ...p,
+                              [market.slug]: e instanceof Error ? e.message : "Failed to load orderbook depth",
+                            }));
+                          } finally {
+                            setDepthLoadingBySlug((p) => ({ ...p, [market.slug]: false }));
+                          }
+                        }}
+                      >
+                        <BookOpen className="w-4 h-4 mr-2" />
+                        Depth
+                        {depthOpen[market.slug] ? (
+                          <ChevronUp className="w-4 h-4 ml-2" />
+                        ) : (
+                          <ChevronDown className="w-4 h-4 ml-2" />
+                        )}
+                      </Button>
+
+                      <Badge
+                        className={
+                          confidence === "high"
+                            ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
+                            : confidence === "medium"
+                              ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30"
+                              : "bg-muted text-muted-foreground"
+                        }
+                      >
+                        {confidence.toUpperCase()}
+                      </Badge>
+                    </div>
                   </div>
 
-                  <div className="grid grid-cols-4 gap-3 text-sm">
-                    <div className="text-center p-3 bg-emerald-500/10 rounded-lg">
-                      <div className="flex items-center justify-center gap-1 text-emerald-400 mb-1">
-                        <TrendingUp className="w-3 h-3" />
-                        <span className="text-xs">Up (Ask)</span>
-                      </div>
-                      <LivePrice
-                        price={market.upPrice}
-                        format="cents"
-                        className="font-bold text-lg text-emerald-400"
-                        showFlash={true}
-                      />
-                    </div>
-                    <div className="text-center p-3 bg-red-500/10 rounded-lg">
-                      <div className="flex items-center justify-center gap-1 text-red-400 mb-1">
-                        <TrendingDown className="w-3 h-3" />
-                        <span className="text-xs">Down (Ask)</span>
-                      </div>
-                      <LivePrice
-                        price={market.downPrice}
-                        format="cents"
-                        className="font-bold text-lg text-red-400"
-                        showFlash={true}
-                      />
-                    </div>
-                    <div className="text-center p-3 bg-muted/50 rounded-lg">
-                      <div className="flex items-center justify-center gap-1 text-muted-foreground mb-1">
-                        <Layers className="w-3 h-3" />
-                        <span className="text-xs">Σ Cost</span>
-                      </div>
-                      <span
-                        className={`font-mono font-bold text-lg ${
-                          market.combinedPrice < 1 ? "text-emerald-400" : ""
-                        }`}
-                      >
-                        {(market.combinedPrice * 100).toFixed(1)}¢
-                      </span>
-                    </div>
-                    <div className="text-center p-3 bg-primary/10 rounded-lg">
-                      <div className="flex items-center justify-center gap-1 text-primary mb-1">
-                        <Target className="w-3 h-3" />
-                        <span className="text-xs">Edge</span>
-                      </div>
-                      <span className={`font-mono font-bold text-lg ${market.arbitrageEdge > 0 ? "text-primary" : ""}`}>
-                        {market.arbitrageEdge.toFixed(1)}%
-                      </span>
-                    </div>
-                  </div>
+                  {(() => {
+                    const upBook = getTopOfBook(market.slug, "up") ?? getTopOfBook(market.slug, "yes");
+                    const downBook = getTopOfBook(market.slug, "down") ?? getTopOfBook(market.slug, "no");
+
+                    return (
+                      <>
+                        <div className="grid grid-cols-4 gap-3 text-sm">
+                          <div className="text-center p-3 bg-emerald-500/10 rounded-lg">
+                            <div className="flex items-center justify-center gap-1 text-emerald-400 mb-1">
+                              <TrendingUp className="w-3 h-3" />
+                              <span className="text-xs">Up (Market)</span>
+                            </div>
+                            <LivePrice
+                              price={market.upPrice}
+                              format="cents"
+                              className="font-bold text-lg text-emerald-400"
+                              showFlash={true}
+                            />
+                            <div className="mt-1 text-[11px] font-mono text-muted-foreground">
+                              <span>Bid {upBook?.bid !== null && upBook?.bid !== undefined ? `${(upBook.bid * 100).toFixed(1)}¢` : "—"}</span>
+                              <span className="mx-2">•</span>
+                              <span>Ask {upBook?.ask !== null && upBook?.ask !== undefined ? `${(upBook.ask * 100).toFixed(1)}¢` : "—"}</span>
+                            </div>
+                          </div>
+
+                          <div className="text-center p-3 bg-red-500/10 rounded-lg">
+                            <div className="flex items-center justify-center gap-1 text-red-400 mb-1">
+                              <TrendingDown className="w-3 h-3" />
+                              <span className="text-xs">Down (Market)</span>
+                            </div>
+                            <LivePrice
+                              price={market.downPrice}
+                              format="cents"
+                              className="font-bold text-lg text-red-400"
+                              showFlash={true}
+                            />
+                            <div className="mt-1 text-[11px] font-mono text-muted-foreground">
+                              <span>
+                                Bid {downBook?.bid !== null && downBook?.bid !== undefined ? `${(downBook.bid * 100).toFixed(1)}¢` : "—"}
+                              </span>
+                              <span className="mx-2">•</span>
+                              <span>
+                                Ask {downBook?.ask !== null && downBook?.ask !== undefined ? `${(downBook.ask * 100).toFixed(1)}¢` : "—"}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="text-center p-3 bg-muted/50 rounded-lg">
+                            <div className="flex items-center justify-center gap-1 text-muted-foreground mb-1">
+                              <Layers className="w-3 h-3" />
+                              <span className="text-xs">Σ Cost</span>
+                            </div>
+                            <span className={`font-mono font-bold text-lg ${market.combinedPrice < 1 ? "text-emerald-400" : ""}`}>
+                              {(market.combinedPrice * 100).toFixed(1)}¢
+                            </span>
+                          </div>
+
+                          <div className="text-center p-3 bg-primary/10 rounded-lg">
+                            <div className="flex items-center justify-center gap-1 text-primary mb-1">
+                              <Target className="w-3 h-3" />
+                              <span className="text-xs">Edge</span>
+                            </div>
+                            <span className={`font-mono font-bold text-lg ${market.arbitrageEdge > 0 ? "text-primary" : ""}`}>
+                              {market.arbitrageEdge.toFixed(1)}%
+                            </span>
+                          </div>
+                        </div>
+
+                        {depthOpen[market.slug] && (() => {
+                          const meta = marketMetaBySlug.get(market.slug);
+                          const upTokenId = meta?.upTokenId;
+                          const downTokenId = meta?.downTokenId;
+
+                          const upDepth = upTokenId ? depthByTokenId[upTokenId] : undefined;
+                          const downDepth = downTokenId ? depthByTokenId[downTokenId] : undefined;
+
+                          return (
+                            <div className="mt-4">
+                              {depthLoadingBySlug[market.slug] && (
+                                <div className="text-xs text-muted-foreground">Loading depth…</div>
+                              )}
+                              {depthErrorBySlug[market.slug] && (
+                                <div className="text-xs text-destructive">{depthErrorBySlug[market.slug]}</div>
+                              )}
+
+                              <div className="grid gap-3 md:grid-cols-2">
+                                <OrderbookDepth
+                                  title="Up orderbook"
+                                  bids={upDepth?.bids ?? []}
+                                  asks={upDepth?.asks ?? []}
+                                />
+                                <OrderbookDepth
+                                  title="Down orderbook"
+                                  bids={downDepth?.bids ?? []}
+                                  asks={downDepth?.asks ?? []}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })()}
+                      </>
+                    );
+                  })()}
 
                   {market.arbitrageEdge >= 2 && (
                     <div className="mt-4 p-3 rounded-lg bg-emerald-500/20 border border-emerald-500/30">
