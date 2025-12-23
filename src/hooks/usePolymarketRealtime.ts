@@ -1,29 +1,36 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
- * Polymarket RTDS WebSocket for real-time market prices
- * Uses clob_market topic for price_change events
+ * Polymarket RTDS WebSocket client for live trade prices.
+ * We subscribe to topic `activity` / type `trades` filtered by market_slug.
  */
 
-export interface MarketTokens {
-  slug: string;
-  asset: 'BTC' | 'ETH';
-  upTokenId: string;
-  downTokenId: string;
-  eventStartTime: string;
-  eventEndTime: string;
+type ConnectionState = "disconnected" | "connecting" | "connected" | "error";
+
+type OutcomeKey = string;
+
+interface TradePayload {
+  slug?: string; // market slug
+  outcome?: string;
+  price?: number;
+  timestamp?: number;
 }
 
-interface PriceData {
+interface MessageEnvelope {
+  topic?: string;
+  type?: string;
+  payload?: TradePayload;
+}
+
+interface PricePoint {
   price: number;
-  timestamp: number;
+  timestampMs: number;
 }
 
 interface UsePolymarketRealtimeResult {
-  getPrice: (tokenId: string) => number | null;
-  getBidAsk: (tokenId: string) => { bid: number; ask: number } | null;
+  getPrice: (marketSlug: string, outcome: OutcomeKey) => number | null;
   isConnected: boolean;
-  connectionState: 'disconnected' | 'connecting' | 'connected' | 'error';
+  connectionState: ConnectionState;
   updateCount: number;
   lastUpdateTime: number;
   latencyMs: number;
@@ -31,273 +38,210 @@ interface UsePolymarketRealtimeResult {
   disconnect: () => void;
 }
 
-const RTDS_URL = 'wss://rtds.polymarket.com';
-const RECONNECT_DELAY = 3000;
+const RTDS_URL = "wss://rtds.polymarket.com";
+const RECONNECT_DELAY_MS = 3000;
 const MAX_RECONNECT_ATTEMPTS = 10;
-const PING_INTERVAL = 30000;
-const UI_UPDATE_INTERVAL = 100; // Update UI every 100ms
+const UI_SYNC_INTERVAL_MS = 100;
+
+const normalizeOutcome = (o: string) => o.trim().toLowerCase();
+
+const toTimestampMs = (t: number, fallbackMs: number) => {
+  // Some feeds send seconds, some ms
+  if (t < 1_000_000_000_000) return t * 1000;
+  return t;
+};
 
 export function usePolymarketRealtime(
-  tokenIds: string[],
+  marketSlugs: string[],
   enabled: boolean = true
 ): UsePolymarketRealtimeResult {
-  // Use refs for high-frequency data to avoid re-renders
-  const pricesRef = useRef<Map<string, PriceData>>(new Map());
-  const lastUpdateTimeRef = useRef<number>(Date.now());
-  const updateCountRef = useRef<number>(0);
-  
-  // State for UI (updated less frequently)
-  const [isConnected, setIsConnected] = useState(false);
-  const [connectionState, setConnectionState] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected');
-  const [updateCount, setUpdateCount] = useState(0);
-  const [lastUpdateTime, setLastUpdateTime] = useState<number>(Date.now());
-  const [latencyMs, setLatencyMs] = useState(0);
-  
-  // WebSocket refs
-  const wsRef = useRef<WebSocket | null>(null);
-  const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const uiUpdateIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const reconnectAttemptsRef = useRef(0);
-  const subscribedTokensRef = useRef<Set<string>>(new Set());
+  const pricesRef = useRef<Map<string, Map<string, PricePoint>>>(new Map());
+  const updateCountRef = useRef(0);
+  const lastUpdateTimeRef = useRef(Date.now());
 
-  // Sync ref data to state periodically for smooth UI
-  const startUISync = useCallback(() => {
-    if (uiUpdateIntervalRef.current) return;
-    
-    uiUpdateIntervalRef.current = setInterval(() => {
+  const [isConnected, setIsConnected] = useState(false);
+  const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected");
+  const [updateCount, setUpdateCount] = useState(0);
+  const [lastUpdateTime, setLastUpdateTime] = useState(Date.now());
+  const [latencyMs, setLatencyMs] = useState(0);
+
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const uiSyncIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const subscribedSlugsRef = useRef<string>("");
+
+  const startUiSync = useCallback(() => {
+    if (uiSyncIntervalRef.current) return;
+    uiSyncIntervalRef.current = setInterval(() => {
       const now = Date.now();
       if (updateCountRef.current !== updateCount) {
         setUpdateCount(updateCountRef.current);
         setLastUpdateTime(lastUpdateTimeRef.current);
         setLatencyMs(now - lastUpdateTimeRef.current);
       }
-    }, UI_UPDATE_INTERVAL);
+    }, UI_SYNC_INTERVAL_MS);
   }, [updateCount]);
 
-  const stopUISync = useCallback(() => {
-    if (uiUpdateIntervalRef.current) {
-      clearInterval(uiUpdateIntervalRef.current);
-      uiUpdateIntervalRef.current = null;
-    }
+  const stopUiSync = useCallback(() => {
+    if (!uiSyncIntervalRef.current) return;
+    clearInterval(uiSyncIntervalRef.current);
+    uiSyncIntervalRef.current = null;
   }, []);
 
-  const connect = useCallback(() => {
-    if (!enabled || tokenIds.length === 0) {
-      console.log('[RTDS Market] Not connecting - enabled:', enabled, 'tokens:', tokenIds.length);
-      return;
+  const disconnect = useCallback(() => {
+    stopUiSync();
+
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
     }
 
-    // Close existing connection
     if (wsRef.current) {
-      wsRef.current.close();
+      try {
+        wsRef.current.close();
+      } catch {
+        // ignore
+      }
       wsRef.current = null;
     }
 
-    setConnectionState('connecting');
-    console.log(`[RTDS Market] Connecting with ${tokenIds.length} tokens...`);
+    setIsConnected(false);
+    setConnectionState("disconnected");
+  }, [stopUiSync]);
+
+  const connect = useCallback(() => {
+    if (!enabled) return;
+    if (marketSlugs.length === 0) {
+      console.log("[RTDS Trades] No market slugs, not connecting");
+      return;
+    }
+
+    setConnectionState("connecting");
+    console.log("[RTDS Trades] Connecting…", { count: marketSlugs.length });
 
     try {
       const ws = new WebSocket(RTDS_URL);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        console.log('[RTDS Market] Connected');
-        setConnectionState('connected');
+        console.log("[RTDS Trades] Connected");
         setIsConnected(true);
+        setConnectionState("connected");
         reconnectAttemptsRef.current = 0;
 
-        // Subscribe to clob_market price_change for all token IDs
-        // Filter format: array of token IDs as strings
-        const subscribeMsg = {
-          action: 'subscribe',
-          subscriptions: [
-            {
-              topic: 'clob_market',
-              type: 'price_change',
-              filters: JSON.stringify(tokenIds)
-            },
-            {
-              topic: 'clob_market',
-              type: 'last_trade_price',
-              filters: JSON.stringify(tokenIds)
-            }
-          ]
-        };
-        
-        ws.send(JSON.stringify(subscribeMsg));
-        subscribedTokensRef.current = new Set(tokenIds);
-        
-        console.log('[RTDS Market] Subscribed to', tokenIds.length, 'tokens');
-        console.log('[RTDS Market] First tokens:', tokenIds.slice(0, 2).map(t => t.slice(0, 30) + '...'));
+        const subscriptions = marketSlugs.map((slug) => ({
+          topic: "activity",
+          type: "trades",
+          filters: JSON.stringify({ market_slug: slug }),
+        }));
 
-        // Start UI sync
-        startUISync();
+        ws.send(
+          JSON.stringify({
+            action: "subscribe",
+            subscriptions,
+          })
+        );
 
-        // Keep-alive ping
-        pingIntervalRef.current = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ action: 'ping' }));
-          }
-        }, PING_INTERVAL);
+        subscribedSlugsRef.current = marketSlugs.join(",");
+        startUiSync();
       };
 
       ws.onmessage = (event) => {
+        const now = Date.now();
+
+        let msg: MessageEnvelope | null = null;
         try {
-          const data = JSON.parse(event.data);
-          const now = Date.now();
-          
-          // Handle subscription confirmation
-          if (data.type === 'subscribed' || data.action === 'subscribed') {
-            console.log('[RTDS Market] Subscription confirmed:', data.topic);
-            return;
-          }
-
-          // Handle pong
-          if (data.type === 'pong' || data.action === 'pong') {
-            return;
-          }
-
-          // Handle price_change events
-          // Format: { topic: 'clob_market', type: 'price_change', payload: { asset_id, price, timestamp } }
-          if (data.topic === 'clob_market' && data.payload) {
-            const { asset_id, price, timestamp } = data.payload;
-            
-            if (asset_id && typeof price === 'number') {
-              const wsTimestamp = timestamp || now;
-              
-              pricesRef.current.set(asset_id, {
-                price,
-                timestamp: wsTimestamp
-              });
-              
-              lastUpdateTimeRef.current = wsTimestamp;
-              updateCountRef.current++;
-              
-              console.log(`[RTDS Market] ${data.type}: ${asset_id.slice(0, 20)}... = ${price.toFixed(4)}`);
-            }
-          }
-
-          // Handle array format (initial dump)
-          if (Array.isArray(data)) {
-            for (const item of data) {
-              if (item.asset_id && typeof item.price === 'number') {
-                pricesRef.current.set(item.asset_id, {
-                  price: item.price,
-                  timestamp: item.timestamp || now
-                });
-                updateCountRef.current++;
-              }
-            }
-            lastUpdateTimeRef.current = now;
-          }
-        } catch (e) {
-          // Non-JSON message - ignore
-          console.log('[RTDS Market] Message:', event.data);
+          msg = JSON.parse(event.data) as MessageEnvelope;
+        } catch {
+          return;
         }
+
+        if (!msg || !msg.payload) return;
+        if (msg.topic !== "activity") return;
+        if (msg.type !== "trades" && msg.type !== "orders_matched") return;
+
+        const slug = msg.payload.slug;
+        const outcome = msg.payload.outcome;
+        const price = msg.payload.price;
+        const ts = msg.payload.timestamp;
+
+        if (!slug || !outcome || typeof price !== "number") return;
+
+        const outcomeKey = normalizeOutcome(outcome);
+        const timestampMs = typeof ts === "number" ? toTimestampMs(ts, now) : now;
+
+        let marketMap = pricesRef.current.get(slug);
+        if (!marketMap) {
+          marketMap = new Map();
+          pricesRef.current.set(slug, marketMap);
+        }
+
+        marketMap.set(outcomeKey, { price, timestampMs });
+
+        updateCountRef.current++;
+        lastUpdateTimeRef.current = timestampMs;
       };
 
-      ws.onerror = (error) => {
-        console.error('[RTDS Market] WebSocket error:', error);
-        setConnectionState('error');
+      ws.onerror = (err) => {
+        console.error("[RTDS Trades] WebSocket error:", err);
+        setConnectionState("error");
       };
 
       ws.onclose = (event) => {
-        console.log('[RTDS Market] Disconnected:', event.code, event.reason);
+        console.log("[RTDS Trades] Disconnected:", event.code, event.reason);
         setIsConnected(false);
-        setConnectionState('disconnected');
-        stopUISync();
+        setConnectionState("disconnected");
+        stopUiSync();
 
-        if (pingIntervalRef.current) {
-          clearInterval(pingIntervalRef.current);
-          pingIntervalRef.current = null;
-        }
-
-        // Attempt to reconnect
-        if (enabled && tokenIds.length > 0 && reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
+        if (enabled && reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
           reconnectAttemptsRef.current++;
-          console.log(`[RTDS Market] Reconnecting (${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})...`);
-          reconnectTimeoutRef.current = setTimeout(connect, RECONNECT_DELAY);
+          reconnectTimeoutRef.current = setTimeout(connect, RECONNECT_DELAY_MS);
         }
       };
-    } catch (error) {
-      console.error('[RTDS Market] Failed to connect:', error);
-      setConnectionState('error');
+    } catch (e) {
+      console.error("[RTDS Trades] Failed to connect:", e);
+      setConnectionState("error");
     }
-  }, [enabled, tokenIds, startUISync, stopUISync]);
+  }, [enabled, marketSlugs, startUiSync, stopUiSync]);
 
-  const disconnect = useCallback(() => {
-    console.log('[RTDS Market] Disconnecting...');
-    
-    stopUISync();
-    
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-
-    if (pingIntervalRef.current) {
-      clearInterval(pingIntervalRef.current);
-      pingIntervalRef.current = null;
-    }
-    
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-    
-    setIsConnected(false);
-    setConnectionState('disconnected');
-    subscribedTokensRef.current = new Set();
-  }, [stopUISync]);
-
-  // Connect when tokens change
+  // Reconnect when subscription set changes
   useEffect(() => {
-    if (enabled && tokenIds.length > 0) {
-      const currentTokens = Array.from(subscribedTokensRef.current);
-      const tokensChanged = tokenIds.some(t => !subscribedTokensRef.current.has(t)) ||
-                           currentTokens.length !== tokenIds.length;
-      
-      if (tokensChanged || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-        disconnect();
-        connect();
-      }
-    } else if (!enabled) {
+    const next = marketSlugs.join(",");
+    const changed = next !== subscribedSlugsRef.current;
+
+    if (!enabled) {
       disconnect();
+      return;
     }
-  }, [enabled, tokenIds.join(','), connect, disconnect]);
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => disconnect();
-  }, [disconnect]);
+    if (marketSlugs.length === 0) {
+      disconnect();
+      return;
+    }
 
-  // Get price for a token
-  const getPrice = useCallback((tokenId: string): number | null => {
-    return pricesRef.current.get(tokenId)?.price ?? null;
-  }, []);
+    if (changed || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      disconnect();
+      connect();
+    }
+  }, [enabled, marketSlugs.join(","), connect, disconnect]);
 
-  // Get bid/ask for a token (approximation based on price)
-  const getBidAsk = useCallback((tokenId: string): { bid: number; ask: number } | null => {
-    const priceData = pricesRef.current.get(tokenId);
-    if (!priceData) return null;
-    // Approximate spread of 1%
-    const spread = 0.01;
-    return { 
-      bid: priceData.price * (1 - spread / 2), 
-      ask: priceData.price * (1 + spread / 2) 
-    };
+  useEffect(() => () => disconnect(), [disconnect]);
+
+  const getPrice = useCallback((marketSlug: string, outcome: OutcomeKey) => {
+    const market = pricesRef.current.get(marketSlug);
+    if (!market) return null;
+    return market.get(normalizeOutcome(outcome))?.price ?? null;
   }, []);
 
   return {
     getPrice,
-    getBidAsk,
     isConnected,
     connectionState,
     updateCount,
     lastUpdateTime,
     latencyMs,
     connect,
-    disconnect
+    disconnect,
   };
 }
