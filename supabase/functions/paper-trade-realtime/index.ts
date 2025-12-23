@@ -28,12 +28,12 @@ const TRADE_CONFIG = {
   dcaHedge: {
     enabled: true,
     baseBudget: 60,           // Conservative budget per side
-    maxCombinedPrice: 1.00,   // Allow breakeven trades (DCA now, arb later)
-    minCombinedPrice: 0.95,   // Don't overpay
+    maxCombinedPrice: 0.98,   // MUST have 2%+ edge - no breakeven trades!
+    minCombinedPrice: 0.90,   // Don't buy if prices are too weird
     sweetSpotMin: 0.35,       // From deep-dive: 35-45¢ is the sweet spot
     sweetSpotMax: 0.45,       // Gabagool buys most in this range
-    outsideSpotMin: 0.20,     // Also buys outside but less
-    outsideSpotMax: 0.55,     // Upper bound for entries
+    outsideSpotMin: 0.25,     // Wider range but still require edge
+    outsideSpotMax: 0.50,     // Max 50¢ per side (combined must still be <98¢)
     biasMultiplier: 1.2,      // 20% more shares on favored side (crypto direction)
     minPriceMove: 0.03,       // 0.03% crypto move to trigger bias
     maxSlippage: 2.0,
