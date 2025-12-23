@@ -14,3 +14,6 @@ verify_jwt = false
 
 [functions.rtds-proxy]
 verify_jwt = false
+
+[functions.clob-proxy]
+verify_jwt = false
