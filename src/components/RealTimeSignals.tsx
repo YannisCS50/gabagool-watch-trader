@@ -110,7 +110,9 @@ export const RealTimeSignals = () => {
     orderBooks, 
     isConnected: wsConnected, 
     connectionState,
-    updateCount 
+    updateCount,
+    latencyMs,
+    lastWsTimestamp
   } = usePolymarketRealtime({
     tokenIds,
     enabled: WS_ENABLED && isLive && tokenIds.length > 0
@@ -380,7 +382,7 @@ export const RealTimeSignals = () => {
                   {wsConnected && (
                     <Badge variant="outline" className="text-xs text-purple-400 border-purple-500/30 flex items-center gap-1">
                       <Radio className="w-3 h-3" />
-                      CLOB WS ({updateCount} updates)
+                      CLOB WS ({updateCount} | {latencyMs}ms)
                     </Badge>
                   )}
                 </CardDescription>
