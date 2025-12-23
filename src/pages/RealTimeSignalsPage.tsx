@@ -55,13 +55,16 @@ interface RealTimeData {
     ETH: number | null;
   };
   marketsAnalyzed: number;
-  currentMarkets: TradingSignal[];
-  upcomingMarkets: TradingSignal[];
+  liveMarkets: TradingSignal[];
+  soonUpcoming: TradingSignal[];
+  laterMarkets: TradingSignal[];
   signals: TradingSignal[];
   summary: {
     highConfidenceCount: number;
     arbitrageOpportunityCount: number;
     dualSideSignalCount: number;
+    liveCount: number;
+    soonCount: number;
     avgCombinedPrice: number;
     avgArbitrageEdge: number;
   };
@@ -424,47 +427,87 @@ const RealTimeSignalsPage = () => {
               </Card>
             </div>
 
-            {/* Current Markets (Active Now) */}
-            {data.currentMarkets.length > 0 && (
-              <Card className="border-primary/30 bg-gradient-to-br from-primary/5 to-transparent">
+            {/* LIVE Markets (Active Now - < 15 min remaining) */}
+            {data.liveMarkets && data.liveMarkets.length > 0 && (
+              <Card className="border-emerald-500/50 bg-gradient-to-br from-emerald-500/10 to-transparent shadow-lg shadow-emerald-500/10">
                 <CardHeader>
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <Timer className="w-5 h-5 text-primary" />
-                      <CardTitle className="text-lg">Active Now ({data.currentMarkets.length})</CardTitle>
+                      <div className="relative">
+                        <Activity className="w-5 h-5 text-emerald-400" />
+                        <span className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
+                      </div>
+                      <CardTitle className="text-lg text-emerald-400">
+                        LIVE NOW ({data.liveMarkets.length})
+                      </CardTitle>
                     </div>
-                    <Badge variant="outline" className="text-primary">
-                      &lt; 15 min remaining
+                    <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30 animate-pulse">
+                      ACTIVE
                     </Badge>
                   </div>
                   <CardDescription>
-                    Current 15-minute markets with live countdown
+                    Markets currently in progress - trade now!
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  {data.currentMarkets.map((signal, index) => (
+                  {data.liveMarkets.map((signal, index) => (
                     <SignalCard key={index} signal={signal} />
                   ))}
                 </CardContent>
               </Card>
             )}
 
-            {/* Upcoming Markets */}
-            {data.upcomingMarkets.length > 0 && (
+            {/* Soon Upcoming (within 30 min) */}
+            {data.soonUpcoming && data.soonUpcoming.length > 0 && (
+              <Card className="border-yellow-500/30 bg-gradient-to-br from-yellow-500/5 to-transparent">
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Timer className="w-5 h-5 text-yellow-400" />
+                      <CardTitle className="text-lg">Starting Soon ({data.soonUpcoming.length})</CardTitle>
+                    </div>
+                    <Badge variant="outline" className="text-yellow-400 border-yellow-500/30">
+                      &lt; 30 min
+                    </Badge>
+                  </div>
+                  <CardDescription>
+                    Next 15-minute markets starting within 30 minutes
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {data.soonUpcoming.map((signal, index) => (
+                    <SignalCard key={index} signal={signal} showCountdown={true} />
+                  ))}
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Later Markets (> 30 min out) - compact view */}
+            {data.laterMarkets && data.laterMarkets.length > 0 && (
               <Card>
                 <CardHeader>
                   <div className="flex items-center gap-2">
                     <Clock className="w-5 h-5 text-muted-foreground" />
-                    <CardTitle className="text-lg">Upcoming Markets ({data.upcomingMarkets.length})</CardTitle>
+                    <CardTitle className="text-lg">Later ({data.laterMarkets.length})</CardTitle>
                   </div>
                   <CardDescription>
-                    Future 15-minute markets to monitor
+                    Markets starting in more than 30 minutes
                   </CardDescription>
                 </CardHeader>
-                <CardContent className="space-y-4">
-                  {data.upcomingMarkets.slice(0, 4).map((signal, index) => (
-                    <SignalCard key={index} signal={signal} showCountdown={true} />
-                  ))}
+                <CardContent>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                    {data.laterMarkets.slice(0, 8).map((signal, index) => (
+                      <div key={index} className="p-3 rounded-lg bg-muted/30 border border-border text-center">
+                        {signal.asset === 'BTC' 
+                          ? <Badge className="bg-orange-500/20 text-orange-400 border-orange-500/30 text-xs">BTC</Badge>
+                          : <Badge className="bg-blue-500/20 text-blue-400 border-blue-500/30 text-xs">ETH</Badge>
+                        }
+                        <div className="text-xs text-muted-foreground mt-1">
+                          {Math.floor(signal.remainingSeconds / 60)} min
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 </CardContent>
               </Card>
             )}
