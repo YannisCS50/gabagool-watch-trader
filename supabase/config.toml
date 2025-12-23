@@ -11,3 +11,6 @@ verify_jwt = false
 
 [functions.get-market-tokens]
 verify_jwt = false
+
+[functions.rtds-proxy]
+verify_jwt = false

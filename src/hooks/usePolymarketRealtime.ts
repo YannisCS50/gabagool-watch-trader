@@ -1,26 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
- * Polymarket RTDS WebSocket client for live trade prices.
- * We subscribe to topic `activity` / type `trades` filtered by market_slug.
+ * Polymarket market prices via RTDS proxy edge function
+ * Subscribes to activity/trades for market_slug updates
+ * Falls back to REST polling if WebSocket fails
  */
 
 type ConnectionState = "disconnected" | "connecting" | "connected" | "error";
-
-type OutcomeKey = string;
-
-interface TradePayload {
-  slug?: string; // market slug
-  outcome?: string;
-  price?: number;
-  timestamp?: number;
-}
-
-interface MessageEnvelope {
-  topic?: string;
-  type?: string;
-  payload?: TradePayload;
-}
 
 interface PricePoint {
   price: number;
@@ -28,7 +14,7 @@ interface PricePoint {
 }
 
 interface UsePolymarketRealtimeResult {
-  getPrice: (marketSlug: string, outcome: OutcomeKey) => number | null;
+  getPrice: (marketSlug: string, outcome: string) => number | null;
   isConnected: boolean;
   connectionState: ConnectionState;
   updateCount: number;
@@ -38,23 +24,20 @@ interface UsePolymarketRealtimeResult {
   disconnect: () => void;
 }
 
-const RTDS_URL = "wss://rtds.polymarket.com";
+const PROXY_WS_URL = "wss://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/rtds-proxy";
+const PROXY_REST_URL = "https://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/rtds-proxy";
 const RECONNECT_DELAY_MS = 3000;
-const MAX_RECONNECT_ATTEMPTS = 10;
+const MAX_RECONNECT_ATTEMPTS = 5;
+const REST_POLL_INTERVAL = 3000;
 const UI_SYNC_INTERVAL_MS = 100;
 
 const normalizeOutcome = (o: string) => o.trim().toLowerCase();
-
-const toTimestampMs = (t: number, fallbackMs: number) => {
-  // Some feeds send seconds, some ms
-  if (t < 1_000_000_000_000) return t * 1000;
-  return t;
-};
 
 export function usePolymarketRealtime(
   marketSlugs: string[],
   enabled: boolean = true
 ): UsePolymarketRealtimeResult {
+  // Map: marketSlug -> outcome -> price
   const pricesRef = useRef<Map<string, Map<string, PricePoint>>>(new Map());
   const updateCountRef = useRef(0);
   const lastUpdateTimeRef = useRef(Date.now());
@@ -69,7 +52,9 @@ export function usePolymarketRealtime(
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const uiSyncIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const subscribedSlugsRef = useRef<string>("");
+  const useRestFallback = useRef(false);
 
   const startUiSync = useCallback(() => {
     if (uiSyncIntervalRef.current) return;
@@ -84,13 +69,71 @@ export function usePolymarketRealtime(
   }, [updateCount]);
 
   const stopUiSync = useCallback(() => {
-    if (!uiSyncIntervalRef.current) return;
-    clearInterval(uiSyncIntervalRef.current);
-    uiSyncIntervalRef.current = null;
+    if (uiSyncIntervalRef.current) {
+      clearInterval(uiSyncIntervalRef.current);
+      uiSyncIntervalRef.current = null;
+    }
+  }, []);
+
+  // REST API fallback polling
+  const pollPrices = useCallback(async () => {
+    if (marketSlugs.length === 0) return;
+    
+    try {
+      const response = await fetch(PROXY_REST_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ market_slugs: marketSlugs })
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        const now = Date.now();
+        
+        if (data.markets) {
+          for (const [slug, prices] of Object.entries(data.markets)) {
+            const p = prices as { up: number; down: number };
+            let marketMap = pricesRef.current.get(slug);
+            if (!marketMap) {
+              marketMap = new Map();
+              pricesRef.current.set(slug, marketMap);
+            }
+            marketMap.set('up', { price: p.up, timestampMs: now });
+            marketMap.set('yes', { price: p.up, timestampMs: now });
+            marketMap.set('down', { price: p.down, timestampMs: now });
+            marketMap.set('no', { price: p.down, timestampMs: now });
+          }
+          updateCountRef.current++;
+          lastUpdateTimeRef.current = now;
+        }
+        
+        setIsConnected(true);
+        setConnectionState('connected');
+      }
+    } catch (err) {
+      console.error('[Market REST] Poll error:', err);
+    }
+  }, [marketSlugs]);
+
+  const startRestPolling = useCallback(() => {
+    if (pollIntervalRef.current) return;
+    console.log('[Market] Starting REST API polling fallback');
+    useRestFallback.current = true;
+    pollPrices();
+    pollIntervalRef.current = setInterval(pollPrices, REST_POLL_INTERVAL);
+    startUiSync();
+  }, [pollPrices, startUiSync]);
+
+  const stopRestPolling = useCallback(() => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
   }, []);
 
   const disconnect = useCallback(() => {
     stopUiSync();
+    stopRestPolling();
 
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
@@ -108,102 +151,115 @@ export function usePolymarketRealtime(
 
     setIsConnected(false);
     setConnectionState("disconnected");
-  }, [stopUiSync]);
+  }, [stopUiSync, stopRestPolling]);
 
   const connect = useCallback(() => {
     if (!enabled) return;
     if (marketSlugs.length === 0) {
-      console.log("[RTDS Trades] No market slugs, not connecting");
+      console.log("[Market WS] No market slugs, not connecting");
       return;
     }
 
     setConnectionState("connecting");
-    console.log("[RTDS Trades] Connecting…", { count: marketSlugs.length });
+    console.log("[Market WS] Connecting via proxy...", { count: marketSlugs.length });
 
     try {
-      const ws = new WebSocket(RTDS_URL);
+      const ws = new WebSocket(PROXY_WS_URL);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        console.log("[RTDS Trades] Connected");
-        setIsConnected(true);
-        setConnectionState("connected");
+        console.log("[Market WS] Connected to proxy");
         reconnectAttemptsRef.current = 0;
-
-        const subscriptions = marketSlugs.map((slug) => ({
-          topic: "activity",
-          type: "trades",
-          filters: JSON.stringify({ market_slug: slug }),
-        }));
-
-        ws.send(
-          JSON.stringify({
-            action: "subscribe",
-            subscriptions,
-          })
-        );
-
-        subscribedSlugsRef.current = marketSlugs.join(",");
-        startUiSync();
       };
 
       ws.onmessage = (event) => {
         const now = Date.now();
-
-        let msg: MessageEnvelope | null = null;
+        
+        let msg: any = null;
         try {
-          msg = JSON.parse(event.data) as MessageEnvelope;
+          msg = JSON.parse(event.data);
         } catch {
           return;
         }
 
-        if (!msg || !msg.payload) return;
-        if (msg.topic !== "activity") return;
-        if (msg.type !== "trades" && msg.type !== "orders_matched") return;
-
-        const slug = msg.payload.slug;
-        const outcome = msg.payload.outcome;
-        const price = msg.payload.price;
-        const ts = msg.payload.timestamp;
-
-        if (!slug || !outcome || typeof price !== "number") return;
-
-        const outcomeKey = normalizeOutcome(outcome);
-        const timestampMs = typeof ts === "number" ? toTimestampMs(ts, now) : now;
-
-        let marketMap = pricesRef.current.get(slug);
-        if (!marketMap) {
-          marketMap = new Map();
-          pricesRef.current.set(slug, marketMap);
+        // Proxy connected - subscribe to trades
+        if (msg.type === 'proxy_connected') {
+          console.log('[Market WS] Proxy connected to RTDS, subscribing...');
+          setIsConnected(true);
+          setConnectionState('connected');
+          stopRestPolling();
+          useRestFallback.current = false;
+          
+          const subscriptions = marketSlugs.map((slug) => ({
+            topic: "activity",
+            type: "trades",
+            filters: JSON.stringify({ market_slug: slug }),
+          }));
+          
+          ws.send(JSON.stringify({ action: "subscribe", subscriptions }));
+          subscribedSlugsRef.current = marketSlugs.join(",");
+          startUiSync();
+          return;
         }
 
-        marketMap.set(outcomeKey, { price, timestampMs });
+        // Proxy error - fall back to REST
+        if (msg.type === 'proxy_error' || msg.type === 'proxy_disconnected') {
+          console.log('[Market WS] Proxy error, falling back to REST');
+          startRestPolling();
+          return;
+        }
 
-        updateCountRef.current++;
-        lastUpdateTimeRef.current = timestampMs;
+        // Handle trade updates
+        if (msg.topic === "activity" && msg.payload) {
+          const { slug, outcome, price, timestamp } = msg.payload;
+          if (!slug || !outcome || typeof price !== "number") return;
+
+          const outcomeKey = normalizeOutcome(outcome);
+          const timestampMs = typeof timestamp === "number" 
+            ? (timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp) 
+            : now;
+
+          let marketMap = pricesRef.current.get(slug);
+          if (!marketMap) {
+            marketMap = new Map();
+            pricesRef.current.set(slug, marketMap);
+          }
+          marketMap.set(outcomeKey, { price, timestampMs });
+
+          updateCountRef.current++;
+          lastUpdateTimeRef.current = timestampMs;
+          
+          console.log(`[Market WS] Trade: ${slug} ${outcomeKey}=${price.toFixed(2)}`);
+        }
       };
 
       ws.onerror = (err) => {
-        console.error("[RTDS Trades] WebSocket error:", err);
+        console.error("[Market WS] Error:", err);
         setConnectionState("error");
       };
 
       ws.onclose = (event) => {
-        console.log("[RTDS Trades] Disconnected:", event.code, event.reason);
+        console.log("[Market WS] Disconnected:", event.code);
         setIsConnected(false);
-        setConnectionState("disconnected");
+        wsRef.current = null;
         stopUiSync();
 
-        if (enabled && reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
-          reconnectAttemptsRef.current++;
-          reconnectTimeoutRef.current = setTimeout(connect, RECONNECT_DELAY_MS);
+        if (enabled && !useRestFallback.current) {
+          if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
+            reconnectAttemptsRef.current++;
+            reconnectTimeoutRef.current = setTimeout(connect, RECONNECT_DELAY_MS);
+          } else {
+            console.log('[Market WS] Max reconnects reached, using REST fallback');
+            startRestPolling();
+          }
         }
       };
     } catch (e) {
-      console.error("[RTDS Trades] Failed to connect:", e);
+      console.error("[Market WS] Failed to connect:", e);
       setConnectionState("error");
+      startRestPolling();
     }
-  }, [enabled, marketSlugs, startUiSync, stopUiSync]);
+  }, [enabled, marketSlugs, startUiSync, stopUiSync, startRestPolling, stopRestPolling]);
 
   // Reconnect when subscription set changes
   useEffect(() => {
@@ -222,13 +278,16 @@ export function usePolymarketRealtime(
 
     if (changed || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
       disconnect();
+      // Start with REST polling for immediate data
+      startRestPolling();
+      // Then try WebSocket
       connect();
     }
-  }, [enabled, marketSlugs.join(","), connect, disconnect]);
+  }, [enabled, marketSlugs.join(","), connect, disconnect, startRestPolling]);
 
   useEffect(() => () => disconnect(), [disconnect]);
 
-  const getPrice = useCallback((marketSlug: string, outcome: OutcomeKey) => {
+  const getPrice = useCallback((marketSlug: string, outcome: string) => {
     const market = pricesRef.current.get(marketSlug);
     if (!market) return null;
     return market.get(normalizeOutcome(outcome))?.price ?? null;
