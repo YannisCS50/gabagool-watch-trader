@@ -6,59 +6,65 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// GABAGOOL STRATEGY - Based on deep-dive analysis of real trading patterns
-// Key insights:
-// 1. Arbitrage requires combined < 98¢ (2%+ edge) - from hedge pair analysis
-// 2. Sweet spot is 35-45¢ price range - from DCA bucket analysis
-// 3. Late entry 0-5 min before expiry at cheap prices - from expiry analysis
-// 4. More neutral/DCA trades than pure arb - 60%+ are neutral hedges
+// GABAGOOL STRATEGY V2 - Based on ACTUAL trading pattern analysis
+// Real pattern from trade data:
+// 1. OPEN: Buy ONE side first (exposed) - typically cheaper side or based on crypto direction
+// 2. HEDGE: 4-10 seconds later, buy OTHER side to complete the hedge pair
+// 3. DCA: Continue buying the cheaper side as prices move, building position
+// Key rule: combined price must be < 98¢ for any trade (2%+ guaranteed edge)
 
 const TRADE_CONFIG = {
-  // Strategy 1: Pure Arbitrage - combined < 98¢ = guaranteed profit
-  arbitrage: {
+  // Phase 1: Opening trade (exposed position)
+  opening: {
     enabled: true,
-    minEdge: 2.0,             // 2%+ edge = combined < 98¢ (from deep-dive: "arbitrage" category)
-    maxCombinedPrice: 0.98,   // Must be < 98¢ for true arbitrage
-    budget: 100,              // Full budget for arb opportunities
-    maxSlippage: 1.5,         // Tight slippage for guaranteed fills
-    minLiquidity: 80,         // Need good liquidity
-  },
-  
-  // Strategy 2: DCA Hedge - accumulate in sweet spot price range
-  dcaHedge: {
-    enabled: true,
-    baseBudget: 60,           // Conservative budget per side
-    maxCombinedPrice: 0.98,   // MUST have 2%+ edge - no breakeven trades!
-    minCombinedPrice: 0.90,   // Don't buy if prices are too weird
-    sweetSpotMin: 0.35,       // From deep-dive: 35-45¢ is the sweet spot
-    sweetSpotMax: 0.45,       // Gabagool buys most in this range
-    outsideSpotMin: 0.25,     // Wider range but still require edge
-    outsideSpotMax: 0.50,     // Max 50¢ per side (combined must still be <98¢)
-    biasMultiplier: 1.2,      // 20% more shares on favored side (crypto direction)
-    minPriceMove: 0.03,       // 0.03% crypto move to trigger bias
+    minPrice: 0.35,            // Sweet spot starts at 35¢
+    maxPrice: 0.55,            // Don't overpay for opening
+    baseBudget: 20,            // Small initial position (like Gabagool's 20 shares)
     maxSlippage: 2.0,
-    minLiquidity: 40,
-    minRemainingSeconds: 120, // Need some time to let prices develop
+    minLiquidity: 30,
+    minRemainingSeconds: 600,  // At least 10 min to expiry for opening
   },
   
-  // Strategy 3: Late Entry Sniper - cheap shots near expiry
-  // From deep-dive: 50%+ trades happen in last 5 minutes
+  // Phase 2: Hedge trade (complete the pair)
+  hedge: {
+    enabled: true,
+    maxCombinedPrice: 0.98,    // MUST have edge when hedging
+    maxPrice: 0.60,            // Allow slightly higher for hedge
+    baseBudget: 20,            // Match opening size
+    maxSlippage: 2.5,          // Allow more slippage to complete hedge
+    minLiquidity: 25,
+    hedgeDelayMs: 3000,        // Wait 3 sec before hedging (like Gabagool)
+  },
+  
+  // Phase 3: DCA - accumulate on the cheaper side
+  dca: {
+    enabled: true,
+    maxCombinedPrice: 0.97,    // Tighter requirement for DCA (3%+ edge)
+    sweetSpotMin: 0.35,        // Gabagool's sweet spot
+    sweetSpotMax: 0.48,        // Upper bound for DCA
+    budget: 15,                // Smaller DCA buys
+    maxSlippage: 2.0,
+    minLiquidity: 20,
+    minSecondsBetweenDCA: 10,  // Don't spam trades
+    maxDCAPerSide: 5,          // Max 5 DCA trades per side per market
+  },
+  
+  // Phase 4: Late sniper - cheap bets near expiry
   lateEntry: {
     enabled: true,
-    maxRemainingSeconds: 300, // 5 min window (from expiry analysis)
-    minRemainingSeconds: 30,  // Not too close to prevent fills
-    sweetSpotPrice: 0.15,     // Sweet spot for late entries
-    maxPrice: 0.25,           // Don't pay more than 25¢
-    minPrice: 0.05,           // Need realistic fills
-    budget: 50,
-    maxSlippage: 3.0,         // Allow more slippage near expiry
-    minLiquidity: 30,
+    maxRemainingSeconds: 300,  // Last 5 minutes
+    minRemainingSeconds: 30,
+    maxPrice: 0.25,            // Cheap shots only
+    minPrice: 0.05,
+    budget: 30,
+    maxSlippage: 3.0,
+    minLiquidity: 20,
   },
   
   // Global settings
   global: {
-    minAskPrice: 0.05,        // Absolute minimum (avoid penny stocks)
-    maxAskPrice: 0.95,        // Absolute maximum (avoid expensive fills)
+    minAskPrice: 0.05,
+    maxAskPrice: 0.95,
   }
 };
 
@@ -175,21 +181,25 @@ function calculateSlippage(
 }
 
 /**
- * Gabagool-style trading based on deep-dive analysis
- * Priority: 1) Arbitrage (<98¢), 2) DCA in sweet spot, 3) Late entry sniper
+ * Gabagool-style trading V2 - Stateful pattern
+ * Phase 1: OPEN - Buy one side (exposed)
+ * Phase 2: HEDGE - Buy other side to complete pair (must have edge)
+ * Phase 3: DCA - Continue accumulating cheaper side
+ * Phase 4: LATE - Snipe cheap positions near expiry
  */
 function makeGabagoolTradeDecision(
   orderbook: MarketOrderbook,
   cryptoPrice: number | null,
   openPrice: number | null,
-  remainingSeconds: number
+  remainingSeconds: number,
+  existingPositions: { hasUp: boolean; hasDown: boolean; upCount: number; downCount: number; lastTradeTime: number }
 ): TradeDecision {
   const upBestAsk = orderbook.upAsks[0]?.price ?? 0.5;
   const downBestAsk = orderbook.downAsks[0]?.price ?? 0.5;
   const combinedPrice = upBestAsk + downBestAsk;
   const arbitrageEdge = (1 - combinedPrice) * 100;
 
-  // Calculate price delta for bias
+  // Calculate price delta for bias (crypto direction)
   const priceDelta = cryptoPrice && openPrice ? cryptoPrice - openPrice : null;
   const priceDeltaPercent = priceDelta && openPrice ? (priceDelta / openPrice) * 100 : null;
 
@@ -202,65 +212,36 @@ function makeGabagoolTradeDecision(
     return { shouldTrade: false, reasoning: `Price too high: UP=${(upBestAsk*100).toFixed(0)}¢ DOWN=${(downBestAsk*100).toFixed(0)}¢` };
   }
 
-  // ============================================
-  // STRATEGY 1: Pure Arbitrage (highest priority)
-  // Combined price < 98¢ = guaranteed 2%+ profit
-  // ============================================
-  const arbCfg = TRADE_CONFIG.arbitrage;
-  if (arbCfg.enabled && combinedPrice <= arbCfg.maxCombinedPrice) {
-    const halfBudget = arbCfg.budget / 2;
-    const upSlippage = calculateSlippage(orderbook.upAsks, halfBudget);
-    const downSlippage = calculateSlippage(orderbook.downAsks, halfBudget);
-
-    if (upSlippage.slippagePercent <= arbCfg.maxSlippage &&
-        downSlippage.slippagePercent <= arbCfg.maxSlippage &&
-        upSlippage.availableLiquidity >= arbCfg.minLiquidity &&
-        downSlippage.availableLiquidity >= arbCfg.minLiquidity) {
-      
-      const totalCost = (upSlippage.filledShares * upSlippage.avgFillPrice) + 
-                        (downSlippage.filledShares * downSlippage.avgFillPrice);
-      const minPayout = Math.min(upSlippage.filledShares, downSlippage.filledShares);
-      const guaranteedProfit = minPayout - totalCost;
-      
-      return {
-        shouldTrade: true,
-        outcome: 'BOTH',
-        upShares: upSlippage.filledShares,
-        downShares: downSlippage.filledShares,
-        tradeType: 'ARBITRAGE',
-        reasoning: `🎯 ARB ${arbitrageEdge.toFixed(1)}% | ${(upBestAsk*100).toFixed(0)}¢+${(downBestAsk*100).toFixed(0)}¢=${(combinedPrice*100).toFixed(0)}¢ | +$${guaranteedProfit.toFixed(2)}`,
-        upSlippage,
-        downSlippage,
-      };
-    }
+  // Determine which side is favored based on crypto movement
+  let favoredSide: 'UP' | 'DOWN' = 'UP';
+  if (priceDeltaPercent !== null) {
+    favoredSide = priceDeltaPercent > 0 ? 'UP' : 'DOWN';
+  } else {
+    // No crypto data - favor cheaper side
+    favoredSide = upBestAsk <= downBestAsk ? 'UP' : 'DOWN';
   }
 
   // ============================================
-  // STRATEGY 2: Late Entry Sniper (before DCA)
-  // Last 5 minutes, cheap single-side bets
+  // PHASE 4: Late Entry Sniper (highest priority in last 5 min)
   // ============================================
   const lateCfg = TRADE_CONFIG.lateEntry;
   if (lateCfg.enabled && 
       remainingSeconds <= lateCfg.maxRemainingSeconds && 
       remainingSeconds >= lateCfg.minRemainingSeconds) {
     
-    // Prefer the cheaper side
     const cheaperSide = upBestAsk <= downBestAsk ? 'UP' : 'DOWN';
     const cheaperPrice = Math.min(upBestAsk, downBestAsk);
     
     if (cheaperPrice <= lateCfg.maxPrice && cheaperPrice >= lateCfg.minPrice) {
-      const orderbook_side = cheaperSide === 'UP' ? orderbook.upAsks : orderbook.downAsks;
-      const slippage = calculateSlippage(orderbook_side, lateCfg.budget);
+      const orderbookSide = cheaperSide === 'UP' ? orderbook.upAsks : orderbook.downAsks;
+      const slippage = calculateSlippage(orderbookSide, lateCfg.budget);
       
       if (slippage.slippagePercent <= lateCfg.maxSlippage && 
           slippage.availableLiquidity >= lateCfg.minLiquidity) {
         
-        // Check if crypto price direction supports the bet
-        let directionBonus = '';
-        if (priceDeltaPercent !== null) {
-          if (cheaperSide === 'UP' && priceDeltaPercent > 0) directionBonus = '📈';
-          if (cheaperSide === 'DOWN' && priceDeltaPercent < 0) directionBonus = '📉';
-        }
+        const directionBonus = priceDeltaPercent !== null
+          ? (cheaperSide === 'UP' && priceDeltaPercent > 0) || (cheaperSide === 'DOWN' && priceDeltaPercent < 0) ? '📈' : ''
+          : '';
         
         return {
           shouldTrade: true,
@@ -277,89 +258,153 @@ function makeGabagoolTradeDecision(
   }
 
   // ============================================
-  // STRATEGY 3: DCA Hedge in Sweet Spot
-  // Accumulate positions in 35-45¢ range
+  // PHASE 1: Opening Trade (no position yet)
+  // Buy favored side to get exposed
   // ============================================
-  const dcaCfg = TRADE_CONFIG.dcaHedge;
-  if (dcaCfg.enabled && remainingSeconds >= dcaCfg.minRemainingSeconds) {
-    // Check if combined price is acceptable
-    if (combinedPrice > dcaCfg.maxCombinedPrice || combinedPrice < dcaCfg.minCombinedPrice) {
-      return { shouldTrade: false, reasoning: `Combined ${(combinedPrice*100).toFixed(0)}¢ outside DCA range` };
+  const openCfg = TRADE_CONFIG.opening;
+  if (openCfg.enabled && !existingPositions.hasUp && !existingPositions.hasDown) {
+    if (remainingSeconds < openCfg.minRemainingSeconds) {
+      return { shouldTrade: false, reasoning: `Too late for opening: ${remainingSeconds}s < ${openCfg.minRemainingSeconds}s` };
     }
     
-    // Check if at least one side is in sweet spot range
-    const upInSweetSpot = upBestAsk >= dcaCfg.sweetSpotMin && upBestAsk <= dcaCfg.sweetSpotMax;
-    const downInSweetSpot = downBestAsk >= dcaCfg.sweetSpotMin && downBestAsk <= dcaCfg.sweetSpotMax;
-    const upInRange = upBestAsk >= dcaCfg.outsideSpotMin && upBestAsk <= dcaCfg.outsideSpotMax;
-    const downInRange = downBestAsk >= dcaCfg.outsideSpotMin && downBestAsk <= dcaCfg.outsideSpotMax;
+    const targetSide = favoredSide;
+    const targetPrice = targetSide === 'UP' ? upBestAsk : downBestAsk;
     
-    // Prefer when at least one side is in sweet spot
-    if (!upInSweetSpot && !downInSweetSpot && !upInRange && !downInRange) {
-      return { shouldTrade: false, reasoning: `Prices outside DCA range: UP=${(upBestAsk*100).toFixed(0)}¢ DOWN=${(downBestAsk*100).toFixed(0)}¢` };
-    }
-    
-    // Determine bias direction based on crypto price movement
-    let upBudgetMultiplier = 1.0;
-    let downBudgetMultiplier = 1.0;
-    let biasDirection = 'NEUTRAL';
-    
-    if (priceDeltaPercent !== null) {
-      if (priceDeltaPercent > dcaCfg.minPriceMove) {
-        upBudgetMultiplier = dcaCfg.biasMultiplier;
-        biasDirection = 'UP';
-      } else if (priceDeltaPercent < -dcaCfg.minPriceMove) {
-        downBudgetMultiplier = dcaCfg.biasMultiplier;
-        biasDirection = 'DOWN';
+    if (targetPrice >= openCfg.minPrice && targetPrice <= openCfg.maxPrice) {
+      const orderbookSide = targetSide === 'UP' ? orderbook.upAsks : orderbook.downAsks;
+      const slippage = calculateSlippage(orderbookSide, openCfg.baseBudget);
+      
+      if (slippage.slippagePercent <= openCfg.maxSlippage && 
+          slippage.availableLiquidity >= openCfg.minLiquidity) {
+        
+        const directionLabel = priceDeltaPercent !== null 
+          ? (priceDeltaPercent > 0 ? '📈' : '📉') 
+          : '❓';
+        
+        return {
+          shouldTrade: true,
+          outcome: targetSide,
+          upShares: targetSide === 'UP' ? slippage.filledShares : undefined,
+          downShares: targetSide === 'DOWN' ? slippage.filledShares : undefined,
+          tradeType: `OPEN_${targetSide}`,
+          reasoning: `🎬 OPEN ${targetSide} @ ${(targetPrice*100).toFixed(0)}¢ | Δ=${priceDeltaPercent?.toFixed(2) ?? 'N/A'}% ${directionLabel}`,
+          upSlippage: targetSide === 'UP' ? slippage : undefined,
+          downSlippage: targetSide === 'DOWN' ? slippage : undefined,
+        };
       }
     }
     
-    // Bonus multiplier for sweet spot prices
-    if (upInSweetSpot) upBudgetMultiplier *= 1.1;
-    if (downInSweetSpot) downBudgetMultiplier *= 1.1;
-    
-    // Calculate budget split
-    const totalMultiplier = upBudgetMultiplier + downBudgetMultiplier;
-    const upBudget = (dcaCfg.baseBudget * upBudgetMultiplier) / totalMultiplier;
-    const downBudget = (dcaCfg.baseBudget * downBudgetMultiplier) / totalMultiplier;
-    
-    const upSlippage = calculateSlippage(orderbook.upAsks, upBudget);
-    const downSlippage = calculateSlippage(orderbook.downAsks, downBudget);
-    
-    // Check slippage and liquidity
-    const avgSlippage = (upSlippage.slippagePercent + downSlippage.slippagePercent) / 2;
-    if (avgSlippage > dcaCfg.maxSlippage) {
-      return { shouldTrade: false, reasoning: `Slippage too high: ${avgSlippage.toFixed(1)}%` };
+    return { shouldTrade: false, reasoning: `Opening price outside range: ${(targetPrice*100).toFixed(0)}¢` };
+  }
+
+  // ============================================
+  // PHASE 2: Hedge Trade (have one side, need other)
+  // Complete the hedge pair - MUST have edge
+  // ============================================
+  const hedgeCfg = TRADE_CONFIG.hedge;
+  if (hedgeCfg.enabled && (existingPositions.hasUp !== existingPositions.hasDown)) {
+    // Check if enough time has passed since last trade (Gabagool waits ~4 sec)
+    const timeSinceLastTrade = Date.now() - existingPositions.lastTradeTime;
+    if (timeSinceLastTrade < hedgeCfg.hedgeDelayMs) {
+      return { shouldTrade: false, reasoning: `Waiting to hedge: ${timeSinceLastTrade}ms < ${hedgeCfg.hedgeDelayMs}ms` };
     }
     
-    if (upSlippage.availableLiquidity < dcaCfg.minLiquidity || 
-        downSlippage.availableLiquidity < dcaCfg.minLiquidity) {
-      return { shouldTrade: false, reasoning: `Low liquidity` };
+    // CRITICAL: Check combined price has edge
+    if (combinedPrice > hedgeCfg.maxCombinedPrice) {
+      return { shouldTrade: false, reasoning: `No edge for hedge: ${(combinedPrice*100).toFixed(0)}¢ > ${(hedgeCfg.maxCombinedPrice*100).toFixed(0)}¢` };
     }
     
-    // Calculate expected outcome
-    const totalCost = (upSlippage.filledShares * upSlippage.avgFillPrice) + 
-                      (downSlippage.filledShares * downSlippage.avgFillPrice);
-    const profitIfUp = upSlippage.filledShares - totalCost;
-    const profitIfDown = downSlippage.filledShares - totalCost;
-    const minProfit = Math.min(profitIfUp, profitIfDown);
+    const targetSide = existingPositions.hasUp ? 'DOWN' : 'UP';
+    const targetPrice = targetSide === 'UP' ? upBestAsk : downBestAsk;
     
-    const spotLabel = (upInSweetSpot || downInSweetSpot) ? '⭐' : '';
+    if (targetPrice <= hedgeCfg.maxPrice) {
+      const orderbookSide = targetSide === 'UP' ? orderbook.upAsks : orderbook.downAsks;
+      const slippage = calculateSlippage(orderbookSide, hedgeCfg.baseBudget);
+      
+      if (slippage.slippagePercent <= hedgeCfg.maxSlippage && 
+          slippage.availableLiquidity >= hedgeCfg.minLiquidity) {
+        
+        return {
+          shouldTrade: true,
+          outcome: targetSide,
+          upShares: targetSide === 'UP' ? slippage.filledShares : undefined,
+          downShares: targetSide === 'DOWN' ? slippage.filledShares : undefined,
+          tradeType: `HEDGE_${targetSide}`,
+          reasoning: `🛡️ HEDGE ${targetSide} @ ${(targetPrice*100).toFixed(0)}¢ | Combined=${(combinedPrice*100).toFixed(0)}¢ | Edge=${arbitrageEdge.toFixed(1)}%`,
+          upSlippage: targetSide === 'UP' ? slippage : undefined,
+          downSlippage: targetSide === 'DOWN' ? slippage : undefined,
+        };
+      }
+    }
     
-    return {
-      shouldTrade: true,
-      outcome: 'BOTH',
-      upShares: upSlippage.filledShares,
-      downShares: downSlippage.filledShares,
-      tradeType: `DCA_${biasDirection}`,
-      reasoning: `${spotLabel} DCA(${biasDirection}) | ${(upBestAsk*100).toFixed(0)}¢+${(downBestAsk*100).toFixed(0)}¢ | Δ=${priceDeltaPercent?.toFixed(2) ?? '0'}% | P/L: $${minProfit.toFixed(2)}`,
-      upSlippage,
-      downSlippage,
-    };
+    return { shouldTrade: false, reasoning: `Hedge price too high: ${(targetPrice*100).toFixed(0)}¢ > ${(hedgeCfg.maxPrice*100).toFixed(0)}¢` };
+  }
+
+  // ============================================
+  // PHASE 3: DCA - Both sides exist, accumulate cheaper side
+  // ============================================
+  const dcaCfg = TRADE_CONFIG.dca;
+  if (dcaCfg.enabled && existingPositions.hasUp && existingPositions.hasDown) {
+    // Check combined still has good edge
+    if (combinedPrice > dcaCfg.maxCombinedPrice) {
+      return { shouldTrade: false, reasoning: `No DCA edge: ${(combinedPrice*100).toFixed(0)}¢ > ${(dcaCfg.maxCombinedPrice*100).toFixed(0)}¢` };
+    }
+    
+    // Rate limiting
+    const timeSinceLastTrade = Date.now() - existingPositions.lastTradeTime;
+    if (timeSinceLastTrade < dcaCfg.minSecondsBetweenDCA * 1000) {
+      return { shouldTrade: false, reasoning: `DCA cooldown: ${(timeSinceLastTrade/1000).toFixed(0)}s < ${dcaCfg.minSecondsBetweenDCA}s` };
+    }
+    
+    // Choose cheaper side (or favored side if prices similar)
+    let targetSide: 'UP' | 'DOWN';
+    const priceDiff = Math.abs(upBestAsk - downBestAsk);
+    
+    if (priceDiff < 0.03) {
+      // Prices similar - use crypto direction
+      targetSide = favoredSide;
+    } else {
+      // Different prices - buy cheaper
+      targetSide = upBestAsk < downBestAsk ? 'UP' : 'DOWN';
+    }
+    
+    const targetPrice = targetSide === 'UP' ? upBestAsk : downBestAsk;
+    const dcaCount = targetSide === 'UP' ? existingPositions.upCount : existingPositions.downCount;
+    
+    // Check max DCA limit
+    if (dcaCount >= dcaCfg.maxDCAPerSide) {
+      return { shouldTrade: false, reasoning: `Max DCA reached for ${targetSide}: ${dcaCount} >= ${dcaCfg.maxDCAPerSide}` };
+    }
+    
+    // Check price in sweet spot
+    if (targetPrice < dcaCfg.sweetSpotMin || targetPrice > dcaCfg.sweetSpotMax) {
+      return { shouldTrade: false, reasoning: `DCA price outside sweet spot: ${(targetPrice*100).toFixed(0)}¢` };
+    }
+    
+    const orderbookSide = targetSide === 'UP' ? orderbook.upAsks : orderbook.downAsks;
+    const slippage = calculateSlippage(orderbookSide, dcaCfg.budget);
+    
+    if (slippage.slippagePercent <= dcaCfg.maxSlippage && 
+        slippage.availableLiquidity >= dcaCfg.minLiquidity) {
+      
+      const spotLabel = targetPrice >= dcaCfg.sweetSpotMin && targetPrice <= 0.45 ? '⭐' : '';
+      
+      return {
+        shouldTrade: true,
+        outcome: targetSide,
+        upShares: targetSide === 'UP' ? slippage.filledShares : undefined,
+        downShares: targetSide === 'DOWN' ? slippage.filledShares : undefined,
+        tradeType: `DCA_${targetSide}`,
+        reasoning: `${spotLabel} DCA ${targetSide} #${dcaCount + 1} @ ${(targetPrice*100).toFixed(0)}¢ | Edge=${arbitrageEdge.toFixed(1)}%`,
+        upSlippage: targetSide === 'UP' ? slippage : undefined,
+        downSlippage: targetSide === 'DOWN' ? slippage : undefined,
+      };
+    }
   }
 
   return { 
     shouldTrade: false, 
-    reasoning: `No opportunity: ${(combinedPrice*100).toFixed(0)}¢ combined | ${remainingSeconds}s left | Δ=${priceDeltaPercent?.toFixed(2) ?? 'N/A'}%` 
+    reasoning: `No opportunity: ${(combinedPrice*100).toFixed(0)}¢ combined | ${remainingSeconds}s left` 
   };
 }
 
@@ -391,7 +436,15 @@ async function handleWebSocket(req: Request): Promise<Response> {
   let tokenToMarket: Map<string, { slug: string; side: 'up' | 'down' }> = new Map();
   let cryptoPrices: { btc: number | null; eth: number | null } = { btc: null, eth: null };
   let existingTrades: Set<string> = new Set();
-  let processingTrades: Set<string> = new Set(); // NEW: Lock to prevent race conditions
+  let processingTrades: Set<string> = new Set();
+  // NEW: Track position state per market for phased trading
+  let marketPositions: Map<string, { 
+    hasUp: boolean; 
+    hasDown: boolean; 
+    upCount: number; 
+    downCount: number; 
+    lastTradeTime: number 
+  }> = new Map();
   let isEnabled = false;
   let statusLogInterval: ReturnType<typeof setInterval> | null = null;
   let evaluationCount = 0;
@@ -448,16 +501,44 @@ async function handleWebSocket(req: Request): Promise<Response> {
       
       const { data } = await supabase
         .from('paper_trades')
-        .select('market_slug, outcome')
+        .select('market_slug, outcome, created_at')
         .in('market_slug', slugs);
       
       existingTrades.clear();
+      marketPositions.clear();
+      
       if (data) {
+        // Group by market_slug
+        const byMarket = new Map<string, typeof data>();
         for (const trade of data) {
-          existingTrades.add(`${trade.market_slug}-${trade.outcome}`);
+          if (!byMarket.has(trade.market_slug)) byMarket.set(trade.market_slug, []);
+          byMarket.get(trade.market_slug)!.push(trade);
+        }
+        
+        // Build position state for each market
+        for (const [slug, trades] of byMarket) {
+          const upTrades = trades.filter(t => t.outcome === 'UP');
+          const downTrades = trades.filter(t => t.outcome === 'DOWN');
+          
+          // Find most recent trade time
+          const allTimes = trades.map(t => new Date(t.created_at).getTime());
+          const lastTradeTime = allTimes.length > 0 ? Math.max(...allTimes) : 0;
+          
+          marketPositions.set(slug, {
+            hasUp: upTrades.length > 0,
+            hasDown: downTrades.length > 0,
+            upCount: upTrades.length,
+            downCount: downTrades.length,
+            lastTradeTime,
+          });
+          
+          // Also mark in existingTrades set for backward compat
+          for (const trade of trades) {
+            existingTrades.add(`${trade.market_slug}-${trade.outcome}`);
+          }
         }
       }
-      log(`📋 Found ${existingTrades.size} existing trades`);
+      log(`📋 Found ${existingTrades.size} existing trades across ${marketPositions.size} markets`);
     } catch (error) {
       log(`❌ Error fetching trades: ${error}`);
     }
@@ -579,15 +660,19 @@ async function handleWebSocket(req: Request): Promise<Response> {
     if (!market || !orderbook) return;
     if (orderbook.upAsks.length === 0 && orderbook.downAsks.length === 0) return;
     
-    // RACE CONDITION FIX: Check existing trades BEFORE making decision
-    const upKey = `${slug}-UP`;
-    const downKey = `${slug}-DOWN`;
-    const hasUpTrade = existingTrades.has(upKey);
-    const hasDownTrade = existingTrades.has(downKey);
+    // Get current position state for this market
+    const positionState = marketPositions.get(slug) ?? {
+      hasUp: false,
+      hasDown: false,
+      upCount: 0,
+      downCount: 0,
+      lastTradeTime: 0,
+    };
     
-    // If we already have both trades for this market, skip
-    if (hasUpTrade && hasDownTrade) {
-      return;
+    // Check DCA limits - max 6 trades per side (1 open + 1 hedge + max 4 DCA)
+    const maxTradesPerSide = TRADE_CONFIG.dca.maxDCAPerSide + 2; // +2 for open and hedge
+    if (positionState.upCount >= maxTradesPerSide && positionState.downCount >= maxTradesPerSide) {
+      return; // Max trades reached for both sides
     }
     
     evaluationCount++;
@@ -598,12 +683,13 @@ async function handleWebSocket(req: Request): Promise<Response> {
     
     const cryptoPrice = market.asset === 'BTC' ? cryptoPrices.btc : cryptoPrices.eth;
     
-    // Use gabagool-style decision making
+    // Use gabagool-style decision making with position state
     const decision = makeGabagoolTradeDecision(
       orderbook,
       cryptoPrice,
       market.openPrice,
-      remainingSeconds
+      remainingSeconds,
+      positionState
     );
     
     // Log every 50th evaluation or when trading
@@ -629,85 +715,92 @@ async function handleWebSocket(req: Request): Promise<Response> {
       const priceDelta = cryptoPrice && market.openPrice ? cryptoPrice - market.openPrice : null;
       const priceDeltaPercent = priceDelta && market.openPrice ? (priceDelta / market.openPrice) * 100 : null;
       
-      // UP trade - check existing again to be safe
+      // UP trade
       if ((decision.outcome === 'UP' || decision.outcome === 'BOTH') && decision.upShares && decision.upShares > 0) {
-        if (!existingTrades.has(upKey)) {
-          existingTrades.add(upKey); // Mark as existing BEFORE insert
-          trades.push({
-            market_slug: slug,
-            asset: market.asset,
-            outcome: 'UP',
-            price: decision.upSlippage?.avgFillPrice ?? upBestAsk,
-            shares: decision.upShares,
-            total: decision.upShares * (decision.upSlippage?.avgFillPrice ?? upBestAsk),
-            trade_type: decision.tradeType ?? 'UNKNOWN',
-            reasoning: decision.reasoning,
-            crypto_price: cryptoPrice,
-            open_price: market.openPrice,
-            combined_price: combinedPrice,
-            arbitrage_edge: arbitrageEdge,
-            event_start_time: market.eventStartTime,
-            event_end_time: market.eventEndTime,
-            remaining_seconds: remainingSeconds,
-            price_delta: priceDelta,
-            price_delta_percent: priceDeltaPercent,
-            best_bid: orderbook.upBids[0]?.price ?? null,
-            best_ask: upBestAsk,
-            estimated_slippage: decision.upSlippage?.slippagePercent ?? null,
-            available_liquidity: decision.upSlippage?.availableLiquidity ?? null,
-            avg_fill_price: decision.upSlippage?.avgFillPrice ?? null,
-          });
-        }
+        trades.push({
+          market_slug: slug,
+          asset: market.asset,
+          outcome: 'UP',
+          price: decision.upSlippage?.avgFillPrice ?? upBestAsk,
+          shares: decision.upShares,
+          total: decision.upShares * (decision.upSlippage?.avgFillPrice ?? upBestAsk),
+          trade_type: decision.tradeType ?? 'UNKNOWN',
+          reasoning: decision.reasoning,
+          crypto_price: cryptoPrice,
+          open_price: market.openPrice,
+          combined_price: combinedPrice,
+          arbitrage_edge: arbitrageEdge,
+          event_start_time: market.eventStartTime,
+          event_end_time: market.eventEndTime,
+          remaining_seconds: remainingSeconds,
+          price_delta: priceDelta,
+          price_delta_percent: priceDeltaPercent,
+          best_bid: orderbook.upBids[0]?.price ?? null,
+          best_ask: upBestAsk,
+          estimated_slippage: decision.upSlippage?.slippagePercent ?? null,
+          available_liquidity: decision.upSlippage?.availableLiquidity ?? null,
+          avg_fill_price: decision.upSlippage?.avgFillPrice ?? null,
+        });
       }
       
-      // DOWN trade - check existing again to be safe
+      // DOWN trade
       if ((decision.outcome === 'DOWN' || decision.outcome === 'BOTH') && decision.downShares && decision.downShares > 0) {
-        if (!existingTrades.has(downKey)) {
-          existingTrades.add(downKey); // Mark as existing BEFORE insert
-          trades.push({
-            market_slug: slug,
-            asset: market.asset,
-            outcome: 'DOWN',
-            price: decision.downSlippage?.avgFillPrice ?? downBestAsk,
-            shares: decision.downShares,
-            total: decision.downShares * (decision.downSlippage?.avgFillPrice ?? downBestAsk),
-            trade_type: decision.tradeType ?? 'UNKNOWN',
-            reasoning: decision.reasoning,
-            crypto_price: cryptoPrice,
-            open_price: market.openPrice,
-            combined_price: combinedPrice,
-            arbitrage_edge: arbitrageEdge,
-            event_start_time: market.eventStartTime,
-            event_end_time: market.eventEndTime,
-            remaining_seconds: remainingSeconds,
-            price_delta: priceDelta,
-            price_delta_percent: priceDeltaPercent,
-            best_bid: orderbook.downBids[0]?.price ?? null,
-            best_ask: downBestAsk,
-            estimated_slippage: decision.downSlippage?.slippagePercent ?? null,
-            available_liquidity: decision.downSlippage?.availableLiquidity ?? null,
-            avg_fill_price: decision.downSlippage?.avgFillPrice ?? null,
-          });
-        }
+        trades.push({
+          market_slug: slug,
+          asset: market.asset,
+          outcome: 'DOWN',
+          price: decision.downSlippage?.avgFillPrice ?? downBestAsk,
+          shares: decision.downShares,
+          total: decision.downShares * (decision.downSlippage?.avgFillPrice ?? downBestAsk),
+          trade_type: decision.tradeType ?? 'UNKNOWN',
+          reasoning: decision.reasoning,
+          crypto_price: cryptoPrice,
+          open_price: market.openPrice,
+          combined_price: combinedPrice,
+          arbitrage_edge: arbitrageEdge,
+          event_start_time: market.eventStartTime,
+          event_end_time: market.eventEndTime,
+          remaining_seconds: remainingSeconds,
+          price_delta: priceDelta,
+          price_delta_percent: priceDeltaPercent,
+          best_bid: orderbook.downBids[0]?.price ?? null,
+          best_ask: downBestAsk,
+          estimated_slippage: decision.downSlippage?.slippagePercent ?? null,
+          available_liquidity: decision.downSlippage?.availableLiquidity ?? null,
+          avg_fill_price: decision.downSlippage?.avgFillPrice ?? null,
+        });
       }
       
       if (trades.length > 0) {
-        // Use upsert with onConflict to handle race conditions at database level
-        const { error } = await supabase.from('paper_trades').upsert(trades, {
-          onConflict: 'market_slug,outcome',
-          ignoreDuplicates: true,
-        });
+        // Insert trades (allow duplicates for DCA)
+        const { error } = await supabase.from('paper_trades').insert(trades);
         
         if (error) {
-          // Ignore duplicate key errors (23505) - means another process already inserted
-          if (!error.message?.includes('duplicate') && !error.code?.includes('23505')) {
-            log(`❌ Insert error: ${error.message}`);
-            // Remove from existingTrades on error so we can retry
-            if (trades.some(t => t.outcome === 'UP')) existingTrades.delete(upKey);
-            if (trades.some(t => t.outcome === 'DOWN')) existingTrades.delete(downKey);
-          }
+          log(`❌ Insert error: ${error.message}`);
         } else {
           tradeCount += trades.length;
+          
+          // Update local position state immediately
+          const currentPos = marketPositions.get(slug) ?? {
+            hasUp: false,
+            hasDown: false,
+            upCount: 0,
+            downCount: 0,
+            lastTradeTime: 0,
+          };
+          
+          for (const trade of trades) {
+            if (trade.outcome === 'UP') {
+              currentPos.hasUp = true;
+              currentPos.upCount++;
+            } else {
+              currentPos.hasDown = true;
+              currentPos.downCount++;
+            }
+          }
+          currentPos.lastTradeTime = Date.now();
+          marketPositions.set(slug, currentPos);
+          
           log(`🚀 TRADED #${tradeCount}: ${slug} | ${decision.tradeType} | ${trades.map(t => `${t.outcome}:${t.shares.toFixed(1)}`).join(' + ')}`);
           socket.send(JSON.stringify({ 
             type: 'trade', 
@@ -716,16 +809,19 @@ async function handleWebSocket(req: Request): Promise<Response> {
               outcome: t.outcome,
               price: t.price,
               shares: t.shares,
+              slippage: t.estimated_slippage,
               reasoning: t.reasoning,
-            }))
+            })),
+            timestamp: Date.now() 
           }));
         }
       }
     } finally {
-      // RACE CONDITION FIX: Always release lock
       processingTrades.delete(slug);
     }
   };
+
+
 
   const connectToRtds = () => {
     const rtdsSocket = new WebSocket(`${supabaseUrl.replace('https', 'wss')}/functions/v1/rtds-proxy`);
