@@ -197,13 +197,27 @@ export const GabagoolTradesSummary = memo(({
           </div>
         </div>
         
-        {/* Guaranteed result */}
+        {/* Hedge analysis */}
         {isDualSide && (
-          <div className={`mt-2 pt-2 border-t border-border/50 text-sm font-medium ${isArbitrage ? 'text-emerald-400' : 'text-amber-400'}`}>
+          <div className="mt-2 pt-2 border-t border-border/50 text-sm">
             {isArbitrage ? (
-              <span>✅ Guaranteed win: +${guaranteedProfit.toFixed(2)} (+{guaranteedProfitPercent.toFixed(1)}%)</span>
+              <span className="font-medium text-emerald-400">✅ Guaranteed win: +${guaranteedProfit.toFixed(2)} (+{guaranteedProfitPercent.toFixed(1)}%)</span>
             ) : (
-              <span>⚠️ No guaranteed win (worst: ${guaranteedProfit.toFixed(2)})</span>
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-amber-400">
+                  <span>⚠️ Hedge niet perfect</span>
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  Mogelijke hedge winst: 
+                  <span className={`ml-1 font-mono ${profitIfUpWins >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {profitIfUpWins >= 0 ? '+' : ''}${profitIfUpWins.toFixed(2)}
+                  </span>
+                  <span className="mx-1">/</span>
+                  <span className={`font-mono ${profitIfDownWins >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {profitIfDownWins >= 0 ? '+' : ''}${profitIfDownWins.toFixed(2)}
+                  </span>
+                </div>
+              </div>
             )}
           </div>
         )}
