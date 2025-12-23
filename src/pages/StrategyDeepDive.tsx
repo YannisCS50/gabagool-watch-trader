@@ -34,6 +34,7 @@ import { OpeningTradeAnalysis } from '@/components/OpeningTradeAnalysis';
 import { DCAArbitrageAnalysis } from '@/components/DCAArbitrageAnalysis';
 import { TradeSizeEvolutionChart } from '@/components/TradeSizeEvolutionChart';
 import { VolatilityAnalysis } from '@/components/VolatilityAnalysis';
+import { DCAFormulaAnalysis } from '@/components/DCAFormulaAnalysis';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { 
@@ -1199,8 +1200,11 @@ const StrategyDeepDive = () => {
         {/* Opening Trade Analysis */}
         <OpeningTradeAnalysis trades={trades} />
 
-        {/* Trade Size Evolution - Two-Phase Strategy */}
+        {/* Trade Size Evolution - Asset-Specific Sizing */}
         <TradeSizeEvolutionChart trades={trades} />
+
+        {/* NEW: DCA Formula Analysis - Dual-Side Market Making */}
+        <DCAFormulaAnalysis trades={trades} />
 
         {/* DCA & Arbitrage Strategy Analysis */}
         <DCAArbitrageAnalysis trades={trades} />

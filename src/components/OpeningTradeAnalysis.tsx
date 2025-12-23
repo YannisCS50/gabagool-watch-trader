@@ -194,10 +194,10 @@ export function OpeningTradeAnalysis({ trades }: OpeningTradeAnalysisProps) {
       </h2>
       
       <p className="text-sm text-muted-foreground">
-        Analyse van Gabagool22's eerste trades per markt: partial fills, timing patronen, en <strong>twee-fasen strategie</strong>.
+        Analyse van Gabagool22's eerste trades per markt: partial fills, timing patronen, en <strong>asset-specifieke sizing</strong>.
       </p>
 
-      {/* Key Discovery Alert */}
+      {/* Key Discovery Alert - Updated */}
       <Card className="glass border-chart-4/30 bg-chart-4/5">
         <CardContent className="py-4">
           <div className="flex items-start gap-3">
@@ -205,11 +205,29 @@ export function OpeningTradeAnalysis({ trades }: OpeningTradeAnalysisProps) {
               <Zap className="w-5 h-5 text-chart-4" />
             </div>
             <div>
-              <h4 className="font-semibold text-sm text-chart-4 mb-1">Ontdekking: Twee-Fasen Strategie</h4>
+              <h4 className="font-semibold text-sm text-chart-4 mb-1">Ontdekking: Consistente Kleine Orders</h4>
               <p className="text-sm text-muted-foreground">
-                Trade 1 & 2 zijn <strong>~140 shares</strong> (groot), daarna schakelt de bot over naar 
-                kleinere DCA trades van <strong>~15 shares</strong>. Dit is geen "vaste order size" - 
-                het is een initiële positie-opbouw gevolgd door opportunistisch bijkopen.
+                De bot start met <strong>~20 shares (BTC)</strong> of <strong>~14 shares (ETH)</strong> en 
+                blijft consistent kleine orders plaatsen. Geen grote initiële trades - de positie wordt 
+                opgebouwd door <strong>honderden kleine orders</strong> over tijd.
+              </p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Initial Price Insight */}
+      <Card className="glass border-primary/30 bg-primary/5">
+        <CardContent className="py-4">
+          <div className="flex items-start gap-3">
+            <div className="p-2 rounded-lg bg-primary/10 shrink-0">
+              <Target className="w-5 h-5 text-primary" />
+            </div>
+            <div>
+              <h4 className="font-semibold text-sm text-primary mb-1">Initiële Entry Prijs: ~50¢</h4>
+              <p className="text-sm text-muted-foreground">
+                De gemiddelde prijs voor eerste trades is <strong>~49-50¢</strong> voor beide Up en Down.
+                Dit is geen toeval - de bot start wanneer markten rond 50/50 zijn (maximale onzekerheid).
               </p>
             </div>
           </div>
@@ -224,11 +242,11 @@ export function OpeningTradeAnalysis({ trades }: OpeningTradeAnalysisProps) {
               <AlertCircle className="w-5 h-5 text-warning" />
             </div>
             <div>
-              <h4 className="font-semibold text-sm text-warning mb-1">Niet Altijd Goedkoopste Eerst</h4>
+              <h4 className="font-semibold text-sm text-warning mb-1">Dual-Side Market Making</h4>
               <p className="text-sm text-muted-foreground">
-                De ~50/50 verdeling van Up vs Down eerste trades is <strong>willekeurig</strong>, niet strategisch.
-                In ~52% van de markten startte de bot met de "duurdere" kant. De 50/50 split komt door 
-                de random verdeling van welke kant goedkoper is, niet door een "koop altijd goedkoopst" regel.
+                De ~50/50 verdeling van Up vs Down eerste trades is <strong>random</strong>. 
+                De bot koopt <strong>beide kanten actief</strong> om een gebalanceerde positie op te bouwen, 
+                niet om de "goedkoopste" eerst te pakken.
               </p>
             </div>
           </div>
@@ -237,31 +255,31 @@ export function OpeningTradeAnalysis({ trades }: OpeningTradeAnalysisProps) {
 
       {/* Key Metrics Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card className="glass border-chart-4/30">
+        <Card className="glass border-chart-1/30">
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-muted-foreground">Fase 1 Size</p>
-                <p className="text-2xl font-mono font-bold text-chart-4">~140 sh</p>
-                <p className="text-xs text-muted-foreground mt-1">Trade 1 & 2</p>
+                <p className="text-xs text-muted-foreground">BTC Order Size</p>
+                <p className="text-2xl font-mono font-bold text-chart-1">~20 sh</p>
+                <p className="text-xs text-muted-foreground mt-1">Per trade</p>
               </div>
-              <div className="p-2 rounded-lg bg-chart-4/10">
-                <Zap className="w-5 h-5 text-chart-4" />
+              <div className="p-2 rounded-lg bg-chart-1/10">
+                <Zap className="w-5 h-5 text-chart-1" />
               </div>
             </div>
           </CardContent>
         </Card>
 
-        <Card className="glass border-primary/30">
+        <Card className="glass border-chart-2/30">
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-muted-foreground">Fase 2 Size</p>
-                <p className="text-2xl font-mono font-bold text-primary">~15 sh</p>
-                <p className="text-xs text-muted-foreground mt-1">Trade 3+</p>
+                <p className="text-xs text-muted-foreground">ETH Order Size</p>
+                <p className="text-2xl font-mono font-bold text-chart-2">~14 sh</p>
+                <p className="text-xs text-muted-foreground mt-1">Per trade</p>
               </div>
-              <div className="p-2 rounded-lg bg-primary/10">
-                <TrendingUp className="w-5 h-5 text-primary" />
+              <div className="p-2 rounded-lg bg-chart-2/10">
+                <TrendingUp className="w-5 h-5 text-chart-2" />
               </div>
             </div>
           </CardContent>
@@ -271,9 +289,9 @@ export function OpeningTradeAnalysis({ trades }: OpeningTradeAnalysisProps) {
           <CardContent className="pt-6">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-muted-foreground">Delay na Opening</p>
-                <p className="text-2xl font-mono font-bold">{openingTradeAnalysis.avgDelay}s</p>
-                <p className="text-xs text-muted-foreground mt-1">Fixed timing</p>
+                <p className="text-xs text-muted-foreground">Entry Prijs</p>
+                <p className="text-2xl font-mono font-bold">~50¢</p>
+                <p className="text-xs text-muted-foreground mt-1">Beide kanten</p>
               </div>
               <div className="p-2 rounded-lg bg-warning/10">
                 <Timer className="w-5 h-5 text-warning" />
@@ -302,17 +320,17 @@ export function OpeningTradeAnalysis({ trades }: OpeningTradeAnalysisProps) {
 
       {/* Insights Badges */}
       <div className="flex flex-wrap gap-2">
-        <Badge variant="outline" className="bg-chart-4/10 border-chart-4/30 text-chart-4">
+        <Badge variant="outline" className="bg-chart-1/10 border-chart-1/30 text-chart-1">
           <Zap className="w-3 h-3 mr-1" />
-          Fase 1: ~140 shares (initieel)
+          BTC: 20-24 shares
+        </Badge>
+        <Badge variant="outline" className="bg-chart-2/10 border-chart-2/30 text-chart-2">
+          <TrendingUp className="w-3 h-3 mr-1" />
+          ETH: 14-16 shares
         </Badge>
         <Badge variant="outline" className="bg-primary/10 border-primary/30 text-primary">
-          <TrendingUp className="w-3 h-3 mr-1" />
-          Fase 2: ~15 shares (DCA)
-        </Badge>
-        <Badge variant="outline" className="bg-warning/10 border-warning/30 text-warning">
-          <Timer className="w-3 h-3 mr-1" />
-          Fixed 19s delay
+          <Target className="w-3 h-3 mr-1" />
+          Entry ~50¢ (beide)
         </Badge>
         <Badge variant="outline" className="bg-secondary border-border">
           <CheckCircle2 className="w-3 h-3 mr-1" />
