@@ -88,16 +88,16 @@ interface StrategyConfig {
 const DEFAULT_CONFIG: StrategyConfig = {
   // V7: Directional + Opportunistic Hedge with Share Balancing
   opening: {
-    notional: 5,              // $5 initial trade
+    notional: 12,             // $12 initial trade (~24 shares @ 50¢)
     preferCheaper: true,      // Buy cheaper side first (more shares)
   },
   hedge: {
     triggerCombined: 0.98,    // Hedge when combined < 98¢
-    notional: 5,              // $5 per hedge trade
+    notional: 12,             // $12 per hedge trade
   },
   accumulate: {
     triggerCombined: 0.95,    // Accumulate when combined < 95¢ (strong arb)
-    notional: 5,              // $5 per accumulate trade
+    notional: 12,             // $12 per accumulate trade
   },
   positionLimits: {
     maxSharesPerSide: 500,    // Max 500 shares per side
