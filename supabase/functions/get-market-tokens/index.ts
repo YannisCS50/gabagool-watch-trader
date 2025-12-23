@@ -18,6 +18,7 @@ interface MarketToken {
   marketType: 'price_above' | 'price_target' | '15min' | 'other';
   strikePrice?: number | null; // Legacy alias for openPrice
   openPrice?: number | null;   // The "Price to Beat"
+  previousClosePrice?: number | null; // Previous bet's close price (= next bet's target)
 }
 
 // Parse timestamp from slug (e.g., btc-updown-15m-1766485800 -> 1766485800)
@@ -440,17 +441,19 @@ serve(async (req) => {
       // Primary: current market's open_price from oracle
       let openPrice = oracleData?.open_price ?? oracleData?.strike_price ?? null;
       
-      // Fallback: previous interval's close_price (price to beat = prev close)
-      if (openPrice === null) {
-        const slugTs = parseTimestampFromSlug(m.slug);
-        if (slugTs) {
-          const prevTs = slugTs - 15 * 60;
-          const slugParts = m.slug.replace(/\d{10}$/, '');
-          const prevSlug = `${slugParts}${prevTs}`;
-          openPrice = prevPriceMap.get(prevSlug) ?? null;
-          if (openPrice) {
-            console.log(`[Price] Using prev close for ${m.slug}: $${openPrice}`);
-          }
+      // Get previous close price for context
+      let previousClosePrice: number | null = null;
+      const slugTs = parseTimestampFromSlug(m.slug);
+      if (slugTs) {
+        const prevTs = slugTs - 15 * 60;
+        const slugParts = m.slug.replace(/\d{10}$/, '');
+        const prevSlug = `${slugParts}${prevTs}`;
+        previousClosePrice = prevPriceMap.get(prevSlug) ?? null;
+        
+        // Fallback: previous interval's close_price (price to beat = prev close)
+        if (openPrice === null && previousClosePrice) {
+          openPrice = previousClosePrice;
+          console.log(`[Price] Using prev close for ${m.slug}: $${openPrice}`);
         }
       }
       
@@ -458,6 +461,7 @@ serve(async (req) => {
         ...m,
         openPrice,
         strikePrice: openPrice, // Legacy alias
+        previousClosePrice, // Expose for UI context
       };
     });
     
