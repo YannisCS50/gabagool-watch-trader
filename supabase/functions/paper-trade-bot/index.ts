@@ -5,7 +5,7 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Trading decision configuration (same as Rust bot)
+// Trading decision configuration
 const TRADE_CONFIG = {
   arbitrage: {
     minEdge: 2,           // Minimum 2% edge for pure arbitrage
@@ -26,6 +26,10 @@ const TRADE_CONFIG = {
     maxSeconds: 60,
     maxCombined: 0.95,
     budget: 20,
+  },
+  openingTrade: {
+    budget: 20,           // $20 for opening trades
+    maxCombined: 1.0,     // Only if no guaranteed loss
   },
   minRemainingSeconds: 30, // Don't trade if less than 30 seconds remaining
 };
@@ -77,16 +81,18 @@ function makeTradeDecision(
   downPrice: number,
   currentCryptoPrice: number | null,
   openPrice: number | null,
-  remainingSeconds: number
+  remainingSeconds: number,
+  asset: string
 ): TradeDecision {
   const combinedPrice = upPrice + downPrice;
   const arbitrageEdge = (1 - combinedPrice) * 100;
   
-  let priceDelta = null;
-  let priceDeltaPercent = null;
+  let priceDelta: number | null = null;
+  let priceDeltaPercent: number | null = null;
+  
   if (currentCryptoPrice && openPrice) {
     priceDelta = currentCryptoPrice - openPrice;
-    priceDeltaPercent = Math.abs((priceDelta / openPrice) * 100);
+    priceDeltaPercent = (priceDelta / openPrice) * 100;
   }
 
   // Don't trade if too close to expiry
@@ -97,44 +103,47 @@ function makeTradeDecision(
       upShares: 0,
       downShares: 0,
       tradeType: 'SKIP',
-      reasoning: `Too close to expiry: ${remainingSeconds}s remaining`,
+      reasoning: `⏱️ Te dicht bij expiry (${remainingSeconds}s < ${TRADE_CONFIG.minRemainingSeconds}s minimum)`,
     };
   }
 
   // RULE 1: Pure Arbitrage (combined < 0.98 = guaranteed profit)
   if (combinedPrice < 0.98 && remainingSeconds > 60) {
     const budget = TRADE_CONFIG.arbitrage.budget;
+    const guaranteedProfit = ((1 - combinedPrice) * budget * 2).toFixed(2);
     return {
       shouldTrade: true,
       outcome: 'BOTH',
       upShares: budget / upPrice,
       downShares: budget / downPrice,
       tradeType: 'ARBITRAGE',
-      reasoning: `Pure arbitrage: ${arbitrageEdge.toFixed(1)}% edge, combined=${combinedPrice.toFixed(3)}`,
+      reasoning: `🎯 ARBITRAGE: Koop UP@${(upPrice*100).toFixed(1)}¢ + DOWN@${(downPrice*100).toFixed(1)}¢ = ${(combinedPrice*100).toFixed(1)}¢ < $1. Gegarandeerde winst ~$${guaranteedProfit} (${arbitrageEdge.toFixed(1)}% edge)`,
     };
   }
 
-  // RULE 2: Dual-Side Hedge (very small delta + combined < 1.0)
-  if (priceDeltaPercent !== null && priceDeltaPercent < TRADE_CONFIG.dualSide.maxDeltaPercent 
-      && combinedPrice < TRADE_CONFIG.dualSide.maxCombined && remainingSeconds > 120) {
+  // RULE 2: Dual-Side Hedge (very small delta + combined <= 1.0)
+  if (priceDeltaPercent !== null && Math.abs(priceDeltaPercent) < TRADE_CONFIG.dualSide.maxDeltaPercent 
+      && combinedPrice <= TRADE_CONFIG.dualSide.maxCombined && remainingSeconds > 120) {
     const budget = TRADE_CONFIG.dualSide.budget;
+    const direction = priceDeltaPercent >= 0 ? '📈' : '📉';
     return {
       shouldTrade: true,
       outcome: 'BOTH',
       upShares: budget / upPrice,
       downShares: budget / downPrice,
       tradeType: 'DUAL_SIDE',
-      reasoning: `Dual-side hedge: delta=${priceDeltaPercent.toFixed(3)}%, combined=${combinedPrice.toFixed(3)}`,
+      reasoning: `🔄 DUAL-SIDE: ${asset} ${direction} ${Math.abs(priceDeltaPercent).toFixed(3)}% vs open ($${currentCryptoPrice?.toFixed(2)} vs $${openPrice?.toFixed(2)}). Prijs te dicht bij strike voor richting. Hedge beide kanten @ combined ${(combinedPrice*100).toFixed(1)}¢`,
     };
   }
 
   // RULE 3: Directional + Hedge (clear direction but hedge)
   if (priceDeltaPercent !== null && priceDelta !== null 
-      && priceDeltaPercent < TRADE_CONFIG.directionalHedge.maxDeltaPercent 
-      && combinedPrice < TRADE_CONFIG.directionalHedge.maxCombined && remainingSeconds > 60) {
+      && Math.abs(priceDeltaPercent) < TRADE_CONFIG.directionalHedge.maxDeltaPercent 
+      && combinedPrice <= TRADE_CONFIG.directionalHedge.maxCombined && remainingSeconds > 60) {
     const favoredSide = priceDelta > 0 ? 'UP' : 'DOWN';
     const mainBudget = TRADE_CONFIG.directionalHedge.mainBudget;
     const hedgeBudget = TRADE_CONFIG.directionalHedge.hedgeBudget;
+    const direction = priceDelta > 0 ? '📈' : '📉';
 
     return {
       shouldTrade: true,
@@ -142,7 +151,7 @@ function makeTradeDecision(
       upShares: favoredSide === 'UP' ? mainBudget / upPrice : hedgeBudget / upPrice,
       downShares: favoredSide === 'DOWN' ? mainBudget / downPrice : hedgeBudget / downPrice,
       tradeType: 'DIRECTIONAL_HEDGE',
-      reasoning: `Directional hedge: ${favoredSide} favored by ${priceDeltaPercent.toFixed(2)}%`,
+      reasoning: `🎲 DIRECTIONAL: ${asset} ${direction} ${Math.abs(priceDeltaPercent).toFixed(2)}% ($${currentCryptoPrice?.toFixed(2)} vs open $${openPrice?.toFixed(2)}). Favoriet: ${favoredSide} ($${mainBudget}) + hedge ${favoredSide === 'UP' ? 'DOWN' : 'UP'} ($${hedgeBudget})`,
     };
   }
 
@@ -155,18 +164,52 @@ function makeTradeDecision(
       upShares: budget / upPrice,
       downShares: budget / downPrice,
       tradeType: 'LATE_ARB',
-      reasoning: `Late arbitrage: ${remainingSeconds}s left, ${arbitrageEdge.toFixed(1)}% edge`,
+      reasoning: `⚡ LATE ARB: Nog ${remainingSeconds}s, combined ${(combinedPrice*100).toFixed(1)}¢ = ${arbitrageEdge.toFixed(1)}% edge. Snelle arbitrage voor expiry.`,
     };
   }
 
-  // NO TRADE
+  // RULE 5: Opening trade when no Chainlink data but combined <= 1.0
+  // This is a fallback for when we can't determine direction
+  if (currentCryptoPrice === null && combinedPrice <= TRADE_CONFIG.openingTrade.maxCombined && remainingSeconds > 300) {
+    const budget = TRADE_CONFIG.openingTrade.budget;
+    // Pick the cheaper side as slight favorite
+    const cheaperSide = upPrice <= downPrice ? 'UP' : 'DOWN';
+    const cheaperPrice = Math.min(upPrice, downPrice);
+    
+    return {
+      shouldTrade: true,
+      outcome: cheaperSide as 'UP' | 'DOWN',
+      upShares: cheaperSide === 'UP' ? budget / upPrice : 0,
+      downShares: cheaperSide === 'DOWN' ? budget / downPrice : 0,
+      tradeType: 'OPENING',
+      reasoning: `🎬 OPENING: Geen Chainlink data beschikbaar. ${cheaperSide}@${(cheaperPrice*100).toFixed(1)}¢ is goedkoper. Combined=${(combinedPrice*100).toFixed(1)}¢. Speculatieve positie.`,
+    };
+  }
+
+  // NO TRADE - provide detailed reason
+  const reasons: string[] = [];
+  
+  if (priceDeltaPercent === null) {
+    reasons.push('geen Chainlink data');
+  } else if (Math.abs(priceDeltaPercent) >= TRADE_CONFIG.directionalHedge.maxDeltaPercent) {
+    reasons.push(`delta te groot (${Math.abs(priceDeltaPercent).toFixed(2)}% > ${TRADE_CONFIG.directionalHedge.maxDeltaPercent}%)`);
+  }
+  
+  if (combinedPrice > TRADE_CONFIG.directionalHedge.maxCombined) {
+    reasons.push(`combined te hoog (${(combinedPrice*100).toFixed(1)}¢ > ${TRADE_CONFIG.directionalHedge.maxCombined * 100}¢)`);
+  }
+  
+  if (arbitrageEdge < 0) {
+    reasons.push(`negatieve edge (${arbitrageEdge.toFixed(1)}%)`);
+  }
+
   return {
     shouldTrade: false,
     outcome: 'UP',
     upShares: 0,
     downShares: 0,
     tradeType: 'SKIP',
-    reasoning: `No opportunity: delta=${priceDeltaPercent?.toFixed(2) ?? 'N/A'}%, combined=${combinedPrice.toFixed(3)}, edge=${arbitrageEdge.toFixed(1)}%`,
+    reasoning: `⏸️ SKIP: ${reasons.join(', ')}. UP@${(upPrice*100).toFixed(1)}¢ + DOWN@${(downPrice*100).toFixed(1)}¢ = ${(combinedPrice*100).toFixed(1)}¢`,
   };
 }
 
@@ -186,7 +229,7 @@ async function fetchClobPrices(supabaseUrl: string, anonKey: string, tokenIds: s
     });
     
     if (!response.ok) {
-      console.error('Failed to fetch CLOB prices:', response.status);
+      console.error('[paper-trade-bot] Failed to fetch CLOB prices:', response.status);
       return prices;
     }
     
@@ -201,7 +244,7 @@ async function fetchClobPrices(supabaseUrl: string, anonKey: string, tokenIds: s
       }
     }
   } catch (error) {
-    console.error('Error fetching CLOB prices:', error);
+    console.error('[paper-trade-bot] Error fetching CLOB prices:', error);
   }
   
   return prices;
@@ -217,17 +260,18 @@ async function fetchChainlinkPrices(supabaseUrl: string, anonKey: string): Promi
     });
     
     if (!response.ok) {
-      console.error('Failed to fetch Chainlink prices:', response.status);
+      console.error('[paper-trade-bot] Failed to fetch Chainlink prices:', response.status);
       return { btc: null, eth: null };
     }
     
     const data = await response.json();
+    console.log('[paper-trade-bot] Chainlink prices:', data);
     return {
       btc: data.btc?.price ?? null,
       eth: data.eth?.price ?? null,
     };
   } catch (error) {
-    console.error('Error fetching Chainlink prices:', error);
+    console.error('[paper-trade-bot] Error fetching Chainlink prices:', error);
     return { btc: null, eth: null };
   }
 }
@@ -324,6 +368,7 @@ Deno.serve(async (req) => {
     // 4. Make trading decisions
     const now = Date.now();
     const paperTrades: PaperTrade[] = [];
+    const skippedMarkets: { slug: string; reason: string }[] = [];
 
     for (const market of markets) {
       const eventEndTime = new Date(market.eventEndTime);
@@ -338,17 +383,20 @@ Deno.serve(async (req) => {
                           market.asset === 'ETH' ? chainlinkPrices.eth : null;
       const openPrice = market.openPrice ?? market.strikePrice;
 
-      const decision = makeTradeDecision(upPrice, downPrice, cryptoPrice, openPrice, remainingSeconds);
+      const decision = makeTradeDecision(upPrice, downPrice, cryptoPrice, openPrice, remainingSeconds, market.asset);
 
       if (!decision.shouldTrade) {
         console.log(`[paper-trade-bot] ${market.slug}: ${decision.reasoning}`);
+        skippedMarkets.push({ slug: market.slug, reason: decision.reasoning });
         continue;
       }
 
       const combinedPrice = upPrice + downPrice;
       const arbitrageEdge = (1 - combinedPrice) * 100;
       const priceDelta = cryptoPrice && openPrice ? cryptoPrice - openPrice : null;
-      const priceDeltaPercent = priceDelta && openPrice ? Math.abs((priceDelta / openPrice) * 100) : null;
+      const priceDeltaPercent = priceDelta && openPrice ? (priceDelta / openPrice) * 100 : null;
+
+      console.log(`[paper-trade-bot] ${market.slug}: ${decision.reasoning}`);
 
       // Create UP trade if shares > 0 and not already exists
       if (decision.upShares > 0 && !existingTradeMap.has(`${market.slug}-UP`)) {
@@ -414,13 +462,19 @@ Deno.serve(async (req) => {
       timestamp: new Date().toISOString(),
       marketsAnalyzed: markets.length,
       tradesPlaced: paperTrades.length,
+      chainlinkPrices: {
+        btc: chainlinkPrices.btc,
+        eth: chainlinkPrices.eth,
+      },
       trades: paperTrades.map(t => ({
         slug: t.market_slug,
         outcome: t.outcome,
         type: t.trade_type,
         shares: t.shares.toFixed(2),
         price: t.price.toFixed(3),
+        reasoning: t.reasoning,
       })),
+      skipped: skippedMarkets,
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
