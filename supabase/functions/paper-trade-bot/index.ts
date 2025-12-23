@@ -54,7 +54,7 @@ const STRATEGY_CONFIG = {
   arbitrage: {
     strongEdge: 0.95,     // <95¢ = strong arbitrage
     normalEdge: 0.98,     // <98¢ = arbitrage opportunity
-    maxEntry: 1.02,       // >102¢ = don't trade (negative edge)
+    maxEntry: 0.98,       // >=98¢ = don't trade (no edge)
   },
   
   // DCA multipliers based on combined price
@@ -196,12 +196,13 @@ function makeGabagoolDecision(
     };
   }
   
-  // 3. Combined price too high (negative edge)
-  if (combinedPrice > STRATEGY_CONFIG.arbitrage.maxEntry) {
+  // 3. No edge (Gabagool targets guaranteed edge)
+  // Only trade when combined entry is < 98¢.
+  if (combinedPrice >= STRATEGY_CONFIG.arbitrage.maxEntry) {
     return {
       shouldTrade: false,
       trades: [],
-      summaryReasoning: `❌ NO_EDGE: Combined ${(combinedPrice * 100).toFixed(1)}¢ > ${STRATEGY_CONFIG.arbitrage.maxEntry * 100}¢ (negatieve edge)`,
+      summaryReasoning: `❌ NO_EDGE: Combined ${(combinedPrice * 100).toFixed(1)}¢ >= ${STRATEGY_CONFIG.arbitrage.maxEntry * 100}¢ (geen edge)`,
     };
   }
   
