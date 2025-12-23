@@ -221,41 +221,7 @@ function makeGabagoolTradeDecision(
     favoredSide = upBestAsk <= downBestAsk ? 'UP' : 'DOWN';
   }
 
-  // ============================================
-  // PHASE 4: Late Entry Sniper (highest priority in last 5 min)
-  // ============================================
-  const lateCfg = TRADE_CONFIG.lateEntry;
-  if (lateCfg.enabled && 
-      remainingSeconds <= lateCfg.maxRemainingSeconds && 
-      remainingSeconds >= lateCfg.minRemainingSeconds) {
-    
-    const cheaperSide = upBestAsk <= downBestAsk ? 'UP' : 'DOWN';
-    const cheaperPrice = Math.min(upBestAsk, downBestAsk);
-    
-    if (cheaperPrice <= lateCfg.maxPrice && cheaperPrice >= lateCfg.minPrice) {
-      const orderbookSide = cheaperSide === 'UP' ? orderbook.upAsks : orderbook.downAsks;
-      const slippage = calculateSlippage(orderbookSide, lateCfg.budget);
-      
-      if (slippage.slippagePercent <= lateCfg.maxSlippage && 
-          slippage.availableLiquidity >= lateCfg.minLiquidity) {
-        
-        const directionBonus = priceDeltaPercent !== null
-          ? (cheaperSide === 'UP' && priceDeltaPercent > 0) || (cheaperSide === 'DOWN' && priceDeltaPercent < 0) ? '📈' : ''
-          : '';
-        
-        return {
-          shouldTrade: true,
-          outcome: cheaperSide,
-          upShares: cheaperSide === 'UP' ? slippage.filledShares : undefined,
-          downShares: cheaperSide === 'DOWN' ? slippage.filledShares : undefined,
-          tradeType: `LATE_${cheaperSide}`,
-          reasoning: `⏰ Late ${cheaperSide} @ ${(cheaperPrice*100).toFixed(0)}¢ | ${remainingSeconds}s left ${directionBonus}`,
-          upSlippage: cheaperSide === 'UP' ? slippage : undefined,
-          downSlippage: cheaperSide === 'DOWN' ? slippage : undefined,
-        };
-      }
-    }
-  }
+  // Late entry disabled - only OPEN → HEDGE → DCA flow
 
   // ============================================
   // PHASE 1: Opening Trade (no position yet)
