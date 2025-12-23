@@ -626,6 +626,13 @@ const RealTimeSignalsPage = () => {
                           </Badge>
                         </div>
                       </div>
+                      
+                      {/* Gabagool trades summary for expired market */}
+                      <GabagoolTradesSummary 
+                        marketSlug={market.slug} 
+                        upClobPrice={market.upPriceAtClose ?? 0.5} 
+                        downClobPrice={market.downPriceAtClose ?? 0.5} 
+                      />
                     </div>
                   ))}
                 </CardContent>
