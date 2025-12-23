@@ -17,3 +17,6 @@ verify_jwt = false
 
 [functions.clob-proxy]
 verify_jwt = false
+
+[functions.clob-prices]
+verify_jwt = false
