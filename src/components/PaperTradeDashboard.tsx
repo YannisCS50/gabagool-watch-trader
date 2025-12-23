@@ -257,7 +257,7 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
                   <tr className="text-xs text-muted-foreground border-b border-border/50">
                     <th className="text-left pb-3 font-medium">Market</th>
                     <th className="text-center pb-3 font-medium">Position</th>
-                    <th className="text-center pb-3 font-medium">Hedge</th>
+                    <th className="text-center pb-3 font-medium">Edge</th>
                     <th className="text-right pb-3 font-medium">Cost</th>
                     <th className="text-right pb-3 font-medium">Value</th>
                     <th className="text-right pb-3 font-medium">P/L</th>
@@ -293,8 +293,11 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
                                     const totalShares = upShares + downShares;
                                     const upPct = totalShares > 0 ? (upShares / totalShares) * 100 : 50;
                                     
-                                    // Hedge number: total shares per dollar invested
-                                    const hedgeNumber = totalCost > 0 ? totalShares / totalCost : 0;
+                                    // Arbitrage edge: 1 - (upAvg + downAvg) as percentage
+                                    const upAvg = upShares > 0 ? upCost / upShares : 0;
+                                    const downAvg = downShares > 0 ? downCost / downShares : 0;
+                                    const combinedEntry = upAvg + downAvg;
+                                    const arbEdge = (1 - combinedEntry) * 100; // percentage edge
 
                     return (
                       <tr key={slug} className="group hover:bg-muted/30 transition-colors">
@@ -328,11 +331,12 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
                                         </td>
                                         <td className="py-3 text-center">
                                           <span className={`font-mono text-sm font-medium ${
-                                            hedgeNumber >= 1.02 ? 'text-emerald-500' : 
-                                            hedgeNumber <= 0.98 ? 'text-red-500' : 
-                                            'text-yellow-500'
+                                            arbEdge >= 5 ? 'text-emerald-500' : 
+                                            arbEdge >= 2 ? 'text-yellow-500' : 
+                                            arbEdge > 0 ? 'text-orange-500' :
+                                            'text-red-500'
                                           }`}>
-                                            {hedgeNumber.toFixed(2)}
+                                            {arbEdge > 0 ? '+' : ''}{arbEdge.toFixed(1)}%
                                           </span>
                                         </td>
                                         <td className="py-3 text-right font-mono text-sm">
