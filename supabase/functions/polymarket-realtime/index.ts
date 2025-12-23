@@ -83,83 +83,153 @@ function extractStrikePrice(question: string): number | null {
   return null;
 }
 
+// Generate 15-min market timestamps based on current time
+function get15MinTimestamps(): number[] {
+  const now = Math.floor(Date.now() / 1000);
+  const timestamps: number[] = [];
+  
+  // Generate timestamps for current and upcoming 15-min windows
+  // Each window is 900 seconds (15 min)
+  const currentWindow = Math.floor(now / 900) * 900;
+  
+  for (let i = -1; i < 6; i++) {
+    timestamps.push(currentWindow + (i * 900));
+  }
+  
+  return timestamps;
+}
+
 // Fetch 15-minute crypto markets from Gamma API
 async function fetch15MinMarkets(): Promise<Market15Min[]> {
   try {
-    // Fetch both BTC and ETH 15-min series
-    const [btcResponse, ethResponse] = await Promise.all([
-      fetch(`${GAMMA_API_URL}/events?series_slug=btc-up-or-down-15m&active=true&closed=false&limit=5`),
-      fetch(`${GAMMA_API_URL}/events?series_slug=eth-up-or-down-15m&active=true&closed=false&limit=5`)
-    ]);
+    const timestamps = get15MinTimestamps();
+    console.log('Generated timestamps:', timestamps);
     
-    const btcEvents = btcResponse.ok ? await btcResponse.json() : [];
-    const ethEvents = ethResponse.ok ? await ethResponse.json() : [];
+    // Try fetching with different Gamma API patterns
+    const searchPatterns = [
+      // Search in events with slug pattern
+      `${GAMMA_API_URL}/events?slug_contains=updown-15m&active=true&limit=50`,
+      `${GAMMA_API_URL}/events?title_contains=15m&active=true&limit=50`,
+      // Search in markets
+      `${GAMMA_API_URL}/markets?slug_contains=15m&active=true&closed=false&limit=100`,
+    ];
     
-    console.log(`Found ${btcEvents.length} BTC and ${ethEvents.length} ETH 15-min events`);
+    const responses = await Promise.all(
+      searchPatterns.map(url => 
+        fetch(url)
+          .then(r => {
+            console.log(`API ${url.split('?')[1]?.slice(0,30)}: status ${r.status}`);
+            return r.ok ? r.json() : [];
+          })
+          .catch(e => {
+            console.error(`Error fetching ${url}:`, e.message);
+            return [];
+          })
+      )
+    );
+    
+    const [eventsWithSlug, eventsWithTitle, marketsWithSlug] = responses;
+    console.log(`Responses: events-slug=${eventsWithSlug?.length || 0}, events-title=${eventsWithTitle?.length || 0}, markets=${marketsWithSlug?.length || 0}`);
     
     const markets: Market15Min[] = [];
+    const seenIds = new Set<string>();
+    const now = new Date();
     
-    // Process BTC events
-    for (const event of btcEvents) {
-      if (event.markets && event.markets.length > 0) {
+    // Process events
+    const allEvents = [...(eventsWithSlug || []), ...(eventsWithTitle || [])];
+    for (const event of allEvents) {
+      const slug = event.slug || '';
+      
+      // Check if this is a 15-min BTC or ETH market
+      const isBtc15Min = slug.includes('btc') && slug.includes('15m');
+      const isEth15Min = slug.includes('eth') && slug.includes('15m');
+      
+      if (!isBtc15Min && !isEth15Min) continue;
+      
+      const asset: 'BTC' | 'ETH' = isBtc15Min ? 'BTC' : 'ETH';
+      
+      // Process markets within the event
+      if (event.markets && Array.isArray(event.markets)) {
         for (const market of event.markets) {
-          if (!market.active || market.closed) continue;
+          if (market.closed || seenIds.has(market.id)) continue;
+          seenIds.add(market.id);
           
-          const eventStartTime = new Date(event.startDate || market.startDate);
           const eventEndTime = new Date(market.endDate);
+          if (eventEndTime <= now) continue;
           
-          // Only include markets that haven't ended
-          if (eventEndTime > new Date()) {
-            markets.push({
-              id: market.conditionId,
-              slug: market.slug,
-              question: market.question,
-              asset: 'BTC',
-              eventStartTime,
-              eventEndTime,
-              priceToBeat: extractStrikePrice(market.question),
-              tokens: market.tokens?.map((t: any) => ({
-                token_id: t.token_id,
-                outcome: t.outcome,
-                price: parseFloat(t.price) || 0
-              })) || []
-            });
-          }
+          // Extract timestamp from slug
+          const timestampMatch = slug.match(/(\d{10})/);
+          const eventStartTime = timestampMatch 
+            ? new Date(parseInt(timestampMatch[1]) * 1000)
+            : new Date(event.startDate || market.startDate);
+          
+          markets.push({
+            id: market.conditionId || market.id,
+            slug: market.slug || slug,
+            question: market.question || event.title || `${asset} Up or Down`,
+            asset,
+            eventStartTime,
+            eventEndTime,
+            priceToBeat: extractStrikePrice(market.question || event.title || ''),
+            tokens: market.tokens?.map((t: any) => ({
+              token_id: t.token_id,
+              outcome: t.outcome,
+              price: parseFloat(t.price) || 0.5
+            })) || []
+          });
+          
+          console.log(`Added from event: ${slug}, ends: ${eventEndTime.toISOString()}`);
         }
       }
     }
     
-    // Process ETH events
-    for (const event of ethEvents) {
-      if (event.markets && event.markets.length > 0) {
-        for (const market of event.markets) {
-          if (!market.active || market.closed) continue;
-          
-          const eventStartTime = new Date(event.startDate || market.startDate);
-          const eventEndTime = new Date(market.endDate);
-          
-          if (eventEndTime > new Date()) {
-            markets.push({
-              id: market.conditionId,
-              slug: market.slug,
-              question: market.question,
-              asset: 'ETH',
-              eventStartTime,
-              eventEndTime,
-              priceToBeat: extractStrikePrice(market.question),
-              tokens: market.tokens?.map((t: any) => ({
-                token_id: t.token_id,
-                outcome: t.outcome,
-                price: parseFloat(t.price) || 0
-              })) || []
-            });
-          }
-        }
-      }
+    // Process direct markets
+    for (const market of (marketsWithSlug || [])) {
+      const slug = market.slug || '';
+      
+      // Check if this is a 15-min BTC or ETH market
+      const isBtc15Min = (slug.includes('btc') || slug.includes('bitcoin')) && 
+                          (slug.includes('15m') || slug.includes('15-min'));
+      const isEth15Min = (slug.includes('eth') || slug.includes('ethereum')) && 
+                          (slug.includes('15m') || slug.includes('15-min'));
+      
+      if (!isBtc15Min && !isEth15Min) continue;
+      if (market.closed || seenIds.has(market.id)) continue;
+      seenIds.add(market.id);
+      
+      const eventEndTime = new Date(market.endDate);
+      if (eventEndTime <= now) continue;
+      
+      const asset: 'BTC' | 'ETH' = isBtc15Min ? 'BTC' : 'ETH';
+      
+      // Extract timestamp from slug
+      const timestampMatch = slug.match(/(\d{10})/);
+      const eventStartTime = timestampMatch 
+        ? new Date(parseInt(timestampMatch[1]) * 1000)
+        : new Date(market.startDate);
+      
+      markets.push({
+        id: market.conditionId || market.id,
+        slug: slug,
+        question: market.question || `${asset} Up or Down`,
+        asset,
+        eventStartTime,
+        eventEndTime,
+        priceToBeat: extractStrikePrice(market.question || ''),
+        tokens: market.tokens?.map((t: any) => ({
+          token_id: t.token_id,
+          outcome: t.outcome,
+          price: parseFloat(t.price) || 0.5
+        })) || []
+      });
+      
+      console.log(`Added from market: ${slug}, ends: ${eventEndTime.toISOString()}`);
     }
     
     // Sort by end time (soonest first)
     markets.sort((a, b) => a.eventEndTime.getTime() - b.eventEndTime.getTime());
+    
+    console.log(`Total ${markets.length} active 15-min crypto markets found`);
     
     return markets;
   } catch (error) {
