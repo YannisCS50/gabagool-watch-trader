@@ -108,32 +108,56 @@ Deno.serve(async (req) => {
       });
     }
 
-    // 4. Determine winner for each market by checking real trades
+    // 4. Determine winner for each market
     const marketSlugs = Array.from(positionMap.keys());
     
     // Get market results from market_history
     const { data: marketHistory } = await supabase
       .from('market_history')
-      .select('slug, result, up_price_at_close, down_price_at_close')
+      .select('slug, result, up_price_at_close, down_price_at_close, open_price, close_price')
       .in('slug', marketSlugs);
 
     const marketResultMap = new Map<string, 'UP' | 'DOWN' | null>();
     if (marketHistory) {
       for (const market of marketHistory) {
+        // Priority 1: Explicit result field
         if (market.result === 'UP' || market.result === 'DOWN') {
           marketResultMap.set(market.slug, market.result);
-        } else if (market.up_price_at_close !== null && market.down_price_at_close !== null) {
-          // Derive result from close prices
-          if (market.up_price_at_close >= 0.9) {
+          continue;
+        }
+        
+        // Priority 2: Derive from close prices (if one side is >= 0.90, that side won)
+        if (market.up_price_at_close !== null && market.down_price_at_close !== null) {
+          if (market.up_price_at_close >= 0.90) {
             marketResultMap.set(market.slug, 'UP');
-          } else if (market.down_price_at_close >= 0.9) {
+            console.log(`[settle] ${market.slug}: UP wins (up_close=${market.up_price_at_close})`);
+            continue;
+          } else if (market.down_price_at_close >= 0.90) {
             marketResultMap.set(market.slug, 'DOWN');
+            console.log(`[settle] ${market.slug}: DOWN wins (down_close=${market.down_price_at_close})`);
+            continue;
           }
+          // If neither side >= 0.90, compare them
+          if (market.up_price_at_close > market.down_price_at_close) {
+            marketResultMap.set(market.slug, 'UP');
+            console.log(`[settle] ${market.slug}: UP wins by higher close price (${market.up_price_at_close} vs ${market.down_price_at_close})`);
+          } else if (market.down_price_at_close > market.up_price_at_close) {
+            marketResultMap.set(market.slug, 'DOWN');
+            console.log(`[settle] ${market.slug}: DOWN wins by higher close price (${market.down_price_at_close} vs ${market.up_price_at_close})`);
+          }
+          continue;
+        }
+        
+        // Priority 3: Derive from open/close price comparison
+        if (market.open_price !== null && market.close_price !== null) {
+          const result = market.close_price >= market.open_price ? 'UP' : 'DOWN';
+          marketResultMap.set(market.slug, result);
+          console.log(`[settle] ${market.slug}: ${result} wins (open=${market.open_price}, close=${market.close_price})`);
         }
       }
     }
 
-    // Fallback: check real trades table
+    // Fallback: check real trades table for high-confidence prices
     const { data: realTrades } = await supabase
       .from('trades')
       .select('market_slug, outcome, price')
@@ -142,8 +166,9 @@ Deno.serve(async (req) => {
 
     if (realTrades) {
       for (const trade of realTrades) {
-        if (!marketResultMap.has(trade.market_slug) && trade.price >= 0.9) {
+        if (!marketResultMap.has(trade.market_slug) && trade.price >= 0.90) {
           marketResultMap.set(trade.market_slug, trade.outcome as 'UP' | 'DOWN');
+          console.log(`[settle] ${trade.market_slug}: ${trade.outcome} wins (from trades, price=${trade.price})`);
         }
       }
     }
