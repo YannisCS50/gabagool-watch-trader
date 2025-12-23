@@ -117,8 +117,8 @@ export function useGabagoolLiveTrades(marketSlug: string | null) {
   const summary: TradeSummary | null = useMemo(() => {
     if (trades.length === 0) return null;
 
-    const upTrades = trades.filter(t => t.outcome === 'Up' && t.side === 'BUY');
-    const downTrades = trades.filter(t => t.outcome === 'Down' && t.side === 'BUY');
+    const upTrades = trades.filter(t => t.outcome === 'Up' && t.side.toUpperCase() === 'BUY');
+    const downTrades = trades.filter(t => t.outcome === 'Down' && t.side.toUpperCase() === 'BUY');
 
     const upShares = upTrades.reduce((sum, t) => sum + t.shares, 0);
     const upInvested = upTrades.reduce((sum, t) => sum + t.total, 0);
