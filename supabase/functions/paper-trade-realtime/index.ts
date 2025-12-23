@@ -86,22 +86,22 @@ interface StrategyConfig {
 }
 
 const DEFAULT_CONFIG: StrategyConfig = {
-  // V7: Directional + Opportunistic Hedge with Share Balancing
+  // V8: Maximized Absolute Profit Strategy
   opening: {
-    notional: 12,             // $12 initial trade (~24 shares @ 50¢)
+    notional: 25,             // $25 initial trade (~50 shares @ 50¢)
     preferCheaper: true,      // Buy cheaper side first (more shares)
   },
   hedge: {
     triggerCombined: 0.98,    // Hedge when combined < 98¢
-    notional: 12,             // $12 per hedge trade
+    notional: 25,             // $25 per hedge trade
   },
   accumulate: {
-    triggerCombined: 0.95,    // Accumulate when combined < 95¢ (strong arb)
-    notional: 12,             // $12 per accumulate trade
+    triggerCombined: 0.97,    // Accumulate when combined < 97¢ (more opportunities)
+    notional: 25,             // $25 per accumulate trade
   },
   positionLimits: {
-    maxSharesPerSide: 500,    // Max 500 shares per side
-    maxTotalInvested: 200,    // Max $200 total
+    maxSharesPerSide: 1000,   // Max 1000 shares per side
+    maxTotalInvested: 500,    // Max $500 total
     minSharesDiffToRebalance: 5,  // Min 5 shares diff to rebalance
   },
   entry: {
@@ -356,40 +356,41 @@ function decideTrades(
     }
 
     // ========================================================================
-    // PHASE 4: GROW - Use guaranteed profit to add more shares risk-free
-    // If we have positive P/L buffer, we can buy more shares
+    // PHASE 4: GROW - Use guaranteed profit to add EQUAL shares on both sides
+    // Maintains balance while growing position risk-free
     // ========================================================================
     const minShares = Math.min(pos.upShares, pos.downShares);
     const growTotalInvested = pos.upInvested + pos.downInvested;
     const guaranteedPayout = minShares; // Winner pays $1 per share
     const guaranteedPL = guaranteedPayout - growTotalInvested;
     
-    // Only grow if we have positive guaranteed profit
-    if (guaranteedPL > 0.50) { // At least 50 cents profit buffer
-      // Find which side is cheaper and buy that side
-      // This will increase our shares and potentially improve edge
-      const cheaperSide: Outcome = upExec <= downExec ? "UP" : "DOWN";
-      const cheaperPrice = cheaperSide === "UP" ? upExec : downExec;
+    // Only grow if we have sufficient guaranteed profit AND good combined price
+    if (guaranteedPL > 1.00 && combined <= 0.97) {
+      // Use 50% of profit buffer for growth
+      const growBudget = guaranteedPL * 0.5;
       
-      // Only buy if price is reasonable (< 52 cents)
-      if (cheaperPrice <= 0.52) {
-        // Use half of the profit buffer as budget for growth
-        const growBudget = guaranteedPL * 0.5;
-        const sharesToBuy = Math.floor(growBudget / cheaperPrice);
-        
-        if (sharesToBuy >= 1) {
-          // Check limits
-          const targetShares = cheaperSide === "UP" ? pos.upShares + sharesToBuy : pos.downShares + sharesToBuy;
-          if (targetShares <= cfg.positionLimits.maxSharesPerSide) {
-            const trade = mkTrade(
-              cheaperSide,
-              cheaperPrice,
-              sharesToBuy,
-              "GROW",
-              `Grow ${cheaperSide} @ ${(cheaperPrice*100).toFixed(0)}¢ (using $${guaranteedPL.toFixed(2)} profit buffer)`
-            );
+      // Calculate equal shares we can buy on BOTH sides (maintains balance)
+      const sharesToAdd = calcEqualShares(growBudget, upExec, downExec);
+      
+      if (sharesToAdd >= 1) {
+        // Check limits after growth
+        if (pos.upShares + sharesToAdd <= cfg.positionLimits.maxSharesPerSide &&
+            pos.downShares + sharesToAdd <= cfg.positionLimits.maxSharesPerSide) {
+          
+          const newTotalInvested = growTotalInvested + (sharesToAdd * (upExec + downExec));
+          const newMinShares = minShares + sharesToAdd;
+          const newPL = newMinShares - newTotalInvested;
+          
+          // Only grow if we maintain at least 60% of original profit
+          if (newPL >= guaranteedPL * 0.6) {
+            const edgePct = ((1 - combined) * 100).toFixed(1);
             
-            return commit(ctx, nowMs, "GROW", [trade], cfg);
+            const trades: TradeIntent[] = [
+              mkTrade("UP", upExec, sharesToAdd, "GROW", `Grow UP @ ${(upExec*100).toFixed(0)}¢ (PL buffer $${guaranteedPL.toFixed(2)}, ${edgePct}% edge)`),
+              mkTrade("DOWN", downExec, sharesToAdd, "GROW", `Grow DOWN @ ${(downExec*100).toFixed(0)}¢ (PL buffer $${guaranteedPL.toFixed(2)}, ${edgePct}% edge)`),
+            ];
+            
+            return commit(ctx, nowMs, "GROW", trades, cfg);
           }
         }
       }
