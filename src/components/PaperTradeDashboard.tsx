@@ -331,12 +331,12 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
                                         </td>
                                         <td className="py-3 text-center">
                                           <span className={`font-mono text-sm font-medium ${
-                                            arbEdge >= 5 ? 'text-emerald-500' : 
-                                            arbEdge >= 2 ? 'text-yellow-500' : 
-                                            arbEdge > 0 ? 'text-orange-500' :
+                                            combinedEntry <= 0.95 ? 'text-emerald-500' : 
+                                            combinedEntry <= 0.98 ? 'text-yellow-500' : 
+                                            combinedEntry < 1.0 ? 'text-orange-500' :
                                             'text-red-500'
                                           }`}>
-                                            {arbEdge > 0 ? '+' : ''}{arbEdge.toFixed(1)}%
+                                            {combinedEntry.toFixed(2)}
                                           </span>
                                         </td>
                                         <td className="py-3 text-right font-mono text-sm">
