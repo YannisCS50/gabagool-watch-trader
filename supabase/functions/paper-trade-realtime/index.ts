@@ -634,13 +634,20 @@ async function handleWebSocket(req: Request): Promise<Response> {
       }
       
       if (trades.length > 0) {
-        const { error } = await supabase.from('paper_trades').insert(trades);
+        // Use upsert with onConflict to handle race conditions at database level
+        const { error } = await supabase.from('paper_trades').upsert(trades, {
+          onConflict: 'market_slug,outcome',
+          ignoreDuplicates: true,
+        });
         
         if (error) {
-          log(`❌ Insert error: ${error.message}`);
-          // Remove from existingTrades on error so we can retry
-          if (trades.some(t => t.outcome === 'UP')) existingTrades.delete(upKey);
-          if (trades.some(t => t.outcome === 'DOWN')) existingTrades.delete(downKey);
+          // Ignore duplicate key errors (23505) - means another process already inserted
+          if (!error.message?.includes('duplicate') && !error.code?.includes('23505')) {
+            log(`❌ Insert error: ${error.message}`);
+            // Remove from existingTrades on error so we can retry
+            if (trades.some(t => t.outcome === 'UP')) existingTrades.delete(upKey);
+            if (trades.some(t => t.outcome === 'DOWN')) existingTrades.delete(downKey);
+          }
         } else {
           tradeCount += trades.length;
           log(`🚀 TRADED #${tradeCount}: ${slug} | ${decision.tradeType} | ${trades.map(t => `${t.outcome}:${t.shares.toFixed(1)}`).join(' + ')}`);
