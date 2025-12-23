@@ -68,33 +68,35 @@ export const GabagoolTradesSummary = memo(({
   // Compact version for expired markets
   if (compact) {
     return (
-      <div className="mt-2 p-2 rounded-lg bg-purple-500/10 border border-purple-500/20 flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-2">
+      <div className="mt-2 p-2 rounded-lg bg-purple-500/10 border border-purple-500/20">
+        <div className="flex items-center gap-2 mb-2">
           <span className="text-sm">🎰</span>
           <span className="text-xs font-medium text-muted-foreground">Gabagool22</span>
-          {isDualSide && (
-            <Badge variant="outline" className="text-purple-400 border-purple-500/30 text-[10px] px-1 py-0">
-              <Shuffle className="w-2.5 h-2.5 mr-0.5" />
-              Dual
-            </Badge>
-          )}
         </div>
         
-        <div className="flex items-center gap-3 text-xs">
-          <span className="text-muted-foreground">
-            ${totalInvested.toFixed(2)} invested
-          </span>
-          
-          {actualPnL !== null && actualPnLPercent !== null ? (
-            <span className={`font-mono font-bold ${actualPnL >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-              {actualPnL >= 0 ? '+' : ''}${actualPnL.toFixed(2)} ({actualPnLPercent >= 0 ? '+' : ''}{actualPnLPercent.toFixed(0)}%)
-            </span>
-          ) : (
-            <span className="text-muted-foreground font-mono">
-              {tradesCount} trades
-            </span>
-          )}
+        <div className="grid grid-cols-2 gap-2 text-xs mb-2">
+          <div className="flex items-center gap-1">
+            <TrendingUp className="w-3 h-3 text-emerald-400" />
+            <span className="text-muted-foreground">UP:</span>
+            <span className="font-mono text-emerald-400">{up.shares.toFixed(0)}</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <TrendingDown className="w-3 h-3 text-red-400" />
+            <span className="text-muted-foreground">DOWN:</span>
+            <span className="font-mono text-red-400">{down.shares.toFixed(0)}</span>
+          </div>
         </div>
+        
+        {actualResult && actualPnL !== null && (
+          <div className="flex items-center justify-between text-xs pt-2 border-t border-purple-500/20">
+            <span className={actualResult === 'UP' ? 'text-emerald-400' : 'text-red-400'}>
+              Won: {actualResult}
+            </span>
+            <span className={`font-mono font-bold ${actualPnL >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+              {actualPnL >= 0 ? '+' : ''}${actualPnL.toFixed(2)}
+            </span>
+          </div>
+        )}
       </div>
     );
   }
