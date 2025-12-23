@@ -32,7 +32,13 @@ export const GabagoolTradesSummary = memo(({
 
   if (isLoading || !summary) return null;
 
-  const { up, down, totalInvested, payoutIfUpWins, payoutIfDownWins, edge, isDualSide, trades, lastTradeTime } = summary;
+  const { 
+    up, down, totalInvested, 
+    profitIfUpWins, profitIfDownWins, 
+    guaranteedProfit, bestCaseProfit,
+    combinedEntry, isArbitrage, isDualSide, 
+    trades, lastTradeTime 
+  } = summary;
 
   // Calculate live edge vs CLOB price
   const upEdgeVsClob = up.avgPrice > 0 && upClobPrice > 0 
@@ -41,6 +47,10 @@ export const GabagoolTradesSummary = memo(({
   const downEdgeVsClob = down.avgPrice > 0 && downClobPrice > 0 
     ? ((downClobPrice - down.avgPrice) / down.avgPrice) * 100 
     : 0;
+    
+  const guaranteedProfitPercent = totalInvested > 0 ? (guaranteedProfit / totalInvested) * 100 : 0;
+  const profitIfUpPercent = totalInvested > 0 ? (profitIfUpWins / totalInvested) * 100 : 0;
+  const profitIfDownPercent = totalInvested > 0 ? (profitIfDownWins / totalInvested) * 100 : 0;
 
   const formatTime = (date: Date) => {
     return date.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -110,20 +120,48 @@ export const GabagoolTradesSummary = memo(({
 
       {/* P/L Summary */}
       <div className="p-2 rounded-lg bg-muted/30 border border-border/50 mb-3">
-        <div className="flex items-center justify-between text-sm">
+        <div className="flex items-center justify-between text-sm mb-2">
           <div className="flex items-center gap-2">
             <DollarSign className="w-4 h-4 text-muted-foreground" />
             <span className="text-muted-foreground">Invested:</span>
             <span className="font-mono font-bold">${totalInvested.toFixed(2)}</span>
           </div>
-          <div className={`font-mono font-bold ${edge >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-            {edge >= 0 ? '+' : ''}{edge.toFixed(1)}% edge
+          {isDualSide && (
+            <div className="text-xs text-muted-foreground">
+              Combined: {(combinedEntry * 100).toFixed(0)}¢ 
+              <span className={combinedEntry < 1 ? 'text-emerald-400' : 'text-red-400'}>
+                {combinedEntry < 1 ? ' ✓' : ' ✗'}
+              </span>
+            </div>
+          )}
+        </div>
+        
+        {/* Scenario's */}
+        <div className="space-y-1 text-xs">
+          <div className="flex items-center justify-between">
+            <span className="text-muted-foreground">If UP wins:</span>
+            <span className={`font-mono font-medium ${profitIfUpWins >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+              {profitIfUpWins >= 0 ? '+' : ''}${profitIfUpWins.toFixed(2)} ({profitIfUpPercent >= 0 ? '+' : ''}{profitIfUpPercent.toFixed(1)}%)
+            </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span className="text-muted-foreground">If DOWN wins:</span>
+            <span className={`font-mono font-medium ${profitIfDownWins >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+              {profitIfDownWins >= 0 ? '+' : ''}${profitIfDownWins.toFixed(2)} ({profitIfDownPercent >= 0 ? '+' : ''}{profitIfDownPercent.toFixed(1)}%)
+            </span>
           </div>
         </div>
-        <div className="flex items-center justify-between text-xs text-muted-foreground mt-1">
-          <span>If UP wins: ${payoutIfUpWins.toFixed(2)}</span>
-          <span>If DOWN wins: ${payoutIfDownWins.toFixed(2)}</span>
-        </div>
+        
+        {/* Guaranteed result */}
+        {isDualSide && (
+          <div className={`mt-2 pt-2 border-t border-border/50 text-sm font-medium ${isArbitrage ? 'text-emerald-400' : 'text-amber-400'}`}>
+            {isArbitrage ? (
+              <span>✅ Guaranteed win: +${guaranteedProfit.toFixed(2)} (+{guaranteedProfitPercent.toFixed(1)}%)</span>
+            ) : (
+              <span>⚠️ No guaranteed win (worst: ${guaranteedProfit.toFixed(2)})</span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Trades Accordion */}

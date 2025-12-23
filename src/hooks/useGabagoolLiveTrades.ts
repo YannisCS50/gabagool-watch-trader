@@ -23,9 +23,14 @@ interface TradeSummary {
   totalInvested: number;
   payoutIfUpWins: number;
   payoutIfDownWins: number;
+  profitIfUpWins: number;
+  profitIfDownWins: number;
   guaranteedPayout: number;
+  guaranteedProfit: number;
   bestCasePayout: number;
-  edge: number;
+  bestCaseProfit: number;
+  combinedEntry: number;
+  isArbitrage: boolean;
   isDualSide: boolean;
   trades: Trade[];
   lastTradeTime: Date | null;
@@ -117,42 +122,67 @@ export function useGabagoolLiveTrades(marketSlug: string | null) {
   const summary: TradeSummary | null = useMemo(() => {
     if (trades.length === 0) return null;
 
-    const upTrades = trades.filter(t => t.outcome === 'Up' && t.side.toUpperCase() === 'BUY');
-    const downTrades = trades.filter(t => t.outcome === 'Down' && t.side.toUpperCase() === 'BUY');
+    // Separate BUY and SELL trades per outcome
+    const upBuys = trades.filter(t => t.outcome === 'Up' && t.side.toUpperCase() === 'BUY');
+    const upSells = trades.filter(t => t.outcome === 'Up' && t.side.toUpperCase() === 'SELL');
+    const downBuys = trades.filter(t => t.outcome === 'Down' && t.side.toUpperCase() === 'BUY');
+    const downSells = trades.filter(t => t.outcome === 'Down' && t.side.toUpperCase() === 'SELL');
 
-    const upShares = upTrades.reduce((sum, t) => sum + t.shares, 0);
-    const upInvested = upTrades.reduce((sum, t) => sum + t.total, 0);
-    const upAvgPrice = upShares > 0 ? upInvested / upShares : 0;
+    // Net shares (buys - sells)
+    const upNetShares = upBuys.reduce((sum, t) => sum + t.shares, 0) - upSells.reduce((sum, t) => sum + t.shares, 0);
+    const downNetShares = downBuys.reduce((sum, t) => sum + t.shares, 0) - downSells.reduce((sum, t) => sum + t.shares, 0);
 
-    const downShares = downTrades.reduce((sum, t) => sum + t.shares, 0);
-    const downInvested = downTrades.reduce((sum, t) => sum + t.total, 0);
-    const downAvgPrice = downShares > 0 ? downInvested / downShares : 0;
+    // Net cost (buys - sells proceeds)
+    const upNetCost = upBuys.reduce((sum, t) => sum + t.total, 0) - upSells.reduce((sum, t) => sum + t.total, 0);
+    const downNetCost = downBuys.reduce((sum, t) => sum + t.total, 0) - downSells.reduce((sum, t) => sum + t.total, 0);
 
-    const totalInvested = upInvested + downInvested;
-    const payoutIfUpWins = upShares * 1.00;
-    const payoutIfDownWins = downShares * 1.00;
+    // Average prices
+    const upAvgPrice = upNetShares > 0 ? upNetCost / upNetShares : 0;
+    const downAvgPrice = downNetShares > 0 ? downNetCost / downNetShares : 0;
+
+    const totalInvested = upNetCost + downNetCost;
+
+    // Payouts (1 share = $1 payout if that side wins)
+    const payoutIfUpWins = upNetShares;
+    const payoutIfDownWins = downNetShares;
+
+    // Profits per scenario
+    const profitIfUpWins = payoutIfUpWins - totalInvested;
+    const profitIfDownWins = payoutIfDownWins - totalInvested;
+
+    // Guaranteed = worst case scenario
     const guaranteedPayout = Math.min(payoutIfUpWins, payoutIfDownWins);
-    const bestCasePayout = Math.max(payoutIfUpWins, payoutIfDownWins);
-    
-    // Edge = (guaranteed - invested) / invested * 100
-    const edge = totalInvested > 0 
-      ? ((guaranteedPayout - totalInvested) / totalInvested) * 100 
-      : 0;
+    const guaranteedProfit = guaranteedPayout - totalInvested;
 
-    const isDualSide = upShares > 0 && downShares > 0;
+    // Best case = best scenario
+    const bestCasePayout = Math.max(payoutIfUpWins, payoutIfDownWins);
+    const bestCaseProfit = bestCasePayout - totalInvested;
+
+    // Combined entry price (sum of avg prices for both sides)
+    const combinedEntry = upAvgPrice + downAvgPrice;
+
+    // True arbitrage = guaranteed profit > 0
+    const isArbitrage = guaranteedProfit > 0;
+
+    const isDualSide = upNetShares > 0 && downNetShares > 0;
 
     const sortedTrades = [...trades].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
     const lastTradeTime = sortedTrades.length > 0 ? sortedTrades[0].timestamp : null;
 
     return {
-      up: { shares: upShares, invested: upInvested, avgPrice: upAvgPrice },
-      down: { shares: downShares, invested: downInvested, avgPrice: downAvgPrice },
+      up: { shares: upNetShares, invested: upNetCost, avgPrice: upAvgPrice },
+      down: { shares: downNetShares, invested: downNetCost, avgPrice: downAvgPrice },
       totalInvested,
       payoutIfUpWins,
       payoutIfDownWins,
+      profitIfUpWins,
+      profitIfDownWins,
       guaranteedPayout,
+      guaranteedProfit,
       bestCasePayout,
-      edge,
+      bestCaseProfit,
+      combinedEntry,
+      isArbitrage,
       isDualSide,
       trades: sortedTrades,
       lastTradeTime,
