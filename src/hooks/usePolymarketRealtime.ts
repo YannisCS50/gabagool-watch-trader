@@ -23,6 +23,7 @@ export interface MarketInfo {
   eventStartTime: Date;
   eventEndTime: Date;
   marketType: "price_above" | "price_target" | "15min" | "other";
+  strikePrice: number | null;
 }
 
 interface UsePolymarketRealtimeResult {
@@ -77,6 +78,7 @@ async function fetchActiveMarkets(): Promise<MarketInfo[]> {
       eventStartTime: new Date(m.eventStartTime),
       eventEndTime: new Date(m.eventEndTime),
       marketType: m.marketType || 'other',
+      strikePrice: m.strikePrice || null,
     }));
     
     console.log("[Market Discovery] Found", markets.length, "markets");

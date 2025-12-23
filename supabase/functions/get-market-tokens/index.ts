@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -15,6 +16,7 @@ interface MarketToken {
   eventStartTime: string;
   eventEndTime: string;
   marketType: 'price_above' | 'price_target' | '15min' | 'other';
+  strikePrice?: number;
 }
 
 /**
@@ -388,6 +390,31 @@ serve(async (req) => {
       return new Date(a.eventEndTime).getTime() - new Date(b.eventEndTime).getTime();
     });
     
+    // Fetch strike prices from database
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabase = createClient(supabaseUrl, supabaseKey);
+    
+    const marketSlugs = markets.map(m => m.slug);
+    const { data: strikePrices } = await supabase
+      .from('strike_prices')
+      .select('market_slug, strike_price')
+      .in('market_slug', marketSlugs);
+    
+    // Map strike prices to markets
+    const strikePriceMap = new Map<string, number>();
+    if (strikePrices) {
+      for (const sp of strikePrices) {
+        strikePriceMap.set(sp.market_slug, sp.strike_price);
+      }
+    }
+    
+    // Add strike prices to markets
+    const marketsWithStrike = markets.map(m => ({
+      ...m,
+      strikePrice: strikePriceMap.get(m.slug) || null
+    }));
+    
     const duration = Date.now() - startTime;
     console.log(`=== Found ${markets.length} markets in ${duration}ms ===`);
 
@@ -395,7 +422,7 @@ serve(async (req) => {
       success: true,
       timestamp: new Date().toISOString(),
       durationMs: duration,
-      markets
+      markets: marketsWithStrike
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
