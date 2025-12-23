@@ -657,6 +657,9 @@ async function handleWebSocket(req: Request): Promise<Response> {
     }
   };
 
+  // Per-market locks to prevent race conditions
+  const marketLocks = new Map<string, boolean>();
+
   const evaluateTradeOpportunity = async (slug: string, nowMs: number) => {
     if (!isEnabled) return;
     
@@ -664,30 +667,44 @@ async function handleWebSocket(req: Request): Promise<Response> {
     const ctx = marketContexts.get(slug);
     if (!market || !ctx) return;
     
-    // inFlight check is now inside decideTrades, but we skip if already processing
-    if (ctx.inFlight) return;
-    
-    // Update remaining seconds
-    const endTime = new Date(market.eventEndTime).getTime();
-    ctx.remainingSeconds = Math.floor((endTime - nowMs) / 1000);
-    
-    evaluationCount++;
-    
-    // Call the improved strategy
-    const result = decideTrades(ctx, DEFAULT_CONFIG, nowMs);
-    
-    // Log every 100th evaluation or when trading
-    if (evaluationCount % 100 === 0 || result.shouldTrade) {
-      const px = getExecutionPrices(ctx, DEFAULT_CONFIG);
-      if (px) {
-        const combined = px.upExec + px.downExec;
-        log(`📊 ${slug.slice(-20)}: ${(px.upExec*100).toFixed(0)}¢+${(px.downExec*100).toFixed(0)}¢=${(combined*100).toFixed(0)}¢ | ${result.shouldTrade ? '🚀' : '⏸️'} ${result.reason.slice(0, 50)}`);
-      }
-    }
-    
-    if (!result.shouldTrade || result.trades.length === 0) return;
+    // LOCK CHECK: Skip if already processing this market
+    if (marketLocks.get(slug)) return;
+    marketLocks.set(slug, true);
     
     try {
+      // Update remaining seconds
+      const endTime = new Date(market.eventEndTime).getTime();
+      ctx.remainingSeconds = Math.floor((endTime - nowMs) / 1000);
+      
+      evaluationCount++;
+      
+      // Call the strategy
+      const result = decideTrades(ctx, DEFAULT_CONFIG, nowMs);
+      
+      // Log every 100th evaluation or when trading
+      if (evaluationCount % 100 === 0 || result.shouldTrade) {
+        const px = getExecutionPrices(ctx, DEFAULT_CONFIG);
+        if (px) {
+          const combined = px.upExec + px.downExec;
+          log(`📊 ${slug.slice(-20)}: ${(px.upExec*100).toFixed(0)}¢+${(px.downExec*100).toFixed(0)}¢=${(combined*100).toFixed(0)}¢ | pos: ${ctx.position.upShares}UP/${ctx.position.downShares}DOWN | ${result.shouldTrade ? '🚀' : '⏸️'} ${result.reason.slice(0, 40)}`);
+        }
+      }
+      
+      if (!result.shouldTrade || result.trades.length === 0) return;
+      
+      // IMPORTANT: Update position BEFORE inserting to DB (prevents duplicate trades)
+      for (const intent of result.trades) {
+        if (intent.outcome === 'UP') {
+          ctx.position.upShares += intent.shares;
+          ctx.position.upInvested += intent.notionalUsd;
+        } else {
+          ctx.position.downShares += intent.shares;
+          ctx.position.downInvested += intent.notionalUsd;
+        }
+      }
+      ctx.lastTradeAtMs = nowMs;
+      
+      // Now insert to database
       const trades: PaperTrade[] = [];
       const px = getExecutionPrices(ctx, DEFAULT_CONFIG);
       if (!px) return;
@@ -734,20 +751,18 @@ async function handleWebSocket(req: Request): Promise<Response> {
         
         if (error) {
           log(`❌ Insert error: ${error.message}`);
-        } else {
-          tradeCount += trades.length;
-          
-          // Update local position state
-          for (const trade of trades) {
-            if (trade.outcome === 'UP') {
-              ctx.position.upShares += trade.shares;
-              ctx.position.upInvested += trade.total;
+          // Rollback position on error
+          for (const intent of result.trades) {
+            if (intent.outcome === 'UP') {
+              ctx.position.upShares -= intent.shares;
+              ctx.position.upInvested -= intent.notionalUsd;
             } else {
-              ctx.position.downShares += trade.shares;
-              ctx.position.downInvested += trade.total;
+              ctx.position.downShares -= intent.shares;
+              ctx.position.downInvested -= intent.notionalUsd;
             }
           }
-          ctx.lastTradeAtMs = nowMs;
+        } else {
+          tradeCount += trades.length;
           
           // Verbeterde logging met shares balans info
           const ratio = ctx.position.upShares > 0 && ctx.position.downShares > 0 
@@ -770,6 +785,9 @@ async function handleWebSocket(req: Request): Promise<Response> {
       }
     } catch (err) {
       log(`❌ Trade error: ${err}`);
+    } finally {
+      // Always release the lock
+      marketLocks.set(slug, false);
     }
   };
 
