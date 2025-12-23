@@ -204,18 +204,26 @@ export const GabagoolTradesSummary = memo(({
               <span className="font-medium text-emerald-400">✅ Guaranteed win: +${guaranteedProfit.toFixed(2)} (+{guaranteedProfitPercent.toFixed(1)}%)</span>
             ) : (
               <div className="space-y-1">
-                <div className="flex items-center justify-between text-amber-400">
-                  <span>⚠️ Hedge niet perfect</span>
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  Mogelijke hedge winst: 
-                  <span className={`ml-1 font-mono ${profitIfUpWins >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {profitIfUpWins >= 0 ? '+' : ''}${profitIfUpWins.toFixed(2)}
-                  </span>
-                  <span className="mx-1">/</span>
-                  <span className={`font-mono ${profitIfDownWins >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {profitIfDownWins >= 0 ? '+' : ''}${profitIfDownWins.toFixed(2)}
-                  </span>
+                <div className="text-amber-400 font-medium mb-1">⚠️ Hedge niet perfect</div>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  <div className={`p-2 rounded ${profitIfUpWins >= profitIfDownWins ? 'bg-emerald-500/10 border border-emerald-500/20' : 'bg-red-500/10 border border-red-500/20'}`}>
+                    <div className="text-muted-foreground mb-0.5">Best case:</div>
+                    <div className={`font-mono font-bold ${bestCaseProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {bestCaseProfit >= 0 ? '+' : ''}${bestCaseProfit.toFixed(2)}
+                    </div>
+                    <div className="text-muted-foreground text-[10px]">
+                      {profitIfUpWins >= profitIfDownWins ? 'UP wint' : 'DOWN wint'}
+                    </div>
+                  </div>
+                  <div className={`p-2 rounded ${profitIfUpWins < profitIfDownWins ? 'bg-emerald-500/10 border border-emerald-500/20' : 'bg-red-500/10 border border-red-500/20'}`}>
+                    <div className="text-muted-foreground mb-0.5">Worst case:</div>
+                    <div className={`font-mono font-bold ${guaranteedProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {guaranteedProfit >= 0 ? '+' : ''}${guaranteedProfit.toFixed(2)}
+                    </div>
+                    <div className="text-muted-foreground text-[10px]">
+                      {profitIfUpWins < profitIfDownWins ? 'UP wint' : 'DOWN wint'}
+                    </div>
+                  </div>
                 </div>
               </div>
             )}
