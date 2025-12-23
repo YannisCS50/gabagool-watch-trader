@@ -8,3 +8,6 @@ verify_jwt = false
 
 [functions.chainlink-price-collector]
 verify_jwt = false
+
+[functions.get-market-tokens]
+verify_jwt = false

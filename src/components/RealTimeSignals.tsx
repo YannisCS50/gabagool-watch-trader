@@ -52,6 +52,7 @@ interface TradingSignal {
   remainingSeconds: number;
   remainingFormatted: string;
   timestamp: string;
+  hasLiveWsData?: boolean;
 }
 
 interface RealTimeData {
@@ -82,6 +83,8 @@ interface MarketTokenMapping {
   asset: 'BTC' | 'ETH';
   upTokenId: string;
   downTokenId: string;
+  eventStartTime?: string;
+  eventEndTime?: string;
 }
 
 const REFRESH_INTERVAL = 5000; // 5 seconds for API data
@@ -131,9 +134,11 @@ export const RealTimeSignals = () => {
           slug: m.slug,
           asset: m.asset,
           upTokenId: m.upTokenId,
-          downTokenId: m.downTokenId
+          downTokenId: m.downTokenId,
+          eventStartTime: m.eventStartTime,
+          eventEndTime: m.eventEndTime
         })));
-        console.log('Loaded token mappings for', markets.length, 'markets');
+        console.log('[Tokens] Loaded mappings for', markets.length, 'markets:', markets.map(m => m.slug));
       } catch (err) {
         console.error('Failed to fetch market tokens:', err);
       }
@@ -155,47 +160,76 @@ export const RealTimeSignals = () => {
   const liveMarketsWithWsPrices = useMemo(() => {
     if (!data?.liveMarkets) return [];
     
-    return data.liveMarkets
-      .filter(signal => signal.asset === 'BTC') // Only BTC for now
-      .map(signal => {
-        // Find token mapping for this market using exact slug match
-        const tokenMapping = marketTokens.find(m => m.slug === signal.marketSlug);
-        
-        // Get WebSocket prices for Up/Down
-        const wsUpPrice = tokenMapping ? getWsPrice(tokenMapping.upTokenId) : null;
-        const wsDownPrice = tokenMapping ? getWsPrice(tokenMapping.downTokenId) : null;
-        
-        // Use WebSocket prices if available, otherwise fall back to API
-        const upPrice = wsUpPrice ?? signal.upPrice;
-        const downPrice = wsDownPrice ?? signal.downPrice;
-        const combinedPrice = upPrice + downPrice;
-        
-        // Use Chainlink WebSocket price for current BTC price
-        const currentPrice = chainlinkBtcPrice ?? signal.currentPrice;
-        
-        // Calculate delta based on real-time current price
-        const priceToBeat = signal.priceToBeat;
-        const priceDelta = priceToBeat && currentPrice ? currentPrice - priceToBeat : null;
-        const priceDeltaPercent = priceToBeat && priceDelta !== null 
-          ? (priceDelta / priceToBeat) * 100 
-          : null;
-        
-        return {
-          ...signal,
-          upPrice,
-          downPrice,
-          combinedPrice,
-          currentPrice,
-          priceDelta,
-          priceDeltaPercent,
-          upTokenId: tokenMapping?.upTokenId,
-          downTokenId: tokenMapping?.downTokenId,
-          arbitrageEdge: (1 - combinedPrice) * 100,
-          cheaperSide: upPrice < downPrice ? 'Up' as const : 'Down' as const,
-          cheaperPrice: Math.min(upPrice, downPrice)
-        };
-      });
-  }, [data?.liveMarkets, marketTokens, getWsPrice, orderBooks, chainlinkBtcPrice]);
+    return data.liveMarkets.map(signal => {
+      // Find token mapping for this market - try multiple matching strategies
+      let tokenMapping = marketTokens.find(m => m.slug === signal.marketSlug);
+      
+      // If no exact match, try matching by timestamp in slug
+      if (!tokenMapping) {
+        const timestampMatch = signal.marketSlug.match(/(\d{10})$/);
+        if (timestampMatch) {
+          const timestamp = timestampMatch[1];
+          tokenMapping = marketTokens.find(m => 
+            m.slug.includes(timestamp) && 
+            m.asset === signal.asset
+          );
+        }
+      }
+      
+      // If still no match, try matching by asset and approximate time
+      if (!tokenMapping) {
+        const eventStartMs = new Date(signal.eventStartTime).getTime();
+        tokenMapping = marketTokens.find(m => {
+          if (m.asset !== signal.asset) return false;
+          const tokenEventMs = new Date(m.eventStartTime).getTime();
+          // Match if within 5 minutes
+          return Math.abs(eventStartMs - tokenEventMs) < 5 * 60 * 1000;
+        });
+      }
+      
+      // Get WebSocket prices for Up/Down
+      const wsUpPrice = tokenMapping ? getWsPrice(tokenMapping.upTokenId) : null;
+      const wsDownPrice = tokenMapping ? getWsPrice(tokenMapping.downTokenId) : null;
+      
+      // Use WebSocket prices if available, otherwise fall back to API
+      const upPrice = wsUpPrice ?? signal.upPrice;
+      const downPrice = wsDownPrice ?? signal.downPrice;
+      const combinedPrice = upPrice + downPrice;
+      
+      // Use Chainlink WebSocket price for current crypto price
+      const currentPrice = signal.asset === 'BTC' 
+        ? (chainlinkBtcPrice ?? signal.currentPrice)
+        : (chainlinkEthPrice ?? signal.currentPrice);
+      
+      // Calculate delta based on real-time current price
+      const priceToBeat = signal.priceToBeat;
+      const priceDelta = priceToBeat && currentPrice ? currentPrice - priceToBeat : null;
+      const priceDeltaPercent = priceToBeat && priceDelta !== null 
+        ? (priceDelta / priceToBeat) * 100 
+        : null;
+      
+      // Log for debugging
+      if (tokenMapping) {
+        console.log(`[Match] ${signal.marketSlug} -> ${tokenMapping.slug} (Up: ${wsUpPrice}, Down: ${wsDownPrice})`);
+      }
+      
+      return {
+        ...signal,
+        upPrice,
+        downPrice,
+        combinedPrice,
+        currentPrice,
+        priceDelta,
+        priceDeltaPercent,
+        upTokenId: tokenMapping?.upTokenId,
+        downTokenId: tokenMapping?.downTokenId,
+        arbitrageEdge: (1 - combinedPrice) * 100,
+        cheaperSide: upPrice < downPrice ? 'Up' as const : 'Down' as const,
+        cheaperPrice: Math.min(upPrice, downPrice),
+        hasLiveWsData: !!(wsUpPrice || wsDownPrice)
+      };
+    });
+  }, [data?.liveMarkets, marketTokens, getWsPrice, orderBooks, chainlinkBtcPrice, chainlinkEthPrice]);
 
   // Track which markets we've already triggered price collection for
   const [triggeredMarkets, setTriggeredMarkets] = useState<Set<string>>(new Set());
@@ -594,7 +628,11 @@ export const RealTimeSignals = () => {
                             <LivePrice 
                               price={signal.upPrice} 
                               className="text-emerald-400 font-medium"
+                              showFlash={signal.hasLiveWsData}
                             />
+                            {signal.hasLiveWsData && (
+                              <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse" />
+                            )}
                           </div>
                           <div className="flex items-center gap-1">
                             <TrendingDown className="w-4 h-4 text-red-400" />
@@ -602,7 +640,11 @@ export const RealTimeSignals = () => {
                             <LivePrice 
                               price={signal.downPrice} 
                               className="text-red-400 font-medium"
+                              showFlash={signal.hasLiveWsData}
                             />
+                            {signal.hasLiveWsData && (
+                              <span className="w-1.5 h-1.5 bg-red-500 rounded-full animate-pulse" />
+                            )}
                           </div>
                           <div className="flex items-center gap-1">
                             <span className="text-muted-foreground">Σ:</span>
