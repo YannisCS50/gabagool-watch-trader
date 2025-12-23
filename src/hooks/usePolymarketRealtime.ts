@@ -19,6 +19,7 @@ export interface MarketInfo {
   slug: string;
   question: string;
   asset: "BTC" | "ETH" | "SOL" | "XRP";
+  conditionId: string;
   upTokenId: string;
   downTokenId: string;
   eventStartTime: Date;
@@ -83,6 +84,7 @@ async function fetchActiveMarkets(): Promise<MarketInfo[]> {
       slug: m.slug,
       question: m.question || '',
       asset: m.asset as "BTC" | "ETH" | "SOL" | "XRP",
+      conditionId: m.conditionId || '',
       upTokenId: m.upTokenId,
       downTokenId: m.downTokenId,
       eventStartTime: new Date(m.eventStartTime),
