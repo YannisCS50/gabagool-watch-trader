@@ -61,6 +61,7 @@ interface UsePolymarketRealtimeResult {
 
 const MARKET_TOKENS_URL = "https://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/get-market-tokens";
 const CLOB_WS_PROXY_URL = "wss://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/clob-proxy";
+const CLOB_PRICES_URL = "https://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/clob-prices";
 const SAVE_EXPIRED_URL = "https://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/save-expired-market";
 const MARKET_REFRESH_INTERVAL_MS = 60000;
 
@@ -200,6 +201,7 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
   const tokenToMarketRef = useRef<Map<string, { slug: string; outcome: "up" | "down" }>>(new Map());
   const wsRef = useRef<WebSocket | null>(null);
   const marketRefreshIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pricesPollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const marketsRef = useRef<MarketInfo[]>([]);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const enabledRef = useRef(enabled);
@@ -272,6 +274,11 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
       clearInterval(marketRefreshIntervalRef.current);
       marketRefreshIntervalRef.current = null;
     }
+
+    if (pricesPollIntervalRef.current) {
+      clearInterval(pricesPollIntervalRef.current);
+      pricesPollIntervalRef.current = null;
+    }
     
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
@@ -301,12 +308,12 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
     const tokenMapping = new Map<string, { slug: string; outcome: "up" | "down" }>();
     for (const m of discovered) {
       if (m.upTokenId) {
-        tokenMapping.set(m.upTokenId, { slug: m.slug, outcome: "up" });
-        console.log(`[Token Map] ${m.upTokenId.slice(0,20)}... -> ${m.slug} UP`);
+        tokenMapping.set(String(m.upTokenId), { slug: m.slug, outcome: "up" });
+        console.log(`[Token Map] ${String(m.upTokenId).slice(0,20)}... -> ${m.slug} UP`);
       }
       if (m.downTokenId) {
-        tokenMapping.set(m.downTokenId, { slug: m.slug, outcome: "down" });
-        console.log(`[Token Map] ${m.downTokenId.slice(0,20)}... -> ${m.slug} DOWN`);
+        tokenMapping.set(String(m.downTokenId), { slug: m.slug, outcome: "down" });
+        console.log(`[Token Map] ${String(m.downTokenId).slice(0,20)}... -> ${m.slug} DOWN`);
       }
     }
     tokenToMarketRef.current = tokenMapping;
@@ -379,51 +386,49 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
         
         // Process price_change events - ONLY update .price (last trade), NOT bid/ask
         // Bid/ask come exclusively from book events
-        if (data.event_type === 'price_change' && Array.isArray(data.price_changes)) {
+        if (data.event_type === "price_change" && Array.isArray((data as any).price_changes)) {
           let updatedAny = false;
-          
-          for (const change of data.price_changes) {
-            const tokenId = change.asset_id;
+
+          for (const change of (data as any).price_changes as any[]) {
+            const tokenId = String(change.asset_id ?? change.assetId ?? "");
             const marketInfo = tokenToMarketRef.current.get(tokenId);
-            
-            if (marketInfo) {
-              const price = parseFloat(change.price);
-              
-              let marketMap = pricesRef.current.get(marketInfo.slug);
-              if (!marketMap) {
-                marketMap = new Map();
-                pricesRef.current.set(marketInfo.slug, marketMap);
-              }
-              
-              // Preserve existing bid/ask from book events - only update last trade price
-              const existing = marketMap.get(marketInfo.outcome);
-              
-              const pricePoint: PricePoint = {
-                price, // Last trade price
-                bestAsk: existing?.bestAsk ?? null, // Keep book data
-                bestBid: existing?.bestBid ?? null, // Keep book data
-                timestampMs: now,
-              };
-              
-              marketMap.set(marketInfo.outcome, pricePoint);
-              if (marketInfo.outcome === "up") marketMap.set("yes", pricePoint);
-              if (marketInfo.outcome === "down") marketMap.set("no", pricePoint);
-              
-              updatedAny = true;
-              lastPriceUpdateRef.current = now;
+            if (!marketInfo) continue;
+
+            const price = parseFloat(String(change.price));
+            if (Number.isNaN(price)) continue;
+
+            let marketMap = pricesRef.current.get(marketInfo.slug);
+            if (!marketMap) {
+              marketMap = new Map();
+              pricesRef.current.set(marketInfo.slug, marketMap);
             }
+
+            // Preserve existing bid/ask from book events - only update last trade price
+            const existing = marketMap.get(marketInfo.outcome);
+
+            const pricePoint: PricePoint = {
+              price, // Last trade price
+              bestAsk: existing?.bestAsk ?? null, // Keep book data
+              bestBid: existing?.bestBid ?? null, // Keep book data
+              timestampMs: now,
+            };
+
+            marketMap.set(marketInfo.outcome, pricePoint);
+            if (marketInfo.outcome === "up") marketMap.set("yes", pricePoint);
+            if (marketInfo.outcome === "down") marketMap.set("no", pricePoint);
+
+            updatedAny = true;
           }
-          
+
           if (updatedAny) {
             // Just update the ref - the 100ms interval timer handles UI updates
-            // This prevents throttling from blocking price data flow
             lastPriceUpdateRef.current = now;
           }
         }
-        
+
         // Also process book events (backup) - with robust parsing to avoid NaN
         if (data.event_type === 'book' && data.asset_id) {
-          const tokenId = data.asset_id;
+          const tokenId = String(data.asset_id);
           const marketInfo = tokenToMarketRef.current.get(tokenId);
           
           if (marketInfo) {
@@ -489,42 +494,47 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
         }
         
         // Handle last_trade_price events too
-        if (data.event_type === 'last_trade_price' && Array.isArray(data.price_changes)) {
-          for (const change of data.price_changes) {
-            const tokenId = change.asset_id;
+        if (data.event_type === "last_trade_price" && Array.isArray((data as any).price_changes)) {
+          let updatedAny = false;
+
+          for (const change of (data as any).price_changes as any[]) {
+            const tokenId = String(change.asset_id ?? change.assetId ?? "");
             const marketInfo = tokenToMarketRef.current.get(tokenId);
-            
-            if (marketInfo) {
-              const price = parseFloat(change.price);
-              console.log(`[TRADE] ${marketInfo.slug} ${marketInfo.outcome}: ${(price * 100).toFixed(1)}¢`);
-              
-              let marketMap = pricesRef.current.get(marketInfo.slug);
-              if (!marketMap) {
-                marketMap = new Map();
-                pricesRef.current.set(marketInfo.slug, marketMap);
-              }
-              
-              // Only update if we don't have a price yet
-              const existing = marketMap.get(marketInfo.outcome);
-              if (!existing || (now - existing.timestampMs) > 5000) {
-                const pricePoint: PricePoint = {
-                  price,
-                  bestAsk: price,
-                  bestBid: null,
-                  timestampMs: now,
-                };
-                
-                marketMap.set(marketInfo.outcome, pricePoint);
-                if (marketInfo.outcome === "up") marketMap.set("yes", pricePoint);
-                if (marketInfo.outcome === "down") marketMap.set("no", pricePoint);
-                
-                setPricesVersion(v => v + 1);
-                lastPriceUpdateRef.current = now;
-              }
+            if (!marketInfo) continue;
+
+            const price = parseFloat(String(change.price));
+            if (Number.isNaN(price)) continue;
+
+            console.log(`[TRADE] ${marketInfo.slug} ${marketInfo.outcome}: ${(price * 100).toFixed(1)}¢`);
+
+            let marketMap = pricesRef.current.get(marketInfo.slug);
+            if (!marketMap) {
+              marketMap = new Map();
+              pricesRef.current.set(marketInfo.slug, marketMap);
+            }
+
+            // Only update if we don't have a recent price yet
+            const existing = marketMap.get(marketInfo.outcome);
+            if (!existing || now - existing.timestampMs > 5000) {
+              const pricePoint: PricePoint = {
+                price,
+                bestAsk: price,
+                bestBid: existing?.bestBid ?? null,
+                timestampMs: now,
+              };
+
+              marketMap.set(marketInfo.outcome, pricePoint);
+              if (marketInfo.outcome === "up") marketMap.set("yes", pricePoint);
+              if (marketInfo.outcome === "down") marketMap.set("no", pricePoint);
+
+              updatedAny = true;
             }
           }
+
+          if (updatedAny) {
+            lastPriceUpdateRef.current = now;
+          }
         }
-        
       } catch {
         // Non-JSON message (like PONG)
       }
@@ -564,6 +574,70 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
         setLastUpdateTime(Date.now());
       }
     }, 100);
+
+    // Fallback polling (fix for "stuck at 50c"): fetch best bid/ask via REST every second.
+    // This makes UP/DOWN updates as reliable as the BTC live price even when BOOK is empty.
+    if (pricesPollIntervalRef.current) {
+      clearInterval(pricesPollIntervalRef.current);
+    }
+    pricesPollIntervalRef.current = setInterval(async () => {
+      try {
+        const tokenIds: string[] = [];
+        for (const m of marketsRef.current) {
+          if (m.upTokenId) tokenIds.push(String(m.upTokenId));
+          if (m.downTokenId) tokenIds.push(String(m.downTokenId));
+        }
+        const uniqueTokenIds = Array.from(new Set(tokenIds));
+        if (uniqueTokenIds.length === 0) return;
+
+        const res = await fetch(CLOB_PRICES_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tokenIds: uniqueTokenIds }),
+        });
+        if (!res.ok) return;
+
+        const json = await res.json();
+        const prices: Record<string, any> = json?.prices || {};
+
+        let updatedAny = false;
+        for (const [tokenId, p] of Object.entries(prices)) {
+          const marketInfo = tokenToMarketRef.current.get(String(tokenId));
+          if (!marketInfo) continue;
+
+          const bestAsk = typeof (p as any).bestAsk === "number" ? (p as any).bestAsk : null;
+          const bestBid = typeof (p as any).bestBid === "number" ? (p as any).bestBid : null;
+          const price = typeof (p as any).price === "number" ? (p as any).price : null;
+
+          if (bestAsk === null && bestBid === null && price === null) continue;
+
+          let marketMap = pricesRef.current.get(marketInfo.slug);
+          if (!marketMap) {
+            marketMap = new Map();
+            pricesRef.current.set(marketInfo.slug, marketMap);
+          }
+
+          const point: PricePoint = {
+            price: price ?? bestAsk ?? bestBid ?? 0.5,
+            bestAsk: bestAsk ?? null,
+            bestBid: bestBid ?? null,
+            timestampMs: Date.now(),
+          };
+
+          marketMap.set(marketInfo.outcome, point);
+          if (marketInfo.outcome === "up") marketMap.set("yes", point);
+          if (marketInfo.outcome === "down") marketMap.set("no", point);
+
+          updatedAny = true;
+        }
+
+        if (updatedAny) {
+          lastPriceUpdateRef.current = Date.now();
+        }
+      } catch {
+        // ignore
+      }
+    }, 1000);
     
     // Set up market refresh interval
     if (marketRefreshIntervalRef.current) {
@@ -577,8 +651,8 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
       
       const newMapping = new Map<string, { slug: string; outcome: "up" | "down" }>();
       for (const m of refreshed) {
-        if (m.upTokenId) newMapping.set(m.upTokenId, { slug: m.slug, outcome: "up" });
-        if (m.downTokenId) newMapping.set(m.downTokenId, { slug: m.slug, outcome: "down" });
+        if (m.upTokenId) newMapping.set(String(m.upTokenId), { slug: m.slug, outcome: "up" });
+        if (m.downTokenId) newMapping.set(String(m.downTokenId), { slug: m.slug, outcome: "down" });
       }
       tokenToMarketRef.current = newMapping;
     }, MARKET_REFRESH_INTERVAL_MS);
