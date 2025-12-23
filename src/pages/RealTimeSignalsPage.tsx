@@ -30,6 +30,9 @@ import { usePolymarketRealtime } from "@/hooks/usePolymarketRealtime";
 import { useChainlinkRealtime } from "@/hooks/useChainlinkRealtime";
 import { LivePrice } from "@/components/LivePrice";
 import { GabagoolTradesSummary } from "@/components/GabagoolTradesSummary";
+import { PaperTradesSummary } from "@/components/PaperTradesSummary";
+import { PaperTradeDashboard } from "@/components/PaperTradeDashboard";
+import { Bot } from "lucide-react";
 
 interface LiveMarket {
   slug: string;
@@ -455,7 +458,16 @@ const RealTimeSignalsPage = () => {
               <div className="flex items-center gap-2 text-muted-foreground mb-1">
                 <Zap className="w-4 h-4" />
                 <span className="text-sm">Arb Opportunities</span>
-              </div>
+        </div>
+
+        {/* Paper Trade Bot Dashboard */}
+        <div className="flex items-center justify-between">
+          <PaperTradeDashboard compact />
+          <Link to="/paper-trading" className="text-sm text-purple-400 hover:underline flex items-center gap-1">
+            <Bot className="w-4 h-4" />
+            Full Dashboard →
+          </Link>
+        </div>
               <div className="text-2xl font-bold text-primary">{liveMarkets.filter((m) => m.arbitrageEdge >= 2).length}</div>
             </CardContent>
           </Card>
@@ -516,6 +528,8 @@ const RealTimeSignalsPage = () => {
                     upClobPrice={market.upPrice} 
                     downClobPrice={market.downPrice} 
                   />
+                  <PaperTradesSummary marketSlug={market.slug} compact />
+                </div>
                 </div>
               ))}
             </CardContent>
@@ -544,6 +558,7 @@ const RealTimeSignalsPage = () => {
                     upClobPrice={market.upPrice} 
                     downClobPrice={market.downPrice} 
                   />
+                  <PaperTradesSummary marketSlug={market.slug} compact />
                 </div>
               ))}
             </CardContent>
