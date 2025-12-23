@@ -20,3 +20,6 @@ verify_jwt = false
 
 [functions.clob-prices]
 verify_jwt = false
+
+[functions.save-expired-market]
+verify_jwt = false
