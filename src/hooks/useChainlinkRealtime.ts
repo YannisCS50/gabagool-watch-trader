@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
 /**
- * Polymarket crypto prices via RTDS proxy edge function
+ * Polymarket crypto prices via RTDS WebSocket (crypto_prices_chainlink topic)
+ * Connects to wss://ws-live-data.polymarket.com via our proxy
  * Falls back to REST API polling if WebSocket fails
  */
 
@@ -18,7 +19,7 @@ const PROXY_WS_URL = 'wss://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/rtds-p
 const PROXY_REST_URL = 'https://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/rtds-proxy';
 const RECONNECT_DELAY = 3000;
 const MAX_RECONNECT_ATTEMPTS = 5;
-const REST_POLL_INTERVAL = 3000;
+const REST_POLL_INTERVAL = 5000;
 
 export function useChainlinkRealtime(enabled: boolean = true): UseChainlinkRealtimeResult {
   const [btcPrice, setBtcPrice] = useState<number | null>(null);
@@ -84,7 +85,7 @@ export function useChainlinkRealtime(enabled: boolean = true): UseChainlinkRealt
     }
 
     setConnectionState('connecting');
-    console.log('[Crypto WS] Connecting via proxy...');
+    console.log('[Crypto WS] Connecting via RTDS proxy...');
 
     try {
       const ws = new WebSocket(PROXY_WS_URL);
@@ -101,18 +102,18 @@ export function useChainlinkRealtime(enabled: boolean = true): UseChainlinkRealt
           
           // Proxy connected confirmation
           if (data.type === 'proxy_connected') {
-            console.log('[Crypto WS] Proxy connected to RTDS, subscribing...');
+            console.log('[Crypto WS] Proxy connected to RTDS, subscribing to crypto_prices_chainlink...');
             setIsConnected(true);
             setConnectionState('connected');
             stopRestPolling();
             useRestFallback.current = false;
             
-            // Subscribe to crypto prices
+            // Subscribe to crypto_prices_chainlink with correct format from docs
+            // The topic broadcasts btc/usd and eth/usd prices
             ws.send(JSON.stringify({
               action: 'subscribe',
               subscriptions: [
-                { topic: 'crypto_prices_chainlink', type: 'update', filters: JSON.stringify({ symbol: 'BTCUSDT' }) },
-                { topic: 'crypto_prices_chainlink', type: 'update', filters: JSON.stringify({ symbol: 'ETHUSDT' }) }
+                { topic: 'crypto_prices_chainlink', type: '*', filters: '' }
               ]
             }));
             return;
@@ -126,20 +127,29 @@ export function useChainlinkRealtime(enabled: boolean = true): UseChainlinkRealt
           }
           
           // Handle crypto price updates from RTDS
+          // Format: { topic: "crypto_prices_chainlink", payload: { symbol: "btc/usd", value: 98765.43 } }
           if (data.topic === 'crypto_prices_chainlink' && data.payload) {
-            const { symbol, value } = data.payload;
-            if (symbol === 'BTCUSDT' && typeof value === 'number') {
-              setBtcPrice(value);
-              setUpdateCount(prev => prev + 1);
-              setLastUpdate(new Date());
-            } else if (symbol === 'ETHUSDT' && typeof value === 'number') {
-              setEthPrice(value);
-              setUpdateCount(prev => prev + 1);
-              setLastUpdate(new Date());
+            const symbol = String(data.payload.symbol || '').toLowerCase();
+            const value = typeof data.payload.value === 'number' ? data.payload.value : 
+                          typeof data.payload.price === 'number' ? data.payload.price : null;
+            
+            console.log('[Crypto WS] Price update:', symbol, value);
+            
+            if (value !== null) {
+              if (symbol === 'btc/usd' || symbol === 'btcusd' || symbol === 'btc') {
+                setBtcPrice(value);
+                setUpdateCount(prev => prev + 1);
+                setLastUpdate(new Date());
+              } else if (symbol === 'eth/usd' || symbol === 'ethusd' || symbol === 'eth') {
+                setEthPrice(value);
+                setUpdateCount(prev => prev + 1);
+                setLastUpdate(new Date());
+              }
             }
           }
         } catch (err) {
-          // Non-JSON message
+          // Non-JSON message (like PONG)
+          console.log('[Crypto WS] Non-JSON message:', event.data);
         }
       };
 
