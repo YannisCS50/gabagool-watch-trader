@@ -82,36 +82,37 @@ interface StrategyConfig {
 }
 
 const DEFAULT_CONFIG: StrategyConfig = {
-  tradeSize: { min: 3, max: 25, base: 8 },
+  // Gabagool V4 exact config from specification
+  tradeSize: { min: 3, max: 15, base: 8 },
   positionLimits: { maxPerSide: 200, maxTotal: 350 },
   entry: {
-    minSecondsRemaining: 45,
-    minPrice: 0.03,
-    maxPrice: 0.92,
-    imbalanceThresholdPct: 30,
-    staleBookMs: 2000,
+    minSecondsRemaining: 30,      // Was 45
+    minPrice: 0.02,               // Was 0.03
+    maxPrice: 0.95,               // Was 0.92
+    imbalanceThresholdPct: 20,    // Was 30
+    staleBookMs: 1500,            // Was 2000
   },
   edge: {
-    arbMaxEntry: 0.995,   // Only accumulate if combined < 99.5¢
-    strongArb: 0.94,      // Strong arb zone < 94¢
+    arbMaxEntry: 0.995,           // Accumulate only if combined < 99.5¢
+    strongArb: 0.94,              // Strong arb zone < 94¢ (groter size)
   },
   hf: {
-    tickMinIntervalMs: 900,       // Fast: ~900ms cooldown (Gabagool style)
-    dedupeWindowMs: 950,          // Prevent duplicate signals within ~1s
-    minNotionalToTrade: 1.5,      // Min $1.5 per trade
+    tickMinIntervalMs: 900,       // Fast HF
+    dedupeWindowMs: 950,
+    minNotionalToTrade: 1.5,
   },
   coverage: {
-    openingNotional: 3,           // Small opening trades
-    hedgeNotional: 3,             // Small hedge trades
-    rebalanceNotional: 4,         // Slightly larger rebalance
-    maxCombinedForCoverage: 1.02, // Skip only if combined > 102¢
+    openingNotional: 3,
+    hedgeNotional: 3,
+    rebalanceNotional: 4,
+    maxCombinedForCoverage: 1.02, // Coverage ook bij ~100¢
   },
   split: {
     mode: "CHEAPER_BIAS",
-    cheaperBiasPct: 0.60,
+    cheaperBiasPct: 0.55,         // Was 0.60
   },
   execution: {
-    mode: "PAPER_BID",            // Paper = bid prices
+    mode: "PAPER_BID",            // Paper = bid (maker)
     bidMissing: "FALLBACK_TO_ASK",
   },
 };
@@ -346,11 +347,12 @@ function decideTrades(
 
     // ============================================================
     // ACCUMULATE TRADES (only with edge: combined < 99.5¢)
+    // Hier zit de winst - geen edge = geen accumulate
     // ============================================================
     
     if (combined < cfg.edge.arbMaxEntry) {
-      // Scale notional by edge zone
-      const mult = combined < cfg.edge.strongArb ? 2.5 : 1.5;
+      // Scale notional by edge zone: strong < 94¢ = 2.0x, normal = 1.5x
+      const mult = combined < cfg.edge.strongArb ? 2.0 : 1.5;
       const notional = clamp(cfg.tradeSize.base * mult, cfg.tradeSize.min, cfg.tradeSize.max);
       
       const edgePct = ((1 - combined) * 100).toFixed(1);
