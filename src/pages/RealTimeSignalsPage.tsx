@@ -37,7 +37,7 @@ import { useRealtimePaperBot } from "@/hooks/useRealtimePaperBot";
 import { LivePrice } from "@/components/LivePrice";
 import { GabagoolTradesSummary } from "@/components/GabagoolTradesSummary";
 import { PaperBotTradesSummary } from "@/components/PaperBotTradesSummary";
-import { PaperTradeDashboard } from "@/components/PaperTradeDashboard";
+import { PaperBotOverview } from "@/components/PaperBotOverview";
 import { Switch } from "@/components/ui/switch";
 
 interface LiveMarket {
@@ -289,80 +289,13 @@ const RealTimeSignalsPage = () => {
         </div>
 
         {/* Paper Bot Section */}
-        <Card>
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <CardTitle className="flex items-center gap-3 text-base">
-                <div className="p-2 rounded-lg bg-primary/10">
-                  <Bot className="w-4 h-4 text-primary" />
-                </div>
-                Paper Trading Bot
-                <div className="flex items-center gap-2">
-                  <Switch 
-                    checked={botEnabled} 
-                    onCheckedChange={toggleBot}
-                    disabled={botLoading}
-                  />
-                  <Badge variant={botEnabled ? "default" : "secondary"}>
-                    {botEnabled ? "Active" : "Off"}
-                  </Badge>
-                </div>
-              </CardTitle>
-              <Link to="/paper-trading" className="text-sm text-primary hover:underline">
-                Full Dashboard →
-              </Link>
-            </div>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {botEnabled && (
-              <div className="flex items-center gap-3 text-sm">
-                <Badge variant="outline" className={realtimeBotStatus.isConnected ? "text-emerald-500 border-emerald-500/30" : ""}>
-                  <Cpu className="w-3 h-3 mr-1" />
-                  {realtimeBotStatus.isConnected ? "Connected" : "Connecting..."}
-                </Badge>
-                {realtimeBotStatus.isConnected && (
-                  <>
-                    <span className="text-muted-foreground">
-                      {realtimeBotStatus.marketsCount} markets
-                    </span>
-                    <span className="text-muted-foreground">•</span>
-                    <span className="text-muted-foreground">
-                      {realtimeBotStatus.tokensCount} tokens
-                    </span>
-                  </>
-                )}
-              </div>
-            )}
-
-            <PaperTradeDashboard compact />
-
-            {/* Recent Trades */}
-            {realtimeBotStatus.lastTrades.length > 0 && (
-              <div className="pt-3 border-t border-border/50">
-                <div className="text-xs text-muted-foreground mb-2 flex items-center gap-1.5">
-                  <Zap className="w-3 h-3" />
-                  Recent Trades
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {realtimeBotStatus.lastTrades.slice(0, 6).map((trade, i) => (
-                    <Badge 
-                      key={i} 
-                      variant="outline" 
-                      className={`text-xs ${
-                        trade.outcome === 'UP' 
-                          ? 'text-emerald-500 border-emerald-500/30' 
-                          : 'text-red-500 border-red-500/30'
-                      }`}
-                    >
-                      {trade.outcome === 'UP' ? <TrendingUp className="w-3 h-3 mr-1" /> : <TrendingDown className="w-3 h-3 mr-1" />}
-                      {(trade.price * 100).toFixed(0)}¢ × {trade.shares}
-                    </Badge>
-                  ))}
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+        <PaperBotOverview 
+          botEnabled={botEnabled}
+          toggleBot={toggleBot}
+          botLoading={botLoading}
+          realtimeBotStatus={realtimeBotStatus}
+          getPrice={getPrice}
+        />
 
         {/* Status Messages */}
         {clobState === "discovering" && isLive && (
