@@ -12,31 +12,31 @@ const TRADE_CONFIG = {
   gabagoolStyle: {
     enabled: true,
     baseBudget: 80,           // Total budget per market
-    minEdge: -0.5,            // Allow slight negative edge (99.5¢ combined)
-    maxCombinedPrice: 1.005,  // Max combined price to enter
+    minEdge: 0.5,             // FIXED: Require at least 0.5% edge (99.5¢ combined max)
+    maxCombinedPrice: 0.995,  // FIXED: Only trade when combined < 99.5¢ (guaranteed profit)
     biasMultiplier: 1.15,     // 15% more shares on favored side
     minPriceMove: 0.05,       // 0.05% crypto move to trigger bias
     maxSlippage: 2.5,
-    minLiquidity: 50,         // INCREASED from 30 - more realistic
-    minRemainingSeconds: 60,  // INCREASED from 45 - avoid last minute chaos
-    minAskPrice: 0.10,        // NEW: Don't buy if price < 10¢ (unrealistic fills)
-    maxAskPrice: 0.90,        // NEW: Don't buy if price > 90¢ (too expensive)
+    minLiquidity: 50,
+    minRemainingSeconds: 60,
+    minAskPrice: 0.10,        // Don't buy if price < 10¢ (unrealistic fills)
+    maxAskPrice: 0.90,        // Don't buy if price > 90¢ (too expensive)
   },
   // Arbitrage: capture when combined price < 99¢
   arbitrage: {
-    minEdge: 1.5,             // INCREASED from 1.0 - need stronger edge
+    minEdge: 1.0,             // 1% edge minimum for pure arb
     budget: 100,
     maxSlippage: 2.0,
-    minLiquidity: 60,         // INCREASED from 40
+    minLiquidity: 60,
   },
   // Late entry: cheap single side near expiry
   lateEntry: {
     maxRemainingSeconds: 180,
-    minRemainingSeconds: 45,  // INCREASED from 30
-    maxPrice: 0.20,           // DECREASED from 0.25 - more conservative
-    minPrice: 0.08,           // NEW: minimum price to avoid illiquid fills
+    minRemainingSeconds: 45,
+    maxPrice: 0.20,
+    minPrice: 0.08,
     budget: 40,
-    maxSlippage: 3.0,         // DECREASED from 4.0
+    maxSlippage: 3.0,
   },
 };
 
