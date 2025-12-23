@@ -458,20 +458,24 @@ const RealTimeSignalsPage = () => {
               <div className="flex items-center gap-2 text-muted-foreground mb-1">
                 <Zap className="w-4 h-4" />
                 <span className="text-sm">Arb Opportunities</span>
-        </div>
-
-        {/* Paper Trade Bot Dashboard */}
-        <div className="flex items-center justify-between">
-          <PaperTradeDashboard compact />
-          <Link to="/paper-trading" className="text-sm text-purple-400 hover:underline flex items-center gap-1">
-            <Bot className="w-4 h-4" />
-            Full Dashboard →
-          </Link>
-        </div>
+              </div>
               <div className="text-2xl font-bold text-primary">{liveMarkets.filter((m) => m.arbitrageEdge >= 2).length}</div>
             </CardContent>
           </Card>
         </div>
+
+        {/* Paper Trade Bot Dashboard */}
+        <Card className="border-purple-500/30">
+          <CardContent className="pt-4 pb-4">
+            <div className="flex items-center justify-between">
+              <PaperTradeDashboard compact />
+              <Link to="/paper-trading" className="text-sm text-purple-400 hover:underline flex items-center gap-1">
+                <Bot className="w-4 h-4" />
+                Full Dashboard →
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
 
         {clobState === "discovering" && isLive && (
           <Card className="border-blue-500/50 bg-blue-500/10">
@@ -529,7 +533,6 @@ const RealTimeSignalsPage = () => {
                     downClobPrice={market.downPrice} 
                   />
                   <PaperTradesSummary marketSlug={market.slug} compact />
-                </div>
                 </div>
               ))}
             </CardContent>
