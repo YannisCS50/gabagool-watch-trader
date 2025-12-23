@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, Brain, AlertCircle, Calculator, ChevronDown, Book, Cpu } from 'lucide-react';
+import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, Brain, AlertCircle, Calculator, ChevronDown, Book, Cpu, Radio } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { StatCard } from '@/components/StatCard';
 import { TradesTable } from '@/components/TradesTable';
@@ -8,6 +8,7 @@ import { ActivityChart } from '@/components/ActivityChart';
 import { PnLChart } from '@/components/PnLChart';
 import { TraderHeader } from '@/components/TraderHeader';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { useTrades } from '@/hooks/useTrades';
 import { format } from 'date-fns';
 import {
@@ -15,6 +16,7 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
 
 const Index = () => {
@@ -137,6 +139,16 @@ const Index = () => {
                     <Link to="/strategy-deep-dive" className="flex items-center gap-2">
                       <TrendingUp className="w-4 h-4" />
                       Strategy Deep Dive
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem asChild>
+                    <Link to="/real-time-signals" className="flex items-center gap-2">
+                      <Radio className="w-4 h-4" />
+                      Real-Time Signals
+                      <Badge className="ml-auto bg-emerald-500/20 text-emerald-400 border-emerald-500/30 text-[10px] px-1.5">
+                        LIVE
+                      </Badge>
                     </Link>
                   </DropdownMenuItem>
                 </DropdownMenuContent>
