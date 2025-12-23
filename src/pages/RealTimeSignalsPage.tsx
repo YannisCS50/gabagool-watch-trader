@@ -55,6 +55,8 @@ const RealTimeSignalsPage = () => {
     connectionState: clobState,
     updateCount: clobUpdates,
     latencyMs: clobLatency,
+    pricesVersion,
+    timeSinceLastUpdate,
   } = usePolymarketRealtime(isLive);
 
   const {
@@ -187,6 +189,14 @@ const RealTimeSignalsPage = () => {
                     <Badge variant="outline" className="text-xs text-orange-400 border-orange-500/30">
                       <Satellite className="w-2.5 h-2.5 mr-1" />
                       Chainlink {chainlinkUpdates}
+                    </Badge>
+                    {/* STAP 5: Last update indicator */}
+                    <Badge 
+                      variant="outline" 
+                      className={`text-xs ${timeSinceLastUpdate < 1000 ? 'text-emerald-400 border-emerald-500/30' : timeSinceLastUpdate < 5000 ? 'text-yellow-400 border-yellow-500/30' : 'text-red-400 border-red-500/30'}`}
+                    >
+                      <Activity className="w-2.5 h-2.5 mr-1" />
+                      {timeSinceLastUpdate < 1000 ? 'LIVE' : `${Math.floor(timeSinceLastUpdate / 1000)}s ago`}
                     </Badge>
                   </p>
                 </div>
