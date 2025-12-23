@@ -1,19 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
 /**
- * Real-time order book data from Polymarket CLOB WebSocket
+ * Polymarket RTDS WebSocket for real-time market prices
+ * Uses clob_market topic for price_change events
  */
-export interface OrderBookData {
-  tokenId: string;
-  bestBid: number;
-  bestAsk: number;
-  midPrice: number;
-  timestamp: number;
-}
 
-/**
- * Market with token IDs for WebSocket subscription
- */
 export interface MarketTokens {
   slug: string;
   asset: 'BTC' | 'ETH';
@@ -23,36 +14,35 @@ export interface MarketTokens {
   eventEndTime: string;
 }
 
+interface PriceData {
+  price: number;
+  timestamp: number;
+}
+
 interface UsePolymarketRealtimeResult {
-  // Price data
   getPrice: (tokenId: string) => number | null;
   getBidAsk: (tokenId: string) => { bid: number; ask: number } | null;
-  
-  // Connection state
   isConnected: boolean;
   connectionState: 'disconnected' | 'connecting' | 'connected' | 'error';
-  
-  // Stats
   updateCount: number;
   lastUpdateTime: number;
   latencyMs: number;
-  
-  // Methods
   connect: () => void;
   disconnect: () => void;
 }
 
-const WS_URL = 'wss://ws-subscriptions-clob.polymarket.com/ws/market';
-const PING_INTERVAL = 10000;
+const RTDS_URL = 'wss://rtds.polymarket.com';
 const RECONNECT_DELAY = 3000;
-const MAX_RECONNECT_ATTEMPTS = 5;
+const MAX_RECONNECT_ATTEMPTS = 10;
+const PING_INTERVAL = 30000;
+const UI_UPDATE_INTERVAL = 100; // Update UI every 100ms
 
 export function usePolymarketRealtime(
   tokenIds: string[],
   enabled: boolean = true
 ): UsePolymarketRealtimeResult {
   // Use refs for high-frequency data to avoid re-renders
-  const orderBooksRef = useRef<Map<string, OrderBookData>>(new Map());
+  const pricesRef = useRef<Map<string, PriceData>>(new Map());
   const lastUpdateTimeRef = useRef<number>(Date.now());
   const updateCountRef = useRef<number>(0);
   
@@ -71,7 +61,7 @@ export function usePolymarketRealtime(
   const reconnectAttemptsRef = useRef(0);
   const subscribedTokensRef = useRef<Set<string>>(new Set());
 
-  // Sync ref data to state every 50ms for smooth UI
+  // Sync ref data to state periodically for smooth UI
   const startUISync = useCallback(() => {
     if (uiUpdateIntervalRef.current) return;
     
@@ -82,7 +72,7 @@ export function usePolymarketRealtime(
         setLastUpdateTime(lastUpdateTimeRef.current);
         setLatencyMs(now - lastUpdateTimeRef.current);
       }
-    }, 50);
+    }, UI_UPDATE_INTERVAL);
   }, [updateCount]);
 
   const stopUISync = useCallback(() => {
@@ -94,7 +84,7 @@ export function usePolymarketRealtime(
 
   const connect = useCallback(() => {
     if (!enabled || tokenIds.length === 0) {
-      console.log('[CLOB WS] Not connecting - enabled:', enabled, 'tokens:', tokenIds.length);
+      console.log('[RTDS Market] Not connecting - enabled:', enabled, 'tokens:', tokenIds.length);
       return;
     }
 
@@ -105,143 +95,139 @@ export function usePolymarketRealtime(
     }
 
     setConnectionState('connecting');
-    console.log(`[CLOB WS] Connecting with ${tokenIds.length} tokens...`);
+    console.log(`[RTDS Market] Connecting with ${tokenIds.length} tokens...`);
 
     try {
-      const ws = new WebSocket(WS_URL);
+      const ws = new WebSocket(RTDS_URL);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        console.log('[CLOB WS] Connected');
+        console.log('[RTDS Market] Connected');
         setConnectionState('connected');
         setIsConnected(true);
         reconnectAttemptsRef.current = 0;
 
-        // Subscribe to market data for all tokens
+        // Subscribe to clob_market price_change for all token IDs
+        // Filter format: array of token IDs as strings
         const subscribeMsg = {
-          assets_ids: tokenIds,
-          type: 'market'
+          action: 'subscribe',
+          subscriptions: [
+            {
+              topic: 'clob_market',
+              type: 'price_change',
+              filters: JSON.stringify(tokenIds)
+            },
+            {
+              topic: 'clob_market',
+              type: 'last_trade_price',
+              filters: JSON.stringify(tokenIds)
+            }
+          ]
         };
         
         ws.send(JSON.stringify(subscribeMsg));
         subscribedTokensRef.current = new Set(tokenIds);
         
-        console.log('[CLOB WS] Subscribed to', tokenIds.length, 'tokens');
-        console.log('[CLOB WS] First tokens:', tokenIds.slice(0, 2).map(t => t.slice(0, 30) + '...'));
+        console.log('[RTDS Market] Subscribed to', tokenIds.length, 'tokens');
+        console.log('[RTDS Market] First tokens:', tokenIds.slice(0, 2).map(t => t.slice(0, 30) + '...'));
 
         // Start UI sync
         startUISync();
 
-        // Keep connection alive
+        // Keep-alive ping
         pingIntervalRef.current = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
-            ws.send('PING');
+            ws.send(JSON.stringify({ action: 'ping' }));
           }
         }, PING_INTERVAL);
       };
 
       ws.onmessage = (event) => {
-        const now = Date.now();
-        
-        // Handle PONG
-        if (event.data === 'PONG') return;
-
         try {
           const data = JSON.parse(event.data);
+          const now = Date.now();
           
-          // Book event - full order book snapshot
-          if (data.event_type === 'book' && data.asset_id) {
-            const bids = data.bids || [];
-            const asks = data.asks || [];
-            
-            const bestBid = bids.length > 0 ? parseFloat(bids[0].price) : 0;
-            const bestAsk = asks.length > 0 ? parseFloat(asks[0].price) : 1;
-            const midPrice = (bestBid + bestAsk) / 2;
-            const wsTimestamp = parseInt(data.timestamp) || now;
-
-            orderBooksRef.current.set(data.asset_id, {
-              tokenId: data.asset_id,
-              bestBid,
-              bestAsk,
-              midPrice,
-              timestamp: wsTimestamp
-            });
-            
-            lastUpdateTimeRef.current = wsTimestamp;
-            updateCountRef.current++;
-            
-            console.log(`[CLOB WS] Book: ${data.asset_id.slice(0, 20)}... bid=${bestBid.toFixed(2)} ask=${bestAsk.toFixed(2)}`);
-          }
-          
-          // Price change event
-          if (data.event_type === 'price_change' && data.asset_id) {
-            const price = parseFloat(data.price);
-            const existing = orderBooksRef.current.get(data.asset_id);
-            
-            orderBooksRef.current.set(data.asset_id, {
-              tokenId: data.asset_id,
-              bestBid: existing?.bestBid ?? price,
-              bestAsk: existing?.bestAsk ?? price,
-              midPrice: price,
-              timestamp: now
-            });
-            
-            lastUpdateTimeRef.current = now;
-            updateCountRef.current++;
+          // Handle subscription confirmation
+          if (data.type === 'subscribed' || data.action === 'subscribed') {
+            console.log('[RTDS Market] Subscription confirmed:', data.topic);
+            return;
           }
 
-          // Last trade price event
-          if (data.event_type === 'last_trade_price' && data.asset_id) {
-            const price = parseFloat(data.price);
-            const existing = orderBooksRef.current.get(data.asset_id);
+          // Handle pong
+          if (data.type === 'pong' || data.action === 'pong') {
+            return;
+          }
+
+          // Handle price_change events
+          // Format: { topic: 'clob_market', type: 'price_change', payload: { asset_id, price, timestamp } }
+          if (data.topic === 'clob_market' && data.payload) {
+            const { asset_id, price, timestamp } = data.payload;
             
-            orderBooksRef.current.set(data.asset_id, {
-              tokenId: data.asset_id,
-              bestBid: existing?.bestBid ?? price,
-              bestAsk: existing?.bestAsk ?? price,
-              midPrice: price,
-              timestamp: now
-            });
-            
+            if (asset_id && typeof price === 'number') {
+              const wsTimestamp = timestamp || now;
+              
+              pricesRef.current.set(asset_id, {
+                price,
+                timestamp: wsTimestamp
+              });
+              
+              lastUpdateTimeRef.current = wsTimestamp;
+              updateCountRef.current++;
+              
+              console.log(`[RTDS Market] ${data.type}: ${asset_id.slice(0, 20)}... = ${price.toFixed(4)}`);
+            }
+          }
+
+          // Handle array format (initial dump)
+          if (Array.isArray(data)) {
+            for (const item of data) {
+              if (item.asset_id && typeof item.price === 'number') {
+                pricesRef.current.set(item.asset_id, {
+                  price: item.price,
+                  timestamp: item.timestamp || now
+                });
+                updateCountRef.current++;
+              }
+            }
             lastUpdateTimeRef.current = now;
-            updateCountRef.current++;
           }
         } catch (e) {
-          // Non-JSON message
+          // Non-JSON message - ignore
+          console.log('[RTDS Market] Message:', event.data);
         }
       };
 
       ws.onerror = (error) => {
-        console.error('[CLOB WS] Error:', error);
+        console.error('[RTDS Market] WebSocket error:', error);
         setConnectionState('error');
       };
 
       ws.onclose = (event) => {
-        console.log('[CLOB WS] Closed:', event.code, event.reason);
+        console.log('[RTDS Market] Disconnected:', event.code, event.reason);
         setIsConnected(false);
         setConnectionState('disconnected');
         stopUISync();
-        
+
         if (pingIntervalRef.current) {
           clearInterval(pingIntervalRef.current);
           pingIntervalRef.current = null;
         }
 
-        // Reconnect if enabled
+        // Attempt to reconnect
         if (enabled && tokenIds.length > 0 && reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
           reconnectAttemptsRef.current++;
-          console.log(`[CLOB WS] Reconnecting (${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})...`);
+          console.log(`[RTDS Market] Reconnecting (${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})...`);
           reconnectTimeoutRef.current = setTimeout(connect, RECONNECT_DELAY);
         }
       };
     } catch (error) {
-      console.error('[CLOB WS] Failed to connect:', error);
+      console.error('[RTDS Market] Failed to connect:', error);
       setConnectionState('error');
     }
   }, [enabled, tokenIds, startUISync, stopUISync]);
 
   const disconnect = useCallback(() => {
-    console.log('[CLOB WS] Disconnecting...');
+    console.log('[RTDS Market] Disconnecting...');
     
     stopUISync();
     
@@ -249,7 +235,7 @@ export function usePolymarketRealtime(
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
     }
-    
+
     if (pingIntervalRef.current) {
       clearInterval(pingIntervalRef.current);
       pingIntervalRef.current = null;
@@ -286,16 +272,21 @@ export function usePolymarketRealtime(
     return () => disconnect();
   }, [disconnect]);
 
-  // Get mid price for a token
+  // Get price for a token
   const getPrice = useCallback((tokenId: string): number | null => {
-    return orderBooksRef.current.get(tokenId)?.midPrice ?? null;
+    return pricesRef.current.get(tokenId)?.price ?? null;
   }, []);
 
-  // Get bid/ask for a token
+  // Get bid/ask for a token (approximation based on price)
   const getBidAsk = useCallback((tokenId: string): { bid: number; ask: number } | null => {
-    const book = orderBooksRef.current.get(tokenId);
-    if (!book) return null;
-    return { bid: book.bestBid, ask: book.bestAsk };
+    const priceData = pricesRef.current.get(tokenId);
+    if (!priceData) return null;
+    // Approximate spread of 1%
+    const spread = 0.01;
+    return { 
+      bid: priceData.price * (1 - spread / 2), 
+      ask: priceData.price * (1 + spread / 2) 
+    };
   }, []);
 
   return {

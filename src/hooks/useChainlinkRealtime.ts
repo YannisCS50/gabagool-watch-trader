@@ -1,5 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
+/**
+ * Polymarket RTDS WebSocket for real-time crypto prices
+ * Uses crypto_prices_chainlink topic for BTC/ETH
+ */
+
 interface UseChainlinkRealtimeResult {
   btcPrice: number | null;
   ethPrice: number | null;
@@ -9,9 +14,10 @@ interface UseChainlinkRealtimeResult {
   lastUpdate: Date | null;
 }
 
-// Use CoinGecko public API for crypto prices (no API key needed)
-const COINGECKO_API = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd';
-const POLL_INTERVAL = 5000; // 5 seconds
+const RTDS_URL = 'wss://rtds.polymarket.com';
+const RECONNECT_DELAY = 3000;
+const MAX_RECONNECT_ATTEMPTS = 10;
+const PING_INTERVAL = 30000;
 
 export function useChainlinkRealtime(enabled: boolean = true): UseChainlinkRealtimeResult {
   const [btcPrice, setBtcPrice] = useState<number | null>(null);
@@ -21,75 +27,170 @@ export function useChainlinkRealtime(enabled: boolean = true): UseChainlinkRealt
   const [updateCount, setUpdateCount] = useState(0);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectAttempts = useRef(0);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  const fetchPrices = useCallback(async () => {
-    if (!enabled) return;
-    
+  const connect = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      return;
+    }
+
+    setConnectionState('connecting');
+    console.log('[RTDS] Connecting to', RTDS_URL);
+
     try {
-      // Cancel previous request if still pending
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-      abortControllerRef.current = new AbortController();
+      const ws = new WebSocket(RTDS_URL);
+      wsRef.current = ws;
 
-      const response = await fetch(COINGECKO_API, {
-        signal: abortControllerRef.current.signal,
-        headers: { 'Accept': 'application/json' }
-      });
-      
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-      
-      const data = await response.json();
-      
-      if (data.bitcoin?.usd) {
-        setBtcPrice(data.bitcoin.usd);
-      }
-      if (data.ethereum?.usd) {
-        setEthPrice(data.ethereum.usd);
-      }
-      
-      setIsConnected(true);
-      setConnectionState('connected');
-      setUpdateCount(prev => prev + 1);
-      setLastUpdate(new Date());
-      
+      ws.onopen = () => {
+        console.log('[RTDS] Connected');
+        setIsConnected(true);
+        setConnectionState('connected');
+        reconnectAttempts.current = 0;
+
+        // Subscribe to Chainlink crypto prices for BTC and ETH
+        const subscribeMessage = {
+          action: 'subscribe',
+          subscriptions: [
+            {
+              topic: 'crypto_prices_chainlink',
+              type: 'update',
+              filters: JSON.stringify({ symbol: 'BTCUSDT' })
+            },
+            {
+              topic: 'crypto_prices_chainlink',
+              type: 'update', 
+              filters: JSON.stringify({ symbol: 'ETHUSDT' })
+            }
+          ]
+        };
+        
+        ws.send(JSON.stringify(subscribeMessage));
+        console.log('[RTDS] Subscribed to crypto_prices_chainlink (BTC, ETH)');
+
+        // Keep-alive ping
+        pingIntervalRef.current = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ action: 'ping' }));
+          }
+        }, PING_INTERVAL);
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          
+          // Handle subscription confirmation
+          if (data.type === 'subscribed' || data.action === 'subscribed') {
+            console.log('[RTDS] Subscription confirmed:', data.topic || data);
+            return;
+          }
+
+          // Handle pong
+          if (data.type === 'pong' || data.action === 'pong') {
+            return;
+          }
+          
+          // Handle crypto price updates
+          // Format: { topic: 'crypto_prices_chainlink', type: 'update', payload: { symbol, value, timestamp } }
+          if (data.topic === 'crypto_prices_chainlink' && data.payload) {
+            const { symbol, value } = data.payload;
+            
+            if (symbol === 'BTCUSDT' && typeof value === 'number') {
+              console.log('[RTDS] BTC price:', value);
+              setBtcPrice(value);
+              setUpdateCount(prev => prev + 1);
+              setLastUpdate(new Date());
+            } else if (symbol === 'ETHUSDT' && typeof value === 'number') {
+              console.log('[RTDS] ETH price:', value);
+              setEthPrice(value);
+              setUpdateCount(prev => prev + 1);
+              setLastUpdate(new Date());
+            }
+          }
+
+          // Also handle initial data dump format (array of prices)
+          if (Array.isArray(data)) {
+            for (const item of data) {
+              if (item.symbol === 'BTCUSDT' && typeof item.value === 'number') {
+                setBtcPrice(item.value);
+                setUpdateCount(prev => prev + 1);
+                setLastUpdate(new Date());
+              } else if (item.symbol === 'ETHUSDT' && typeof item.value === 'number') {
+                setEthPrice(item.value);
+                setUpdateCount(prev => prev + 1);
+                setLastUpdate(new Date());
+              }
+            }
+          }
+        } catch (err) {
+          // Non-JSON or parse error - ignore
+          console.log('[RTDS] Message:', event.data);
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error('[RTDS] WebSocket error:', error);
+        setConnectionState('error');
+      };
+
+      ws.onclose = (event) => {
+        console.log('[RTDS] Disconnected:', event.code, event.reason);
+        setIsConnected(false);
+        setConnectionState('disconnected');
+        wsRef.current = null;
+
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current);
+          pingIntervalRef.current = null;
+        }
+
+        // Attempt to reconnect
+        if (enabled && reconnectAttempts.current < MAX_RECONNECT_ATTEMPTS) {
+          reconnectAttempts.current++;
+          console.log(`[RTDS] Reconnecting (attempt ${reconnectAttempts.current}/${MAX_RECONNECT_ATTEMPTS})...`);
+          reconnectTimeoutRef.current = setTimeout(connect, RECONNECT_DELAY);
+        }
+      };
     } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') {
-        return; // Ignore aborted requests
-      }
-      console.error('[CryptoPrice] Fetch error:', err);
+      console.error('[RTDS] Failed to create WebSocket:', err);
       setConnectionState('error');
     }
   }, [enabled]);
 
+  const disconnect = useCallback(() => {
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+
+    if (pingIntervalRef.current) {
+      clearInterval(pingIntervalRef.current);
+      pingIntervalRef.current = null;
+    }
+    
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    
+    setIsConnected(false);
+    setConnectionState('disconnected');
+  }, []);
+
   useEffect(() => {
     if (enabled) {
-      setConnectionState('connecting');
-      console.log('[CryptoPrice] Starting price polling...');
-      
-      // Initial fetch
-      fetchPrices();
-      
-      // Poll every 5 seconds
-      intervalRef.current = setInterval(fetchPrices, POLL_INTERVAL);
+      connect();
+    } else {
+      disconnect();
     }
 
     return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-      setIsConnected(false);
-      setConnectionState('disconnected');
+      disconnect();
     };
-  }, [enabled, fetchPrices]);
+  }, [enabled, connect, disconnect]);
 
   return {
     btcPrice,
