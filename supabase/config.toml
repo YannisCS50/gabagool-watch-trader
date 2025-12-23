@@ -29,3 +29,6 @@ verify_jwt = false
 
 [functions.settle-paper-trades]
 verify_jwt = false
+
+[functions.paper-trade-realtime]
+verify_jwt = false

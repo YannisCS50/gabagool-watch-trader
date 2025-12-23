@@ -159,9 +159,14 @@ export type Database = {
         Row: {
           arbitrage_edge: number | null
           asset: string
+          available_liquidity: number | null
+          avg_fill_price: number | null
+          best_ask: number | null
+          best_bid: number | null
           combined_price: number | null
           created_at: string | null
           crypto_price: number | null
+          estimated_slippage: number | null
           event_end_time: string | null
           event_start_time: string | null
           id: string
@@ -180,9 +185,14 @@ export type Database = {
         Insert: {
           arbitrage_edge?: number | null
           asset: string
+          available_liquidity?: number | null
+          avg_fill_price?: number | null
+          best_ask?: number | null
+          best_bid?: number | null
           combined_price?: number | null
           created_at?: string | null
           crypto_price?: number | null
+          estimated_slippage?: number | null
           event_end_time?: string | null
           event_start_time?: string | null
           id?: string
@@ -201,9 +211,14 @@ export type Database = {
         Update: {
           arbitrage_edge?: number | null
           asset?: string
+          available_liquidity?: number | null
+          avg_fill_price?: number | null
+          best_ask?: number | null
+          best_bid?: number | null
           combined_price?: number | null
           created_at?: string | null
           crypto_price?: number | null
+          estimated_slippage?: number | null
           event_end_time?: string | null
           event_start_time?: string | null
           id?: string
