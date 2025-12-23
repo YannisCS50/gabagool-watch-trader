@@ -52,7 +52,23 @@ serve(async (req) => {
 
     clobSocket.onmessage = (event) => {
       if (clientSocket.readyState !== WebSocket.OPEN) return;
-      clientSocket.send(event.data);
+      
+      // Log incoming messages for debugging
+      const data = event.data;
+      if (typeof data === 'string' && data !== 'PONG') {
+        try {
+          const msg = JSON.parse(data);
+          if (msg.event_type) {
+            console.log(`[CLOB Proxy] Event: ${msg.event_type}`, 
+              msg.event_type === 'price_change' ? `changes: ${msg.price_changes?.length || 0}` :
+              msg.event_type === 'book' ? `asset: ${msg.asset_id?.slice(0, 20)}...` : '');
+          }
+        } catch {
+          // Non-JSON message
+        }
+      }
+      
+      clientSocket.send(data);
     };
 
     clobSocket.onerror = (error) => {
@@ -73,6 +89,18 @@ serve(async (req) => {
   };
 
   clientSocket.onmessage = (event) => {
+    // Log client subscribe messages
+    try {
+      const msg = JSON.parse(event.data);
+      if (msg.type || msg.assets_ids) {
+        console.log(`[CLOB Proxy] Client subscribe:`, 
+          msg.type || 'market', 
+          `tokens: ${msg.assets_ids?.length || 0}`);
+      }
+    } catch {
+      // Non-JSON
+    }
+    
     // Forward client messages to CLOB
     if (clobSocket?.readyState === WebSocket.OPEN) {
       clobSocket.send(event.data);

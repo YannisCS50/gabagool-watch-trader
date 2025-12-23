@@ -323,16 +323,38 @@ const RealTimeSignalsPage = () => {
                           : "border-border bg-muted/5"
                     }`}
                   >
+                    {/* Market Title */}
+                    <div className="mb-3">
+                      <p className="text-sm font-medium text-foreground">
+                        {market.question || `${market.asset} Up/Down`}
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-0.5">
+                        {market.slug}
+                      </p>
+                    </div>
+
                     <div className="flex items-center justify-between mb-4">
                       <div className="flex items-center gap-2">
                         <Badge
                           className={
                             market.asset === "BTC"
                               ? "bg-orange-500/20 text-orange-400 border-orange-500/30"
-                              : "bg-blue-500/20 text-blue-400 border-blue-500/30"
+                              : market.asset === "ETH"
+                                ? "bg-blue-500/20 text-blue-400 border-blue-500/30"
+                                : market.asset === "SOL"
+                                  ? "bg-purple-500/20 text-purple-400 border-purple-500/30"
+                                  : "bg-cyan-500/20 text-cyan-400 border-cyan-500/30"
                           }
                         >
                           {market.asset}
+                        </Badge>
+                        <Badge 
+                          variant="outline" 
+                          className={market.marketType === '15min' 
+                            ? "text-emerald-400 border-emerald-500/30" 
+                            : "text-muted-foreground"}
+                        >
+                          {market.marketType === '15min' ? '15m' : 'Daily'}
                         </Badge>
                         <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/30 text-xs flex items-center gap-1">
                           <Radio className="w-2.5 h-2.5" />
