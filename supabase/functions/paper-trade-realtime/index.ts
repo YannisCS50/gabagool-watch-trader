@@ -695,6 +695,36 @@ async function handleWebSocket(req: Request): Promise<Response> {
         return; // finally will release lock
       }
       
+      // DATABASE DUPLICATE CHECK: Before inserting, verify no trades exist for this market yet
+      // This prevents race conditions across multiple WebSocket connections
+      const tradeType = result.trades[0]?.type;
+      if (tradeType === 'OPENING') {
+        const { data: existingTrades } = await supabase
+          .from('paper_trades')
+          .select('id')
+          .eq('market_slug', slug)
+          .limit(1);
+        
+        if (existingTrades && existingTrades.length > 0) {
+          log(`⚠️ DUPLICATE BLOCKED: ${slug} already has trades`);
+          return; // Don't insert, already have trades for this market
+        }
+      } else if (tradeType === 'HEDGE') {
+        // Check if we already have this outcome for this market
+        const hedgeOutcome = result.trades[0]?.outcome;
+        const { data: existingHedge } = await supabase
+          .from('paper_trades')
+          .select('id')
+          .eq('market_slug', slug)
+          .eq('outcome', hedgeOutcome)
+          .limit(1);
+        
+        if (existingHedge && existingHedge.length > 0) {
+          log(`⚠️ HEDGE DUPLICATE BLOCKED: ${slug} ${hedgeOutcome} already exists`);
+          return;
+        }
+      }
+      
       // IMPORTANT: Update position BEFORE inserting to DB (prevents duplicate trades)
       for (const intent of result.trades) {
         if (intent.outcome === 'UP') {
