@@ -6,67 +6,45 @@ const corsHeaders = {
 };
 
 /**
- * GABAGOOL-STYLE TRADING STRATEGY - EXACT REPLICATION
+ * OPENING + HEDGE STRATEGY
  * 
- * Based on deep analysis of 109,654 trades across 316 markets:
- * 
- * KEY INSIGHTS:
- * 1. DUAL-SIDE ALWAYS (100% of markets have both Up AND Down positions)
- * 2. HIGH-FREQUENCY DCA (~1 trade/second, 347 trades per market average)
- * 3. BALANCED HEDGING (51.5% Up / 48.5% Down = near perfect 50/50)
- * 4. SMALL TRADE SIZES ($5.33 average, 67% between $1-10)
- * 5. COMBINED ENTRY TARGETING (aim for <98¢ for guaranteed profit)
- * 
- * REASONING TYPES (from analysis):
- * - OPENING: First trade in a new market
- * - HEDGE: Start opposite side position for dual-side coverage  
- * - DCA_CHEAP: Buy when price ≤20¢ (cheap shares)
- * - DCA_BALANCE: Rebalance when Up/Down ratio >20% off
- * - ARBITRAGE: Combined entry <98¢ = guaranteed profit
- * - ACCUMULATE: Standard DCA accumulation
+ * 1. OPENING: Bij market open, koop direct 100 shares van de goedkoopste kant
+ * 2. HEDGE: Zodra mogelijk, hedge met 100 shares van de andere kant
+ *    - Target: combined price < 100¢ voor gegarandeerde winst
+ *    - Bijv: 48¢ UP + 49¢ DOWN = 97¢ = 3% winst
+ * 3. ACCUMULATE: Binnen de risk-free marge, blijf positie vergroten
+ *    - Zolang combined < 100¢, blijf kopen
  */
 
-// Gabagool's exact parameters (derived from 109K trades)
 const STRATEGY_CONFIG = {
-  // Trade sizing (matches Gabagool's $5.33 average)
-  tradeSize: {
-    min: 3,
-    max: 15,
-    base: 8,
+  // Initiële opening trade
+  opening: {
+    shares: 100,              // 100 shares per opening
+    maxPrice: 0.55,           // Alleen openen als prijs ≤ 55¢
   },
   
-  // Position limits per market (Gabagool averages $1,850/market)
-  positionLimits: {
-    maxPerSide: 150,
-    maxTotal: 250,
+  // Hedge settings
+  hedge: {
+    shares: 100,              // 100 shares voor hedge
+    maxCombined: 1.00,        // Hedge zolang combined ≤ 100¢ (break-even)
+    targetCombined: 0.97,     // Ideaal: combined ≤ 97¢ (3% winst)
   },
   
-  // Entry thresholds
-  entry: {
-    minSecondsRemaining: 30,
-    minPrice: 0.02,        // Don't buy <2¢
-    maxPrice: 0.95,        // Don't buy >95¢
-    cheapThreshold: 0.20,  // "Cheap" = ≤20¢
-    imbalanceThreshold: 20, // Rebalance if >20% off
+  // Accumulation settings
+  accumulate: {
+    minShares: 20,
+    maxShares: 50,
+    maxCombined: 0.99,        // Alleen accumuleren als combined < 99¢
+    maxPositionPerSide: 500,  // Max 500 shares per kant
   },
   
-  // Arbitrage thresholds
-  arbitrage: {
-    strongEdge: 0.95,     // <95¢ = strong arbitrage
-    normalEdge: 0.98,     // <98¢ = arbitrage opportunity
-    maxEntry: 0.98,       // >=98¢ = don't trade (no edge)
-  },
-  
-  // DCA multipliers based on combined price
-  dcaMultipliers: {
-    strongArbitrage: 2.0,  // 2x when combined <95¢
-    arbitrage: 1.5,        // 1.5x when combined <98¢
-    neutral: 1.0,          // 1x when combined 98-100¢
-    risky: 0.5,            // 0.5x when combined 100-102¢
-  },
+  // General settings
+  minSecondsRemaining: 60,    // Stop 60s voor expiry
+  minPrice: 0.02,             // Niet kopen onder 2¢
+  maxPrice: 0.98,             // Niet kopen boven 98¢
 };
 
-type ReasoningType = 'OPENING' | 'HEDGE' | 'DCA_CHEAP' | 'DCA_BALANCE' | 'ARBITRAGE' | 'ACCUMULATE';
+type TradeType = 'OPENING' | 'HEDGE' | 'ACCUMULATE';
 
 interface MarketToken {
   slug: string;
@@ -82,23 +60,27 @@ interface MarketToken {
 }
 
 interface Position {
-  upInvested: number;
-  downInvested: number;
   upShares: number;
   downShares: number;
+  upAvgPrice: number;
+  downAvgPrice: number;
+  upCost: number;
+  downCost: number;
   tradeCount: number;
+}
+
+interface Trade {
+  outcome: 'UP' | 'DOWN';
+  shares: number;
+  price: number;
+  total: number;
+  tradeType: TradeType;
+  reasoning: string;
 }
 
 interface TradeDecision {
   shouldTrade: boolean;
-  trades: Array<{
-    outcome: 'UP' | 'DOWN';
-    shares: number;
-    price: number;
-    total: number;
-    reasoningType: ReasoningType;
-    reasoning: string;
-  }>;
+  trades: Trade[];
   summaryReasoning: string;
 }
 
@@ -120,44 +102,17 @@ interface PaperTrade {
   reasoning: string;
   event_start_time: string;
   event_end_time: string;
+  best_bid: number | null;
+  best_ask: number | null;
 }
 
-function getPositionImbalance(position: Position): number {
-  const total = position.upShares + position.downShares;
-  if (total === 0) return 0;
-  return ((position.upShares - position.downShares) / total) * 100;
-}
-
-function calculateTradeSize(
-  combinedPrice: number,
-  remainingSeconds: number,
-): number {
-  let baseSize = STRATEGY_CONFIG.tradeSize.base;
-  
-  // Apply DCA multiplier based on arbitrage opportunity
-  let multiplier = STRATEGY_CONFIG.dcaMultipliers.neutral;
-  if (combinedPrice < STRATEGY_CONFIG.arbitrage.strongEdge) {
-    multiplier = STRATEGY_CONFIG.dcaMultipliers.strongArbitrage;
-  } else if (combinedPrice < STRATEGY_CONFIG.arbitrage.normalEdge) {
-    multiplier = STRATEGY_CONFIG.dcaMultipliers.arbitrage;
-  } else if (combinedPrice > 1.00) {
-    multiplier = STRATEGY_CONFIG.dcaMultipliers.risky;
-  }
-  
-  // Scale down near expiry
-  if (remainingSeconds < 60) {
-    multiplier *= 0.5;
-  }
-  
-  const size = baseSize * multiplier;
-  return Math.max(STRATEGY_CONFIG.tradeSize.min, Math.min(size, STRATEGY_CONFIG.tradeSize.max));
-}
-
-function makeGabagoolDecision(
+function makeDecision(
   upPrice: number,
   downPrice: number,
-  cryptoPrice: number | null,
-  openPrice: number | null,
+  upBid: number | null,
+  upAsk: number | null,
+  downBid: number | null,
+  downAsk: number | null,
   remainingSeconds: number,
   asset: string,
   position: Position
@@ -165,202 +120,212 @@ function makeGabagoolDecision(
   const combinedPrice = upPrice + downPrice;
   const arbitrageEdge = (1 - combinedPrice) * 100;
   
-  // Calculate price delta if we have crypto data
-  let priceDelta: number | null = null;
-  let priceDeltaPercent: number | null = null;
-  if (cryptoPrice && openPrice) {
-    priceDelta = cryptoPrice - openPrice;
-    priceDeltaPercent = (priceDelta / openPrice) * 100;
-  }
-  
-  const totalInvested = position.upInvested + position.downInvested;
-  const imbalance = getPositionImbalance(position);
+  const trades: Trade[] = [];
   
   // === REJECTION CHECKS ===
   
-  // 1. Position limit reached
-  if (totalInvested >= STRATEGY_CONFIG.positionLimits.maxTotal) {
+  // Te dicht bij expiry
+  if (remainingSeconds < STRATEGY_CONFIG.minSecondsRemaining) {
     return {
       shouldTrade: false,
       trades: [],
-      summaryReasoning: `⛔ LIMIT_REACHED: Positie $${totalInvested.toFixed(0)} >= max $${STRATEGY_CONFIG.positionLimits.maxTotal}`,
+      summaryReasoning: `⏱️ TOO_LATE: ${remainingSeconds}s < ${STRATEGY_CONFIG.minSecondsRemaining}s minimum`,
     };
   }
   
-  // 2. Too close to expiry
-  if (remainingSeconds < STRATEGY_CONFIG.entry.minSecondsRemaining) {
-    return {
-      shouldTrade: false,
-      trades: [],
-      summaryReasoning: `⏱️ TOO_LATE: ${remainingSeconds}s remaining < ${STRATEGY_CONFIG.entry.minSecondsRemaining}s minimum`,
-    };
-  }
-  
-  // 3. No edge (Gabagool targets guaranteed edge)
-  // Only trade when combined entry is < 98¢.
-  if (combinedPrice >= STRATEGY_CONFIG.arbitrage.maxEntry) {
-    return {
-      shouldTrade: false,
-      trades: [],
-      summaryReasoning: `❌ NO_EDGE: Combined ${(combinedPrice * 100).toFixed(1)}¢ >= ${STRATEGY_CONFIG.arbitrage.maxEntry * 100}¢ (geen edge)`,
-    };
-  }
-  
-  // 4. Invalid prices
-  if (upPrice < STRATEGY_CONFIG.entry.minPrice && downPrice < STRATEGY_CONFIG.entry.minPrice) {
-    return {
-      shouldTrade: false,
-      trades: [],
-      summaryReasoning: `⚠️ INVALID_PRICES: UP=${(upPrice * 100).toFixed(0)}¢ DOWN=${(downPrice * 100).toFixed(0)}¢ beide te laag`,
-    };
-  }
-  
-  // === DETERMINE TRADES ===
-  
-  const trades: TradeDecision['trades'] = [];
-  const baseTradeSize = calculateTradeSize(combinedPrice, remainingSeconds);
-  
-  // Check if this is the first trade in the market
-  const isFirstTrade = position.tradeCount === 0;
   const hasUpPosition = position.upShares > 0;
   const hasDownPosition = position.downShares > 0;
+  const isHedged = hasUpPosition && hasDownPosition;
+  const totalCost = position.upCost + position.downCost;
+  const lockedProfit = isHedged ? (position.upShares + position.downShares) - totalCost : 0;
   
-  // Determine which sides to trade
-  const shouldTradeUp = upPrice >= STRATEGY_CONFIG.entry.minPrice && 
-                        upPrice <= STRATEGY_CONFIG.entry.maxPrice &&
-                        position.upInvested < STRATEGY_CONFIG.positionLimits.maxPerSide;
-  
-  const shouldTradeDown = downPrice >= STRATEGY_CONFIG.entry.minPrice && 
-                          downPrice <= STRATEGY_CONFIG.entry.maxPrice &&
-                          position.downInvested < STRATEGY_CONFIG.positionLimits.maxPerSide;
-  
-  // === UP TRADE LOGIC ===
-  if (shouldTradeUp) {
-    let upSize = baseTradeSize;
-    let reasoningType: ReasoningType = 'ACCUMULATE';
-    let reasoning = '';
+  // === PHASE 1: OPENING ===
+  // Als we nog geen positie hebben, open met de goedkoopste kant
+  if (!hasUpPosition && !hasDownPosition) {
+    // Kies de goedkoopste kant
+    const upValid = upPrice >= STRATEGY_CONFIG.minPrice && upPrice <= STRATEGY_CONFIG.opening.maxPrice;
+    const downValid = downPrice >= STRATEGY_CONFIG.minPrice && downPrice <= STRATEGY_CONFIG.opening.maxPrice;
     
-    if (isFirstTrade) {
-      // First trade in market
-      reasoningType = 'OPENING';
-      reasoning = `🚀 OPENING: Eerste trade in markt. Start UP positie @ ${(upPrice * 100).toFixed(0)}¢`;
-    } else if (!hasUpPosition && hasDownPosition) {
-      // Starting hedge - we have Down but no Up
-      reasoningType = 'HEDGE';
-      reasoning = `🛡️ HEDGE: Start hedge. Had DOWN, nu UP @ ${(upPrice * 100).toFixed(0)}¢ voor dual-side`;
-      upSize *= 1.5; // Extra size for hedge
-    } else if (upPrice <= STRATEGY_CONFIG.entry.cheapThreshold) {
-      // Cheap price opportunity
-      reasoningType = 'DCA_CHEAP';
-      reasoning = `💰 DCA_CHEAP: Goedkope UP @ ${(upPrice * 100).toFixed(0)}¢ (≤${STRATEGY_CONFIG.entry.cheapThreshold * 100}¢)`;
-      upSize *= 1.3; // Extra size for cheap buys
-    } else if (imbalance < -STRATEGY_CONFIG.entry.imbalanceThreshold) {
-      // Rebalance - we're Down-heavy
-      reasoningType = 'DCA_BALANCE';
-      reasoning = `⚖️ BALANCE: Down-heavy (${imbalance.toFixed(0)}%), koop meer UP`;
-      upSize *= 1.2;
-    } else if (combinedPrice < STRATEGY_CONFIG.arbitrage.normalEdge) {
-      // Arbitrage opportunity
-      reasoningType = 'ARBITRAGE';
-      reasoning = `🎯 ARBITRAGE: Combined ${(combinedPrice * 100).toFixed(1)}¢ < 98¢ = ${arbitrageEdge.toFixed(1)}% edge`;
-    } else {
-      // Standard accumulation
-      reasoningType = 'ACCUMULATE';
-      reasoning = `📈 ACCUMULATE: DCA UP @ ${(upPrice * 100).toFixed(0)}¢. Trade #${position.tradeCount + 1}`;
+    if (!upValid && !downValid) {
+      return {
+        shouldTrade: false,
+        trades: [],
+        summaryReasoning: `⏳ WAITING: Geen kant goedkoop genoeg. UP=${(upPrice*100).toFixed(0)}¢ DOWN=${(downPrice*100).toFixed(0)}¢ (max ${STRATEGY_CONFIG.opening.maxPrice*100}¢)`,
+      };
     }
     
-    // Respect position limit
-    const remainingUpBudget = STRATEGY_CONFIG.positionLimits.maxPerSide - position.upInvested;
-    upSize = Math.min(upSize, remainingUpBudget);
+    // Kies de goedkoopste kant (of de enige valide kant)
+    let openOutcome: 'UP' | 'DOWN';
+    let openPrice: number;
     
-    if (upSize >= STRATEGY_CONFIG.tradeSize.min) {
+    if (upValid && downValid) {
+      // Beide valid - kies goedkoopste
+      if (upPrice <= downPrice) {
+        openOutcome = 'UP';
+        openPrice = upPrice;
+      } else {
+        openOutcome = 'DOWN';
+        openPrice = downPrice;
+      }
+    } else if (upValid) {
+      openOutcome = 'UP';
+      openPrice = upPrice;
+    } else {
+      openOutcome = 'DOWN';
+      openPrice = downPrice;
+    }
+    
+    const openShares = STRATEGY_CONFIG.opening.shares;
+    const openTotal = openShares * openPrice;
+    
+    trades.push({
+      outcome: openOutcome,
+      shares: openShares,
+      price: openPrice,
+      total: openTotal,
+      tradeType: 'OPENING',
+      reasoning: `🚀 OPENING: Start ${openOutcome} @ ${(openPrice*100).toFixed(1)}¢. ${openShares} shares = $${openTotal.toFixed(2)}`,
+    });
+    
+    return {
+      shouldTrade: true,
+      trades,
+      summaryReasoning: `🚀 OPENING: ${openOutcome} @ ${(openPrice*100).toFixed(0)}¢ (${openShares} shares). Wacht op hedge...`,
+    };
+  }
+  
+  // === PHASE 2: HEDGE ===
+  // We hebben één kant, nu de andere kant pakken voor gegarandeerde winst
+  if (!isHedged) {
+    const needsUp = !hasUpPosition;
+    const hedgePrice = needsUp ? upPrice : downPrice;
+    const hedgeOutcome: 'UP' | 'DOWN' = needsUp ? 'UP' : 'DOWN';
+    const existingPrice = needsUp ? position.downAvgPrice : position.upAvgPrice;
+    const existingShares = needsUp ? position.downShares : position.upShares;
+    
+    // Check of hedge combined price acceptabel is
+    const projectedCombined = existingPrice + hedgePrice;
+    
+    if (projectedCombined > STRATEGY_CONFIG.hedge.maxCombined) {
+      return {
+        shouldTrade: false,
+        trades: [],
+        summaryReasoning: `⏳ HEDGE_WAIT: ${hedgeOutcome} @ ${(hedgePrice*100).toFixed(0)}¢ te duur. Combined zou ${(projectedCombined*100).toFixed(0)}¢ zijn (max ${STRATEGY_CONFIG.hedge.maxCombined*100}¢)`,
+      };
+    }
+    
+    // Hedge met dezelfde hoeveelheid shares als opening
+    const hedgeShares = Math.min(STRATEGY_CONFIG.hedge.shares, existingShares * 1.2); // Max 20% meer dan existing
+    const hedgeTotal = hedgeShares * hedgePrice;
+    const projectedProfit = ((1 - projectedCombined) * 100).toFixed(1);
+    
+    trades.push({
+      outcome: hedgeOutcome,
+      shares: hedgeShares,
+      price: hedgePrice,
+      total: hedgeTotal,
+      tradeType: 'HEDGE',
+      reasoning: `🛡️ HEDGE: ${hedgeOutcome} @ ${(hedgePrice*100).toFixed(1)}¢. Combined=${(projectedCombined*100).toFixed(0)}¢ = ${projectedProfit}% locked profit`,
+    });
+    
+    return {
+      shouldTrade: true,
+      trades,
+      summaryReasoning: `🛡️ HEDGE: ${hedgeOutcome} @ ${(hedgePrice*100).toFixed(0)}¢. Σ${(projectedCombined*100).toFixed(0)}¢ = ${projectedProfit}% winst gelockt!`,
+    };
+  }
+  
+  // === PHASE 3: ACCUMULATE ===
+  // We zijn gehedged - nu positie vergroten binnen de risk-free marge
+  
+  // Check position limits
+  if (position.upShares >= STRATEGY_CONFIG.accumulate.maxPositionPerSide &&
+      position.downShares >= STRATEGY_CONFIG.accumulate.maxPositionPerSide) {
+    return {
+      shouldTrade: false,
+      trades: [],
+      summaryReasoning: `⛔ LIMIT: Max positie bereikt (${position.upShares.toFixed(0)}↑ / ${position.downShares.toFixed(0)}↓)`,
+    };
+  }
+  
+  // Alleen accumuleren als combined nog steeds < 99¢
+  if (combinedPrice >= STRATEGY_CONFIG.accumulate.maxCombined) {
+    return {
+      shouldTrade: false,
+      trades: [],
+      summaryReasoning: `⏸️ HOLD: Combined ${(combinedPrice*100).toFixed(0)}¢ ≥ ${STRATEGY_CONFIG.accumulate.maxCombined*100}¢. Locked profit: ${lockedProfit.toFixed(0)} shares`,
+    };
+  }
+  
+  // Bepaal hoeveel te kopen
+  const edgeMultiplier = Math.max(0.5, (1 - combinedPrice) * 20); // Meer edge = meer kopen
+  const baseShares = STRATEGY_CONFIG.accumulate.minShares + 
+    (STRATEGY_CONFIG.accumulate.maxShares - STRATEGY_CONFIG.accumulate.minShares) * Math.min(1, edgeMultiplier);
+  
+  // Koop beide kanten om gebalanceerd te blijven
+  const upValid = upPrice >= STRATEGY_CONFIG.minPrice && upPrice <= STRATEGY_CONFIG.maxPrice &&
+                  position.upShares < STRATEGY_CONFIG.accumulate.maxPositionPerSide;
+  const downValid = downPrice >= STRATEGY_CONFIG.minPrice && downPrice <= STRATEGY_CONFIG.maxPrice &&
+                    position.downShares < STRATEGY_CONFIG.accumulate.maxPositionPerSide;
+  
+  if (upValid) {
+    const upShares = Math.min(
+      baseShares,
+      STRATEGY_CONFIG.accumulate.maxPositionPerSide - position.upShares
+    );
+    if (upShares >= STRATEGY_CONFIG.accumulate.minShares) {
       trades.push({
         outcome: 'UP',
-        shares: upSize / upPrice,
+        shares: upShares,
         price: upPrice,
-        total: upSize,
-        reasoningType,
-        reasoning,
+        total: upShares * upPrice,
+        tradeType: 'ACCUMULATE',
+        reasoning: `📈 ACC UP: ${upShares.toFixed(0)} @ ${(upPrice*100).toFixed(1)}¢`,
       });
     }
   }
   
-  // === DOWN TRADE LOGIC ===
-  if (shouldTradeDown) {
-    let downSize = baseTradeSize;
-    let reasoningType: ReasoningType = 'ACCUMULATE';
-    let reasoning = '';
-    
-    if (isFirstTrade && trades.length === 0) {
-      // First trade and no UP trade
-      reasoningType = 'OPENING';
-      reasoning = `🚀 OPENING: Eerste trade in markt. Start DOWN positie @ ${(downPrice * 100).toFixed(0)}¢`;
-    } else if (!hasDownPosition && hasUpPosition) {
-      // Starting hedge - we have Up but no Down
-      reasoningType = 'HEDGE';
-      reasoning = `🛡️ HEDGE: Start hedge. Had UP, nu DOWN @ ${(downPrice * 100).toFixed(0)}¢ voor dual-side`;
-      downSize *= 1.5;
-    } else if (downPrice <= STRATEGY_CONFIG.entry.cheapThreshold) {
-      // Cheap price opportunity
-      reasoningType = 'DCA_CHEAP';
-      reasoning = `💰 DCA_CHEAP: Goedkope DOWN @ ${(downPrice * 100).toFixed(0)}¢ (≤${STRATEGY_CONFIG.entry.cheapThreshold * 100}¢)`;
-      downSize *= 1.3;
-    } else if (imbalance > STRATEGY_CONFIG.entry.imbalanceThreshold) {
-      // Rebalance - we're Up-heavy
-      reasoningType = 'DCA_BALANCE';
-      reasoning = `⚖️ BALANCE: Up-heavy (+${imbalance.toFixed(0)}%), koop meer DOWN`;
-      downSize *= 1.2;
-    } else if (combinedPrice < STRATEGY_CONFIG.arbitrage.normalEdge) {
-      // Arbitrage opportunity
-      reasoningType = 'ARBITRAGE';
-      reasoning = `🎯 ARBITRAGE: Combined ${(combinedPrice * 100).toFixed(1)}¢ < 98¢ = ${arbitrageEdge.toFixed(1)}% edge`;
-    } else {
-      // Standard accumulation
-      reasoningType = 'ACCUMULATE';
-      reasoning = `📈 ACCUMULATE: DCA DOWN @ ${(downPrice * 100).toFixed(0)}¢. Trade #${position.tradeCount + (trades.length > 0 ? 2 : 1)}`;
-    }
-    
-    // Respect position limit
-    const remainingDownBudget = STRATEGY_CONFIG.positionLimits.maxPerSide - position.downInvested;
-    downSize = Math.min(downSize, remainingDownBudget);
-    
-    if (downSize >= STRATEGY_CONFIG.tradeSize.min) {
+  if (downValid) {
+    const downShares = Math.min(
+      baseShares,
+      STRATEGY_CONFIG.accumulate.maxPositionPerSide - position.downShares
+    );
+    if (downShares >= STRATEGY_CONFIG.accumulate.minShares) {
       trades.push({
         outcome: 'DOWN',
-        shares: downSize / downPrice,
+        shares: downShares,
         price: downPrice,
-        total: downSize,
-        reasoningType,
-        reasoning,
+        total: downShares * downPrice,
+        tradeType: 'ACCUMULATE',
+        reasoning: `📉 ACC DOWN: ${downShares.toFixed(0)} @ ${(downPrice*100).toFixed(1)}¢`,
       });
     }
   }
   
-  // No valid trades
   if (trades.length === 0) {
     return {
       shouldTrade: false,
       trades: [],
-      summaryReasoning: `⚠️ NO_TRADES: UP limit=${position.upInvested >= STRATEGY_CONFIG.positionLimits.maxPerSide}, DOWN limit=${position.downInvested >= STRATEGY_CONFIG.positionLimits.maxPerSide}`,
+      summaryReasoning: `⏸️ HOLD: Geen valide accumulate trades. Pos: ${position.upShares.toFixed(0)}↑/${position.downShares.toFixed(0)}↓`,
     };
   }
   
-  // Build summary
-  const tradesSummary = trades.map(t => `${t.outcome}@${(t.price * 100).toFixed(0)}¢ $${t.total.toFixed(0)}`).join(' + ');
-  const priceInfo = priceDeltaPercent !== null 
-    ? `${asset} ${priceDeltaPercent >= 0 ? '📈' : '📉'}${Math.abs(priceDeltaPercent).toFixed(2)}%`
-    : `${asset}`;
-  const positionAfter = `Pos: ↑$${(position.upInvested + trades.filter(t => t.outcome === 'UP').reduce((s, t) => s + t.total, 0)).toFixed(0)} ↓$${(position.downInvested + trades.filter(t => t.outcome === 'DOWN').reduce((s, t) => s + t.total, 0)).toFixed(0)}`;
+  const totalNewShares = trades.reduce((s, t) => s + t.shares, 0);
+  const totalNewCost = trades.reduce((s, t) => s + t.total, 0);
   
   return {
     shouldTrade: true,
     trades,
-    summaryReasoning: `${trades[0].reasoningType}: ${tradesSummary}. Σ${(combinedPrice * 100).toFixed(0)}¢ (${arbitrageEdge >= 0 ? '+' : ''}${arbitrageEdge.toFixed(1)}%). ${priceInfo}. ${positionAfter}. ${remainingSeconds}s`,
+    summaryReasoning: `📊 ACCUMULATE: +${totalNewShares.toFixed(0)} shares ($${totalNewCost.toFixed(2)}). Σ${(combinedPrice*100).toFixed(0)}¢ = ${arbitrageEdge.toFixed(1)}% edge. Total: ${(position.upShares + position.downShares + totalNewShares).toFixed(0)} shares`,
   };
 }
 
-async function fetchClobPrices(supabaseUrl: string, anonKey: string, tokenIds: string[]): Promise<Map<string, number>> {
-  const prices = new Map<string, number>();
+async function fetchClobPrices(
+  supabaseUrl: string, 
+  anonKey: string, 
+  tokenIds: string[]
+): Promise<Map<string, { price: number; bid: number | null; ask: number | null }>> {
+  const prices = new Map<string, { price: number; bid: number | null; ask: number | null }>();
   
   if (tokenIds.length === 0) return prices;
   
@@ -382,13 +347,19 @@ async function fetchClobPrices(supabaseUrl: string, anonKey: string, tokenIds: s
     const data = await response.json();
     if (data.success && data.prices) {
       for (const [tokenId, priceData] of Object.entries(data.prices)) {
-        const p = priceData as { bestAsk?: number; price?: number };
-        const price = p.bestAsk ?? p.price;
-        if (price !== undefined) {
-          prices.set(tokenId, price);
+        const p = priceData as { mid?: number; bestAsk?: number; bestBid?: number; price?: number };
+        // Prefer mid, then price, then bestAsk
+        const price = p.mid ?? p.price ?? p.bestAsk ?? null;
+        if (price !== null) {
+          prices.set(tokenId, {
+            price,
+            bid: p.bestBid ?? null,
+            ask: p.bestAsk ?? null,
+          });
         }
       }
     }
+    console.log(`[PaperBot] CLOB prices: ${prices.size} tokens fetched`);
   } catch (error) {
     console.error('[PaperBot] Error fetching CLOB prices:', error);
   }
@@ -406,7 +377,6 @@ async function fetchChainlinkPrices(supabaseUrl: string, anonKey: string): Promi
     });
     
     if (!response.ok) {
-      console.error('[PaperBot] Failed to fetch Chainlink prices:', response.status);
       return { btc: null, eth: null };
     }
     
@@ -415,8 +385,7 @@ async function fetchChainlinkPrices(supabaseUrl: string, anonKey: string): Promi
       btc: data.btc?.price ?? null,
       eth: data.eth?.price ?? null,
     };
-  } catch (error) {
-    console.error('[PaperBot] Error fetching Chainlink prices:', error);
+  } catch {
     return { btc: null, eth: null };
   }
 }
@@ -426,26 +395,44 @@ async function getExistingPositions(supabase: any, marketSlugs: string[]): Promi
   
   // Initialize all markets with zero positions
   for (const slug of marketSlugs) {
-    positions.set(slug, { upInvested: 0, downInvested: 0, upShares: 0, downShares: 0, tradeCount: 0 });
+    positions.set(slug, { 
+      upShares: 0, downShares: 0, 
+      upAvgPrice: 0, downAvgPrice: 0,
+      upCost: 0, downCost: 0,
+      tradeCount: 0 
+    });
   }
   
   const { data: existingTrades } = await supabase
     .from('paper_trades')
-    .select('market_slug, outcome, shares, total')
+    .select('market_slug, outcome, shares, price, total')
     .in('market_slug', marketSlugs);
   
   if (existingTrades) {
     for (const trade of existingTrades) {
-      const existing = positions.get(trade.market_slug) || { upInvested: 0, downInvested: 0, upShares: 0, downShares: 0, tradeCount: 0 };
+      const existing = positions.get(trade.market_slug)!;
       existing.tradeCount++;
+      
+      const shares = Number(trade.shares);
+      const price = Number(trade.price);
+      const total = Number(trade.total);
+      
       if (trade.outcome === 'UP') {
-        existing.upInvested += Number(trade.total);
-        existing.upShares += Number(trade.shares);
+        // Calculate weighted average price
+        const newTotalShares = existing.upShares + shares;
+        if (newTotalShares > 0) {
+          existing.upAvgPrice = (existing.upCost + total) / newTotalShares;
+        }
+        existing.upShares = newTotalShares;
+        existing.upCost += total;
       } else {
-        existing.downInvested += Number(trade.total);
-        existing.downShares += Number(trade.shares);
+        const newTotalShares = existing.downShares + shares;
+        if (newTotalShares > 0) {
+          existing.downAvgPrice = (existing.downCost + total) / newTotalShares;
+        }
+        existing.downShares = newTotalShares;
+        existing.downCost += total;
       }
-      positions.set(trade.market_slug, existing);
     }
   }
   
@@ -464,7 +451,7 @@ Deno.serve(async (req) => {
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
   try {
-    console.log('[PaperBot] 🎯 Starting Gabagool-style trading cycle...');
+    console.log('[PaperBot] 🎯 Opening + Hedge Strategy cycle...');
 
     // Check if bot is enabled
     const { data: settings } = await supabase
@@ -526,7 +513,7 @@ Deno.serve(async (req) => {
       getExistingPositions(supabase, markets.map(m => m.slug)),
     ]);
 
-    console.log(`[PaperBot] 💹 Prices: CLOB=${clobPrices.size} tokens, BTC=$${chainlinkPrices.btc?.toFixed(0) ?? 'N/A'}, ETH=$${chainlinkPrices.eth?.toFixed(0) ?? 'N/A'}`);
+    console.log(`[PaperBot] 💹 Prices: ${clobPrices.size} tokens`);
 
     // 3. Make trading decisions for each market
     const now = Date.now();
@@ -539,21 +526,25 @@ Deno.serve(async (req) => {
 
       if (remainingSeconds <= 0) continue;
 
-      const upPrice = clobPrices.get(market.upTokenId) ?? 0.5;
-      const downPrice = clobPrices.get(market.downTokenId) ?? 0.5;
-
+      const upData = clobPrices.get(market.upTokenId);
+      const downData = clobPrices.get(market.downTokenId);
+      
+      const upPrice = upData?.price ?? 0.5;
+      const downPrice = downData?.price ?? 0.5;
+      
       const cryptoPrice = market.asset === 'BTC' ? chainlinkPrices.btc : 
                           market.asset === 'ETH' ? chainlinkPrices.eth : null;
       const openPrice = market.openPrice ?? market.strikePrice;
       
-      const position = existingPositions.get(market.slug) || 
-        { upInvested: 0, downInvested: 0, upShares: 0, downShares: 0, tradeCount: 0 };
+      const position = existingPositions.get(market.slug)!;
 
-      const decision = makeGabagoolDecision(
+      const decision = makeDecision(
         upPrice, 
-        downPrice, 
-        cryptoPrice, 
-        openPrice, 
+        downPrice,
+        upData?.bid ?? null,
+        upData?.ask ?? null,
+        downData?.bid ?? null,
+        downData?.ask ?? null,
         remainingSeconds, 
         market.asset,
         position
@@ -561,10 +552,7 @@ Deno.serve(async (req) => {
 
       decisions.push({ slug: market.slug, decision: decision.summaryReasoning });
       
-      // Only log trades, not rejections
-      if (decision.shouldTrade) {
-        console.log(`[PaperBot] ✅ ${market.slug}: ${decision.summaryReasoning}`);
-      }
+      console.log(`[PaperBot] ${market.slug}: ${decision.summaryReasoning}`);
 
       if (!decision.shouldTrade) continue;
 
@@ -575,6 +563,8 @@ Deno.serve(async (req) => {
 
       // Create paper trades for each trade in the decision
       for (const trade of decision.trades) {
+        const tradeData = trade.outcome === 'UP' ? upData : downData;
+        
         paperTrades.push({
           market_slug: market.slug,
           asset: market.asset,
@@ -589,10 +579,12 @@ Deno.serve(async (req) => {
           price_delta: priceDelta,
           price_delta_percent: priceDeltaPercent,
           remaining_seconds: remainingSeconds,
-          trade_type: trade.reasoningType,
+          trade_type: trade.tradeType,
           reasoning: trade.reasoning,
           event_start_time: market.eventStartTime,
           event_end_time: market.eventEndTime,
+          best_bid: tradeData?.bid ?? null,
+          best_ask: tradeData?.ask ?? null,
         });
       }
     }
@@ -604,7 +596,7 @@ Deno.serve(async (req) => {
         console.error('[PaperBot] ❌ Error inserting trades:', error);
         throw error;
       }
-      console.log(`[PaperBot] 📝 Placed ${paperTrades.length} trades`);
+      console.log(`[PaperBot] ✅ Placed ${paperTrades.length} trades`);
     } else {
       console.log('[PaperBot] 💤 No trades this cycle');
     }
@@ -612,23 +604,19 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({
       success: true,
       timestamp: new Date().toISOString(),
-      strategy: 'GABAGOOL_EXACT',
+      strategy: 'OPENING_HEDGE',
       marketsAnalyzed: markets.length,
       tradesPlaced: paperTrades.length,
-      chainlinkPrices: {
-        btc: chainlinkPrices.btc,
-        eth: chainlinkPrices.eth,
-      },
       trades: paperTrades.map(t => ({
         slug: t.market_slug,
         outcome: t.outcome,
         type: t.trade_type,
-        shares: t.shares.toFixed(2),
-        price: t.price.toFixed(3),
-        total: t.total.toFixed(2),
+        shares: t.shares.toFixed(0),
+        price: (t.price * 100).toFixed(1) + '¢',
+        total: '$' + t.total.toFixed(2),
         reasoning: t.reasoning,
       })),
-      decisions: decisions.filter(d => !d.decision.includes('NO_EDGE') && !d.decision.includes('LIMIT')),
+      decisions,
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
