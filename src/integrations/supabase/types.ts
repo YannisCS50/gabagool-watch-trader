@@ -77,6 +77,24 @@ export type Database = {
         }
         Relationships: []
       }
+      paper_bot_settings: {
+        Row: {
+          id: string
+          is_enabled: boolean | null
+          updated_at: string | null
+        }
+        Insert: {
+          id?: string
+          is_enabled?: boolean | null
+          updated_at?: string | null
+        }
+        Update: {
+          id?: string
+          is_enabled?: boolean | null
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
       paper_trade_results: {
         Row: {
           asset: string
