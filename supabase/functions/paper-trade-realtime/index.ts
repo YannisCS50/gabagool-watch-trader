@@ -6,31 +6,42 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Trading configuration with orderbook awareness
+// Trading configuration with relaxed thresholds + exposed risk strategy
 const TRADE_CONFIG = {
   arbitrage: {
-    minEdge: 2.0,
+    minEdge: 0.5, // Relaxed from 2.0
     budget: 100,
-    maxSlippage: 2.0, // Max 2% slippage allowed
-    minLiquidity: 50, // Minimum $50 liquidity required
+    maxSlippage: 2.0,
+    minLiquidity: 50,
   },
   dualSide: {
-    minEdge: 0.5,
+    minEdge: 0.0, // Relaxed from 0.5 - allow break-even hedges
     budget: 80,
     maxSlippage: 1.5,
     minLiquidity: 40,
   },
   directional: {
-    minProbability: 0.65,
+    minProbability: 0.55, // Relaxed from 0.65
     budget: 50,
     maxSlippage: 3.0,
     minLiquidity: 30,
+    minPriceMove: 0.08, // Relaxed from 0.1
   },
   lateEntry: {
     minRemainingSeconds: 30,
-    maxRemainingSeconds: 180,
-    budget: 40,
+    maxRemainingSeconds: 300, // Extended from 180
+    budget: 60, // Increased from 40
     maxSlippage: 5.0,
+    maxPrice: 0.30, // Increased from 0.25
+  },
+  // NEW: Exposed risk strategy - single side bets like gabagool22
+  exposedRisk: {
+    enabled: true,
+    minPriceMove: 0.12, // 0.12% crypto price move triggers
+    maxPrice: 0.48, // Only buy if outcome < 48¢
+    budget: 50,
+    maxSlippage: 3.5,
+    minRemainingSeconds: 60,
   },
 };
 
@@ -149,7 +160,7 @@ function calculateSlippage(
 }
 
 /**
- * Make real-time trade decision with orderbook awareness
+ * Make real-time trade decision with orderbook awareness + exposed risk
  */
 function makeRealtimeTradeDecision(
   orderbook: MarketOrderbook,
@@ -162,9 +173,13 @@ function makeRealtimeTradeDecision(
   const combinedPrice = upBestAsk + downBestAsk;
   const arbitrageEdge = (1 - combinedPrice) * 100;
 
+  // Calculate price delta for directional strategies
+  const priceDelta = cryptoPrice && openPrice ? cryptoPrice - openPrice : null;
+  const priceDeltaPercent = priceDelta && openPrice ? (priceDelta / openPrice) * 100 : null;
+
   // Skip if market is too close to expiry or already expired
   if (remainingSeconds < TRADE_CONFIG.lateEntry.minRemainingSeconds) {
-    return { shouldTrade: false, reasoning: `Too close to expiry: ${remainingSeconds}s` };
+    return { shouldTrade: false, reasoning: `Too close to expiry: ${remainingSeconds}s remaining` };
   }
 
   // Strategy 1: Pure arbitrage with slippage check
@@ -208,7 +223,7 @@ function makeRealtimeTradeDecision(
   }
 
   // Strategy 2: Dual-side with favorable combined price
-  if (combinedPrice < 0.99 && arbitrageEdge >= TRADE_CONFIG.dualSide.minEdge) {
+  if (combinedPrice < 0.995 && arbitrageEdge >= TRADE_CONFIG.dualSide.minEdge) {
     const upSlippage = calculateSlippage(orderbook.upAsks, TRADE_CONFIG.dualSide.budget / 2);
     const downSlippage = calculateSlippage(orderbook.downAsks, TRADE_CONFIG.dualSide.budget / 2);
 
@@ -217,6 +232,15 @@ function makeRealtimeTradeDecision(
       return {
         shouldTrade: false,
         reasoning: `Dual-side slippage too high: ${totalSlippage.toFixed(2)}%`
+      };
+    }
+
+    // Check minimum liquidity
+    if (upSlippage.availableLiquidity < TRADE_CONFIG.dualSide.minLiquidity ||
+        downSlippage.availableLiquidity < TRADE_CONFIG.dualSide.minLiquidity) {
+      return {
+        shouldTrade: false,
+        reasoning: `Insufficient liquidity for dual-side`
       };
     }
 
@@ -233,12 +257,11 @@ function makeRealtimeTradeDecision(
   }
 
   // Strategy 3: Directional based on crypto price movement
-  if (cryptoPrice && openPrice && remainingSeconds > 60) {
-    const priceDelta = cryptoPrice - openPrice;
-    const priceDeltaPercent = (priceDelta / openPrice) * 100;
+  if (priceDeltaPercent !== null && remainingSeconds > 60) {
+    const absMove = Math.abs(priceDeltaPercent);
     
     // Strong upward movement - bet UP
-    if (priceDeltaPercent > 0.1 && upBestAsk < 0.65) {
+    if (priceDeltaPercent > TRADE_CONFIG.directional.minPriceMove && upBestAsk < (1 - TRADE_CONFIG.directional.minProbability)) {
       const upSlippage = calculateSlippage(orderbook.upAsks, TRADE_CONFIG.directional.budget);
       
       if (upSlippage.slippagePercent <= TRADE_CONFIG.directional.maxSlippage) {
@@ -254,7 +277,7 @@ function makeRealtimeTradeDecision(
     }
 
     // Strong downward movement - bet DOWN
-    if (priceDeltaPercent < -0.1 && downBestAsk < 0.65) {
+    if (priceDeltaPercent < -TRADE_CONFIG.directional.minPriceMove && downBestAsk < (1 - TRADE_CONFIG.directional.minProbability)) {
       const downSlippage = calculateSlippage(orderbook.downAsks, TRADE_CONFIG.directional.budget);
       
       if (downSlippage.slippagePercent <= TRADE_CONFIG.directional.maxSlippage) {
@@ -272,7 +295,7 @@ function makeRealtimeTradeDecision(
 
   // Strategy 4: Late entry when one side is very cheap
   if (remainingSeconds <= TRADE_CONFIG.lateEntry.maxRemainingSeconds && remainingSeconds >= TRADE_CONFIG.lateEntry.minRemainingSeconds) {
-    if (upBestAsk <= 0.25) {
+    if (upBestAsk <= TRADE_CONFIG.lateEntry.maxPrice) {
       const upSlippage = calculateSlippage(orderbook.upAsks, TRADE_CONFIG.lateEntry.budget);
       if (upSlippage.slippagePercent <= TRADE_CONFIG.lateEntry.maxSlippage) {
         return {
@@ -285,7 +308,7 @@ function makeRealtimeTradeDecision(
         };
       }
     }
-    if (downBestAsk <= 0.25) {
+    if (downBestAsk <= TRADE_CONFIG.lateEntry.maxPrice) {
       const downSlippage = calculateSlippage(orderbook.downAsks, TRADE_CONFIG.lateEntry.budget);
       if (downSlippage.slippagePercent <= TRADE_CONFIG.lateEntry.maxSlippage) {
         return {
@@ -300,9 +323,51 @@ function makeRealtimeTradeDecision(
     }
   }
 
+  // Strategy 5: EXPOSED RISK - single side bet based on momentum (like gabagool22)
+  if (TRADE_CONFIG.exposedRisk.enabled && 
+      priceDeltaPercent !== null && 
+      remainingSeconds >= TRADE_CONFIG.exposedRisk.minRemainingSeconds) {
+    
+    const absMove = Math.abs(priceDeltaPercent);
+    
+    // Crypto going UP and UP outcome is cheap enough
+    if (priceDeltaPercent >= TRADE_CONFIG.exposedRisk.minPriceMove && upBestAsk <= TRADE_CONFIG.exposedRisk.maxPrice) {
+      const upSlippage = calculateSlippage(orderbook.upAsks, TRADE_CONFIG.exposedRisk.budget);
+      
+      if (upSlippage.slippagePercent <= TRADE_CONFIG.exposedRisk.maxSlippage &&
+          upSlippage.availableLiquidity >= 20) {
+        return {
+          shouldTrade: true,
+          outcome: 'UP',
+          upShares: upSlippage.filledShares,
+          tradeType: 'EXPOSED_RISK_UP',
+          reasoning: `🎯 Exposed UP: crypto +${priceDeltaPercent.toFixed(2)}%, UP @ ${(upBestAsk * 100).toFixed(0)}¢ (no hedge)`,
+          upSlippage,
+        };
+      }
+    }
+    
+    // Crypto going DOWN and DOWN outcome is cheap enough
+    if (priceDeltaPercent <= -TRADE_CONFIG.exposedRisk.minPriceMove && downBestAsk <= TRADE_CONFIG.exposedRisk.maxPrice) {
+      const downSlippage = calculateSlippage(orderbook.downAsks, TRADE_CONFIG.exposedRisk.budget);
+      
+      if (downSlippage.slippagePercent <= TRADE_CONFIG.exposedRisk.maxSlippage &&
+          downSlippage.availableLiquidity >= 20) {
+        return {
+          shouldTrade: true,
+          outcome: 'DOWN',
+          downShares: downSlippage.filledShares,
+          tradeType: 'EXPOSED_RISK_DOWN',
+          reasoning: `🎯 Exposed DOWN: crypto ${priceDeltaPercent.toFixed(2)}%, DOWN @ ${(downBestAsk * 100).toFixed(0)}¢ (no hedge)`,
+          downSlippage,
+        };
+      }
+    }
+  }
+
   return { 
     shouldTrade: false, 
-    reasoning: `No opportunity: edge=${arbitrageEdge.toFixed(1)}%, UP=${(upBestAsk * 100).toFixed(0)}¢, DOWN=${(downBestAsk * 100).toFixed(0)}¢` 
+    reasoning: `No opportunity: edge=${arbitrageEdge.toFixed(1)}%, UP=${(upBestAsk * 100).toFixed(0)}¢, DOWN=${(downBestAsk * 100).toFixed(0)}¢, Δ=${priceDeltaPercent?.toFixed(2) ?? 'N/A'}%` 
   };
 }
 
@@ -338,6 +403,7 @@ async function handleWebSocket(req: Request): Promise<Response> {
   let cryptoPrices: { btc: number | null; eth: number | null } = { btc: null, eth: null };
   let existingTrades: Set<string> = new Set();
   let isEnabled = false;
+  let statusLogInterval: ReturnType<typeof setInterval> | null = null;
 
   const log = (msg: string) => {
     console.log(`[PaperTradeRT] ${msg}`);
@@ -498,7 +564,7 @@ async function handleWebSocket(req: Request): Promise<Response> {
       }
     } else if (eventType === 'price_change') {
       // Price update - still triggers evaluation
-      const changes = data.changes || [];
+      const changes = data.changes || data.price_changes || [];
       const affectedSlugs = new Set<string>();
       
       for (const change of changes) {
@@ -553,6 +619,14 @@ async function handleWebSocket(req: Request): Promise<Response> {
     // Get crypto price
     const cryptoPrice = market.asset === 'BTC' ? cryptoPrices.btc : cryptoPrices.eth;
     
+    // Calculate metrics for logging
+    const upBestAsk = orderbook.upAsks[0]?.price ?? 0.5;
+    const downBestAsk = orderbook.downAsks[0]?.price ?? 0.5;
+    const combinedPrice = upBestAsk + downBestAsk;
+    const arbitrageEdge = (1 - combinedPrice) * 100;
+    const priceDelta = cryptoPrice && market.openPrice ? cryptoPrice - market.openPrice : null;
+    const priceDeltaPercent = priceDelta && market.openPrice ? (priceDelta / market.openPrice) * 100 : null;
+    
     // Make trade decision
     const decision = makeRealtimeTradeDecision(
       orderbook,
@@ -561,23 +635,15 @@ async function handleWebSocket(req: Request): Promise<Response> {
       remainingSeconds
     );
     
+    // ALWAYS log the decision for debugging
+    log(`📊 ${slug}: edge=${arbitrageEdge.toFixed(1)}%, UP=${(upBestAsk*100).toFixed(0)}¢, DOWN=${(downBestAsk*100).toFixed(0)}¢, Δ=${priceDeltaPercent?.toFixed(2) ?? 'N/A'}%, time=${remainingSeconds}s → ${decision.shouldTrade ? '🚀 TRADE' : '⏸️ SKIP'}: ${decision.reasoning}`);
+    
     if (!decision.shouldTrade) {
       return;
     }
     
     // Check for duplicates
     const trades: PaperTrade[] = [];
-    const upBestAsk = orderbook.upAsks[0]?.price ?? 0.5;
-    const downBestAsk = orderbook.downAsks[0]?.price ?? 0.5;
-    const combinedPrice = upBestAsk + downBestAsk;
-    const arbitrageEdge = (1 - combinedPrice) * 100;
-    
-    const priceDelta = cryptoPrice && market.openPrice 
-      ? cryptoPrice - market.openPrice 
-      : null;
-    const priceDeltaPercent = priceDelta && market.openPrice 
-      ? (priceDelta / market.openPrice) * 100 
-      : null;
     
     // Create UP trade
     if ((decision.outcome === 'UP' || decision.outcome === 'BOTH') && decision.upShares && decision.upShares > 0) {
@@ -703,6 +769,16 @@ async function handleWebSocket(req: Request): Promise<Response> {
     };
   };
 
+  // Start periodic status logging
+  const startStatusLogging = () => {
+    statusLogInterval = setInterval(() => {
+      const orderbooksWithData = [...orderbooks.values()].filter(
+        ob => ob.upAsks.length > 0 || ob.downAsks.length > 0
+      ).length;
+      log(`📈 Status: ${orderbooksWithData}/${markets.size} markets with data | BTC: $${cryptoPrices.btc?.toFixed(0) ?? 'N/A'} | ETH: $${cryptoPrices.eth?.toFixed(0) ?? 'N/A'} | Existing trades: ${existingTrades.size}`);
+    }, 30000);
+  };
+
   socket.onopen = async () => {
     log('Client connected');
     
@@ -725,6 +801,9 @@ async function handleWebSocket(req: Request): Promise<Response> {
     connectToClob();
     connectToRtds();
     
+    // Start status logging
+    startStatusLogging();
+    
     // Refresh markets periodically
     const refreshInterval = setInterval(async () => {
       isEnabled = await checkBotEnabled();
@@ -732,6 +811,7 @@ async function handleWebSocket(req: Request): Promise<Response> {
         log('Bot disabled, stopping');
         clobSocket?.close();
         clearInterval(refreshInterval);
+        if (statusLogInterval) clearInterval(statusLogInterval);
         return;
       }
       
@@ -754,6 +834,7 @@ async function handleWebSocket(req: Request): Promise<Response> {
   socket.onclose = () => {
     log('Client disconnected');
     clobSocket?.close();
+    if (statusLogInterval) clearInterval(statusLogInterval);
   };
 
   return response;
@@ -786,6 +867,7 @@ async function handleHttpRequest(req: Request): Promise<Response> {
       success: true,
       isEnabled,
       mode: 'realtime',
+      config: TRADE_CONFIG,
       recentTrades: recentTrades || [],
       message: isEnabled 
         ? 'Real-time paper trading bot is active. Connect via WebSocket for live updates.'

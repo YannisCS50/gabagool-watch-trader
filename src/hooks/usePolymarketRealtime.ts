@@ -393,18 +393,35 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
           }
         }
         
-        // Also process book events (backup)
+        // Also process book events (backup) - with robust parsing to avoid NaN
         if (data.event_type === 'book' && data.asset_id) {
           const tokenId = data.asset_id;
           const marketInfo = tokenToMarketRef.current.get(tokenId);
           
           if (marketInfo) {
-            const asks = data.asks || [];
-            const bids = data.bids || [];
-            const bestAsk = asks.length > 0 ? parseFloat(asks[0][0]) : null;
-            const bestBid = bids.length > 0 ? parseFloat(bids[0][0]) : null;
+            // Robust parsing: check that asks/bids are arrays of arrays
+            const rawAsks = Array.isArray(data.asks) ? data.asks : [];
+            const rawBids = Array.isArray(data.bids) ? data.bids : [];
             
-            // Only update if we have actual data
+            // Parse best ask/bid with validation
+            let bestAsk: number | null = null;
+            let bestBid: number | null = null;
+            
+            if (rawAsks.length > 0 && Array.isArray(rawAsks[0]) && rawAsks[0].length > 0) {
+              const parsed = parseFloat(rawAsks[0][0]);
+              if (!isNaN(parsed) && parsed > 0) {
+                bestAsk = parsed;
+              }
+            }
+            
+            if (rawBids.length > 0 && Array.isArray(rawBids[0]) && rawBids[0].length > 0) {
+              const parsed = parseFloat(rawBids[0][0]);
+              if (!isNaN(parsed) && parsed > 0) {
+                bestBid = parsed;
+              }
+            }
+            
+            // Only update if we have valid data (not NaN)
             if (bestAsk !== null || bestBid !== null) {
               console.log(`[BOOK] ${marketInfo.slug} ${marketInfo.outcome}: ask=${bestAsk} bid=${bestBid}`);
               
