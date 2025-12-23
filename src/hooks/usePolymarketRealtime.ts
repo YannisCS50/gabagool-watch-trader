@@ -24,9 +24,8 @@ export interface MarketInfo {
   eventStartTime: Date;
   eventEndTime: Date;
   marketType: "price_above" | "price_target" | "15min" | "other";
-  strikePrice: number | null;
-  previousMarketClosePrice?: number | null;
-  previousMarketResult?: string | null;
+  openPrice: number | null;     // The "Price to Beat" (oracle open price)
+  strikePrice: number | null;   // Legacy alias for openPrice
 }
 
 export interface ExpiredMarket {
@@ -35,8 +34,9 @@ export interface ExpiredMarket {
   question: string;
   eventStartTime: Date;
   eventEndTime: Date;
-  strikePrice: number | null;
-  closePrice: number | null;
+  openPrice: number | null;      // The "Price to Beat" at market start
+  strikePrice: number | null;    // Legacy alias
+  closePrice: number | null;     // Settlement price at market end
   upPriceAtClose: number | null;
   downPriceAtClose: number | null;
   result: "UP" | "DOWN" | "UNKNOWN" | null;
@@ -96,9 +96,8 @@ async function fetchActiveMarkets(): Promise<MarketInfo[]> {
       eventStartTime: new Date(m.eventStartTime),
       eventEndTime: new Date(m.eventEndTime),
       marketType: m.marketType || 'other',
-      strikePrice: m.strikePrice || null,
-      previousMarketClosePrice: m.previousMarketClosePrice || null,
-      previousMarketResult: m.previousMarketResult || null,
+      openPrice: m.openPrice ?? m.strikePrice ?? null,
+      strikePrice: m.openPrice ?? m.strikePrice ?? null, // Legacy alias
     }));
     
     console.log("[Market Discovery] Found", markets.length, "markets");
@@ -131,7 +130,8 @@ async function fetchExpiredMarketsFromDB(): Promise<ExpiredMarket[]> {
       question: m.question || '',
       eventStartTime: new Date(m.event_start_time),
       eventEndTime: new Date(m.event_end_time),
-      strikePrice: m.strike_price,
+      openPrice: m.open_price ?? m.strike_price ?? null,
+      strikePrice: m.open_price ?? m.strike_price ?? null, // Legacy alias
       closePrice: m.close_price,
       upPriceAtClose: m.up_price_at_close,
       downPriceAtClose: m.down_price_at_close,
@@ -570,9 +570,10 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
             const exists = prev.some(m => m.slug === market.slug);
             if (exists) return prev;
             
+            const openPrice = market.openPrice ?? market.strikePrice;
             let result: "UP" | "DOWN" | "UNKNOWN" = "UNKNOWN";
-            if (closePrice && market.strikePrice) {
-              result = closePrice > market.strikePrice ? "UP" : "DOWN";
+            if (closePrice && openPrice) {
+              result = closePrice > openPrice ? "UP" : "DOWN";
             }
             
             return [{
@@ -581,7 +582,8 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
               question: market.question,
               eventStartTime: market.eventStartTime,
               eventEndTime: market.eventEndTime,
-              strikePrice: market.strikePrice,
+              openPrice,
+              strikePrice: openPrice, // Legacy alias
               closePrice,
               upPriceAtClose: upPrice,
               downPriceAtClose: downPrice,

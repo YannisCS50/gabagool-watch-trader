@@ -18,12 +18,15 @@ export type Database = {
         Row: {
           asset: string
           close_price: number | null
+          close_timestamp: number | null
           created_at: string
           down_price_at_close: number | null
           down_token_id: string | null
           event_end_time: string
           event_start_time: string
           id: string
+          open_price: number | null
+          open_timestamp: number | null
           question: string | null
           result: string | null
           slug: string
@@ -35,12 +38,15 @@ export type Database = {
         Insert: {
           asset: string
           close_price?: number | null
+          close_timestamp?: number | null
           created_at?: string
           down_price_at_close?: number | null
           down_token_id?: string | null
           event_end_time: string
           event_start_time: string
           id?: string
+          open_price?: number | null
+          open_timestamp?: number | null
           question?: string | null
           result?: string | null
           slug: string
@@ -52,12 +58,15 @@ export type Database = {
         Update: {
           asset?: string
           close_price?: number | null
+          close_timestamp?: number | null
           created_at?: string
           down_price_at_close?: number | null
           down_token_id?: string | null
           event_end_time?: string
           event_start_time?: string
           id?: string
+          open_price?: number | null
+          open_timestamp?: number | null
           question?: string | null
           result?: string | null
           slug?: string

@@ -42,9 +42,8 @@ interface LiveMarket {
   eventEndTime: Date;
   remainingSeconds: number;
   marketType: string;
-  strikePrice: number | null;
-  previousMarketClosePrice?: number | null;
-  previousMarketResult?: string | null;
+  openPrice: number | null;      // Price to Beat
+  strikePrice: number | null;    // Legacy alias
 }
 
 // MarketCard component for reuse
@@ -62,12 +61,12 @@ const MarketCard = ({
   const confidence = getConfidenceLevel(market.arbitrageEdge);
   const isExpiringSoon = market.remainingSeconds < 120;
 
-  // Calculate price difference
-  const priceDiff = currentPrice && market.strikePrice 
-    ? currentPrice - market.strikePrice 
+  // Calculate price difference using openPrice (Price to Beat)
+  const priceDiff = currentPrice && market.openPrice 
+    ? currentPrice - market.openPrice 
     : null;
-  const priceDiffPercent = currentPrice && market.strikePrice
-    ? ((currentPrice - market.strikePrice) / market.strikePrice) * 100
+  const priceDiffPercent = currentPrice && market.openPrice
+    ? ((currentPrice - market.openPrice) / market.openPrice) * 100
     : null;
 
   return (
@@ -92,12 +91,12 @@ const MarketCard = ({
             {formatTime(market.remainingSeconds)}
           </div>
           
-          {market.strikePrice && (
+          {market.openPrice && (
             <>
               <div className="flex items-center gap-1 px-2 py-1 rounded-md bg-amber-500/20 text-amber-400">
                 <Target className="w-3 h-3" />
                 <span className="font-mono text-sm font-bold">
-                  ${market.strikePrice.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                  ${market.openPrice.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                 </span>
               </div>
               
@@ -273,9 +272,8 @@ const RealTimeSignalsPage = () => {
         eventEndTime: market.eventEndTime,
         remainingSeconds,
         marketType: market.marketType,
-        strikePrice: market.strikePrice,
-        previousMarketClosePrice: market.previousMarketClosePrice,
-        previousMarketResult: market.previousMarketResult,
+        openPrice: market.openPrice ?? market.strikePrice ?? null,
+        strikePrice: market.openPrice ?? market.strikePrice ?? null,
       };
     });
 
@@ -582,9 +580,9 @@ const RealTimeSignalsPage = () => {
                           </span>
                         </div>
                         <div className="flex items-center gap-3 text-xs">
-                          {market.strikePrice && (
+                          {market.openPrice && (
                             <span className="text-amber-400">
-                              Strike: ${market.strikePrice.toLocaleString()}
+                              Open: ${market.openPrice.toLocaleString()}
                             </span>
                           )}
                           {market.closePrice && (
