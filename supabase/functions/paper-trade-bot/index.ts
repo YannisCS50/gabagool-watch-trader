@@ -246,6 +246,24 @@ Deno.serve(async (req) => {
   try {
     console.log('[paper-trade-bot] Starting paper trade cycle...');
 
+    // Check if bot is enabled
+    const { data: settings } = await supabase
+      .from('paper_bot_settings')
+      .select('is_enabled')
+      .limit(1)
+      .maybeSingle();
+
+    if (!settings?.is_enabled) {
+      console.log('[paper-trade-bot] Bot is disabled, skipping...');
+      return new Response(JSON.stringify({
+        success: true,
+        message: 'Bot is disabled',
+        tradesPlaced: 0,
+      }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     // 1. Fetch active markets
     const marketsResponse = await fetch(`${supabaseUrl}/functions/v1/get-market-tokens`, {
       method: 'POST',
