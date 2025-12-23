@@ -59,12 +59,14 @@ export const RealTimeSignals = () => {
     }
   }, []);
 
-  // Initial fetch and periodic refresh
+  // Initial fetch and periodic refresh (every 10s until we have markets, then every 30s)
   useEffect(() => {
     fetchMarkets();
-    const interval = setInterval(fetchMarkets, 2 * 60 * 1000);
+    const interval = setInterval(() => {
+      fetchMarkets();
+    }, markets.length === 0 ? 10000 : 30000);
     return () => clearInterval(interval);
-  }, [fetchMarkets]);
+  }, [fetchMarkets, markets.length]);
 
   // Extract token IDs for WebSocket
   const tokenIds = useMemo(() => {
