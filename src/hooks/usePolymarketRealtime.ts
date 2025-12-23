@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /**
- * Polymarket market prices via RTDS proxy edge function
- * Subscribes to activity/trades for market_slug updates
- * Falls back to REST polling if WebSocket fails
+ * True realtime Up/Down pricing for Polymarket markets.
+ *
+ * For arbitrage you want the *cost to buy now*, so we track best ASK (top of book)
+ * per outcome token via Polymarket CLOB market websocket (proxied server-side).
  */
 
 type ConnectionState = "disconnected" | "connecting" | "connected" | "error";
@@ -24,23 +25,65 @@ interface UsePolymarketRealtimeResult {
   disconnect: () => void;
 }
 
-const PROXY_WS_URL = "wss://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/rtds-proxy";
-const PROXY_REST_URL = "https://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/rtds-proxy";
-const RECONNECT_DELAY_MS = 3000;
-const MAX_RECONNECT_ATTEMPTS = 5;
-const REST_POLL_INTERVAL = 3000;
-const UI_SYNC_INTERVAL_MS = 100;
+const CLOB_PROXY_WS_URL = "wss://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/clob-proxy";
+
+const RECONNECT_DELAY_MS = 1500;
+const MAX_RECONNECT_ATTEMPTS = 10;
+const UI_SYNC_INTERVAL_MS = 75;
 
 const normalizeOutcome = (o: string) => o.trim().toLowerCase();
 
+function parseNumber(n: unknown): number | null {
+  const v = typeof n === "number" ? n : typeof n === "string" ? Number(n) : NaN;
+  return Number.isFinite(v) ? v : null;
+}
+
+function inferUpDownTokenIds(outcomes: unknown, tokenIds: unknown): { up: string; down: string } | null {
+  if (!Array.isArray(outcomes) || !Array.isArray(tokenIds)) return null;
+  if (tokenIds.length < 2) return null;
+
+  const o0 = String(outcomes[0] ?? "").toLowerCase();
+  const id0 = String(tokenIds[0] ?? "");
+  const id1 = String(tokenIds[1] ?? "");
+
+  const o0IsDown = o0.includes("no") || o0.includes("down");
+  return o0IsDown ? { up: id1, down: id0 } : { up: id0, down: id1 };
+}
+
+async function fetchSlugTokenIds(slug: string) {
+  const r = await fetch(`https://gamma-api.polymarket.com/markets?slug=${encodeURIComponent(slug)}`);
+  if (!r.ok) return null;
+  const markets = await r.json();
+  if (!Array.isArray(markets) || markets.length === 0) return null;
+
+  const m = markets[0] as any;
+  // Polymarket markets often expose these
+  const tokenIds = m.clobTokenIds ?? m.clob_token_ids ?? null;
+  const outcomes = m.outcomes ?? null;
+
+  const inferred = inferUpDownTokenIds(outcomes, tokenIds);
+  if (!inferred) return null;
+
+  return {
+    upTokenId: inferred.up,
+    downTokenId: inferred.down,
+  };
+}
+
 export function usePolymarketRealtime(
   marketSlugs: string[],
-  enabled: boolean = true
+  enabled: boolean = true,
 ): UsePolymarketRealtimeResult {
   // Map: marketSlug -> outcome -> price
   const pricesRef = useRef<Map<string, Map<string, PricePoint>>>(new Map());
   const updateCountRef = useRef(0);
   const lastUpdateTimeRef = useRef(Date.now());
+
+  // Token mapping (tokenId -> { slug, outcome })
+  const tokenToMarketRef = useRef<Map<string, { slug: string; outcome: "up" | "down" }>>(new Map());
+  const tokenCacheRef = useRef<Map<string, { upTokenId: string; downTokenId: string }>>(new Map());
+
+  const [tokenIds, setTokenIds] = useState<string[]>([]);
 
   const [isConnected, setIsConnected] = useState(false);
   const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected");
@@ -52,9 +95,8 @@ export function usePolymarketRealtime(
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const uiSyncIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const subscribedSlugsRef = useRef<string>("");
-  const useRestFallback = useRef(false);
+
+  const slugsKey = useMemo(() => marketSlugs.slice().sort().join(","), [marketSlugs]);
 
   const startUiSync = useCallback(() => {
     if (uiSyncIntervalRef.current) return;
@@ -75,65 +117,8 @@ export function usePolymarketRealtime(
     }
   }, []);
 
-  // REST API fallback polling
-  const pollPrices = useCallback(async () => {
-    if (marketSlugs.length === 0) return;
-    
-    try {
-      const response = await fetch(PROXY_REST_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ market_slugs: marketSlugs })
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        const now = Date.now();
-        
-        if (data.markets) {
-          for (const [slug, prices] of Object.entries(data.markets)) {
-            const p = prices as { up: number; down: number };
-            let marketMap = pricesRef.current.get(slug);
-            if (!marketMap) {
-              marketMap = new Map();
-              pricesRef.current.set(slug, marketMap);
-            }
-            marketMap.set('up', { price: p.up, timestampMs: now });
-            marketMap.set('yes', { price: p.up, timestampMs: now });
-            marketMap.set('down', { price: p.down, timestampMs: now });
-            marketMap.set('no', { price: p.down, timestampMs: now });
-          }
-          updateCountRef.current++;
-          lastUpdateTimeRef.current = now;
-        }
-        
-        setIsConnected(true);
-        setConnectionState('connected');
-      }
-    } catch (err) {
-      console.error('[Market REST] Poll error:', err);
-    }
-  }, [marketSlugs]);
-
-  const startRestPolling = useCallback(() => {
-    if (pollIntervalRef.current) return;
-    console.log('[Market] Starting REST API polling fallback');
-    useRestFallback.current = true;
-    pollPrices();
-    pollIntervalRef.current = setInterval(pollPrices, REST_POLL_INTERVAL);
-    startUiSync();
-  }, [pollPrices, startUiSync]);
-
-  const stopRestPolling = useCallback(() => {
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = null;
-    }
-  }, []);
-
   const disconnect = useCallback(() => {
     stopUiSync();
-    stopRestPolling();
 
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
@@ -151,139 +136,206 @@ export function usePolymarketRealtime(
 
     setIsConnected(false);
     setConnectionState("disconnected");
-  }, [stopUiSync, stopRestPolling]);
+  }, [stopUiSync]);
+
+  // Fetch token IDs for current slugs (fast, parallel, cached)
+  useEffect(() => {
+    let cancelled = false;
+
+    async function run() {
+      if (!enabled || marketSlugs.length === 0) {
+        setTokenIds([]);
+        return;
+      }
+
+      const missing = marketSlugs.filter((s) => !tokenCacheRef.current.has(s));
+      if (missing.length > 0) {
+        const results = await Promise.all(
+          missing.map(async (slug) => {
+            try {
+              const t = await fetchSlugTokenIds(slug);
+              return { slug, tokens: t };
+            } catch {
+              return { slug, tokens: null };
+            }
+          }),
+        );
+
+        for (const r of results) {
+          if (r.tokens) tokenCacheRef.current.set(r.slug, r.tokens);
+        }
+      }
+
+      // Build tokenId list + reverse mapping
+      const nextTokenToMarket = new Map<string, { slug: string; outcome: "up" | "down" }>();
+      const nextTokenIds: string[] = [];
+
+      for (const slug of marketSlugs) {
+        const t = tokenCacheRef.current.get(slug);
+        if (!t) continue;
+
+        nextTokenToMarket.set(t.upTokenId, { slug, outcome: "up" });
+        nextTokenToMarket.set(t.downTokenId, { slug, outcome: "down" });
+        nextTokenIds.push(t.upTokenId, t.downTokenId);
+      }
+
+      if (!cancelled) {
+        tokenToMarketRef.current = nextTokenToMarket;
+        setTokenIds(nextTokenIds);
+      }
+    }
+
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled, slugsKey]);
 
   const connect = useCallback(() => {
     if (!enabled) return;
-    if (marketSlugs.length === 0) {
-      console.log("[Market WS] No market slugs, not connecting");
-      return;
-    }
+    if (tokenIds.length === 0) return;
 
     setConnectionState("connecting");
-    console.log("[Market WS] Connecting via proxy...", { count: marketSlugs.length });
 
     try {
-      const ws = new WebSocket(PROXY_WS_URL);
+      const ws = new WebSocket(CLOB_PROXY_WS_URL);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        console.log("[Market WS] Connected to proxy");
         reconnectAttemptsRef.current = 0;
       };
 
       ws.onmessage = (event) => {
         const now = Date.now();
-        
-        let msg: any = null;
+
+        // Proxy control messages
         try {
-          msg = JSON.parse(event.data);
-        } catch {
-          return;
-        }
+          const msg = JSON.parse(event.data);
 
-        // Proxy connected - subscribe to trades
-        if (msg.type === 'proxy_connected') {
-          console.log('[Market WS] Proxy connected to RTDS, subscribing...');
-          setIsConnected(true);
-          setConnectionState('connected');
-          stopRestPolling();
-          useRestFallback.current = false;
-          
-          const subscriptions = marketSlugs.map((slug) => ({
-            topic: "activity",
-            type: "trades",
-            filters: JSON.stringify({ market_slug: slug }),
-          }));
-          
-          ws.send(JSON.stringify({ action: "subscribe", subscriptions }));
-          subscribedSlugsRef.current = marketSlugs.join(",");
-          startUiSync();
-          return;
-        }
+          if (msg?.type === "proxy_connected") {
+            setIsConnected(true);
+            setConnectionState("connected");
 
-        // Proxy error - fall back to REST
-        if (msg.type === 'proxy_error' || msg.type === 'proxy_disconnected') {
-          console.log('[Market WS] Proxy error, falling back to REST');
-          startRestPolling();
-          return;
-        }
+            // Initial subscription (CLOB market channel)
+            ws.send(
+              JSON.stringify({
+                type: "market",
+                assets_ids: tokenIds,
+              }),
+            );
 
-        // Handle trade updates
-        if (msg.topic === "activity" && msg.payload) {
-          const { slug, outcome, price, timestamp } = msg.payload;
-          if (!slug || !outcome || typeof price !== "number") return;
-
-          const outcomeKey = normalizeOutcome(outcome);
-          const timestampMs = typeof timestamp === "number" 
-            ? (timestamp < 1_000_000_000_000 ? timestamp * 1000 : timestamp) 
-            : now;
-
-          let marketMap = pricesRef.current.get(slug);
-          if (!marketMap) {
-            marketMap = new Map();
-            pricesRef.current.set(slug, marketMap);
+            startUiSync();
+            return;
           }
-          marketMap.set(outcomeKey, { price, timestampMs });
 
-          updateCountRef.current++;
-          lastUpdateTimeRef.current = timestampMs;
-          
-          console.log(`[Market WS] Trade: ${slug} ${outcomeKey}=${price.toFixed(2)}`);
+          if (msg?.type === "proxy_error" || msg?.type === "proxy_disconnected") {
+            setIsConnected(false);
+            setConnectionState("error");
+            return;
+          }
+
+          // CLOB messages
+          const eventType = msg?.event_type;
+
+          if (eventType === "price_change" && Array.isArray(msg.price_changes)) {
+            const ts = parseNumber(msg.timestamp) ?? now;
+
+            for (const pc of msg.price_changes) {
+              const tokenId = String((pc as any)?.asset_id ?? "");
+              const bestAsk = parseNumber((pc as any)?.best_ask);
+              if (!tokenId || bestAsk == null) continue;
+
+              const m = tokenToMarketRef.current.get(tokenId);
+              if (!m) continue;
+
+              let marketMap = pricesRef.current.get(m.slug);
+              if (!marketMap) {
+                marketMap = new Map();
+                pricesRef.current.set(m.slug, marketMap);
+              }
+
+              const key = m.outcome;
+              marketMap.set(key, { price: bestAsk, timestampMs: ts });
+              // outcome aliases
+              if (key === "up") marketMap.set("yes", { price: bestAsk, timestampMs: ts });
+              if (key === "down") marketMap.set("no", { price: bestAsk, timestampMs: ts });
+
+              updateCountRef.current++;
+              lastUpdateTimeRef.current = ts;
+            }
+
+            return;
+          }
+
+          if (eventType === "book") {
+            const tokenId = String(msg.asset_id ?? "");
+            const asks = Array.isArray(msg.asks) ? msg.asks : [];
+            const bestAsk = asks.length > 0 ? parseNumber(asks[0]?.price) : null;
+            const ts = parseNumber(msg.timestamp) ?? now;
+
+            if (!tokenId || bestAsk == null) return;
+
+            const m = tokenToMarketRef.current.get(tokenId);
+            if (!m) return;
+
+            let marketMap = pricesRef.current.get(m.slug);
+            if (!marketMap) {
+              marketMap = new Map();
+              pricesRef.current.set(m.slug, marketMap);
+            }
+
+            const key = m.outcome;
+            marketMap.set(key, { price: bestAsk, timestampMs: ts });
+            if (key === "up") marketMap.set("yes", { price: bestAsk, timestampMs: ts });
+            if (key === "down") marketMap.set("no", { price: bestAsk, timestampMs: ts });
+
+            updateCountRef.current++;
+            lastUpdateTimeRef.current = ts;
+            return;
+          }
+        } catch {
+          // non-JSON (e.g. PONG) -> ignore
         }
       };
 
-      ws.onerror = (err) => {
-        console.error("[Market WS] Error:", err);
+      ws.onerror = () => {
         setConnectionState("error");
       };
 
-      ws.onclose = (event) => {
-        console.log("[Market WS] Disconnected:", event.code);
+      ws.onclose = () => {
         setIsConnected(false);
         wsRef.current = null;
         stopUiSync();
 
-        if (enabled && !useRestFallback.current) {
-          if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
-            reconnectAttemptsRef.current++;
-            reconnectTimeoutRef.current = setTimeout(connect, RECONNECT_DELAY_MS);
-          } else {
-            console.log('[Market WS] Max reconnects reached, using REST fallback');
-            startRestPolling();
-          }
+        if (!enabled) return;
+
+        if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
+          reconnectAttemptsRef.current++;
+          reconnectTimeoutRef.current = setTimeout(connect, RECONNECT_DELAY_MS);
+        } else {
+          setConnectionState("error");
         }
       };
-    } catch (e) {
-      console.error("[Market WS] Failed to connect:", e);
+    } catch {
       setConnectionState("error");
-      startRestPolling();
     }
-  }, [enabled, marketSlugs, startUiSync, stopUiSync, startRestPolling, stopRestPolling]);
+  }, [enabled, tokenIds, startUiSync, stopUiSync]);
 
-  // Reconnect when subscription set changes
+  // (Re)connect when token set changes
   useEffect(() => {
-    const next = marketSlugs.join(",");
-    const changed = next !== subscribedSlugsRef.current;
-
     if (!enabled) {
       disconnect();
       return;
     }
 
-    if (marketSlugs.length === 0) {
+    if (tokenIds.length === 0) {
       disconnect();
       return;
     }
 
-    if (changed || !wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
-      disconnect();
-      // Start with REST polling for immediate data
-      startRestPolling();
-      // Then try WebSocket
-      connect();
-    }
-  }, [enabled, marketSlugs.join(","), connect, disconnect, startRestPolling]);
+    disconnect();
+    connect();
+  }, [enabled, tokenIds.join(","), connect, disconnect]);
 
   useEffect(() => () => disconnect(), [disconnect]);
 
