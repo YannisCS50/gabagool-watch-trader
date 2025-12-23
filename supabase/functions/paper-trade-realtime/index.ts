@@ -221,7 +221,41 @@ function makeGabagoolTradeDecision(
     favoredSide = upBestAsk <= downBestAsk ? 'UP' : 'DOWN';
   }
 
-  // Late entry disabled - only OPEN → HEDGE → DCA flow
+  // ============================================
+  // PHASE 4: Late Arbitrage Only (last 5 min, only if combined < $1)
+  // ============================================
+  const lateCfg = TRADE_CONFIG.lateEntry;
+  const lateCombinedPrice = upBestAsk + downBestAsk;
+  
+  if (lateCfg.enabled && 
+      remainingSeconds <= lateCfg.maxRemainingSeconds && 
+      remainingSeconds >= lateCfg.minRemainingSeconds &&
+      lateCombinedPrice < 1) {  // ONLY if there's actual arbitrage
+    
+    const lateArbitrageEdge = 1 - lateCombinedPrice;
+    const cheaperSide = upBestAsk <= downBestAsk ? 'UP' : 'DOWN';
+    const cheaperPrice = Math.min(upBestAsk, downBestAsk);
+    
+    if (cheaperPrice <= lateCfg.maxPrice && cheaperPrice >= lateCfg.minPrice) {
+      const orderbookSide = cheaperSide === 'UP' ? orderbook.upAsks : orderbook.downAsks;
+      const slippage = calculateSlippage(orderbookSide, lateCfg.budget);
+      
+      if (slippage.slippagePercent <= lateCfg.maxSlippage && 
+          slippage.availableLiquidity >= lateCfg.minLiquidity) {
+        
+        return {
+          shouldTrade: true,
+          outcome: cheaperSide,
+          upShares: cheaperSide === 'UP' ? slippage.filledShares : undefined,
+          downShares: cheaperSide === 'DOWN' ? slippage.filledShares : undefined,
+          tradeType: `LATE_ARB_${cheaperSide}`,
+          reasoning: `⏰ Late ARB ${cheaperSide} @ ${(cheaperPrice*100).toFixed(0)}¢ | edge ${(lateArbitrageEdge*100).toFixed(1)}% | ${remainingSeconds}s`,
+          upSlippage: cheaperSide === 'UP' ? slippage : undefined,
+          downSlippage: cheaperSide === 'DOWN' ? slippage : undefined,
+        };
+      }
+    }
+  }
 
   // ============================================
   // PHASE 1: Opening Trade (no position yet)
