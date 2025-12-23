@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -10,9 +10,10 @@ import {
   Zap,
   Target,
   AlertTriangle,
-  CheckCircle2,
   Clock,
-  DollarSign
+  DollarSign,
+  Wifi,
+  WifiOff
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 
@@ -53,14 +54,17 @@ interface RealTimeData {
   };
 }
 
+const REFRESH_INTERVAL = 10000; // 10 seconds for live updates
+
 export const RealTimeSignals = () => {
   const [data, setData] = useState<RealTimeData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [isLive, setIsLive] = useState(true); // Start live by default
+  const [secondsSinceUpdate, setSecondsSinceUpdate] = useState(0);
 
-  const fetchSignals = async () => {
+  const fetchSignals = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     
@@ -73,26 +77,35 @@ export const RealTimeSignals = () => {
       
       setData(responseData);
       setLastUpdate(new Date());
+      setSecondsSinceUpdate(0);
     } catch (err: any) {
       console.error('Error fetching signals:', err);
       setError(err.message || 'Failed to fetch signals');
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
   // Initial fetch
   useEffect(() => {
     fetchSignals();
-  }, []);
+  }, [fetchSignals]);
 
-  // Auto-refresh every 30 seconds if enabled
+  // Live auto-refresh
   useEffect(() => {
-    if (!autoRefresh) return;
+    if (!isLive) return;
     
-    const interval = setInterval(fetchSignals, 30000);
+    const interval = setInterval(fetchSignals, REFRESH_INTERVAL);
     return () => clearInterval(interval);
-  }, [autoRefresh]);
+  }, [isLive, fetchSignals]);
+
+  // Update seconds counter
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setSecondsSinceUpdate(prev => prev + 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   const getConfidenceBadge = (confidence: string) => {
     switch (confidence) {
@@ -137,23 +150,55 @@ export const RealTimeSignals = () => {
         <CardHeader>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="p-2 bg-primary/10 rounded-lg">
+              <div className="p-2 bg-primary/10 rounded-lg relative">
                 <Activity className="w-6 h-6 text-primary" />
+                {isLive && (
+                  <span className="absolute -top-1 -right-1 w-3 h-3 bg-emerald-500 rounded-full animate-pulse" />
+                )}
               </div>
               <div>
-                <CardTitle className="text-xl">Real-Time Market Signals</CardTitle>
-                <CardDescription>
+                <CardTitle className="text-xl flex items-center gap-2">
+                  Real-Time Market Signals
+                  {isLive ? (
+                    <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30 flex items-center gap-1">
+                      <Wifi className="w-3 h-3" />
+                      LIVE
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="flex items-center gap-1">
+                      <WifiOff className="w-3 h-3" />
+                      Paused
+                    </Badge>
+                  )}
+                </CardTitle>
+                <CardDescription className="flex items-center gap-2">
                   Live Price to Beat vs Current Price analyse
+                  {lastUpdate && (
+                    <span className="text-xs">
+                      • Updated {secondsSinceUpdate}s ago
+                    </span>
+                  )}
                 </CardDescription>
               </div>
             </div>
             <div className="flex items-center gap-2">
               <Button
-                variant={autoRefresh ? "default" : "outline"}
+                variant={isLive ? "default" : "outline"}
                 size="sm"
-                onClick={() => setAutoRefresh(!autoRefresh)}
+                onClick={() => setIsLive(!isLive)}
+                className={isLive ? 'bg-emerald-600 hover:bg-emerald-700' : ''}
               >
-                {autoRefresh ? 'Auto ●' : 'Auto ○'}
+                {isLive ? (
+                  <>
+                    <Wifi className="w-4 h-4 mr-2" />
+                    Live
+                  </>
+                ) : (
+                  <>
+                    <WifiOff className="w-4 h-4 mr-2" />
+                    Paused
+                  </>
+                )}
               </Button>
               <Button
                 variant="outline"
