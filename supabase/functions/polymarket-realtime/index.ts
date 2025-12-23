@@ -61,16 +61,6 @@ async function fetchCryptoPrice(asset: 'BTC' | 'ETH'): Promise<number | null> {
   }
 }
 
-// Extract strike price from market title
-function extractStrikePrice(marketTitle: string): number | null {
-  // Patterns like "above $97,000.50" or "below $96,500"
-  const priceMatch = marketTitle.match(/\$?([\d,]+(?:\.\d+)?)/);
-  if (priceMatch) {
-    return parseFloat(priceMatch[1].replace(/,/g, ''));
-  }
-  return null;
-}
-
 // Parse timestamp from market slug like btc-updown-15m-1766485800
 function parseTimestampFromSlug(slug: string): number | null {
   const match = slug.match(/(\d{10})$/);
@@ -78,6 +68,53 @@ function parseTimestampFromSlug(slug: string): number | null {
     return parseInt(match[1], 10);
   }
   return null;
+}
+
+// Fetch strike price from Gamma API for a specific market slug
+async function fetchStrikePriceFromGamma(slug: string): Promise<number | null> {
+  try {
+    // Try to fetch the event directly
+    const response = await fetch(`https://gamma-api.polymarket.com/events?slug=${slug}`);
+    if (!response.ok) return null;
+    
+    const events = await response.json();
+    if (!events || events.length === 0) return null;
+    
+    const event = events[0];
+    
+    // Look for strike price in title or description
+    const textToSearch = `${event.title || ''} ${event.description || ''}`;
+    
+    // Patterns like "above $97,000.50" or "below $96,500" or just "$87,432"
+    const priceMatch = textToSearch.match(/\$\s*([\d,]+(?:\.\d+)?)/);
+    if (priceMatch) {
+      return parseFloat(priceMatch[1].replace(/,/g, ''));
+    }
+    
+    // Also check market questions
+    if (event.markets && Array.isArray(event.markets)) {
+      for (const market of event.markets) {
+        const question = market.question || '';
+        const qMatch = question.match(/\$\s*([\d,]+(?:\.\d+)?)/);
+        if (qMatch) {
+          return parseFloat(qMatch[1].replace(/,/g, ''));
+        }
+      }
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('Error fetching strike price from Gamma:', error);
+    return null;
+  }
+}
+
+interface MarketFromDB {
+  market: string;
+  market_slug: string;
+  upPrice: number;
+  downPrice: number;
+  eventTimestamp: number;
 }
 
 // Get active 15-min markets from trades database
@@ -143,7 +180,8 @@ async function get15MinMarketsFromDB(): Promise<MarketFromDB[]> {
 function calculateGabagoolSignal(
   market: MarketFromDB,
   currentCryptoPrice: number | null,
-  asset: 'BTC' | 'ETH'
+  asset: 'BTC' | 'ETH',
+  priceToBeat: number | null
 ): TradingSignal {
   const now = Date.now();
   const eventStart = market.eventTimestamp * 1000;
@@ -162,9 +200,6 @@ function calculateGabagoolSignal(
   
   const cheaperSide = upPrice < downPrice ? 'Up' : 'Down';
   const cheaperPrice = Math.min(upPrice, downPrice);
-  
-  // Extract strike price from market title
-  const priceToBeat = extractStrikePrice(market.market);
   
   // Calculate price delta
   let priceDelta: number | null = null;
@@ -271,12 +306,20 @@ serve(async (req) => {
     const now = Date.now();
     const signals: TradingSignal[] = [];
     
-    for (const market of marketsFromDB) {
+    // Fetch strike prices for all markets in parallel
+    const strikePricePromises = marketsFromDB.map(m => fetchStrikePriceFromGamma(m.market_slug));
+    const strikePrices = await Promise.all(strikePricePromises);
+    
+    for (let i = 0; i < marketsFromDB.length; i++) {
+      const market = marketsFromDB[i];
       const slug = market.market_slug.toLowerCase();
       const asset: 'BTC' | 'ETH' = slug.includes('btc') ? 'BTC' : 'ETH';
       const cryptoPrice = asset === 'BTC' ? btcPrice : ethPrice;
+      const priceToBeat = strikePrices[i];
       
-      const signal = calculateGabagoolSignal(market, cryptoPrice, asset);
+      console.log(`Market ${slug}: strike=$${priceToBeat}, current=${cryptoPrice}`);
+      
+      const signal = calculateGabagoolSignal(market, cryptoPrice, asset, priceToBeat);
       signals.push(signal);
     }
     
