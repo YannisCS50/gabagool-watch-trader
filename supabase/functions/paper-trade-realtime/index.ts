@@ -528,7 +528,9 @@ async function handleWebSocket(req: Request): Promise<Response> {
         const activeSlugs = new Set<string>();
 
         for (const market of data.markets) {
+          // Only trade BTC 15-min markets
           if (market.marketType !== '15min') continue;
+          if (market.asset !== 'BTC') continue;
 
           const startMs = new Date(market.eventStartTime).getTime();
           const endMs = new Date(market.eventEndTime).getTime();
