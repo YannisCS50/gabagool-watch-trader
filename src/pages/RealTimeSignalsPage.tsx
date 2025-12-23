@@ -29,6 +29,8 @@ import {
   Cpu,
   ArrowUpRight,
   ArrowDownRight,
+  ExternalLink,
+  Clock,
 } from "lucide-react";
 import { usePolymarketRealtime } from "@/hooks/usePolymarketRealtime";
 import { useChainlinkRealtime } from "@/hooks/useChainlinkRealtime";
@@ -60,6 +62,7 @@ const RealTimeSignalsPage = () => {
   const [isLive, setIsLive] = useState(true);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [expiredMarketsOpen, setExpiredMarketsOpen] = useState(false);
+  const [upcomingMarketsOpen, setUpcomingMarketsOpen] = useState(false);
 
   const { isEnabled: botEnabled, toggleEnabled: toggleBot, isLoading: botLoading } = usePaperBotSettings();
   const realtimeBotStatus = useRealtimePaperBot();
@@ -87,7 +90,7 @@ const RealTimeSignalsPage = () => {
     updateCount: chainlinkUpdates,
   } = useChainlinkRealtime(isLive);
 
-  const { btcMarkets, ethMarkets, recentExpiredMarkets } = useMemo(() => {
+  const { btcMarkets, ethMarkets, upcomingMarkets, recentExpiredMarkets } = useMemo(() => {
     const readUpDown = (slug: string) => {
       const up = getPrice(slug, "up") ?? getPrice(slug, "yes");
       const down = getPrice(slug, "down") ?? getPrice(slug, "no");
@@ -123,13 +126,20 @@ const RealTimeSignalsPage = () => {
       };
     });
 
+    // Active = within 15 minutes
     const active = allMarkets
-      .filter((m) => m.remainingSeconds > 0 && m.remainingSeconds <= 7 * 24 * 3600)
+      .filter((m) => m.remainingSeconds > 0 && m.remainingSeconds <= 15 * 60)
+      .sort((a, b) => a.remainingSeconds - b.remainingSeconds);
+    
+    // Upcoming = more than 15 minutes, less than 7 days
+    const upcoming = allMarkets
+      .filter((m) => m.remainingSeconds > 15 * 60 && m.remainingSeconds <= 7 * 24 * 3600)
       .sort((a, b) => a.remainingSeconds - b.remainingSeconds);
 
     return {
       btcMarkets: active.filter((m) => m.asset === "BTC"),
       ethMarkets: active.filter((m) => m.asset === "ETH"),
+      upcomingMarkets: upcoming,
       recentExpiredMarkets: dbExpiredMarkets.slice(0, 20),
     };
   }, [discoveredMarkets, nowMs, getPrice, dbExpiredMarkets]);
@@ -424,66 +434,186 @@ const RealTimeSignalsPage = () => {
         {/* Market Details with Trades */}
         {[...btcMarkets, ...ethMarkets].length > 0 && (
           <div className="grid lg:grid-cols-2 gap-4">
-            {[...btcMarkets, ...ethMarkets].slice(0, 4).map((market) => (
-              <Card key={market.slug} className={market.asset === "BTC" ? "border-orange-500/20" : "border-blue-500/20"}>
-                <CardHeader className="pb-2">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className={`w-6 h-6 rounded flex items-center justify-center font-bold text-xs ${
-                        market.asset === 'BTC' ? 'bg-orange-500/10 text-orange-500' : 'bg-blue-500/10 text-blue-500'
-                      }`}>
-                        {market.asset === 'BTC' ? '₿' : 'Ξ'}
+            {[...btcMarkets, ...ethMarkets].slice(0, 4).map((market) => {
+              const polymarketUrl = `https://polymarket.com/event/${market.slug}`;
+              
+              return (
+                <Card key={market.slug} className={market.asset === "BTC" ? "border-orange-500/20" : "border-blue-500/20"}>
+                  <CardHeader className="pb-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className={`w-6 h-6 rounded flex items-center justify-center font-bold text-xs ${
+                          market.asset === 'BTC' ? 'bg-orange-500/10 text-orange-500' : 'bg-blue-500/10 text-blue-500'
+                        }`}>
+                          {market.asset === 'BTC' ? '₿' : 'Ξ'}
+                        </div>
+                        <div>
+                          <span className="font-medium text-sm">{market.asset} 15m</span>
+                          <a 
+                            href={polymarketUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary transition-colors"
+                          >
+                            Polymarket <ExternalLink className="w-3 h-3" />
+                          </a>
+                        </div>
                       </div>
-                      <span className="font-medium text-sm">{market.asset} 15m</span>
+                      <Badge variant="secondary" className="font-mono text-xs">
+                        {formatTime(market.remainingSeconds)}
+                      </Badge>
                     </div>
-                    <Badge variant="secondary" className="font-mono text-xs">
-                      {formatTime(market.remainingSeconds)}
-                    </Badge>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <div className="grid grid-cols-4 gap-2 text-center text-sm">
-                    <div className="p-2 rounded-lg bg-emerald-500/10">
-                      <div className="text-[10px] text-muted-foreground">UP</div>
-                      <div className="font-mono font-bold text-emerald-500">{(market.upPrice * 100).toFixed(0)}¢</div>
-                    </div>
-                    <div className="p-2 rounded-lg bg-red-500/10">
-                      <div className="text-[10px] text-muted-foreground">DOWN</div>
-                      <div className="font-mono font-bold text-red-500">{(market.downPrice * 100).toFixed(0)}¢</div>
-                    </div>
-                    <div className="p-2 rounded-lg bg-muted/50">
-                      <div className="text-[10px] text-muted-foreground">Σ</div>
-                      <div className={`font-mono font-bold ${market.combinedPrice < 1 ? "text-primary" : ""}`}>
-                        {(market.combinedPrice * 100).toFixed(0)}¢
+                    {market.question && (
+                      <p className="text-xs text-muted-foreground mt-1 line-clamp-1">{market.question}</p>
+                    )}
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <div className="grid grid-cols-4 gap-2 text-center text-sm">
+                      <div className="p-2 rounded-lg bg-emerald-500/10">
+                        <div className="text-[10px] text-muted-foreground">UP</div>
+                        <div className="font-mono font-bold text-emerald-500">{(market.upPrice * 100).toFixed(0)}¢</div>
+                      </div>
+                      <div className="p-2 rounded-lg bg-red-500/10">
+                        <div className="text-[10px] text-muted-foreground">DOWN</div>
+                        <div className="font-mono font-bold text-red-500">{(market.downPrice * 100).toFixed(0)}¢</div>
+                      </div>
+                      <div className="p-2 rounded-lg bg-muted/50">
+                        <div className="text-[10px] text-muted-foreground">Σ</div>
+                        <div className={`font-mono font-bold ${market.combinedPrice < 1 ? "text-primary" : ""}`}>
+                          {(market.combinedPrice * 100).toFixed(0)}¢
+                        </div>
+                      </div>
+                      <div className="p-2 rounded-lg bg-primary/10">
+                        <div className="text-[10px] text-muted-foreground">Edge</div>
+                        <div className="font-mono font-bold text-primary">{market.arbitrageEdge.toFixed(1)}%</div>
                       </div>
                     </div>
-                    <div className="p-2 rounded-lg bg-primary/10">
-                      <div className="text-[10px] text-muted-foreground">Edge</div>
-                      <div className="font-mono font-bold text-primary">{market.arbitrageEdge.toFixed(1)}%</div>
-                    </div>
-                  </div>
-                  
-                  {market.arbitrageEdge >= 2 && (
-                    <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-500 flex items-center gap-1.5">
-                      <Zap className="w-3 h-3" />
-                      Arbitrage: Buy both @ {(market.combinedPrice * 100).toFixed(0)}¢
-                    </div>
-                  )}
-                  
-                  <GabagoolTradesSummary 
-                    marketSlug={market.slug} 
-                    upClobPrice={market.upPrice} 
-                    downClobPrice={market.downPrice} 
-                  />
-                  <PaperBotTradesSummary 
-                    marketSlug={market.slug} 
-                    upClobPrice={market.upPrice} 
-                    downClobPrice={market.downPrice} 
-                  />
-                </CardContent>
-              </Card>
-            ))}
+                    
+                    {market.arbitrageEdge >= 2 && (
+                      <div className="p-2 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-500 flex items-center gap-1.5">
+                        <Zap className="w-3 h-3" />
+                        Arbitrage: Buy both @ {(market.combinedPrice * 100).toFixed(0)}¢
+                      </div>
+                    )}
+                    
+                    <GabagoolTradesSummary 
+                      marketSlug={market.slug} 
+                      upClobPrice={market.upPrice} 
+                      downClobPrice={market.downPrice} 
+                    />
+                    <PaperBotTradesSummary 
+                      marketSlug={market.slug} 
+                      upClobPrice={market.upPrice} 
+                      downClobPrice={market.downPrice} 
+                    />
+                  </CardContent>
+                </Card>
+              );
+            })}
           </div>
+        )}
+
+        {/* Upcoming Markets (>15 min) */}
+        {upcomingMarkets.length > 0 && (
+          <Collapsible open={upcomingMarketsOpen} onOpenChange={setUpcomingMarketsOpen}>
+            <Card>
+              <CollapsibleTrigger asChild>
+                <CardHeader className="cursor-pointer hover:bg-muted/30 transition-colors">
+                  <CardTitle className="flex items-center justify-between text-base text-muted-foreground">
+                    <div className="flex items-center gap-2">
+                      <Clock className="w-4 h-4" />
+                      Upcoming Markets
+                      <Badge variant="secondary">{upcomingMarkets.length}</Badge>
+                    </div>
+                    <ChevronDown className={`w-4 h-4 transition-transform ${upcomingMarketsOpen ? 'rotate-180' : ''}`} />
+                  </CardTitle>
+                </CardHeader>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <CardContent className="pt-0">
+                  <div className="overflow-x-auto">
+                    <table className="w-full">
+                      <thead>
+                        <tr className="text-xs text-muted-foreground border-b border-border/50">
+                          <th className="text-left pb-3 font-medium">Asset</th>
+                          <th className="text-left pb-3 font-medium">Time</th>
+                          <th className="text-center pb-3 font-medium">Strike</th>
+                          <th className="text-center pb-3 font-medium">UP</th>
+                          <th className="text-center pb-3 font-medium">DOWN</th>
+                          <th className="text-center pb-3 font-medium">Combined</th>
+                          <th className="text-right pb-3 font-medium">Edge</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border/30">
+                        {upcomingMarkets.slice(0, 20).map((market) => {
+                          const confidence = getConfidenceLevel(market.arbitrageEdge);
+                          const mins = Math.floor(market.remainingSeconds / 60);
+                          const timeDisplay = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`;
+                          
+                          return (
+                            <tr key={market.slug} className="group hover:bg-muted/30 transition-colors">
+                              <td className="py-3">
+                                <div className="flex items-center gap-2">
+                                  <div className={`w-7 h-7 rounded-lg flex items-center justify-center font-bold text-xs ${
+                                    market.asset === 'BTC' ? 'bg-orange-500/10 text-orange-500' : 'bg-blue-500/10 text-blue-500'
+                                  }`}>
+                                    {market.asset === 'BTC' ? '₿' : 'Ξ'}
+                                  </div>
+                                  <div>
+                                    <div className="font-medium text-sm">{market.asset}</div>
+                                    <div className="text-[10px] text-muted-foreground">15m</div>
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="py-3">
+                                <Badge variant="secondary" className="font-mono text-xs">
+                                  {timeDisplay}
+                                </Badge>
+                              </td>
+                              <td className="py-3 text-center">
+                                {market.openPrice ? (
+                                  <div className="font-mono text-sm">${market.openPrice.toLocaleString()}</div>
+                                ) : (
+                                  <span className="text-muted-foreground">—</span>
+                                )}
+                              </td>
+                              <td className="py-3 text-center">
+                                <span className="font-mono text-sm text-emerald-500">
+                                  {(market.upPrice * 100).toFixed(0)}¢
+                                </span>
+                              </td>
+                              <td className="py-3 text-center">
+                                <span className="font-mono text-sm text-red-500">
+                                  {(market.downPrice * 100).toFixed(0)}¢
+                                </span>
+                              </td>
+                              <td className="py-3 text-center">
+                                <span className={`font-mono text-sm font-medium ${market.combinedPrice < 1 ? "text-primary" : ""}`}>
+                                  {(market.combinedPrice * 100).toFixed(1)}¢
+                                </span>
+                              </td>
+                              <td className="py-3 text-right">
+                                <Badge 
+                                  variant="outline" 
+                                  className={`font-mono ${
+                                    confidence === "high" ? "text-emerald-500 border-emerald-500/30 bg-emerald-500/10" :
+                                    confidence === "medium" ? "text-yellow-500 border-yellow-500/30 bg-yellow-500/10" :
+                                    "text-muted-foreground"
+                                  }`}
+                                >
+                                  {market.arbitrageEdge > 0 ? "+" : ""}{market.arbitrageEdge.toFixed(1)}%
+                                </Badge>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </CardContent>
+              </CollapsibleContent>
+            </Card>
+          </Collapsible>
         )}
 
         {/* Expired Markets */}
