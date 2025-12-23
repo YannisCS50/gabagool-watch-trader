@@ -258,7 +258,8 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
                     <th className="text-left pb-3 font-medium">Market</th>
                     <th className="text-center pb-3 font-medium">Position</th>
                     <th className="text-center pb-3 font-medium">Edge</th>
-                    <th className="text-right pb-3 font-medium">Cost</th>
+                    <th className="text-right pb-3 font-medium">UP Cost</th>
+                    <th className="text-right pb-3 font-medium">DOWN Cost</th>
                     <th className="text-right pb-3 font-medium">Value</th>
                     <th className="text-right pb-3 font-medium">P/L</th>
                     <th className="text-right pb-3 font-medium">If UP</th>
@@ -339,9 +340,12 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
                                             {combinedEntry.toFixed(2)}
                                           </span>
                                         </td>
-                                        <td className="py-3 text-right font-mono text-sm">
-                          ${totalCost.toFixed(2)}
-                        </td>
+                                        <td className="py-3 text-right font-mono text-sm text-emerald-500">
+                                          ${upCost.toFixed(2)}
+                                        </td>
+                                        <td className="py-3 text-right font-mono text-sm text-red-500">
+                                          ${downCost.toFixed(2)}
+                                        </td>
                         <td className="py-3 text-right font-mono text-sm">
                           {hasLivePrices ? `$${currentValue.toFixed(2)}` : '—'}
                         </td>
