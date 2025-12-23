@@ -46,6 +46,7 @@ interface UsePolymarketRealtimeResult {
   markets: MarketInfo[];
   expiredMarkets: ExpiredMarket[];
   getPrice: (marketSlug: string, outcome: string) => number | null;
+  getOrderbook: (marketSlug: string, outcome: string) => { bid: number | null; ask: number | null } | null;
   isConnected: boolean;
   connectionState: ConnectionState;
   updateCount: number;
@@ -240,6 +241,21 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
     // Fallback to ask or price if we don't have bid
     return point.bestAsk ?? point.price ?? null;
   }, [pricesVersion]); // Depend on pricesVersion to re-create when prices update
+
+  // Get orderbook bid/ask for a market outcome
+  const getOrderbook = useCallback((marketSlug: string, outcome: string): { bid: number | null; ask: number | null } | null => {
+    const market = pricesRef.current.get(marketSlug);
+    if (!market) return null;
+    
+    const normalizedOutcome = normalizeOutcome(outcome);
+    const point = market.get(normalizedOutcome);
+    if (!point) return null;
+    
+    return {
+      bid: point.bestBid,
+      ask: point.bestAsk,
+    };
+  }, [pricesVersion]);
 
   const disconnect = useCallback(() => {
     console.log("[WS] Disconnecting...");
@@ -634,6 +650,7 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
     markets,
     expiredMarkets,
     getPrice,
+    getOrderbook,
     isConnected,
     connectionState,
     updateCount,
