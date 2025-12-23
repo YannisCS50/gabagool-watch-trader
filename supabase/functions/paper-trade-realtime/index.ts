@@ -258,61 +258,55 @@ function decideTrades(
     const sharesDiff = pos.upShares - pos.downShares;  // Positive = more UP, negative = more DOWN
 
     // ========================================================================
-    // PHASE 1: OPENING - No position yet, start with one side
+    // PHASE 1: OPENING - No position yet
+    // If combined is good (< hedge trigger), buy EQUAL shares on BOTH sides!
+    // If not good, wait for better opportunity
     // ========================================================================
     if (pos.upShares === 0 && pos.downShares === 0) {
-      // Buy cheaper side first (more shares for your money)
-      const side: Outcome = cfg.opening.preferCheaper 
-        ? (upExec < downExec ? "UP" : "DOWN")
-        : "UP";  // Default to UP if not preferring cheaper
+      // GABAGOOL RULE: Only enter when there's an edge!
+      if (combined >= cfg.hedge.triggerCombined) {
+        return skip(`WAITING_FOR_ENTRY: combined=${(combined*100).toFixed(0)}¢ >= ${(cfg.hedge.triggerCombined*100).toFixed(0)}¢`);
+      }
       
-      const price = side === "UP" ? upExec : downExec;
-      const shares = Math.floor(cfg.opening.notional / price);
+      // Good edge! Buy EQUAL shares on BOTH sides immediately
+      const sharesToBuy = calcEqualShares(cfg.opening.notional, upExec, downExec);
       
-      if (shares < 1) return skip("OPENING_SHARES_TOO_LOW");
+      if (sharesToBuy < 1) return skip("OPENING_SHARES_TOO_LOW");
       
-      const trade = mkTrade(
-        side, 
-        price, 
-        shares, 
-        "OPENING", 
-        `Opening ${side} @ ${(price*100).toFixed(0)}¢ (${shares} shares)`
-      );
+      const edgePct = ((1 - combined) * 100).toFixed(1);
       
-      return commit(ctx, nowMs, "OPENING", [trade], cfg);
+      const trades: TradeIntent[] = [
+        mkTrade("UP", upExec, sharesToBuy, "OPENING", `Opening UP @ ${(upExec*100).toFixed(0)}¢ (${edgePct}% edge)`),
+        mkTrade("DOWN", downExec, sharesToBuy, "OPENING", `Opening DOWN @ ${(downExec*100).toFixed(0)}¢ (${edgePct}% edge)`),
+      ];
+      
+      return commit(ctx, nowMs, "OPENING", trades, cfg);
     }
 
     // ========================================================================
-    // PHASE 2: HEDGE - One side missing, buy other side when combined is good
+    // PHASE 2: HEDGE - One side only, buy other side to create balanced position
     // ========================================================================
     if (pos.upShares === 0 || pos.downShares === 0) {
       // Only hedge if combined price is favorable
-      if (combined < cfg.hedge.triggerCombined) {
-        const missingSide: Outcome = pos.upShares === 0 ? "UP" : "DOWN";
-        const price = missingSide === "UP" ? upExec : downExec;
-        
-        // Match existing shares on the other side
-        const existingShares = missingSide === "UP" ? pos.downShares : pos.upShares;
-        
-        // Calculate how many shares we can afford, but target matching existing
-        const maxAffordableShares = Math.floor(cfg.hedge.notional / price);
-        const sharesToBuy = Math.min(existingShares, maxAffordableShares);
-        
-        if (sharesToBuy < 1) return skip("HEDGE_SHARES_TOO_LOW");
-        
-        const trade = mkTrade(
-          missingSide, 
-          price, 
-          sharesToBuy, 
-          "HEDGE", 
-          `Hedge ${missingSide} @ ${(price*100).toFixed(0)}¢ (${sharesToBuy} shares, combined=${(combined*100).toFixed(0)}¢)`
-        );
-        
-        return commit(ctx, nowMs, "HEDGE", [trade], cfg);
+      if (combined >= cfg.hedge.triggerCombined) {
+        return skip(`WAITING_FOR_HEDGE: combined=${(combined*100).toFixed(0)}¢ >= ${(cfg.hedge.triggerCombined*100).toFixed(0)}¢`);
       }
       
-      // Not good enough combined price yet, wait
-      return skip(`WAITING_FOR_HEDGE: combined=${(combined*100).toFixed(0)}¢ > ${(cfg.hedge.triggerCombined*100).toFixed(0)}¢`);
+      const missingSide: Outcome = pos.upShares === 0 ? "UP" : "DOWN";
+      const price = missingSide === "UP" ? upExec : downExec;
+      
+      // Match existing shares on the other side EXACTLY
+      const existingShares = missingSide === "UP" ? pos.downShares : pos.upShares;
+      
+      const trade = mkTrade(
+        missingSide, 
+        price, 
+        existingShares,  // Buy EXACT same amount to balance
+        "HEDGE", 
+        `Hedge ${missingSide} @ ${(price*100).toFixed(0)}¢ (${existingShares} shares to match)`
+      );
+      
+      return commit(ctx, nowMs, "HEDGE", [trade], cfg);
     }
 
     // ========================================================================
