@@ -197,6 +197,42 @@ export const RealTimeSignals = () => {
       });
   }, [data?.liveMarkets, marketTokens, getWsPrice, orderBooks, chainlinkBtcPrice]);
 
+  // Track which markets we've already triggered price collection for
+  const [triggeredMarkets, setTriggeredMarkets] = useState<Set<string>>(new Set());
+
+  // Trigger price collector for markets with pending/missing prices
+  const triggerPriceCollection = useCallback(async () => {
+    if (!data?.liveMarkets) return;
+    
+    const marketsNeedingPrices = data.liveMarkets.filter(m => 
+      (m.priceToBeatQuality === 'pending' || m.priceToBeatQuality === 'missing' || !m.priceToBeat) &&
+      !triggeredMarkets.has(m.marketSlug)
+    );
+    
+    if (marketsNeedingPrices.length > 0) {
+      console.log('Triggering price collection for', marketsNeedingPrices.length, 'markets');
+      setTriggeredMarkets(prev => {
+        const next = new Set(prev);
+        marketsNeedingPrices.forEach(m => next.add(m.marketSlug));
+        return next;
+      });
+      
+      try {
+        await supabase.functions.invoke('chainlink-price-collector');
+        console.log('Price collection triggered successfully');
+      } catch (err) {
+        console.error('Failed to trigger price collection:', err);
+      }
+    }
+  }, [data?.liveMarkets, triggeredMarkets]);
+
+  // Auto-trigger price collection when we detect markets needing prices
+  useEffect(() => {
+    if (isLive && data?.liveMarkets) {
+      triggerPriceCollection();
+    }
+  }, [isLive, data?.liveMarkets, triggerPriceCollection]);
+
   const fetchSignals = useCallback(async () => {
     setIsLoading(true);
     setError(null);
