@@ -35,7 +35,6 @@ import { DCAArbitrageAnalysis } from '@/components/DCAArbitrageAnalysis';
 import { TradeSizeEvolutionChart } from '@/components/TradeSizeEvolutionChart';
 import { VolatilityAnalysis } from '@/components/VolatilityAnalysis';
 import { DCAFormulaAnalysis } from '@/components/DCAFormulaAnalysis';
-import { RealTimeSignals } from '@/components/RealTimeSignals';
 import { GabagoolCorrelationAnalysis } from '@/components/GabagoolCorrelationAnalysis';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -2947,8 +2946,7 @@ const StrategyDeepDive = () => {
           </Card>
         </section>
 
-        {/* Real-Time Signals Section */}
-        <RealTimeSignals />
+        {/* Gabagool Correlation Analysis */}
 
         {/* Gabagool Correlation Analysis */}
         <GabagoolCorrelationAnalysis trades={trades} />

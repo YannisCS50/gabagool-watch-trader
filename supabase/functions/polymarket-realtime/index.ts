@@ -1,5 +1,4 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -12,23 +11,25 @@ const GAMMA_API_URL = 'https://gamma-api.polymarket.com';
 // CLOB API for order book
 const CLOB_API_URL = 'https://clob.polymarket.com';
 
-interface MarketData {
-  conditionId: string;
+interface Market15Min {
+  id: string;
   slug: string;
   question: string;
+  asset: 'BTC' | 'ETH';
+  eventStartTime: Date;
+  eventEndTime: Date;
+  priceToBeat: number | null;
   tokens: Array<{
     token_id: string;
     outcome: string;
     price: number;
   }>;
-  priceToBeat: number | null;
-  currentCryptoPrice: number | null;
-  endDate: string;
 }
 
 interface TradingSignal {
   market: string;
   marketSlug: string;
+  asset: 'BTC' | 'ETH';
   priceToBeat: number | null;
   currentPrice: number | null;
   priceDelta: number | null;
@@ -42,18 +43,13 @@ interface TradingSignal {
   potentialReturn: number;
   arbitrageEdge: number;
   confidence: 'high' | 'medium' | 'low';
-  signalType: string;
+  signalType: 'dual_side' | 'single_side' | 'arbitrage' | 'wait';
+  action: string;
+  eventStartTime: string;
+  eventEndTime: string;
+  remainingSeconds: number;
+  remainingFormatted: string;
   timestamp: string;
-}
-
-// Extract strike price from market question
-function extractPriceToBeat(question: string): number | null {
-  // Patterns like "above $97,000" or "below $96,500"
-  const priceMatch = question.match(/\$?([\d,]+(?:\.\d+)?)/);
-  if (priceMatch) {
-    return parseFloat(priceMatch[1].replace(/,/g, ''));
-  }
-  return null;
 }
 
 // Fetch current crypto price from CoinGecko (free, no auth needed)
@@ -77,70 +73,114 @@ async function fetchCryptoPrice(asset: 'BTC' | 'ETH'): Promise<number | null> {
   }
 }
 
-// Fetch active crypto markets from Gamma API
-async function fetchActiveCryptoMarkets(): Promise<MarketData[]> {
+// Extract strike price from market question for 15-min markets
+function extractStrikePrice(question: string): number | null {
+  // Patterns like "above $97,000.50" or "below $96,500"
+  const priceMatch = question.match(/\$?([\d,]+(?:\.\d+)?)/);
+  if (priceMatch) {
+    return parseFloat(priceMatch[1].replace(/,/g, ''));
+  }
+  return null;
+}
+
+// Fetch 15-minute crypto markets from Gamma API
+async function fetch15MinMarkets(): Promise<Market15Min[]> {
   try {
-    // Get active markets with crypto in the question
-    const response = await fetch(
-      `${GAMMA_API_URL}/markets?active=true&limit=50`
-    );
+    // Fetch both BTC and ETH 15-min series
+    const [btcResponse, ethResponse] = await Promise.all([
+      fetch(`${GAMMA_API_URL}/events?series_slug=btc-up-or-down-15m&active=true&closed=false&limit=5`),
+      fetch(`${GAMMA_API_URL}/events?series_slug=eth-up-or-down-15m&active=true&closed=false&limit=5`)
+    ]);
     
-    if (!response.ok) {
-      console.error('Gamma API error:', response.status);
-      return [];
+    const btcEvents = btcResponse.ok ? await btcResponse.json() : [];
+    const ethEvents = ethResponse.ok ? await ethResponse.json() : [];
+    
+    console.log(`Found ${btcEvents.length} BTC and ${ethEvents.length} ETH 15-min events`);
+    
+    const markets: Market15Min[] = [];
+    
+    // Process BTC events
+    for (const event of btcEvents) {
+      if (event.markets && event.markets.length > 0) {
+        for (const market of event.markets) {
+          if (!market.active || market.closed) continue;
+          
+          const eventStartTime = new Date(event.startDate || market.startDate);
+          const eventEndTime = new Date(market.endDate);
+          
+          // Only include markets that haven't ended
+          if (eventEndTime > new Date()) {
+            markets.push({
+              id: market.conditionId,
+              slug: market.slug,
+              question: market.question,
+              asset: 'BTC',
+              eventStartTime,
+              eventEndTime,
+              priceToBeat: extractStrikePrice(market.question),
+              tokens: market.tokens?.map((t: any) => ({
+                token_id: t.token_id,
+                outcome: t.outcome,
+                price: parseFloat(t.price) || 0
+              })) || []
+            });
+          }
+        }
+      }
     }
     
-    const markets = await response.json();
+    // Process ETH events
+    for (const event of ethEvents) {
+      if (event.markets && event.markets.length > 0) {
+        for (const market of event.markets) {
+          if (!market.active || market.closed) continue;
+          
+          const eventStartTime = new Date(event.startDate || market.startDate);
+          const eventEndTime = new Date(market.endDate);
+          
+          if (eventEndTime > new Date()) {
+            markets.push({
+              id: market.conditionId,
+              slug: market.slug,
+              question: market.question,
+              asset: 'ETH',
+              eventStartTime,
+              eventEndTime,
+              priceToBeat: extractStrikePrice(market.question),
+              tokens: market.tokens?.map((t: any) => ({
+                token_id: t.token_id,
+                outcome: t.outcome,
+                price: parseFloat(t.price) || 0
+              })) || []
+            });
+          }
+        }
+      }
+    }
     
-    // Filter for BTC/ETH price prediction markets
-    const cryptoMarkets = markets.filter((m: any) => {
-      const q = m.question?.toLowerCase() || '';
-      return (q.includes('bitcoin') || q.includes('btc') || 
-              q.includes('ethereum') || q.includes('eth')) &&
-             (q.includes('above') || q.includes('below') || q.includes('price'));
-    });
+    // Sort by end time (soonest first)
+    markets.sort((a, b) => a.eventEndTime.getTime() - b.eventEndTime.getTime());
     
-    return cryptoMarkets.map((m: any) => ({
-      conditionId: m.conditionId,
-      slug: m.slug,
-      question: m.question,
-      tokens: m.tokens?.map((t: any) => ({
-        token_id: t.token_id,
-        outcome: t.outcome,
-        price: parseFloat(t.price) || 0
-      })) || [],
-      priceToBeat: extractPriceToBeat(m.question),
-      currentCryptoPrice: null,
-      endDate: m.endDate
-    }));
+    return markets;
   } catch (error) {
-    console.error('Error fetching markets:', error);
+    console.error('Error fetching 15-min markets:', error);
     return [];
   }
 }
 
-// Fetch order book prices from CLOB
-async function fetchOrderBookPrices(tokenId: string): Promise<{ bestBid: number; bestAsk: number } | null> {
-  try {
-    const response = await fetch(`${CLOB_API_URL}/book?token_id=${tokenId}`);
-    
-    if (!response.ok) {
-      return null;
-    }
-    
-    const book = await response.json();
-    
-    const bestBid = book.bids?.[0]?.price ? parseFloat(book.bids[0].price) : 0;
-    const bestAsk = book.asks?.[0]?.price ? parseFloat(book.asks[0].price) : 1;
-    
-    return { bestBid, bestAsk };
-  } catch (error) {
-    return null;
-  }
-}
-
-// Calculate trading signal based on market data
-function calculateSignal(market: MarketData, cryptoPrice: number | null): TradingSignal {
+// Calculate Gabagool-style trading signal
+function calculateGabagoolSignal(
+  market: Market15Min,
+  currentCryptoPrice: number | null
+): TradingSignal {
+  const now = new Date();
+  const remainingMs = market.eventEndTime.getTime() - now.getTime();
+  const remainingSeconds = Math.max(0, Math.floor(remainingMs / 1000));
+  const minutes = Math.floor(remainingSeconds / 60);
+  const seconds = remainingSeconds % 60;
+  const remainingFormatted = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  
+  // Find Up and Down tokens
   const upToken = market.tokens.find(t => 
     t.outcome.toLowerCase().includes('yes') || 
     t.outcome.toLowerCase().includes('up') ||
@@ -160,12 +200,12 @@ function calculateSignal(market: MarketData, cryptoPrice: number | null): Tradin
   const cheaperSide = upPrice < downPrice ? 'Up' : 'Down';
   const cheaperPrice = Math.min(upPrice, downPrice);
   
-  // Calculate price delta if we have both prices
+  // Calculate price delta
   let priceDelta: number | null = null;
   let priceDeltaPercent: number | null = null;
   
-  if (market.priceToBeat && cryptoPrice) {
-    priceDelta = cryptoPrice - market.priceToBeat;
+  if (market.priceToBeat && currentCryptoPrice) {
+    priceDelta = currentCryptoPrice - market.priceToBeat;
     priceDeltaPercent = (priceDelta / market.priceToBeat) * 100;
   }
   
@@ -175,36 +215,54 @@ function calculateSignal(market: MarketData, cryptoPrice: number | null): Tradin
   // Potential return if buying cheaper side and it wins
   const potentialReturn = cheaperPrice > 0 ? ((1 / cheaperPrice) - 1) * 100 : 0;
   
-  // Determine confidence based on price delta
+  // GABAGOOL SIGNAL LOGIC
   let confidence: 'high' | 'medium' | 'low' = 'low';
-  let signalType = 'none';
+  let signalType: 'dual_side' | 'single_side' | 'arbitrage' | 'wait' = 'wait';
+  let action = 'No signal - waiting';
   
-  if (priceDeltaPercent !== null) {
-    const absDelta = Math.abs(priceDeltaPercent);
-    
-    if (absDelta < 0.05) {
-      confidence = 'high';
-      signalType = 'uncertainty_high';
-    } else if (absDelta < 0.2) {
-      confidence = 'medium';
-      signalType = 'close_to_strike';
-    } else {
-      confidence = 'low';
-      signalType = 'directional';
-    }
+  const absDeltaPercent = priceDeltaPercent !== null ? Math.abs(priceDeltaPercent) : 100;
+  
+  // HIGH CONFIDENCE: Very small delta (<0.03%) + arbitrage opportunity
+  if (absDeltaPercent < 0.03 && combinedPrice < 1.0) {
+    confidence = 'high';
+    signalType = 'dual_side';
+    action = `BUY BOTH @ ${(combinedPrice * 100).toFixed(1)}¢ combined - Dual-side hedge`;
   }
-  
-  // Also consider combined price for arbitrage
-  if (combinedPrice < 0.98) {
-    signalType = 'arbitrage_opportunity';
-    if (confidence === 'low') confidence = 'medium';
+  // HIGH CONFIDENCE: Pure arbitrage (combined < 0.98)
+  else if (combinedPrice < 0.98) {
+    confidence = 'high';
+    signalType = 'arbitrage';
+    action = `ARBITRAGE: Buy both @ ${(combinedPrice * 100).toFixed(1)}¢ = ${arbitrageEdge.toFixed(1)}% edge`;
+  }
+  // MEDIUM: Small delta (<0.1%), market still uncertain
+  else if (absDeltaPercent < 0.1) {
+    confidence = 'medium';
+    signalType = 'dual_side';
+    action = `Buy ${cheaperSide} @ ${(cheaperPrice * 100).toFixed(1)}¢ - Near strike uncertainty`;
+  }
+  // MEDIUM: Combined < 1.0 but larger delta
+  else if (combinedPrice < 1.0 && absDeltaPercent < 0.5) {
+    confidence = 'medium';
+    signalType = 'single_side';
+    const expectedSide = priceDelta !== null && priceDelta > 0 ? 'Up' : 'Down';
+    const sidePrice = expectedSide === 'Up' ? upPrice : downPrice;
+    action = `Buy ${expectedSide} @ ${(sidePrice * 100).toFixed(1)}¢ - Trend + edge`;
+  }
+  // LOW: Clear directional signal
+  else if (absDeltaPercent < 1.0) {
+    confidence = 'low';
+    signalType = 'single_side';
+    const expectedSide = priceDelta !== null && priceDelta > 0 ? 'Up' : 'Down';
+    const sidePrice = expectedSide === 'Up' ? upPrice : downPrice;
+    action = `Consider ${expectedSide} @ ${(sidePrice * 100).toFixed(1)}¢ - Directional`;
   }
   
   return {
     market: market.question,
     marketSlug: market.slug,
+    asset: market.asset,
     priceToBeat: market.priceToBeat,
-    currentPrice: cryptoPrice,
+    currentPrice: currentCryptoPrice,
     priceDelta,
     priceDeltaPercent,
     upPrice,
@@ -217,6 +275,11 @@ function calculateSignal(market: MarketData, cryptoPrice: number | null): Tradin
     arbitrageEdge,
     confidence,
     signalType,
+    action,
+    eventStartTime: market.eventStartTime.toISOString(),
+    eventEndTime: market.eventEndTime.toISOString(),
+    remainingSeconds,
+    remainingFormatted,
     timestamp: new Date().toISOString()
   };
 }
@@ -228,7 +291,7 @@ serve(async (req) => {
   }
 
   try {
-    console.log('Fetching real-time Polymarket data...');
+    console.log('Fetching real-time 15-min Polymarket data...');
     
     // Fetch current crypto prices in parallel
     const [btcPrice, ethPrice] = await Promise.all([
@@ -238,34 +301,36 @@ serve(async (req) => {
     
     console.log('Crypto prices:', { btcPrice, ethPrice });
     
-    // Fetch active crypto markets
-    const markets = await fetchActiveCryptoMarkets();
-    console.log(`Found ${markets.length} active crypto markets`);
+    // Fetch active 15-minute markets
+    const markets = await fetch15MinMarkets();
+    console.log(`Found ${markets.length} active 15-min markets`);
     
     // Calculate signals for each market
     const signals: TradingSignal[] = [];
     
     for (const market of markets) {
-      // Determine which crypto price to use
-      const q = market.question.toLowerCase();
-      const cryptoPrice = (q.includes('bitcoin') || q.includes('btc')) ? btcPrice : ethPrice;
-      
-      const signal = calculateSignal(market, cryptoPrice);
+      const cryptoPrice = market.asset === 'BTC' ? btcPrice : ethPrice;
+      const signal = calculateGabagoolSignal(market, cryptoPrice);
       signals.push(signal);
     }
     
-    // Sort by confidence and arbitrage edge
+    // Sort by confidence (high first), then by remaining time (soonest first)
     signals.sort((a, b) => {
       const confOrder = { high: 0, medium: 1, low: 2 };
       if (confOrder[a.confidence] !== confOrder[b.confidence]) {
         return confOrder[a.confidence] - confOrder[b.confidence];
       }
-      return b.arbitrageEdge - a.arbitrageEdge;
+      return a.remainingSeconds - b.remainingSeconds;
     });
     
-    // Get high confidence opportunities
+    // Get statistics
     const highConfidence = signals.filter(s => s.confidence === 'high');
-    const arbitrageOpportunities = signals.filter(s => s.arbitrageEdge > 2);
+    const arbitrageOpportunities = signals.filter(s => s.signalType === 'arbitrage');
+    const dualSideSignals = signals.filter(s => s.signalType === 'dual_side');
+    
+    // Separate current (ending soon) vs upcoming markets
+    const currentMarkets = signals.filter(s => s.remainingSeconds < 900); // < 15 min
+    const upcomingMarkets = signals.filter(s => s.remainingSeconds >= 900);
     
     return new Response(JSON.stringify({
       success: true,
@@ -275,10 +340,13 @@ serve(async (req) => {
         ETH: ethPrice
       },
       marketsAnalyzed: markets.length,
+      currentMarkets,
+      upcomingMarkets,
       signals,
       summary: {
         highConfidenceCount: highConfidence.length,
         arbitrageOpportunityCount: arbitrageOpportunities.length,
+        dualSideSignalCount: dualSideSignals.length,
         avgCombinedPrice: signals.length > 0 
           ? signals.reduce((sum, s) => sum + s.combinedPrice, 0) / signals.length 
           : 0,
