@@ -14,6 +14,10 @@ import {
   Clock,
   Zap,
   Activity,
+  Wallet,
+  PieChart,
+  ArrowUpRight,
+  ArrowDownRight,
 } from 'lucide-react';
 import { usePaperTrades, PaperTrade, PaperTradeResult } from '@/hooks/usePaperTrades';
 import { formatDistanceToNow } from 'date-fns';
@@ -49,7 +53,6 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
     let totalCurrentValue = 0;
     let totalOpenInvested = 0;
     
-    // Group by market
     const byMarket = openTrades.reduce((acc, trade) => {
       if (!acc[trade.market_slug]) {
         acc[trade.market_slug] = { upShares: 0, upCost: 0, downShares: 0, downCost: 0 };
@@ -88,33 +91,31 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
 
   if (compact) {
     return (
-      <Card className="border-purple-500/30">
-        <CardHeader className="pb-2">
-          <CardTitle className="flex items-center justify-between text-sm">
-            <div className="flex items-center gap-2 text-purple-400">
-              <Bot className="w-4 h-4" />
-              Paper Trade Bot
+      <Card className="border-border/50 bg-card/50 backdrop-blur">
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Bot className="w-4 h-4 text-primary" />
+              <span className="font-medium text-sm">Paper Bot</span>
             </div>
-            <Badge variant="outline" className="text-purple-400 border-purple-500/30">
+            <Badge variant="secondary" className="text-xs">
               {trades.length} trades
             </Badge>
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="pt-0">
-          <div className="grid grid-cols-3 gap-2 text-center">
-            <div className="p-2 rounded-md bg-muted/30">
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <div className="text-center">
               <div className="text-xs text-muted-foreground">Invested</div>
-              <div className="font-mono font-bold">${stats.totalInvested.toFixed(0)}</div>
+              <div className="font-mono font-semibold">${stats.totalInvested.toFixed(0)}</div>
             </div>
-            <div className="p-2 rounded-md bg-muted/30">
+            <div className="text-center">
               <div className="text-xs text-muted-foreground">P/L</div>
-              <div className={`font-mono font-bold ${stats.totalProfitLoss >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+              <div className={`font-mono font-semibold ${stats.totalProfitLoss >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
                 {stats.totalProfitLoss >= 0 ? '+' : ''}${stats.totalProfitLoss.toFixed(2)}
               </div>
             </div>
-            <div className="p-2 rounded-md bg-muted/30">
+            <div className="text-center">
               <div className="text-xs text-muted-foreground">Win Rate</div>
-              <div className={`font-mono font-bold ${stats.winRate >= 50 ? 'text-emerald-400' : 'text-red-400'}`}>
+              <div className={`font-mono font-semibold ${stats.winRate >= 50 ? 'text-emerald-500' : 'text-red-500'}`}>
                 {stats.winRate.toFixed(0)}%
               </div>
             </div>
@@ -133,423 +134,334 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
     return acc;
   }, {} as Record<string, PaperTrade[]>);
 
-  // Get open positions (trades without settled results)
   const settledSlugs = new Set(results.filter(r => r.settled_at).map(r => r.market_slug));
   const openMarkets = Object.keys(tradesByMarket).filter(slug => !settledSlugs.has(slug));
+  const totalPL = stats.totalProfitLoss + unrealizedStats.unrealizedPL;
+  const budgetRemaining = 1000 - stats.totalInvested + stats.totalProfitLoss;
 
   return (
-    <div className="space-y-4">
-      {/* Header Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
-        {/* Starting Budget */}
-        <Card className="border-blue-500/30">
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-2 text-muted-foreground mb-1">
-              <DollarSign className="w-4 h-4" />
-              <span className="text-sm">Start Budget</span>
-            </div>
-            <div className="text-2xl font-bold text-blue-400">$1,000</div>
-          </CardContent>
-        </Card>
-
-        <Card className="border-purple-500/30">
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-2 text-muted-foreground mb-1">
-              <Activity className="w-4 h-4" />
-              <span className="text-sm">Total Trades</span>
-            </div>
-            <div className="text-2xl font-bold text-purple-400">{stats.totalTrades}</div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-2 text-muted-foreground mb-1">
-              <DollarSign className="w-4 h-4" />
-              <span className="text-sm">Total Invested</span>
-            </div>
-            <div className="text-2xl font-bold">${stats.totalInvested.toFixed(2)}</div>
-          </CardContent>
-        </Card>
-
-        <Card className={stats.totalProfitLoss >= 0 ? 'border-emerald-500/30' : 'border-red-500/30'}>
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-2 text-muted-foreground mb-1">
-              <CheckCircle2 className="w-4 h-4" />
-              <span className="text-sm">Realized P/L</span>
-            </div>
-            <div className={`text-2xl font-bold ${stats.totalProfitLoss >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-              {stats.totalProfitLoss >= 0 ? '+' : ''}${stats.totalProfitLoss.toFixed(2)}
-            </div>
-            {stats.totalInvested > 0 && (
-              <div className={`text-xs mt-1 ${stats.totalProfitLoss >= 0 ? 'text-emerald-400/70' : 'text-red-400/70'}`}>
-                {stats.totalProfitLoss >= 0 ? '+' : ''}{((stats.totalProfitLoss / stats.totalInvested) * 100).toFixed(1)}%
+    <div className="space-y-6">
+      {/* Main Stats Overview */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* Portfolio Value */}
+        <Card className="bg-gradient-to-br from-primary/10 to-primary/5 border-primary/20">
+          <CardContent className="p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="p-2 rounded-lg bg-primary/10">
+                <Wallet className="w-4 h-4 text-primary" />
               </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Unrealized P/L Card */}
-        <Card className={unrealizedStats.unrealizedPL >= 0 ? 'border-cyan-500/30' : 'border-orange-500/30'}>
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-2 text-muted-foreground mb-1">
-              <Activity className="w-4 h-4 animate-pulse" />
-              <span className="text-sm">Unrealized P/L</span>
+              <span className="text-sm text-muted-foreground">Portfolio</span>
             </div>
-            <div className={`text-2xl font-bold ${unrealizedStats.unrealizedPL >= 0 ? 'text-cyan-400' : 'text-orange-400'}`}>
-              {unrealizedStats.unrealizedPL >= 0 ? '+' : ''}${unrealizedStats.unrealizedPL.toFixed(2)}
+            <div className="text-3xl font-bold mb-1">
+              ${(budgetRemaining + unrealizedStats.currentValue).toFixed(0)}
             </div>
-            <div className="text-xs text-muted-foreground mt-1">
-              {unrealizedStats.unrealizedPLPercent >= 0 ? '+' : ''}{unrealizedStats.unrealizedPLPercent.toFixed(1)}%
+            <div className={`text-sm flex items-center gap-1 ${totalPL >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+              {totalPL >= 0 ? <ArrowUpRight className="w-4 h-4" /> : <ArrowDownRight className="w-4 h-4" />}
+              {totalPL >= 0 ? '+' : ''}{((totalPL / 1000) * 100).toFixed(2)}% all time
             </div>
           </CardContent>
         </Card>
 
-        {/* Total P/L (Realized + Unrealized) */}
-        <Card className={(stats.totalProfitLoss + unrealizedStats.unrealizedPL) >= 0 ? 'border-emerald-500/30' : 'border-red-500/30'}>
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-2 text-muted-foreground mb-1">
-              <TrendingUp className="w-4 h-4" />
-              <span className="text-sm">Total P/L</span>
-            </div>
-            <div className={`text-2xl font-bold ${(stats.totalProfitLoss + unrealizedStats.unrealizedPL) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-              {(stats.totalProfitLoss + unrealizedStats.unrealizedPL) >= 0 ? '+' : ''}${(stats.totalProfitLoss + unrealizedStats.unrealizedPL).toFixed(2)}
-            </div>
-            {stats.totalInvested > 0 && (
-              <div className={`text-xs mt-1 ${(stats.totalProfitLoss + unrealizedStats.unrealizedPL) >= 0 ? 'text-emerald-400/70' : 'text-red-400/70'}`}>
-                {(stats.totalProfitLoss + unrealizedStats.unrealizedPL) >= 0 ? '+' : ''}{(((stats.totalProfitLoss + unrealizedStats.unrealizedPL) / stats.totalInvested) * 100).toFixed(1)}%
+        {/* Total P/L */}
+        <Card className={totalPL >= 0 ? 'border-emerald-500/20' : 'border-red-500/20'}>
+          <CardContent className="p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <div className={`p-2 rounded-lg ${totalPL >= 0 ? 'bg-emerald-500/10' : 'bg-red-500/10'}`}>
+                {totalPL >= 0 ? <TrendingUp className="w-4 h-4 text-emerald-500" /> : <TrendingDown className="w-4 h-4 text-red-500" />}
               </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent className="pt-6">
-            <div className="flex items-center gap-2 text-muted-foreground mb-1">
-              <Target className="w-4 h-4" />
-              <span className="text-sm">Win Rate</span>
+              <span className="text-sm text-muted-foreground">Total P/L</span>
             </div>
-            <div className={`text-2xl font-bold ${stats.winRate >= 50 ? 'text-emerald-400' : 'text-red-400'}`}>
-              {stats.winRate.toFixed(1)}%
+            <div className={`text-3xl font-bold mb-1 ${totalPL >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+              {totalPL >= 0 ? '+' : ''}${totalPL.toFixed(2)}
             </div>
-            <div className="text-xs text-muted-foreground mt-1">
-              {stats.winCount}W / {stats.lossCount}L / {stats.pendingCount}P
+            <div className="text-sm text-muted-foreground flex gap-3">
+              <span>Realized: ${stats.totalProfitLoss.toFixed(2)}</span>
+              <span>Open: ${unrealizedStats.unrealizedPL.toFixed(2)}</span>
             </div>
           </CardContent>
         </Card>
 
+        {/* Win Rate */}
         <Card>
-          <CardContent className="pt-6 flex flex-col gap-2">
+          <CardContent className="p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <div className="p-2 rounded-lg bg-muted">
+                <Target className="w-4 h-4 text-muted-foreground" />
+              </div>
+              <span className="text-sm text-muted-foreground">Performance</span>
+            </div>
+            <div className={`text-3xl font-bold mb-1 ${stats.winRate >= 50 ? 'text-emerald-500' : 'text-red-500'}`}>
+              {stats.winRate.toFixed(0)}%
+            </div>
+            <div className="text-sm text-muted-foreground">
+              {stats.winCount}W / {stats.lossCount}L / {stats.pendingCount} pending
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Actions */}
+        <Card>
+          <CardContent className="p-5 flex flex-col justify-center gap-2">
             <Button 
-              variant="outline" 
-              size="sm" 
               onClick={handleTriggerBot}
               disabled={isTriggering}
               className="w-full"
+              size="sm"
             >
-              {isTriggering ? (
-                <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-              ) : (
-                <Play className="w-4 h-4 mr-2" />
-              )}
+              {isTriggering ? <RefreshCw className="w-4 h-4 mr-2 animate-spin" /> : <Play className="w-4 h-4 mr-2" />}
               Run Bot
             </Button>
             <Button 
-              variant="outline" 
-              size="sm" 
+              variant="outline"
               onClick={handleTriggerSettle}
               disabled={isTriggering}
               className="w-full"
+              size="sm"
             >
               <CheckCircle2 className="w-4 h-4 mr-2" />
-              Settle
+              Settle Markets
             </Button>
+            <div className="text-xs text-center text-muted-foreground mt-1">
+              {stats.totalTrades} trades • ${stats.totalInvested.toFixed(0)} invested
+            </div>
           </CardContent>
         </Card>
       </div>
 
-
       {/* Open Positions */}
       {openMarkets.length > 0 && (
-        <Card className="border-purple-500/30 bg-gradient-to-br from-purple-500/5 to-transparent">
-          <CardHeader className="pb-3">
-            <CardTitle className="flex items-center justify-between">
-              <div className="flex items-center gap-2 text-purple-400">
-                <div className="relative">
-                  <Clock className="w-5 h-5" />
-                  <span className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
-                </div>
-                <span>Open Positions</span>
-                <Badge className="bg-purple-500/20 text-purple-300 border-purple-500/30">
-                  {openMarkets.length}
-                </Badge>
-              </div>
+        <Card>
+          <CardHeader className="pb-4">
+            <div className="flex items-center justify-between">
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <Clock className="w-5 h-5 text-primary" />
+                Open Positions
+                <Badge variant="secondary">{openMarkets.length}</Badge>
+              </CardTitle>
               {unrealizedStats.openInvested > 0 && (
-                <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${
+                <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${
                   unrealizedStats.unrealizedPL >= 0 
-                    ? 'bg-emerald-500/10 border border-emerald-500/30' 
-                    : 'bg-red-500/10 border border-red-500/30'
+                    ? 'bg-emerald-500/10 text-emerald-500' 
+                    : 'bg-red-500/10 text-red-500'
                 }`}>
-                  <Activity className="w-3.5 h-3.5 animate-pulse" />
-                  <span className={`font-mono font-bold ${unrealizedStats.unrealizedPL >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                    {unrealizedStats.unrealizedPL >= 0 ? '+' : ''}${unrealizedStats.unrealizedPL.toFixed(2)}
-                  </span>
-                  <span className="text-xs text-muted-foreground">unrealized</span>
+                  <Activity className="w-3.5 h-3.5" />
+                  {unrealizedStats.unrealizedPL >= 0 ? '+' : ''}${unrealizedStats.unrealizedPL.toFixed(2)} unrealized
                 </div>
               )}
-            </CardTitle>
+            </div>
           </CardHeader>
-          <CardContent className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {openMarkets.slice(0, 12).map(slug => {
-              const marketTrades = tradesByMarket[slug];
-              const upTrades = marketTrades.filter(t => t.outcome === 'UP');
-              const downTrades = marketTrades.filter(t => t.outcome === 'DOWN');
-              const upShares = upTrades.reduce((s, t) => s + t.shares, 0);
-              const downShares = downTrades.reduce((s, t) => s + t.shares, 0);
-              const upCost = upTrades.reduce((s, t) => s + t.total, 0);
-              const downCost = downTrades.reduce((s, t) => s + t.total, 0);
-              const totalCost = upCost + downCost;
-              const tradeType = marketTrades[0]?.trade_type || 'UNKNOWN';
-              const asset = marketTrades[0]?.asset || 'BTC';
+          <CardContent>
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="text-xs text-muted-foreground border-b border-border/50">
+                    <th className="text-left pb-3 font-medium">Market</th>
+                    <th className="text-center pb-3 font-medium">Position</th>
+                    <th className="text-right pb-3 font-medium">Cost</th>
+                    <th className="text-right pb-3 font-medium">Value</th>
+                    <th className="text-right pb-3 font-medium">P/L</th>
+                    <th className="text-right pb-3 font-medium">If UP</th>
+                    <th className="text-right pb-3 font-medium">If DOWN</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/30">
+                  {openMarkets.slice(0, 15).map(slug => {
+                    const marketTrades = tradesByMarket[slug];
+                    const upTrades = marketTrades.filter(t => t.outcome === 'UP');
+                    const downTrades = marketTrades.filter(t => t.outcome === 'DOWN');
+                    const upShares = upTrades.reduce((s, t) => s + t.shares, 0);
+                    const downShares = downTrades.reduce((s, t) => s + t.shares, 0);
+                    const upCost = upTrades.reduce((s, t) => s + t.total, 0);
+                    const downCost = downTrades.reduce((s, t) => s + t.total, 0);
+                    const totalCost = upCost + downCost;
+                    const asset = marketTrades[0]?.asset || 'BTC';
 
-              // Get current prices for this market
-              const currentUpPrice = getPrice(slug, 'up');
-              const currentDownPrice = getPrice(slug, 'down');
-              const hasLivePrices = currentUpPrice !== null && currentDownPrice !== null;
-              
-              // Calculate unrealized P&L for this position
-              let posUnrealizedPL = 0;
-              let upCurrentValue = 0;
-              let downCurrentValue = 0;
-              if (hasLivePrices) {
-                upCurrentValue = upShares * (currentUpPrice || 0);
-                downCurrentValue = downShares * (currentDownPrice || 0);
-                posUnrealizedPL = (upCurrentValue + downCurrentValue) - totalCost;
-              }
+                    const currentUpPrice = getPrice(slug, 'up');
+                    const currentDownPrice = getPrice(slug, 'down');
+                    const hasLivePrices = currentUpPrice !== null && currentDownPrice !== null;
+                    
+                    let currentValue = 0;
+                    let posUnrealizedPL = 0;
+                    if (hasLivePrices) {
+                      currentValue = upShares * (currentUpPrice || 0) + downShares * (currentDownPrice || 0);
+                      posUnrealizedPL = currentValue - totalCost;
+                    }
 
-              // Potential outcomes
-              const profitIfUpWins = upShares - totalCost;
-              const profitIfDownWins = downShares - totalCost;
-              
-              // Calculate balance ratio for visual bar
-              const totalShares = upShares + downShares;
-              const upRatio = totalShares > 0 ? (upShares / totalShares) * 100 : 50;
+                    const profitIfUpWins = upShares - totalCost;
+                    const profitIfDownWins = downShares - totalCost;
+                    const totalShares = upShares + downShares;
+                    const upPct = totalShares > 0 ? (upShares / totalShares) * 100 : 50;
 
-              return (
-                <div 
-                  key={slug} 
-                  className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-card to-muted/30 border border-border/50 hover:border-purple-500/30 transition-all duration-300 hover:shadow-lg hover:shadow-purple-500/5"
-                >
-                  {/* Header */}
-                  <div className="p-4 pb-3 border-b border-border/50">
-                    <div className="flex items-center justify-between mb-2">
-                      <div className="flex items-center gap-2">
-                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-bold text-sm ${
-                          asset === 'BTC' 
-                            ? 'bg-orange-500/20 text-orange-400' 
-                            : 'bg-blue-500/20 text-blue-400'
-                        }`}>
-                          {asset === 'BTC' ? '₿' : 'Ξ'}
-                        </div>
-                        <div>
-                          <div className="font-medium text-sm">{asset} 15m</div>
-                          <div className="text-[10px] text-muted-foreground font-mono truncate max-w-[120px]">
-                            {slug.split('-').slice(-1)[0]}
+                    return (
+                      <tr key={slug} className="group hover:bg-muted/30 transition-colors">
+                        <td className="py-3">
+                          <div className="flex items-center gap-2">
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-bold text-sm ${
+                              asset === 'BTC' ? 'bg-orange-500/10 text-orange-500' : 'bg-blue-500/10 text-blue-500'
+                            }`}>
+                              {asset === 'BTC' ? '₿' : 'Ξ'}
+                            </div>
+                            <div>
+                              <div className="font-medium text-sm">{asset} 15m</div>
+                              <div className="text-xs text-muted-foreground font-mono">
+                                {slug.split('-').slice(-1)[0]}
+                              </div>
+                            </div>
                           </div>
-                        </div>
-                      </div>
-                      <Badge 
-                        variant="outline" 
-                        className="text-[10px] px-2 py-0.5 bg-purple-500/10 text-purple-400 border-purple-500/30"
-                      >
-                        {tradeType.replace('_', ' ')}
-                      </Badge>
-                    </div>
-                    
-                    {/* Live P&L Badge */}
-                    {hasLivePrices && (
-                      <div className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg ${
-                        posUnrealizedPL >= 0 
-                          ? 'bg-emerald-500/10' 
-                          : 'bg-red-500/10'
-                      }`}>
-                        <Activity className="w-3 h-3 animate-pulse" />
-                        <span className={`font-mono font-bold text-sm ${posUnrealizedPL >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                          {posUnrealizedPL >= 0 ? '+' : ''}${posUnrealizedPL.toFixed(2)}
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                  
-                  {/* Position Details */}
-                  <div className="p-4 space-y-3">
-                    {/* Balance Bar */}
-                    <div className="space-y-1.5">
-                      <div className="flex justify-between text-[11px]">
-                        <span className="text-emerald-400 font-medium flex items-center gap-1">
-                          <TrendingUp className="w-3 h-3" />
-                          UP
-                        </span>
-                        <span className="text-red-400 font-medium flex items-center gap-1">
-                          DOWN
-                          <TrendingDown className="w-3 h-3" />
-                        </span>
-                      </div>
-                      <div className="h-2 rounded-full bg-muted/50 overflow-hidden flex">
-                        <div 
-                          className="bg-gradient-to-r from-emerald-500 to-emerald-400 transition-all duration-500"
-                          style={{ width: `${upRatio}%` }}
-                        />
-                        <div 
-                          className="bg-gradient-to-r from-red-400 to-red-500 transition-all duration-500"
-                          style={{ width: `${100 - upRatio}%` }}
-                        />
-                      </div>
-                      <div className="flex justify-between text-[11px] font-mono">
-                        <span className="text-emerald-400/80">
-                          {upShares.toFixed(0)} @ {hasLivePrices && currentUpPrice ? `${(currentUpPrice * 100).toFixed(0)}¢` : '—'}
-                        </span>
-                        <span className="text-red-400/80">
-                          {downShares.toFixed(0)} @ {hasLivePrices && currentDownPrice ? `${(currentDownPrice * 100).toFixed(0)}¢` : '—'}
-                        </span>
-                      </div>
-                    </div>
-                    
-                    {/* Cost & Potential */}
-                    <div className="grid grid-cols-3 gap-2 text-center">
-                      <div className="p-2 rounded-lg bg-muted/30">
-                        <div className="text-[10px] text-muted-foreground mb-0.5">Cost</div>
-                        <div className="font-mono font-bold text-sm">${totalCost.toFixed(0)}</div>
-                      </div>
-                      <div className={`p-2 rounded-lg ${profitIfUpWins >= 0 ? 'bg-emerald-500/10' : 'bg-red-500/10'}`}>
-                        <div className="text-[10px] text-muted-foreground mb-0.5">If ↑</div>
-                        <div className={`font-mono font-bold text-sm ${profitIfUpWins >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                          {profitIfUpWins >= 0 ? '+' : ''}{profitIfUpWins.toFixed(0)}
-                        </div>
-                      </div>
-                      <div className={`p-2 rounded-lg ${profitIfDownWins >= 0 ? 'bg-emerald-500/10' : 'bg-red-500/10'}`}>
-                        <div className="text-[10px] text-muted-foreground mb-0.5">If ↓</div>
-                        <div className={`font-mono font-bold text-sm ${profitIfDownWins >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
-                          {profitIfDownWins >= 0 ? '+' : ''}{profitIfDownWins.toFixed(0)}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                  
-                  {/* Subtle gradient overlay on hover */}
-                  <div className="absolute inset-0 bg-gradient-to-t from-purple-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
-                </div>
-              );
-            })}
+                        </td>
+                        <td className="py-3">
+                          <div className="flex flex-col items-center gap-1">
+                            <div className="flex items-center gap-2 text-xs">
+                              <span className="text-emerald-500">{upShares.toFixed(0)}↑</span>
+                              <span className="text-muted-foreground">/</span>
+                              <span className="text-red-500">{downShares.toFixed(0)}↓</span>
+                            </div>
+                            <div className="w-20 h-1.5 rounded-full bg-muted overflow-hidden flex">
+                              <div className="bg-emerald-500 transition-all" style={{ width: `${upPct}%` }} />
+                              <div className="bg-red-500 transition-all" style={{ width: `${100 - upPct}%` }} />
+                            </div>
+                          </div>
+                        </td>
+                        <td className="py-3 text-right font-mono text-sm">
+                          ${totalCost.toFixed(2)}
+                        </td>
+                        <td className="py-3 text-right font-mono text-sm">
+                          {hasLivePrices ? `$${currentValue.toFixed(2)}` : '—'}
+                        </td>
+                        <td className="py-3 text-right">
+                          {hasLivePrices ? (
+                            <span className={`font-mono text-sm font-medium ${posUnrealizedPL >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                              {posUnrealizedPL >= 0 ? '+' : ''}{posUnrealizedPL.toFixed(2)}
+                            </span>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
+                        </td>
+                        <td className="py-3 text-right">
+                          <span className={`font-mono text-sm ${profitIfUpWins >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                            {profitIfUpWins >= 0 ? '+' : ''}{profitIfUpWins.toFixed(0)}
+                          </span>
+                        </td>
+                        <td className="py-3 text-right">
+                          <span className={`font-mono text-sm ${profitIfDownWins >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                            {profitIfDownWins >= 0 ? '+' : ''}{profitIfDownWins.toFixed(0)}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {openMarkets.length > 15 && (
+              <div className="text-center text-sm text-muted-foreground mt-4">
+                +{openMarkets.length - 15} more positions
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
 
-      {/* Settled Results */}
-      {results.filter(r => r.settled_at).length > 0 && (
+      {/* Settled Results & Recent Trades in two columns */}
+      <div className="grid lg:grid-cols-2 gap-6">
+        {/* Settled Results */}
+        {results.filter(r => r.settled_at).length > 0 && (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <CheckCircle2 className="w-5 h-5 text-emerald-500" />
+                Settled Results
+                <Badge variant="secondary">{results.filter(r => r.settled_at).length}</Badge>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
+                {results.filter(r => r.settled_at).slice(0, 15).map(result => (
+                  <div 
+                    key={result.id} 
+                    className={`flex items-center justify-between p-3 rounded-lg ${
+                      (result.profit_loss || 0) > 0 
+                        ? 'bg-emerald-500/5 border border-emerald-500/10' 
+                        : 'bg-red-500/5 border border-red-500/10'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className={`w-7 h-7 rounded flex items-center justify-center text-xs font-bold ${
+                        result.asset === 'BTC' ? 'bg-orange-500/10 text-orange-500' : 'bg-blue-500/10 text-blue-500'
+                      }`}>
+                        {result.asset === 'BTC' ? '₿' : 'Ξ'}
+                      </div>
+                      <div>
+                        <Badge variant="outline" className={`text-xs ${
+                          result.result === 'UP' 
+                            ? 'text-emerald-500 border-emerald-500/30' 
+                            : 'text-red-500 border-red-500/30'
+                        }`}>
+                          {result.result} won
+                        </Badge>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className={`font-mono font-medium ${(result.profit_loss || 0) > 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                        {(result.profit_loss || 0) > 0 ? '+' : ''}${result.profit_loss?.toFixed(2)}
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        ${result.total_invested?.toFixed(0)} → ${result.payout?.toFixed(0)}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Recent Trades */}
         <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-              Settled Results ({results.filter(r => r.settled_at).length})
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Zap className="w-5 h-5 text-primary" />
+              Recent Trades
             </CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="space-y-2">
-              {results.filter(r => r.settled_at).slice(0, 20).map(result => (
-                <div 
-                  key={result.id} 
-                  className={`p-3 rounded-lg border ${
-                    (result.profit_loss || 0) > 0 
-                      ? 'bg-emerald-500/10 border-emerald-500/30' 
-                      : 'bg-red-500/10 border-red-500/30'
-                  }`}
-                >
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline" className={
-                        result.asset === 'BTC' 
-                          ? 'text-orange-400 border-orange-500/30' 
-                          : 'text-blue-400 border-blue-500/30'
-                      }>
-                        {result.asset}
-                      </Badge>
-                      <span className="text-sm text-muted-foreground truncate max-w-[200px]">
-                        {result.market_slug}
-                      </span>
-                      <Badge className={
-                        result.result === 'UP' 
-                          ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30' 
-                          : 'bg-red-500/20 text-red-400 border-red-500/30'
-                      }>
-                        {result.result}
-                      </Badge>
+            <div className="space-y-1.5 max-h-[300px] overflow-y-auto pr-2">
+              {trades.slice(0, 20).map(trade => (
+                <div key={trade.id} className="flex items-center justify-between py-2 px-3 rounded-lg hover:bg-muted/30 transition-colors">
+                  <div className="flex items-center gap-2">
+                    <div className={`w-6 h-6 rounded flex items-center justify-center text-xs font-bold ${
+                      trade.asset === 'BTC' ? 'bg-orange-500/10 text-orange-500' : 'bg-blue-500/10 text-blue-500'
+                    }`}>
+                      {trade.asset === 'BTC' ? '₿' : 'Ξ'}
                     </div>
-                    <div className="flex items-center gap-4 text-sm">
-                      <span className="text-muted-foreground">
-                        ${result.total_invested?.toFixed(2)} → ${result.payout?.toFixed(2)}
-                      </span>
-                      <span className={`font-bold font-mono ${
-                        (result.profit_loss || 0) > 0 ? 'text-emerald-400' : 'text-red-400'
-                      }`}>
-                        {(result.profit_loss || 0) > 0 ? '+' : ''}${result.profit_loss?.toFixed(2)}
-                        <span className="text-xs ml-1">
-                          ({result.profit_loss_percent?.toFixed(1)}%)
-                        </span>
+                    <div className="flex items-center gap-1.5">
+                      {trade.outcome === 'UP' ? (
+                        <TrendingUp className="w-3.5 h-3.5 text-emerald-500" />
+                      ) : (
+                        <TrendingDown className="w-3.5 h-3.5 text-red-500" />
+                      )}
+                      <span className={`text-sm font-medium ${trade.outcome === 'UP' ? 'text-emerald-500' : 'text-red-500'}`}>
+                        {trade.outcome}
                       </span>
                     </div>
+                  </div>
+                  <div className="flex items-center gap-4 text-xs">
+                    <span className="font-mono">
+                      {trade.shares.toFixed(0)} @ {(trade.price * 100).toFixed(0)}¢
+                    </span>
+                    <span className="text-muted-foreground w-16 text-right">
+                      ${trade.total.toFixed(2)}
+                    </span>
+                    <span className="text-muted-foreground w-20 text-right">
+                      {formatDistanceToNow(new Date(trade.created_at), { addSuffix: true }).replace('about ', '')}
+                    </span>
                   </div>
                 </div>
               ))}
             </div>
           </CardContent>
         </Card>
-      )}
-
-      {/* Recent Trades */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Zap className="w-5 h-5 text-purple-400" />
-            Recent Paper Trades
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-2 max-h-[400px] overflow-y-auto">
-            {trades.slice(0, 30).map(trade => (
-              <div key={trade.id} className="flex items-center justify-between p-2 rounded-md bg-muted/30 text-sm">
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline" className={
-                    trade.asset === 'BTC' 
-                      ? 'text-orange-400 border-orange-500/30' 
-                      : 'text-blue-400 border-blue-500/30'
-                  }>
-                    {trade.asset}
-                  </Badge>
-                  {trade.outcome === 'UP' ? (
-                    <TrendingUp className="w-3 h-3 text-emerald-400" />
-                  ) : (
-                    <TrendingDown className="w-3 h-3 text-red-400" />
-                  )}
-                  <span className={trade.outcome === 'UP' ? 'text-emerald-400' : 'text-red-400'}>
-                    {trade.outcome}
-                  </span>
-                  <Badge variant="outline" className="text-xs text-purple-400 border-purple-500/30">
-                    {trade.trade_type}
-                  </Badge>
-                </div>
-                <div className="flex items-center gap-3 text-xs">
-                  <span className="font-mono">{trade.shares.toFixed(2)} @ {(trade.price * 100).toFixed(1)}¢</span>
-                  <span className="text-muted-foreground">${trade.total.toFixed(2)}</span>
-                  <span className="text-muted-foreground">
-                    {formatDistanceToNow(new Date(trade.created_at), { addSuffix: true })}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+      </div>
     </div>
   );
 };
