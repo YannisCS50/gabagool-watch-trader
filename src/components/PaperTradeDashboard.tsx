@@ -341,11 +341,13 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
                                             {combinedEntry.toFixed(2)}
                                           </span>
                                         </td>
-                                        <td className="py-3 text-right font-mono text-sm text-emerald-500">
-                                          ${upCost.toFixed(2)}
+                                        <td className="py-3 text-right">
+                                          <div className="font-mono text-sm text-emerald-500">${upCost.toFixed(2)}</div>
+                                          <div className="text-xs text-muted-foreground">@{upAvg.toFixed(2)}¢</div>
                                         </td>
-                                        <td className="py-3 text-right font-mono text-sm text-red-500">
-                                          ${downCost.toFixed(2)}
+                                        <td className="py-3 text-right">
+                                          <div className="font-mono text-sm text-red-500">${downCost.toFixed(2)}</div>
+                                          <div className="text-xs text-muted-foreground">@{downAvg.toFixed(2)}¢</div>
                                         </td>
                                         <td className="py-3 text-right font-mono text-sm font-medium">
                                           ${totalCost.toFixed(2)}
