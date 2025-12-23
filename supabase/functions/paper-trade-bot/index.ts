@@ -26,8 +26,8 @@ const STRATEGY_CONFIG = {
   // Hedge settings
   hedge: {
     shares: 100,              // 100 shares voor hedge
-    maxCombined: 1.00,        // Hedge zolang combined ≤ 100¢ (break-even)
-    targetCombined: 0.97,     // Ideaal: combined ≤ 97¢ (3% winst)
+    maxCombined: 0.97,        // Alleen hedgen als combined ≤ 97¢ (3% winst gegarandeerd)
+    targetCombined: 0.95,     // Ideaal: combined ≤ 95¢ (5% winst)
   },
   
   // Accumulation settings
