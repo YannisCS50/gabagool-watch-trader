@@ -223,7 +223,7 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
     }
   }, [enabled]);
 
-  // STAP 4: Debug getPrice met logging
+  // Get midpoint price (average of bid and ask) - this is what Polymarket UI shows
   const getPrice = useCallback((marketSlug: string, outcome: string) => {
     const market = pricesRef.current.get(marketSlug);
     if (!market) {
@@ -231,8 +231,14 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
     }
     const normalizedOutcome = normalizeOutcome(outcome);
     const point = market.get(normalizedOutcome);
-    const price = point?.bestAsk ?? point?.price ?? null;
-    return price;
+    if (!point) return null;
+    
+    // Calculate midpoint if we have both bid and ask
+    if (point.bestBid !== null && point.bestAsk !== null) {
+      return (point.bestBid + point.bestAsk) / 2;
+    }
+    // Fallback to ask or price if we don't have bid
+    return point.bestAsk ?? point.price ?? null;
   }, [pricesVersion]); // Depend on pricesVersion to re-create when prices update
 
   const disconnect = useCallback(() => {
@@ -359,19 +365,20 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
             if (marketInfo) {
               const price = parseFloat(change.price);
               
-              // STAP 4: Debug logging
-              console.log(`[PRICE] ${marketInfo.slug} ${marketInfo.outcome.toUpperCase()}: ${(price * 100).toFixed(1)}¢`);
-              
               let marketMap = pricesRef.current.get(marketInfo.slug);
               if (!marketMap) {
                 marketMap = new Map();
                 pricesRef.current.set(marketInfo.slug, marketMap);
               }
               
+              // Preserve existing bid if we have one
+              const existing = marketMap.get(marketInfo.outcome);
+              const existingBid = existing?.bestBid ?? null;
+              
               const pricePoint: PricePoint = {
                 price,
                 bestAsk: price,
-                bestBid: null,
+                bestBid: existingBid, // Keep existing bid for midpoint calc
                 timestampMs: now,
               };
               
@@ -385,11 +392,14 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
           }
           
           if (updatedAny) {
-            // STAP 1: Increment version om re-render te triggeren
-            setPricesVersion(v => v + 1);
-            setUpdateCount(c => c + 1);
-            setLastUpdateTime(now);
-            setLatencyMs(Date.now() - now);
+            // Throttle UI updates to max 2 per second for stability
+            const timeSinceLastUIUpdate = now - lastUpdateTime;
+            if (timeSinceLastUIUpdate >= 500) {
+              setPricesVersion(v => v + 1);
+              setUpdateCount(c => c + 1);
+              setLastUpdateTime(now);
+              setLatencyMs(Date.now() - now);
+            }
           }
         }
         
