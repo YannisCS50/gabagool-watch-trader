@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { 
@@ -8,418 +8,153 @@ import {
   Activity, 
   TrendingUp, 
   TrendingDown, 
-  RefreshCw, 
   Zap,
   Target,
-  AlertTriangle,
-  Clock,
   DollarSign,
   Wifi,
   WifiOff,
   Timer,
   Layers,
-  Radio
+  Radio,
+  Satellite
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
-import { usePolymarketRealtime, fetch15MinMarketTokenIds } from '@/hooks/usePolymarketRealtime';
+import { usePolymarketRealtime, MarketTokens } from '@/hooks/usePolymarketRealtime';
 import { useChainlinkRealtime } from '@/hooks/useChainlinkRealtime';
 import { LivePrice } from '@/components/LivePrice';
 
-interface TradingSignal {
-  market: string;
-  marketSlug: string;
-  asset: 'BTC' | 'ETH';
-  priceToBeat: number | null;
-  currentPrice: number | null;
-  priceDelta: number | null;
-  priceDeltaPercent: number | null;
-  upPrice: number;
-  downPrice: number;
-  combinedPrice: number;
-  cheaperSide: 'Up' | 'Down';
-  cheaperPrice: number;
-  spread: number;
-  potentialReturn: number;
-  arbitrageEdge: number;
-  confidence: 'high' | 'medium' | 'low';
-  signalType: 'dual_side' | 'single_side' | 'arbitrage' | 'wait';
-  action: string;
-  eventStartTime: string;
-  eventEndTime: string;
-  remainingSeconds: number;
-  remainingFormatted: string;
-  timestamp: string;
-}
-
-interface RealTimeData {
-  success: boolean;
-  timestamp: string;
-  cryptoPrices: {
-    BTC: number | null;
-    ETH: number | null;
-  };
-  marketsAnalyzed: number;
-  liveMarkets: TradingSignal[];
-  soonUpcoming: TradingSignal[];
-  laterMarkets: TradingSignal[];
-  signals: TradingSignal[];
-  summary: {
-    highConfidenceCount: number;
-    arbitrageOpportunityCount: number;
-    dualSideSignalCount: number;
-    liveCount: number;
-    soonCount: number;
-    avgCombinedPrice: number;
-    avgArbitrageEdge: number;
-  };
-}
-
-interface MarketTokenMapping {
+interface LiveMarket {
   slug: string;
   asset: 'BTC' | 'ETH';
   upTokenId: string;
   downTokenId: string;
-  eventStartTime: string;
-  eventEndTime: string;
+  upPrice: number;
+  downPrice: number;
+  combinedPrice: number;
+  arbitrageEdge: number;
+  eventStartTime: Date;
+  eventEndTime: Date;
+  remainingSeconds: number;
 }
 
-const REFRESH_INTERVAL = 5000;
-
 const RealTimeSignalsPage = () => {
-  const [data, setData] = useState<RealTimeData | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [isLive, setIsLive] = useState(true);
-  const [secondsSinceUpdate, setSecondsSinceUpdate] = useState(0);
-  const [countdowns, setCountdowns] = useState<Record<string, string>>({});
-  const [marketTokens, setMarketTokens] = useState<MarketTokenMapping[]>([]);
+  const [markets, setMarkets] = useState<MarketTokens[]>([]);
+  const [countdown, setCountdown] = useState<Record<string, number>>({});
 
-  // Fetch token IDs from Gamma API for WebSocket subscriptions
-  useEffect(() => {
-    const fetchTokens = async () => {
-      const result = await fetch15MinMarketTokenIds();
-      console.log('[Token Fetch] Found markets:', result.markets);
-      setMarketTokens(result.markets);
-    };
-    fetchTokens();
-    const interval = setInterval(fetchTokens, 30000); // Refresh every 30s
-    return () => clearInterval(interval);
+  // Fetch market tokens from edge function (one-time, then every 2 min)
+  const fetchMarkets = useCallback(async () => {
+    try {
+      console.log('[Markets] Fetching from edge function...');
+      const { data, error } = await supabase.functions.invoke('get-market-tokens');
+      
+      if (error) {
+        console.error('[Markets] Error:', error);
+        return;
+      }
+      
+      const fetchedMarkets = data?.markets || [];
+      console.log('[Markets] Found', fetchedMarkets.length, 'markets');
+      setMarkets(fetchedMarkets);
+    } catch (err) {
+      console.error('[Markets] Fetch failed:', err);
+    }
   }, []);
+
+  // Initial fetch and periodic refresh
+  useEffect(() => {
+    fetchMarkets();
+    const interval = setInterval(fetchMarkets, 2 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [fetchMarkets]);
 
   // Extract all token IDs for WebSocket subscription
   const tokenIds = useMemo(() => {
-    const ids = marketTokens.flatMap(m => [m.upTokenId, m.downTokenId]);
-    console.log('[WebSocket] Subscribing to tokens:', ids.length);
-    return ids;
-  }, [marketTokens]);
+    return markets.flatMap(m => [m.upTokenId, m.downTokenId]).filter(Boolean);
+  }, [markets]);
 
-  // Polymarket CLOB WebSocket for real-time Up/Down prices
+  // Polymarket CLOB WebSocket - REAL-TIME Up/Down prices
   const { 
-    orderBooks, 
+    getPrice,
+    getBidAsk,
     isConnected: clobConnected, 
-    updateCount: clobUpdateCount,
-    getPrice 
-  } = usePolymarketRealtime({
-    tokenIds,
-    enabled: isLive && tokenIds.length > 0
-  });
+    connectionState: clobState,
+    updateCount: clobUpdates,
+    latencyMs: clobLatency
+  } = usePolymarketRealtime(tokenIds, isLive && tokenIds.length > 0);
 
-  // Chainlink WebSocket for real-time BTC/ETH prices
+  // Chainlink WebSocket - REAL-TIME BTC/ETH prices
   const { 
-    btcPrice: chainlinkBtcPrice, 
-    ethPrice: chainlinkEthPrice,
+    btcPrice,
+    ethPrice,
     isConnected: chainlinkConnected,
-    updateCount: chainlinkUpdateCount
+    updateCount: chainlinkUpdates
   } = useChainlinkRealtime(isLive);
 
-  const fetchSignals = useCallback(async () => {
-    setIsLoading(true);
-    setError(null);
-    
-    try {
-      const { data: responseData, error: invokeError } = await supabase.functions.invoke('polymarket-realtime');
-      
-      if (invokeError) {
-        throw new Error(invokeError.message);
-      }
-      
-      setData(responseData);
-      setLastUpdate(new Date());
-      setSecondsSinceUpdate(0);
-    } catch (err: any) {
-      console.error('Error fetching signals:', err);
-      setError(err.message || 'Failed to fetch signals');
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
-
-  // Initial fetch
-  useEffect(() => {
-    fetchSignals();
-  }, [fetchSignals]);
-
-  // Live auto-refresh
-  useEffect(() => {
-    if (!isLive) return;
-    
-    const interval = setInterval(fetchSignals, REFRESH_INTERVAL);
-    return () => clearInterval(interval);
-  }, [isLive, fetchSignals]);
-
-  // Update seconds counter and countdowns
+  // Update countdowns every second
   useEffect(() => {
     const interval = setInterval(() => {
-      setSecondsSinceUpdate(prev => prev + 1);
+      const now = Date.now();
+      const newCountdowns: Record<string, number> = {};
       
-      if (data?.signals) {
-        const newCountdowns: Record<string, string> = {};
-        data.signals.forEach(signal => {
-          const remaining = signal.remainingSeconds - secondsSinceUpdate;
-          if (remaining > 0) {
-            const mins = Math.floor(remaining / 60);
-            const secs = remaining % 60;
-            newCountdowns[signal.marketSlug] = `${mins}:${secs.toString().padStart(2, '0')}`;
-          } else {
-            newCountdowns[signal.marketSlug] = 'EXPIRED';
-          }
-        });
-        setCountdowns(newCountdowns);
-      }
+      markets.forEach(market => {
+        const endTime = new Date(market.eventEndTime).getTime();
+        const remaining = Math.max(0, Math.floor((endTime - now) / 1000));
+        newCountdowns[market.slug] = remaining;
+      });
+      
+      setCountdown(newCountdowns);
     }, 1000);
+    
     return () => clearInterval(interval);
-  }, [data, secondsSinceUpdate]);
+  }, [markets]);
 
-  // Helper to get WebSocket price for a market
-  const getWsPrice = useCallback((marketSlug: string, side: 'up' | 'down'): number | null => {
-    const market = marketTokens.find(m => m.slug === marketSlug);
-    if (!market) return null;
+  // Build live market data from WebSocket prices
+  const liveMarkets = useMemo((): LiveMarket[] => {
+    const now = Date.now();
     
-    const tokenId = side === 'up' ? market.upTokenId : market.downTokenId;
-    return getPrice(tokenId);
-  }, [marketTokens, getPrice]);
-
-  // Merge API data with WebSocket real-time prices
-  const liveMarketsWithWsPrices = useMemo(() => {
-    if (!data?.liveMarkets) return [];
-    
-    return data.liveMarkets.map(signal => {
-      const wsUpPrice = getWsPrice(signal.marketSlug, 'up');
-      const wsDownPrice = getWsPrice(signal.marketSlug, 'down');
-      
-      // Use WebSocket prices if available, else fall back to API
-      const upPrice = wsUpPrice ?? signal.upPrice;
-      const downPrice = wsDownPrice ?? signal.downPrice;
-      const combinedPrice = upPrice + downPrice;
-      const arbitrageEdge = (1 - combinedPrice) * 100;
-      
-      // Use Chainlink price for current BTC price if available
-      const currentPrice = signal.asset === 'BTC' && chainlinkBtcPrice 
-        ? chainlinkBtcPrice 
-        : signal.asset === 'ETH' && chainlinkEthPrice 
-          ? chainlinkEthPrice 
-          : signal.currentPrice;
-      
-      const priceDelta = signal.priceToBeat && currentPrice 
-        ? currentPrice - signal.priceToBeat 
-        : signal.priceDelta;
-      
-      const priceDeltaPercent = signal.priceToBeat && currentPrice 
-        ? ((currentPrice - signal.priceToBeat) / signal.priceToBeat) * 100 
-        : signal.priceDeltaPercent;
-
-      return {
-        ...signal,
-        upPrice,
-        downPrice,
-        combinedPrice,
-        arbitrageEdge,
-        currentPrice,
-        priceDelta,
-        priceDeltaPercent,
-        hasWsData: wsUpPrice !== null || wsDownPrice !== null
-      };
-    });
-  }, [data?.liveMarkets, getWsPrice, chainlinkBtcPrice, chainlinkEthPrice]);
-
-  const getConfidenceBadge = (confidence: string) => {
-    switch (confidence) {
-      case 'high':
-        return <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30">HIGH</Badge>;
-      case 'medium':
-        return <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-500/30">MEDIUM</Badge>;
-      default:
-        return <Badge className="bg-muted text-muted-foreground">LOW</Badge>;
-    }
-  };
-
-  const getSignalTypeBadge = (signalType: string) => {
-    switch (signalType) {
-      case 'dual_side':
-        return <Badge variant="outline" className="text-purple-400 border-purple-500/30">Dual-Side</Badge>;
-      case 'arbitrage':
-        return <Badge variant="outline" className="text-emerald-400 border-emerald-500/30">Arbitrage</Badge>;
-      case 'single_side':
-        return <Badge variant="outline" className="text-blue-400 border-blue-500/30">Single-Side</Badge>;
-      default:
-        return <Badge variant="outline" className="text-muted-foreground">Wait</Badge>;
-    }
-  };
-
-  const getAssetBadge = (asset: 'BTC' | 'ETH') => {
-    return asset === 'BTC' 
-      ? <Badge className="bg-orange-500/20 text-orange-400 border-orange-500/30">BTC</Badge>
-      : <Badge className="bg-blue-500/20 text-blue-400 border-blue-500/30">ETH</Badge>;
-  };
-
-  const formatDelta = (delta: number | null, percent: number | null): string => {
-    if (delta === null || percent === null) return '-';
-    const sign = delta >= 0 ? '+' : '';
-    return `${sign}$${Math.abs(delta).toFixed(2)} (${sign}${percent.toFixed(4)}%)`;
-  };
-
-  const SignalCard = ({ signal, showCountdown = true }: { signal: TradingSignal & { hasWsData?: boolean }; showCountdown?: boolean }) => {
-    const countdown = countdowns[signal.marketSlug] || signal.remainingFormatted;
-    const isExpiringSoon = signal.remainingSeconds < 120;
-    const isExpired = countdown === 'EXPIRED';
-    
-    return (
-      <div
-        className={`p-4 rounded-lg border transition-all ${
-          signal.confidence === 'high' 
-            ? 'border-emerald-500/50 bg-emerald-500/10 shadow-lg shadow-emerald-500/10' 
-            : signal.confidence === 'medium'
-            ? 'border-yellow-500/30 bg-yellow-500/5'
-            : 'border-border bg-muted/5'
-        }`}
-      >
-        {/* Header with Asset, Countdown, Badges */}
-        <div className="flex items-start justify-between mb-4">
-          <div className="flex items-center gap-2">
-            {getAssetBadge(signal.asset)}
-            {signal.hasWsData && (
-              <Badge className="bg-cyan-500/20 text-cyan-400 border-cyan-500/30 text-xs flex items-center gap-1">
-                <Radio className="w-2.5 h-2.5" />
-                LIVE
-              </Badge>
-            )}
-            {showCountdown && (
-              <div className={`flex items-center gap-1 px-2 py-1 rounded-md text-sm font-mono ${
-                isExpired 
-                  ? 'bg-destructive/20 text-destructive'
-                  : isExpiringSoon 
-                    ? 'bg-red-500/20 text-red-400 animate-pulse'
-                    : 'bg-muted'
-              }`}>
-                <Timer className="w-3 h-3" />
-                {countdown}
-              </div>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            {getConfidenceBadge(signal.confidence)}
-            {getSignalTypeBadge(signal.signalType)}
-          </div>
-        </div>
+    return markets
+      .map(market => {
+        const upPrice = getPrice(market.upTokenId) ?? 0.5;
+        const downPrice = getPrice(market.downTokenId) ?? 0.5;
+        const combinedPrice = upPrice + downPrice;
+        const arbitrageEdge = (1 - combinedPrice) * 100;
         
-        {/* Price Comparison - Main Focus */}
-        <div className="grid grid-cols-3 gap-4 mb-4 p-3 bg-background/50 rounded-lg">
-          <div className="text-center">
-            <div className="text-xs text-muted-foreground mb-1">Price to Beat</div>
-            <div className="text-lg font-bold font-mono">
-              ${signal.priceToBeat?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '-'}
-            </div>
-          </div>
-          <div className="text-center">
-            <div className="text-xs text-muted-foreground mb-1">Current Price</div>
-            <div className={`text-lg font-bold font-mono ${
-              signal.priceDelta !== null 
-                ? signal.priceDelta >= 0 ? 'text-emerald-400' : 'text-red-400'
-                : ''
-            }`}>
-              {signal.currentPrice ? (
-                <LivePrice 
-                  price={signal.currentPrice} 
-                  format="dollars" 
-                  className="text-lg font-bold"
-                />
-              ) : '-'}
-            </div>
-          </div>
-          <div className="text-center">
-            <div className="text-xs text-muted-foreground mb-1">Delta</div>
-            <div className={`text-sm font-mono font-medium ${
-              signal.priceDelta !== null 
-                ? signal.priceDelta >= 0 ? 'text-emerald-400' : 'text-red-400'
-                : ''
-            }`}>
-              {formatDelta(signal.priceDelta, signal.priceDeltaPercent)}
-            </div>
-          </div>
-        </div>
+        const startTime = new Date(market.eventStartTime);
+        const endTime = new Date(market.eventEndTime);
+        const remainingSeconds = countdown[market.slug] ?? Math.floor((endTime.getTime() - now) / 1000);
         
-        {/* Action - Highlighted */}
-        <div className={`p-3 rounded-lg mb-4 ${
-          signal.confidence === 'high'
-            ? 'bg-emerald-500/20 border border-emerald-500/30'
-            : signal.confidence === 'medium'
-            ? 'bg-yellow-500/10 border border-yellow-500/30'
-            : 'bg-muted/50 border border-border'
-        }`}>
-          <div className="flex items-center gap-2">
-            <Zap className={`w-4 h-4 ${
-              signal.confidence === 'high' ? 'text-emerald-400' : 'text-muted-foreground'
-            }`} />
-            <span className="font-medium text-sm">{signal.action}</span>
-          </div>
-        </div>
-        
-        {/* Market Prices with LivePrice component */}
-        <div className="grid grid-cols-4 gap-3 text-sm">
-          <div className="text-center p-2 bg-emerald-500/10 rounded-lg">
-            <div className="flex items-center justify-center gap-1 text-emerald-400 mb-1">
-              <TrendingUp className="w-3 h-3" />
-              <span className="text-xs">Up</span>
-            </div>
-            <LivePrice 
-              price={signal.upPrice} 
-              format="cents" 
-              className="font-bold text-emerald-400"
-            />
-          </div>
-          <div className="text-center p-2 bg-red-500/10 rounded-lg">
-            <div className="flex items-center justify-center gap-1 text-red-400 mb-1">
-              <TrendingDown className="w-3 h-3" />
-              <span className="text-xs">Down</span>
-            </div>
-            <LivePrice 
-              price={signal.downPrice} 
-              format="cents" 
-              className="font-bold text-red-400"
-            />
-          </div>
-          <div className="text-center p-2 bg-muted/50 rounded-lg">
-            <div className="flex items-center justify-center gap-1 text-muted-foreground mb-1">
-              <Layers className="w-3 h-3" />
-              <span className="text-xs">Combined</span>
-            </div>
-            <span className={`font-mono font-bold ${signal.combinedPrice < 1 ? 'text-emerald-400' : ''}`}>
-              {(signal.combinedPrice * 100).toFixed(1)}¢
-            </span>
-          </div>
-          <div className="text-center p-2 bg-primary/10 rounded-lg">
-            <div className="flex items-center justify-center gap-1 text-primary mb-1">
-              <Target className="w-3 h-3" />
-              <span className="text-xs">Edge</span>
-            </div>
-            <span className={`font-mono font-bold ${signal.arbitrageEdge > 0 ? 'text-primary' : ''}`}>
-              {signal.arbitrageEdge.toFixed(1)}%
-            </span>
-          </div>
-        </div>
-      </div>
-    );
+        return {
+          slug: market.slug,
+          asset: market.asset,
+          upTokenId: market.upTokenId,
+          downTokenId: market.downTokenId,
+          upPrice,
+          downPrice,
+          combinedPrice,
+          arbitrageEdge,
+          eventStartTime: startTime,
+          eventEndTime: endTime,
+          remainingSeconds
+        };
+      })
+      // Filter to only live markets (started and not ended)
+      .filter(m => m.remainingSeconds > 0 && m.remainingSeconds <= 900)
+      // Sort by remaining time
+      .sort((a, b) => a.remainingSeconds - b.remainingSeconds);
+  }, [markets, getPrice, countdown]);
+
+  const formatTime = (seconds: number): string => {
+    if (seconds <= 0) return 'EXPIRED';
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const getConfidenceLevel = (arbitrageEdge: number): 'high' | 'medium' | 'low' => {
+    if (arbitrageEdge >= 3) return 'high';
+    if (arbitrageEdge >= 1) return 'medium';
+    return 'low';
   };
 
   return (
@@ -442,7 +177,7 @@ const RealTimeSignalsPage = () => {
                 </div>
                 <div>
                   <h1 className="font-bold text-lg flex items-center gap-2">
-                    Real-Time 15-Min Signals
+                    Real-Time WebSocket Signals
                     {isLive ? (
                       <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30 flex items-center gap-1">
                         <Wifi className="w-3 h-3" />
@@ -455,293 +190,274 @@ const RealTimeSignalsPage = () => {
                       </Badge>
                     )}
                   </h1>
-                  <p className="text-xs text-muted-foreground">
-                    BTC/ETH 15-min markets • Gabagool-style signals
-                    {lastUpdate && ` • Updated ${secondsSinceUpdate}s ago`}
+                  <p className="text-xs text-muted-foreground flex items-center gap-2">
+                    Pure WebSocket • No API Polling
+                    {clobConnected && (
+                      <Badge variant="outline" className="text-xs text-purple-400 border-purple-500/30">
+                        <Radio className="w-2.5 h-2.5 mr-1" />
+                        CLOB {clobUpdates} | {clobLatency}ms
+                      </Badge>
+                    )}
+                    {chainlinkConnected && (
+                      <Badge variant="outline" className="text-xs text-orange-400 border-orange-500/30">
+                        <Satellite className="w-2.5 h-2.5 mr-1" />
+                        Chainlink {chainlinkUpdates}
+                      </Badge>
+                    )}
                   </p>
                 </div>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              {/* WebSocket Status Badges */}
-              <div className="hidden md:flex items-center gap-1.5 mr-2">
-                <Badge 
-                  variant="outline" 
-                  className={`text-xs ${clobConnected ? 'text-cyan-400 border-cyan-500/30' : 'text-muted-foreground'}`}
-                >
-                  CLOB {clobConnected ? `✓ ${clobUpdateCount}` : '—'}
-                </Badge>
-                <Badge 
-                  variant="outline" 
-                  className={`text-xs ${chainlinkConnected ? 'text-orange-400 border-orange-500/30' : 'text-muted-foreground'}`}
-                >
-                  CL {chainlinkConnected ? `✓ ${chainlinkUpdateCount}` : '—'}
-                </Badge>
-              </div>
-              <Button
-                variant={isLive ? "default" : "outline"}
-                size="sm"
-                onClick={() => setIsLive(!isLive)}
-                className={isLive ? 'bg-emerald-600 hover:bg-emerald-700' : ''}
-              >
-                {isLive ? <Wifi className="w-4 h-4" /> : <WifiOff className="w-4 h-4" />}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={fetchSignals}
-                disabled={isLoading}
-              >
-                <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
-              </Button>
-            </div>
+            <Button
+              variant={isLive ? "default" : "outline"}
+              size="sm"
+              onClick={() => setIsLive(!isLive)}
+              className={isLive ? 'bg-emerald-600 hover:bg-emerald-700' : ''}
+            >
+              {isLive ? (
+                <>
+                  <Wifi className="w-4 h-4 mr-2" />
+                  Live
+                </>
+              ) : (
+                <>
+                  <WifiOff className="w-4 h-4 mr-2" />
+                  Paused
+                </>
+              )}
+            </Button>
           </div>
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="container mx-auto px-4 py-6 space-y-6">
-        {error && (
-          <Card className="border-destructive/50 bg-destructive/10">
+        {/* Crypto Prices */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Card className={chainlinkConnected ? 'border-orange-500/30' : ''}>
+            <CardContent className="pt-6">
+              <div className="flex items-center gap-2 text-muted-foreground mb-1">
+                <DollarSign className="w-4 h-4" />
+                <span className="text-sm">Bitcoin</span>
+                {chainlinkConnected && (
+                  <Badge variant="outline" className="text-xs text-orange-400 border-orange-500/30 px-1">LIVE</Badge>
+                )}
+              </div>
+              <LivePrice 
+                price={btcPrice ?? 0}
+                format="dollars"
+                className="text-2xl font-bold text-orange-400"
+                showFlash={chainlinkConnected}
+              />
+            </CardContent>
+          </Card>
+          
+          <Card className={chainlinkConnected ? 'border-blue-500/30' : ''}>
+            <CardContent className="pt-6">
+              <div className="flex items-center gap-2 text-muted-foreground mb-1">
+                <DollarSign className="w-4 h-4" />
+                <span className="text-sm">Ethereum</span>
+                {chainlinkConnected && (
+                  <Badge variant="outline" className="text-xs text-blue-400 border-blue-500/30 px-1">LIVE</Badge>
+                )}
+              </div>
+              <LivePrice 
+                price={ethPrice ?? 0}
+                format="dollars"
+                className="text-2xl font-bold text-blue-400"
+                showFlash={chainlinkConnected}
+              />
+            </CardContent>
+          </Card>
+          
+          <Card>
+            <CardContent className="pt-6">
+              <div className="flex items-center gap-2 text-muted-foreground mb-1">
+                <Timer className="w-4 h-4" />
+                <span className="text-sm">Live Markets</span>
+              </div>
+              <div className="text-2xl font-bold text-emerald-400">
+                {liveMarkets.length}
+              </div>
+            </CardContent>
+          </Card>
+          
+          <Card>
+            <CardContent className="pt-6">
+              <div className="flex items-center gap-2 text-muted-foreground mb-1">
+                <Zap className="w-4 h-4" />
+                <span className="text-sm">Arb Opportunities</span>
+              </div>
+              <div className="text-2xl font-bold text-primary">
+                {liveMarkets.filter(m => m.arbitrageEdge >= 2).length}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Connection Status */}
+        {!clobConnected && tokenIds.length > 0 && (
+          <Card className="border-yellow-500/50 bg-yellow-500/10">
             <CardContent className="py-4">
-              <div className="flex items-center gap-2 text-destructive">
-                <AlertTriangle className="w-5 h-5" />
-                <span>{error}</span>
+              <div className="flex items-center gap-2 text-yellow-400">
+                <Radio className="w-5 h-5 animate-pulse" />
+                <span>Connecting to Polymarket CLOB WebSocket... ({clobState})</span>
               </div>
             </CardContent>
           </Card>
         )}
 
-        {data && (
-          <>
-            {/* Crypto Prices - Now with WebSocket data */}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <Card className="border-orange-500/30">
-                <CardContent className="pt-6">
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="flex items-center gap-2 text-muted-foreground">
-                      <DollarSign className="w-4 h-4 text-orange-400" />
-                      <span className="text-sm">Bitcoin</span>
-                    </div>
-                    {chainlinkConnected && (
-                      <Badge className="bg-cyan-500/20 text-cyan-400 border-cyan-500/30 text-[10px] px-1">
-                        LIVE
-                      </Badge>
-                    )}
-                  </div>
-                  <div className="text-2xl font-bold text-orange-400 font-mono">
-                    {chainlinkBtcPrice ? (
-                      <LivePrice price={chainlinkBtcPrice} format="dollars" className="text-2xl font-bold text-orange-400" />
-                    ) : (
-                      `$${data.cryptoPrices.BTC?.toLocaleString() || '-'}`
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-              
-              <Card className="border-blue-500/30">
-                <CardContent className="pt-6">
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="flex items-center gap-2 text-muted-foreground">
-                      <DollarSign className="w-4 h-4 text-blue-400" />
-                      <span className="text-sm">Ethereum</span>
-                    </div>
-                    {chainlinkConnected && (
-                      <Badge className="bg-cyan-500/20 text-cyan-400 border-cyan-500/30 text-[10px] px-1">
-                        LIVE
-                      </Badge>
-                    )}
-                  </div>
-                  <div className="text-2xl font-bold text-blue-400 font-mono">
-                    {chainlinkEthPrice ? (
-                      <LivePrice price={chainlinkEthPrice} format="dollars" className="text-2xl font-bold text-blue-400" />
-                    ) : (
-                      `$${data.cryptoPrices.ETH?.toLocaleString() || '-'}`
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-              
-              <Card className="border-emerald-500/30">
-                <CardContent className="pt-6">
-                  <div className="flex items-center gap-2 text-muted-foreground mb-1">
-                    <Zap className="w-4 h-4 text-emerald-400" />
-                    <span className="text-sm">High Confidence</span>
-                  </div>
-                  <div className="text-2xl font-bold text-emerald-400">
-                    {data.summary.highConfidenceCount}
-                  </div>
-                </CardContent>
-              </Card>
-              
-              <Card className="border-primary/30">
-                <CardContent className="pt-6">
-                  <div className="flex items-center gap-2 text-muted-foreground mb-1">
-                    <Target className="w-4 h-4 text-primary" />
-                    <span className="text-sm">Dual-Side Signals</span>
-                  </div>
-                  <div className="text-2xl font-bold text-primary">
-                    {data.summary.dualSideSignalCount}
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-
-            {/* LIVE Markets - Using WebSocket enhanced data */}
-            {liveMarketsWithWsPrices.length > 0 && (
-              <Card className="border-emerald-500/50 bg-gradient-to-br from-emerald-500/10 to-transparent shadow-lg shadow-emerald-500/10">
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <div className="relative">
-                        <Activity className="w-5 h-5 text-emerald-400" />
-                        <span className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
-                      </div>
-                      <CardTitle className="text-lg text-emerald-400">
-                        LIVE NOW ({liveMarketsWithWsPrices.length})
-                      </CardTitle>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {clobConnected && (
-                        <Badge className="bg-cyan-500/20 text-cyan-400 border-cyan-500/30 text-xs flex items-center gap-1">
-                          <Radio className="w-3 h-3" />
-                          WebSocket
-                        </Badge>
-                      )}
-                      <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30 animate-pulse">
-                        ACTIVE
-                      </Badge>
-                    </div>
-                  </div>
-                  <CardDescription>
-                    Markets currently in progress - trade now!
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {liveMarketsWithWsPrices.map((signal, index) => (
-                    <SignalCard key={index} signal={signal} />
-                  ))}
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Soon Upcoming (within 30 min) */}
-            {data.soonUpcoming && data.soonUpcoming.length > 0 && (
-              <Card className="border-yellow-500/30 bg-gradient-to-br from-yellow-500/5 to-transparent">
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Timer className="w-5 h-5 text-yellow-400" />
-                      <CardTitle className="text-lg">Starting Soon ({data.soonUpcoming.length})</CardTitle>
-                    </div>
-                    <Badge variant="outline" className="text-yellow-400 border-yellow-500/30">
-                      &lt; 30 min
-                    </Badge>
-                  </div>
-                  <CardDescription>
-                    Next 15-minute markets starting within 30 minutes
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {data.soonUpcoming.map((signal, index) => (
-                    <SignalCard key={index} signal={signal} showCountdown={true} />
-                  ))}
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Later Markets (> 30 min out) - compact view */}
-            {data.laterMarkets && data.laterMarkets.length > 0 && (
-              <Card>
-                <CardHeader>
-                  <div className="flex items-center gap-2">
-                    <Clock className="w-5 h-5 text-muted-foreground" />
-                    <CardTitle className="text-lg">Later ({data.laterMarkets.length})</CardTitle>
-                  </div>
-                  <CardDescription>
-                    Markets starting in more than 30 minutes
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                    {data.laterMarkets.slice(0, 8).map((signal, index) => (
-                      <div key={index} className="p-3 rounded-lg bg-muted/30 border border-border text-center">
-                        {signal.asset === 'BTC' 
-                          ? <Badge className="bg-orange-500/20 text-orange-400 border-orange-500/30 text-xs">BTC</Badge>
-                          : <Badge className="bg-blue-500/20 text-blue-400 border-blue-500/30 text-xs">ETH</Badge>
-                        }
-                        <div className="text-xs text-muted-foreground mt-1">
-                          {Math.floor(signal.remainingSeconds / 60)} min
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Empty State */}
-            {data.signals.length === 0 && (
-              <Card>
-                <CardContent className="py-12 text-center">
-                  <Activity className="w-12 h-12 mx-auto mb-4 text-muted-foreground/50" />
-                  <h3 className="text-lg font-medium mb-2">No Active 15-Min Markets</h3>
-                  <p className="text-muted-foreground text-sm">
-                    Waiting for BTC/ETH 15-minute prediction markets to become active.
-                  </p>
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Gabagool Strategy Info */}
-            <Card className="border-purple-500/30 bg-gradient-to-br from-purple-500/5 to-transparent">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-lg">
-                  <Target className="w-5 h-5 text-purple-400" />
-                  Gabagool Strategie: 15-Min Dual-Side
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid md:grid-cols-3 gap-4">
-                  <div className="p-4 bg-emerald-500/10 rounded-lg border border-emerald-500/20">
-                    <h4 className="font-medium text-emerald-400 mb-2">HIGH Confidence</h4>
-                    <p className="text-sm text-muted-foreground">
-                      Delta &lt; 0.03% + Combined &lt; 100¢
-                    </p>
-                    <p className="text-xs text-emerald-400 mt-2">
-                      → Buy BOTH sides for guaranteed profit
-                    </p>
-                  </div>
-                  <div className="p-4 bg-yellow-500/10 rounded-lg border border-yellow-500/20">
-                    <h4 className="font-medium text-yellow-400 mb-2">MEDIUM Confidence</h4>
-                    <p className="text-sm text-muted-foreground">
-                      Delta &lt; 0.1% or Combined &lt; 100¢
-                    </p>
-                    <p className="text-xs text-yellow-400 mt-2">
-                      → Buy underpriced side near strike
-                    </p>
-                  </div>
-                  <div className="p-4 bg-muted/50 rounded-lg border border-border">
-                    <h4 className="font-medium text-muted-foreground mb-2">LOW Confidence</h4>
-                    <p className="text-sm text-muted-foreground">
-                      Larger delta, directional signal
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-2">
-                      → Consider single-side directional bet
-                    </p>
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </>
+        {tokenIds.length === 0 && (
+          <Card className="border-muted">
+            <CardContent className="py-8 text-center">
+              <Radio className="w-8 h-8 text-muted-foreground mx-auto mb-2 animate-pulse" />
+              <p className="text-muted-foreground">Loading market tokens...</p>
+            </CardContent>
+          </Card>
         )}
 
-        {/* Loading State */}
-        {isLoading && !data && (
+        {/* Live Markets */}
+        {liveMarkets.length > 0 && (
           <Card>
-            <CardContent className="py-12 text-center">
-              <RefreshCw className="w-8 h-8 mx-auto mb-4 animate-spin text-primary" />
-              <p className="text-muted-foreground">Loading 15-min market signals...</p>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <span className="relative flex h-3 w-3">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                </span>
+                LIVE NOW
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {liveMarkets.map(market => {
+                const confidence = getConfidenceLevel(market.arbitrageEdge);
+                const isExpiringSoon = market.remainingSeconds < 120;
+                
+                return (
+                  <div
+                    key={market.slug}
+                    className={`p-4 rounded-lg border transition-all ${
+                      confidence === 'high' 
+                        ? 'border-emerald-500/50 bg-emerald-500/10 shadow-lg shadow-emerald-500/10' 
+                        : confidence === 'medium'
+                        ? 'border-yellow-500/30 bg-yellow-500/5'
+                        : 'border-border bg-muted/5'
+                    }`}
+                  >
+                    {/* Header */}
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-2">
+                        <Badge className={market.asset === 'BTC' 
+                          ? 'bg-orange-500/20 text-orange-400 border-orange-500/30'
+                          : 'bg-blue-500/20 text-blue-400 border-blue-500/30'
+                        }>
+                          {market.asset}
+                        </Badge>
+                        <Badge className="bg-cyan-500/20 text-cyan-400 border-cyan-500/30 text-xs flex items-center gap-1">
+                          <Radio className="w-2.5 h-2.5" />
+                          WS LIVE
+                        </Badge>
+                        <div className={`flex items-center gap-1 px-2 py-1 rounded-md text-sm font-mono ${
+                          isExpiringSoon 
+                            ? 'bg-red-500/20 text-red-400 animate-pulse'
+                            : 'bg-muted'
+                        }`}>
+                          <Timer className="w-3 h-3" />
+                          {formatTime(market.remainingSeconds)}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Badge className={
+                          confidence === 'high' 
+                            ? 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                            : confidence === 'medium'
+                            ? 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30'
+                            : 'bg-muted text-muted-foreground'
+                        }>
+                          {confidence.toUpperCase()}
+                        </Badge>
+                        {market.arbitrageEdge >= 2 && (
+                          <Badge variant="outline" className="text-emerald-400 border-emerald-500/30">
+                            Arbitrage
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Prices Grid */}
+                    <div className="grid grid-cols-4 gap-3 text-sm">
+                      <div className="text-center p-3 bg-emerald-500/10 rounded-lg">
+                        <div className="flex items-center justify-center gap-1 text-emerald-400 mb-1">
+                          <TrendingUp className="w-3 h-3" />
+                          <span className="text-xs">Up</span>
+                        </div>
+                        <LivePrice 
+                          price={market.upPrice} 
+                          format="cents" 
+                          className="font-bold text-lg text-emerald-400"
+                          showFlash={true}
+                        />
+                      </div>
+                      <div className="text-center p-3 bg-red-500/10 rounded-lg">
+                        <div className="flex items-center justify-center gap-1 text-red-400 mb-1">
+                          <TrendingDown className="w-3 h-3" />
+                          <span className="text-xs">Down</span>
+                        </div>
+                        <LivePrice 
+                          price={market.downPrice} 
+                          format="cents" 
+                          className="font-bold text-lg text-red-400"
+                          showFlash={true}
+                        />
+                      </div>
+                      <div className="text-center p-3 bg-muted/50 rounded-lg">
+                        <div className="flex items-center justify-center gap-1 text-muted-foreground mb-1">
+                          <Layers className="w-3 h-3" />
+                          <span className="text-xs">Combined</span>
+                        </div>
+                        <span className={`font-mono font-bold text-lg ${
+                          market.combinedPrice < 1 ? 'text-emerald-400' : ''
+                        }`}>
+                          {(market.combinedPrice * 100).toFixed(1)}¢
+                        </span>
+                      </div>
+                      <div className="text-center p-3 bg-primary/10 rounded-lg">
+                        <div className="flex items-center justify-center gap-1 text-primary mb-1">
+                          <Target className="w-3 h-3" />
+                          <span className="text-xs">Edge</span>
+                        </div>
+                        <span className={`font-mono font-bold text-lg ${
+                          market.arbitrageEdge > 0 ? 'text-primary' : ''
+                        }`}>
+                          {market.arbitrageEdge.toFixed(1)}%
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Action */}
+                    {market.arbitrageEdge >= 2 && (
+                      <div className="mt-4 p-3 rounded-lg bg-emerald-500/20 border border-emerald-500/30">
+                        <div className="flex items-center gap-2">
+                          <Zap className="w-4 h-4 text-emerald-400" />
+                          <span className="font-medium text-sm text-emerald-400">
+                            ARBITRAGE: Buy both @ {(market.combinedPrice * 100).toFixed(1)}¢ = {market.arbitrageEdge.toFixed(1)}% guaranteed edge
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* No Live Markets */}
+        {liveMarkets.length === 0 && tokenIds.length > 0 && clobConnected && (
+          <Card>
+            <CardContent className="py-8 text-center">
+              <Timer className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
+              <p className="text-muted-foreground">No live markets at the moment</p>
+              <p className="text-xs text-muted-foreground mt-1">Markets run every 15 minutes</p>
             </CardContent>
           </Card>
         )}
