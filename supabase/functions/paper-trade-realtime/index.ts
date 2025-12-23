@@ -673,10 +673,16 @@ async function handleWebSocket(req: Request): Promise<Response> {
     ctx.inFlight = true;
     
     try {
-      // Update remaining seconds
+      // Only trade the CURRENT 15-min market (must be in its active window)
+      const startTime = new Date(market.eventStartTime).getTime();
       const endTime = new Date(market.eventEndTime).getTime();
+      if (nowMs < startTime || nowMs >= endTime) {
+        return; // finally will release lock
+      }
+
+      // Update remaining seconds
       ctx.remainingSeconds = Math.floor((endTime - nowMs) / 1000);
-      
+
       evaluationCount++;
       
       // Call the strategy (without internal inFlight - we handle it here)
