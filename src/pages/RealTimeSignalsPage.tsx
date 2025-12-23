@@ -60,6 +60,14 @@ const MarketCard = ({
   const confidence = getConfidenceLevel(market.arbitrageEdge);
   const isExpiringSoon = market.remainingSeconds < 120;
 
+  // Calculate price difference
+  const priceDiff = currentPrice && market.strikePrice 
+    ? currentPrice - market.strikePrice 
+    : null;
+  const priceDiffPercent = currentPrice && market.strikePrice
+    ? ((currentPrice - market.strikePrice) / market.strikePrice) * 100
+    : null;
+
   return (
     <div
       className={`p-4 rounded-lg border transition-all ${
@@ -70,39 +78,44 @@ const MarketCard = ({
             : "border-border bg-muted/5"
       }`}
     >
-      {/* Strike Price Banner */}
-      {market.strikePrice && (
-        <div className="mb-3 p-2 rounded-lg bg-amber-500/10 border border-amber-500/30">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2 text-amber-400">
-              <Target className="w-4 h-4" />
-              <span className="text-xs font-medium">Price to Beat</span>
-            </div>
-            <div className="flex items-center gap-3">
-              <span className="font-mono font-bold text-amber-400">
-                ${market.strikePrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </span>
-              {currentPrice && (
-                <span className={`text-xs font-medium ${currentPrice > market.strikePrice ? 'text-emerald-400' : 'text-red-400'}`}>
-                  {currentPrice > market.strikePrice ? '↑ Above' : '↓ Below'}
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      <div className="mb-3">
-        <p className="text-sm font-medium text-foreground">
-          {market.question || `${market.asset} Up/Down`}
-        </p>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          {market.slug}
-        </p>
-      </div>
-
-      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+      {/* Header with time, strike price and difference */}
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
         <div className="flex items-center gap-2 flex-wrap">
+          <div
+            className={`flex items-center gap-1 px-2 py-1 rounded-md text-sm font-mono ${
+              isExpiringSoon ? "bg-red-500/20 text-red-400 animate-pulse" : "bg-muted"
+            }`}
+          >
+            <Timer className="w-3 h-3" />
+            {formatTime(market.remainingSeconds)}
+          </div>
+          
+          {market.strikePrice && (
+            <>
+              <div className="flex items-center gap-1 px-2 py-1 rounded-md bg-amber-500/20 text-amber-400">
+                <Target className="w-3 h-3" />
+                <span className="font-mono text-sm font-bold">
+                  ${market.strikePrice.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                </span>
+              </div>
+              
+              {priceDiff !== null && priceDiffPercent !== null && (
+                <div className={`flex items-center gap-1 px-2 py-1 rounded-md text-sm font-mono ${
+                  priceDiff > 0 
+                    ? "bg-emerald-500/20 text-emerald-400" 
+                    : "bg-red-500/20 text-red-400"
+                }`}>
+                  {priceDiff > 0 ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                  <span className="font-bold">
+                    {priceDiff > 0 ? '+' : ''}{priceDiff.toFixed(0)} ({priceDiffPercent > 0 ? '+' : ''}{priceDiffPercent.toFixed(2)}%)
+                  </span>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+        
+        <div className="flex items-center gap-2">
           <Badge 
             variant="outline" 
             className={market.marketType === '15min' 
@@ -115,33 +128,35 @@ const MarketCard = ({
             <Radio className="w-2.5 h-2.5" />
             CLOB
           </Badge>
-          <div
-            className={`flex items-center gap-1 px-2 py-1 rounded-md text-sm font-mono ${
-              isExpiringSoon ? "bg-red-500/20 text-red-400 animate-pulse" : "bg-muted"
-            }`}
-          >
-            <Timer className="w-3 h-3" />
-            {formatTime(market.remainingSeconds)}
-          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Badge
-            className={
-              confidence === "high"
-                ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
-                : confidence === "medium"
-                  ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30"
-                  : "bg-muted text-muted-foreground"
-            }
-          >
-            {confidence.toUpperCase()}
+      </div>
+
+      <div className="mb-3">
+        <p className="text-sm font-medium text-foreground">
+          {market.question || `${market.asset} Up/Down`}
+        </p>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          {market.slug}
+        </p>
+      </div>
+
+      <div className="flex items-center justify-end mb-4 gap-2">
+        <Badge
+          className={
+            confidence === "high"
+              ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
+              : confidence === "medium"
+                ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30"
+                : "bg-muted text-muted-foreground"
+          }
+        >
+          {confidence.toUpperCase()}
+        </Badge>
+        {market.arbitrageEdge >= 2 && (
+          <Badge variant="outline" className="text-emerald-400 border-emerald-500/30">
+            Arbitrage
           </Badge>
-          {market.arbitrageEdge >= 2 && (
-            <Badge variant="outline" className="text-emerald-400 border-emerald-500/30">
-              Arbitrage
-            </Badge>
-          )}
-        </div>
+        )}
       </div>
 
       <div className="grid grid-cols-4 gap-3 text-sm">
