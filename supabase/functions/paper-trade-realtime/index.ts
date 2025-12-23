@@ -230,7 +230,18 @@ function decideTrades(
     const { upExec, downExec } = px;
     const combined = upExec + downExec;
 
-    // 5) PRICE SANITY
+    // 5) COMBINED PRICE SANITY CHECK
+    // In a binary market, UP + DOWN should always be ~100¢ (minus small spread)
+    // If combined < 90¢, the prices are corrupt/stale and not tradeable
+    // This prevents trades like UP@48¢ + DOWN@8¢ = 56¢ (impossible in reality)
+    if (combined < 0.90) {
+      return skip(`PRICES_CORRUPT: ${(upExec*100).toFixed(0)}¢+${(downExec*100).toFixed(0)}¢=${(combined*100).toFixed(0)}¢ < 90¢`);
+    }
+    if (combined > 1.10) {
+      return skip(`PRICES_INFLATED: ${(upExec*100).toFixed(0)}¢+${(downExec*100).toFixed(0)}¢=${(combined*100).toFixed(0)}¢ > 110¢`);
+    }
+
+    // 6) INDIVIDUAL PRICE SANITY
     if (upExec < cfg.entry.minPrice || upExec > cfg.entry.maxPrice) {
       return skip(`UP_OUT_OF_RANGE: ${(upExec*100).toFixed(0)}¢`);
     }
