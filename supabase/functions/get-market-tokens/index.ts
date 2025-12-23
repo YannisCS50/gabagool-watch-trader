@@ -16,12 +16,44 @@ interface MarketToken {
   eventStartTime: string;
   eventEndTime: string;
   marketType: 'price_above' | 'price_target' | '15min' | 'other';
-  strikePrice?: number;
+  strikePrice?: number | null;
 }
 
 /**
- * Fetch market by slug directly from Gamma API
+ * Parse strike price from market question
+ * Examples:
+ * - "Bitcoin Up or Down - December 23, 8:15AM-8:30AM ET" -> parse from question patterns
+ * - "Will BTC be above $95,000 at 9:00 AM?" -> 95000
+ * - "Ethereum above $3,400?" -> 3400
  */
+function parseStrikePriceFromQuestion(question: string): number | null {
+  if (!question) return null;
+  
+  // Pattern 1: "$XX,XXX" or "$X,XXX" format
+  const dollarMatch = question.match(/\$([0-9,]+(?:\.[0-9]+)?)/);
+  if (dollarMatch) {
+    const priceStr = dollarMatch[1].replace(/,/g, '');
+    const price = parseFloat(priceStr);
+    if (!isNaN(price) && price > 0) {
+      console.log(`[Parse] Found strike price $${price} from question: ${question.slice(0, 50)}...`);
+      return price;
+    }
+  }
+  
+  // Pattern 2: "above XXXXX" without dollar sign
+  const aboveMatch = question.match(/above\s+([0-9,]+(?:\.[0-9]+)?)/i);
+  if (aboveMatch) {
+    const priceStr = aboveMatch[1].replace(/,/g, '');
+    const price = parseFloat(priceStr);
+    if (!isNaN(price) && price > 0) {
+      console.log(`[Parse] Found strike price ${price} from question: ${question.slice(0, 50)}...`);
+      return price;
+    }
+  }
+  
+  return null;
+}
+
 /**
  * Parse clobTokenIds which can be a string, array, or JSON string
  */
@@ -122,6 +154,9 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
     console.log(`[Gamma] UP token: ${upTokenId.slice(0, 30)}...`);
     console.log(`[Gamma] DOWN token: ${downTokenId.slice(0, 30)}...`);
     
+    // Try to parse strike price from question
+    const parsedStrikePrice = parseStrikePriceFromQuestion(question);
+    
     return {
       slug,
       question,
@@ -132,6 +167,7 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
       eventStartTime: market.startDate || market.gameStartTime || new Date().toISOString(),
       eventEndTime: market.endDate || market.endDateIso || new Date(Date.now() + 15 * 60000).toISOString(),
       marketType,
+      strikePrice: parsedStrikePrice,
     };
     
   } catch (error) {
@@ -311,6 +347,9 @@ async function fetchPriceMarkets(): Promise<MarketToken[]> {
       console.log(`[Gamma] Found price market: ${question.slice(0, 60)}...`);
       console.log(`[Gamma] UP: ${upTokenId.slice(0, 30)}... DOWN: ${downTokenId.slice(0, 30)}...`);
       
+      // Parse strike price from question
+      const parsedStrikePrice = parseStrikePriceFromQuestion(market.question || '');
+      
       results.push({
         slug,
         question: market.question || '',
@@ -321,6 +360,7 @@ async function fetchPriceMarkets(): Promise<MarketToken[]> {
         eventStartTime: market.startDate || new Date().toISOString(),
         eventEndTime: market.endDate || new Date(Date.now() + 24 * 60 * 60000).toISOString(),
         marketType: 'price_above',
+        strikePrice: parsedStrikePrice,
       });
     }
     
@@ -409,10 +449,10 @@ serve(async (req) => {
       }
     }
     
-    // Add strike prices to markets
+    // Add strike prices to markets - prefer DB, fallback to parsed from question
     const marketsWithStrike = markets.map(m => ({
       ...m,
-      strikePrice: strikePriceMap.get(m.slug) || null
+      strikePrice: strikePriceMap.get(m.slug) || m.strikePrice || null
     }));
     
     const duration = Date.now() - startTime;
