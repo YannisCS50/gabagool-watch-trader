@@ -20,6 +20,33 @@ interface MarketToken {
 /**
  * Fetch market by slug directly from Gamma API
  */
+/**
+ * Parse clobTokenIds which can be a string, array, or JSON string
+ */
+function parseClobTokenIds(raw: any): string[] {
+  if (!raw) return [];
+  
+  // Already an array
+  if (Array.isArray(raw)) {
+    return raw.filter(id => typeof id === 'string' && id.length > 10);
+  }
+  
+  // JSON string - parse it
+  if (typeof raw === 'string') {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        return parsed.filter(id => typeof id === 'string' && id.length > 10);
+      }
+    } catch {
+      // Not valid JSON, might be a single token ID
+      if (raw.length > 10) return [raw];
+    }
+  }
+  
+  return [];
+}
+
 async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
   try {
     console.log(`[Gamma] Fetching market by slug: ${slug}`);
@@ -45,16 +72,26 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
     
     const market = markets[0];
     const conditionId = market.conditionId || '';
-    const clobTokenIds = market.clobTokenIds || [];
+    
+    // Parse clobTokenIds properly - can be string or array
+    const clobTokenIds = parseClobTokenIds(market.clobTokenIds);
+    
     const question = market.question || market.title || '';
     const outcomes = market.outcomes || ['Yes', 'No'];
     
     console.log(`[Gamma] Found market: ${question.slice(0, 50)}...`);
     console.log(`[Gamma] conditionId: ${conditionId}`);
-    console.log(`[Gamma] clobTokenIds: ${JSON.stringify(clobTokenIds)}`);
+    console.log(`[Gamma] Raw clobTokenIds type: ${typeof market.clobTokenIds}`);
+    console.log(`[Gamma] Raw clobTokenIds: ${JSON.stringify(market.clobTokenIds)?.slice(0, 100)}`);
+    console.log(`[Gamma] Parsed clobTokenIds: ${clobTokenIds.length} tokens`);
+    
+    if (clobTokenIds.length >= 2) {
+      console.log(`[Gamma] Token 0: ${clobTokenIds[0].slice(0, 30)}...`);
+      console.log(`[Gamma] Token 1: ${clobTokenIds[1].slice(0, 30)}...`);
+    }
     
     if (clobTokenIds.length < 2) {
-      console.log(`[Gamma] Not enough token IDs for slug: ${slug}`);
+      console.log(`[Gamma] Not enough valid token IDs for slug: ${slug}`);
       return null;
     }
     
@@ -79,6 +116,9 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
       upTokenId = clobTokenIds[1];
       downTokenId = clobTokenIds[0];
     }
+    
+    console.log(`[Gamma] UP token: ${upTokenId.slice(0, 30)}...`);
+    console.log(`[Gamma] DOWN token: ${downTokenId.slice(0, 30)}...`);
     
     return {
       slug,
@@ -252,7 +292,7 @@ async function fetchPriceMarkets(): Promise<MarketToken[]> {
       
       if (!isBtcAbove && !isEthAbove) continue;
       
-      const clobTokenIds = market.clobTokenIds || [];
+      const clobTokenIds = parseClobTokenIds(market.clobTokenIds);
       if (clobTokenIds.length < 2) continue;
       
       const outcomes = market.outcomes || ['Yes', 'No'];
@@ -267,6 +307,7 @@ async function fetchPriceMarkets(): Promise<MarketToken[]> {
       }
       
       console.log(`[Gamma] Found price market: ${question.slice(0, 60)}...`);
+      console.log(`[Gamma] UP: ${upTokenId.slice(0, 30)}... DOWN: ${downTokenId.slice(0, 30)}...`);
       
       results.push({
         slug,
