@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, TrendingUp, TrendingDown, Activity, Zap, Shield, Target, Clock, DollarSign, BarChart3, PieChart, Layers, AlertTriangle, CheckCircle2 } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart as RechartsPie, Pie, Cell, LineChart, Line, Legend, ComposedChart, Area } from 'recharts';
+import { GabagoolTradesTable } from '@/components/GabagoolTradesTable';
 
 interface Trade {
   id: string;
@@ -824,6 +825,9 @@ export default function GabagoolStrategyAnalysis() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Trades Table with Reasoning */}
+        <GabagoolTradesTable trades={trades} />
       </div>
     </div>
   );
