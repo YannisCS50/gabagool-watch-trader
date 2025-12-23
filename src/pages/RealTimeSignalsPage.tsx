@@ -42,17 +42,20 @@ interface LiveMarket {
   eventEndTime: Date;
   remainingSeconds: number;
   marketType: string;
+  strikePrice: number | null;
 }
 
 // MarketCard component for reuse
 const MarketCard = ({ 
   market, 
   formatTime, 
-  getConfidenceLevel 
+  getConfidenceLevel,
+  currentPrice,
 }: { 
   market: LiveMarket; 
   formatTime: (s: number) => string; 
   getConfidenceLevel: (edge: number) => "high" | "medium" | "low";
+  currentPrice: number | null;
 }) => {
   const confidence = getConfidenceLevel(market.arbitrageEdge);
   const isExpiringSoon = market.remainingSeconds < 120;
@@ -67,6 +70,28 @@ const MarketCard = ({
             : "border-border bg-muted/5"
       }`}
     >
+      {/* Strike Price Banner */}
+      {market.strikePrice && (
+        <div className="mb-3 p-2 rounded-lg bg-amber-500/10 border border-amber-500/30">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-amber-400">
+              <Target className="w-4 h-4" />
+              <span className="text-xs font-medium">Price to Beat</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="font-mono font-bold text-amber-400">
+                ${market.strikePrice.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+              {currentPrice && (
+                <span className={`text-xs font-medium ${currentPrice > market.strikePrice ? 'text-emerald-400' : 'text-red-400'}`}>
+                  {currentPrice > market.strikePrice ? '↑ Above' : '↓ Below'}
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="mb-3">
         <p className="text-sm font-medium text-foreground">
           {market.question || `${market.asset} Up/Down`}
@@ -230,6 +255,7 @@ const RealTimeSignalsPage = () => {
         eventEndTime: market.eventEndTime,
         remainingSeconds,
         marketType: market.marketType,
+        strikePrice: market.strikePrice,
       };
     });
 
@@ -470,7 +496,7 @@ const RealTimeSignalsPage = () => {
             </CardHeader>
             <CardContent className="space-y-4">
               {btcMarkets.map((market) => (
-                <MarketCard key={market.slug} market={market} formatTime={formatTime} getConfidenceLevel={getConfidenceLevel} />
+                <MarketCard key={market.slug} market={market} formatTime={formatTime} getConfidenceLevel={getConfidenceLevel} currentPrice={btcPrice} />
               ))}
             </CardContent>
           </Card>
@@ -491,7 +517,7 @@ const RealTimeSignalsPage = () => {
             </CardHeader>
             <CardContent className="space-y-4">
               {ethMarkets.map((market) => (
-                <MarketCard key={market.slug} market={market} formatTime={formatTime} getConfidenceLevel={getConfidenceLevel} />
+                <MarketCard key={market.slug} market={market} formatTime={formatTime} getConfidenceLevel={getConfidenceLevel} currentPrice={ethPrice} />
               ))}
             </CardContent>
           </Card>
