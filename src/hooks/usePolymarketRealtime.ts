@@ -376,7 +376,8 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
           return;
         }
         
-        // STAP 2: Process price_change events als primaire bron
+        // Process price_change events - ONLY update .price (last trade), NOT bid/ask
+        // Bid/ask come exclusively from book events
         if (data.event_type === 'price_change' && Array.isArray(data.price_changes)) {
           let updatedAny = false;
           
@@ -393,14 +394,13 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
                 pricesRef.current.set(marketInfo.slug, marketMap);
               }
               
-              // Preserve existing bid if we have one
+              // Preserve existing bid/ask from book events - only update last trade price
               const existing = marketMap.get(marketInfo.outcome);
-              const existingBid = existing?.bestBid ?? null;
               
               const pricePoint: PricePoint = {
-                price,
-                bestAsk: price,
-                bestBid: existingBid, // Keep existing bid for midpoint calc
+                price, // Last trade price
+                bestAsk: existing?.bestAsk ?? null, // Keep book data
+                bestBid: existing?.bestBid ?? null, // Keep book data
                 timestampMs: now,
               };
               
