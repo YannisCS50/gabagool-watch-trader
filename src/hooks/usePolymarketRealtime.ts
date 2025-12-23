@@ -342,7 +342,7 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
           setIsConnected(true);
           setConnectionState("connected");
           
-          // Subscribe to markets
+          // Subscribe to markets - both MARKET (price_change) and BOOK (bid/ask) channels
           const tokenIds: string[] = [];
           for (const m of marketsRef.current) {
             if (m.upTokenId) tokenIds.push(m.upTokenId);
@@ -350,9 +350,15 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
           }
           
           if (tokenIds.length > 0 && ws.readyState === WebSocket.OPEN) {
-            const subscribeMsg = { type: "MARKET", assets_ids: tokenIds };
-            console.log(`[WS] Subscribing to ${tokenIds.length} tokens`);
-            ws.send(JSON.stringify(subscribeMsg));
+            // Subscribe to MARKET channel for price_change events
+            const marketSubscribeMsg = { type: "MARKET", assets_ids: tokenIds };
+            console.log(`[WS] Subscribing to ${tokenIds.length} tokens (MARKET channel)`);
+            ws.send(JSON.stringify(marketSubscribeMsg));
+            
+            // Subscribe to BOOK channel for bid/ask orderbook data
+            const bookSubscribeMsg = { type: "BOOK", assets_ids: tokenIds };
+            console.log(`[WS] Subscribing to ${tokenIds.length} tokens (BOOK channel)`);
+            ws.send(JSON.stringify(bookSubscribeMsg));
           }
           return;
         }
