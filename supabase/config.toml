@@ -23,3 +23,9 @@ verify_jwt = false
 
 [functions.save-expired-market]
 verify_jwt = false
+
+[functions.paper-trade-bot]
+verify_jwt = false
+
+[functions.settle-paper-trades]
+verify_jwt = false

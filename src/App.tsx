@@ -14,6 +14,7 @@ import HFTBuildGuide from "./pages/HFTBuildGuide";
 import EdgeAnalysis from "./pages/EdgeAnalysis";
 import StrategyDeepDive from "./pages/StrategyDeepDive";
 import RealTimeSignalsPage from "./pages/RealTimeSignalsPage";
+import PaperTrading from "./pages/PaperTrading";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -36,6 +37,7 @@ const App = () => (
           <Route path="/edge-analysis" element={<EdgeAnalysis />} />
           <Route path="/strategy-deep-dive" element={<StrategyDeepDive />} />
           <Route path="/real-time-signals" element={<RealTimeSignalsPage />} />
+          <Route path="/paper-trading" element={<PaperTrading />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>
