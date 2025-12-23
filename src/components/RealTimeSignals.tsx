@@ -15,12 +15,14 @@ import {
   Wifi,
   WifiOff,
   Timer,
-  Radio
+  Radio,
+  Satellite
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { LiveCountdown } from './LiveCountdown';
 import { LivePrice, LiveMarketPrices } from './LivePrice';
 import { usePolymarketRealtime, fetch15MinMarketTokenIds } from '@/hooks/usePolymarketRealtime';
+import { useChainlinkRealtime } from '@/hooks/useChainlinkRealtime';
 
 interface TradingSignal {
   market: string;
@@ -98,7 +100,7 @@ export const RealTimeSignals = () => {
     return marketTokens.flatMap(m => [m.upTokenId, m.downTokenId]).filter(Boolean);
   }, [marketTokens]);
 
-  // Polymarket WebSocket hook
+  // Polymarket CLOB WebSocket for Up/Down prices
   const { 
     orderBooks, 
     isConnected: wsConnected, 
@@ -109,10 +111,14 @@ export const RealTimeSignals = () => {
     enabled: WS_ENABLED && isLive && tokenIds.length > 0
   });
 
-  // Track WebSocket updates
-  useEffect(() => {
-    setWsUpdateCount(updateCount);
-  }, [updateCount]);
+  // Chainlink WebSocket for real-time BTC/ETH prices
+  const {
+    btcPrice: chainlinkBtcPrice,
+    ethPrice: chainlinkEthPrice,
+    isConnected: chainlinkConnected,
+    updateCount: chainlinkUpdateCount,
+    lastUpdate: chainlinkLastUpdate
+  } = useChainlinkRealtime(WS_ENABLED && isLive);
 
   // Fetch token IDs from Gamma API
   useEffect(() => {
@@ -143,40 +149,51 @@ export const RealTimeSignals = () => {
     return book?.midPrice ?? null;
   }, [orderBooks]);
 
-  // Merge WebSocket prices with API data
+  // Merge WebSocket prices with API data - use Chainlink for current price
   const liveMarketsWithWsPrices = useMemo(() => {
     if (!data?.liveMarkets) return [];
     
-    return data.liveMarkets.map(signal => {
-      // Find token mapping for this market
-      const tokenMapping = marketTokens.find(m => 
-        signal.marketSlug.toLowerCase().includes(m.slug.toLowerCase()) ||
-        m.slug.toLowerCase().includes(signal.asset.toLowerCase())
-      );
-      
-      if (!tokenMapping) return signal;
-      
-      const wsUpPrice = getWsPrice(tokenMapping.upTokenId);
-      const wsDownPrice = getWsPrice(tokenMapping.downTokenId);
-      
-      // Use WebSocket prices if available, otherwise fall back to API
-      const upPrice = wsUpPrice ?? signal.upPrice;
-      const downPrice = wsDownPrice ?? signal.downPrice;
-      const combinedPrice = upPrice + downPrice;
-      
-      return {
-        ...signal,
-        upPrice,
-        downPrice,
-        combinedPrice,
-        upTokenId: tokenMapping.upTokenId,
-        downTokenId: tokenMapping.downTokenId,
-        arbitrageEdge: (1 - combinedPrice) * 100,
-        cheaperSide: upPrice < downPrice ? 'Up' as const : 'Down' as const,
-        cheaperPrice: Math.min(upPrice, downPrice)
-      };
-    });
-  }, [data?.liveMarkets, marketTokens, getWsPrice, orderBooks]);
+    return data.liveMarkets
+      .filter(signal => signal.asset === 'BTC') // Only BTC for now
+      .map(signal => {
+        // Find token mapping for this market using exact slug match
+        const tokenMapping = marketTokens.find(m => m.slug === signal.marketSlug);
+        
+        // Get WebSocket prices for Up/Down
+        const wsUpPrice = tokenMapping ? getWsPrice(tokenMapping.upTokenId) : null;
+        const wsDownPrice = tokenMapping ? getWsPrice(tokenMapping.downTokenId) : null;
+        
+        // Use WebSocket prices if available, otherwise fall back to API
+        const upPrice = wsUpPrice ?? signal.upPrice;
+        const downPrice = wsDownPrice ?? signal.downPrice;
+        const combinedPrice = upPrice + downPrice;
+        
+        // Use Chainlink WebSocket price for current BTC price
+        const currentPrice = chainlinkBtcPrice ?? signal.currentPrice;
+        
+        // Calculate delta based on real-time current price
+        const priceToBeat = signal.priceToBeat;
+        const priceDelta = priceToBeat && currentPrice ? currentPrice - priceToBeat : null;
+        const priceDeltaPercent = priceToBeat && priceDelta !== null 
+          ? (priceDelta / priceToBeat) * 100 
+          : null;
+        
+        return {
+          ...signal,
+          upPrice,
+          downPrice,
+          combinedPrice,
+          currentPrice,
+          priceDelta,
+          priceDeltaPercent,
+          upTokenId: tokenMapping?.upTokenId,
+          downTokenId: tokenMapping?.downTokenId,
+          arbitrageEdge: (1 - combinedPrice) * 100,
+          cheaperSide: upPrice < downPrice ? 'Up' as const : 'Down' as const,
+          cheaperPrice: Math.min(upPrice, downPrice)
+        };
+      });
+  }, [data?.liveMarkets, marketTokens, getWsPrice, orderBooks, chainlinkBtcPrice]);
 
   const fetchSignals = useCallback(async () => {
     setIsLoading(true);
@@ -282,10 +299,16 @@ export const RealTimeSignals = () => {
                       • API {secondsSinceUpdate}s old
                     </span>
                   )}
+                  {chainlinkConnected && (
+                    <Badge variant="outline" className="text-xs text-orange-400 border-orange-500/30 flex items-center gap-1">
+                      <Satellite className="w-3 h-3" />
+                      Chainlink ({chainlinkUpdateCount} updates)
+                    </Badge>
+                  )}
                   {wsConnected && (
                     <Badge variant="outline" className="text-xs text-purple-400 border-purple-500/30 flex items-center gap-1">
                       <Radio className="w-3 h-3" />
-                      WebSocket ({wsUpdateCount} updates)
+                      CLOB WS ({updateCount} updates)
                     </Badge>
                   )}
                 </CardDescription>
@@ -339,15 +362,23 @@ export const RealTimeSignals = () => {
         <>
           {/* Crypto Prices & Summary */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <Card>
+            <Card className={chainlinkConnected ? 'border-orange-500/30' : ''}>
               <CardContent className="pt-6">
                 <div className="flex items-center gap-2 text-muted-foreground mb-1">
                   <DollarSign className="w-4 h-4" />
                   <span className="text-sm">Bitcoin</span>
+                  {chainlinkConnected && (
+                    <Badge variant="outline" className="text-xs text-orange-400 border-orange-500/30 px-1">
+                      LIVE
+                    </Badge>
+                  )}
                 </div>
-                <div className="text-2xl font-bold text-orange-400">
-                  {data.cryptoPrices.BTC ? `$${data.cryptoPrices.BTC.toLocaleString()}` : '-'}
-                </div>
+                <LivePrice 
+                  price={chainlinkBtcPrice ?? data.cryptoPrices.BTC ?? 0}
+                  format="dollars"
+                  className="text-2xl font-bold text-orange-400"
+                  showFlash={chainlinkConnected}
+                />
               </CardContent>
             </Card>
             
@@ -357,9 +388,12 @@ export const RealTimeSignals = () => {
                   <DollarSign className="w-4 h-4" />
                   <span className="text-sm">Ethereum</span>
                 </div>
-                <div className="text-2xl font-bold text-blue-400">
-                  {data.cryptoPrices.ETH ? `$${data.cryptoPrices.ETH.toLocaleString()}` : '-'}
-                </div>
+                <LivePrice 
+                  price={chainlinkEthPrice ?? data.cryptoPrices.ETH ?? 0}
+                  format="dollars"
+                  className="text-2xl font-bold text-blue-400"
+                  showFlash={chainlinkConnected}
+                />
               </CardContent>
             </Card>
             
@@ -458,19 +492,24 @@ export const RealTimeSignals = () => {
                           </div>
                         </div>
                         <div className="text-center p-3 bg-background/50 rounded-lg">
-                          <div className="text-xs text-muted-foreground mb-1">Current</div>
-                          <div className={`font-mono font-bold text-lg ${
-                            signal.priceDelta !== null 
-                              ? signal.priceDelta >= 0 ? 'text-emerald-400' : 'text-red-400'
-                              : ''
-                          }`}>
-                            {signal.currentPrice 
-                              ? `$${signal.currentPrice.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` 
-                              : '-'}
+                          <div className="text-xs text-muted-foreground mb-1">
+                            Current {chainlinkConnected && <span className="text-orange-400">(LIVE)</span>}
                           </div>
+                          <LivePrice 
+                            price={signal.currentPrice ?? 0}
+                            format="dollars"
+                            className={`font-mono font-bold text-lg ${
+                              signal.priceDelta !== null 
+                                ? signal.priceDelta >= 0 ? 'text-emerald-400' : 'text-red-400'
+                                : ''
+                            }`}
+                            showFlash={chainlinkConnected}
+                          />
                         </div>
                         <div className="text-center p-3 bg-background/50 rounded-lg">
-                          <div className="text-xs text-muted-foreground mb-1">Delta</div>
+                          <div className="text-xs text-muted-foreground mb-1">
+                            Delta {chainlinkConnected && <span className="text-orange-400">(LIVE)</span>}
+                          </div>
                           <div className={`font-mono font-bold text-lg ${
                             signal.priceDeltaPercent !== null 
                               ? signal.priceDeltaPercent >= 0 ? 'text-emerald-400' : 'text-red-400'
