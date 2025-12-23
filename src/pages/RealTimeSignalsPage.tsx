@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -17,9 +17,13 @@ import {
   Wifi,
   WifiOff,
   Timer,
-  Layers
+  Layers,
+  Radio
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
+import { usePolymarketRealtime, fetch15MinMarketTokenIds } from '@/hooks/usePolymarketRealtime';
+import { useChainlinkRealtime } from '@/hooks/useChainlinkRealtime';
+import { LivePrice } from '@/components/LivePrice';
 
 interface TradingSignal {
   market: string;
@@ -70,7 +74,16 @@ interface RealTimeData {
   };
 }
 
-const REFRESH_INTERVAL = 5000; // 5 seconds for live 15-min markets
+interface MarketTokenMapping {
+  slug: string;
+  asset: 'BTC' | 'ETH';
+  upTokenId: string;
+  downTokenId: string;
+  eventStartTime: string;
+  eventEndTime: string;
+}
+
+const REFRESH_INTERVAL = 5000;
 
 const RealTimeSignalsPage = () => {
   const [data, setData] = useState<RealTimeData | null>(null);
@@ -80,6 +93,45 @@ const RealTimeSignalsPage = () => {
   const [isLive, setIsLive] = useState(true);
   const [secondsSinceUpdate, setSecondsSinceUpdate] = useState(0);
   const [countdowns, setCountdowns] = useState<Record<string, string>>({});
+  const [marketTokens, setMarketTokens] = useState<MarketTokenMapping[]>([]);
+
+  // Fetch token IDs from Gamma API for WebSocket subscriptions
+  useEffect(() => {
+    const fetchTokens = async () => {
+      const result = await fetch15MinMarketTokenIds();
+      console.log('[Token Fetch] Found markets:', result.markets);
+      setMarketTokens(result.markets);
+    };
+    fetchTokens();
+    const interval = setInterval(fetchTokens, 30000); // Refresh every 30s
+    return () => clearInterval(interval);
+  }, []);
+
+  // Extract all token IDs for WebSocket subscription
+  const tokenIds = useMemo(() => {
+    const ids = marketTokens.flatMap(m => [m.upTokenId, m.downTokenId]);
+    console.log('[WebSocket] Subscribing to tokens:', ids.length);
+    return ids;
+  }, [marketTokens]);
+
+  // Polymarket CLOB WebSocket for real-time Up/Down prices
+  const { 
+    orderBooks, 
+    isConnected: clobConnected, 
+    updateCount: clobUpdateCount,
+    getPrice 
+  } = usePolymarketRealtime({
+    tokenIds,
+    enabled: isLive && tokenIds.length > 0
+  });
+
+  // Chainlink WebSocket for real-time BTC/ETH prices
+  const { 
+    btcPrice: chainlinkBtcPrice, 
+    ethPrice: chainlinkEthPrice,
+    isConnected: chainlinkConnected,
+    updateCount: chainlinkUpdateCount
+  } = useChainlinkRealtime(isLive);
 
   const fetchSignals = useCallback(async () => {
     setIsLoading(true);
@@ -121,7 +173,6 @@ const RealTimeSignalsPage = () => {
     const interval = setInterval(() => {
       setSecondsSinceUpdate(prev => prev + 1);
       
-      // Update countdowns locally
       if (data?.signals) {
         const newCountdowns: Record<string, string> = {};
         data.signals.forEach(signal => {
@@ -139,6 +190,58 @@ const RealTimeSignalsPage = () => {
     }, 1000);
     return () => clearInterval(interval);
   }, [data, secondsSinceUpdate]);
+
+  // Helper to get WebSocket price for a market
+  const getWsPrice = useCallback((marketSlug: string, side: 'up' | 'down'): number | null => {
+    const market = marketTokens.find(m => m.slug === marketSlug);
+    if (!market) return null;
+    
+    const tokenId = side === 'up' ? market.upTokenId : market.downTokenId;
+    return getPrice(tokenId);
+  }, [marketTokens, getPrice]);
+
+  // Merge API data with WebSocket real-time prices
+  const liveMarketsWithWsPrices = useMemo(() => {
+    if (!data?.liveMarkets) return [];
+    
+    return data.liveMarkets.map(signal => {
+      const wsUpPrice = getWsPrice(signal.marketSlug, 'up');
+      const wsDownPrice = getWsPrice(signal.marketSlug, 'down');
+      
+      // Use WebSocket prices if available, else fall back to API
+      const upPrice = wsUpPrice ?? signal.upPrice;
+      const downPrice = wsDownPrice ?? signal.downPrice;
+      const combinedPrice = upPrice + downPrice;
+      const arbitrageEdge = (1 - combinedPrice) * 100;
+      
+      // Use Chainlink price for current BTC price if available
+      const currentPrice = signal.asset === 'BTC' && chainlinkBtcPrice 
+        ? chainlinkBtcPrice 
+        : signal.asset === 'ETH' && chainlinkEthPrice 
+          ? chainlinkEthPrice 
+          : signal.currentPrice;
+      
+      const priceDelta = signal.priceToBeat && currentPrice 
+        ? currentPrice - signal.priceToBeat 
+        : signal.priceDelta;
+      
+      const priceDeltaPercent = signal.priceToBeat && currentPrice 
+        ? ((currentPrice - signal.priceToBeat) / signal.priceToBeat) * 100 
+        : signal.priceDeltaPercent;
+
+      return {
+        ...signal,
+        upPrice,
+        downPrice,
+        combinedPrice,
+        arbitrageEdge,
+        currentPrice,
+        priceDelta,
+        priceDeltaPercent,
+        hasWsData: wsUpPrice !== null || wsDownPrice !== null
+      };
+    });
+  }, [data?.liveMarkets, getWsPrice, chainlinkBtcPrice, chainlinkEthPrice]);
 
   const getConfidenceBadge = (confidence: string) => {
     switch (confidence) {
@@ -176,7 +279,7 @@ const RealTimeSignalsPage = () => {
     return `${sign}$${Math.abs(delta).toFixed(2)} (${sign}${percent.toFixed(4)}%)`;
   };
 
-  const SignalCard = ({ signal, showCountdown = true }: { signal: TradingSignal; showCountdown?: boolean }) => {
+  const SignalCard = ({ signal, showCountdown = true }: { signal: TradingSignal & { hasWsData?: boolean }; showCountdown?: boolean }) => {
     const countdown = countdowns[signal.marketSlug] || signal.remainingFormatted;
     const isExpiringSoon = signal.remainingSeconds < 120;
     const isExpired = countdown === 'EXPIRED';
@@ -195,6 +298,12 @@ const RealTimeSignalsPage = () => {
         <div className="flex items-start justify-between mb-4">
           <div className="flex items-center gap-2">
             {getAssetBadge(signal.asset)}
+            {signal.hasWsData && (
+              <Badge className="bg-cyan-500/20 text-cyan-400 border-cyan-500/30 text-xs flex items-center gap-1">
+                <Radio className="w-2.5 h-2.5" />
+                LIVE
+              </Badge>
+            )}
             {showCountdown && (
               <div className={`flex items-center gap-1 px-2 py-1 rounded-md text-sm font-mono ${
                 isExpired 
@@ -229,7 +338,13 @@ const RealTimeSignalsPage = () => {
                 ? signal.priceDelta >= 0 ? 'text-emerald-400' : 'text-red-400'
                 : ''
             }`}>
-              ${signal.currentPrice?.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) || '-'}
+              {signal.currentPrice ? (
+                <LivePrice 
+                  price={signal.currentPrice} 
+                  format="dollars" 
+                  className="text-lg font-bold"
+                />
+              ) : '-'}
             </div>
           </div>
           <div className="text-center">
@@ -260,21 +375,29 @@ const RealTimeSignalsPage = () => {
           </div>
         </div>
         
-        {/* Market Prices */}
+        {/* Market Prices with LivePrice component */}
         <div className="grid grid-cols-4 gap-3 text-sm">
           <div className="text-center p-2 bg-emerald-500/10 rounded-lg">
             <div className="flex items-center justify-center gap-1 text-emerald-400 mb-1">
               <TrendingUp className="w-3 h-3" />
               <span className="text-xs">Up</span>
             </div>
-            <span className="font-mono font-bold">{(signal.upPrice * 100).toFixed(1)}¢</span>
+            <LivePrice 
+              price={signal.upPrice} 
+              format="cents" 
+              className="font-bold text-emerald-400"
+            />
           </div>
           <div className="text-center p-2 bg-red-500/10 rounded-lg">
             <div className="flex items-center justify-center gap-1 text-red-400 mb-1">
               <TrendingDown className="w-3 h-3" />
               <span className="text-xs">Down</span>
             </div>
-            <span className="font-mono font-bold">{(signal.downPrice * 100).toFixed(1)}¢</span>
+            <LivePrice 
+              price={signal.downPrice} 
+              format="cents" 
+              className="font-bold text-red-400"
+            />
           </div>
           <div className="text-center p-2 bg-muted/50 rounded-lg">
             <div className="flex items-center justify-center gap-1 text-muted-foreground mb-1">
@@ -340,6 +463,21 @@ const RealTimeSignalsPage = () => {
               </div>
             </div>
             <div className="flex items-center gap-2">
+              {/* WebSocket Status Badges */}
+              <div className="hidden md:flex items-center gap-1.5 mr-2">
+                <Badge 
+                  variant="outline" 
+                  className={`text-xs ${clobConnected ? 'text-cyan-400 border-cyan-500/30' : 'text-muted-foreground'}`}
+                >
+                  CLOB {clobConnected ? `✓ ${clobUpdateCount}` : '—'}
+                </Badge>
+                <Badge 
+                  variant="outline" 
+                  className={`text-xs ${chainlinkConnected ? 'text-orange-400 border-orange-500/30' : 'text-muted-foreground'}`}
+                >
+                  CL {chainlinkConnected ? `✓ ${chainlinkUpdateCount}` : '—'}
+                </Badge>
+              </div>
               <Button
                 variant={isLive ? "default" : "outline"}
                 size="sm"
@@ -376,28 +514,50 @@ const RealTimeSignalsPage = () => {
 
         {data && (
           <>
-            {/* Crypto Prices */}
+            {/* Crypto Prices - Now with WebSocket data */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
               <Card className="border-orange-500/30">
                 <CardContent className="pt-6">
-                  <div className="flex items-center gap-2 text-muted-foreground mb-1">
-                    <DollarSign className="w-4 h-4 text-orange-400" />
-                    <span className="text-sm">Bitcoin</span>
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <DollarSign className="w-4 h-4 text-orange-400" />
+                      <span className="text-sm">Bitcoin</span>
+                    </div>
+                    {chainlinkConnected && (
+                      <Badge className="bg-cyan-500/20 text-cyan-400 border-cyan-500/30 text-[10px] px-1">
+                        LIVE
+                      </Badge>
+                    )}
                   </div>
                   <div className="text-2xl font-bold text-orange-400 font-mono">
-                    ${data.cryptoPrices.BTC?.toLocaleString() || '-'}
+                    {chainlinkBtcPrice ? (
+                      <LivePrice price={chainlinkBtcPrice} format="dollars" className="text-2xl font-bold text-orange-400" />
+                    ) : (
+                      `$${data.cryptoPrices.BTC?.toLocaleString() || '-'}`
+                    )}
                   </div>
                 </CardContent>
               </Card>
               
               <Card className="border-blue-500/30">
                 <CardContent className="pt-6">
-                  <div className="flex items-center gap-2 text-muted-foreground mb-1">
-                    <DollarSign className="w-4 h-4 text-blue-400" />
-                    <span className="text-sm">Ethereum</span>
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <DollarSign className="w-4 h-4 text-blue-400" />
+                      <span className="text-sm">Ethereum</span>
+                    </div>
+                    {chainlinkConnected && (
+                      <Badge className="bg-cyan-500/20 text-cyan-400 border-cyan-500/30 text-[10px] px-1">
+                        LIVE
+                      </Badge>
+                    )}
                   </div>
                   <div className="text-2xl font-bold text-blue-400 font-mono">
-                    ${data.cryptoPrices.ETH?.toLocaleString() || '-'}
+                    {chainlinkEthPrice ? (
+                      <LivePrice price={chainlinkEthPrice} format="dollars" className="text-2xl font-bold text-blue-400" />
+                    ) : (
+                      `$${data.cryptoPrices.ETH?.toLocaleString() || '-'}`
+                    )}
                   </div>
                 </CardContent>
               </Card>
@@ -427,8 +587,8 @@ const RealTimeSignalsPage = () => {
               </Card>
             </div>
 
-            {/* LIVE Markets (Active Now - < 15 min remaining) */}
-            {data.liveMarkets && data.liveMarkets.length > 0 && (
+            {/* LIVE Markets - Using WebSocket enhanced data */}
+            {liveMarketsWithWsPrices.length > 0 && (
               <Card className="border-emerald-500/50 bg-gradient-to-br from-emerald-500/10 to-transparent shadow-lg shadow-emerald-500/10">
                 <CardHeader>
                   <div className="flex items-center justify-between">
@@ -438,19 +598,27 @@ const RealTimeSignalsPage = () => {
                         <span className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
                       </div>
                       <CardTitle className="text-lg text-emerald-400">
-                        LIVE NOW ({data.liveMarkets.length})
+                        LIVE NOW ({liveMarketsWithWsPrices.length})
                       </CardTitle>
                     </div>
-                    <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30 animate-pulse">
-                      ACTIVE
-                    </Badge>
+                    <div className="flex items-center gap-2">
+                      {clobConnected && (
+                        <Badge className="bg-cyan-500/20 text-cyan-400 border-cyan-500/30 text-xs flex items-center gap-1">
+                          <Radio className="w-3 h-3" />
+                          WebSocket
+                        </Badge>
+                      )}
+                      <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30 animate-pulse">
+                        ACTIVE
+                      </Badge>
+                    </div>
                   </div>
                   <CardDescription>
                     Markets currently in progress - trade now!
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  {data.liveMarkets.map((signal, index) => (
+                  {liveMarketsWithWsPrices.map((signal, index) => (
                     <SignalCard key={index} signal={signal} />
                   ))}
                 </CardContent>
