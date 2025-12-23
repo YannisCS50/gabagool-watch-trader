@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 /**
  * True realtime Up/Down pricing for Polymarket 15-min crypto markets.
  *
- * 1. Fetches active 15m markets from Gamma API
+ * 1. Fetches active 15m markets from our edge function (avoids CORS)
  * 2. Extracts clobTokenIds (Up/Down token IDs)
  * 3. Subscribes to CLOB market channel for best_ask prices
  */
@@ -37,12 +37,12 @@ interface UsePolymarketRealtimeResult {
 }
 
 const CLOB_PROXY_WS_URL = "wss://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/clob-proxy";
-const GAMMA_API_URL = "https://gamma-api.polymarket.com/events";
+const MARKET_TOKENS_URL = "https://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/get-market-tokens";
 
 const RECONNECT_DELAY_MS = 2000;
 const MAX_RECONNECT_ATTEMPTS = 10;
 const UI_SYNC_INTERVAL_MS = 100;
-const MARKET_REFRESH_INTERVAL_MS = 60000; // Refresh market discovery every minute
+const MARKET_REFRESH_INTERVAL_MS = 60000;
 
 const normalizeOutcome = (o: string) => o.trim().toLowerCase();
 
@@ -52,78 +52,41 @@ function parseNumber(n: unknown): number | null {
 }
 
 /**
- * Fetch active 15-minute crypto markets from Gamma API
+ * Fetch active 15-minute crypto markets from our edge function
  */
 async function fetchActive15mMarkets(): Promise<MarketInfo[]> {
-  console.log("[Market Discovery] Fetching active 15m crypto markets from Gamma API...");
+  console.log("[Market Discovery] Fetching from edge function...");
   
   try {
-    // Fetch active events
-    const response = await fetch(`${GAMMA_API_URL}?active=true&limit=100`);
+    const response = await fetch(MARKET_TOKENS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    
     if (!response.ok) {
-      console.error("[Market Discovery] Gamma API error:", response.status);
+      console.error("[Market Discovery] Edge function error:", response.status);
       return [];
     }
     
-    const events = await response.json();
-    if (!Array.isArray(events)) {
+    const data = await response.json();
+    console.log("[Market Discovery] Response:", data);
+    
+    if (!data.success || !Array.isArray(data.markets)) {
       console.error("[Market Discovery] Invalid response format");
       return [];
     }
     
-    console.log("[Market Discovery] Got", events.length, "active events");
+    const markets: MarketInfo[] = data.markets.map((m: any) => ({
+      slug: m.slug,
+      asset: m.asset as "BTC" | "ETH",
+      upTokenId: m.upTokenId,
+      downTokenId: m.downTokenId,
+      eventStartTime: new Date(m.eventStartTime),
+      eventEndTime: new Date(m.eventEndTime),
+    }));
     
-    const markets: MarketInfo[] = [];
-    
-    for (const event of events) {
-      const title = String(event.title || "").toLowerCase();
-      const slug = String(event.slug || "");
-      
-      // Look for 15-minute crypto markets
-      const is15m = title.includes("15") && (title.includes("minute") || title.includes("min") || title.includes("m"));
-      const isBtc = title.includes("bitcoin") || title.includes("btc");
-      const isEth = title.includes("ethereum") || title.includes("eth");
-      const isUpDown = title.includes("up") || title.includes("down") || title.includes("higher") || title.includes("lower");
-      
-      if (!is15m || (!isBtc && !isEth) || !isUpDown) continue;
-      
-      // Get the markets array from the event
-      const eventMarkets = event.markets || [];
-      if (eventMarkets.length === 0) continue;
-      
-      // Find the main market with token IDs
-      const market = eventMarkets[0];
-      const clobTokenIds = market.clobTokenIds || market.clob_token_ids || [];
-      const outcomes = market.outcomes || [];
-      
-      if (clobTokenIds.length < 2 || outcomes.length < 2) continue;
-      
-      // Determine which token is Up and which is Down
-      const o0 = String(outcomes[0] || "").toLowerCase();
-      const isO0Down = o0.includes("no") || o0.includes("down") || o0.includes("lower");
-      
-      const upTokenId = isO0Down ? String(clobTokenIds[1]) : String(clobTokenIds[0]);
-      const downTokenId = isO0Down ? String(clobTokenIds[0]) : String(clobTokenIds[1]);
-      
-      // Parse event times
-      const startTime = new Date(event.startDate || event.start_date || Date.now());
-      const endTime = new Date(event.endDate || event.end_date || Date.now() + 900000);
-      
-      const asset: "BTC" | "ETH" = isBtc ? "BTC" : "ETH";
-      
-      markets.push({
-        slug: market.slug || slug,
-        asset,
-        upTokenId,
-        downTokenId,
-        eventStartTime: startTime,
-        eventEndTime: endTime,
-      });
-      
-      console.log("[Market Discovery] Found:", asset, "15m market:", market.slug || slug, "tokens:", upTokenId.slice(0, 8), downTokenId.slice(0, 8));
-    }
-    
-    console.log("[Market Discovery] Total 15m crypto markets found:", markets.length);
+    console.log("[Market Discovery] Found", markets.length, "markets");
     return markets;
     
   } catch (error) {
@@ -133,15 +96,12 @@ async function fetchActive15mMarkets(): Promise<MarketInfo[]> {
 }
 
 export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRealtimeResult {
-  // Discovered markets
   const [markets, setMarkets] = useState<MarketInfo[]>([]);
   
-  // Map: marketSlug -> outcome -> price
   const pricesRef = useRef<Map<string, Map<string, PricePoint>>>(new Map());
   const updateCountRef = useRef(0);
   const lastUpdateTimeRef = useRef(Date.now());
 
-  // Token mapping (tokenId -> { slug, outcome })
   const tokenToMarketRef = useRef<Map<string, { slug: string; outcome: "up" | "down" }>>(new Map());
 
   const [isConnected, setIsConnected] = useState(false);
@@ -201,14 +161,12 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
     setConnectionState("disconnected");
   }, [stopUiSync]);
 
-  // Discover markets and build token mapping
   const discoverMarkets = useCallback(async () => {
     setConnectionState("discovering");
     
     const discovered = await fetchActive15mMarkets();
     setMarkets(discovered);
     
-    // Build reverse mapping: tokenId -> { slug, outcome }
     const mapping = new Map<string, { slug: string; outcome: "up" | "down" }>();
     for (const m of discovered) {
       mapping.set(m.upTokenId, { slug: m.slug, outcome: "up" });
@@ -227,7 +185,7 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
     }
 
     setConnectionState("connecting");
-    console.log("[CLOB WS] Connecting to CLOB proxy with", tokenIds.length, "tokens...");
+    console.log("[CLOB WS] Connecting with", tokenIds.length, "tokens...");
 
     try {
       const ws = new WebSocket(CLOB_PROXY_WS_URL);
@@ -245,11 +203,10 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
           const msg = JSON.parse(event.data);
 
           if (msg?.type === "proxy_connected") {
-            console.log("[CLOB WS] Proxy connected to CLOB, subscribing to", tokenIds.length, "tokens");
+            console.log("[CLOB WS] Proxy connected, subscribing to", tokenIds.length, "tokens");
             setIsConnected(true);
             setConnectionState("connected");
 
-            // Subscribe to market channel with all token IDs
             ws.send(JSON.stringify({
               type: "market",
               assets_ids: tokenIds,
@@ -266,7 +223,6 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
             return;
           }
 
-          // Handle CLOB price_change events
           const eventType = msg?.event_type;
 
           if (eventType === "price_change" && Array.isArray(msg.price_changes)) {
@@ -288,19 +244,17 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
 
               const key = m.outcome;
               marketMap.set(key, { price: bestAsk, timestampMs: ts });
-              // Aliases
               if (key === "up") marketMap.set("yes", { price: bestAsk, timestampMs: ts });
               if (key === "down") marketMap.set("no", { price: bestAsk, timestampMs: ts });
 
               updateCountRef.current++;
               lastUpdateTimeRef.current = ts;
               
-              console.log("[CLOB WS] Price update:", m.slug, m.outcome, bestAsk);
+              console.log("[CLOB WS] Price:", m.slug, m.outcome, bestAsk);
             }
             return;
           }
 
-          // Handle CLOB book events (initial snapshot)
           if (eventType === "book") {
             const tokenId = String(msg.asset_id ?? "");
             const asks = Array.isArray(msg.asks) ? msg.asks : [];
@@ -326,11 +280,11 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
             updateCountRef.current++;
             lastUpdateTimeRef.current = ts;
             
-            console.log("[CLOB WS] Book snapshot:", m.slug, m.outcome, bestAsk);
+            console.log("[CLOB WS] Book:", m.slug, m.outcome, bestAsk);
             return;
           }
         } catch {
-          // non-JSON (e.g. PONG) -> ignore
+          // non-JSON
         }
       };
 
@@ -351,7 +305,6 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
           reconnectAttemptsRef.current++;
           console.log(`[CLOB WS] Reconnecting (${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})...`);
           reconnectTimeoutRef.current = setTimeout(() => {
-            // Re-discover and reconnect
             discoverMarkets().then(discovered => {
               const ids = discovered.flatMap(m => [m.upTokenId, m.downTokenId]);
               connectWebSocket(ids);
@@ -370,28 +323,24 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
   const connect = useCallback(async () => {
     if (!enabled) return;
 
-    // First discover markets
     const discovered = await discoverMarkets();
     
     if (discovered.length === 0) {
       console.log("[CLOB] No active 15m markets found");
-      setConnectionState("error");
+      // Still set connected state so we show the "no markets" message
+      setConnectionState("connected");
+      setIsConnected(true);
       return;
     }
 
-    // Extract all token IDs
     const tokenIds = discovered.flatMap(m => [m.upTokenId, m.downTokenId]);
-    
-    // Connect WebSocket
     connectWebSocket(tokenIds);
     
-    // Set up periodic market refresh
     if (!marketRefreshIntervalRef.current) {
       marketRefreshIntervalRef.current = setInterval(async () => {
-        console.log("[Market Discovery] Refreshing markets...");
+        console.log("[Market Discovery] Refreshing...");
         const refreshed = await discoverMarkets();
         if (refreshed.length > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
-          // Re-subscribe with new tokens
           const ids = refreshed.flatMap(m => [m.upTokenId, m.downTokenId]);
           wsRef.current.send(JSON.stringify({
             type: "market",
@@ -402,7 +351,6 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
     }
   }, [enabled, discoverMarkets, connectWebSocket]);
 
-  // Auto-connect when enabled
   useEffect(() => {
     if (enabled) {
       connect();
