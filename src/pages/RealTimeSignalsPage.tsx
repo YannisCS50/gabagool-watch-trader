@@ -25,16 +25,18 @@ import {
   Search,
   ChevronDown,
   History,
+  Bot,
+  Cpu,
 } from "lucide-react";
 import { usePolymarketRealtime } from "@/hooks/usePolymarketRealtime";
 import { useChainlinkRealtime } from "@/hooks/useChainlinkRealtime";
 import { usePaperBotSettings } from "@/hooks/usePaperBotSettings";
+import { useRealtimePaperBot } from "@/hooks/useRealtimePaperBot";
 import { LivePrice } from "@/components/LivePrice";
 import { GabagoolTradesSummary } from "@/components/GabagoolTradesSummary";
 import { PaperTradesSummary } from "@/components/PaperTradesSummary";
 import { PaperTradeDashboard } from "@/components/PaperTradeDashboard";
 import { Switch } from "@/components/ui/switch";
-import { Bot } from "lucide-react";
 
 interface LiveMarket {
   slug: string;
@@ -222,6 +224,9 @@ const RealTimeSignalsPage = () => {
 
   // Paper bot settings
   const { isEnabled: botEnabled, toggleEnabled: toggleBot, isLoading: botLoading } = usePaperBotSettings();
+  
+  // Real-time paper bot status (RUST-style WebSocket connection)
+  const realtimeBotStatus = useRealtimePaperBot();
 
   // Drive countdown
   useEffect(() => {
@@ -472,8 +477,8 @@ const RealTimeSignalsPage = () => {
         {/* Paper Trade Bot Dashboard */}
         <Card className="border-purple-500/30">
           <CardContent className="pt-4 pb-4">
-            <div className="flex items-center justify-between gap-4">
-              <div className="flex items-center gap-3">
+            <div className="flex items-center justify-between gap-4 flex-wrap">
+              <div className="flex items-center gap-3 flex-wrap">
                 <div className="flex items-center gap-2">
                   <Bot className="w-5 h-5 text-purple-400" />
                   <span className="font-medium text-purple-400">Paper Bot</span>
@@ -489,13 +494,42 @@ const RealTimeSignalsPage = () => {
                     {botEnabled ? 'AAN' : 'UIT'}
                   </span>
                 </div>
+                
+                {/* RUST-style Real-time Indicator */}
                 {botEnabled && (
-                  <Badge variant="outline" className="text-purple-400 border-purple-500/30 animate-pulse">
-                    <Activity className="w-3 h-3 mr-1" />
-                    Elke minuut actief
-                  </Badge>
+                  <div className="flex items-center gap-2">
+                    <Badge 
+                      variant="outline" 
+                      className={`flex items-center gap-1 ${
+                        realtimeBotStatus.isConnected 
+                          ? 'text-orange-400 border-orange-500/30 bg-orange-500/10 animate-pulse' 
+                          : 'text-muted-foreground border-muted'
+                      }`}
+                    >
+                      <Cpu className="w-3 h-3" />
+                      RUST
+                      {realtimeBotStatus.isConnected && (
+                        <span className="ml-1 text-xs">
+                          {realtimeBotStatus.marketsCount}M/{realtimeBotStatus.tokensCount}T
+                        </span>
+                      )}
+                    </Badge>
+                    
+                    {realtimeBotStatus.isConnected ? (
+                      <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30 text-xs">
+                        <Activity className="w-2.5 h-2.5 mr-1 animate-pulse" />
+                        LIVE TRADING
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="text-yellow-400 border-yellow-500/30 text-xs">
+                        <Radio className="w-2.5 h-2.5 mr-1" />
+                        Connecting...
+                      </Badge>
+                    )}
+                  </div>
                 )}
               </div>
+              
               <div className="flex items-center gap-3">
                 <PaperTradeDashboard compact />
                 <Link to="/paper-trading" className="text-sm text-purple-400 hover:underline flex items-center gap-1">
@@ -503,6 +537,33 @@ const RealTimeSignalsPage = () => {
                 </Link>
               </div>
             </div>
+            
+            {/* Recent realtime trades */}
+            {realtimeBotStatus.lastTrades.length > 0 && (
+              <div className="mt-3 pt-3 border-t border-border/50">
+                <div className="text-xs text-muted-foreground mb-2">Recent Real-time Trades:</div>
+                <div className="flex flex-wrap gap-2">
+                  {realtimeBotStatus.lastTrades.slice(0, 5).map((trade, i) => (
+                    <Badge 
+                      key={i} 
+                      variant="outline" 
+                      className={`text-xs ${
+                        trade.outcome === 'UP' 
+                          ? 'text-emerald-400 border-emerald-500/30' 
+                          : 'text-red-400 border-red-500/30'
+                      }`}
+                    >
+                      {trade.slug.split('-')[0].toUpperCase()} {trade.outcome} @ {(trade.price * 100).toFixed(0)}¢
+                      {trade.slippage !== null && (
+                        <span className="ml-1 text-muted-foreground">
+                          ({trade.slippage.toFixed(1)}% slip)
+                        </span>
+                      )}
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
 
