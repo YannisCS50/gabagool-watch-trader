@@ -34,7 +34,7 @@ import { usePaperBotSettings } from "@/hooks/usePaperBotSettings";
 import { useRealtimePaperBot } from "@/hooks/useRealtimePaperBot";
 import { LivePrice } from "@/components/LivePrice";
 import { GabagoolTradesSummary } from "@/components/GabagoolTradesSummary";
-import { PaperTradesSummary } from "@/components/PaperTradesSummary";
+import { PaperBotTradesSummary } from "@/components/PaperBotTradesSummary";
 import { PaperTradeDashboard } from "@/components/PaperTradeDashboard";
 import { Switch } from "@/components/ui/switch";
 
@@ -622,7 +622,11 @@ const RealTimeSignalsPage = () => {
                     upClobPrice={market.upPrice} 
                     downClobPrice={market.downPrice} 
                   />
-                  <PaperTradesSummary marketSlug={market.slug} compact />
+                  <PaperBotTradesSummary 
+                    marketSlug={market.slug} 
+                    upClobPrice={market.upPrice} 
+                    downClobPrice={market.downPrice} 
+                  />
                 </div>
               ))}
             </CardContent>
@@ -651,7 +655,11 @@ const RealTimeSignalsPage = () => {
                     upClobPrice={market.upPrice} 
                     downClobPrice={market.downPrice} 
                   />
-                  <PaperTradesSummary marketSlug={market.slug} compact />
+                  <PaperBotTradesSummary 
+                    marketSlug={market.slug} 
+                    upClobPrice={market.upPrice} 
+                    downClobPrice={market.downPrice} 
+                  />
                 </div>
               ))}
             </CardContent>
@@ -746,13 +754,22 @@ const RealTimeSignalsPage = () => {
                           else if (market.downPriceAtClose >= 0.9) derivedResult = 'DOWN';
                         }
                         return (
-                          <GabagoolTradesSummary 
-                            marketSlug={market.slug} 
-                            upClobPrice={market.upPriceAtClose ?? 0.5} 
-                            downClobPrice={market.downPriceAtClose ?? 0.5}
-                            compact
-                            actualResult={derivedResult}
-                          />
+                          <>
+                            <GabagoolTradesSummary 
+                              marketSlug={market.slug} 
+                              upClobPrice={market.upPriceAtClose ?? 0.5} 
+                              downClobPrice={market.downPriceAtClose ?? 0.5}
+                              compact
+                              actualResult={derivedResult}
+                            />
+                            <PaperBotTradesSummary 
+                              marketSlug={market.slug} 
+                              upClobPrice={market.upPriceAtClose ?? 0.5} 
+                              downClobPrice={market.downPriceAtClose ?? 0.5}
+                              compact
+                              actualResult={derivedResult}
+                            />
+                          </>
                         );
                       })()}
                     </div>
