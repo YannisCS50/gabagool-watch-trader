@@ -70,51 +70,43 @@ function parseTimestampFromSlug(slug: string): number | null {
   return null;
 }
 
-// Fetch strike price from Gamma API for a specific market slug
-async function fetchStrikePriceFromGamma(slug: string): Promise<number | null> {
+// Fetch historical crypto price from CoinGecko at a specific timestamp
+// The timestamp is the START of the 15-min market window = the "Price to Beat"
+async function fetchHistoricalCryptoPrice(
+  asset: 'BTC' | 'ETH',
+  timestamp: number
+): Promise<number | null> {
   try {
-    // Try to fetch the event directly
-    const response = await fetch(`https://gamma-api.polymarket.com/events?slug=${slug}`);
-    if (!response.ok) return null;
+    const coinId = asset === 'BTC' ? 'bitcoin' : 'ethereum';
     
-    const events = await response.json();
-    if (!events || events.length === 0) return null;
+    // CoinGecko range API: from/to are UNIX timestamps in seconds
+    // We fetch a small window around the target timestamp
+    const from = timestamp;
+    const to = timestamp + 300; // 5 minutes window to ensure we get data
     
-    const event = events[0];
+    const response = await fetch(
+      `https://api.coingecko.com/api/v3/coins/${coinId}/market_chart/range?vs_currency=usd&from=${from}&to=${to}`
+    );
     
-    // Look for strike price in title or description
-    const textToSearch = `${event.title || ''} ${event.description || ''}`;
-    
-    // Patterns like "above $97,000.50" or "below $96,500" or just "$87,432"
-    const priceMatch = textToSearch.match(/\$\s*([\d,]+(?:\.\d+)?)/);
-    if (priceMatch) {
-      return parseFloat(priceMatch[1].replace(/,/g, ''));
+    if (!response.ok) {
+      console.error(`CoinGecko historical API error: ${response.status}`);
+      return null;
     }
     
-    // Also check market questions
-    if (event.markets && Array.isArray(event.markets)) {
-      for (const market of event.markets) {
-        const question = market.question || '';
-        const qMatch = question.match(/\$\s*([\d,]+(?:\.\d+)?)/);
-        if (qMatch) {
-          return parseFloat(qMatch[1].replace(/,/g, ''));
-        }
-      }
+    const data = await response.json();
+    
+    if (data.prices && data.prices.length > 0) {
+      // Return the first price point (closest to our target timestamp)
+      const price = data.prices[0][1];
+      console.log(`Historical price for ${asset} at ${new Date(timestamp * 1000).toISOString()}: $${price}`);
+      return price;
     }
     
     return null;
   } catch (error) {
-    console.error('Error fetching strike price from Gamma:', error);
+    console.error('Error fetching historical crypto price:', error);
     return null;
   }
-}
-
-interface MarketFromDB {
-  market: string;
-  market_slug: string;
-  upPrice: number;
-  downPrice: number;
-  eventTimestamp: number;
 }
 
 // Get active 15-min markets from trades database
@@ -306,8 +298,13 @@ serve(async (req) => {
     const now = Date.now();
     const signals: TradingSignal[] = [];
     
-    // Fetch strike prices for all markets in parallel
-    const strikePricePromises = marketsFromDB.map(m => fetchStrikePriceFromGamma(m.market_slug));
+    // Fetch historical prices (Price to Beat) for all markets in parallel
+    // Group by asset to minimize API calls
+    const strikePricePromises = marketsFromDB.map(m => {
+      const slug = m.market_slug.toLowerCase();
+      const asset: 'BTC' | 'ETH' = slug.includes('btc') ? 'BTC' : 'ETH';
+      return fetchHistoricalCryptoPrice(asset, m.eventTimestamp);
+    });
     const strikePrices = await Promise.all(strikePricePromises);
     
     for (let i = 0; i < marketsFromDB.length; i++) {
@@ -317,7 +314,7 @@ serve(async (req) => {
       const cryptoPrice = asset === 'BTC' ? btcPrice : ethPrice;
       const priceToBeat = strikePrices[i];
       
-      console.log(`Market ${slug}: strike=$${priceToBeat}, current=${cryptoPrice}`);
+      console.log(`Market ${slug}: priceToBeat=$${priceToBeat}, current=$${cryptoPrice}`);
       
       const signal = calculateGabagoolSignal(market, cryptoPrice, asset, priceToBeat);
       signals.push(signal);
