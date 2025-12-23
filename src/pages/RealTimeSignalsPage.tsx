@@ -29,6 +29,7 @@ import {
 import { usePolymarketRealtime } from "@/hooks/usePolymarketRealtime";
 import { useChainlinkRealtime } from "@/hooks/useChainlinkRealtime";
 import { LivePrice } from "@/components/LivePrice";
+import { GabagoolTradesSummary } from "@/components/GabagoolTradesSummary";
 
 interface LiveMarket {
   slug: string;
@@ -508,7 +509,14 @@ const RealTimeSignalsPage = () => {
             </CardHeader>
             <CardContent className="space-y-4">
               {btcMarkets.map((market) => (
-                <MarketCard key={market.slug} market={market} formatTime={formatTime} getConfidenceLevel={getConfidenceLevel} currentPrice={btcPrice} />
+                <div key={market.slug}>
+                  <MarketCard market={market} formatTime={formatTime} getConfidenceLevel={getConfidenceLevel} currentPrice={btcPrice} />
+                  <GabagoolTradesSummary 
+                    marketSlug={market.slug} 
+                    upClobPrice={market.upPrice} 
+                    downClobPrice={market.downPrice} 
+                  />
+                </div>
               ))}
             </CardContent>
           </Card>
@@ -529,7 +537,14 @@ const RealTimeSignalsPage = () => {
             </CardHeader>
             <CardContent className="space-y-4">
               {ethMarkets.map((market) => (
-                <MarketCard key={market.slug} market={market} formatTime={formatTime} getConfidenceLevel={getConfidenceLevel} currentPrice={ethPrice} />
+                <div key={market.slug}>
+                  <MarketCard market={market} formatTime={formatTime} getConfidenceLevel={getConfidenceLevel} currentPrice={ethPrice} />
+                  <GabagoolTradesSummary 
+                    marketSlug={market.slug} 
+                    upClobPrice={market.upPrice} 
+                    downClobPrice={market.downPrice} 
+                  />
+                </div>
               ))}
             </CardContent>
           </Card>
