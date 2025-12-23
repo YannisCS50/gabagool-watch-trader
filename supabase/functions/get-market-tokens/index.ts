@@ -119,6 +119,10 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
     console.log(`[Gamma] Raw clobTokenIds: ${JSON.stringify(market.clobTokenIds)?.slice(0, 100)}`);
     console.log(`[Gamma] Parsed clobTokenIds: ${clobTokenIds.length} tokens`);
     
+    // Check for strike price in metadata first (Gamma API)
+    const metadataStrikePrice = market.metadata?.strike_price;
+    console.log(`[Gamma] metadata.strike_price: ${metadataStrikePrice}`);
+    
     if (clobTokenIds.length >= 2) {
       console.log(`[Gamma] Token 0: ${clobTokenIds[0].slice(0, 30)}...`);
       console.log(`[Gamma] Token 1: ${clobTokenIds[1].slice(0, 30)}...`);
@@ -154,8 +158,13 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
     console.log(`[Gamma] UP token: ${upTokenId.slice(0, 30)}...`);
     console.log(`[Gamma] DOWN token: ${downTokenId.slice(0, 30)}...`);
     
-    // Try to parse strike price from question
+    // Priority for strike price: 1) metadata.strike_price, 2) parsed from question
     const parsedStrikePrice = parseStrikePriceFromQuestion(question);
+    const strikePrice = metadataStrikePrice ?? parsedStrikePrice;
+    
+    if (strikePrice) {
+      console.log(`[Gamma] Strike price: $${strikePrice} (source: ${metadataStrikePrice ? 'metadata' : 'question'})`);
+    }
     
     return {
       slug,
@@ -167,7 +176,7 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
       eventStartTime: market.startDate || market.gameStartTime || new Date().toISOString(),
       eventEndTime: market.endDate || market.endDateIso || new Date(Date.now() + 15 * 60000).toISOString(),
       marketType,
-      strikePrice: parsedStrikePrice,
+      strikePrice,
     };
     
   } catch (error) {
