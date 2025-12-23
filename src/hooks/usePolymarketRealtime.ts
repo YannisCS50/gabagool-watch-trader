@@ -431,27 +431,37 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
           const marketInfo = tokenToMarketRef.current.get(tokenId);
           
           if (marketInfo) {
-            // Robust parsing: check that asks/bids are arrays of arrays
+            // Robust parsing: bids/asks can be arrays of arrays OR arrays of objects (per Polymarket docs)
             const rawAsks = Array.isArray(data.asks) ? data.asks : [];
             const rawBids = Array.isArray(data.bids) ? data.bids : [];
-            
-            // Parse best ask/bid with validation
-            let bestAsk: number | null = null;
-            let bestBid: number | null = null;
-            
-            if (rawAsks.length > 0 && Array.isArray(rawAsks[0]) && rawAsks[0].length > 0) {
-              const parsed = parseFloat(rawAsks[0][0]);
-              if (!isNaN(parsed) && parsed > 0) {
-                bestAsk = parsed;
+
+            const parseBestLevelPrice = (levels: any[]): number | null => {
+              if (!Array.isArray(levels) || levels.length === 0) return null;
+              const first = levels[0];
+
+              // Format A: [[price, size], ...]
+              if (Array.isArray(first) && first.length > 0) {
+                const parsed = parseFloat(first[0]);
+                return !isNaN(parsed) && parsed > 0 ? parsed : null;
               }
-            }
-            
-            if (rawBids.length > 0 && Array.isArray(rawBids[0]) && rawBids[0].length > 0) {
-              const parsed = parseFloat(rawBids[0][0]);
-              if (!isNaN(parsed) && parsed > 0) {
-                bestBid = parsed;
+
+              // Format B: [{ price: ".52", size: "25" }, ...]
+              if (first && typeof first === "object" && "price" in first) {
+                const parsed = parseFloat((first as any).price);
+                return !isNaN(parsed) && parsed > 0 ? parsed : null;
               }
-            }
+
+              // Format C: ["0.52", ...]
+              if (typeof first === "string" || typeof first === "number") {
+                const parsed = parseFloat(String(first));
+                return !isNaN(parsed) && parsed > 0 ? parsed : null;
+              }
+
+              return null;
+            };
+
+            const bestAsk = parseBestLevelPrice(rawAsks);
+            const bestBid = parseBestLevelPrice(rawBids);
             
             // Only update if we have valid data (not NaN)
             if (bestAsk !== null || bestBid !== null) {
