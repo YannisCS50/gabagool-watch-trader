@@ -375,59 +375,107 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
         </Card>
       )}
 
-      {/* Settled Results & Recent Trades in two columns */}
-      <div className="grid lg:grid-cols-2 gap-6">
-        {/* Settled Results */}
-        {results.filter(r => r.settled_at).length > 0 && (
-          <Card>
-            <CardHeader className="pb-3">
+      {/* Closed Positions */}
+      {results.filter(r => r.settled_at).length > 0 && (
+        <Card>
+          <CardHeader className="pb-4">
+            <div className="flex items-center justify-between">
               <CardTitle className="flex items-center gap-2 text-lg">
                 <CheckCircle2 className="w-5 h-5 text-emerald-500" />
-                Settled Results
+                Closed Positions
                 <Badge variant="secondary">{results.filter(r => r.settled_at).length}</Badge>
               </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2">
-                {results.filter(r => r.settled_at).slice(0, 15).map(result => (
-                  <div 
-                    key={result.id} 
-                    className={`flex items-center justify-between p-3 rounded-lg ${
-                      (result.profit_loss || 0) > 0 
-                        ? 'bg-emerald-500/5 border border-emerald-500/10' 
-                        : 'bg-red-500/5 border border-red-500/10'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <div className={`w-7 h-7 rounded flex items-center justify-center text-xs font-bold ${
-                        result.asset === 'BTC' ? 'bg-orange-500/10 text-orange-500' : 'bg-blue-500/10 text-blue-500'
-                      }`}>
-                        {result.asset === 'BTC' ? '₿' : 'Ξ'}
-                      </div>
-                      <div>
-                        <Badge variant="outline" className={`text-xs ${
-                          result.result === 'UP' 
-                            ? 'text-emerald-500 border-emerald-500/30' 
-                            : 'text-red-500 border-red-500/30'
-                        }`}>
-                          {result.result} won
-                        </Badge>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className={`font-mono font-medium ${(result.profit_loss || 0) > 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                        {(result.profit_loss || 0) > 0 ? '+' : ''}${result.profit_loss?.toFixed(2)}
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        ${result.total_invested?.toFixed(0)} → ${result.payout?.toFixed(0)}
-                      </div>
-                    </div>
-                  </div>
-                ))}
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <span className="text-emerald-500">{stats.winCount}W</span>
+                <span>/</span>
+                <span className="text-red-500">{stats.lossCount}L</span>
               </div>
-            </CardContent>
-          </Card>
-        )}
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="text-xs text-muted-foreground border-b border-border/50">
+                    <th className="text-left pb-3 font-medium">Market</th>
+                    <th className="text-center pb-3 font-medium">Result</th>
+                    <th className="text-center pb-3 font-medium">Position</th>
+                    <th className="text-right pb-3 font-medium">Invested</th>
+                    <th className="text-right pb-3 font-medium">Payout</th>
+                    <th className="text-right pb-3 font-medium">P/L</th>
+                    <th className="text-right pb-3 font-medium">ROI</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/30">
+                  {results.filter(r => r.settled_at).slice(0, 20).map(result => {
+                    const profitLoss = result.profit_loss || 0;
+                    const roi = result.total_invested ? (profitLoss / result.total_invested) * 100 : 0;
+                    
+                    return (
+                      <tr key={result.id} className="group hover:bg-muted/30 transition-colors">
+                        <td className="py-3">
+                          <div className="flex items-center gap-2">
+                            <div className={`w-7 h-7 rounded flex items-center justify-center text-xs font-bold ${
+                              result.asset === 'BTC' ? 'bg-orange-500/10 text-orange-500' : 'bg-blue-500/10 text-blue-500'
+                            }`}>
+                              {result.asset === 'BTC' ? '₿' : 'Ξ'}
+                            </div>
+                            <div>
+                              <div className="font-medium text-sm">{result.asset} 15m</div>
+                              <div className="text-xs text-muted-foreground font-mono">
+                                {result.market_slug.split('-').slice(-1)[0]}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="py-3 text-center">
+                          <Badge variant="outline" className={`text-xs ${
+                            result.result === 'UP' 
+                              ? 'text-emerald-500 border-emerald-500/30 bg-emerald-500/5' 
+                              : 'text-red-500 border-red-500/30 bg-red-500/5'
+                          }`}>
+                            {result.result} won
+                          </Badge>
+                        </td>
+                        <td className="py-3">
+                          <div className="flex flex-col items-center gap-0.5 text-xs">
+                            <span className="text-emerald-500">{result.up_shares?.toFixed(0) || 0}↑</span>
+                            <span className="text-red-500">{result.down_shares?.toFixed(0) || 0}↓</span>
+                          </div>
+                        </td>
+                        <td className="py-3 text-right font-mono text-sm">
+                          ${result.total_invested?.toFixed(2)}
+                        </td>
+                        <td className="py-3 text-right font-mono text-sm">
+                          ${result.payout?.toFixed(2)}
+                        </td>
+                        <td className="py-3 text-right">
+                          <span className={`font-mono text-sm font-medium ${profitLoss >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                            {profitLoss >= 0 ? '+' : ''}${profitLoss.toFixed(2)}
+                          </span>
+                        </td>
+                        <td className="py-3 text-right">
+                          <span className={`font-mono text-sm ${roi >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                            {roi >= 0 ? '+' : ''}{roi.toFixed(1)}%
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            {results.filter(r => r.settled_at).length > 20 && (
+              <div className="text-center text-sm text-muted-foreground mt-4">
+                +{results.filter(r => r.settled_at).length - 20} more closed positions
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Recent Trades */}
+      <div className="grid lg:grid-cols-2 gap-6">
 
         {/* Recent Trades */}
         <Card>
