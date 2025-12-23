@@ -29,6 +29,8 @@ interface TradingSignal {
   marketSlug: string;
   asset: 'BTC' | 'ETH';
   priceToBeat: number | null;
+  priceToBeatSource: string | null;
+  priceToBeatQuality: string | null;
   currentPrice: number | null;
   priceDelta: number | null;
   priceDeltaPercent: number | null;
@@ -484,12 +486,37 @@ export const RealTimeSignals = () => {
                       {/* Price comparison row */}
                       <div className="grid grid-cols-3 gap-4 mb-4">
                         <div className="text-center p-3 bg-background/50 rounded-lg">
-                          <div className="text-xs text-muted-foreground mb-1">Price to Beat</div>
+                          <div className="text-xs text-muted-foreground mb-1 flex items-center justify-center gap-1">
+                            Price to Beat
+                            {signal.priceToBeatQuality === 'exact' && (
+                              <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30 text-[10px] px-1 py-0">
+                                ✓
+                              </Badge>
+                            )}
+                            {signal.priceToBeatQuality === 'pending' && (
+                              <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-500/30 text-[10px] px-1 py-0 animate-pulse">
+                                ...
+                              </Badge>
+                            )}
+                            {(signal.priceToBeatQuality === 'late' || signal.priceToBeatQuality === 'estimated') && (
+                              <Badge className="bg-orange-500/20 text-orange-400 border-orange-500/30 text-[10px] px-1 py-0">
+                                ~
+                              </Badge>
+                            )}
+                          </div>
                           <div className="font-mono font-bold text-lg">
                             {signal.priceToBeat 
                               ? `$${signal.priceToBeat.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` 
                               : '-'}
                           </div>
+                          {signal.priceToBeatSource && signal.priceToBeatSource !== 'none' && (
+                            <div className="text-[10px] text-muted-foreground mt-0.5">
+                              {signal.priceToBeatSource === 'polymarket_rtds' && 'Polymarket RTDS'}
+                              {signal.priceToBeatSource === 'chainlink_delayed' && 'Chainlink (delayed)'}
+                              {signal.priceToBeatSource === 'current_estimate' && 'Estimate (pending)'}
+                              {signal.priceToBeatSource === 'coingecko_fallback' && 'CoinGecko'}
+                            </div>
+                          )}
                         </div>
                         <div className="text-center p-3 bg-background/50 rounded-lg">
                           <div className="text-xs text-muted-foreground mb-1">

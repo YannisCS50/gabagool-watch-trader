@@ -63,28 +63,46 @@ export type Database = {
         Row: {
           asset: string
           chainlink_timestamp: number
+          close_price: number | null
+          close_timestamp: number | null
           created_at: string | null
           event_start_time: string
           id: string
           market_slug: string
+          open_price: number | null
+          open_timestamp: number | null
+          quality: string | null
+          source: string | null
           strike_price: number
         }
         Insert: {
           asset: string
           chainlink_timestamp: number
+          close_price?: number | null
+          close_timestamp?: number | null
           created_at?: string | null
           event_start_time: string
           id?: string
           market_slug: string
+          open_price?: number | null
+          open_timestamp?: number | null
+          quality?: string | null
+          source?: string | null
           strike_price: number
         }
         Update: {
           asset?: string
           chainlink_timestamp?: number
+          close_price?: number | null
+          close_timestamp?: number | null
           created_at?: string | null
           event_start_time?: string
           id?: string
           market_slug?: string
+          open_price?: number | null
+          open_timestamp?: number | null
+          quality?: string | null
+          source?: string | null
           strike_price?: number
         }
         Relationships: []
