@@ -475,42 +475,61 @@ async function handleWebSocket(req: Request): Promise<Response> {
           'Content-Type': 'application/json',
         },
       });
-      
+
       const data = await response.json();
       if (data.success && data.markets) {
+        const nowMs = Date.now();
+
         markets.clear();
         tokenToMarket.clear();
-        
+
+        // Only keep ACTIVE 15-min markets (current window)
+        const activeSlugs = new Set<string>();
+
         for (const market of data.markets) {
-          if (market.marketType === '15min') {
-            markets.set(market.slug, market);
-            tokenToMarket.set(market.upTokenId, { slug: market.slug, side: 'up' });
-            tokenToMarket.set(market.downTokenId, { slug: market.slug, side: 'down' });
-            
-            // Initialize market context with default book
-            if (!marketContexts.has(market.slug)) {
-              marketContexts.set(market.slug, {
-                slug: market.slug,
-                remainingSeconds: 0,
-                book: {
-                  up: { bid: null, ask: null },
-                  down: { bid: null, ask: null },
-                  updatedAtMs: 0,
-                },
-                position: {
-                  upShares: 0,
-                  downShares: 0,
-                  upInvested: 0,
-                  downInvested: 0,
-                },
-                lastTradeAtMs: 0,
-                lastDecisionKey: null,
-                inFlight: false,
-              });
-            }
+          if (market.marketType !== '15min') continue;
+
+          const startMs = new Date(market.eventStartTime).getTime();
+          const endMs = new Date(market.eventEndTime).getTime();
+
+          // If timestamps are invalid or market not in its active window, skip it
+          if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) continue;
+          if (nowMs < startMs || nowMs >= endMs) continue;
+
+          activeSlugs.add(market.slug);
+          markets.set(market.slug, market);
+          tokenToMarket.set(market.upTokenId, { slug: market.slug, side: 'up' });
+          tokenToMarket.set(market.downTokenId, { slug: market.slug, side: 'down' });
+
+          // Initialize market context with default book
+          if (!marketContexts.has(market.slug)) {
+            marketContexts.set(market.slug, {
+              slug: market.slug,
+              remainingSeconds: 0,
+              book: {
+                up: { bid: null, ask: null },
+                down: { bid: null, ask: null },
+                updatedAtMs: 0,
+              },
+              position: {
+                upShares: 0,
+                downShares: 0,
+                upInvested: 0,
+                downInvested: 0,
+              },
+              lastTradeAtMs: 0,
+              lastDecisionKey: null,
+              inFlight: false,
+            });
           }
         }
-        log(`📊 Loaded ${markets.size} markets`);
+
+        // Prune contexts for non-active markets to avoid lingering future markets
+        for (const slug of Array.from(marketContexts.keys())) {
+          if (!activeSlugs.has(slug)) marketContexts.delete(slug);
+        }
+
+        log(`📊 Loaded ${markets.size} ACTIVE markets`);
       }
     } catch (error) {
       log(`❌ Error fetching markets: ${error}`);
