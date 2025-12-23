@@ -9,6 +9,7 @@ interface MarketToken {
   slug: string;
   question: string;
   asset: 'BTC' | 'ETH' | 'SOL' | 'XRP';
+  conditionId: string;
   upTokenId: string;
   downTokenId: string;
   eventStartTime: string;
@@ -17,123 +18,221 @@ interface MarketToken {
 }
 
 /**
- * Fetch active crypto markets from Gamma API
- * Focus on "Bitcoin above X" and "Ethereum above X" markets
+ * Fetch market by slug directly from Gamma API
  */
-async function fetchActiveMarkets(): Promise<MarketToken[]> {
-  const results: MarketToken[] = [];
-  
+async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
   try {
-    // Query active events - look for crypto price markets
+    console.log(`[Gamma] Fetching market by slug: ${slug}`);
+    
     const response = await fetch(
-      'https://gamma-api.polymarket.com/events?active=true&closed=false&limit=100',
+      `https://gamma-api.polymarket.com/markets?slug=${encodeURIComponent(slug)}`,
       {
-        headers: {
-          'Accept': 'application/json',
-        }
+        headers: { 'Accept': 'application/json' }
       }
     );
     
     if (!response.ok) {
-      console.log('Gamma API failed:', response.status);
-      return results;
+      console.log(`[Gamma] Failed to fetch slug ${slug}: ${response.status}`);
+      return null;
     }
     
-    const events = await response.json();
-    console.log(`Gamma returned ${events.length} active events`);
+    const markets = await response.json();
     
-    for (const event of events) {
-      const title = (event.title || '').toLowerCase();
-      const slug = event.slug || '';
-      
-      // Match crypto price markets
-      const isBTC = title.includes('bitcoin') || slug.includes('bitcoin') || slug.includes('btc');
-      const isETH = title.includes('ethereum') || slug.includes('ethereum') || slug.includes('eth');
-      const isSOL = title.includes('solana') || slug.includes('solana') || slug.includes('sol');
-      const isXRP = title.includes('xrp') || slug.includes('xrp');
-      
-      if (!isBTC && !isETH && !isSOL && !isXRP) {
-        continue;
-      }
-      
-      // Check for price-based markets ("above", "hit", "reach")
-      const isPriceMarket = title.includes('above') || 
-                           title.includes('hit') || 
-                           title.includes('reach') ||
-                           title.includes('price');
-      
-      // Also include 15-minute markets
-      const is15Min = title.includes('15') || slug.includes('15');
-      
-      if (!isPriceMarket && !is15Min) {
-        continue;
-      }
-      
-      const asset: 'BTC' | 'ETH' | 'SOL' | 'XRP' = isBTC ? 'BTC' : isETH ? 'ETH' : isSOL ? 'SOL' : 'XRP';
-      const marketType = is15Min ? '15min' : 'price_above';
-      const markets = event.markets || [];
-      
-      console.log(`Found crypto event: "${title}" (${slug}) with ${markets.length} markets`);
-      
-      for (const market of markets) {
-        const clobTokenIds = market.clobTokenIds || [];
-        const outcomes = market.outcomes || ['Yes', 'No'];
-        const question = market.question || event.title || '';
-        
-        if (clobTokenIds.length >= 2) {
-          // Determine which token is Yes vs No
-          const outcome1 = (outcomes[0] || '').toLowerCase();
-          
-          let upTokenId = clobTokenIds[0];
-          let downTokenId = clobTokenIds[1];
-          
-          // If first outcome is "no", swap
-          if (outcome1 === 'no') {
-            upTokenId = clobTokenIds[1];
-            downTokenId = clobTokenIds[0];
-          }
-          
-          console.log(`  Market: "${question.slice(0, 50)}..." Yes=${upTokenId.slice(0, 20)}...`);
-          
-          results.push({
-            slug: market.conditionId || slug,
-            question: question,
-            asset,
-            upTokenId,
-            downTokenId,
-            eventStartTime: event.startDate || new Date().toISOString(),
-            eventEndTime: event.endDate || new Date(Date.now() + 24 * 60 * 60000).toISOString(),
-            marketType,
-          });
-        }
-      }
+    if (!Array.isArray(markets) || markets.length === 0) {
+      console.log(`[Gamma] No market found for slug: ${slug}`);
+      return null;
     }
     
-    // Sort: 15min markets first, then by end time (soonest first)
-    results.sort((a, b) => {
-      if (a.marketType === '15min' && b.marketType !== '15min') return -1;
-      if (a.marketType !== '15min' && b.marketType === '15min') return 1;
-      return new Date(a.eventEndTime).getTime() - new Date(b.eventEndTime).getTime();
-    });
+    const market = markets[0];
+    const conditionId = market.conditionId || '';
+    const clobTokenIds = market.clobTokenIds || [];
+    const question = market.question || market.title || '';
+    const outcomes = market.outcomes || ['Yes', 'No'];
     
-    // Limit to first 20 markets
-    return results.slice(0, 20);
+    console.log(`[Gamma] Found market: ${question.slice(0, 50)}...`);
+    console.log(`[Gamma] conditionId: ${conditionId}`);
+    console.log(`[Gamma] clobTokenIds: ${JSON.stringify(clobTokenIds)}`);
+    
+    if (clobTokenIds.length < 2) {
+      console.log(`[Gamma] Not enough token IDs for slug: ${slug}`);
+      return null;
+    }
+    
+    // Determine asset type from slug
+    const slugLower = slug.toLowerCase();
+    let asset: 'BTC' | 'ETH' | 'SOL' | 'XRP' = 'BTC';
+    if (slugLower.includes('eth')) asset = 'ETH';
+    else if (slugLower.includes('sol')) asset = 'SOL';
+    else if (slugLower.includes('xrp')) asset = 'XRP';
+    
+    // Determine market type
+    const is15Min = slugLower.includes('15m') || slugLower.includes('updown');
+    const marketType = is15Min ? '15min' : 'price_above';
+    
+    // Determine which token is Up/Yes vs Down/No
+    const outcome1 = (outcomes[0] || '').toLowerCase();
+    let upTokenId = clobTokenIds[0];
+    let downTokenId = clobTokenIds[1];
+    
+    // If first outcome is "no" or "down", swap
+    if (outcome1 === 'no' || outcome1 === 'down') {
+      upTokenId = clobTokenIds[1];
+      downTokenId = clobTokenIds[0];
+    }
+    
+    return {
+      slug,
+      question,
+      asset,
+      conditionId,
+      upTokenId,
+      downTokenId,
+      eventStartTime: market.startDate || market.gameStartTime || new Date().toISOString(),
+      eventEndTime: market.endDate || market.endDateIso || new Date(Date.now() + 15 * 60000).toISOString(),
+      marketType,
+    };
     
   } catch (error) {
-    console.error('Gamma fetch error:', error);
-    return results;
+    console.error(`[Gamma] Error fetching slug ${slug}:`, error);
+    return null;
   }
 }
 
 /**
- * Alternative: Try CLOB API directly
+ * Search for active 15-minute crypto markets
  */
-async function fetchClobMarkets(): Promise<MarketToken[]> {
+async function searchActive15mMarkets(): Promise<string[]> {
+  const slugs: string[] = [];
+  
+  try {
+    // First, try to get active events with crypto/15m patterns
+    const response = await fetch(
+      'https://gamma-api.polymarket.com/events?active=true&closed=false&limit=200',
+      {
+        headers: { 'Accept': 'application/json' }
+      }
+    );
+    
+    if (!response.ok) {
+      console.log('[Gamma] Failed to fetch events:', response.status);
+      return slugs;
+    }
+    
+    const events = await response.json();
+    console.log(`[Gamma] Fetched ${events.length} active events`);
+    
+    for (const event of events) {
+      const eventSlug = (event.slug || '').toLowerCase();
+      const title = (event.title || '').toLowerCase();
+      
+      // Look for 15-minute patterns: "15m", "updown", "up-down"
+      const is15MinEvent = eventSlug.includes('15m') || 
+                          eventSlug.includes('updown') ||
+                          title.includes('15 min') ||
+                          title.includes('15-min');
+      
+      // Check if it's crypto related
+      const isCrypto = eventSlug.includes('btc') || 
+                      eventSlug.includes('eth') ||
+                      eventSlug.includes('bitcoin') ||
+                      eventSlug.includes('ethereum') ||
+                      title.includes('bitcoin') ||
+                      title.includes('ethereum');
+      
+      if (is15MinEvent && isCrypto) {
+        console.log(`[Gamma] Found 15m event: ${event.slug}`);
+        
+        // Get market slugs from the event
+        const markets = event.markets || [];
+        for (const market of markets) {
+          if (market.slug) {
+            slugs.push(market.slug);
+          }
+        }
+        
+        // Also add event slug as a potential market slug
+        if (event.slug) {
+          slugs.push(event.slug);
+        }
+      }
+    }
+    
+    // Also search markets directly for 15m patterns
+    const marketsResponse = await fetch(
+      'https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=200',
+      {
+        headers: { 'Accept': 'application/json' }
+      }
+    );
+    
+    if (marketsResponse.ok) {
+      const markets = await marketsResponse.json();
+      console.log(`[Gamma] Fetched ${markets.length} active markets`);
+      
+      for (const market of markets) {
+        const marketSlug = (market.slug || '').toLowerCase();
+        const question = (market.question || '').toLowerCase();
+        
+        const is15MinMarket = marketSlug.includes('15m') ||
+                             marketSlug.includes('updown') ||
+                             question.includes('15 min');
+        
+        const isCrypto = marketSlug.includes('btc') ||
+                        marketSlug.includes('eth') ||
+                        question.includes('bitcoin') ||
+                        question.includes('ethereum');
+        
+        if (is15MinMarket && isCrypto && market.slug) {
+          if (!slugs.includes(market.slug)) {
+            console.log(`[Gamma] Found 15m market: ${market.slug}`);
+            slugs.push(market.slug);
+          }
+        }
+      }
+    }
+    
+  } catch (error) {
+    console.error('[Gamma] Error searching markets:', error);
+  }
+  
+  // Also try known slug patterns for current time
+  const now = Date.now();
+  const intervals = [0, 1, 2, 3, 4]; // Check current and next few 15-min intervals
+  
+  for (const offset of intervals) {
+    // 15-minute intervals: round to nearest 15 min
+    const intervalMs = 15 * 60 * 1000;
+    const intervalTime = Math.floor((now + offset * intervalMs) / intervalMs) * intervalMs;
+    const intervalSecs = Math.floor(intervalTime / 1000);
+    
+    // Try different slug patterns
+    const patterns = [
+      `btc-updown-15m-${intervalSecs}`,
+      `eth-updown-15m-${intervalSecs}`,
+      `btc-15m-${intervalSecs}`,
+      `eth-15m-${intervalSecs}`,
+    ];
+    
+    for (const pattern of patterns) {
+      if (!slugs.includes(pattern)) {
+        slugs.push(pattern);
+      }
+    }
+  }
+  
+  console.log(`[Gamma] Total slugs to check: ${slugs.length}`);
+  return [...new Set(slugs)]; // Dedupe
+}
+
+/**
+ * Fetch crypto price markets ("Bitcoin above X on date Y")
+ */
+async function fetchPriceMarkets(): Promise<MarketToken[]> {
   const results: MarketToken[] = [];
   
   try {
     const response = await fetch(
-      'https://clob.polymarket.com/markets?limit=100&active=true',
+      'https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=100',
       {
         headers: { 'Accept': 'application/json' }
       }
@@ -141,71 +240,52 @@ async function fetchClobMarkets(): Promise<MarketToken[]> {
     
     if (!response.ok) return results;
     
-    const data = await response.json();
-    const markets = Array.isArray(data) ? data : (data.data || []);
-    console.log(`CLOB returned ${markets.length} markets`);
+    const markets = await response.json();
     
     for (const market of markets) {
-      const question = (market.question || market.title || '').toLowerCase();
-      const tokens = market.tokens || [];
+      const question = (market.question || '').toLowerCase();
+      const slug = market.slug || '';
       
-      // Match crypto markets
-      const isBTC = question.includes('bitcoin') || question.includes('btc');
-      const isETH = question.includes('ethereum') || question.includes('eth');
-      const isSOL = question.includes('solana') || question.includes('sol');
-      const isXRP = question.includes('xrp');
+      // Match "bitcoin above" or "ethereum above" markets
+      const isBtcAbove = question.includes('bitcoin') && question.includes('above');
+      const isEthAbove = question.includes('ethereum') && question.includes('above');
       
-      if (!isBTC && !isETH && !isSOL && !isXRP) continue;
+      if (!isBtcAbove && !isEthAbove) continue;
       
-      // Check for price-based markets
-      const isPriceMarket = question.includes('above') || 
-                           question.includes('hit') || 
-                           question.includes('reach') ||
-                           question.includes('price');
-      const is15Min = question.includes('15') && (question.includes('min') || question.includes('minute'));
+      const clobTokenIds = market.clobTokenIds || [];
+      if (clobTokenIds.length < 2) continue;
       
-      if (!isPriceMarket && !is15Min) continue;
+      const outcomes = market.outcomes || ['Yes', 'No'];
+      const outcome1 = (outcomes[0] || '').toLowerCase();
       
-      const asset: 'BTC' | 'ETH' | 'SOL' | 'XRP' = isBTC ? 'BTC' : isETH ? 'ETH' : isSOL ? 'SOL' : 'XRP';
-      const marketType = is15Min ? '15min' : 'price_above';
+      let upTokenId = clobTokenIds[0];
+      let downTokenId = clobTokenIds[1];
       
-      // Extract token IDs
-      let upTokenId = '';
-      let downTokenId = '';
-      
-      if (tokens.length >= 2) {
-        const t0 = tokens[0];
-        const t1 = tokens[1];
-        // Token with outcome "Yes" is upTokenId
-        if (t0?.outcome?.toLowerCase() === 'yes') {
-          upTokenId = t0?.token_id || '';
-          downTokenId = t1?.token_id || '';
-        } else {
-          upTokenId = t1?.token_id || '';
-          downTokenId = t0?.token_id || '';
-        }
+      if (outcome1 === 'no') {
+        upTokenId = clobTokenIds[1];
+        downTokenId = clobTokenIds[0];
       }
       
-      if (upTokenId && downTokenId) {
-        console.log(`CLOB market: "${(market.question || '').slice(0, 50)}..."`);
-        results.push({
-          slug: market.condition_id || market.id || '',
-          question: market.question || '',
-          asset,
-          upTokenId,
-          downTokenId,
-          eventStartTime: market.game_start_time || new Date().toISOString(),
-          eventEndTime: market.end_date_iso || new Date(Date.now() + 24 * 60 * 60000).toISOString(),
-          marketType,
-        });
-      }
+      console.log(`[Gamma] Found price market: ${question.slice(0, 60)}...`);
+      
+      results.push({
+        slug,
+        question: market.question || '',
+        asset: isBtcAbove ? 'BTC' : 'ETH',
+        conditionId: market.conditionId || '',
+        upTokenId,
+        downTokenId,
+        eventStartTime: market.startDate || new Date().toISOString(),
+        eventEndTime: market.endDate || new Date(Date.now() + 24 * 60 * 60000).toISOString(),
+        marketType: 'price_above',
+      });
     }
     
-    return results;
   } catch (error) {
-    console.error('CLOB fetch error:', error);
-    return results;
+    console.error('[Gamma] Error fetching price markets:', error);
   }
+  
+  return results.slice(0, 10); // Limit to 10 price markets
 }
 
 serve(async (req) => {
@@ -217,31 +297,58 @@ serve(async (req) => {
   console.log('=== Fetching market tokens ===');
 
   try {
-    // Try both APIs in parallel for speed
-    const [gammaMarkets, clobMarkets] = await Promise.all([
-      fetchActiveMarkets(),
-      fetchClobMarkets()
-    ]);
-    
-    // Combine and dedupe by slug
-    const marketsMap = new Map<string, MarketToken>();
-    
-    // Prefer Gamma results (more reliable token IDs)
-    for (const m of gammaMarkets) {
-      marketsMap.set(m.slug, m);
+    // Parse request body for optional slug parameter
+    let requestedSlug: string | null = null;
+    try {
+      const body = await req.json();
+      requestedSlug = body.slug || null;
+    } catch {
+      // No body or invalid JSON - that's fine
     }
     
-    // Add CLOB results if not already present
-    for (const m of clobMarkets) {
-      if (!marketsMap.has(m.slug)) {
-        marketsMap.set(m.slug, m);
+    const markets: MarketToken[] = [];
+    
+    if (requestedSlug) {
+      // Fetch specific market by slug
+      console.log(`[Get Tokens] Fetching specific slug: ${requestedSlug}`);
+      const market = await fetchMarketBySlug(requestedSlug);
+      if (market) {
+        markets.push(market);
+      }
+    } else {
+      // Search for active 15m markets
+      const slugs = await searchActive15mMarkets();
+      
+      // Fetch each slug in parallel (limit to first 10)
+      const slugsToFetch = slugs.slice(0, 10);
+      const fetchPromises = slugsToFetch.map(slug => fetchMarketBySlug(slug));
+      const fetchResults = await Promise.all(fetchPromises);
+      
+      for (const result of fetchResults) {
+        if (result) {
+          markets.push(result);
+        }
+      }
+      
+      // Also fetch some price markets as fallback
+      const priceMarkets = await fetchPriceMarkets();
+      for (const pm of priceMarkets) {
+        // Don't add duplicates
+        if (!markets.find(m => m.slug === pm.slug)) {
+          markets.push(pm);
+        }
       }
     }
     
-    const markets = Array.from(marketsMap.values());
-    const duration = Date.now() - startTime;
+    // Sort: 15min markets first, then by end time
+    markets.sort((a, b) => {
+      if (a.marketType === '15min' && b.marketType !== '15min') return -1;
+      if (a.marketType !== '15min' && b.marketType === '15min') return 1;
+      return new Date(a.eventEndTime).getTime() - new Date(b.eventEndTime).getTime();
+    });
     
-    console.log(`=== Found ${markets.length} crypto markets in ${duration}ms ===`);
+    const duration = Date.now() - startTime;
+    console.log(`=== Found ${markets.length} markets in ${duration}ms ===`);
 
     return new Response(JSON.stringify({
       success: true,
