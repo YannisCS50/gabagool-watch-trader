@@ -16,8 +16,8 @@ type OrderSide = "BUY" | "SELL";
 type TradeType = "OPENING" | "HEDGE" | "REBALANCE" | "ACCUMULATE" | "GROW";
 
 interface TopOfBook {
-  up: { bid: number | null; ask: number | null };
-  down: { bid: number | null; ask: number | null };
+  up: { bid: number | null; ask: number | null; isFromRealBook: boolean };
+  down: { bid: number | null; ask: number | null; isFromRealBook: boolean };
   updatedAtMs: number;
 }
 
@@ -223,7 +223,14 @@ function decideTrades(
       return skip(`STALE_BOOK: ${nowMs - ctx.book.updatedAtMs}ms`);
     }
 
-    // 4) Get execution prices
+    // 4) REAL ORDERBOOK DATA CHECK
+    // We only trade if BOTH sides have prices from real orderbook data
+    // price_change events (last trade prices) are NOT reliable for execution
+    if (!ctx.book.up.isFromRealBook || !ctx.book.down.isFromRealBook) {
+      return skip(`NO_REAL_BOOK: up=${ctx.book.up.isFromRealBook} down=${ctx.book.down.isFromRealBook}`);
+    }
+
+    // 5) Get execution prices
     const px = getExecutionPrices(ctx, cfg);
     if (!px) return skip("MISSING_PRICES");
 
@@ -561,8 +568,8 @@ async function handleWebSocket(req: Request): Promise<Response> {
               slug: market.slug,
               remainingSeconds: 0,
               book: {
-                up: { bid: null, ask: null },
-                down: { bid: null, ask: null },
+                up: { bid: null, ask: null, isFromRealBook: false },
+                down: { bid: null, ask: null, isFromRealBook: false },
                 updatedAtMs: 0,
               },
               position: {
@@ -695,9 +702,13 @@ async function handleWebSocket(req: Request): Promise<Response> {
           if (marketInfo.side === 'up') {
             ctx.book.up.ask = topAsk;
             ctx.book.up.bid = topBid;
+            // Only mark as real book data if we actually got asks
+            if (topAsk !== null) ctx.book.up.isFromRealBook = true;
           } else {
             ctx.book.down.ask = topAsk;
             ctx.book.down.bid = topBid;
+            // Only mark as real book data if we actually got asks
+            if (topAsk !== null) ctx.book.down.isFromRealBook = true;
           }
           ctx.book.updatedAtMs = nowMs;
           
@@ -719,13 +730,16 @@ async function handleWebSocket(req: Request): Promise<Response> {
           if (ctx) {
             const price = parseFloat(change.price);
             // ONLY use price_change as fallback if we have NO book data
+            // But mark it as NOT from real book - we won't trade on this
             if (marketInfo.side === 'up') {
               if (ctx.book.up.ask === null) {
                 ctx.book.up.ask = price;
+                // DO NOT set isFromRealBook = true - this is fallback data only for display
               }
             } else {
               if (ctx.book.down.ask === null) {
                 ctx.book.down.ask = price;
+                // DO NOT set isFromRealBook = true - this is fallback data only for display
               }
             }
             ctx.book.updatedAtMs = nowMs;
@@ -734,9 +748,8 @@ async function handleWebSocket(req: Request): Promise<Response> {
         }
       }
       
-      for (const slug of affectedSlugs) {
-        await evaluateTradeOpportunity(slug, nowMs);
-      }
+      // DO NOT evaluate trade opportunities from price_change events
+      // We only trade when we have real orderbook data
     }
   };
 
