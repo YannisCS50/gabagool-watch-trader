@@ -259,10 +259,15 @@ function makeGabagoolTradeDecision(
 
   // ============================================
   // PHASE 1: Opening Trade (no position yet)
-  // Buy favored side to get exposed
+  // CRITICAL: Only open if combined < 98¢ (must have edge from start!)
   // ============================================
   const openCfg = TRADE_CONFIG.opening;
   if (openCfg.enabled && !existingPositions.hasUp && !existingPositions.hasDown) {
+    // GABAGOOL RULE: Must have arbitrage edge from the start
+    if (combinedPrice > 0.98) {
+      return { shouldTrade: false, reasoning: `No edge for opening: ${(combinedPrice*100).toFixed(0)}¢ > 98¢` };
+    }
+    
     if (remainingSeconds < openCfg.minRemainingSeconds) {
       return { shouldTrade: false, reasoning: `Too late for opening: ${remainingSeconds}s < ${openCfg.minRemainingSeconds}s` };
     }
@@ -287,7 +292,7 @@ function makeGabagoolTradeDecision(
           upShares: targetSide === 'UP' ? slippage.filledShares : undefined,
           downShares: targetSide === 'DOWN' ? slippage.filledShares : undefined,
           tradeType: `OPEN_${targetSide}`,
-          reasoning: `🎬 OPEN ${targetSide} @ ${(targetPrice*100).toFixed(0)}¢ | Δ=${priceDeltaPercent?.toFixed(2) ?? 'N/A'}% ${directionLabel}`,
+          reasoning: `🎬 OPEN ${targetSide} @ ${(targetPrice*100).toFixed(0)}¢ | Combined=${(combinedPrice*100).toFixed(0)}¢ | Edge=${arbitrageEdge.toFixed(1)}%`,
           upSlippage: targetSide === 'UP' ? slippage : undefined,
           downSlippage: targetSide === 'DOWN' ? slippage : undefined,
         };
