@@ -26,6 +26,7 @@ export interface MarketInfo {
   marketType: "price_above" | "price_target" | "15min" | "other";
   openPrice: number | null;     // The "Price to Beat" (oracle open price)
   strikePrice: number | null;   // Legacy alias for openPrice
+  previousClosePrice: number | null; // Previous bet's close price (= next bet's target)
 }
 
 export interface ExpiredMarket {
@@ -99,6 +100,7 @@ async function fetchActiveMarkets(): Promise<MarketInfo[]> {
       marketType: m.marketType || 'other',
       openPrice: m.openPrice ?? m.strikePrice ?? null,
       strikePrice: m.openPrice ?? m.strikePrice ?? null, // Legacy alias
+      previousClosePrice: m.previousClosePrice ?? null,
     }));
     
     console.log("[Market Discovery] Found", markets.length, "markets");

@@ -56,6 +56,7 @@ interface LiveMarket {
   marketType: string;
   openPrice: number | null;
   strikePrice: number | null;
+  previousClosePrice: number | null; // Previous bet's close = this bet's "price to beat"
 }
 
 const RealTimeSignalsPage = () => {
@@ -124,6 +125,7 @@ const RealTimeSignalsPage = () => {
         marketType: market.marketType,
         openPrice: market.openPrice ?? market.strikePrice ?? null,
         strikePrice: market.openPrice ?? market.strikePrice ?? null,
+        previousClosePrice: market.previousClosePrice ?? null,
       };
     });
 
@@ -499,6 +501,43 @@ const RealTimeSignalsPage = () => {
                     )}
                   </CardHeader>
                   <CardContent className="space-y-3">
+                    {/* Price to Beat vs Current Price */}
+                    {market.openPrice && (
+                      <div className="p-2 rounded-lg bg-muted/30 border border-border/50">
+                        <div className="flex items-center justify-between text-xs">
+                          <div className="flex items-center gap-1.5">
+                            <Target className="w-3 h-3 text-muted-foreground" />
+                            <span className="text-muted-foreground">Strike:</span>
+                            <span className="font-mono font-medium">
+                              ${market.openPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                            </span>
+                          </div>
+                          {(() => {
+                            const currentPrice = market.asset === 'BTC' ? btcPrice : ethPrice;
+                            if (!currentPrice) return null;
+                            const isAbove = currentPrice > market.openPrice;
+                            const diff = currentPrice - market.openPrice;
+                            const diffPercent = (diff / market.openPrice) * 100;
+                            return (
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-muted-foreground">Now:</span>
+                                <span className={`font-mono font-medium ${isAbove ? 'text-emerald-500' : 'text-red-500'}`}>
+                                  ${currentPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                                </span>
+                                <Badge 
+                                  variant="outline" 
+                                  className={`text-[10px] px-1 py-0 ${isAbove ? 'text-emerald-500 border-emerald-500/30' : 'text-red-500 border-red-500/30'}`}
+                                >
+                                  {isAbove ? <ArrowUpRight className="w-2.5 h-2.5 mr-0.5" /> : <ArrowDownRight className="w-2.5 h-2.5 mr-0.5" />}
+                                  {diffPercent > 0 ? '+' : ''}{diffPercent.toFixed(2)}%
+                                </Badge>
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      </div>
+                    )}
+                    
                     <div className="grid grid-cols-4 gap-2 text-center text-sm">
                       <div className="p-2 rounded-lg bg-emerald-500/10">
                         <div className="text-[10px] text-muted-foreground">UP</div>
