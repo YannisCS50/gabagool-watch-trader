@@ -417,14 +417,9 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
           }
           
           if (updatedAny) {
-            // Throttle UI updates to 1 per second for visual stability
-            const timeSinceLastUIUpdate = now - lastUpdateTime;
-            if (timeSinceLastUIUpdate >= 1000) {
-              setPricesVersion(v => v + 1);
-              setUpdateCount(c => c + 1);
-              setLastUpdateTime(now);
-              setLatencyMs(Date.now() - now);
-            }
+            // Just update the ref - the 100ms interval timer handles UI updates
+            // This prevents throttling from blocking price data flow
+            lastPriceUpdateRef.current = now;
           }
         }
         
