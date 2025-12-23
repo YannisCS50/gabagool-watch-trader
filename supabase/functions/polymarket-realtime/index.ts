@@ -11,6 +11,8 @@ interface TradingSignal {
   marketSlug: string;
   asset: 'BTC' | 'ETH';
   priceToBeat: number | null;
+  priceToBeatSource: string | null;
+  priceToBeatQuality: string | null;
   currentPrice: number | null;
   priceDelta: number | null;
   priceDeltaPercent: number | null;
@@ -38,6 +40,13 @@ interface MarketFromDB {
   upPrice: number;
   downPrice: number;
   eventTimestamp: number;
+}
+
+interface StrikePriceData {
+  open_price: number | null;
+  strike_price: number | null;
+  source: string | null;
+  quality: string | null;
 }
 
 // Fetch current crypto price from CoinGecko
@@ -71,131 +80,56 @@ function parseTimestampFromSlug(slug: string): number | null {
 }
 
 // In-memory cache for strike prices to avoid repeated API calls
-const strikePriceCache = new Map<string, number>();
+const strikePriceCache = new Map<string, { price: number; source: string; quality: string }>();
 
-// Fetch strike price from our cached strike_prices table (Chainlink data)
-// Falls back to CoinGecko if not cached yet
+// Fetch strike price from our cached strike_prices table (Chainlink data from RTDS)
 async function fetchStrikePrice(
   supabase: any,
   marketSlug: string,
   asset: 'BTC' | 'ETH',
   eventTimestamp: number,
   currentPrice: number | null
-): Promise<number | null> {
+): Promise<{ price: number | null; source: string; quality: string }> {
   try {
     // Check in-memory cache first
     if (strikePriceCache.has(marketSlug)) {
       return strikePriceCache.get(marketSlug)!;
     }
     
-    // Try to get from our database cache
+    // Try to get from our database cache (new schema with open_price)
     const { data, error } = await supabase
       .from('strike_prices')
-      .select('strike_price')
+      .select('open_price, strike_price, source, quality')
       .eq('market_slug', marketSlug)
       .maybeSingle();
     
     if (data && !error) {
-      console.log(`Chainlink strike price for ${marketSlug}: $${data.strike_price}`);
-      strikePriceCache.set(marketSlug, data.strike_price);
-      return data.strike_price;
-    }
-    
-    // Fallback to CoinGecko for historical price
-    console.log(`No cached Chainlink price for ${marketSlug}, trying CoinGecko...`);
-    const coinGeckoPrice = await fetchHistoricalCryptoPrice(asset, eventTimestamp);
-    
-    if (coinGeckoPrice) {
-      // Cache in DB for future use
-      await supabase.from('strike_prices').upsert({
-        market_slug: marketSlug,
-        asset: asset,
-        strike_price: coinGeckoPrice,
-        event_start_time: new Date(eventTimestamp * 1000).toISOString(),
-        chainlink_timestamp: eventTimestamp * 1000
-      }, { onConflict: 'market_slug' });
+      // Prefer open_price (new schema), fall back to strike_price (old schema)
+      const price = data.open_price ?? data.strike_price;
+      const source = data.source || 'chainlink_delayed';
+      const quality = data.quality || 'unknown';
       
-      strikePriceCache.set(marketSlug, coinGeckoPrice);
-      return coinGeckoPrice;
+      if (price) {
+        console.log(`Strike price for ${marketSlug}: $${price} (source: ${source}, quality: ${quality})`);
+        const result = { price, source, quality };
+        strikePriceCache.set(marketSlug, result);
+        return result;
+      }
     }
     
-    // If CoinGecko fails AND the market just started (< 2 min ago), use current price as approximation
+    // No cached price - market may have just started
+    // For very new markets (< 2 min), trigger price collector and use current price as temp estimate
     const marketAgeMs = Date.now() - (eventTimestamp * 1000);
     if (marketAgeMs < 2 * 60 * 1000 && currentPrice) {
-      console.log(`Market ${marketSlug} just started, using current price as Price to Beat: $${currentPrice}`);
-      
-      // Cache this
-      await supabase.from('strike_prices').upsert({
-        market_slug: marketSlug,
-        asset: asset,
-        strike_price: currentPrice,
-        event_start_time: new Date(eventTimestamp * 1000).toISOString(),
-        chainlink_timestamp: Date.now()
-      }, { onConflict: 'market_slug' });
-      
-      strikePriceCache.set(marketSlug, currentPrice);
-      return currentPrice;
+      console.log(`Market ${marketSlug} just started, using current price as estimate: $${currentPrice}`);
+      return { price: currentPrice, source: 'current_estimate', quality: 'pending' };
     }
     
-    console.log(`Could not get strike price for ${marketSlug}`);
-    return null;
+    console.log(`No strike price available for ${marketSlug}`);
+    return { price: null, source: 'none', quality: 'missing' };
   } catch (error) {
     console.error('Error fetching strike price:', error);
-    return null;
-  }
-}
-
-// Fetch historical crypto price from CoinGecko at a specific timestamp (fallback)
-async function fetchHistoricalCryptoPrice(
-  asset: 'BTC' | 'ETH',
-  timestamp: number
-): Promise<number | null> {
-  try {
-    const coinId = asset === 'BTC' ? 'bitcoin' : 'ethereum';
-    
-    // CoinGecko range API: from/to are UNIX timestamps in seconds
-    // Use a slightly older window to avoid rate limits on recent data
-    const from = timestamp - 60; // 1 minute before
-    const to = timestamp + 300; // 5 minutes after
-    
-    const response = await fetch(
-      `https://api.coingecko.com/api/v3/coins/${coinId}/market_chart/range?vs_currency=usd&from=${from}&to=${to}`,
-      {
-        headers: {
-          'Accept': 'application/json',
-        }
-      }
-    );
-    
-    if (!response.ok) {
-      console.error(`CoinGecko historical API error: ${response.status}`);
-      return null;
-    }
-    
-    const data = await response.json();
-    
-    if (data.prices && data.prices.length > 0) {
-      // Find the closest price to our target timestamp
-      const targetMs = timestamp * 1000;
-      let closestPrice = data.prices[0];
-      let closestDiff = Math.abs(closestPrice[0] - targetMs);
-      
-      for (const price of data.prices) {
-        const diff = Math.abs(price[0] - targetMs);
-        if (diff < closestDiff) {
-          closestDiff = diff;
-          closestPrice = price;
-        }
-      }
-      
-      console.log(`CoinGecko price for ${asset} at ${new Date(timestamp * 1000).toISOString()}: $${closestPrice[1]}`);
-      return closestPrice[1];
-    }
-    
-    return null;
-  } catch (error) {
-    console.error('Error fetching historical crypto price:', error);
-    return null;
+    return { price: null, source: 'error', quality: 'missing' };
   }
 }
 
@@ -263,7 +197,7 @@ function calculateGabagoolSignal(
   market: MarketFromDB,
   currentCryptoPrice: number | null,
   asset: 'BTC' | 'ETH',
-  priceToBeat: number | null
+  strikeData: { price: number | null; source: string; quality: string }
 ): TradingSignal {
   const now = Date.now();
   const eventStart = market.eventTimestamp * 1000;
@@ -282,6 +216,8 @@ function calculateGabagoolSignal(
   
   const cheaperSide = upPrice < downPrice ? 'Up' : 'Down';
   const cheaperPrice = Math.min(upPrice, downPrice);
+  
+  const priceToBeat = strikeData.price;
   
   // Calculate price delta
   let priceDelta: number | null = null;
@@ -345,6 +281,8 @@ function calculateGabagoolSignal(
     marketSlug: market.market_slug,
     asset,
     priceToBeat,
+    priceToBeatSource: strikeData.source,
+    priceToBeatQuality: strikeData.quality,
     currentPrice: currentCryptoPrice,
     priceDelta,
     priceDeltaPercent,
@@ -392,7 +330,7 @@ serve(async (req) => {
     const now = Date.now();
     const signals: TradingSignal[] = [];
     
-    // Fetch strike prices from Chainlink cache (with CoinGecko fallback)
+    // Fetch strike prices from Chainlink cache (with source/quality info)
     const strikePricePromises = marketsFromDB.map(m => {
       const slug = m.market_slug.toLowerCase();
       const asset: 'BTC' | 'ETH' = slug.includes('btc') ? 'BTC' : 'ETH';
@@ -406,11 +344,11 @@ serve(async (req) => {
       const slug = market.market_slug.toLowerCase();
       const asset: 'BTC' | 'ETH' = slug.includes('btc') ? 'BTC' : 'ETH';
       const cryptoPrice = asset === 'BTC' ? btcPrice : ethPrice;
-      const priceToBeat = strikePrices[i];
+      const strikeData = strikePrices[i];
       
-      console.log(`Market ${slug}: priceToBeat=$${priceToBeat} (Chainlink), current=$${cryptoPrice}`);
+      console.log(`Market ${slug}: priceToBeat=$${strikeData.price} (${strikeData.source}/${strikeData.quality}), current=$${cryptoPrice}`);
       
-      const signal = calculateGabagoolSignal(market, cryptoPrice, asset, priceToBeat);
+      const signal = calculateGabagoolSignal(market, cryptoPrice, asset, strikeData);
       signals.push(signal);
     }
     
