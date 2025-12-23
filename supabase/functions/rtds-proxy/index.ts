@@ -5,17 +5,8 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-const RTDS_URL = 'wss://rtds.polymarket.com';
-
-interface Subscription {
-  topic: string;
-  type: string;
-  filters?: string;
-}
-
-interface SubscribeRequest {
-  subscriptions: Subscription[];
-}
+// Correct RTDS URL from Polymarket docs
+const RTDS_URL = 'wss://ws-live-data.polymarket.com';
 
 serve(async (req) => {
   // Handle CORS preflight
@@ -39,7 +30,7 @@ serve(async (req) => {
       rtdsSocket = new WebSocket(RTDS_URL);
       
       rtdsSocket.onopen = () => {
-        console.log('[RTDS Proxy] Connected to Polymarket RTDS');
+        console.log('[RTDS Proxy] Connected to Polymarket RTDS at', RTDS_URL);
         clientSocket.send(JSON.stringify({ type: 'proxy_connected' }));
         
         // Keep-alive ping to RTDS
@@ -53,6 +44,7 @@ serve(async (req) => {
       rtdsSocket.onmessage = (event) => {
         // Forward RTDS messages to client
         if (clientSocket.readyState === WebSocket.OPEN) {
+          console.log('[RTDS Proxy] Forwarding to client:', typeof event.data === 'string' ? event.data.slice(0, 200) : 'binary');
           clientSocket.send(event.data);
         }
       };

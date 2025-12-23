@@ -1,20 +1,31 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /**
- * True realtime Up/Down pricing for Polymarket markets.
+ * True realtime Up/Down pricing for Polymarket 15-min crypto markets.
  *
- * For arbitrage you want the *cost to buy now*, so we track best ASK (top of book)
- * per outcome token via Polymarket CLOB market websocket (proxied server-side).
+ * 1. Fetches active 15m markets from Gamma API
+ * 2. Extracts clobTokenIds (Up/Down token IDs)
+ * 3. Subscribes to CLOB market channel for best_ask prices
  */
 
-type ConnectionState = "disconnected" | "connecting" | "connected" | "error";
+type ConnectionState = "disconnected" | "connecting" | "connected" | "discovering" | "error";
 
 interface PricePoint {
   price: number;
   timestampMs: number;
 }
 
+interface MarketInfo {
+  slug: string;
+  asset: "BTC" | "ETH";
+  upTokenId: string;
+  downTokenId: string;
+  eventStartTime: Date;
+  eventEndTime: Date;
+}
+
 interface UsePolymarketRealtimeResult {
+  markets: MarketInfo[];
   getPrice: (marketSlug: string, outcome: string) => number | null;
   isConnected: boolean;
   connectionState: ConnectionState;
@@ -26,10 +37,12 @@ interface UsePolymarketRealtimeResult {
 }
 
 const CLOB_PROXY_WS_URL = "wss://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/clob-proxy";
+const GAMMA_API_URL = "https://gamma-api.polymarket.com/events";
 
-const RECONNECT_DELAY_MS = 1500;
+const RECONNECT_DELAY_MS = 2000;
 const MAX_RECONNECT_ATTEMPTS = 10;
-const UI_SYNC_INTERVAL_MS = 75;
+const UI_SYNC_INTERVAL_MS = 100;
+const MARKET_REFRESH_INTERVAL_MS = 60000; // Refresh market discovery every minute
 
 const normalizeOutcome = (o: string) => o.trim().toLowerCase();
 
@@ -38,42 +51,91 @@ function parseNumber(n: unknown): number | null {
   return Number.isFinite(v) ? v : null;
 }
 
-function inferUpDownTokenIds(outcomes: unknown, tokenIds: unknown): { up: string; down: string } | null {
-  if (!Array.isArray(outcomes) || !Array.isArray(tokenIds)) return null;
-  if (tokenIds.length < 2) return null;
-
-  const o0 = String(outcomes[0] ?? "").toLowerCase();
-  const id0 = String(tokenIds[0] ?? "");
-  const id1 = String(tokenIds[1] ?? "");
-
-  const o0IsDown = o0.includes("no") || o0.includes("down");
-  return o0IsDown ? { up: id1, down: id0 } : { up: id0, down: id1 };
+/**
+ * Fetch active 15-minute crypto markets from Gamma API
+ */
+async function fetchActive15mMarkets(): Promise<MarketInfo[]> {
+  console.log("[Market Discovery] Fetching active 15m crypto markets from Gamma API...");
+  
+  try {
+    // Fetch active events
+    const response = await fetch(`${GAMMA_API_URL}?active=true&limit=100`);
+    if (!response.ok) {
+      console.error("[Market Discovery] Gamma API error:", response.status);
+      return [];
+    }
+    
+    const events = await response.json();
+    if (!Array.isArray(events)) {
+      console.error("[Market Discovery] Invalid response format");
+      return [];
+    }
+    
+    console.log("[Market Discovery] Got", events.length, "active events");
+    
+    const markets: MarketInfo[] = [];
+    
+    for (const event of events) {
+      const title = String(event.title || "").toLowerCase();
+      const slug = String(event.slug || "");
+      
+      // Look for 15-minute crypto markets
+      const is15m = title.includes("15") && (title.includes("minute") || title.includes("min") || title.includes("m"));
+      const isBtc = title.includes("bitcoin") || title.includes("btc");
+      const isEth = title.includes("ethereum") || title.includes("eth");
+      const isUpDown = title.includes("up") || title.includes("down") || title.includes("higher") || title.includes("lower");
+      
+      if (!is15m || (!isBtc && !isEth) || !isUpDown) continue;
+      
+      // Get the markets array from the event
+      const eventMarkets = event.markets || [];
+      if (eventMarkets.length === 0) continue;
+      
+      // Find the main market with token IDs
+      const market = eventMarkets[0];
+      const clobTokenIds = market.clobTokenIds || market.clob_token_ids || [];
+      const outcomes = market.outcomes || [];
+      
+      if (clobTokenIds.length < 2 || outcomes.length < 2) continue;
+      
+      // Determine which token is Up and which is Down
+      const o0 = String(outcomes[0] || "").toLowerCase();
+      const isO0Down = o0.includes("no") || o0.includes("down") || o0.includes("lower");
+      
+      const upTokenId = isO0Down ? String(clobTokenIds[1]) : String(clobTokenIds[0]);
+      const downTokenId = isO0Down ? String(clobTokenIds[0]) : String(clobTokenIds[1]);
+      
+      // Parse event times
+      const startTime = new Date(event.startDate || event.start_date || Date.now());
+      const endTime = new Date(event.endDate || event.end_date || Date.now() + 900000);
+      
+      const asset: "BTC" | "ETH" = isBtc ? "BTC" : "ETH";
+      
+      markets.push({
+        slug: market.slug || slug,
+        asset,
+        upTokenId,
+        downTokenId,
+        eventStartTime: startTime,
+        eventEndTime: endTime,
+      });
+      
+      console.log("[Market Discovery] Found:", asset, "15m market:", market.slug || slug, "tokens:", upTokenId.slice(0, 8), downTokenId.slice(0, 8));
+    }
+    
+    console.log("[Market Discovery] Total 15m crypto markets found:", markets.length);
+    return markets;
+    
+  } catch (error) {
+    console.error("[Market Discovery] Error:", error);
+    return [];
+  }
 }
 
-async function fetchSlugTokenIds(slug: string) {
-  const r = await fetch(`https://gamma-api.polymarket.com/markets?slug=${encodeURIComponent(slug)}`);
-  if (!r.ok) return null;
-  const markets = await r.json();
-  if (!Array.isArray(markets) || markets.length === 0) return null;
-
-  const m = markets[0] as any;
-  // Polymarket markets often expose these
-  const tokenIds = m.clobTokenIds ?? m.clob_token_ids ?? null;
-  const outcomes = m.outcomes ?? null;
-
-  const inferred = inferUpDownTokenIds(outcomes, tokenIds);
-  if (!inferred) return null;
-
-  return {
-    upTokenId: inferred.up,
-    downTokenId: inferred.down,
-  };
-}
-
-export function usePolymarketRealtime(
-  marketSlugs: string[],
-  enabled: boolean = true,
-): UsePolymarketRealtimeResult {
+export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRealtimeResult {
+  // Discovered markets
+  const [markets, setMarkets] = useState<MarketInfo[]>([]);
+  
   // Map: marketSlug -> outcome -> price
   const pricesRef = useRef<Map<string, Map<string, PricePoint>>>(new Map());
   const updateCountRef = useRef(0);
@@ -81,9 +143,6 @@ export function usePolymarketRealtime(
 
   // Token mapping (tokenId -> { slug, outcome })
   const tokenToMarketRef = useRef<Map<string, { slug: string; outcome: "up" | "down" }>>(new Map());
-  const tokenCacheRef = useRef<Map<string, { upTokenId: string; downTokenId: string }>>(new Map());
-
-  const [tokenIds, setTokenIds] = useState<string[]>([]);
 
   const [isConnected, setIsConnected] = useState(false);
   const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected");
@@ -95,8 +154,7 @@ export function usePolymarketRealtime(
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const uiSyncIntervalRef = useRef<NodeJS.Timeout | null>(null);
-
-  const slugsKey = useMemo(() => marketSlugs.slice().sort().join(","), [marketSlugs]);
+  const marketRefreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   const startUiSync = useCallback(() => {
     if (uiSyncIntervalRef.current) return;
@@ -124,6 +182,11 @@ export function usePolymarketRealtime(
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
     }
+    
+    if (marketRefreshIntervalRef.current) {
+      clearInterval(marketRefreshIntervalRef.current);
+      marketRefreshIntervalRef.current = null;
+    }
 
     if (wsRef.current) {
       try {
@@ -138,103 +201,72 @@ export function usePolymarketRealtime(
     setConnectionState("disconnected");
   }, [stopUiSync]);
 
-  // Fetch token IDs for current slugs (fast, parallel, cached)
-  useEffect(() => {
-    let cancelled = false;
+  // Discover markets and build token mapping
+  const discoverMarkets = useCallback(async () => {
+    setConnectionState("discovering");
+    
+    const discovered = await fetchActive15mMarkets();
+    setMarkets(discovered);
+    
+    // Build reverse mapping: tokenId -> { slug, outcome }
+    const mapping = new Map<string, { slug: string; outcome: "up" | "down" }>();
+    for (const m of discovered) {
+      mapping.set(m.upTokenId, { slug: m.slug, outcome: "up" });
+      mapping.set(m.downTokenId, { slug: m.slug, outcome: "down" });
+    }
+    tokenToMarketRef.current = mapping;
+    
+    return discovered;
+  }, []);
 
-    async function run() {
-      if (!enabled || marketSlugs.length === 0) {
-        setTokenIds([]);
-        return;
-      }
-
-      const missing = marketSlugs.filter((s) => !tokenCacheRef.current.has(s));
-      if (missing.length > 0) {
-        const results = await Promise.all(
-          missing.map(async (slug) => {
-            try {
-              const t = await fetchSlugTokenIds(slug);
-              return { slug, tokens: t };
-            } catch {
-              return { slug, tokens: null };
-            }
-          }),
-        );
-
-        for (const r of results) {
-          if (r.tokens) tokenCacheRef.current.set(r.slug, r.tokens);
-        }
-      }
-
-      // Build tokenId list + reverse mapping
-      const nextTokenToMarket = new Map<string, { slug: string; outcome: "up" | "down" }>();
-      const nextTokenIds: string[] = [];
-
-      for (const slug of marketSlugs) {
-        const t = tokenCacheRef.current.get(slug);
-        if (!t) continue;
-
-        nextTokenToMarket.set(t.upTokenId, { slug, outcome: "up" });
-        nextTokenToMarket.set(t.downTokenId, { slug, outcome: "down" });
-        nextTokenIds.push(t.upTokenId, t.downTokenId);
-      }
-
-      if (!cancelled) {
-        tokenToMarketRef.current = nextTokenToMarket;
-        setTokenIds(nextTokenIds);
-      }
+  const connectWebSocket = useCallback((tokenIds: string[]) => {
+    if (tokenIds.length === 0) {
+      console.log("[CLOB WS] No token IDs to subscribe to");
+      setConnectionState("error");
+      return;
     }
 
-    run();
-    return () => {
-      cancelled = true;
-    };
-  }, [enabled, slugsKey]);
-
-  const connect = useCallback(() => {
-    if (!enabled) return;
-    if (tokenIds.length === 0) return;
-
     setConnectionState("connecting");
+    console.log("[CLOB WS] Connecting to CLOB proxy with", tokenIds.length, "tokens...");
 
     try {
       const ws = new WebSocket(CLOB_PROXY_WS_URL);
       wsRef.current = ws;
 
       ws.onopen = () => {
+        console.log("[CLOB WS] WebSocket opened");
         reconnectAttemptsRef.current = 0;
       };
 
       ws.onmessage = (event) => {
         const now = Date.now();
 
-        // Proxy control messages
         try {
           const msg = JSON.parse(event.data);
 
           if (msg?.type === "proxy_connected") {
+            console.log("[CLOB WS] Proxy connected to CLOB, subscribing to", tokenIds.length, "tokens");
             setIsConnected(true);
             setConnectionState("connected");
 
-            // Initial subscription (CLOB market channel)
-            ws.send(
-              JSON.stringify({
-                type: "market",
-                assets_ids: tokenIds,
-              }),
-            );
+            // Subscribe to market channel with all token IDs
+            ws.send(JSON.stringify({
+              type: "market",
+              assets_ids: tokenIds,
+            }));
 
             startUiSync();
             return;
           }
 
           if (msg?.type === "proxy_error" || msg?.type === "proxy_disconnected") {
+            console.log("[CLOB WS] Proxy error/disconnect:", msg);
             setIsConnected(false);
             setConnectionState("error");
             return;
           }
 
-          // CLOB messages
+          // Handle CLOB price_change events
           const eventType = msg?.event_type;
 
           if (eventType === "price_change" && Array.isArray(msg.price_changes)) {
@@ -256,17 +288,19 @@ export function usePolymarketRealtime(
 
               const key = m.outcome;
               marketMap.set(key, { price: bestAsk, timestampMs: ts });
-              // outcome aliases
+              // Aliases
               if (key === "up") marketMap.set("yes", { price: bestAsk, timestampMs: ts });
               if (key === "down") marketMap.set("no", { price: bestAsk, timestampMs: ts });
 
               updateCountRef.current++;
               lastUpdateTimeRef.current = ts;
+              
+              console.log("[CLOB WS] Price update:", m.slug, m.outcome, bestAsk);
             }
-
             return;
           }
 
+          // Handle CLOB book events (initial snapshot)
           if (eventType === "book") {
             const tokenId = String(msg.asset_id ?? "");
             const asks = Array.isArray(msg.asks) ? msg.asks : [];
@@ -291,6 +325,8 @@ export function usePolymarketRealtime(
 
             updateCountRef.current++;
             lastUpdateTimeRef.current = ts;
+            
+            console.log("[CLOB WS] Book snapshot:", m.slug, m.outcome, bestAsk);
             return;
           }
         } catch {
@@ -298,11 +334,13 @@ export function usePolymarketRealtime(
         }
       };
 
-      ws.onerror = () => {
+      ws.onerror = (err) => {
+        console.error("[CLOB WS] Error:", err);
         setConnectionState("error");
       };
 
       ws.onclose = () => {
+        console.log("[CLOB WS] Disconnected");
         setIsConnected(false);
         wsRef.current = null;
         stopUiSync();
@@ -311,33 +349,69 @@ export function usePolymarketRealtime(
 
         if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
           reconnectAttemptsRef.current++;
-          reconnectTimeoutRef.current = setTimeout(connect, RECONNECT_DELAY_MS);
+          console.log(`[CLOB WS] Reconnecting (${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})...`);
+          reconnectTimeoutRef.current = setTimeout(() => {
+            // Re-discover and reconnect
+            discoverMarkets().then(discovered => {
+              const ids = discovered.flatMap(m => [m.upTokenId, m.downTokenId]);
+              connectWebSocket(ids);
+            });
+          }, RECONNECT_DELAY_MS);
         } else {
           setConnectionState("error");
         }
       };
-    } catch {
+    } catch (err) {
+      console.error("[CLOB WS] Failed to connect:", err);
       setConnectionState("error");
     }
-  }, [enabled, tokenIds, startUiSync, stopUiSync]);
+  }, [enabled, startUiSync, stopUiSync, discoverMarkets]);
 
-  // (Re)connect when token set changes
+  const connect = useCallback(async () => {
+    if (!enabled) return;
+
+    // First discover markets
+    const discovered = await discoverMarkets();
+    
+    if (discovered.length === 0) {
+      console.log("[CLOB] No active 15m markets found");
+      setConnectionState("error");
+      return;
+    }
+
+    // Extract all token IDs
+    const tokenIds = discovered.flatMap(m => [m.upTokenId, m.downTokenId]);
+    
+    // Connect WebSocket
+    connectWebSocket(tokenIds);
+    
+    // Set up periodic market refresh
+    if (!marketRefreshIntervalRef.current) {
+      marketRefreshIntervalRef.current = setInterval(async () => {
+        console.log("[Market Discovery] Refreshing markets...");
+        const refreshed = await discoverMarkets();
+        if (refreshed.length > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
+          // Re-subscribe with new tokens
+          const ids = refreshed.flatMap(m => [m.upTokenId, m.downTokenId]);
+          wsRef.current.send(JSON.stringify({
+            type: "market",
+            assets_ids: ids,
+          }));
+        }
+      }, MARKET_REFRESH_INTERVAL_MS);
+    }
+  }, [enabled, discoverMarkets, connectWebSocket]);
+
+  // Auto-connect when enabled
   useEffect(() => {
-    if (!enabled) {
+    if (enabled) {
+      connect();
+    } else {
       disconnect();
-      return;
     }
 
-    if (tokenIds.length === 0) {
-      disconnect();
-      return;
-    }
-
-    disconnect();
-    connect();
-  }, [enabled, tokenIds.join(","), connect, disconnect]);
-
-  useEffect(() => () => disconnect(), [disconnect]);
+    return () => disconnect();
+  }, [enabled, connect, disconnect]);
 
   const getPrice = useCallback((marketSlug: string, outcome: string) => {
     const market = pricesRef.current.get(marketSlug);
@@ -346,6 +420,7 @@ export function usePolymarketRealtime(
   }, []);
 
   return {
+    markets,
     getPrice,
     isConnected,
     connectionState,
