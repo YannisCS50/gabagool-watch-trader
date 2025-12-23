@@ -35,6 +35,8 @@ interface UsePolymarketRealtimeResult {
   latencyMs: number;
   connect: () => void;
   disconnect: () => void;
+  pricesVersion: number;
+  timeSinceLastUpdate: number;
 }
 
 const MARKET_TOKENS_URL = "https://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/get-market-tokens";
@@ -94,6 +96,9 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
   const [updateCount, setUpdateCount] = useState(0);
   const [lastUpdateTime, setLastUpdateTime] = useState(Date.now());
   const [latencyMs, setLatencyMs] = useState(0);
+  
+  // STAP 1: pricesVersion state om UI re-renders te forceren
+  const [pricesVersion, setPricesVersion] = useState(0);
 
   // All refs
   const pricesRef = useRef<Map<string, Map<string, PricePoint>>>(new Map());
@@ -103,18 +108,25 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
   const marketsRef = useRef<MarketInfo[]>([]);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const enabledRef = useRef(enabled);
+  const uiUpdateIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastPriceUpdateRef = useRef<number>(Date.now());
   
   // Keep enabledRef in sync
   useEffect(() => {
     enabledRef.current = enabled;
   }, [enabled]);
 
+  // STAP 4: Debug getPrice met logging
   const getPrice = useCallback((marketSlug: string, outcome: string) => {
     const market = pricesRef.current.get(marketSlug);
-    if (!market) return null;
-    const point = market.get(normalizeOutcome(outcome));
-    return point?.bestAsk ?? point?.price ?? null;
-  }, []);
+    if (!market) {
+      return null;
+    }
+    const normalizedOutcome = normalizeOutcome(outcome);
+    const point = market.get(normalizedOutcome);
+    const price = point?.bestAsk ?? point?.price ?? null;
+    return price;
+  }, [pricesVersion]); // Depend on pricesVersion to re-create when prices update
 
   const disconnect = useCallback(() => {
     console.log("[WS] Disconnecting...");
@@ -132,6 +144,11 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
+    }
+    
+    if (uiUpdateIntervalRef.current) {
+      clearInterval(uiUpdateIntervalRef.current);
+      uiUpdateIntervalRef.current = null;
     }
 
     setIsConnected(false);
@@ -151,8 +168,14 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
     // Build token -> market mapping
     const tokenMapping = new Map<string, { slug: string; outcome: "up" | "down" }>();
     for (const m of discovered) {
-      if (m.upTokenId) tokenMapping.set(m.upTokenId, { slug: m.slug, outcome: "up" });
-      if (m.downTokenId) tokenMapping.set(m.downTokenId, { slug: m.slug, outcome: "down" });
+      if (m.upTokenId) {
+        tokenMapping.set(m.upTokenId, { slug: m.slug, outcome: "up" });
+        console.log(`[Token Map] ${m.upTokenId.slice(0,20)}... -> ${m.slug} UP`);
+      }
+      if (m.downTokenId) {
+        tokenMapping.set(m.downTokenId, { slug: m.slug, outcome: "down" });
+        console.log(`[Token Map] ${m.downTokenId.slice(0,20)}... -> ${m.slug} DOWN`);
+      }
     }
     tokenToMarketRef.current = tokenMapping;
     
@@ -182,6 +205,7 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
+        const now = Date.now();
         
         // Handle proxy status messages
         if (data.type === 'proxy_connected') {
@@ -217,50 +241,19 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
           return;
         }
         
-        // Process orderbook data
-        const now = Date.now();
-        
-        if (data.event_type === 'book' && data.asset_id) {
-          const tokenId = data.asset_id;
-          const marketInfo = tokenToMarketRef.current.get(tokenId);
+        // STAP 2: Process price_change events als primaire bron
+        if (data.event_type === 'price_change' && Array.isArray(data.price_changes)) {
+          let updatedAny = false;
           
-          if (marketInfo) {
-            const asks = data.asks || [];
-            const bids = data.bids || [];
-            const bestAsk = asks.length > 0 ? parseFloat(asks[0][0]) : null;
-            const bestBid = bids.length > 0 ? parseFloat(bids[0][0]) : null;
-            
-            console.log(`[WS] Book ${marketInfo.slug} ${marketInfo.outcome}: ask=${bestAsk} bid=${bestBid}`);
-            
-            let marketMap = pricesRef.current.get(marketInfo.slug);
-            if (!marketMap) {
-              marketMap = new Map();
-              pricesRef.current.set(marketInfo.slug, marketMap);
-            }
-            
-            const pricePoint: PricePoint = {
-              price: bestAsk ?? bestBid ?? 0.5,
-              bestAsk,
-              bestBid,
-              timestampMs: now,
-            };
-            
-            marketMap.set(marketInfo.outcome, pricePoint);
-            if (marketInfo.outcome === "up") marketMap.set("yes", pricePoint);
-            if (marketInfo.outcome === "down") marketMap.set("no", pricePoint);
-            
-            setUpdateCount(c => c + 1);
-            setLastUpdateTime(now);
-            setLatencyMs(Date.now() - now);
-          }
-        } else if (data.event_type === 'price_change' && Array.isArray(data.price_changes)) {
           for (const change of data.price_changes) {
             const tokenId = change.asset_id;
             const marketInfo = tokenToMarketRef.current.get(tokenId);
             
             if (marketInfo) {
               const price = parseFloat(change.price);
-              console.log(`[WS] Price ${marketInfo.slug} ${marketInfo.outcome}: ${price}`);
+              
+              // STAP 4: Debug logging
+              console.log(`[PRICE] ${marketInfo.slug} ${marketInfo.outcome.toUpperCase()}: ${(price * 100).toFixed(1)}¢`);
               
               let marketMap = pricesRef.current.get(marketInfo.slug);
               if (!marketMap) {
@@ -278,11 +271,96 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
               marketMap.set(marketInfo.outcome, pricePoint);
               if (marketInfo.outcome === "up") marketMap.set("yes", pricePoint);
               if (marketInfo.outcome === "down") marketMap.set("no", pricePoint);
+              
+              updatedAny = true;
+              lastPriceUpdateRef.current = now;
             }
           }
           
-          setUpdateCount(c => c + 1);
-          setLastUpdateTime(now);
+          if (updatedAny) {
+            // STAP 1: Increment version om re-render te triggeren
+            setPricesVersion(v => v + 1);
+            setUpdateCount(c => c + 1);
+            setLastUpdateTime(now);
+            setLatencyMs(Date.now() - now);
+          }
+        }
+        
+        // Also process book events (backup)
+        if (data.event_type === 'book' && data.asset_id) {
+          const tokenId = data.asset_id;
+          const marketInfo = tokenToMarketRef.current.get(tokenId);
+          
+          if (marketInfo) {
+            const asks = data.asks || [];
+            const bids = data.bids || [];
+            const bestAsk = asks.length > 0 ? parseFloat(asks[0][0]) : null;
+            const bestBid = bids.length > 0 ? parseFloat(bids[0][0]) : null;
+            
+            // Only update if we have actual data
+            if (bestAsk !== null || bestBid !== null) {
+              console.log(`[BOOK] ${marketInfo.slug} ${marketInfo.outcome}: ask=${bestAsk} bid=${bestBid}`);
+              
+              let marketMap = pricesRef.current.get(marketInfo.slug);
+              if (!marketMap) {
+                marketMap = new Map();
+                pricesRef.current.set(marketInfo.slug, marketMap);
+              }
+              
+              const pricePoint: PricePoint = {
+                price: bestAsk ?? bestBid ?? 0.5,
+                bestAsk,
+                bestBid,
+                timestampMs: now,
+              };
+              
+              marketMap.set(marketInfo.outcome, pricePoint);
+              if (marketInfo.outcome === "up") marketMap.set("yes", pricePoint);
+              if (marketInfo.outcome === "down") marketMap.set("no", pricePoint);
+              
+              setPricesVersion(v => v + 1);
+              setUpdateCount(c => c + 1);
+              setLastUpdateTime(now);
+              lastPriceUpdateRef.current = now;
+            }
+          }
+        }
+        
+        // Handle last_trade_price events too
+        if (data.event_type === 'last_trade_price' && Array.isArray(data.price_changes)) {
+          for (const change of data.price_changes) {
+            const tokenId = change.asset_id;
+            const marketInfo = tokenToMarketRef.current.get(tokenId);
+            
+            if (marketInfo) {
+              const price = parseFloat(change.price);
+              console.log(`[TRADE] ${marketInfo.slug} ${marketInfo.outcome}: ${(price * 100).toFixed(1)}¢`);
+              
+              let marketMap = pricesRef.current.get(marketInfo.slug);
+              if (!marketMap) {
+                marketMap = new Map();
+                pricesRef.current.set(marketInfo.slug, marketMap);
+              }
+              
+              // Only update if we don't have a price yet
+              const existing = marketMap.get(marketInfo.outcome);
+              if (!existing || (now - existing.timestampMs) > 5000) {
+                const pricePoint: PricePoint = {
+                  price,
+                  bestAsk: price,
+                  bestBid: null,
+                  timestampMs: now,
+                };
+                
+                marketMap.set(marketInfo.outcome, pricePoint);
+                if (marketInfo.outcome === "up") marketMap.set("yes", pricePoint);
+                if (marketInfo.outcome === "down") marketMap.set("no", pricePoint);
+                
+                setPricesVersion(v => v + 1);
+                lastPriceUpdateRef.current = now;
+              }
+            }
+          }
         }
         
       } catch {
@@ -309,6 +387,18 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
         }, 3000);
       }
     };
+    
+    // STAP 3: Timer voor smooth UI updates (elke 100ms)
+    if (uiUpdateIntervalRef.current) {
+      clearInterval(uiUpdateIntervalRef.current);
+    }
+    uiUpdateIntervalRef.current = setInterval(() => {
+      // Force UI update als er recente prijswijzigingen zijn
+      const timeSinceUpdate = Date.now() - lastPriceUpdateRef.current;
+      if (timeSinceUpdate < 500) {
+        setPricesVersion(v => v + 1);
+      }
+    }, 100);
     
     // Set up market refresh interval
     if (marketRefreshIntervalRef.current) {
@@ -341,6 +431,9 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
     };
   }, [enabled, connect, disconnect]);
 
+  // STAP 5: Calculate time since last update for debugging
+  const timeSinceLastUpdate = Date.now() - lastUpdateTime;
+
   return {
     markets,
     getPrice,
@@ -351,5 +444,7 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
     latencyMs,
     connect,
     disconnect,
+    pricesVersion, // Export for debugging
+    timeSinceLastUpdate, // STAP 5: Export time since last update
   };
 }
