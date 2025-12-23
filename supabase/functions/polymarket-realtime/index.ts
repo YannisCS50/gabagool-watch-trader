@@ -70,8 +70,37 @@ function parseTimestampFromSlug(slug: string): number | null {
   return null;
 }
 
-// Fetch historical crypto price from CoinGecko at a specific timestamp
-// The timestamp is the START of the 15-min market window = the "Price to Beat"
+// Fetch strike price from our cached strike_prices table (Chainlink data)
+// Falls back to CoinGecko if not cached yet
+async function fetchStrikePrice(
+  supabase: any,
+  marketSlug: string,
+  asset: 'BTC' | 'ETH',
+  eventTimestamp: number
+): Promise<number | null> {
+  try {
+    // First, try to get from our Chainlink cache
+    const { data, error } = await supabase
+      .from('strike_prices')
+      .select('strike_price')
+      .eq('market_slug', marketSlug)
+      .single();
+    
+    if (data && !error) {
+      console.log(`Chainlink strike price for ${marketSlug}: $${data.strike_price}`);
+      return data.strike_price;
+    }
+    
+    // Fallback to CoinGecko for historical price
+    console.log(`No cached Chainlink price for ${marketSlug}, falling back to CoinGecko`);
+    return await fetchHistoricalCryptoPrice(asset, eventTimestamp);
+  } catch (error) {
+    console.error('Error fetching strike price:', error);
+    return null;
+  }
+}
+
+// Fetch historical crypto price from CoinGecko at a specific timestamp (fallback)
 async function fetchHistoricalCryptoPrice(
   asset: 'BTC' | 'ETH',
   timestamp: number
@@ -80,9 +109,8 @@ async function fetchHistoricalCryptoPrice(
     const coinId = asset === 'BTC' ? 'bitcoin' : 'ethereum';
     
     // CoinGecko range API: from/to are UNIX timestamps in seconds
-    // We fetch a small window around the target timestamp
     const from = timestamp;
-    const to = timestamp + 300; // 5 minutes window to ensure we get data
+    const to = timestamp + 300; // 5 minutes window
     
     const response = await fetch(
       `https://api.coingecko.com/api/v3/coins/${coinId}/market_chart/range?vs_currency=usd&from=${from}&to=${to}`
@@ -96,9 +124,8 @@ async function fetchHistoricalCryptoPrice(
     const data = await response.json();
     
     if (data.prices && data.prices.length > 0) {
-      // Return the first price point (closest to our target timestamp)
       const price = data.prices[0][1];
-      console.log(`Historical price for ${asset} at ${new Date(timestamp * 1000).toISOString()}: $${price}`);
+      console.log(`CoinGecko fallback for ${asset} at ${new Date(timestamp * 1000).toISOString()}: $${price}`);
       return price;
     }
     
@@ -285,6 +312,10 @@ serve(async (req) => {
   try {
     console.log('Fetching real-time 15-min data from trades DB...');
     
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabase = createClient(supabaseUrl, supabaseKey);
+    
     // Fetch crypto prices and DB markets in parallel
     const [btcPrice, ethPrice, marketsFromDB] = await Promise.all([
       fetchCryptoPrice('BTC'),
@@ -298,12 +329,11 @@ serve(async (req) => {
     const now = Date.now();
     const signals: TradingSignal[] = [];
     
-    // Fetch historical prices (Price to Beat) for all markets in parallel
-    // Group by asset to minimize API calls
+    // Fetch strike prices from Chainlink cache (with CoinGecko fallback)
     const strikePricePromises = marketsFromDB.map(m => {
       const slug = m.market_slug.toLowerCase();
       const asset: 'BTC' | 'ETH' = slug.includes('btc') ? 'BTC' : 'ETH';
-      return fetchHistoricalCryptoPrice(asset, m.eventTimestamp);
+      return fetchStrikePrice(supabase, m.market_slug, asset, m.eventTimestamp);
     });
     const strikePrices = await Promise.all(strikePricePromises);
     
@@ -314,7 +344,7 @@ serve(async (req) => {
       const cryptoPrice = asset === 'BTC' ? btcPrice : ethPrice;
       const priceToBeat = strikePrices[i];
       
-      console.log(`Market ${slug}: priceToBeat=$${priceToBeat}, current=$${cryptoPrice}`);
+      console.log(`Market ${slug}: priceToBeat=$${priceToBeat} (Chainlink), current=$${cryptoPrice}`);
       
       const signal = calculateGabagoolSignal(market, cryptoPrice, asset, priceToBeat);
       signals.push(signal);
