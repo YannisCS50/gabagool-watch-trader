@@ -122,9 +122,14 @@ export const PaperBotOverview = ({
               </Badge>
             </div>
           </CardTitle>
-          <Link to="/paper-trading" className="text-sm text-primary hover:underline">
-            Full Dashboard →
-          </Link>
+          <div className="flex items-center gap-3">
+            <Link to="/paper-bot-strategy" className="text-sm text-muted-foreground hover:text-primary transition-colors">
+              Strategy Code
+            </Link>
+            <Link to="/paper-trading" className="text-sm text-primary hover:underline">
+              Dashboard →
+            </Link>
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
