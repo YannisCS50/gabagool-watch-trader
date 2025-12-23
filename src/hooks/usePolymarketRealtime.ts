@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { supabase } from '@/integrations/supabase/client';
 
 interface OrderBookUpdate {
   assetId: string;
@@ -14,24 +15,56 @@ interface UsePolymarketRealtimeProps {
 }
 
 const WS_URL = 'wss://ws-subscriptions-clob.polymarket.com/ws/market';
+const UI_UPDATE_INTERVAL = 50; // Update UI every 50ms for smooth display
 
 export const usePolymarketRealtime = ({
   tokenIds,
   enabled = true
 }: UsePolymarketRealtimeProps) => {
+  // Use refs for high-frequency data (no re-renders)
+  const orderBooksRef = useRef<Map<string, OrderBookUpdate>>(new Map());
+  const lastWsUpdateRef = useRef<number>(Date.now());
+  const updateCountRef = useRef(0);
+  
+  // State for UI (updated at throttled interval)
   const [orderBooks, setOrderBooks] = useState<Map<string, OrderBookUpdate>>(new Map());
   const [isConnected, setIsConnected] = useState(false);
   const [connectionState, setConnectionState] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
   const [updateCount, setUpdateCount] = useState(0);
+  const [lastWsTimestamp, setLastWsTimestamp] = useState<number>(Date.now());
+  const [latencyMs, setLatencyMs] = useState<number>(0);
   
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const uiUpdateIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const subscribedTokensRef = useRef<Set<string>>(new Set());
+
+  // Sync ref data to state at throttled interval
+  const startUIUpdater = useCallback(() => {
+    if (uiUpdateIntervalRef.current) return;
+    
+    uiUpdateIntervalRef.current = setInterval(() => {
+      // Only update if there's new data
+      if (updateCountRef.current !== updateCount) {
+        setOrderBooks(new Map(orderBooksRef.current));
+        setUpdateCount(updateCountRef.current);
+        setLastWsTimestamp(lastWsUpdateRef.current);
+        setLatencyMs(Date.now() - lastWsUpdateRef.current);
+      }
+    }, UI_UPDATE_INTERVAL);
+  }, [updateCount]);
+
+  const stopUIUpdater = useCallback(() => {
+    if (uiUpdateIntervalRef.current) {
+      clearInterval(uiUpdateIntervalRef.current);
+      uiUpdateIntervalRef.current = null;
+    }
+  }, []);
 
   const connect = useCallback(() => {
     if (!enabled || tokenIds.length === 0) {
-      console.log('[WebSocket] Disabled or no token IDs, tokens:', tokenIds.length);
+      console.log('[WS] Disabled or no token IDs, tokens:', tokenIds.length);
       return;
     }
 
@@ -41,14 +74,14 @@ export const usePolymarketRealtime = ({
     }
 
     setConnectionState('connecting');
-    console.log(`[WebSocket] Connecting with ${tokenIds.length} tokens...`);
+    console.log(`[WS] Connecting with ${tokenIds.length} tokens...`);
 
     try {
       const ws = new WebSocket(WS_URL);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        console.log('[WebSocket] Connected, subscribing to', tokenIds.length, 'tokens');
+        console.log('[WS] Connected, subscribing to', tokenIds.length, 'tokens');
         setConnectionState('connected');
         setIsConnected(true);
 
@@ -60,7 +93,10 @@ export const usePolymarketRealtime = ({
         
         ws.send(JSON.stringify(subscribeMsg));
         subscribedTokensRef.current = new Set(tokenIds);
-        console.log('[WebSocket] Subscribed to tokens:', tokenIds.slice(0, 4), '...');
+        console.log('[WS] Subscribed to tokens:', tokenIds.slice(0, 2).map(t => t.slice(0, 20) + '...'));
+
+        // Start UI updater
+        startUIUpdater();
 
         // Keep connection alive with PING
         pingIntervalRef.current = setInterval(() => {
@@ -71,6 +107,8 @@ export const usePolymarketRealtime = ({
       };
 
       ws.onmessage = (event) => {
+        const now = Date.now();
+        
         try {
           // Handle PONG responses
           if (event.data === 'PONG') {
@@ -88,102 +126,69 @@ export const usePolymarketRealtime = ({
             const bestBid = bids.length > 0 ? parseFloat(bids[0].price) : 0;
             const bestAsk = asks.length > 0 ? parseFloat(asks[0].price) : 1;
             const midPrice = (bestBid + bestAsk) / 2;
+            
+            const wsTimestamp = parseInt(data.timestamp) || now;
 
-            console.log(`[WebSocket] Book update: ${data.asset_id.slice(0, 20)}... bid=${bestBid} ask=${bestAsk}`);
-
-            setOrderBooks(prev => {
-              const newBooks = new Map(prev);
-              newBooks.set(data.asset_id, {
-                assetId: data.asset_id,
-                bestBid,
-                bestAsk,
-                midPrice,
-                timestamp: parseInt(data.timestamp) || Date.now()
-              });
-              return newBooks;
+            orderBooksRef.current.set(data.asset_id, {
+              assetId: data.asset_id,
+              bestBid,
+              bestAsk,
+              midPrice,
+              timestamp: wsTimestamp
             });
             
-            setUpdateCount(c => c + 1);
+            lastWsUpdateRef.current = wsTimestamp;
+            updateCountRef.current++;
           }
           
           // Handle price_change events
           if (data.event_type === 'price_change' && data.asset_id) {
             const newPrice = parseFloat(data.price);
-            console.log(`[WebSocket] Price change: ${data.asset_id.slice(0, 20)}... price=${newPrice}`);
+            const existing = orderBooksRef.current.get(data.asset_id);
             
-            setOrderBooks(prev => {
-              const newBooks = new Map(prev);
-              const existing = newBooks.get(data.asset_id);
-              
-              if (existing) {
-                newBooks.set(data.asset_id, {
-                  ...existing,
-                  midPrice: newPrice,
-                  timestamp: Date.now()
-                });
-              } else {
-                newBooks.set(data.asset_id, {
-                  assetId: data.asset_id,
-                  bestBid: newPrice,
-                  bestAsk: newPrice,
-                  midPrice: newPrice,
-                  timestamp: Date.now()
-                });
-              }
-              
-              return newBooks;
+            orderBooksRef.current.set(data.asset_id, {
+              assetId: data.asset_id,
+              bestBid: existing?.bestBid ?? newPrice,
+              bestAsk: existing?.bestAsk ?? newPrice,
+              midPrice: newPrice,
+              timestamp: now
             });
             
-            setUpdateCount(c => c + 1);
+            lastWsUpdateRef.current = now;
+            updateCountRef.current++;
           }
 
           // Handle last_trade_price events
           if (data.event_type === 'last_trade_price' && data.asset_id) {
             const lastPrice = parseFloat(data.price);
-            console.log(`[WebSocket] Last trade: ${data.asset_id.slice(0, 20)}... price=${lastPrice}`);
+            const existing = orderBooksRef.current.get(data.asset_id);
             
-            setOrderBooks(prev => {
-              const newBooks = new Map(prev);
-              const existing = newBooks.get(data.asset_id);
-              
-              if (existing) {
-                newBooks.set(data.asset_id, {
-                  ...existing,
-                  midPrice: lastPrice,
-                  timestamp: Date.now()
-                });
-              } else {
-                newBooks.set(data.asset_id, {
-                  assetId: data.asset_id,
-                  bestBid: lastPrice,
-                  bestAsk: lastPrice,
-                  midPrice: lastPrice,
-                  timestamp: Date.now()
-                });
-              }
-              
-              return newBooks;
+            orderBooksRef.current.set(data.asset_id, {
+              assetId: data.asset_id,
+              bestBid: existing?.bestBid ?? lastPrice,
+              bestAsk: existing?.bestAsk ?? lastPrice,
+              midPrice: lastPrice,
+              timestamp: now
             });
             
-            setUpdateCount(c => c + 1);
+            lastWsUpdateRef.current = now;
+            updateCountRef.current++;
           }
         } catch (e) {
           // Not JSON, likely a PONG or other message
-          if (event.data !== 'PONG') {
-            console.log('[WebSocket] Non-JSON message:', event.data);
-          }
         }
       };
 
       ws.onerror = (error) => {
-        console.error('[WebSocket] Error:', error);
+        console.error('[WS] Error:', error);
         setConnectionState('disconnected');
       };
 
       ws.onclose = (event) => {
-        console.log('[WebSocket] Closed:', event.code, event.reason);
+        console.log('[WS] Closed:', event.code, event.reason);
         setIsConnected(false);
         setConnectionState('disconnected');
+        stopUIUpdater();
         
         if (pingIntervalRef.current) {
           clearInterval(pingIntervalRef.current);
@@ -193,19 +198,21 @@ export const usePolymarketRealtime = ({
         // Reconnect after delay if still enabled
         if (enabled && tokenIds.length > 0) {
           reconnectTimeoutRef.current = setTimeout(() => {
-            console.log('[WebSocket] Attempting reconnect...');
+            console.log('[WS] Attempting reconnect...');
             connect();
-          }, 5000);
+          }, 3000);
         }
       };
     } catch (error) {
-      console.error('[WebSocket] Error creating connection:', error);
+      console.error('[WS] Error creating connection:', error);
       setConnectionState('disconnected');
     }
-  }, [enabled, tokenIds]);
+  }, [enabled, tokenIds, startUIUpdater, stopUIUpdater]);
 
   const disconnect = useCallback(() => {
-    console.log('[WebSocket] Disconnecting...');
+    console.log('[WS] Disconnecting...');
+    
+    stopUIUpdater();
     
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
@@ -225,7 +232,7 @@ export const usePolymarketRealtime = ({
     setIsConnected(false);
     setConnectionState('disconnected');
     subscribedTokensRef.current = new Set();
-  }, []);
+  }, [stopUIUpdater]);
 
   // Connect on mount/token change
   useEffect(() => {
@@ -254,20 +261,28 @@ export const usePolymarketRealtime = ({
     };
   }, [disconnect]);
 
-  // Get price for a specific token
+  // Get price for a specific token (from ref for instant access)
   const getPrice = useCallback((tokenId: string): number | null => {
-    const book = orderBooks.get(tokenId);
+    const book = orderBooksRef.current.get(tokenId);
     return book?.midPrice ?? null;
-  }, [orderBooks]);
+  }, []);
+
+  // Get book data for a specific token
+  const getBook = useCallback((tokenId: string): OrderBookUpdate | null => {
+    return orderBooksRef.current.get(tokenId) ?? null;
+  }, []);
 
   return {
     orderBooks,
     isConnected,
     connectionState,
     updateCount,
+    lastWsTimestamp,
+    latencyMs,
     connect,
     disconnect,
-    getPrice
+    getPrice,
+    getBook
   };
 };
 
@@ -283,27 +298,17 @@ export async function fetch15MinMarketTokenIds(): Promise<{
   }>;
 }> {
   try {
-    // Use Supabase edge function to fetch from Gamma API
-    const response = await fetch(
-      'https://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/get-market-tokens',
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml1enBkanBsYXNuZHl2YnpobHpkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYzNTE5OTEsImV4cCI6MjA4MTkyNzk5MX0.fIs55-6uaB2M5y0fovJGY65130G5PFMmurosL2BE1dM',
-          'Authorization': 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Iml1enBkanBsYXNuZHl2YnpobHpkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjYzNTE5OTEsImV4cCI6MjA4MTkyNzk5MX0.fIs55-6uaB2M5y0fovJGY65130G5PFMmurosL2BE1dM'
-        }
-      }
-    );
+    const { data, error } = await supabase.functions.invoke('get-market-tokens');
     
-    if (!response.ok) {
-      throw new Error(`Edge function error: ${response.status}`);
+    if (error) {
+      console.error('[Tokens] Edge function error:', error);
+      return { markets: [] };
     }
     
-    const data = await response.json();
-    console.log(`[Gamma] Found ${data.markets?.length || 0} 15-min markets with token IDs`);
-    return { markets: data.markets || [] };
+    console.log(`[Tokens] Found ${data?.markets?.length || 0} 15-min markets with token IDs`);
+    return { markets: data?.markets || [] };
   } catch (error) {
-    console.error('[Gamma] Error fetching market token IDs:', error);
+    console.error('[Tokens] Error fetching market token IDs:', error);
     return { markets: [] };
   }
 }
