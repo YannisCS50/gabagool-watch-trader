@@ -257,6 +257,7 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
                   <tr className="text-xs text-muted-foreground border-b border-border/50">
                     <th className="text-left pb-3 font-medium">Market</th>
                     <th className="text-center pb-3 font-medium">Position</th>
+                    <th className="text-center pb-3 font-medium">Hedge</th>
                     <th className="text-right pb-3 font-medium">Cost</th>
                     <th className="text-right pb-3 font-medium">Value</th>
                     <th className="text-right pb-3 font-medium">P/L</th>
@@ -287,10 +288,13 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
                       posUnrealizedPL = currentValue - totalCost;
                     }
 
-                    const profitIfUpWins = upShares - totalCost;
-                    const profitIfDownWins = downShares - totalCost;
-                    const totalShares = upShares + downShares;
-                    const upPct = totalShares > 0 ? (upShares / totalShares) * 100 : 50;
+                                    const profitIfUpWins = upShares - totalCost;
+                                    const profitIfDownWins = downShares - totalCost;
+                                    const totalShares = upShares + downShares;
+                                    const upPct = totalShares > 0 ? (upShares / totalShares) * 100 : 50;
+                                    
+                                    // Hedge number: total shares per dollar invested
+                                    const hedgeNumber = totalCost > 0 ? totalShares / totalCost : 0;
 
                     return (
                       <tr key={slug} className="group hover:bg-muted/30 transition-colors">
@@ -320,9 +324,18 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
                               <div className="bg-emerald-500 transition-all" style={{ width: `${upPct}%` }} />
                               <div className="bg-red-500 transition-all" style={{ width: `${100 - upPct}%` }} />
                             </div>
-                          </div>
-                        </td>
-                        <td className="py-3 text-right font-mono text-sm">
+                                          </div>
+                                        </td>
+                                        <td className="py-3 text-center">
+                                          <span className={`font-mono text-sm font-medium ${
+                                            hedgeNumber >= 1.02 ? 'text-emerald-500' : 
+                                            hedgeNumber <= 0.98 ? 'text-red-500' : 
+                                            'text-yellow-500'
+                                          }`}>
+                                            {hedgeNumber.toFixed(2)}
+                                          </span>
+                                        </td>
+                                        <td className="py-3 text-right font-mono text-sm">
                           ${totalCost.toFixed(2)}
                         </td>
                         <td className="py-3 text-right font-mono text-sm">
