@@ -631,7 +631,9 @@ const RealTimeSignalsPage = () => {
                       <GabagoolTradesSummary 
                         marketSlug={market.slug} 
                         upClobPrice={market.upPriceAtClose ?? 0.5} 
-                        downClobPrice={market.downPriceAtClose ?? 0.5} 
+                        downClobPrice={market.downPriceAtClose ?? 0.5}
+                        compact
+                        actualResult={market.result as 'UP' | 'DOWN' | null}
                       />
                     </div>
                   ))}
