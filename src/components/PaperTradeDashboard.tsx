@@ -271,21 +271,36 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
 
       {/* Open Positions */}
       {openMarkets.length > 0 && (
-        <Card className="border-yellow-500/30">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-yellow-400">
-              <Clock className="w-5 h-5" />
-              Open Positions ({openMarkets.length})
+        <Card className="border-purple-500/30 bg-gradient-to-br from-purple-500/5 to-transparent">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-purple-400">
+                <div className="relative">
+                  <Clock className="w-5 h-5" />
+                  <span className="absolute -top-1 -right-1 w-2 h-2 bg-emerald-400 rounded-full animate-pulse" />
+                </div>
+                <span>Open Positions</span>
+                <Badge className="bg-purple-500/20 text-purple-300 border-purple-500/30">
+                  {openMarkets.length}
+                </Badge>
+              </div>
               {unrealizedStats.openInvested > 0 && (
-                <span className={`ml-auto text-sm font-normal ${unrealizedStats.unrealizedPL >= 0 ? 'text-cyan-400' : 'text-orange-400'}`}>
-                  <Activity className="w-3 h-3 inline mr-1 animate-pulse" />
-                  {unrealizedStats.unrealizedPL >= 0 ? '+' : ''}${unrealizedStats.unrealizedPL.toFixed(2)} unrealized
-                </span>
+                <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full ${
+                  unrealizedStats.unrealizedPL >= 0 
+                    ? 'bg-emerald-500/10 border border-emerald-500/30' 
+                    : 'bg-red-500/10 border border-red-500/30'
+                }`}>
+                  <Activity className="w-3.5 h-3.5 animate-pulse" />
+                  <span className={`font-mono font-bold ${unrealizedStats.unrealizedPL >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                    {unrealizedStats.unrealizedPL >= 0 ? '+' : ''}${unrealizedStats.unrealizedPL.toFixed(2)}
+                  </span>
+                  <span className="text-xs text-muted-foreground">unrealized</span>
+                </div>
               )}
             </CardTitle>
           </CardHeader>
-          <CardContent className="space-y-3">
-            {openMarkets.slice(0, 10).map(slug => {
+          <CardContent className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {openMarkets.slice(0, 12).map(slug => {
               const marketTrades = tradesByMarket[slug];
               const upTrades = marketTrades.filter(t => t.outcome === 'UP');
               const downTrades = marketTrades.filter(t => t.outcome === 'DOWN');
@@ -295,6 +310,7 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
               const downCost = downTrades.reduce((s, t) => s + t.total, 0);
               const totalCost = upCost + downCost;
               const tradeType = marketTrades[0]?.trade_type || 'UNKNOWN';
+              const asset = marketTrades[0]?.asset || 'BTC';
 
               // Get current prices for this market
               const currentUpPrice = getPrice(slug, 'up');
@@ -314,59 +330,114 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
               // Potential outcomes
               const profitIfUpWins = upShares - totalCost;
               const profitIfDownWins = downShares - totalCost;
+              
+              // Calculate balance ratio for visual bar
+              const totalShares = upShares + downShares;
+              const upRatio = totalShares > 0 ? (upShares / totalShares) * 100 : 50;
 
               return (
-                <div key={slug} className="p-3 rounded-lg bg-muted/30 border border-border/50">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline" className={
-                        marketTrades[0]?.asset === 'BTC' 
-                          ? 'text-orange-400 border-orange-500/30' 
-                          : 'text-blue-400 border-blue-500/30'
-                      }>
-                        {marketTrades[0]?.asset}
+                <div 
+                  key={slug} 
+                  className="group relative overflow-hidden rounded-xl bg-gradient-to-br from-card to-muted/30 border border-border/50 hover:border-purple-500/30 transition-all duration-300 hover:shadow-lg hover:shadow-purple-500/5"
+                >
+                  {/* Header */}
+                  <div className="p-4 pb-3 border-b border-border/50">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-bold text-sm ${
+                          asset === 'BTC' 
+                            ? 'bg-orange-500/20 text-orange-400' 
+                            : 'bg-blue-500/20 text-blue-400'
+                        }`}>
+                          {asset === 'BTC' ? '₿' : 'Ξ'}
+                        </div>
+                        <div>
+                          <div className="font-medium text-sm">{asset} 15m</div>
+                          <div className="text-[10px] text-muted-foreground font-mono truncate max-w-[120px]">
+                            {slug.split('-').slice(-1)[0]}
+                          </div>
+                        </div>
+                      </div>
+                      <Badge 
+                        variant="outline" 
+                        className="text-[10px] px-2 py-0.5 bg-purple-500/10 text-purple-400 border-purple-500/30"
+                      >
+                        {tradeType.replace('_', ' ')}
                       </Badge>
-                      <span className="text-sm text-muted-foreground truncate max-w-[180px]">{slug}</span>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline" className="text-purple-400 border-purple-500/30">
-                        {tradeType}
-                      </Badge>
-                      {hasLivePrices && (
-                        <span className={`text-sm font-bold ${posUnrealizedPL >= 0 ? 'text-cyan-400' : 'text-orange-400'}`}>
+                    
+                    {/* Live P&L Badge */}
+                    {hasLivePrices && (
+                      <div className={`flex items-center justify-center gap-1.5 py-1.5 rounded-lg ${
+                        posUnrealizedPL >= 0 
+                          ? 'bg-emerald-500/10' 
+                          : 'bg-red-500/10'
+                      }`}>
+                        <Activity className="w-3 h-3 animate-pulse" />
+                        <span className={`font-mono font-bold text-sm ${posUnrealizedPL >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                           {posUnrealizedPL >= 0 ? '+' : ''}${posUnrealizedPL.toFixed(2)}
                         </span>
-                      )}
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* Position Details */}
+                  <div className="p-4 space-y-3">
+                    {/* Balance Bar */}
+                    <div className="space-y-1.5">
+                      <div className="flex justify-between text-[11px]">
+                        <span className="text-emerald-400 font-medium flex items-center gap-1">
+                          <TrendingUp className="w-3 h-3" />
+                          UP
+                        </span>
+                        <span className="text-red-400 font-medium flex items-center gap-1">
+                          DOWN
+                          <TrendingDown className="w-3 h-3" />
+                        </span>
+                      </div>
+                      <div className="h-2 rounded-full bg-muted/50 overflow-hidden flex">
+                        <div 
+                          className="bg-gradient-to-r from-emerald-500 to-emerald-400 transition-all duration-500"
+                          style={{ width: `${upRatio}%` }}
+                        />
+                        <div 
+                          className="bg-gradient-to-r from-red-400 to-red-500 transition-all duration-500"
+                          style={{ width: `${100 - upRatio}%` }}
+                        />
+                      </div>
+                      <div className="flex justify-between text-[11px] font-mono">
+                        <span className="text-emerald-400/80">
+                          {upShares.toFixed(0)} @ {hasLivePrices && currentUpPrice ? `${(currentUpPrice * 100).toFixed(0)}¢` : '—'}
+                        </span>
+                        <span className="text-red-400/80">
+                          {downShares.toFixed(0)} @ {hasLivePrices && currentDownPrice ? `${(currentDownPrice * 100).toFixed(0)}¢` : '—'}
+                        </span>
+                      </div>
+                    </div>
+                    
+                    {/* Cost & Potential */}
+                    <div className="grid grid-cols-3 gap-2 text-center">
+                      <div className="p-2 rounded-lg bg-muted/30">
+                        <div className="text-[10px] text-muted-foreground mb-0.5">Cost</div>
+                        <div className="font-mono font-bold text-sm">${totalCost.toFixed(0)}</div>
+                      </div>
+                      <div className={`p-2 rounded-lg ${profitIfUpWins >= 0 ? 'bg-emerald-500/10' : 'bg-red-500/10'}`}>
+                        <div className="text-[10px] text-muted-foreground mb-0.5">If ↑</div>
+                        <div className={`font-mono font-bold text-sm ${profitIfUpWins >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {profitIfUpWins >= 0 ? '+' : ''}{profitIfUpWins.toFixed(0)}
+                        </div>
+                      </div>
+                      <div className={`p-2 rounded-lg ${profitIfDownWins >= 0 ? 'bg-emerald-500/10' : 'bg-red-500/10'}`}>
+                        <div className="text-[10px] text-muted-foreground mb-0.5">If ↓</div>
+                        <div className={`font-mono font-bold text-sm ${profitIfDownWins >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                          {profitIfDownWins >= 0 ? '+' : ''}{profitIfDownWins.toFixed(0)}
+                        </div>
+                      </div>
                     </div>
                   </div>
                   
-                  <div className="flex items-center justify-between text-sm mb-2">
-                    <div className="flex items-center gap-4">
-                      <span className="text-emerald-400 font-mono">
-                        ↑{upShares.toFixed(1)}
-                        {hasLivePrices && currentUpPrice && (
-                          <span className="text-emerald-400/60 ml-1">@{(currentUpPrice * 100).toFixed(0)}¢</span>
-                        )}
-                      </span>
-                      <span className="text-red-400 font-mono">
-                        ↓{downShares.toFixed(1)}
-                        {hasLivePrices && currentDownPrice && (
-                          <span className="text-red-400/60 ml-1">@{(currentDownPrice * 100).toFixed(0)}¢</span>
-                        )}
-                      </span>
-                    </div>
-                    <span className="text-muted-foreground">Cost: ${totalCost.toFixed(2)}</span>
-                  </div>
-
-                  {/* Potential outcomes */}
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div className={`p-1.5 rounded text-center ${profitIfUpWins >= 0 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
-                      If UP: {profitIfUpWins >= 0 ? '+' : ''}${profitIfUpWins.toFixed(2)}
-                    </div>
-                    <div className={`p-1.5 rounded text-center ${profitIfDownWins >= 0 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'}`}>
-                      If DOWN: {profitIfDownWins >= 0 ? '+' : ''}${profitIfDownWins.toFixed(2)}
-                    </div>
-                  </div>
+                  {/* Subtle gradient overlay on hover */}
+                  <div className="absolute inset-0 bg-gradient-to-t from-purple-500/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none" />
                 </div>
               );
             })}
