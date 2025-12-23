@@ -201,10 +201,22 @@ export const GabagoolTradesSummary = memo(({
         {isDualSide && (
           <div className="mt-2 pt-2 border-t border-border/50 text-sm">
             {isArbitrage ? (
-              <span className="font-medium text-emerald-400">✅ Guaranteed win: +${guaranteedProfit.toFixed(2)} (+{guaranteedProfitPercent.toFixed(1)}%)</span>
+              <div className="flex items-center justify-between">
+                <span className="font-medium text-emerald-400">✅ Guaranteed: +${guaranteedProfit.toFixed(2)} (+{guaranteedProfitPercent.toFixed(1)}%)</span>
+                <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30 font-mono">
+                  {combinedEntry.toFixed(2)}
+                </Badge>
+              </div>
             ) : (
               <div className="space-y-1">
-                <div className="text-amber-400 font-medium mb-1">⚠️ Hedge niet perfect</div>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-amber-400 font-medium">⚠️ Hedge niet perfect</span>
+                  </div>
+                  <Badge className="bg-amber-500/20 text-amber-400 border-amber-500/30 font-mono text-sm">
+                    {combinedEntry.toFixed(2)}
+                  </Badge>
+                </div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <div className={`p-2 rounded ${profitIfUpWins >= profitIfDownWins ? 'bg-emerald-500/10 border border-emerald-500/20' : 'bg-red-500/10 border border-red-500/20'}`}>
                     <div className="text-muted-foreground mb-0.5">Best case:</div>
