@@ -43,6 +43,7 @@ serve(async (req) => {
         try {
           if (clobSocket?.readyState === WebSocket.OPEN) {
             clobSocket.send("PING");
+            console.log("[CLOB Proxy] Sent PING");
           }
         } catch {
           // ignore
@@ -53,18 +54,32 @@ serve(async (req) => {
     clobSocket.onmessage = (event) => {
       if (clientSocket.readyState !== WebSocket.OPEN) return;
       
-      // Log incoming messages for debugging
       const data = event.data;
-      if (typeof data === 'string' && data !== 'PONG') {
+      if (typeof data === 'string') {
+        // Skip PONG messages
+        if (data === 'PONG') {
+          console.log("[CLOB Proxy] Received PONG");
+          return;
+        }
+        
         try {
           const msg = JSON.parse(data);
-          if (msg.event_type) {
-            console.log(`[CLOB Proxy] Event: ${msg.event_type}`, 
-              msg.event_type === 'price_change' ? `changes: ${msg.price_changes?.length || 0}` :
-              msg.event_type === 'book' ? `asset: ${msg.asset_id?.slice(0, 20)}...` : '');
+          
+          // Log orderbook updates with prices
+          if (msg.event_type === 'book') {
+            const bestAsk = msg.asks?.[0]?.[0] || 'none';
+            const bestBid = msg.bids?.[0]?.[0] || 'none';
+            console.log(`[CLOB Proxy] Book: asset=${msg.asset_id?.slice(0, 16)}... ask=${bestAsk} bid=${bestBid}`);
+          } else if (msg.event_type === 'price_change') {
+            console.log(`[CLOB Proxy] Price changes: ${msg.price_changes?.length || 0}`);
+            for (const pc of (msg.price_changes || [])) {
+              console.log(`  - ${pc.asset_id?.slice(0, 16)}... price=${pc.price}`);
+            }
+          } else if (msg.event_type) {
+            console.log(`[CLOB Proxy] Event: ${msg.event_type}`);
           }
         } catch {
-          // Non-JSON message
+          console.log(`[CLOB Proxy] Non-JSON message: ${data.slice(0, 50)}`);
         }
       }
       
