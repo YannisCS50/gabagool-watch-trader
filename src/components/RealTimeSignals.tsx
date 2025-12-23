@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -14,10 +14,13 @@ import {
   DollarSign,
   Wifi,
   WifiOff,
-  Timer
+  Timer,
+  Radio
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { LiveCountdown } from './LiveCountdown';
+import { LivePrice, LiveMarketPrices } from './LivePrice';
+import { usePolymarketRealtime, fetch15MinMarketTokenIds } from '@/hooks/usePolymarketRealtime';
 
 interface TradingSignal {
   market: string;
@@ -29,6 +32,8 @@ interface TradingSignal {
   priceDeltaPercent: number | null;
   upPrice: number;
   downPrice: number;
+  upTokenId?: string;
+  downTokenId?: string;
   combinedPrice: number;
   cheaperSide: 'Up' | 'Down';
   cheaperPrice: number;
@@ -68,7 +73,15 @@ interface RealTimeData {
   };
 }
 
-const REFRESH_INTERVAL = 5000; // 5 seconds for live updates
+interface MarketTokenMapping {
+  slug: string;
+  asset: 'BTC' | 'ETH';
+  upTokenId: string;
+  downTokenId: string;
+}
+
+const REFRESH_INTERVAL = 5000; // 5 seconds for API data
+const WS_ENABLED = true; // Enable WebSocket for real-time prices
 
 export const RealTimeSignals = () => {
   const [data, setData] = useState<RealTimeData | null>(null);
@@ -77,6 +90,93 @@ export const RealTimeSignals = () => {
   const [error, setError] = useState<string | null>(null);
   const [isLive, setIsLive] = useState(true);
   const [secondsSinceUpdate, setSecondsSinceUpdate] = useState(0);
+  const [marketTokens, setMarketTokens] = useState<MarketTokenMapping[]>([]);
+  const [wsUpdateCount, setWsUpdateCount] = useState(0);
+
+  // Extract all token IDs for WebSocket subscription
+  const tokenIds = useMemo(() => {
+    return marketTokens.flatMap(m => [m.upTokenId, m.downTokenId]).filter(Boolean);
+  }, [marketTokens]);
+
+  // Polymarket WebSocket hook
+  const { 
+    orderBooks, 
+    isConnected: wsConnected, 
+    connectionState,
+    updateCount 
+  } = usePolymarketRealtime({
+    tokenIds,
+    enabled: WS_ENABLED && isLive && tokenIds.length > 0
+  });
+
+  // Track WebSocket updates
+  useEffect(() => {
+    setWsUpdateCount(updateCount);
+  }, [updateCount]);
+
+  // Fetch token IDs from Gamma API
+  useEffect(() => {
+    const fetchTokens = async () => {
+      try {
+        const { markets } = await fetch15MinMarketTokenIds();
+        setMarketTokens(markets.map(m => ({
+          slug: m.slug,
+          asset: m.asset,
+          upTokenId: m.upTokenId,
+          downTokenId: m.downTokenId
+        })));
+        console.log('Loaded token mappings for', markets.length, 'markets');
+      } catch (err) {
+        console.error('Failed to fetch market tokens:', err);
+      }
+    };
+    
+    fetchTokens();
+    // Refresh token mappings every 5 minutes
+    const interval = setInterval(fetchTokens, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Get real-time prices from WebSocket
+  const getWsPrice = useCallback((tokenId: string): number | null => {
+    const book = orderBooks.get(tokenId);
+    return book?.midPrice ?? null;
+  }, [orderBooks]);
+
+  // Merge WebSocket prices with API data
+  const liveMarketsWithWsPrices = useMemo(() => {
+    if (!data?.liveMarkets) return [];
+    
+    return data.liveMarkets.map(signal => {
+      // Find token mapping for this market
+      const tokenMapping = marketTokens.find(m => 
+        signal.marketSlug.toLowerCase().includes(m.slug.toLowerCase()) ||
+        m.slug.toLowerCase().includes(signal.asset.toLowerCase())
+      );
+      
+      if (!tokenMapping) return signal;
+      
+      const wsUpPrice = getWsPrice(tokenMapping.upTokenId);
+      const wsDownPrice = getWsPrice(tokenMapping.downTokenId);
+      
+      // Use WebSocket prices if available, otherwise fall back to API
+      const upPrice = wsUpPrice ?? signal.upPrice;
+      const downPrice = wsDownPrice ?? signal.downPrice;
+      const combinedPrice = upPrice + downPrice;
+      
+      return {
+        ...signal,
+        upPrice,
+        downPrice,
+        combinedPrice,
+        upTokenId: tokenMapping.upTokenId,
+        downTokenId: tokenMapping.downTokenId,
+        arbitrageEdge: (1 - combinedPrice) * 100,
+        cheaperSide: upPrice < downPrice ? 'Up' as const : 'Down' as const,
+        cheaperPrice: Math.min(upPrice, downPrice)
+      };
+    });
+  }, [data?.liveMarkets, marketTokens, getWsPrice, orderBooks]);
 
   const fetchSignals = useCallback(async () => {
     setIsLoading(true);
@@ -175,12 +275,18 @@ export const RealTimeSignals = () => {
                     </Badge>
                   )}
                 </CardTitle>
-                <CardDescription className="flex items-center gap-2">
+                <CardDescription className="flex items-center gap-2 flex-wrap">
                   Live Chainlink Price to Beat vs Current Price
                   {lastUpdate && (
                     <span className="text-xs">
-                      • Data {secondsSinceUpdate}s old
+                      • API {secondsSinceUpdate}s old
                     </span>
+                  )}
+                  {wsConnected && (
+                    <Badge variant="outline" className="text-xs text-purple-400 border-purple-500/30 flex items-center gap-1">
+                      <Radio className="w-3 h-3" />
+                      WebSocket ({wsUpdateCount} updates)
+                    </Badge>
                   )}
                 </CardDescription>
               </div>
@@ -282,8 +388,8 @@ export const RealTimeSignals = () => {
             </Card>
           </div>
 
-          {/* LIVE NOW Section - Priority Display */}
-          {data.liveMarkets && data.liveMarkets.length > 0 && (
+          {/* LIVE NOW Section - Priority Display with WebSocket prices */}
+          {liveMarketsWithWsPrices && liveMarketsWithWsPrices.length > 0 && (
             <Card className="border-emerald-500/50 bg-gradient-to-br from-emerald-500/10 to-transparent">
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between">
@@ -294,14 +400,20 @@ export const RealTimeSignals = () => {
                     </div>
                     <span className="text-emerald-400">LIVE NOW</span>
                     <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30">
-                      {data.liveMarkets.length}
+                      {liveMarketsWithWsPrices.length}
                     </Badge>
+                    {wsConnected && (
+                      <Badge variant="outline" className="text-purple-400 border-purple-500/30 text-xs">
+                        <Radio className="w-3 h-3 mr-1" />
+                        REAL-TIME
+                      </Badge>
+                    )}
                   </CardTitle>
                 </div>
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
-                  {data.liveMarkets.map((signal) => (
+                  {liveMarketsWithWsPrices.map((signal) => (
                     <div
                       key={`live-${signal.marketSlug}`}
                       className={`p-4 rounded-lg border-2 ${
@@ -338,7 +450,7 @@ export const RealTimeSignals = () => {
                       {/* Price comparison row */}
                       <div className="grid grid-cols-3 gap-4 mb-4">
                         <div className="text-center p-3 bg-background/50 rounded-lg">
-                          <div className="text-xs text-muted-foreground mb-1">Price to Beat (Chainlink)</div>
+                          <div className="text-xs text-muted-foreground mb-1">Price to Beat</div>
                           <div className="font-mono font-bold text-lg">
                             {signal.priceToBeat 
                               ? `$${signal.priceToBeat.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` 
@@ -371,33 +483,39 @@ export const RealTimeSignals = () => {
                         </div>
                       </div>
 
-                      {/* Market prices + Signal */}
+                      {/* Market prices with LIVE updates */}
                       <div className="flex items-center justify-between p-3 bg-background/30 rounded-lg">
                         <div className="flex items-center gap-6 text-sm">
-                          <div>
-                            <TrendingUp className="w-4 h-4 text-emerald-400 inline mr-1" />
-                            <span className="text-muted-foreground">Up: </span>
-                            <span className="font-mono text-emerald-400 font-medium">{(signal.upPrice * 100).toFixed(1)}¢</span>
+                          <div className="flex items-center gap-1">
+                            <TrendingUp className="w-4 h-4 text-emerald-400" />
+                            <span className="text-muted-foreground">Up:</span>
+                            <LivePrice 
+                              price={signal.upPrice} 
+                              className="text-emerald-400 font-medium"
+                            />
                           </div>
-                          <div>
-                            <TrendingDown className="w-4 h-4 text-red-400 inline mr-1" />
-                            <span className="text-muted-foreground">Down: </span>
-                            <span className="font-mono text-red-400 font-medium">{(signal.downPrice * 100).toFixed(1)}¢</span>
+                          <div className="flex items-center gap-1">
+                            <TrendingDown className="w-4 h-4 text-red-400" />
+                            <span className="text-muted-foreground">Down:</span>
+                            <LivePrice 
+                              price={signal.downPrice} 
+                              className="text-red-400 font-medium"
+                            />
                           </div>
-                          <div>
-                            <span className="text-muted-foreground">Combined: </span>
+                          <div className="flex items-center gap-1">
+                            <span className="text-muted-foreground">Σ:</span>
                             <span className={`font-mono font-medium ${signal.combinedPrice < 1 ? 'text-emerald-400' : 'text-muted-foreground'}`}>
                               {(signal.combinedPrice * 100).toFixed(1)}¢
                             </span>
+                            {signal.arbitrageEdge > 0 && (
+                              <span className="text-emerald-400 text-xs">
+                                (+{signal.arbitrageEdge.toFixed(1)}%)
+                              </span>
+                            )}
                           </div>
                         </div>
                         <div className="flex items-center gap-2">
                           {getConfidenceBadge(signal.confidence)}
-                          {signal.arbitrageEdge > 0 && (
-                            <Badge className="bg-primary/20 text-primary border-primary/30">
-                              +{signal.arbitrageEdge.toFixed(1)}% edge
-                            </Badge>
-                          )}
                         </div>
                       </div>
 
