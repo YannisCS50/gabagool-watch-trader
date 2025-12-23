@@ -204,13 +204,9 @@ function decideTrades(
   cfg: StrategyConfig = DEFAULT_CONFIG,
   nowMs: number = Date.now()
 ): { shouldTrade: boolean; reason: string; trades: TradeIntent[] } {
+  // NOTE: inFlight lock is managed by evaluateTradeOpportunity, not here
   
-  // ---- SINGLE-FLIGHT LOCK ----
-  if (ctx.inFlight) return skip("IN_FLIGHT");
-  ctx.inFlight = true;
-
-  try {
-    const pos = ctx.position;
+  const pos = ctx.position;
     
     // 1) COOLDOWN
     if (ctx.lastTradeAtMs && nowMs - ctx.lastTradeAtMs < cfg.hf.tickMinIntervalMs) {
@@ -372,15 +368,11 @@ function decideTrades(
         mkTrade("UP", upExec, sharesToAdd, "ACCUMULATE", `Accumulate UP @ ${(upExec*100).toFixed(0)}¢ (${edgePct}% edge)`),
         mkTrade("DOWN", downExec, sharesToAdd, "ACCUMULATE", `Accumulate DOWN @ ${(downExec*100).toFixed(0)}¢ (${edgePct}% edge)`),
       ];
-      
-      return commit(ctx, nowMs, "ACCUMULATE", trades, cfg);
-    }
-
-    return skip(`NO_SIGNAL: combined=${(combined*100).toFixed(0)}¢`);
     
-  } finally {
-    ctx.inFlight = false;
+    return commit(ctx, nowMs, "ACCUMULATE", trades, cfg);
   }
+
+  return skip(`NO_SIGNAL: combined=${(combined*100).toFixed(0)}¢`);
 }
 
 // ============================================================================
@@ -657,8 +649,7 @@ async function handleWebSocket(req: Request): Promise<Response> {
     }
   };
 
-  // Per-market locks to prevent race conditions
-  const marketLocks = new Map<string, boolean>();
+  // Lock is now managed via ctx.inFlight
 
   const evaluateTradeOpportunity = async (slug: string, nowMs: number) => {
     if (!isEnabled) return;
@@ -667,9 +658,9 @@ async function handleWebSocket(req: Request): Promise<Response> {
     const ctx = marketContexts.get(slug);
     if (!market || !ctx) return;
     
-    // LOCK CHECK: Skip if already processing this market
-    if (marketLocks.get(slug)) return;
-    marketLocks.set(slug, true);
+    // LOCK CHECK: Use ctx.inFlight which persists across calls
+    if (ctx.inFlight) return;
+    ctx.inFlight = true;
     
     try {
       // Update remaining seconds
@@ -678,7 +669,7 @@ async function handleWebSocket(req: Request): Promise<Response> {
       
       evaluationCount++;
       
-      // Call the strategy
+      // Call the strategy (without internal inFlight - we handle it here)
       const result = decideTrades(ctx, DEFAULT_CONFIG, nowMs);
       
       // Log every 100th evaluation or when trading
@@ -690,7 +681,9 @@ async function handleWebSocket(req: Request): Promise<Response> {
         }
       }
       
-      if (!result.shouldTrade || result.trades.length === 0) return;
+      if (!result.shouldTrade || result.trades.length === 0) {
+        return; // finally will release lock
+      }
       
       // IMPORTANT: Update position BEFORE inserting to DB (prevents duplicate trades)
       for (const intent of result.trades) {
@@ -787,7 +780,7 @@ async function handleWebSocket(req: Request): Promise<Response> {
       log(`❌ Trade error: ${err}`);
     } finally {
       // Always release the lock
-      marketLocks.set(slug, false);
+      ctx.inFlight = false;
     }
   };
 
