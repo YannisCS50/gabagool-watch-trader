@@ -628,13 +628,25 @@ const RealTimeSignalsPage = () => {
                       </div>
                       
                       {/* Gabagool trades summary for expired market */}
-                      <GabagoolTradesSummary 
-                        marketSlug={market.slug} 
-                        upClobPrice={market.upPriceAtClose ?? 0.5} 
-                        downClobPrice={market.downPriceAtClose ?? 0.5}
-                        compact
-                        actualResult={market.result as 'UP' | 'DOWN' | null}
-                      />
+                      {(() => {
+                        // Derive result from close prices if not explicitly set
+                        let derivedResult: 'UP' | 'DOWN' | null = null;
+                        if (market.result === 'UP' || market.result === 'DOWN') {
+                          derivedResult = market.result;
+                        } else if (market.upPriceAtClose !== null && market.downPriceAtClose !== null) {
+                          if (market.upPriceAtClose >= 0.9) derivedResult = 'UP';
+                          else if (market.downPriceAtClose >= 0.9) derivedResult = 'DOWN';
+                        }
+                        return (
+                          <GabagoolTradesSummary 
+                            marketSlug={market.slug} 
+                            upClobPrice={market.upPriceAtClose ?? 0.5} 
+                            downClobPrice={market.downPriceAtClose ?? 0.5}
+                            compact
+                            actualResult={derivedResult}
+                          />
+                        );
+                      })()}
                     </div>
                   ))}
                 </CardContent>
