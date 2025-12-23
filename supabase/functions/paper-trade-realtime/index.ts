@@ -35,6 +35,7 @@ interface MarketContext {
   position: MarketPosition;
   priceToBeat?: number | null;
   lastTradeAtMs: number;
+  lastRebalanceAtMs: number;  // Separate cooldown for rebalance trades
   lastDecisionKey?: string | null;
   inFlight?: boolean;
 }
@@ -67,12 +68,14 @@ interface StrategyConfig {
     tickMinIntervalMs: number; 
     dedupeWindowMs: number;
     minNotionalToTrade: number;
+    rebalanceCooldownMs: number;   // separate cooldown for rebalance
   };
   coverage: {
     openingNotional: number;
     hedgeNotional: number;
     rebalanceNotional: number;
-    maxCombinedForCoverage: number;  // skip only if really absurd
+    maxCombinedForCoverage: number;
+    minSharesForRebalance: number; // minimum shares before rebalance allowed
   };
   split: { mode: "EQUAL" | "CHEAPER_BIAS"; cheaperBiasPct: number };
   execution: {
@@ -86,33 +89,35 @@ const DEFAULT_CONFIG: StrategyConfig = {
   tradeSize: { min: 3, max: 15, base: 8 },
   positionLimits: { maxPerSide: 200, maxTotal: 350 },
   entry: {
-    minSecondsRemaining: 30,      // Was 45
-    minPrice: 0.02,               // Was 0.03
-    maxPrice: 0.95,               // Was 0.92
-    imbalanceThresholdPct: 20,    // Was 30
-    staleBookMs: 1500,            // Was 2000
+    minSecondsRemaining: 30,
+    minPrice: 0.02,
+    maxPrice: 0.95,
+    imbalanceThresholdPct: 35,    // Verhoogd van 20 naar 35 om ping-pong te voorkomen
+    staleBookMs: 1500,
   },
   edge: {
     arbMaxEntry: 0.995,           // Accumulate only if combined < 99.5¢
     strongArb: 0.94,              // Strong arb zone < 94¢ (groter size)
   },
   hf: {
-    tickMinIntervalMs: 900,       // Fast HF
+    tickMinIntervalMs: 900,       // Fast HF voor arb trades
     dedupeWindowMs: 950,
     minNotionalToTrade: 1.5,
+    rebalanceCooldownMs: 30000,   // 30 sec cooldown voor rebalance trades
   },
   coverage: {
     openingNotional: 3,
     hedgeNotional: 3,
     rebalanceNotional: 4,
-    maxCombinedForCoverage: 1.02, // Coverage ook bij ~100¢
+    maxCombinedForCoverage: 1.02,
+    minSharesForRebalance: 10,    // Minimaal 10 shares nodig voordat rebalance mag
   },
   split: {
     mode: "CHEAPER_BIAS",
-    cheaperBiasPct: 0.55,         // Was 0.60
+    cheaperBiasPct: 0.55,
   },
   execution: {
-    mode: "PAPER_BID",            // Paper = bid (maker)
+    mode: "PAPER_BID",
     bidMissing: "FALLBACK_TO_ASK",
   },
 };
@@ -329,19 +334,28 @@ function decideTrades(
         return commit(ctx, nowMs, "HEDGE", trades, cfg);
       }
 
-      // C) REBALANCE: imbalanced position (>30% skew by value)
-      const imbalance = valueImbalancePct(ctx.position, upRef, downRef);
-      if (Math.abs(imbalance) > cfg.entry.imbalanceThresholdPct) {
-        const under: Outcome = imbalance > 0 ? "DOWN" : "UP";
-        const price = under === "UP" ? upExec : downExec;
-        const trades = singleTrade(
-          under, price, 
-          cfg.coverage.rebalanceNotional, 
-          canUp, canDown, 
-          "REBALANCE", 
-          `Rebalance ${imbalance.toFixed(1)}% → ${under} @ ${(price*100).toFixed(0)}¢`
-        );
-        return commit(ctx, nowMs, "REBALANCE", trades, cfg);
+      // C) REBALANCE: imbalanced position (>35% skew by value)
+      // Extra checks: minimum shares, separate cooldown
+      const totalShares = ctx.position.upShares + ctx.position.downShares;
+      const rebalanceCooldownOk = !ctx.lastRebalanceAtMs || (nowMs - ctx.lastRebalanceAtMs >= cfg.hf.rebalanceCooldownMs);
+      
+      if (totalShares >= cfg.coverage.minSharesForRebalance && rebalanceCooldownOk) {
+        const imbalance = valueImbalancePct(ctx.position, upRef, downRef);
+        if (Math.abs(imbalance) > cfg.entry.imbalanceThresholdPct) {
+          const under: Outcome = imbalance > 0 ? "DOWN" : "UP";
+          const price = under === "UP" ? upExec : downExec;
+          const trades = singleTrade(
+            under, price, 
+            cfg.coverage.rebalanceNotional, 
+            canUp, canDown, 
+            "REBALANCE", 
+            `Rebalance ${imbalance.toFixed(1)}% → ${under} @ ${(price*100).toFixed(0)}¢`
+          );
+          if (trades.length > 0) {
+            ctx.lastRebalanceAtMs = nowMs;  // Update rebalance cooldown
+          }
+          return commit(ctx, nowMs, "REBALANCE", trades, cfg);
+        }
       }
     }
 
@@ -495,6 +509,7 @@ async function handleWebSocket(req: Request): Promise<Response> {
                   downInvested: 0,
                 },
                 lastTradeAtMs: 0,
+                lastRebalanceAtMs: 0,
                 lastDecisionKey: null,
                 inFlight: false,
               });
@@ -522,6 +537,7 @@ async function handleWebSocket(req: Request): Promise<Response> {
       for (const ctx of marketContexts.values()) {
         ctx.position = { upShares: 0, downShares: 0, upInvested: 0, downInvested: 0 };
         ctx.lastTradeAtMs = 0;
+        ctx.lastRebalanceAtMs = 0;
       }
       
       if (data) {
