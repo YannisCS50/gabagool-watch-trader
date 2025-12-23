@@ -203,6 +203,7 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
   const enabledRef = useRef(enabled);
   const uiUpdateIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastPriceUpdateRef = useRef<number>(Date.now());
+  const lastCountedPriceUpdateRef = useRef<number>(0);
   const savedExpiredSlugsRef = useRef<Set<string>>(new Set());
   const chainlinkPricesRef = useRef<{ btc: number | null; eth: number | null }>({ btc: null, eth: null });
   
@@ -559,10 +560,13 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
       clearInterval(uiUpdateIntervalRef.current);
     }
     uiUpdateIntervalRef.current = setInterval(() => {
-      // Force UI update als er recente prijswijzigingen zijn
-      const timeSinceUpdate = Date.now() - lastPriceUpdateRef.current;
-      if (timeSinceUpdate < 500) {
-        setPricesVersion(v => v + 1);
+      // Flush exactly once per incoming price update so the UI never "stalls"
+      const lastPriceTs = lastPriceUpdateRef.current;
+      if (lastPriceTs && lastPriceTs !== lastCountedPriceUpdateRef.current) {
+        lastCountedPriceUpdateRef.current = lastPriceTs;
+        setPricesVersion((v) => v + 1);
+        setUpdateCount((c) => c + 1);
+        setLastUpdateTime(Date.now());
       }
     }, 100);
     
