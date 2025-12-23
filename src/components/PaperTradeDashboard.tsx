@@ -140,7 +140,18 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
   return (
     <div className="space-y-4">
       {/* Header Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4">
+        {/* Starting Budget */}
+        <Card className="border-blue-500/30">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-2 text-muted-foreground mb-1">
+              <DollarSign className="w-4 h-4" />
+              <span className="text-sm">Start Budget</span>
+            </div>
+            <div className="text-2xl font-bold text-blue-400">$1,000</div>
+          </CardContent>
+        </Card>
+
         <Card className="border-purple-500/30">
           <CardContent className="pt-6">
             <div className="flex items-center gap-2 text-muted-foreground mb-1">
@@ -170,10 +181,15 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
             <div className={`text-2xl font-bold ${stats.totalProfitLoss >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
               {stats.totalProfitLoss >= 0 ? '+' : ''}${stats.totalProfitLoss.toFixed(2)}
             </div>
+            {stats.totalInvested > 0 && (
+              <div className={`text-xs mt-1 ${stats.totalProfitLoss >= 0 ? 'text-emerald-400/70' : 'text-red-400/70'}`}>
+                {stats.totalProfitLoss >= 0 ? '+' : ''}{((stats.totalProfitLoss / stats.totalInvested) * 100).toFixed(1)}%
+              </div>
+            )}
           </CardContent>
         </Card>
 
-        {/* NEW: Unrealized P/L Card */}
+        {/* Unrealized P/L Card */}
         <Card className={unrealizedStats.unrealizedPL >= 0 ? 'border-cyan-500/30' : 'border-orange-500/30'}>
           <CardContent className="pt-6">
             <div className="flex items-center gap-2 text-muted-foreground mb-1">
@@ -186,6 +202,24 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
             <div className="text-xs text-muted-foreground mt-1">
               {unrealizedStats.unrealizedPLPercent >= 0 ? '+' : ''}{unrealizedStats.unrealizedPLPercent.toFixed(1)}%
             </div>
+          </CardContent>
+        </Card>
+
+        {/* Total P/L (Realized + Unrealized) */}
+        <Card className={(stats.totalProfitLoss + unrealizedStats.unrealizedPL) >= 0 ? 'border-emerald-500/30' : 'border-red-500/30'}>
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-2 text-muted-foreground mb-1">
+              <TrendingUp className="w-4 h-4" />
+              <span className="text-sm">Total P/L</span>
+            </div>
+            <div className={`text-2xl font-bold ${(stats.totalProfitLoss + unrealizedStats.unrealizedPL) >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+              {(stats.totalProfitLoss + unrealizedStats.unrealizedPL) >= 0 ? '+' : ''}${(stats.totalProfitLoss + unrealizedStats.unrealizedPL).toFixed(2)}
+            </div>
+            {stats.totalInvested > 0 && (
+              <div className={`text-xs mt-1 ${(stats.totalProfitLoss + unrealizedStats.unrealizedPL) >= 0 ? 'text-emerald-400/70' : 'text-red-400/70'}`}>
+                {(stats.totalProfitLoss + unrealizedStats.unrealizedPL) >= 0 ? '+' : ''}{(((stats.totalProfitLoss + unrealizedStats.unrealizedPL) / stats.totalInvested) * 100).toFixed(1)}%
+              </div>
+            )}
           </CardContent>
         </Card>
 
