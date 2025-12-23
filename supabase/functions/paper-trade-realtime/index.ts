@@ -63,34 +63,34 @@ interface StrategyConfig {
 }
 
 const DEFAULT_CONFIG: StrategyConfig = {
-  tradeSize: { min: 3, max: 15, base: 8 },
-  positionLimits: { maxPerSide: 150, maxTotal: 250 },
+  tradeSize: { min: 5, max: 25, base: 10 },
+  positionLimits: { maxPerSide: 200, maxTotal: 350 },
   entry: {
-    minSecondsRemaining: 30,
-    minPrice: 0.02,
-    maxPrice: 0.95,
-    cheapThreshold: 0.2,
-    imbalanceThresholdPct: 20,
-    staleBookMs: 1500,
+    minSecondsRemaining: 45,
+    minPrice: 0.03,
+    maxPrice: 0.92,  // More conservative - don't buy very expensive options
+    cheapThreshold: 0.25,
+    imbalanceThresholdPct: 30,  // Less aggressive rebalancing
+    staleBookMs: 2000,
   },
   arbitrage: {
-    strongEdge: 0.95,
-    normalEdge: 0.98,
-    maxReasonable: 1.02,
+    strongEdge: 0.94,   // Combined < 94¢ = strong arb (6% edge)
+    normalEdge: 0.97,   // Combined < 97¢ = normal arb (3% edge)
+    maxReasonable: 0.995, // ONLY trade if combined < 99.5¢ (must have SOME edge)
   },
   multipliers: {
-    strongArb: 2.0,
+    strongArb: 2.5,
     arb: 1.5,
-    neutral: 1.0,
-    pricey: 0.25,
+    neutral: 0.0,  // Disabled - don't trade neutral (no edge)
+    pricey: 0.0,   // Disabled - never trade pricey
   },
   hf: {
-    tickMinIntervalMs: 800,
-    minNotionalToTrade: 1.5,
+    tickMinIntervalMs: 3000,  // Slower: only trade every 3 seconds per market
+    minNotionalToTrade: 3.0,  // Higher minimum to reduce dust
   },
   split: {
     mode: "CHEAPER_BIAS",
-    cheaperBiasPct: 0.55,
+    cheaperBiasPct: 0.60,  // More bias to cheaper side
   },
 };
 
@@ -264,74 +264,63 @@ function decideTrades(
     return { shouldTrade: true, reason: "HEDGE_MISSING_SIDE", trades: filtered, nextState };
   }
 
-  // If prices are cheap, we can do a slightly larger dual buy
-  if (upAsk <= cfg.entry.cheapThreshold || downAsk <= cfg.entry.cheapThreshold) {
+  // If prices are cheap AND there's arbitrage, we can do a slightly larger dual buy
+  if ((upAsk <= cfg.entry.cheapThreshold || downAsk <= cfg.entry.cheapThreshold) && combined < cfg.arbitrage.maxReasonable) {
     const cheapBoost = 1.5;
     const notional = clamp(baseNotional * cheapBoost, cfg.tradeSize.min, cfg.tradeSize.max);
+    const edgePct = (1 - combined) * 100;
 
     const [uNotional, dNotional] = splitNotionalDual(notional, upAsk, downAsk, cfg);
 
     const trades: TradeIntent[] = [];
-    if (canBuyUp) trades.push(mkBuy("UP", upAsk, uNotional, "DCA_CHEAP_DUAL", `Cheap DCA dual (UP @ ${(upAsk * 100).toFixed(1)}¢)`));
-    if (canBuyDown) trades.push(mkBuy("DOWN", downAsk, dNotional, "DCA_CHEAP_DUAL", `Cheap DCA dual (DOWN @ ${(downAsk * 100).toFixed(1)}¢)`));
+    if (canBuyUp) trades.push(mkBuy("UP", upAsk, uNotional, "DCA_CHEAP_DUAL", `Cheap DCA: ${edgePct.toFixed(1)}% edge (UP @ ${(upAsk * 100).toFixed(0)}¢)`));
+    if (canBuyDown) trades.push(mkBuy("DOWN", downAsk, dNotional, "DCA_CHEAP_DUAL", `Cheap DCA: ${edgePct.toFixed(1)}% edge (DOWN @ ${(downAsk * 100).toFixed(0)}¢)`));
 
     const filtered = filterTradeDust(trades, cfg);
     if (filtered.length === 0) return skip(nextState, "CHEAP_BLOCKED", "Cheap DCA blocked by limits/dust");
 
     nextState.lastTradeAtMs = nowMs;
-    return { shouldTrade: true, reason: "DCA_CHEAP_DUAL", trades: filtered, nextState };
+    return { shouldTrade: true, reason: `DCA_CHEAP_DUAL (${edgePct.toFixed(1)}% edge)`, trades: filtered, nextState };
   }
 
-  // Rebalance if value skew too large
+  // Rebalance if value skew too large AND there's still some edge
   const imbalancePct = getValueImbalancePct(ctx.position, { upBid, downBid, upAsk, downAsk });
-  if (Math.abs(imbalancePct) > cfg.entry.imbalanceThresholdPct) {
+  if (Math.abs(imbalancePct) > cfg.entry.imbalanceThresholdPct && combined < cfg.arbitrage.maxReasonable) {
     const outcome: Outcome = imbalancePct > 0 ? "DOWN" : "UP";
     const price = outcome === "UP" ? upAsk : downAsk;
+    const edgePct = (1 - combined) * 100;
 
     if ((outcome === "UP" && !canBuyUp) || (outcome === "DOWN" && !canBuyDown)) {
       return skip(nextState, "REBAL_BLOCKED", `Rebalance wants ${outcome} but per-side limit reached`);
     }
 
-    const trade = mkBuy(outcome, price, baseNotional, "DCA_BALANCE", `Rebalance by value: ${outcome} underweight (imbalance ${imbalancePct.toFixed(1)}%)`);
+    const trade = mkBuy(outcome, price, baseNotional, "DCA_BALANCE", `Rebalance: ${outcome} underweight (imbalance ${imbalancePct.toFixed(0)}%, edge ${edgePct.toFixed(1)}%)`);
     const filtered = filterTradeDust([trade], cfg);
     if (filtered.length === 0) return skip(nextState, "REBAL_DUST", "Rebalance trade too small");
 
     nextState.lastTradeAtMs = nowMs;
-    return { shouldTrade: true, reason: "DCA_BALANCE", trades: filtered, nextState };
+    return { shouldTrade: true, reason: `DCA_BALANCE (${edgePct.toFixed(1)}% edge)`, trades: filtered, nextState };
   }
 
-  // Accumulate: dual-leg trading most of the time
+  // Accumulate: dual-leg trading ONLY when there's actual arbitrage edge
   if (zone === "STRONG_ARB" || zone === "ARB") {
+    const edgePct = (1 - combined) * 100;
     const [uNotional, dNotional] = splitNotionalDual(baseNotional, upAsk, downAsk, cfg);
     const trades: TradeIntent[] = [];
 
-    if (canBuyUp) trades.push(mkBuy("UP", upAsk, uNotional, "ARB_DUAL", `ARB dual (combined ${(combined * 100).toFixed(1)}¢)`));
-    if (canBuyDown) trades.push(mkBuy("DOWN", downAsk, dNotional, "ARB_DUAL", `ARB dual (combined ${(combined * 100).toFixed(1)}¢)`));
+    if (canBuyUp) trades.push(mkBuy("UP", upAsk, uNotional, "ARB_DUAL", `ARB dual: ${edgePct.toFixed(1)}% edge (${(upAsk * 100).toFixed(0)}¢+${(downAsk * 100).toFixed(0)}¢=${(combined * 100).toFixed(0)}¢)`));
+    if (canBuyDown) trades.push(mkBuy("DOWN", downAsk, dNotional, "ARB_DUAL", `ARB dual: ${edgePct.toFixed(1)}% edge (${(upAsk * 100).toFixed(0)}¢+${(downAsk * 100).toFixed(0)}¢=${(combined * 100).toFixed(0)}¢)`));
 
     const filtered = filterTradeDust(trades, cfg);
     if (filtered.length === 0) return skip(nextState, "ARB_BLOCKED", "ARB blocked by limits/dust");
 
     nextState.lastTradeAtMs = nowMs;
-    return { shouldTrade: true, reason: "ARB_DUAL", trades: filtered, nextState };
+    return { shouldTrade: true, reason: `ARB_DUAL (${edgePct.toFixed(1)}% edge)`, trades: filtered, nextState };
   }
 
-  // NEUTRAL zone: still do small dual buys
-  if (zone === "NEUTRAL") {
-    const neutralNotional = clamp(baseNotional * cfg.multipliers.neutral, cfg.tradeSize.min, cfg.tradeSize.max);
-    const [uNotional, dNotional] = splitNotionalDual(neutralNotional, upAsk, downAsk, cfg);
-
-    const trades: TradeIntent[] = [];
-    if (canBuyUp) trades.push(mkBuy("UP", upAsk, uNotional, "NEUTRAL_DUAL", `Neutral dual (combined ${(combined * 100).toFixed(1)}¢)`));
-    if (canBuyDown) trades.push(mkBuy("DOWN", downAsk, dNotional, "NEUTRAL_DUAL", `Neutral dual (combined ${(combined * 100).toFixed(1)}¢)`));
-
-    const filtered = filterTradeDust(trades, cfg);
-    if (filtered.length === 0) return skip(nextState, "NEUTRAL_BLOCKED", "Neutral blocked by limits/dust");
-
-    nextState.lastTradeAtMs = nowMs;
-    return { shouldTrade: true, reason: "NEUTRAL_DUAL", trades: filtered, nextState };
-  }
-
-  return skip(nextState, "NO_SIGNAL", "No trade signal");
+  // NEUTRAL and PRICEY zones: DO NOT TRADE - no edge means no profit
+  // This is the key fix: we only trade when combined < maxReasonable (99.5¢)
+  return skip(nextState, "NO_EDGE", `No edge: combined ${(combined * 100).toFixed(1)}¢ >= ${(cfg.arbitrage.maxReasonable * 100).toFixed(1)}¢`);
 }
 
 // ============================================================================
