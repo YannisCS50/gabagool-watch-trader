@@ -1,11 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-interface ChainlinkPrice {
-  symbol: string;
-  price: number;
-  timestamp: number;
-}
-
 interface UseChainlinkRealtimeResult {
   btcPrice: number | null;
   ethPrice: number | null;
@@ -15,9 +9,9 @@ interface UseChainlinkRealtimeResult {
   lastUpdate: Date | null;
 }
 
-const RTDS_URL = 'wss://rtds.polymarket.com';
-const RECONNECT_DELAY = 3000;
-const MAX_RECONNECT_ATTEMPTS = 5;
+// Use CoinGecko public API for crypto prices (no API key needed)
+const COINGECKO_API = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd';
+const POLL_INTERVAL = 5000; // 5 seconds
 
 export function useChainlinkRealtime(enabled: boolean = true): UseChainlinkRealtimeResult {
   const [btcPrice, setBtcPrice] = useState<number | null>(null);
@@ -27,121 +21,75 @@ export function useChainlinkRealtime(enabled: boolean = true): UseChainlinkRealt
   const [updateCount, setUpdateCount] = useState(0);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectAttempts = useRef(0);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
-  const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      return;
-    }
-
-    setConnectionState('connecting');
-    console.log('[Chainlink WS] Connecting to', RTDS_URL);
-
+  const fetchPrices = useCallback(async () => {
+    if (!enabled) return;
+    
     try {
-      const ws = new WebSocket(RTDS_URL);
-      wsRef.current = ws;
+      // Cancel previous request if still pending
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      abortControllerRef.current = new AbortController();
 
-      ws.onopen = () => {
-        console.log('[Chainlink WS] Connected');
-        setIsConnected(true);
-        setConnectionState('connected');
-        reconnectAttempts.current = 0;
-
-        // Subscribe to Chainlink crypto prices
-        const subscribeMessage = {
-          action: 'subscribe',
-          subscriptions: [{
-            topic: 'crypto_prices_chainlink',
-            type: '*',
-            filters: ''
-          }]
-        };
-        
-        ws.send(JSON.stringify(subscribeMessage));
-        console.log('[Chainlink WS] Subscribed to crypto_prices_chainlink');
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          
-          // Handle subscription confirmation
-          if (data.type === 'subscribed') {
-            console.log('[Chainlink WS] Subscription confirmed:', data.topic);
-            return;
-          }
-          
-          // Handle price updates
-          if (data.topic === 'crypto_prices_chainlink' && data.payload) {
-            const { symbol, value, timestamp } = data.payload;
-            
-            if (symbol === 'btc/usd' && typeof value === 'number') {
-              setBtcPrice(value);
-              setUpdateCount(prev => prev + 1);
-              setLastUpdate(new Date());
-            } else if (symbol === 'eth/usd' && typeof value === 'number') {
-              setEthPrice(value);
-              setUpdateCount(prev => prev + 1);
-              setLastUpdate(new Date());
-            }
-          }
-        } catch (err) {
-          console.error('[Chainlink WS] Failed to parse message:', err);
-        }
-      };
-
-      ws.onerror = (error) => {
-        console.error('[Chainlink WS] WebSocket error:', error);
-        setConnectionState('error');
-      };
-
-      ws.onclose = (event) => {
-        console.log('[Chainlink WS] Disconnected:', event.code, event.reason);
-        setIsConnected(false);
-        setConnectionState('disconnected');
-        wsRef.current = null;
-
-        // Attempt to reconnect
-        if (enabled && reconnectAttempts.current < MAX_RECONNECT_ATTEMPTS) {
-          reconnectAttempts.current++;
-          console.log(`[Chainlink WS] Reconnecting (attempt ${reconnectAttempts.current}/${MAX_RECONNECT_ATTEMPTS})...`);
-          reconnectTimeoutRef.current = setTimeout(connect, RECONNECT_DELAY);
-        }
-      };
+      const response = await fetch(COINGECKO_API, {
+        signal: abortControllerRef.current.signal,
+        headers: { 'Accept': 'application/json' }
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      
+      const data = await response.json();
+      
+      if (data.bitcoin?.usd) {
+        setBtcPrice(data.bitcoin.usd);
+      }
+      if (data.ethereum?.usd) {
+        setEthPrice(data.ethereum.usd);
+      }
+      
+      setIsConnected(true);
+      setConnectionState('connected');
+      setUpdateCount(prev => prev + 1);
+      setLastUpdate(new Date());
+      
     } catch (err) {
-      console.error('[Chainlink WS] Failed to create WebSocket:', err);
+      if (err instanceof Error && err.name === 'AbortError') {
+        return; // Ignore aborted requests
+      }
+      console.error('[CryptoPrice] Fetch error:', err);
       setConnectionState('error');
     }
   }, [enabled]);
 
-  const disconnect = useCallback(() => {
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-    
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
-    }
-    
-    setIsConnected(false);
-    setConnectionState('disconnected');
-  }, []);
-
   useEffect(() => {
     if (enabled) {
-      connect();
-    } else {
-      disconnect();
+      setConnectionState('connecting');
+      console.log('[CryptoPrice] Starting price polling...');
+      
+      // Initial fetch
+      fetchPrices();
+      
+      // Poll every 5 seconds
+      intervalRef.current = setInterval(fetchPrices, POLL_INTERVAL);
     }
 
     return () => {
-      disconnect();
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
+      setIsConnected(false);
+      setConnectionState('disconnected');
     };
-  }, [enabled, connect, disconnect]);
+  }, [enabled, fetchPrices]);
 
   return {
     btcPrice,
