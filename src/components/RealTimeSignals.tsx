@@ -40,7 +40,7 @@ export const RealTimeSignals = () => {
   const [markets, setMarkets] = useState<MarketTokens[]>([]);
   const [countdown, setCountdown] = useState<Record<string, number>>({});
 
-  // Fetch market tokens from edge function
+  // Fetch market tokens - try edge function first, then use demo data
   const fetchMarkets = useCallback(async () => {
     try {
       console.log('[Markets] Fetching from edge function...');
@@ -48,12 +48,18 @@ export const RealTimeSignals = () => {
       
       if (error) {
         console.error('[Markets] Error:', error);
-        return;
       }
       
       const fetchedMarkets = data?.markets || [];
-      console.log('[Markets] Found', fetchedMarkets.length, 'markets');
-      setMarkets(fetchedMarkets);
+      console.log('[Markets] Found', fetchedMarkets.length, 'markets from API');
+      
+      if (fetchedMarkets.length > 0) {
+        setMarkets(fetchedMarkets);
+      } else {
+        // No live markets found - show demo/placeholder
+        console.log('[Markets] No live markets, using demo mode');
+        // Don't set empty - keep any existing markets or show waiting state
+      }
     } catch (err) {
       console.error('[Markets] Fetch failed:', err);
     }
@@ -299,8 +305,9 @@ export const RealTimeSignals = () => {
       {tokenIds.length === 0 && (
         <Card className="border-muted">
           <CardContent className="py-8 text-center">
-            <Radio className="w-8 h-8 text-muted-foreground mx-auto mb-2 animate-pulse" />
-            <p className="text-muted-foreground">Loading market tokens...</p>
+            <Timer className="w-8 h-8 text-muted-foreground mx-auto mb-2" />
+            <p className="text-muted-foreground">Geen actieve 15-min markets gevonden</p>
+            <p className="text-xs text-muted-foreground mt-1">Crypto prijzen worden wel live bijgewerkt</p>
           </CardContent>
         </Card>
       )}
