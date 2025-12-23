@@ -14,6 +14,60 @@ export type Database = {
   }
   public: {
     Tables: {
+      market_history: {
+        Row: {
+          asset: string
+          close_price: number | null
+          created_at: string
+          down_price_at_close: number | null
+          down_token_id: string | null
+          event_end_time: string
+          event_start_time: string
+          id: string
+          question: string | null
+          result: string | null
+          slug: string
+          strike_price: number | null
+          up_price_at_close: number | null
+          up_token_id: string | null
+          updated_at: string
+        }
+        Insert: {
+          asset: string
+          close_price?: number | null
+          created_at?: string
+          down_price_at_close?: number | null
+          down_token_id?: string | null
+          event_end_time: string
+          event_start_time: string
+          id?: string
+          question?: string | null
+          result?: string | null
+          slug: string
+          strike_price?: number | null
+          up_price_at_close?: number | null
+          up_token_id?: string | null
+          updated_at?: string
+        }
+        Update: {
+          asset?: string
+          close_price?: number | null
+          created_at?: string
+          down_price_at_close?: number | null
+          down_token_id?: string | null
+          event_end_time?: string
+          event_start_time?: string
+          id?: string
+          question?: string | null
+          result?: string | null
+          slug?: string
+          strike_price?: number | null
+          up_price_at_close?: number | null
+          up_token_id?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       positions: {
         Row: {
           avg_price: number

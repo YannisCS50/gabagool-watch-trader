@@ -43,6 +43,8 @@ interface LiveMarket {
   remainingSeconds: number;
   marketType: string;
   strikePrice: number | null;
+  previousMarketClosePrice?: number | null;
+  previousMarketResult?: string | null;
 }
 
 // MarketCard component for reuse
@@ -222,6 +224,7 @@ const RealTimeSignalsPage = () => {
   // Auto-discovers 15m markets and connects to CLOB
   const {
     markets: discoveredMarkets,
+    expiredMarkets: dbExpiredMarkets,
     getPrice,
     isConnected: clobConnected,
     connectionState: clobState,
@@ -239,7 +242,7 @@ const RealTimeSignalsPage = () => {
   } = useChainlinkRealtime(isLive);
 
   // Split markets by asset
-  const { btcMarkets, ethMarkets, expiredMarkets } = useMemo(() => {
+  const { btcMarkets, ethMarkets, recentExpiredMarkets } = useMemo(() => {
     const readUpDown = (slug: string) => {
       const up = getPrice(slug, "up") ?? getPrice(slug, "yes");
       const down = getPrice(slug, "down") ?? getPrice(slug, "no");
@@ -271,6 +274,8 @@ const RealTimeSignalsPage = () => {
         remainingSeconds,
         marketType: market.marketType,
         strikePrice: market.strikePrice,
+        previousMarketClosePrice: market.previousMarketClosePrice,
+        previousMarketResult: market.previousMarketResult,
       };
     });
 
@@ -279,18 +284,12 @@ const RealTimeSignalsPage = () => {
       .filter((m) => m.remainingSeconds > 0 && m.remainingSeconds <= 7 * 24 * 3600)
       .sort((a, b) => a.remainingSeconds - b.remainingSeconds);
 
-    // Expired markets (negative remaining or zero)
-    const expired = allMarkets
-      .filter((m) => m.remainingSeconds <= 0)
-      .sort((a, b) => b.eventEndTime.getTime() - a.eventEndTime.getTime())
-      .slice(0, 20); // Keep last 20
-
     return {
       btcMarkets: active.filter((m) => m.asset === "BTC"),
       ethMarkets: active.filter((m) => m.asset === "ETH"),
-      expiredMarkets: expired,
+      recentExpiredMarkets: dbExpiredMarkets.slice(0, 20),
     };
-  }, [discoveredMarkets, nowMs, getPrice]);
+  }, [discoveredMarkets, nowMs, getPrice, dbExpiredMarkets]);
 
   // Combine for total count
   const liveMarkets = [...btcMarkets, ...ethMarkets];
@@ -539,7 +538,7 @@ const RealTimeSignalsPage = () => {
         )}
 
         {/* Expired Markets Collapsible */}
-        {expiredMarkets.length > 0 && (
+        {recentExpiredMarkets.length > 0 && (
           <Collapsible open={expiredMarketsOpen} onOpenChange={setExpiredMarketsOpen}>
             <Card className="border-muted">
               <CollapsibleTrigger asChild>
@@ -547,7 +546,7 @@ const RealTimeSignalsPage = () => {
                   <CardTitle className="flex items-center justify-between text-muted-foreground">
                     <div className="flex items-center gap-2">
                       <History className="w-5 h-5" />
-                      Expired Markets ({expiredMarkets.length})
+                      Expired Markets ({recentExpiredMarkets.length})
                     </div>
                     <ChevronDown className={`w-5 h-5 transition-transform ${expiredMarketsOpen ? 'rotate-180' : ''}`} />
                   </CardTitle>
@@ -555,12 +554,18 @@ const RealTimeSignalsPage = () => {
               </CollapsibleTrigger>
               <CollapsibleContent>
                 <CardContent className="space-y-3 pt-0">
-                  {expiredMarkets.map((market) => (
+                  {recentExpiredMarkets.map((market) => (
                     <div
                       key={market.slug}
-                      className="p-3 rounded-lg border border-border bg-muted/20 opacity-60"
+                      className={`p-3 rounded-lg border ${
+                        market.result === 'UP' 
+                          ? 'border-emerald-500/30 bg-emerald-500/10' 
+                          : market.result === 'DOWN'
+                            ? 'border-red-500/30 bg-red-500/10'
+                            : 'border-border bg-muted/20'
+                      }`}
                     >
-                      <div className="flex items-center justify-between">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
                         <div className="flex items-center gap-2">
                           <Badge
                             variant="outline"
@@ -577,11 +582,34 @@ const RealTimeSignalsPage = () => {
                           </span>
                         </div>
                         <div className="flex items-center gap-3 text-xs">
-                          <span className="text-emerald-400">{(market.upPrice * 100).toFixed(0)}¢</span>
+                          {market.strikePrice && (
+                            <span className="text-amber-400">
+                              Strike: ${market.strikePrice.toLocaleString()}
+                            </span>
+                          )}
+                          {market.closePrice && (
+                            <span className="text-muted-foreground">
+                              Close: ${market.closePrice.toLocaleString()}
+                            </span>
+                          )}
+                          {market.upPriceAtClose !== null && (
+                            <span className="text-emerald-400">{((market.upPriceAtClose ?? 0) * 100).toFixed(0)}¢</span>
+                          )}
                           <span className="text-muted-foreground">/</span>
-                          <span className="text-red-400">{(market.downPrice * 100).toFixed(0)}¢</span>
-                          <Badge variant="outline" className="text-muted-foreground">
-                            EXPIRED
+                          {market.downPriceAtClose !== null && (
+                            <span className="text-red-400">{((market.downPriceAtClose ?? 0) * 100).toFixed(0)}¢</span>
+                          )}
+                          <Badge 
+                            variant="outline" 
+                            className={
+                              market.result === 'UP'
+                                ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/20'
+                                : market.result === 'DOWN'
+                                  ? 'text-red-400 border-red-500/30 bg-red-500/20'
+                                  : 'text-muted-foreground'
+                            }
+                          >
+                            {market.result === 'UP' ? '📈 UP WON' : market.result === 'DOWN' ? '📉 DOWN WON' : 'PENDING'}
                           </Badge>
                         </div>
                       </div>

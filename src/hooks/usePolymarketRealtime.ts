@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
 
 /**
  * True realtime pricing for Polymarket crypto markets via CLOB WebSocket.
@@ -24,10 +25,26 @@ export interface MarketInfo {
   eventEndTime: Date;
   marketType: "price_above" | "price_target" | "15min" | "other";
   strikePrice: number | null;
+  previousMarketClosePrice?: number | null;
+  previousMarketResult?: string | null;
+}
+
+export interface ExpiredMarket {
+  slug: string;
+  asset: "BTC" | "ETH";
+  question: string;
+  eventStartTime: Date;
+  eventEndTime: Date;
+  strikePrice: number | null;
+  closePrice: number | null;
+  upPriceAtClose: number | null;
+  downPriceAtClose: number | null;
+  result: "UP" | "DOWN" | "UNKNOWN" | null;
 }
 
 interface UsePolymarketRealtimeResult {
   markets: MarketInfo[];
+  expiredMarkets: ExpiredMarket[];
   getPrice: (marketSlug: string, outcome: string) => number | null;
   isConnected: boolean;
   connectionState: ConnectionState;
@@ -42,6 +59,7 @@ interface UsePolymarketRealtimeResult {
 
 const MARKET_TOKENS_URL = "https://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/get-market-tokens";
 const CLOB_WS_PROXY_URL = "wss://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/clob-proxy";
+const SAVE_EXPIRED_URL = "https://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/save-expired-market";
 const MARKET_REFRESH_INTERVAL_MS = 60000;
 
 const normalizeOutcome = (o: string) => o.trim().toLowerCase();
@@ -79,6 +97,8 @@ async function fetchActiveMarkets(): Promise<MarketInfo[]> {
       eventEndTime: new Date(m.eventEndTime),
       marketType: m.marketType || 'other',
       strikePrice: m.strikePrice || null,
+      previousMarketClosePrice: m.previousMarketClosePrice || null,
+      previousMarketResult: m.previousMarketResult || null,
     }));
     
     console.log("[Market Discovery] Found", markets.length, "markets");
@@ -90,9 +110,79 @@ async function fetchActiveMarkets(): Promise<MarketInfo[]> {
   }
 }
 
+async function fetchExpiredMarketsFromDB(): Promise<ExpiredMarket[]> {
+  console.log("[History] Fetching expired markets from database...");
+  
+  try {
+    const { data, error } = await supabase
+      .from('market_history')
+      .select('*')
+      .order('event_end_time', { ascending: false })
+      .limit(50);
+    
+    if (error) {
+      console.error("[History] Error fetching:", error);
+      return [];
+    }
+    
+    const expired: ExpiredMarket[] = (data || []).map((m: any) => ({
+      slug: m.slug,
+      asset: m.asset as "BTC" | "ETH",
+      question: m.question || '',
+      eventStartTime: new Date(m.event_start_time),
+      eventEndTime: new Date(m.event_end_time),
+      strikePrice: m.strike_price,
+      closePrice: m.close_price,
+      upPriceAtClose: m.up_price_at_close,
+      downPriceAtClose: m.down_price_at_close,
+      result: m.result as "UP" | "DOWN" | "UNKNOWN" | null,
+    }));
+    
+    console.log("[History] Loaded", expired.length, "expired markets");
+    return expired;
+    
+  } catch (error) {
+    console.error("[History] Error:", error);
+    return [];
+  }
+}
+
+async function saveExpiredMarket(
+  market: MarketInfo, 
+  upPrice: number | null, 
+  downPrice: number | null,
+  closePrice: number | null
+): Promise<void> {
+  console.log("[History] Saving expired market:", market.slug);
+  
+  try {
+    await fetch(SAVE_EXPIRED_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        slug: market.slug,
+        asset: market.asset,
+        question: market.question,
+        eventStartTime: market.eventStartTime.toISOString(),
+        eventEndTime: market.eventEndTime.toISOString(),
+        strikePrice: market.strikePrice,
+        closePrice: closePrice,
+        upPriceAtClose: upPrice,
+        downPriceAtClose: downPrice,
+        upTokenId: market.upTokenId,
+        downTokenId: market.downTokenId,
+      })
+    });
+    console.log("[History] Saved:", market.slug);
+  } catch (error) {
+    console.error("[History] Error saving:", error);
+  }
+}
+
 export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRealtimeResult {
   // All state declarations at the top - stable order
   const [markets, setMarkets] = useState<MarketInfo[]>([]);
+  const [expiredMarkets, setExpiredMarkets] = useState<ExpiredMarket[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [connectionState, setConnectionState] = useState<ConnectionState>("disconnected");
   const [updateCount, setUpdateCount] = useState(0);
@@ -112,10 +202,25 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
   const enabledRef = useRef(enabled);
   const uiUpdateIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastPriceUpdateRef = useRef<number>(Date.now());
+  const savedExpiredSlugsRef = useRef<Set<string>>(new Set());
+  const chainlinkPricesRef = useRef<{ btc: number | null; eth: number | null }>({ btc: null, eth: null });
   
   // Keep enabledRef in sync
   useEffect(() => {
     enabledRef.current = enabled;
+  }, [enabled]);
+  
+  // Load expired markets from database on mount
+  useEffect(() => {
+    if (enabled) {
+      fetchExpiredMarketsFromDB().then(expired => {
+        setExpiredMarkets(expired);
+        // Mark these slugs as already saved
+        for (const m of expired) {
+          savedExpiredSlugsRef.current.add(m.slug);
+        }
+      });
+    }
   }, [enabled]);
 
   // STAP 4: Debug getPrice met logging
@@ -435,9 +540,70 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
 
   // STAP 5: Calculate time since last update for debugging
   const timeSinceLastUpdate = Date.now() - lastUpdateTime;
+  
+  // Check for expired markets and save them
+  useEffect(() => {
+    const checkExpired = () => {
+      const now = Date.now();
+      for (const market of marketsRef.current) {
+        const isExpired = market.eventEndTime.getTime() <= now;
+        const alreadySaved = savedExpiredSlugsRef.current.has(market.slug);
+        
+        if (isExpired && !alreadySaved) {
+          console.log("[Expiry] Market expired:", market.slug);
+          savedExpiredSlugsRef.current.add(market.slug);
+          
+          // Get final prices
+          const upPrice = pricesRef.current.get(market.slug)?.get("up")?.price ?? null;
+          const downPrice = pricesRef.current.get(market.slug)?.get("down")?.price ?? null;
+          
+          // Get close price from chainlink (would need to be passed in)
+          const closePrice = market.asset === 'BTC' 
+            ? chainlinkPricesRef.current.btc 
+            : chainlinkPricesRef.current.eth;
+          
+          // Save to database
+          saveExpiredMarket(market, upPrice, downPrice, closePrice);
+          
+          // Add to local expired list
+          setExpiredMarkets(prev => {
+            const exists = prev.some(m => m.slug === market.slug);
+            if (exists) return prev;
+            
+            let result: "UP" | "DOWN" | "UNKNOWN" = "UNKNOWN";
+            if (closePrice && market.strikePrice) {
+              result = closePrice > market.strikePrice ? "UP" : "DOWN";
+            }
+            
+            return [{
+              slug: market.slug,
+              asset: market.asset as "BTC" | "ETH",
+              question: market.question,
+              eventStartTime: market.eventStartTime,
+              eventEndTime: market.eventEndTime,
+              strikePrice: market.strikePrice,
+              closePrice,
+              upPriceAtClose: upPrice,
+              downPriceAtClose: downPrice,
+              result,
+            }, ...prev].slice(0, 50);
+          });
+        }
+      }
+    };
+    
+    const interval = setInterval(checkExpired, 5000);
+    return () => clearInterval(interval);
+  }, [markets]);
+  
+  // Method to update chainlink prices from outside
+  const updateChainlinkPrices = useCallback((btc: number | null, eth: number | null) => {
+    chainlinkPricesRef.current = { btc, eth };
+  }, []);
 
   return {
     markets,
+    expiredMarkets,
     getPrice,
     isConnected,
     connectionState,
@@ -446,7 +612,7 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
     latencyMs,
     connect,
     disconnect,
-    pricesVersion, // Export for debugging
-    timeSinceLastUpdate, // STAP 5: Export time since last update
+    pricesVersion,
+    timeSinceLastUpdate,
   };
 }

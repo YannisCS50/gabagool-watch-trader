@@ -458,11 +458,56 @@ serve(async (req) => {
       }
     }
     
-    // Add strike prices to markets - prefer DB, fallback to parsed from question
-    const marketsWithStrike = markets.map(m => ({
-      ...m,
-      strikePrice: strikePriceMap.get(m.slug) || m.strikePrice || null
-    }));
+    // Fetch previous market data from market_history for strike price chain
+    // For each market, find the previous market that ended when this one started
+    const { data: marketHistory } = await supabase
+      .from('market_history')
+      .select('slug, asset, event_end_time, strike_price, close_price, result')
+      .in('asset', ['BTC', 'ETH'])
+      .order('event_end_time', { ascending: false })
+      .limit(50);
+    
+    // Create a map of previous market close prices by asset and start time
+    const previousMarketMap = new Map<string, { strikePrice: number | null, closePrice: number | null, result: string | null }>();
+    
+    if (marketHistory) {
+      for (const market of markets) {
+        const marketStartTime = new Date(market.eventStartTime).getTime();
+        
+        // Find the previous market for this asset that ended at or before this market started
+        const previousMarket = marketHistory.find(h => 
+          h.asset === market.asset && 
+          new Date(h.event_end_time).getTime() <= marketStartTime
+        );
+        
+        if (previousMarket) {
+          // The "price to beat" for the current market is the close price of the previous market
+          // which becomes the strike price for this market
+          previousMarketMap.set(market.slug, {
+            strikePrice: previousMarket.close_price || previousMarket.strike_price,
+            closePrice: previousMarket.close_price,
+            result: previousMarket.result
+          });
+          console.log(`[History] Found previous market for ${market.slug}: close=$${previousMarket.close_price}`);
+        }
+      }
+    }
+    
+    // Add strike prices to markets - priority: previous market close > DB strike_prices > parsed from question
+    const marketsWithStrike = markets.map(m => {
+      const previousData = previousMarketMap.get(m.slug);
+      const dbStrike = strikePriceMap.get(m.slug);
+      
+      // Use previous market's close price as the strike (price to beat)
+      const finalStrikePrice = previousData?.strikePrice || dbStrike || m.strikePrice || null;
+      
+      return {
+        ...m,
+        strikePrice: finalStrikePrice,
+        previousMarketClosePrice: previousData?.closePrice || null,
+        previousMarketResult: previousData?.result || null
+      };
+    });
     
     const duration = Date.now() - startTime;
     console.log(`=== Found ${markets.length} markets in ${duration}ms ===`);
