@@ -103,15 +103,24 @@ export function usePaperTrades(): UsePaperTradesResult {
     }
   }, []);
 
-  // Calculate stats from results
+  // Calculate stats from both trades AND results
+  // Total invested includes open positions (from trades) + settled positions (from results)
+  const openTradesInvested = trades.reduce((sum, t) => {
+    // Only count trades that don't have a settled result
+    const hasResult = results.some(r => r.market_slug === t.market_slug && r.settled_at);
+    return hasResult ? sum : sum + t.total;
+  }, 0);
+  
+  const settledInvested = results.reduce((sum, r) => sum + (r.total_invested || 0), 0);
+  
   const stats: PaperTradeStats = {
     totalTrades: trades.length,
-    totalInvested: results.reduce((sum, r) => sum + (r.total_invested || 0), 0),
+    totalInvested: openTradesInvested + settledInvested,
     totalPayout: results.reduce((sum, r) => sum + (r.payout || 0), 0),
     totalProfitLoss: results.reduce((sum, r) => sum + (r.profit_loss || 0), 0),
-    winCount: results.filter(r => (r.profit_loss || 0) > 0).length,
-    lossCount: results.filter(r => r.result !== 'PENDING' && (r.profit_loss || 0) <= 0).length,
-    pendingCount: results.filter(r => r.result === 'PENDING' || !r.settled_at).length,
+    winCount: results.filter(r => (r.profit_loss || 0) > 0 && r.settled_at).length,
+    lossCount: results.filter(r => r.settled_at && (r.profit_loss || 0) <= 0).length,
+    pendingCount: results.filter(r => !r.settled_at).length,
     winRate: 0,
   };
 
