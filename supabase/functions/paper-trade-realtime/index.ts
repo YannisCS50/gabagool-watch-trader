@@ -7,13 +7,13 @@ const corsHeaders = {
 };
 
 // ============================================================================
-// GABAGOOL REPLICATION STRATEGY V4
-// Coverage trades without edge, Accumulate only with edge, fast HF cooldown
+// DIRECTIONAL + OPPORTUNISTIC HEDGE STRATEGY V7
+// Share-based balancing: Start directional, hedge when combined < threshold
 // ============================================================================
 
 type Outcome = "UP" | "DOWN";
 type OrderSide = "BUY" | "SELL";
-type TradeType = "OPENING_DUAL" | "HEDGE" | "REBALANCE" | "ARB_DUAL";
+type TradeType = "OPENING" | "HEDGE" | "REBALANCE" | "ACCUMULATE";
 
 interface TopOfBook {
   up: { bid: number | null; ask: number | null };
@@ -33,9 +33,9 @@ interface MarketContext {
   remainingSeconds: number;
   book: TopOfBook;
   position: MarketPosition;
-  priceToBeat?: number | null;
+  cryptoPrice?: number | null;
+  strikePrice?: number | null;
   lastTradeAtMs: number;
-  lastRebalanceAtMs: number;  // Separate cooldown for rebalance trades
   lastDecisionKey?: string | null;
   inFlight?: boolean;
 }
@@ -51,40 +51,33 @@ interface TradeIntent {
 }
 
 interface StrategyConfig {
-  tradeSize: { min: number; max: number; base: number };
-  positionLimits: { 
-    maxPerSide: number; 
-    maxTotal: number;
-    maxSharesRatio: number;       // NIEUW: max ratio tussen UP/DOWN shares (bijv. 3 = max 3:1)
-    maxSharesPerSide: number;     // NIEUW: absolute max shares per side
+  opening: {
+    notional: number;           // Initial trade size
+    preferCheaper: boolean;     // Start with cheaper side (more shares)
+  };
+  hedge: {
+    triggerCombined: number;    // Hedge when combined < this (e.g., 0.98)
+    notional: number;           // Per hedge trade
+  };
+  accumulate: {
+    triggerCombined: number;    // Accumulate when combined < this (e.g., 0.95)
+    notional: number;           // Per accumulate trade
+  };
+  positionLimits: {
+    maxSharesPerSide: number;
+    maxTotalInvested: number;
+    minSharesDiffToRebalance: number;  // Min diff to trigger rebalance
   };
   entry: {
     minSecondsRemaining: number;
     minPrice: number;
     maxPrice: number;
-    investmentImbalanceThresholdPct: number;  // RENAMED: investment-based, not value-based
     staleBookMs: number;
   };
-  edge: {
-    arbMaxEntry: number;    // accumulate-only gate: 99.5¢
-    strongArb: number;      // strong arb zone: 94¢
-  };
-  hf: { 
-    tickMinIntervalMs: number; 
+  hf: {
+    tickMinIntervalMs: number;
     dedupeWindowMs: number;
     minNotionalToTrade: number;
-    rebalanceCooldownMs: number;
-    postTradeCooldownMs: number;  // NIEUW: langere cooldown na trade
-  };
-  coverage: {
-    openingNotional: number;
-    hedgeNotional: number;
-    rebalanceNotional: number;
-    maxCombinedForCoverage: number;
-    minSharesForRebalance: number;
-  };
-  split: { 
-    mode: "EQUAL" | "VALUE_NEUTRAL";  // CHANGED: altijd 50/50 USD split
   };
   execution: {
     mode: "PAPER_BID" | "LIVE_ASK";
@@ -93,41 +86,34 @@ interface StrategyConfig {
 }
 
 const DEFAULT_CONFIG: StrategyConfig = {
-  // V5: Realistische 15-min bets met share-balancering
-  tradeSize: { min: 2, max: 10, base: 5 },   // Kleinere trades
-  positionLimits: { 
-    maxPerSide: 100,          // Max $100 invested per side (was 200)
-    maxTotal: 180,            // Max $180 total (was 350)
-    maxSharesRatio: 2.5,      // Max 2.5:1 shares ratio (voorkomt 11:1)
-    maxSharesPerSide: 300,    // Max 300 shares per side (voorkomt 4435)
+  // V7: Directional + Opportunistic Hedge with Share Balancing
+  opening: {
+    notional: 5,              // $5 initial trade
+    preferCheaper: true,      // Buy cheaper side first (more shares)
+  },
+  hedge: {
+    triggerCombined: 0.98,    // Hedge when combined < 98¢
+    notional: 5,              // $5 per hedge trade
+  },
+  accumulate: {
+    triggerCombined: 0.95,    // Accumulate when combined < 95¢ (strong arb)
+    notional: 5,              // $5 per accumulate trade
+  },
+  positionLimits: {
+    maxSharesPerSide: 500,    // Max 500 shares per side
+    maxTotalInvested: 200,    // Max $200 total
+    minSharesDiffToRebalance: 5,  // Min 5 shares diff to rebalance
   },
   entry: {
-    minSecondsRemaining: 45,  // Meer marge (was 30)
-    minPrice: 0.03,           // Iets hoger (was 0.02)
-    maxPrice: 0.92,           // Iets lager (was 0.95)
-    investmentImbalanceThresholdPct: 25,  // 25% investment imbalance voor rebalance
+    minSecondsRemaining: 45,
+    minPrice: 0.03,
+    maxPrice: 0.92,
     staleBookMs: 1500,
   },
-  edge: {
-    arbMaxEntry: 0.98,        // Strengere gate: 98¢ (was 99.5¢)
-    strongArb: 0.92,          // Strong arb zone: 92¢ (was 94¢)
-  },
   hf: {
-    tickMinIntervalMs: 2000,  // Langere cooldown: 2s (was 900ms)
-    dedupeWindowMs: 2500,     // Langere dedupe: 2.5s (was 950ms)
+    tickMinIntervalMs: 2000,  // 2s cooldown
+    dedupeWindowMs: 2500,
     minNotionalToTrade: 1.5,
-    rebalanceCooldownMs: 60000,  // 60 sec rebalance cooldown (was 30s)
-    postTradeCooldownMs: 3000,   // 3 sec na elke trade
-  },
-  coverage: {
-    openingNotional: 4,       // Iets groter opening (was 3)
-    hedgeNotional: 3,
-    rebalanceNotional: 3,     // Kleiner rebalance (was 4)
-    maxCombinedForCoverage: 1.01,  // Strenger (was 1.02)
-    minSharesForRebalance: 15,     // Meer shares nodig (was 10)
-  },
-  split: {
-    mode: "VALUE_NEUTRAL",    // ALTIJD 50/50 USD split
   },
   execution: {
     mode: "PAPER_BID",
@@ -136,12 +122,9 @@ const DEFAULT_CONFIG: StrategyConfig = {
 };
 
 // ============================================================================
-// STRATEGY LOGIC (GABAGOOL REPLICATION V4)
+// STRATEGY LOGIC V7: DIRECTIONAL + OPPORTUNISTIC HEDGE
+// Core principle: Equal shares on both sides = guaranteed profit
 // ============================================================================
-
-function clamp(x: number, lo: number, hi: number) {
-  return Math.max(lo, Math.min(hi, x));
-}
 
 function isNum(x: unknown): x is number {
   return typeof x === "number" && Number.isFinite(x);
@@ -173,7 +156,7 @@ function makeDecisionKey(slug: string, up: number, down: number, combined: numbe
 
 // Get execution prices based on mode (paper = bid, live = ask)
 function getExecutionPrices(ctx: MarketContext, cfg: StrategyConfig): 
-  { upExec: number; downExec: number; upRef: number; downRef: number } | null {
+  { upExec: number; downExec: number } | null {
   const upBid = ctx.book.up.bid;
   const downBid = ctx.book.down.bid;
   const upAsk = ctx.book.up.ask;
@@ -183,95 +166,38 @@ function getExecutionPrices(ctx: MarketContext, cfg: StrategyConfig):
 
   if (wantBid) {
     if (isNum(upBid) && isNum(downBid)) {
-      return { upExec: upBid, downExec: downBid, upRef: upBid, downRef: downBid };
+      return { upExec: upBid, downExec: downBid };
     }
     if (cfg.execution.bidMissing === "FALLBACK_TO_ASK" && isNum(upAsk) && isNum(downAsk)) {
-      return { upExec: upAsk, downExec: downAsk, upRef: upAsk, downRef: downAsk };
+      return { upExec: upAsk, downExec: downAsk };
     }
     return null;
   } else {
     if (!isNum(upAsk) || !isNum(downAsk)) return null;
-    return { upExec: upAsk, downExec: downAsk, upRef: upAsk, downRef: downAsk };
+    return { upExec: upAsk, downExec: downAsk };
   }
 }
 
-// ============================================================================
-// INVESTMENT-BASED BALANCING (niet value-based!)
-// Dit is cruciaal voor 15-min bets waar shares €1 of €0 waard worden
-// ============================================================================
-
-// INVESTMENT imbalance (hoeveel USD geïnvesteerd per kant)
-function investmentImbalancePct(pos: MarketPosition): number {
-  const total = pos.upInvested + pos.downInvested;
-  if (total <= 0) return 0;
-  return ((pos.upInvested - pos.downInvested) / total) * 100;
-}
-
-// SHARES ratio check (voorkomt 4435 UP vs 380 DOWN situaties)
-function sharesRatio(pos: MarketPosition): number {
-  if (pos.upShares === 0 && pos.downShares === 0) return 1;
-  if (pos.upShares === 0 || pos.downShares === 0) return Infinity;
-  return Math.max(pos.upShares / pos.downShares, pos.downShares / pos.upShares);
-}
-
-function mkBuy(outcome: Outcome, price: number, notionalUsd: number, type: TradeType, reason: string): TradeIntent {
-  const shares = Math.floor(notionalUsd / price);
+// Create a single trade intent
+function mkTrade(outcome: Outcome, price: number, shares: number, type: TradeType, reason: string): TradeIntent {
+  const notionalUsd = shares * price;
   return { outcome, side: "BUY", limitPrice: price, notionalUsd, shares, type, reason };
 }
 
-// VALUE_NEUTRAL split: altijd 50/50 USD (elke kant krijgt gelijke investering)
-// Dit is de sleutel voor arbitrage: gelijke investment = gegarandeerde winst bij combined < $1
-function splitNotionalValueNeutral(notional: number): [number, number] {
-  return [notional * 0.5, notional * 0.5];
-}
-
-function dualTrades(
-  notional: number, 
-  up: number, 
-  down: number, 
-  canUp: boolean, 
-  canDown: boolean, 
-  cfg: StrategyConfig, 
-  type: TradeType, 
-  reasonPrefix: string
-): TradeIntent[] {
-  // ALTIJD 50/50 split (value neutral)
-  const [uN, dN] = splitNotionalValueNeutral(notional);
-  const out: TradeIntent[] = [];
-  
-  // Alleen toevoegen als BEIDE kanten mogelijk zijn voor dual trades
-  // Dit voorkomt onevenwichtige posities
-  if (canUp && canDown) {
-    out.push(mkBuy("UP", up, uN, type, `${reasonPrefix} (UP @ ${(up*100).toFixed(0)}¢)`));
-    out.push(mkBuy("DOWN", down, dN, type, `${reasonPrefix} (DOWN @ ${(down*100).toFixed(0)}¢)`));
-  }
-  return out;
-}
-
-function singleTrade(
-  outcome: Outcome, 
-  price: number, 
-  notional: number, 
-  canUp: boolean, 
-  canDown: boolean, 
-  type: TradeType, 
-  reason: string
-): TradeIntent[] {
-  if (outcome === "UP" && !canUp) return [];
-  if (outcome === "DOWN" && !canDown) return [];
-  return [mkBuy(outcome, price, notional, type, reason)];
+// Calculate how many equal shares we can buy with a given notional
+function calcEqualShares(notional: number, upPrice: number, downPrice: number): number {
+  const priceSum = upPrice + downPrice;
+  if (priceSum <= 0) return 0;
+  return Math.floor(notional / priceSum);
 }
 
 /**
- * MAIN ENTRY: Gabagool Replication V4
+ * MAIN ENTRY: Directional + Opportunistic Hedge Strategy V7
  * 
- * COVERAGE trades (always allowed, even without edge):
- * - OPENING_DUAL: both sides missing → buy small on both
- * - HEDGE: one side missing → fill missing side
- * - REBALANCE: imbalanced position → rebalance to ~50/50
- * 
- * ACCUMULATE trades (only with edge):
- * - ARB_DUAL: combined < 99.5¢ → profit engine
+ * Phase 1: OPENING - Start with one side (cheaper = more shares)
+ * Phase 2: HEDGE - When combined < 0.98, buy other side to match shares
+ * Phase 3: REBALANCE - If shares imbalanced, buy undersized side
+ * Phase 4: ACCUMULATE - If balanced and combined < 0.95, buy equal shares both sides
  */
 function decideTrades(
   ctx: MarketContext,
@@ -279,17 +205,19 @@ function decideTrades(
   nowMs: number = Date.now()
 ): { shouldTrade: boolean; reason: string; trades: TradeIntent[] } {
   
-  // ---- SINGLE-FLIGHT LOCK (race condition fix) ----
+  // ---- SINGLE-FLIGHT LOCK ----
   if (ctx.inFlight) return skip("IN_FLIGHT");
   ctx.inFlight = true;
 
   try {
-    // 1) COOLDOWN (verhoogd naar 2s)
+    const pos = ctx.position;
+    
+    // 1) COOLDOWN
     if (ctx.lastTradeAtMs && nowMs - ctx.lastTradeAtMs < cfg.hf.tickMinIntervalMs) {
       return skip(`COOLDOWN: ${cfg.hf.tickMinIntervalMs}ms`);
     }
 
-    // 2) EXPIRY (verhoogd naar 45s)
+    // 2) EXPIRY CHECK
     if (ctx.remainingSeconds < cfg.entry.minSecondsRemaining) {
       return skip(`TOO_CLOSE_TO_EXPIRY: ${ctx.remainingSeconds}s`);
     }
@@ -299,13 +227,14 @@ function decideTrades(
       return skip(`STALE_BOOK: ${nowMs - ctx.book.updatedAtMs}ms`);
     }
 
-    // 4) Determine execution prices (paper = bid, live = ask)
+    // 4) Get execution prices
     const px = getExecutionPrices(ctx, cfg);
     if (!px) return skip("MISSING_PRICES");
 
     const { upExec, downExec } = px;
+    const combined = upExec + downExec;
 
-    // 5) PRICE SANITY (check BOTH sides - strenger: 3¢-92¢)
+    // 5) PRICE SANITY
     if (upExec < cfg.entry.minPrice || upExec > cfg.entry.maxPrice) {
       return skip(`UP_OUT_OF_RANGE: ${(upExec*100).toFixed(0)}¢`);
     }
@@ -313,147 +242,141 @@ function decideTrades(
       return skip(`DOWN_OUT_OF_RANGE: ${(downExec*100).toFixed(0)}¢`);
     }
 
-    // 6) INVESTMENT LIMITS (per-side + total)
-    const totalInvested = ctx.position.upInvested + ctx.position.downInvested;
-    if (totalInvested >= cfg.positionLimits.maxTotal) {
+    // 6) POSITION LIMITS
+    const totalInvested = pos.upInvested + pos.downInvested;
+    if (totalInvested >= cfg.positionLimits.maxTotalInvested) {
       return skip(`LIMIT_TOTAL: $${totalInvested.toFixed(0)}`);
     }
-
-    const canUp = ctx.position.upInvested < cfg.positionLimits.maxPerSide;
-    const canDown = ctx.position.downInvested < cfg.positionLimits.maxPerSide;
-
-    // 7) SHARES LIMITS (NIEUW - voorkomt extreme share imbalances)
-    const currentRatio = sharesRatio(ctx.position);
-    if (currentRatio > cfg.positionLimits.maxSharesRatio) {
-      return skip(`SHARES_RATIO_EXCEEDED: ${currentRatio.toFixed(1)}:1`);
+    if (pos.upShares >= cfg.positionLimits.maxSharesPerSide) {
+      return skip(`UP_SHARES_LIMIT: ${pos.upShares}`);
     }
-    if (ctx.position.upShares >= cfg.positionLimits.maxSharesPerSide) {
-      return skip(`UP_SHARES_LIMIT: ${ctx.position.upShares}`);
-    }
-    if (ctx.position.downShares >= cfg.positionLimits.maxSharesPerSide) {
-      return skip(`DOWN_SHARES_LIMIT: ${ctx.position.downShares}`);
+    if (pos.downShares >= cfg.positionLimits.maxSharesPerSide) {
+      return skip(`DOWN_SHARES_LIMIT: ${pos.downShares}`);
     }
 
-    const combined = upExec + downExec;
-
-    // ---- DECISION KEY (dedupe identical signals) ----
+    // ---- DECISION KEY (dedupe) ----
     const decisionKey = makeDecisionKey(ctx.slug, upExec, downExec, combined, nowMs, cfg.hf.dedupeWindowMs);
     if (ctx.lastDecisionKey === decisionKey) return skip("DEDUPED");
     ctx.lastDecisionKey = decisionKey;
 
-    // ============================================================
-    // COVERAGE TRADES (allowed even without arb edge)
-    // ============================================================
-    
-    // Skip coverage only if combined is really absurd (> 101¢)
-    if (combined <= cfg.coverage.maxCombinedForCoverage) {
-      
-      // A) OPENING_DUAL: both sides missing - start met 50/50
-      if (ctx.position.upShares === 0 && ctx.position.downShares === 0) {
-        const trades = dualTrades(
-          cfg.coverage.openingNotional, 
-          upExec, downExec, 
-          canUp, canDown, 
-          cfg, 
-          "OPENING_DUAL", 
-          "Opening 50/50 coverage"
-        );
-        if (trades.length === 2) {
-          return commit(ctx, nowMs, "OPENING_DUAL", trades, cfg);
-        }
-        // Als we geen dual kunnen doen, skip (voorkomt onevenwichtige start)
-        return skip("CANNOT_OPEN_DUAL");
-      }
+    const sharesDiff = pos.upShares - pos.downShares;  // Positive = more UP, negative = more DOWN
 
-      // B) HEDGE: one side missing - vul ontbrekende kant
-      if (ctx.position.upShares === 0 || ctx.position.downShares === 0) {
-        const missing: Outcome = ctx.position.upShares === 0 ? "UP" : "DOWN";
-        const price = missing === "UP" ? upExec : downExec;
-        const trades = singleTrade(
-          missing, price, 
-          cfg.coverage.hedgeNotional, 
-          canUp, canDown, 
-          "HEDGE", 
-          `Hedge missing ${missing} @ ${(price*100).toFixed(0)}¢`
-        );
-        return commit(ctx, nowMs, "HEDGE", trades, cfg);
-      }
-
-      // C) REBALANCE: based on INVESTMENT imbalance (niet value!)
-      const totalShares = ctx.position.upShares + ctx.position.downShares;
-      const rebalanceCooldownOk = !ctx.lastRebalanceAtMs || (nowMs - ctx.lastRebalanceAtMs >= cfg.hf.rebalanceCooldownMs);
+    // ========================================================================
+    // PHASE 1: OPENING - No position yet, start with one side
+    // ========================================================================
+    if (pos.upShares === 0 && pos.downShares === 0) {
+      // Buy cheaper side first (more shares for your money)
+      const side: Outcome = cfg.opening.preferCheaper 
+        ? (upExec < downExec ? "UP" : "DOWN")
+        : "UP";  // Default to UP if not preferring cheaper
       
-      if (totalShares >= cfg.coverage.minSharesForRebalance && rebalanceCooldownOk) {
-        const invImbalance = investmentImbalancePct(ctx.position);
-        
-        if (Math.abs(invImbalance) > cfg.entry.investmentImbalanceThresholdPct) {
-          // Investeer in de kant met MINDER investment
-          const under: Outcome = invImbalance > 0 ? "DOWN" : "UP";
-          const price = under === "UP" ? upExec : downExec;
-          
-          // Extra check: voorkomt dat rebalance de shares ratio verslechtert
-          const newSharesUp = under === "UP" ? ctx.position.upShares + Math.floor(cfg.coverage.rebalanceNotional / upExec) : ctx.position.upShares;
-          const newSharesDown = under === "DOWN" ? ctx.position.downShares + Math.floor(cfg.coverage.rebalanceNotional / downExec) : ctx.position.downShares;
-          const newRatio = Math.max(newSharesUp / newSharesDown, newSharesDown / newSharesUp);
-          
-          if (newRatio <= cfg.positionLimits.maxSharesRatio) {
-            const trades = singleTrade(
-              under, price, 
-              cfg.coverage.rebalanceNotional, 
-              canUp, canDown, 
-              "REBALANCE", 
-              `Rebalance inv ${invImbalance.toFixed(0)}% → ${under} @ ${(price*100).toFixed(0)}¢`
-            );
-            if (trades.length > 0) {
-              ctx.lastRebalanceAtMs = nowMs;
-            }
-            return commit(ctx, nowMs, "REBALANCE", trades, cfg);
-          } else {
-            return skip(`REBALANCE_WOULD_WORSEN_RATIO: ${newRatio.toFixed(1)}`);
-          }
-        }
-      }
-    }
-
-    // ============================================================
-    // ACCUMULATE TRADES (only with edge: combined < 98¢)
-    // Dit is waar de winst zit - 50/50 split garandeert profit
-    // ============================================================
-    
-    if (combined < cfg.edge.arbMaxEntry) {
-      // Extra check: alleen ARB als shares ratio OK is
-      const upSharesAfter = ctx.position.upShares + Math.floor((cfg.tradeSize.base / 2) / upExec);
-      const downSharesAfter = ctx.position.downShares + Math.floor((cfg.tradeSize.base / 2) / downExec);
-      const ratioAfter = Math.max(upSharesAfter / downSharesAfter, downSharesAfter / upSharesAfter);
+      const price = side === "UP" ? upExec : downExec;
+      const shares = Math.floor(cfg.opening.notional / price);
       
-      if (ratioAfter > cfg.positionLimits.maxSharesRatio) {
-        return skip(`ARB_WOULD_EXCEED_RATIO: ${ratioAfter.toFixed(1)}`);
-      }
+      if (shares < 1) return skip("OPENING_SHARES_TOO_LOW");
       
-      // Scale notional by edge zone: strong < 92¢ = 1.5x, normal = 1x
-      const mult = combined < cfg.edge.strongArb ? 1.5 : 1.0;
-      const notional = clamp(cfg.tradeSize.base * mult, cfg.tradeSize.min, cfg.tradeSize.max);
-      
-      const edgePct = ((1 - combined) * 100).toFixed(1);
-      const zone = combined < cfg.edge.strongArb ? "STRONG" : "NORMAL";
-      
-      const trades = dualTrades(
-        notional, 
-        upExec, downExec, 
-        canUp, canDown, 
-        cfg, 
-        "ARB_DUAL", 
-        `ARB ${zone} ${edgePct}% edge (${(combined*100).toFixed(0)}¢)`
+      const trade = mkTrade(
+        side, 
+        price, 
+        shares, 
+        "OPENING", 
+        `Opening ${side} @ ${(price*100).toFixed(0)}¢ (${shares} shares)`
       );
       
-      // ARB moet ALTIJD dual zijn
-      if (trades.length === 2) {
-        return commit(ctx, nowMs, "ARB_DUAL", trades, cfg);
-      }
-      return skip("ARB_NOT_DUAL_POSSIBLE");
+      return commit(ctx, nowMs, "OPENING", [trade], cfg);
     }
 
-    return skip("NO_SIGNAL");
+    // ========================================================================
+    // PHASE 2: HEDGE - One side missing, buy other side when combined is good
+    // ========================================================================
+    if (pos.upShares === 0 || pos.downShares === 0) {
+      // Only hedge if combined price is favorable
+      if (combined < cfg.hedge.triggerCombined) {
+        const missingSide: Outcome = pos.upShares === 0 ? "UP" : "DOWN";
+        const price = missingSide === "UP" ? upExec : downExec;
+        
+        // Match existing shares on the other side
+        const existingShares = missingSide === "UP" ? pos.downShares : pos.upShares;
+        
+        // Calculate how many shares we can afford, but target matching existing
+        const maxAffordableShares = Math.floor(cfg.hedge.notional / price);
+        const sharesToBuy = Math.min(existingShares, maxAffordableShares);
+        
+        if (sharesToBuy < 1) return skip("HEDGE_SHARES_TOO_LOW");
+        
+        const trade = mkTrade(
+          missingSide, 
+          price, 
+          sharesToBuy, 
+          "HEDGE", 
+          `Hedge ${missingSide} @ ${(price*100).toFixed(0)}¢ (${sharesToBuy} shares, combined=${(combined*100).toFixed(0)}¢)`
+        );
+        
+        return commit(ctx, nowMs, "HEDGE", [trade], cfg);
+      }
+      
+      // Not good enough combined price yet, wait
+      return skip(`WAITING_FOR_HEDGE: combined=${(combined*100).toFixed(0)}¢ > ${(cfg.hedge.triggerCombined*100).toFixed(0)}¢`);
+    }
+
+    // ========================================================================
+    // PHASE 3: REBALANCE - Shares are imbalanced, buy the undersized side
+    // ========================================================================
+    if (Math.abs(sharesDiff) > cfg.positionLimits.minSharesDiffToRebalance) {
+      // Only rebalance if combined is favorable
+      if (combined < cfg.hedge.triggerCombined) {
+        const underSide: Outcome = sharesDiff > 0 ? "DOWN" : "UP";  // Buy side with fewer shares
+        const price = underSide === "UP" ? upExec : downExec;
+        
+        // Buy exactly the difference to balance shares
+        const sharesToBuy = Math.abs(sharesDiff);
+        const maxAffordable = Math.floor(cfg.hedge.notional / price);
+        const actualShares = Math.min(sharesToBuy, maxAffordable);
+        
+        if (actualShares < 1) return skip("REBALANCE_SHARES_TOO_LOW");
+        
+        const trade = mkTrade(
+          underSide, 
+          price, 
+          actualShares, 
+          "REBALANCE", 
+          `Rebalance ${underSide} @ ${(price*100).toFixed(0)}¢ (${actualShares} shares, diff was ${sharesDiff})`
+        );
+        
+        return commit(ctx, nowMs, "REBALANCE", [trade], cfg);
+      }
+      
+      return skip(`WAITING_FOR_REBALANCE: combined=${(combined*100).toFixed(0)}¢`);
+    }
+
+    // ========================================================================
+    // PHASE 4: ACCUMULATE - Shares balanced, add more at very good combined
+    // ========================================================================
+    if (combined < cfg.accumulate.triggerCombined) {
+      // Calculate equal shares to add on both sides
+      const sharesToAdd = calcEqualShares(cfg.accumulate.notional, upExec, downExec);
+      
+      if (sharesToAdd < 1) return skip("ACCUMULATE_SHARES_TOO_LOW");
+      
+      // Check limits after accumulate
+      if (pos.upShares + sharesToAdd > cfg.positionLimits.maxSharesPerSide) {
+        return skip(`ACCUMULATE_WOULD_EXCEED_UP_LIMIT`);
+      }
+      if (pos.downShares + sharesToAdd > cfg.positionLimits.maxSharesPerSide) {
+        return skip(`ACCUMULATE_WOULD_EXCEED_DOWN_LIMIT`);
+      }
+      
+      const edgePct = ((1 - combined) * 100).toFixed(1);
+      
+      const trades: TradeIntent[] = [
+        mkTrade("UP", upExec, sharesToAdd, "ACCUMULATE", `Accumulate UP @ ${(upExec*100).toFixed(0)}¢ (${edgePct}% edge)`),
+        mkTrade("DOWN", downExec, sharesToAdd, "ACCUMULATE", `Accumulate DOWN @ ${(downExec*100).toFixed(0)}¢ (${edgePct}% edge)`),
+      ];
+      
+      return commit(ctx, nowMs, "ACCUMULATE", trades, cfg);
+    }
+
+    return skip(`NO_SIGNAL: combined=${(combined*100).toFixed(0)}¢`);
     
   } finally {
     ctx.inFlight = false;
@@ -579,7 +502,6 @@ async function handleWebSocket(req: Request): Promise<Response> {
                   downInvested: 0,
                 },
                 lastTradeAtMs: 0,
-                lastRebalanceAtMs: 0,
                 lastDecisionKey: null,
                 inFlight: false,
               });
@@ -607,7 +529,6 @@ async function handleWebSocket(req: Request): Promise<Response> {
       for (const ctx of marketContexts.values()) {
         ctx.position = { upShares: 0, downShares: 0, upInvested: 0, downInvested: 0 };
         ctx.lastTradeAtMs = 0;
-        ctx.lastRebalanceAtMs = 0;
       }
       
       if (data) {
