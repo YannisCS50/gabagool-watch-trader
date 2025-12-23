@@ -28,10 +28,12 @@ import {
 } from "lucide-react";
 import { usePolymarketRealtime } from "@/hooks/usePolymarketRealtime";
 import { useChainlinkRealtime } from "@/hooks/useChainlinkRealtime";
+import { usePaperBotSettings } from "@/hooks/usePaperBotSettings";
 import { LivePrice } from "@/components/LivePrice";
 import { GabagoolTradesSummary } from "@/components/GabagoolTradesSummary";
 import { PaperTradesSummary } from "@/components/PaperTradesSummary";
 import { PaperTradeDashboard } from "@/components/PaperTradeDashboard";
+import { Switch } from "@/components/ui/switch";
 import { Bot } from "lucide-react";
 
 interface LiveMarket {
@@ -217,6 +219,9 @@ const RealTimeSignalsPage = () => {
   const [isLive, setIsLive] = useState(true);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [expiredMarketsOpen, setExpiredMarketsOpen] = useState(false);
+
+  // Paper bot settings
+  const { isEnabled: botEnabled, toggleEnabled: toggleBot, isLoading: botLoading } = usePaperBotSettings();
 
   // Drive countdown
   useEffect(() => {
@@ -467,12 +472,36 @@ const RealTimeSignalsPage = () => {
         {/* Paper Trade Bot Dashboard */}
         <Card className="border-purple-500/30">
           <CardContent className="pt-4 pb-4">
-            <div className="flex items-center justify-between">
-              <PaperTradeDashboard compact />
-              <Link to="/paper-trading" className="text-sm text-purple-400 hover:underline flex items-center gap-1">
-                <Bot className="w-4 h-4" />
-                Full Dashboard →
-              </Link>
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <Bot className="w-5 h-5 text-purple-400" />
+                  <span className="font-medium text-purple-400">Paper Bot</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Switch 
+                    checked={botEnabled} 
+                    onCheckedChange={toggleBot}
+                    disabled={botLoading}
+                    className="data-[state=checked]:bg-purple-500"
+                  />
+                  <span className={`text-sm ${botEnabled ? 'text-emerald-400' : 'text-muted-foreground'}`}>
+                    {botEnabled ? 'AAN' : 'UIT'}
+                  </span>
+                </div>
+                {botEnabled && (
+                  <Badge variant="outline" className="text-purple-400 border-purple-500/30 animate-pulse">
+                    <Activity className="w-3 h-3 mr-1" />
+                    Elke minuut actief
+                  </Badge>
+                )}
+              </div>
+              <div className="flex items-center gap-3">
+                <PaperTradeDashboard compact />
+                <Link to="/paper-trading" className="text-sm text-purple-400 hover:underline flex items-center gap-1">
+                  Full Dashboard →
+                </Link>
+              </div>
             </div>
           </CardContent>
         </Card>
