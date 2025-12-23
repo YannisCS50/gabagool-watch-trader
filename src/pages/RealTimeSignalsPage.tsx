@@ -554,9 +554,9 @@ const RealTimeSignalsPage = () => {
                       }`}
                     >
                       {trade.slug.split('-')[0].toUpperCase()} {trade.outcome} @ {(trade.price * 100).toFixed(0)}¢
-                      {trade.slippage !== null && (
+                      {trade.slippage != null && (
                         <span className="ml-1 text-muted-foreground">
-                          ({trade.slippage.toFixed(1)}% slip)
+                          ({trade.slippage?.toFixed(1)}% slip)
                         </span>
                       )}
                     </Badge>
