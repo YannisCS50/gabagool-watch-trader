@@ -490,6 +490,22 @@ export const RealTimeSignals = () => {
                     const upBook = getTopOfBook(market.slug, "up") ?? getTopOfBook(market.slug, "yes");
                     const downBook = getTopOfBook(market.slug, "down") ?? getTopOfBook(market.slug, "no");
 
+                    // Compute spreads
+                    const upSpread = (upBook?.bid != null && upBook?.ask != null) 
+                      ? upBook.ask - upBook.bid 
+                      : null;
+                    const downSpread = (downBook?.bid != null && downBook?.ask != null) 
+                      ? downBook.ask - downBook.bid 
+                      : null;
+                    const upMid = (upBook?.bid != null && upBook?.ask != null)
+                      ? (upBook.bid + upBook.ask) / 2
+                      : null;
+                    const downMid = (downBook?.bid != null && downBook?.ask != null)
+                      ? (downBook.bid + downBook.ask) / 2
+                      : null;
+                    const isUpWideSpread = upSpread !== null && upSpread >= 0.10;
+                    const isDownWideSpread = downSpread !== null && downSpread >= 0.10;
+
                     return (
                       <>
                         <div className="grid grid-cols-4 gap-3 text-sm">
@@ -506,9 +522,19 @@ export const RealTimeSignals = () => {
                             />
                             <div className="mt-1 text-[11px] font-mono text-muted-foreground">
                               <span>Bid {upBook?.bid !== null && upBook?.bid !== undefined ? `${(upBook.bid * 100).toFixed(1)}¢` : "—"}</span>
-                              <span className="mx-2">•</span>
+                              <span className="mx-1">•</span>
                               <span>Ask {upBook?.ask !== null && upBook?.ask !== undefined ? `${(upBook.ask * 100).toFixed(1)}¢` : "—"}</span>
                             </div>
+                            {upMid !== null && (
+                              <div className="mt-0.5 text-[10px] font-mono text-emerald-400/70">
+                                Mid {(upMid * 100).toFixed(1)}¢
+                                {upSpread !== null && (
+                                  <span className={isUpWideSpread ? "text-yellow-400 ml-1" : "ml-1"}>
+                                    (spread {(upSpread * 100).toFixed(1)}¢{isUpWideSpread ? " ⚠" : ""})
+                                  </span>
+                                )}
+                              </div>
+                            )}
                           </div>
 
                           <div className="text-center p-3 bg-red-500/10 rounded-lg">
@@ -526,11 +552,21 @@ export const RealTimeSignals = () => {
                               <span>
                                 Bid {downBook?.bid !== null && downBook?.bid !== undefined ? `${(downBook.bid * 100).toFixed(1)}¢` : "—"}
                               </span>
-                              <span className="mx-2">•</span>
+                              <span className="mx-1">•</span>
                               <span>
                                 Ask {downBook?.ask !== null && downBook?.ask !== undefined ? `${(downBook.ask * 100).toFixed(1)}¢` : "—"}
                               </span>
                             </div>
+                            {downMid !== null && (
+                              <div className="mt-0.5 text-[10px] font-mono text-red-400/70">
+                                Mid {(downMid * 100).toFixed(1)}¢
+                                {downSpread !== null && (
+                                  <span className={isDownWideSpread ? "text-yellow-400 ml-1" : "ml-1"}>
+                                    (spread {(downSpread * 100).toFixed(1)}¢{isDownWideSpread ? " ⚠" : ""})
+                                  </span>
+                                )}
+                              </div>
+                            )}
                           </div>
 
                           <div className="text-center p-3 bg-muted/50 rounded-lg">
