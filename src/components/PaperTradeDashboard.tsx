@@ -295,6 +295,9 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
                                     const totalShares = upShares + downShares;
                                     const upPct = totalShares > 0 ? (upShares / totalShares) * 100 : 50;
                                     
+                                    // Check if hedged (has both UP and DOWN positions)
+                                    const isHedged = upShares > 0 && downShares > 0;
+                                    
                                     // Arbitrage edge: 1 - (upAvg + downAvg) as percentage
                                     const upAvg = upShares > 0 ? upCost / upShares : 0;
                                     const downAvg = downShares > 0 ? downCost / downShares : 0;
@@ -332,14 +335,20 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
                                           </div>
                                         </td>
                                         <td className="py-3 text-center">
-                                          <span className={`font-mono text-sm font-medium ${
-                                            combinedEntry <= 0.95 ? 'text-emerald-500' : 
-                                            combinedEntry <= 0.98 ? 'text-yellow-500' : 
-                                            combinedEntry < 1.0 ? 'text-orange-500' :
-                                            'text-red-500'
-                                          }`}>
-                                            {combinedEntry.toFixed(2)}
-                                          </span>
+                                          {isHedged ? (
+                                            <span className={`font-mono text-sm font-medium ${
+                                              combinedEntry <= 0.95 ? 'text-emerald-500' : 
+                                              combinedEntry <= 0.98 ? 'text-yellow-500' : 
+                                              combinedEntry < 1.0 ? 'text-orange-500' :
+                                              'text-red-500'
+                                            }`}>
+                                              {combinedEntry.toFixed(2)}
+                                            </span>
+                                          ) : (
+                                            <Badge variant="outline" className="text-xs text-orange-400 border-orange-400/50">
+                                              EXPOSED
+                                            </Badge>
+                                          )}
                                         </td>
                                         <td className="py-3 text-right">
                                           <div className="font-mono text-sm text-emerald-500">${upCost.toFixed(2)}</div>
