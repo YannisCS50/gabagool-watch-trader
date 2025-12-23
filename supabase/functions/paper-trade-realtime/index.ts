@@ -116,8 +116,8 @@ const DEFAULT_CONFIG: StrategyConfig = {
     minNotionalToTrade: 1.5,
   },
   execution: {
-    mode: "PAPER_BID",
-    bidMissing: "FALLBACK_TO_ASK",
+    mode: "LIVE_ASK",              // Use ASK prices (what you'd actually pay)
+    bidMissing: "FALLBACK_TO_ASK", // Not used in LIVE_ASK mode
   },
 };
 
@@ -694,6 +694,9 @@ async function handleWebSocket(req: Request): Promise<Response> {
         }
       }
     } else if (eventType === 'price_change') {
+      // NOTE: price_change events show last trade prices, NOT orderbook state.
+      // These can be wildly different from actual executable prices.
+      // We only use these as FALLBACK when we have no book data.
       const changes = data.changes || data.price_changes || [];
       const affectedSlugs = new Set<string>();
       
@@ -704,10 +707,15 @@ async function handleWebSocket(req: Request): Promise<Response> {
           const ctx = marketContexts.get(marketInfo.slug);
           if (ctx) {
             const price = parseFloat(change.price);
+            // ONLY use price_change as fallback if we have NO book data
             if (marketInfo.side === 'up') {
-              ctx.book.up.ask = price;
+              if (ctx.book.up.ask === null) {
+                ctx.book.up.ask = price;
+              }
             } else {
-              ctx.book.down.ask = price;
+              if (ctx.book.down.ask === null) {
+                ctx.book.down.ask = price;
+              }
             }
             ctx.book.updatedAtMs = nowMs;
             affectedSlugs.add(marketInfo.slug);
