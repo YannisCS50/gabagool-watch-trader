@@ -314,23 +314,23 @@ serve(async (req) => {
       signals.push(signal);
     }
     
-    // Sort by confidence (high first), then by remaining time (soonest first)
-    signals.sort((a, b) => {
-      const confOrder = { high: 0, medium: 1, low: 2 };
-      if (confOrder[a.confidence] !== confOrder[b.confidence]) {
-        return confOrder[a.confidence] - confOrder[b.confidence];
-      }
-      return a.remainingSeconds - b.remainingSeconds;
-    });
+    // Sort by end time (soonest first)
+    signals.sort((a, b) => a.remainingSeconds - b.remainingSeconds);
     
     // Get statistics
     const highConfidence = signals.filter(s => s.confidence === 'high');
     const arbitrageOpportunities = signals.filter(s => s.signalType === 'arbitrage');
     const dualSideSignals = signals.filter(s => s.signalType === 'dual_side');
     
-    // Separate current (ending soon) vs upcoming markets
-    const currentMarkets = signals.filter(s => s.remainingSeconds < 900); // < 15 min
-    const upcomingMarkets = signals.filter(s => s.remainingSeconds >= 900);
+    // LIVE = market is active now (remainingSeconds > 0 AND < 15 min)
+    // A 15-min market that has started has < 900 seconds remaining
+    const liveMarkets = signals.filter(s => s.remainingSeconds > 0 && s.remainingSeconds <= 900);
+    
+    // SOON = starts within the next 30 minutes (remaining 900-2700 seconds)
+    const soonUpcoming = signals.filter(s => s.remainingSeconds > 900 && s.remainingSeconds <= 2700);
+    
+    // LATER = more than 30 min out
+    const laterMarkets = signals.filter(s => s.remainingSeconds > 2700);
     
     return new Response(JSON.stringify({
       success: true,
@@ -340,13 +340,16 @@ serve(async (req) => {
         ETH: ethPrice
       },
       marketsAnalyzed: markets.length,
-      currentMarkets,
-      upcomingMarkets,
+      liveMarkets,
+      soonUpcoming,
+      laterMarkets,
       signals,
       summary: {
         highConfidenceCount: highConfidence.length,
         arbitrageOpportunityCount: arbitrageOpportunities.length,
         dualSideSignalCount: dualSideSignals.length,
+        liveCount: liveMarkets.length,
+        soonCount: soonUpcoming.length,
         avgCombinedPrice: signals.length > 0 
           ? signals.reduce((sum, s) => sum + s.combinedPrice, 0) / signals.length 
           : 0,
