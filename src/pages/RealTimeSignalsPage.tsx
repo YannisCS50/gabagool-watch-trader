@@ -4,6 +4,11 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
+import {
   ArrowLeft,
   Activity,
   TrendingUp,
@@ -18,6 +23,8 @@ import {
   Radio,
   Satellite,
   Search,
+  ChevronDown,
+  History,
 } from "lucide-react";
 import { usePolymarketRealtime } from "@/hooks/usePolymarketRealtime";
 import { useChainlinkRealtime } from "@/hooks/useChainlinkRealtime";
@@ -37,9 +44,134 @@ interface LiveMarket {
   marketType: string;
 }
 
+// MarketCard component for reuse
+const MarketCard = ({ 
+  market, 
+  formatTime, 
+  getConfidenceLevel 
+}: { 
+  market: LiveMarket; 
+  formatTime: (s: number) => string; 
+  getConfidenceLevel: (edge: number) => "high" | "medium" | "low";
+}) => {
+  const confidence = getConfidenceLevel(market.arbitrageEdge);
+  const isExpiringSoon = market.remainingSeconds < 120;
+
+  return (
+    <div
+      className={`p-4 rounded-lg border transition-all ${
+        confidence === "high"
+          ? "border-emerald-500/50 bg-emerald-500/10 shadow-lg shadow-emerald-500/10"
+          : confidence === "medium"
+            ? "border-yellow-500/30 bg-yellow-500/5"
+            : "border-border bg-muted/5"
+      }`}
+    >
+      <div className="mb-3">
+        <p className="text-sm font-medium text-foreground">
+          {market.question || `${market.asset} Up/Down`}
+        </p>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          {market.slug}
+        </p>
+      </div>
+
+      <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Badge 
+            variant="outline" 
+            className={market.marketType === '15min' 
+              ? "text-emerald-400 border-emerald-500/30" 
+              : "text-muted-foreground"}
+          >
+            {market.marketType === '15min' ? '15m' : 'Daily'}
+          </Badge>
+          <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/30 text-xs flex items-center gap-1">
+            <Radio className="w-2.5 h-2.5" />
+            CLOB
+          </Badge>
+          <div
+            className={`flex items-center gap-1 px-2 py-1 rounded-md text-sm font-mono ${
+              isExpiringSoon ? "bg-red-500/20 text-red-400 animate-pulse" : "bg-muted"
+            }`}
+          >
+            <Timer className="w-3 h-3" />
+            {formatTime(market.remainingSeconds)}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge
+            className={
+              confidence === "high"
+                ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
+                : confidence === "medium"
+                  ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30"
+                  : "bg-muted text-muted-foreground"
+            }
+          >
+            {confidence.toUpperCase()}
+          </Badge>
+          {market.arbitrageEdge >= 2 && (
+            <Badge variant="outline" className="text-emerald-400 border-emerald-500/30">
+              Arbitrage
+            </Badge>
+          )}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-4 gap-3 text-sm">
+        <div className="text-center p-3 bg-emerald-500/10 rounded-lg">
+          <div className="flex items-center justify-center gap-1 text-emerald-400 mb-1">
+            <TrendingUp className="w-3 h-3" />
+            <span className="text-xs">Up (Ask)</span>
+          </div>
+          <LivePrice price={market.upPrice} format="cents" className="font-bold text-lg text-emerald-400" showFlash={true} />
+        </div>
+        <div className="text-center p-3 bg-red-500/10 rounded-lg">
+          <div className="flex items-center justify-center gap-1 text-red-400 mb-1">
+            <TrendingDown className="w-3 h-3" />
+            <span className="text-xs">Down (Ask)</span>
+          </div>
+          <LivePrice price={market.downPrice} format="cents" className="font-bold text-lg text-red-400" showFlash={true} />
+        </div>
+        <div className="text-center p-3 bg-muted/50 rounded-lg">
+          <div className="flex items-center justify-center gap-1 text-muted-foreground mb-1">
+            <Layers className="w-3 h-3" />
+            <span className="text-xs">Σ Cost</span>
+          </div>
+          <span className={`font-mono font-bold text-lg ${market.combinedPrice < 1 ? "text-emerald-400" : ""}`}>
+            {(market.combinedPrice * 100).toFixed(1)}¢
+          </span>
+        </div>
+        <div className="text-center p-3 bg-primary/10 rounded-lg">
+          <div className="flex items-center justify-center gap-1 text-primary mb-1">
+            <Target className="w-3 h-3" />
+            <span className="text-xs">Edge</span>
+          </div>
+          <span className={`font-mono font-bold text-lg ${market.arbitrageEdge > 0 ? "text-primary" : ""}`}>
+            {market.arbitrageEdge.toFixed(1)}%
+          </span>
+        </div>
+      </div>
+
+      {market.arbitrageEdge >= 2 && (
+        <div className="mt-4 p-3 rounded-lg bg-emerald-500/20 border border-emerald-500/30">
+          <div className="flex items-center gap-2">
+            <Zap className="w-4 h-4 text-emerald-400" />
+            <span className="font-medium text-sm text-emerald-400">
+              ARBITRAGE: Buy both @ {(market.combinedPrice * 100).toFixed(1)}¢ = {market.arbitrageEdge.toFixed(1)}% edge
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const RealTimeSignalsPage = () => {
   const [isLive, setIsLive] = useState(true);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [expiredMarketsOpen, setExpiredMarketsOpen] = useState(false);
 
   // Drive countdown
   useEffect(() => {
@@ -66,44 +198,61 @@ const RealTimeSignalsPage = () => {
     updateCount: chainlinkUpdates,
   } = useChainlinkRealtime(isLive);
 
-  const liveMarkets = useMemo((): LiveMarket[] => {
+  // Split markets by asset
+  const { btcMarkets, ethMarkets, expiredMarkets } = useMemo(() => {
     const readUpDown = (slug: string) => {
       const up = getPrice(slug, "up") ?? getPrice(slug, "yes");
       const down = getPrice(slug, "down") ?? getPrice(slug, "no");
       return { up, down };
     };
 
-    return discoveredMarkets
-      .map((market) => {
-        const { up, down } = readUpDown(market.slug);
-        const upPrice = up ?? 0.5;
-        const downPrice = down ?? 0.5;
-        const combinedPrice = upPrice + downPrice;
-        const arbitrageEdge = (1 - combinedPrice) * 100;
+    const allMarkets = discoveredMarkets.map((market) => {
+      const { up, down } = readUpDown(market.slug);
+      const upPrice = up ?? 0.5;
+      const downPrice = down ?? 0.5;
+      const combinedPrice = upPrice + downPrice;
+      const arbitrageEdge = (1 - combinedPrice) * 100;
 
-        const remainingSeconds = Math.max(
-          0,
-          Math.floor((market.eventEndTime.getTime() - nowMs) / 1000)
-        );
+      const remainingSeconds = Math.max(
+        0,
+        Math.floor((market.eventEndTime.getTime() - nowMs) / 1000)
+      );
 
-        return {
-          slug: market.slug,
-          question: market.question,
-          asset: market.asset,
-          upPrice,
-          downPrice,
-          combinedPrice,
-          arbitrageEdge,
-          eventStartTime: market.eventStartTime,
-          eventEndTime: market.eventEndTime,
-          remainingSeconds,
-          marketType: market.marketType,
-        };
-      })
-      // Show markets with remaining time (up to 7 days for daily markets)
+      return {
+        slug: market.slug,
+        question: market.question,
+        asset: market.asset,
+        upPrice,
+        downPrice,
+        combinedPrice,
+        arbitrageEdge,
+        eventStartTime: market.eventStartTime,
+        eventEndTime: market.eventEndTime,
+        remainingSeconds,
+        marketType: market.marketType,
+      };
+    });
+
+    // Active markets (within 7 days)
+    const active = allMarkets
       .filter((m) => m.remainingSeconds > 0 && m.remainingSeconds <= 7 * 24 * 3600)
       .sort((a, b) => a.remainingSeconds - b.remainingSeconds);
+
+    // Expired markets (negative remaining or zero)
+    const expired = allMarkets
+      .filter((m) => m.remainingSeconds <= 0)
+      .sort((a, b) => b.eventEndTime.getTime() - a.eventEndTime.getTime())
+      .slice(0, 20); // Keep last 20
+
+    return {
+      btcMarkets: active.filter((m) => m.asset === "BTC"),
+      ethMarkets: active.filter((m) => m.asset === "ETH"),
+      expiredMarkets: expired,
+    };
   }, [discoveredMarkets, nowMs, getPrice]);
+
+  // Combine for total count
+  const liveMarkets = [...btcMarkets, ...ethMarkets];
 
   const formatTime = (seconds: number): string => {
     if (seconds <= 0) return "EXPIRED";
@@ -306,149 +455,101 @@ const RealTimeSignalsPage = () => {
           </Card>
         )}
 
-        {liveMarkets.length > 0 && (
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
+        {/* BTC Markets */}
+        {btcMarkets.length > 0 && (
+          <Card className="border-orange-500/30">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-orange-400">
                 <span className="relative flex h-3 w-3">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-500"></span>
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-orange-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3 w-3 bg-orange-500"></span>
                 </span>
-                LIVE NOW ({liveMarkets.length})
+                <DollarSign className="w-5 h-5" />
+                Bitcoin ({btcMarkets.length})
               </CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              {liveMarkets.map((market) => {
-                const confidence = getConfidenceLevel(market.arbitrageEdge);
-                const isExpiringSoon = market.remainingSeconds < 120;
-
-                return (
-                  <div
-                    key={market.slug}
-                    className={`p-4 rounded-lg border transition-all ${
-                      confidence === "high"
-                        ? "border-emerald-500/50 bg-emerald-500/10 shadow-lg shadow-emerald-500/10"
-                        : confidence === "medium"
-                          ? "border-yellow-500/30 bg-yellow-500/5"
-                          : "border-border bg-muted/5"
-                    }`}
-                  >
-                    {/* Market Title */}
-                    <div className="mb-3">
-                      <p className="text-sm font-medium text-foreground">
-                        {market.question || `${market.asset} Up/Down`}
-                      </p>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        {market.slug}
-                      </p>
-                    </div>
-
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="flex items-center gap-2">
-                        <Badge
-                          className={
-                            market.asset === "BTC"
-                              ? "bg-orange-500/20 text-orange-400 border-orange-500/30"
-                              : market.asset === "ETH"
-                                ? "bg-blue-500/20 text-blue-400 border-blue-500/30"
-                                : market.asset === "SOL"
-                                  ? "bg-purple-500/20 text-purple-400 border-purple-500/30"
-                                  : "bg-cyan-500/20 text-cyan-400 border-cyan-500/30"
-                          }
-                        >
-                          {market.asset}
-                        </Badge>
-                        <Badge 
-                          variant="outline" 
-                          className={market.marketType === '15min' 
-                            ? "text-emerald-400 border-emerald-500/30" 
-                            : "text-muted-foreground"}
-                        >
-                          {market.marketType === '15min' ? '15m' : 'Daily'}
-                        </Badge>
-                        <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/30 text-xs flex items-center gap-1">
-                          <Radio className="w-2.5 h-2.5" />
-                          CLOB
-                        </Badge>
-                        <div
-                          className={`flex items-center gap-1 px-2 py-1 rounded-md text-sm font-mono ${
-                            isExpiringSoon ? "bg-red-500/20 text-red-400 animate-pulse" : "bg-muted"
-                          }`}
-                        >
-                          <Timer className="w-3 h-3" />
-                          {formatTime(market.remainingSeconds)}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Badge
-                          className={
-                            confidence === "high"
-                              ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
-                              : confidence === "medium"
-                                ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30"
-                                : "bg-muted text-muted-foreground"
-                          }
-                        >
-                          {confidence.toUpperCase()}
-                        </Badge>
-                        {market.arbitrageEdge >= 2 && (
-                          <Badge variant="outline" className="text-emerald-400 border-emerald-500/30">
-                            Arbitrage
-                          </Badge>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-4 gap-3 text-sm">
-                      <div className="text-center p-3 bg-emerald-500/10 rounded-lg">
-                        <div className="flex items-center justify-center gap-1 text-emerald-400 mb-1">
-                          <TrendingUp className="w-3 h-3" />
-                          <span className="text-xs">Up (Ask)</span>
-                        </div>
-                        <LivePrice price={market.upPrice} format="cents" className="font-bold text-lg text-emerald-400" showFlash={true} />
-                      </div>
-                      <div className="text-center p-3 bg-red-500/10 rounded-lg">
-                        <div className="flex items-center justify-center gap-1 text-red-400 mb-1">
-                          <TrendingDown className="w-3 h-3" />
-                          <span className="text-xs">Down (Ask)</span>
-                        </div>
-                        <LivePrice price={market.downPrice} format="cents" className="font-bold text-lg text-red-400" showFlash={true} />
-                      </div>
-                      <div className="text-center p-3 bg-muted/50 rounded-lg">
-                        <div className="flex items-center justify-center gap-1 text-muted-foreground mb-1">
-                          <Layers className="w-3 h-3" />
-                          <span className="text-xs">Σ Cost</span>
-                        </div>
-                        <span className={`font-mono font-bold text-lg ${market.combinedPrice < 1 ? "text-emerald-400" : ""}`}>
-                          {(market.combinedPrice * 100).toFixed(1)}¢
-                        </span>
-                      </div>
-                      <div className="text-center p-3 bg-primary/10 rounded-lg">
-                        <div className="flex items-center justify-center gap-1 text-primary mb-1">
-                          <Target className="w-3 h-3" />
-                          <span className="text-xs">Edge</span>
-                        </div>
-                        <span className={`font-mono font-bold text-lg ${market.arbitrageEdge > 0 ? "text-primary" : ""}`}>
-                          {market.arbitrageEdge.toFixed(1)}%
-                        </span>
-                      </div>
-                    </div>
-
-                    {market.arbitrageEdge >= 2 && (
-                      <div className="mt-4 p-3 rounded-lg bg-emerald-500/20 border border-emerald-500/30">
-                        <div className="flex items-center gap-2">
-                          <Zap className="w-4 h-4 text-emerald-400" />
-                          <span className="font-medium text-sm text-emerald-400">
-                            ARBITRAGE: Buy both @ {(market.combinedPrice * 100).toFixed(1)}¢ = {market.arbitrageEdge.toFixed(1)}% edge
-                          </span>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+              {btcMarkets.map((market) => (
+                <MarketCard key={market.slug} market={market} formatTime={formatTime} getConfidenceLevel={getConfidenceLevel} />
+              ))}
             </CardContent>
           </Card>
+        )}
+
+        {/* ETH Markets */}
+        {ethMarkets.length > 0 && (
+          <Card className="border-blue-500/30">
+            <CardHeader className="pb-3">
+              <CardTitle className="flex items-center gap-2 text-blue-400">
+                <span className="relative flex h-3 w-3">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-3 w-3 bg-blue-500"></span>
+                </span>
+                <DollarSign className="w-5 h-5" />
+                Ethereum ({ethMarkets.length})
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {ethMarkets.map((market) => (
+                <MarketCard key={market.slug} market={market} formatTime={formatTime} getConfidenceLevel={getConfidenceLevel} />
+              ))}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Expired Markets Collapsible */}
+        {expiredMarkets.length > 0 && (
+          <Collapsible open={expiredMarketsOpen} onOpenChange={setExpiredMarketsOpen}>
+            <Card className="border-muted">
+              <CollapsibleTrigger asChild>
+                <CardHeader className="cursor-pointer hover:bg-muted/50 transition-colors">
+                  <CardTitle className="flex items-center justify-between text-muted-foreground">
+                    <div className="flex items-center gap-2">
+                      <History className="w-5 h-5" />
+                      Expired Markets ({expiredMarkets.length})
+                    </div>
+                    <ChevronDown className={`w-5 h-5 transition-transform ${expiredMarketsOpen ? 'rotate-180' : ''}`} />
+                  </CardTitle>
+                </CardHeader>
+              </CollapsibleTrigger>
+              <CollapsibleContent>
+                <CardContent className="space-y-3 pt-0">
+                  {expiredMarkets.map((market) => (
+                    <div
+                      key={market.slug}
+                      className="p-3 rounded-lg border border-border bg-muted/20 opacity-60"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Badge
+                            variant="outline"
+                            className={
+                              market.asset === "BTC"
+                                ? "text-orange-400 border-orange-500/30"
+                                : "text-blue-400 border-blue-500/30"
+                            }
+                          >
+                            {market.asset}
+                          </Badge>
+                          <span className="text-sm text-muted-foreground">
+                            {market.question || `${market.asset} Up/Down`}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3 text-xs">
+                          <span className="text-emerald-400">{(market.upPrice * 100).toFixed(0)}¢</span>
+                          <span className="text-muted-foreground">/</span>
+                          <span className="text-red-400">{(market.downPrice * 100).toFixed(0)}¢</span>
+                          <Badge variant="outline" className="text-muted-foreground">
+                            EXPIRED
+                          </Badge>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </CardContent>
+              </CollapsibleContent>
+            </Card>
+          </Collapsible>
         )}
 
         {discoveredMarkets.length === 0 && clobConnected && (
