@@ -59,6 +59,36 @@ export type Database = {
         }
         Relationships: []
       }
+      strike_prices: {
+        Row: {
+          asset: string
+          chainlink_timestamp: number
+          created_at: string | null
+          event_start_time: string
+          id: string
+          market_slug: string
+          strike_price: number
+        }
+        Insert: {
+          asset: string
+          chainlink_timestamp: number
+          created_at?: string | null
+          event_start_time: string
+          id?: string
+          market_slug: string
+          strike_price: number
+        }
+        Update: {
+          asset?: string
+          chainlink_timestamp?: number
+          created_at?: string | null
+          event_start_time?: string
+          id?: string
+          market_slug?: string
+          strike_price?: number
+        }
+        Relationships: []
+      }
       trader_stats: {
         Row: {
           active_since: string | null
