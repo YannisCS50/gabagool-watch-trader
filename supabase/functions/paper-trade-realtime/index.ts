@@ -7,7 +7,8 @@ const corsHeaders = {
 };
 
 // ============================================================================
-// GABAGOOL-STYLE TRADING STRATEGY (execution-ready)
+// GABAGOOL-STYLE TRADING STRATEGY V3 (IMPROVED)
+// Fixed: bid-based paper execution, both-side checks, dedup, per-side limits
 // ============================================================================
 
 type Outcome = "UP" | "DOWN";
@@ -32,7 +33,10 @@ interface MarketContext {
   book: TopOfBook;
   position: MarketPosition;
   priceToBeat?: number | null;
-  lastTradeAtMs?: number;
+  lastTradeAtMs: number;
+  // NEW: de-dupe state
+  lastDecisionKey?: string | null;
+  inFlight?: boolean;
 }
 
 interface TradeIntent {
@@ -41,7 +45,7 @@ interface TradeIntent {
   limitPrice: number;
   notionalUsd: number;
   shares: number;
-  type: "OPENING_DUAL" | "HEDGE_MISSING_SIDE" | "DCA_CHEAP_DUAL" | "DCA_BALANCE" | "ARB_DUAL" | "NEUTRAL_DUAL" | "SKIP";
+  type: "OPENING_DUAL" | "HEDGE_MISSING_SIDE" | "DCA_CHEAP_DUAL" | "DCA_BALANCE" | "ARB_DUAL" | "SKIP";
   reason: string;
 }
 
@@ -58,8 +62,16 @@ interface StrategyConfig {
   };
   arbitrage: { strongEdge: number; normalEdge: number; maxReasonable: number };
   multipliers: { strongArb: number; arb: number; neutral: number; pricey: number };
-  hf: { tickMinIntervalMs: number; minNotionalToTrade: number };
+  hf: { 
+    tickMinIntervalMs: number; 
+    minNotionalToTrade: number;
+    dedupeWindowMs: number;  // NEW: de-dupe window
+  };
   split: { mode: "EQUAL" | "CHEAPER_BIAS"; cheaperBiasPct: number };
+  execution: {
+    mode: "PAPER_BID" | "LIVE_ASK";  // NEW: execution mode
+    bidMissing: "FALLBACK_TO_ASK" | "SKIP";  // NEW: fallback behavior
+  };
 }
 
 const DEFAULT_CONFIG: StrategyConfig = {
@@ -68,94 +80,40 @@ const DEFAULT_CONFIG: StrategyConfig = {
   entry: {
     minSecondsRemaining: 45,
     minPrice: 0.03,
-    maxPrice: 0.92,  // More conservative - don't buy very expensive options
+    maxPrice: 0.92,
     cheapThreshold: 0.25,
-    imbalanceThresholdPct: 30,  // Less aggressive rebalancing
+    imbalanceThresholdPct: 30,
     staleBookMs: 2000,
   },
   arbitrage: {
     strongEdge: 0.94,   // Combined < 94¢ = strong arb (6% edge)
     normalEdge: 0.97,   // Combined < 97¢ = normal arb (3% edge)
-    maxReasonable: 0.995, // ONLY trade if combined < 99.5¢ (must have SOME edge)
+    maxReasonable: 0.995, // ONLY trade if combined < 99.5¢
   },
   multipliers: {
     strongArb: 2.5,
     arb: 1.5,
-    neutral: 0.0,  // Disabled - don't trade neutral (no edge)
-    pricey: 0.0,   // Disabled - never trade pricey
+    neutral: 0.0,  // Disabled
+    pricey: 0.0,   // Disabled
   },
   hf: {
-    tickMinIntervalMs: 3000,  // Slower: only trade every 3 seconds per market
-    minNotionalToTrade: 3.0,  // Higher minimum to reduce dust
+    tickMinIntervalMs: 3000,
+    minNotionalToTrade: 3.0,
+    dedupeWindowMs: 950,  // NEW: prevent duplicate signals within ~1s
   },
   split: {
     mode: "CHEAPER_BIAS",
-    cheaperBiasPct: 0.60,  // More bias to cheaper side
+    cheaperBiasPct: 0.60,
+  },
+  execution: {
+    mode: "PAPER_BID",        // NEW: simulate on bid prices
+    bidMissing: "FALLBACK_TO_ASK",  // NEW: fallback if bid missing
   },
 };
 
 // ============================================================================
-// STRATEGY LOGIC
+// STRATEGY LOGIC (IMPROVED)
 // ============================================================================
-
-type Zone = "STRONG_ARB" | "ARB" | "NEUTRAL" | "PRICEY" | "TOO_EXPENSIVE";
-
-function classifyZone(combined: number, cfg: StrategyConfig): Zone {
-  if (combined < cfg.arbitrage.strongEdge) return "STRONG_ARB";
-  if (combined < cfg.arbitrage.normalEdge) return "ARB";
-  if (combined <= 1.0) return "NEUTRAL";
-  if (combined <= cfg.arbitrage.maxReasonable) return "PRICEY";
-  return "TOO_EXPENSIVE";
-}
-
-function computeBaseNotional(remainingSeconds: number, combined: number, cfg: StrategyConfig): number {
-  const zone = classifyZone(combined, cfg);
-  let notional = cfg.tradeSize.base;
-
-  if (zone === "STRONG_ARB") notional *= cfg.multipliers.strongArb;
-  else if (zone === "ARB") notional *= cfg.multipliers.arb;
-  else if (zone === "NEUTRAL") notional *= cfg.multipliers.neutral;
-  else if (zone === "PRICEY") notional *= cfg.multipliers.pricey;
-
-  if (remainingSeconds < 60) notional *= 0.5;
-  return clamp(notional, cfg.tradeSize.min, cfg.tradeSize.max);
-}
-
-function splitNotionalDual(notional: number, upAsk: number, downAsk: number, cfg: StrategyConfig): [number, number] {
-  if (cfg.split.mode === "EQUAL") return [notional * 0.5, notional * 0.5];
-  const bias = clamp(cfg.split.cheaperBiasPct, 0.5, 0.75);
-  if (upAsk <= downAsk) return [notional * bias, notional * (1 - bias)];
-  return [notional * (1 - bias), notional * bias];
-}
-
-function getValueImbalancePct(
-  pos: MarketPosition,
-  prices: { upBid: number | null; downBid: number | null; upAsk: number; downAsk: number }
-): number {
-  const upPx = isFiniteNum(prices.upBid) ? prices.upBid : prices.upAsk;
-  const downPx = isFiniteNum(prices.downBid) ? prices.downBid : prices.downAsk;
-  const upVal = pos.upShares * upPx;
-  const downVal = pos.downShares * downPx;
-  const total = upVal + downVal;
-  if (total <= 0) return 0;
-  return ((upVal - downVal) / total) * 100;
-}
-
-function mkBuy(outcome: Outcome, limitPrice: number, notionalUsd: number, type: TradeIntent["type"], reason: string): TradeIntent {
-  const shares = Math.floor(notionalUsd / limitPrice);
-  return { outcome, side: "BUY", limitPrice, notionalUsd, shares, type, reason };
-}
-
-function filterTradeDust(trades: TradeIntent[], cfg: StrategyConfig): TradeIntent[] {
-  return trades
-    .filter(t => t.notionalUsd >= cfg.hf.minNotionalToTrade)
-    .filter(t => t.shares >= 1)
-    .filter(t => t.limitPrice >= cfg.entry.minPrice && t.limitPrice <= cfg.entry.maxPrice);
-}
-
-function skip(nextState: MarketContext, code: string, why: string) {
-  return { shouldTrade: false, reason: `${code}: ${why}`, trades: [] as TradeIntent[], nextState };
-}
 
 function clamp(x: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, x));
@@ -165,162 +123,215 @@ function isFiniteNum(x: unknown): x is number {
   return typeof x === "number" && Number.isFinite(x);
 }
 
+function skip(reason: string): { shouldTrade: false; reason: string; trades: TradeIntent[] } {
+  return { shouldTrade: false, reason, trades: [] };
+}
+
+function commit(ctx: MarketContext, nowMs: number, reason: string, trades: TradeIntent[]): 
+  { shouldTrade: true; reason: string; trades: TradeIntent[] } | { shouldTrade: false; reason: string; trades: TradeIntent[] } {
+  if (!trades.length) return skip("BLOCKED");
+  ctx.lastTradeAtMs = nowMs;
+  return { shouldTrade: true, reason, trades };
+}
+
+// NEW: Make a decision key for de-duplication
+function makeDecisionKey(slug: string, up: number, down: number, combined: number, nowMs: number, windowMs: number): string {
+  const bucket = Math.floor(nowMs / windowMs);
+  const r = (x: number) => (Math.round(x * 100) / 100).toFixed(2);
+  return `${slug}|${bucket}|u=${r(up)}|d=${r(down)}|c=${r(combined)}`;
+}
+
+// NEW: Get execution prices based on mode (paper = bid, live = ask)
+function getExecutionPrices(ctx: MarketContext, cfg: StrategyConfig): 
+  { upExec: number; downExec: number; upRef: number; downRef: number } | null {
+  const upBid = ctx.book.up.bid;
+  const downBid = ctx.book.down.bid;
+  const upAsk = ctx.book.up.ask;
+  const downAsk = ctx.book.down.ask;
+
+  const wantBid = cfg.execution.mode === "PAPER_BID";
+
+  if (wantBid) {
+    if (isFiniteNum(upBid) && isFiniteNum(downBid)) {
+      return { upExec: upBid, downExec: downBid, upRef: upBid, downRef: downBid };
+    }
+    if (cfg.execution.bidMissing === "FALLBACK_TO_ASK" && isFiniteNum(upAsk) && isFiniteNum(downAsk)) {
+      return { upExec: upAsk, downExec: downAsk, upRef: upAsk, downRef: downAsk };
+    }
+    return null;
+  } else {
+    if (!isFiniteNum(upAsk) || !isFiniteNum(downAsk)) return null;
+    return { upExec: upAsk, downExec: downAsk, upRef: upAsk, downRef: downAsk };
+  }
+}
+
+// VALUE imbalance (better than shares)
+function valueImbalancePct(pos: MarketPosition, upPx: number, downPx: number): number {
+  const upVal = pos.upShares * upPx;
+  const downVal = pos.downShares * downPx;
+  const total = upVal + downVal;
+  if (total <= 0) return 0;
+  return ((upVal - downVal) / total) * 100;
+}
+
+function mkBuy(outcome: Outcome, price: number, notionalUsd: number, type: TradeIntent["type"], reason: string): TradeIntent {
+  const shares = Math.floor(notionalUsd / price);
+  return { outcome, side: "BUY", limitPrice: price, notionalUsd, shares, type, reason };
+}
+
+function splitNotional(notional: number, up: number, down: number, cfg: StrategyConfig): [number, number] {
+  if (cfg.split.mode === "EQUAL") return [notional * 0.5, notional * 0.5];
+  const bias = clamp(cfg.split.cheaperBiasPct, 0.5, 0.75);
+  return up <= down ? [notional * bias, notional * (1 - bias)] : [notional * (1 - bias), notional * bias];
+}
+
+function dualTrades(notional: number, up: number, down: number, canUp: boolean, canDown: boolean, cfg: StrategyConfig, type: TradeIntent["type"], reasonPrefix: string): TradeIntent[] {
+  const [uN, dN] = splitNotional(notional, up, down, cfg);
+  const out: TradeIntent[] = [];
+  if (canUp) out.push(mkBuy("UP", up, uN, type, `${reasonPrefix} (UP @ ${(up*100).toFixed(0)}¢)`));
+  if (canDown) out.push(mkBuy("DOWN", down, dN, type, `${reasonPrefix} (DOWN @ ${(down*100).toFixed(0)}¢)`));
+  return out.filter(t => t.notionalUsd >= cfg.hf.minNotionalToTrade && t.shares >= 1);
+}
+
+function buildOpeningDual(up: number, down: number, canUp: boolean, canDown: boolean, cfg: StrategyConfig): TradeIntent[] {
+  const notional = clamp(cfg.tradeSize.base, cfg.tradeSize.min, cfg.tradeSize.max);
+  return dualTrades(notional, up, down, canUp, canDown, cfg, "OPENING_DUAL", "Opening dual-side baseline");
+}
+
+function buildHedgeMissing(up: number, down: number, canUp: boolean, canDown: boolean, cfg: StrategyConfig, pos: MarketPosition): TradeIntent[] {
+  const notional = clamp(cfg.tradeSize.base, cfg.tradeSize.min, cfg.tradeSize.max);
+  if (pos.upShares === 0 && canUp) return [mkBuy("UP", up, notional, "HEDGE_MISSING_SIDE", `Hedge missing UP @ ${(up*100).toFixed(0)}¢`)];
+  if (pos.downShares === 0 && canDown) return [mkBuy("DOWN", down, notional, "HEDGE_MISSING_SIDE", `Hedge missing DOWN @ ${(down*100).toFixed(0)}¢`)];
+  return [];
+}
+
+function buildCheapDual(up: number, down: number, canUp: boolean, canDown: boolean, cfg: StrategyConfig, combined: number): TradeIntent[] {
+  const notional = clamp(cfg.tradeSize.base * cfg.multipliers.arb, cfg.tradeSize.min, cfg.tradeSize.max);
+  const edgePct = ((1 - combined) * 100).toFixed(1);
+  return dualTrades(notional, up, down, canUp, canDown, cfg, "DCA_CHEAP_DUAL", `Cheap DCA: ${edgePct}% edge`);
+}
+
+function buildRebalance(up: number, down: number, canUp: boolean, canDown: boolean, cfg: StrategyConfig, imbalancePct: number, combined: number): TradeIntent[] {
+  const notional = clamp(cfg.tradeSize.base, cfg.tradeSize.min, cfg.tradeSize.max);
+  const edgePct = ((1 - combined) * 100).toFixed(1);
+  const underweight: Outcome = imbalancePct > 0 ? "DOWN" : "UP";
+  if (underweight === "UP" && canUp) return [mkBuy("UP", up, notional, "DCA_BALANCE", `Rebalance: UP underweight (imbalance ${imbalancePct.toFixed(0)}%, edge ${edgePct}%)`)];
+  if (underweight === "DOWN" && canDown) return [mkBuy("DOWN", down, notional, "DCA_BALANCE", `Rebalance: DOWN underweight (imbalance ${imbalancePct.toFixed(0)}%, edge ${edgePct}%)`)];
+  return [];
+}
+
+function buildArbDual(up: number, down: number, canUp: boolean, canDown: boolean, cfg: StrategyConfig, combined: number): TradeIntent[] {
+  const mult = combined < cfg.arbitrage.strongEdge ? cfg.multipliers.strongArb : cfg.multipliers.arb;
+  const notional = clamp(cfg.tradeSize.base * mult, cfg.tradeSize.min, cfg.tradeSize.max);
+  const edgePct = ((1 - combined) * 100).toFixed(1);
+  const zone = combined < cfg.arbitrage.strongEdge ? "STRONG" : "NORMAL";
+  return dualTrades(notional, up, down, canUp, canDown, cfg, "ARB_DUAL", `ARB ${zone}: ${edgePct}% edge (${(up*100).toFixed(0)}¢+${(down*100).toFixed(0)}¢=${(combined*100).toFixed(0)}¢)`);
+}
+
 /**
  * MAIN ENTRY: Decide trades for a single market tick.
+ * FIXED: bid-based execution, both-side checks, inFlight lock, decisionKey de-dupe, per-side limits
  */
 function decideTrades(
   ctx: MarketContext,
   cfg: StrategyConfig = DEFAULT_CONFIG,
   nowMs: number = Date.now()
-): { shouldTrade: boolean; reason: string; trades: TradeIntent[]; nextState: MarketContext } {
-  const nextState: MarketContext = { ...ctx, lastTradeAtMs: ctx.lastTradeAtMs };
+): { shouldTrade: boolean; reason: string; trades: TradeIntent[] } {
+  
+  // ---- SINGLE-FLIGHT LOCK (race condition fix) ----
+  if (ctx.inFlight) return skip("IN_FLIGHT");
+  ctx.inFlight = true;
 
-  // HF throttle
-  if (ctx.lastTradeAtMs && nowMs - ctx.lastTradeAtMs < cfg.hf.tickMinIntervalMs) {
-    return skip(nextState, "COOLDOWN", `Cooldown ${cfg.hf.tickMinIntervalMs}ms not elapsed`);
-  }
-
-  // Expiry guard
-  if (ctx.remainingSeconds < cfg.entry.minSecondsRemaining) {
-    return skip(nextState, "TOO_CLOSE_TO_EXPIRY", `Remaining ${ctx.remainingSeconds}s < ${cfg.entry.minSecondsRemaining}s`);
-  }
-
-  // Book freshness
-  if (nowMs - ctx.book.updatedAtMs > cfg.entry.staleBookMs) {
-    return skip(nextState, "STALE_BOOK", `Book stale: ${nowMs - ctx.book.updatedAtMs}ms`);
-  }
-
-  const upAsk = ctx.book.up.ask;
-  const downAsk = ctx.book.down.ask;
-  const upBid = ctx.book.up.bid;
-  const downBid = ctx.book.down.bid;
-
-  if (!isFiniteNum(upAsk) || !isFiniteNum(downAsk)) {
-    return skip(nextState, "MISSING_ASK", "Missing top-of-book ask(s)");
-  }
-
-  // Price sanity
-  if (upAsk < cfg.entry.minPrice || downAsk < cfg.entry.minPrice) {
-    return skip(nextState, "PRICE_TOO_LOW", `Ask too low (upAsk=${upAsk}, downAsk=${downAsk})`);
-  }
-  if (upAsk > cfg.entry.maxPrice || downAsk > cfg.entry.maxPrice) {
-    return skip(nextState, "PRICE_TOO_HIGH", `Ask too high (upAsk=${upAsk}, downAsk=${downAsk})`);
-  }
-
-  // Limits
-  const totalInvested = ctx.position.upInvested + ctx.position.downInvested;
-  if (totalInvested >= cfg.positionLimits.maxTotal) {
-    return skip(nextState, "POSITION_LIMIT_TOTAL", `Total invested ${totalInvested} >= ${cfg.positionLimits.maxTotal}`);
-  }
-
-  const combined = upAsk + downAsk;
-  const zone = classifyZone(combined, cfg);
-
-  // If combined is wildly expensive, skip
-  if (zone === "TOO_EXPENSIVE") {
-    return skip(nextState, "TOO_EXPENSIVE", `Combined ${(combined * 100).toFixed(2)}¢ > ${(cfg.arbitrage.maxReasonable * 100).toFixed(2)}¢`);
-  }
-
-  // Compute base notional and multiplier by zone + time scaling
-  const baseNotional = computeBaseNotional(ctx.remainingSeconds, combined, cfg);
-
-  // Always enforce per-side limits
-  const canBuyUp = ctx.position.upInvested < cfg.positionLimits.maxPerSide;
-  const canBuyDown = ctx.position.downInvested < cfg.positionLimits.maxPerSide;
-
-  // If one side missing, hedge immediately (dual-side always)
-  const missingUp = ctx.position.upShares <= 0;
-  const missingDown = ctx.position.downShares <= 0;
-
-  if (missingUp || missingDown) {
-    const trades: TradeIntent[] = [];
-
-    // Opening: if both missing, do dual opening
-    if (missingUp && missingDown) {
-      const [uNotional, dNotional] = splitNotionalDual(baseNotional, upAsk, downAsk, cfg);
-      if (canBuyUp) trades.push(mkBuy("UP", upAsk, uNotional, "OPENING_DUAL", "Opening dual-side baseline (UP leg)"));
-      if (canBuyDown) trades.push(mkBuy("DOWN", downAsk, dNotional, "OPENING_DUAL", "Opening dual-side baseline (DOWN leg)"));
-
-      const filtered = filterTradeDust(trades, cfg);
-      if (filtered.length === 0) return skip(nextState, "OPENING_BLOCKED", "Opening blocked by limits or dust");
-
-      nextState.lastTradeAtMs = nowMs;
-      return { shouldTrade: true, reason: "OPENING_DUAL", trades: filtered, nextState };
+  try {
+    // 1) COOLDOWN
+    if (ctx.lastTradeAtMs && nowMs - ctx.lastTradeAtMs < cfg.hf.tickMinIntervalMs) {
+      return skip(`COOLDOWN: ${cfg.hf.tickMinIntervalMs}ms not elapsed`);
     }
 
-    // Hedge: buy only the missing side
-    const outcome: Outcome = missingUp ? "UP" : "DOWN";
-    const price = outcome === "UP" ? upAsk : downAsk;
-
-    if ((outcome === "UP" && !canBuyUp) || (outcome === "DOWN" && !canBuyDown)) {
-      return skip(nextState, "HEDGE_BLOCKED", `Missing side ${outcome} but per-side limit reached`);
+    // 2) EXPIRY
+    if (ctx.remainingSeconds < cfg.entry.minSecondsRemaining) {
+      return skip(`TOO_CLOSE_TO_EXPIRY: ${ctx.remainingSeconds}s < ${cfg.entry.minSecondsRemaining}s`);
     }
 
-    const trade = mkBuy(outcome, price, baseNotional, "HEDGE_MISSING_SIDE", `Hedge missing side: ${outcome}`);
-    const filtered = filterTradeDust([trade], cfg);
-    if (filtered.length === 0) return skip(nextState, "HEDGE_DUST", "Hedge notional too small");
-
-    nextState.lastTradeAtMs = nowMs;
-    return { shouldTrade: true, reason: "HEDGE_MISSING_SIDE", trades: filtered, nextState };
-  }
-
-  // If prices are cheap AND there's arbitrage, we can do a slightly larger dual buy
-  if ((upAsk <= cfg.entry.cheapThreshold || downAsk <= cfg.entry.cheapThreshold) && combined < cfg.arbitrage.maxReasonable) {
-    const cheapBoost = 1.5;
-    const notional = clamp(baseNotional * cheapBoost, cfg.tradeSize.min, cfg.tradeSize.max);
-    const edgePct = (1 - combined) * 100;
-
-    const [uNotional, dNotional] = splitNotionalDual(notional, upAsk, downAsk, cfg);
-
-    const trades: TradeIntent[] = [];
-    if (canBuyUp) trades.push(mkBuy("UP", upAsk, uNotional, "DCA_CHEAP_DUAL", `Cheap DCA: ${edgePct.toFixed(1)}% edge (UP @ ${(upAsk * 100).toFixed(0)}¢)`));
-    if (canBuyDown) trades.push(mkBuy("DOWN", downAsk, dNotional, "DCA_CHEAP_DUAL", `Cheap DCA: ${edgePct.toFixed(1)}% edge (DOWN @ ${(downAsk * 100).toFixed(0)}¢)`));
-
-    const filtered = filterTradeDust(trades, cfg);
-    if (filtered.length === 0) return skip(nextState, "CHEAP_BLOCKED", "Cheap DCA blocked by limits/dust");
-
-    nextState.lastTradeAtMs = nowMs;
-    return { shouldTrade: true, reason: `DCA_CHEAP_DUAL (${edgePct.toFixed(1)}% edge)`, trades: filtered, nextState };
-  }
-
-  // Rebalance if value skew too large AND there's still some edge
-  const imbalancePct = getValueImbalancePct(ctx.position, { upBid, downBid, upAsk, downAsk });
-  if (Math.abs(imbalancePct) > cfg.entry.imbalanceThresholdPct && combined < cfg.arbitrage.maxReasonable) {
-    const outcome: Outcome = imbalancePct > 0 ? "DOWN" : "UP";
-    const price = outcome === "UP" ? upAsk : downAsk;
-    const edgePct = (1 - combined) * 100;
-
-    if ((outcome === "UP" && !canBuyUp) || (outcome === "DOWN" && !canBuyDown)) {
-      return skip(nextState, "REBAL_BLOCKED", `Rebalance wants ${outcome} but per-side limit reached`);
+    // 3) BOOK FRESHNESS
+    if (nowMs - ctx.book.updatedAtMs > cfg.entry.staleBookMs) {
+      return skip(`STALE_BOOK: ${nowMs - ctx.book.updatedAtMs}ms`);
     }
 
-    const trade = mkBuy(outcome, price, baseNotional, "DCA_BALANCE", `Rebalance: ${outcome} underweight (imbalance ${imbalancePct.toFixed(0)}%, edge ${edgePct.toFixed(1)}%)`);
-    const filtered = filterTradeDust([trade], cfg);
-    if (filtered.length === 0) return skip(nextState, "REBAL_DUST", "Rebalance trade too small");
+    // 4) Determine execution prices (paper = bid, live = ask)
+    const px = getExecutionPrices(ctx, cfg);
+    if (!px) return skip("MISSING_PRICES");
 
-    nextState.lastTradeAtMs = nowMs;
-    return { shouldTrade: true, reason: `DCA_BALANCE (${edgePct.toFixed(1)}% edge)`, trades: filtered, nextState };
+    const { upExec, downExec, upRef, downRef } = px;
+
+    // 5) PRICE SANITY (check BOTH sides) - FIXED
+    if (upExec < cfg.entry.minPrice || upExec > cfg.entry.maxPrice) {
+      return skip(`UP_PRICE_OUT_OF_RANGE: ${(upExec*100).toFixed(0)}¢`);
+    }
+    if (downExec < cfg.entry.minPrice || downExec > cfg.entry.maxPrice) {
+      return skip(`DOWN_PRICE_OUT_OF_RANGE: ${(downExec*100).toFixed(0)}¢`);
+    }
+
+    // 6) LIMITS (total + per-side) - FIXED: check per-side
+    const totalInvested = ctx.position.upInvested + ctx.position.downInvested;
+    if (totalInvested >= cfg.positionLimits.maxTotal) {
+      return skip(`POSITION_LIMIT_TOTAL: $${totalInvested.toFixed(0)} >= $${cfg.positionLimits.maxTotal}`);
+    }
+
+    const canBuyUp = ctx.position.upInvested < cfg.positionLimits.maxPerSide;
+    const canBuyDown = ctx.position.downInvested < cfg.positionLimits.maxPerSide;
+
+    // 7) EDGE REQUIREMENT: combined must be < maxReasonable (99.5¢)
+    const combined = upExec + downExec;
+
+    // ---- DECISION KEY (dedupe identical signals) ----
+    const decisionKey = makeDecisionKey(ctx.slug, upExec, downExec, combined, nowMs, cfg.hf.dedupeWindowMs);
+    if (ctx.lastDecisionKey === decisionKey) return skip("DEDUPED");
+    ctx.lastDecisionKey = decisionKey;
+
+    if (combined >= cfg.arbitrage.maxReasonable) {
+      return skip(`NO_EDGE: combined ${(combined*100).toFixed(1)}¢ >= ${(cfg.arbitrage.maxReasonable*100).toFixed(1)}¢`);
+    }
+
+    // ---- TRADE TYPES PRIORITY ----
+
+    // A) OPENING_DUAL: both sides missing
+    if (ctx.position.upShares === 0 && ctx.position.downShares === 0) {
+      const trades = buildOpeningDual(upExec, downExec, canBuyUp, canBuyDown, cfg);
+      return commit(ctx, nowMs, "OPENING_DUAL", trades);
+    }
+
+    // B) HEDGE_MISSING_SIDE: one side missing
+    if (ctx.position.upShares === 0 || ctx.position.downShares === 0) {
+      const trades = buildHedgeMissing(upExec, downExec, canBuyUp, canBuyDown, cfg, ctx.position);
+      return commit(ctx, nowMs, "HEDGE_MISSING_SIDE", trades);
+    }
+
+    // C) DCA_CHEAP_DUAL (≤25¢) - still requires edge gate already passed
+    if (upExec <= cfg.entry.cheapThreshold || downExec <= cfg.entry.cheapThreshold) {
+      const trades = buildCheapDual(upExec, downExec, canBuyUp, canBuyDown, cfg, combined);
+      return commit(ctx, nowMs, "DCA_CHEAP_DUAL", trades);
+    }
+
+    // D) DCA_BALANCE (>30% skew) - by VALUE, not shares
+    const imbalancePct = valueImbalancePct(ctx.position, upRef, downRef);
+    if (Math.abs(imbalancePct) > cfg.entry.imbalanceThresholdPct) {
+      const trades = buildRebalance(upExec, downExec, canBuyUp, canBuyDown, cfg, imbalancePct, combined);
+      return commit(ctx, nowMs, "DCA_BALANCE", trades);
+    }
+
+    // E) ARB_DUAL (Combined < 97¢) - accumulate both sides
+    if (combined < cfg.arbitrage.normalEdge) {
+      const trades = buildArbDual(upExec, downExec, canBuyUp, canBuyDown, cfg, combined);
+      return commit(ctx, nowMs, "ARB_DUAL", trades);
+    }
+
+    // Neutral is disabled in config
+    return skip("SKIP: no trade type matched");
+    
+  } finally {
+    ctx.inFlight = false;
   }
-
-  // Accumulate: dual-leg trading ONLY when there's actual arbitrage edge
-  if (zone === "STRONG_ARB" || zone === "ARB") {
-    const edgePct = (1 - combined) * 100;
-    const [uNotional, dNotional] = splitNotionalDual(baseNotional, upAsk, downAsk, cfg);
-    const trades: TradeIntent[] = [];
-
-    if (canBuyUp) trades.push(mkBuy("UP", upAsk, uNotional, "ARB_DUAL", `ARB dual: ${edgePct.toFixed(1)}% edge (${(upAsk * 100).toFixed(0)}¢+${(downAsk * 100).toFixed(0)}¢=${(combined * 100).toFixed(0)}¢)`));
-    if (canBuyDown) trades.push(mkBuy("DOWN", downAsk, dNotional, "ARB_DUAL", `ARB dual: ${edgePct.toFixed(1)}% edge (${(upAsk * 100).toFixed(0)}¢+${(downAsk * 100).toFixed(0)}¢=${(combined * 100).toFixed(0)}¢)`));
-
-    const filtered = filterTradeDust(trades, cfg);
-    if (filtered.length === 0) return skip(nextState, "ARB_BLOCKED", "ARB blocked by limits/dust");
-
-    nextState.lastTradeAtMs = nowMs;
-    return { shouldTrade: true, reason: `ARB_DUAL (${edgePct.toFixed(1)}% edge)`, trades: filtered, nextState };
-  }
-
-  // NEUTRAL and PRICEY zones: DO NOT TRADE - no edge means no profit
-  // This is the key fix: we only trade when combined < maxReasonable (99.5¢)
-  return skip(nextState, "NO_EDGE", `No edge: combined ${(combined * 100).toFixed(1)}¢ >= ${(cfg.arbitrage.maxReasonable * 100).toFixed(1)}¢`);
 }
 
 // ============================================================================
@@ -388,9 +399,8 @@ async function handleWebSocket(req: Request): Promise<Response> {
   let markets: Map<string, MarketToken> = new Map();
   let tokenToMarket: Map<string, { slug: string; side: 'up' | 'down' }> = new Map();
   let cryptoPrices: { btc: number | null; eth: number | null } = { btc: null, eth: null };
-  let processingTrades: Set<string> = new Set();
   
-  // NEW: Store per-market context for the new strategy
+  // Store per-market context for strategy
   let marketContexts: Map<string, MarketContext> = new Map();
   
   let isEnabled = false;
@@ -443,6 +453,8 @@ async function handleWebSocket(req: Request): Promise<Response> {
                   downInvested: 0,
                 },
                 lastTradeAtMs: 0,
+                lastDecisionKey: null,
+                inFlight: false,
               });
             }
           }
@@ -598,11 +610,13 @@ async function handleWebSocket(req: Request): Promise<Response> {
 
   const evaluateTradeOpportunity = async (slug: string, nowMs: number) => {
     if (!isEnabled) return;
-    if (processingTrades.has(slug)) return;
     
     const market = markets.get(slug);
     const ctx = marketContexts.get(slug);
     if (!market || !ctx) return;
+    
+    // inFlight check is now inside decideTrades, but we skip if already processing
+    if (ctx.inFlight) return;
     
     // Update remaining seconds
     const endTime = new Date(market.eventEndTime).getTime();
@@ -610,26 +624,27 @@ async function handleWebSocket(req: Request): Promise<Response> {
     
     evaluationCount++;
     
-    // Call the new strategy
+    // Call the improved strategy
     const result = decideTrades(ctx, DEFAULT_CONFIG, nowMs);
     
     // Log every 50th evaluation or when trading
     if (evaluationCount % 50 === 0 || result.shouldTrade) {
-      const upAsk = ctx.book.up.ask ?? 0.5;
-      const downAsk = ctx.book.down.ask ?? 0.5;
-      const combined = upAsk + downAsk;
-      log(`📊 ${slug.slice(-20)}: ${(upAsk*100).toFixed(0)}¢+${(downAsk*100).toFixed(0)}¢=${(combined*100).toFixed(0)}¢ | ${result.shouldTrade ? '🚀' : '⏸️'} ${result.reason.slice(0, 60)}`);
+      // Use execution prices for logging
+      const px = getExecutionPrices(ctx, DEFAULT_CONFIG);
+      if (px) {
+        const combined = px.upExec + px.downExec;
+        log(`📊 ${slug.slice(-20)}: ${(px.upExec*100).toFixed(0)}¢+${(px.downExec*100).toFixed(0)}¢=${(combined*100).toFixed(0)}¢ | ${result.shouldTrade ? '🚀' : '⏸️'} ${result.reason.slice(0, 60)}`);
+      }
     }
     
     if (!result.shouldTrade || result.trades.length === 0) return;
     
-    processingTrades.add(slug);
-    
     try {
       const trades: PaperTrade[] = [];
-      const upAsk = ctx.book.up.ask ?? 0.5;
-      const downAsk = ctx.book.down.ask ?? 0.5;
-      const combinedPrice = upAsk + downAsk;
+      const px = getExecutionPrices(ctx, DEFAULT_CONFIG);
+      if (!px) return;
+      
+      const combinedPrice = px.upExec + px.downExec;
       const arbitrageEdge = (1 - combinedPrice) * 100;
       
       const cryptoPrice = market.asset === 'BTC' ? cryptoPrices.btc : cryptoPrices.eth;
@@ -637,7 +652,7 @@ async function handleWebSocket(req: Request): Promise<Response> {
       const priceDeltaPercent = priceDelta && market.openPrice ? (priceDelta / market.openPrice) * 100 : null;
       
       for (const intent of result.trades) {
-        const bestAsk = intent.outcome === 'UP' ? upAsk : downAsk;
+        const bestAsk = intent.outcome === 'UP' ? ctx.book.up.ask : ctx.book.down.ask;
         const bestBid = intent.outcome === 'UP' ? ctx.book.up.bid : ctx.book.down.bid;
         
         trades.push({
@@ -701,8 +716,8 @@ async function handleWebSocket(req: Request): Promise<Response> {
           }));
         }
       }
-    } finally {
-      processingTrades.delete(slug);
+    } catch (err) {
+      log(`❌ Trade error: ${err}`);
     }
   };
 
@@ -754,7 +769,7 @@ async function handleWebSocket(req: Request): Promise<Response> {
       return;
     }
     
-    log('🟢 Bot ENABLED - New Gabagool HF strategy active');
+    log('🟢 Bot ENABLED - Gabagool HF strategy V3 (bid-based paper trading)');
     socket.send(JSON.stringify({ type: 'enabled' }));
     
     await fetchMarkets();
@@ -839,11 +854,11 @@ async function handleHttpRequest(req: Request): Promise<Response> {
     return new Response(JSON.stringify({
       success: true,
       isEnabled,
-      strategy: 'GABAGOOL_HF_V2',
+      strategy: 'GABAGOOL_HF_V3',
       config: DEFAULT_CONFIG,
       recentTrades: recentTrades || [],
       message: isEnabled 
-        ? '🟢 Gabagool HF paper trading bot is ACTIVE'
+        ? '🟢 Gabagool HF V3 paper trading bot is ACTIVE (bid-based execution)'
         : '🔴 Bot is disabled',
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },

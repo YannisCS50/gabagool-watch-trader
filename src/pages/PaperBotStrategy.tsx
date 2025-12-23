@@ -3,82 +3,103 @@ import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, Copy, Check, Code, Settings, Zap, Shield, Scale, TrendingUp, Clock, DollarSign } from "lucide-react";
+import { ArrowLeft, Copy, Check, Code, Settings, Zap, Shield, Scale, TrendingUp, Clock, DollarSign, Activity } from "lucide-react";
 import { toast } from "sonner";
 
-// This is the ACTUAL strategy config from paper-trade-realtime edge function
+// This is the ACTUAL strategy config from paper-trade-realtime edge function V3
 const REALTIME_STRATEGY_CONFIG = `const DEFAULT_CONFIG: StrategyConfig = {
   tradeSize: { min: 5, max: 25, base: 10 },
   positionLimits: { maxPerSide: 200, maxTotal: 350 },
   entry: {
     minSecondsRemaining: 45,
     minPrice: 0.03,
-    maxPrice: 0.92,  // More conservative - don't buy very expensive options
+    maxPrice: 0.92,
     cheapThreshold: 0.25,
-    imbalanceThresholdPct: 30,  // Less aggressive rebalancing
+    imbalanceThresholdPct: 30,
     staleBookMs: 2000,
   },
   arbitrage: {
     strongEdge: 0.94,   // Combined < 94¢ = strong arb (6% edge)
     normalEdge: 0.97,   // Combined < 97¢ = normal arb (3% edge)
-    maxReasonable: 0.995, // ONLY trade if combined < 99.5¢ (must have SOME edge)
+    maxReasonable: 0.995, // ONLY trade if combined < 99.5¢
   },
   multipliers: {
     strongArb: 2.5,
     arb: 1.5,
-    neutral: 0.0,  // Disabled - don't trade neutral (no edge)
-    pricey: 0.0,   // Disabled - never trade pricey
+    neutral: 0.0,  // Disabled
+    pricey: 0.0,   // Disabled
   },
   hf: {
-    tickMinIntervalMs: 3000,  // Slower: only trade every 3 seconds per market
-    minNotionalToTrade: 3.0,  // Higher minimum to reduce dust
+    tickMinIntervalMs: 3000,
+    minNotionalToTrade: 3.0,
+    dedupeWindowMs: 950,  // NEW: prevent duplicate signals
   },
   split: {
     mode: "CHEAPER_BIAS",
-    cheaperBiasPct: 0.60,  // More bias to cheaper side
+    cheaperBiasPct: 0.60,
+  },
+  execution: {
+    mode: "PAPER_BID",        // NEW: simulate on bid prices
+    bidMissing: "FALLBACK_TO_ASK",
   },
 };`;
 
 const DECISION_LOGIC = `function decideTrades(ctx: MarketContext, cfg: StrategyConfig): Decision {
-  // 1. COOLDOWN CHECK - max 1 trade per 3 seconds
-  if (nowMs - ctx.lastTradeAtMs < cfg.hf.tickMinIntervalMs) {
-    return skip("COOLDOWN");
-  }
+  // ---- SINGLE-FLIGHT LOCK (race condition fix) ----
+  if (ctx.inFlight) return skip("IN_FLIGHT");
+  ctx.inFlight = true;
 
-  // 2. EXPIRY GUARD - no trades within 45s of expiry
-  if (ctx.remainingSeconds < cfg.entry.minSecondsRemaining) {
-    return skip("TOO_CLOSE_TO_EXPIRY");
-  }
+  try {
+    // 1) COOLDOWN
+    if (nowMs - ctx.lastTradeAtMs < cfg.hf.tickMinIntervalMs) {
+      return skip("COOLDOWN");
+    }
 
-  // 3. BOOK FRESHNESS - skip if book data >2s old
-  if (nowMs - ctx.book.updatedAtMs > cfg.entry.staleBookMs) {
-    return skip("STALE_BOOK");
-  }
+    // 2) EXPIRY GUARD
+    if (ctx.remainingSeconds < cfg.entry.minSecondsRemaining) {
+      return skip("TOO_CLOSE_TO_EXPIRY");
+    }
 
-  // 4. PRICE SANITY - must be between 3¢ and 92¢
-  if (upAsk < cfg.entry.minPrice || upAsk > cfg.entry.maxPrice) {
-    return skip("PRICE_OUT_OF_RANGE");
-  }
+    // 3) BOOK FRESHNESS
+    if (nowMs - ctx.book.updatedAtMs > cfg.entry.staleBookMs) {
+      return skip("STALE_BOOK");
+    }
 
-  // 5. POSITION LIMITS - max $350 total, $200 per side
-  if (totalInvested >= cfg.positionLimits.maxTotal) {
-    return skip("POSITION_LIMIT_TOTAL");
-  }
+    // 4) Get execution prices (PAPER_BID mode = bid prices)
+    const px = getExecutionPrices(ctx, cfg);
+    if (!px) return skip("MISSING_PRICES");
 
-  // 6. EDGE REQUIREMENT - combined must be < 99.5¢
-  const combined = upAsk + downAsk;
-  if (combined >= cfg.arbitrage.maxReasonable) {
-    return skip("NO_EDGE");  // ← This is why bot doesn't trade at 100¢!
-  }
+    // 5) PRICE SANITY - check BOTH sides (FIXED!)
+    if (upExec < minPrice || upExec > maxPrice) return skip("UP_PRICE_OUT_OF_RANGE");
+    if (downExec < minPrice || downExec > maxPrice) return skip("DOWN_PRICE_OUT_OF_RANGE");
 
-  // TRADE TYPES (in priority order):
-  // - OPENING_DUAL: First trade in market, buy both sides
-  // - HEDGE_MISSING_SIDE: Only have one side, buy the other
-  // - DCA_CHEAP_DUAL: Price ≤25¢, buy both with 1.5x boost
-  // - DCA_BALANCE: Position imbalance >30%, rebalance
-  // - ARB_DUAL: Combined <97¢, accumulate both sides
-  
-  return { shouldTrade: true, trades };
+    // 6) LIMITS - total AND per-side (FIXED!)
+    if (totalInvested >= cfg.positionLimits.maxTotal) return skip("POSITION_LIMIT_TOTAL");
+    const canBuyUp = ctx.position.upInvested < cfg.positionLimits.maxPerSide;
+    const canBuyDown = ctx.position.downInvested < cfg.positionLimits.maxPerSide;
+
+    // 7) EDGE REQUIREMENT
+    const combined = upExec + downExec;
+
+    // ---- DECISION KEY (dedupe identical signals) ----
+    const decisionKey = makeDecisionKey(slug, upExec, downExec, combined, nowMs);
+    if (ctx.lastDecisionKey === decisionKey) return skip("DEDUPED");
+
+    if (combined >= cfg.arbitrage.maxReasonable) {
+      return skip("NO_EDGE");  // ← Combined ≥ 99.5¢ = no trade
+    }
+
+    // TRADE TYPES (in priority order):
+    // A) OPENING_DUAL: both sides missing
+    // B) HEDGE_MISSING_SIDE: one side missing  
+    // C) DCA_CHEAP_DUAL: price ≤25¢
+    // D) DCA_BALANCE: >30% value skew
+    // E) ARB_DUAL: combined <97¢
+
+    return commit(ctx, nowMs, reason, trades);
+  } finally {
+    ctx.inFlight = false;
+  }
 }`;
 
 const PaperBotStrategy = () => {
@@ -104,15 +125,24 @@ const PaperBotStrategy = () => {
     { label: "Normal Edge", value: "<97¢", icon: TrendingUp, description: "1.5x multiplier zone" },
     { label: "Max Reasonable", value: "<99.5¢", icon: Shield, description: "ONLY trade with edge" },
     { label: "Trade Interval", value: "3000ms", icon: Clock, description: "Cooldown between trades" },
+    { label: "Dedupe Window", value: "950ms", icon: Activity, description: "Prevent duplicate signals" },
   ];
 
   const tradeTypes = [
     { type: "OPENING_DUAL", color: "bg-blue-500", description: "Eerste trade in markt - koop beide kanten" },
     { type: "HEDGE_MISSING_SIDE", color: "bg-purple-500", description: "Hedge - koop ontbrekende kant" },
     { type: "DCA_CHEAP_DUAL", color: "bg-green-500", description: "Goedkoop (<25¢) - extra inkopen" },
-    { type: "DCA_BALANCE", color: "bg-yellow-500", description: "Herbalanceren bij >30% scheefstand" },
+    { type: "DCA_BALANCE", color: "bg-yellow-500", description: "Herbalanceren bij >30% VALUE scheefstand" },
     { type: "ARB_DUAL", color: "bg-primary", description: "Arbitrage edge - accumuleer beide kanten" },
     { type: "SKIP", color: "bg-muted", description: "Geen trade - geen edge of limit bereikt" },
+  ];
+
+  const v3Fixes = [
+    { fix: "Bid-based execution", description: "Paper trading simuleert nu op bid prices (realistischer), met fallback naar ask" },
+    { fix: "Both-side price check", description: "Checkt nu zowel UP als DOWN prijs sanity (niet alleen UP)" },
+    { fix: "Per-side limits", description: "Dwingt $200 per side limiet af (voorheen alleen total gecheckt)" },
+    { fix: "InFlight lock", description: "Race condition fix bij concurrent WS + interval calls" },
+    { fix: "DecisionKey dedup", description: "Voorkomt duplicate trades bij identieke signalen binnen 950ms" },
   ];
 
   return (
@@ -128,8 +158,8 @@ const PaperBotStrategy = () => {
               <div className="flex items-center gap-3">
                 <Code className="w-5 h-5 text-primary" />
                 <div>
-                  <h1 className="font-semibold text-base">Paper Bot Strategy</h1>
-                  <p className="text-xs text-muted-foreground">Actieve trading logica</p>
+                  <h1 className="font-semibold text-base">Paper Bot Strategy V3</h1>
+                  <p className="text-xs text-muted-foreground">Bid-based execution, dedup, per-side limits</p>
                 </div>
               </div>
             </div>
@@ -142,6 +172,28 @@ const PaperBotStrategy = () => {
       </header>
 
       <main className="container mx-auto px-4 py-6 space-y-6">
+        {/* V3 Fixes */}
+        <Card className="border-green-500/30 bg-gradient-to-br from-green-500/5 to-transparent">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base text-green-400">
+              <Zap className="w-4 h-4" />
+              V3 Verbeteringen
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-2">
+              {v3Fixes.map((item) => (
+                <div key={item.fix} className="flex items-start gap-3 p-2 rounded-lg hover:bg-muted/30">
+                  <Badge variant="outline" className="text-green-400 border-green-500/30 font-mono text-xs whitespace-nowrap">
+                    {item.fix}
+                  </Badge>
+                  <span className="text-sm text-muted-foreground">{item.description}</span>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+
         {/* Key Principle */}
         <Card className="border-primary/30 bg-gradient-to-br from-primary/5 to-transparent">
           <CardContent className="p-4">
@@ -154,7 +206,7 @@ const PaperBotStrategy = () => {
                 <p className="text-xs text-muted-foreground mt-1">
                   De bot traded <strong>alleen</strong> wanneer combined price &lt; 99.5¢. 
                   Bij 100¢ of hoger is er geen edge en wordt er niet gehandeld.
-                  Dit is de reden waarom je "NO_EDGE" ziet in de logs.
+                  Paper trades worden gesimuleerd op <strong>bid prijzen</strong> (meer realistisch).
                 </p>
               </div>
             </div>
@@ -210,7 +262,7 @@ const PaperBotStrategy = () => {
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
               <Code className="w-4 h-4" />
-              DEFAULT_CONFIG (paper-trade-realtime)
+              DEFAULT_CONFIG (V3)
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -225,7 +277,7 @@ const PaperBotStrategy = () => {
           <CardHeader className="pb-3">
             <CardTitle className="flex items-center gap-2 text-base">
               <Code className="w-4 h-4" />
-              decideTrades() Logic (vereenvoudigd)
+              decideTrades() Logic (V3)
             </CardTitle>
           </CardHeader>
           <CardContent>
@@ -244,13 +296,13 @@ const PaperBotStrategy = () => {
             <div className="p-3 rounded-lg bg-muted/50 border border-border/50">
               <div className="font-mono text-sm text-primary">supabase/functions/paper-trade-realtime/index.ts</div>
               <div className="text-xs text-muted-foreground mt-1">
-                Realtime WebSocket versie - gebruikt voor live trading via CLOB
+                V3: Realtime WebSocket versie met bid-based execution, dedup, per-side limits
               </div>
             </div>
             <div className="p-3 rounded-lg bg-muted/50 border border-border/50">
               <div className="font-mono text-sm text-primary">supabase/functions/paper-trade-bot/index.ts</div>
               <div className="text-xs text-muted-foreground mt-1">
-                HTTP polling versie - gebruikt voor cron-based trading
+                HTTP polling versie (nog niet ge-upgraded naar V3)
               </div>
             </div>
           </CardContent>
