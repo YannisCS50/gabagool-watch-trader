@@ -392,9 +392,9 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
           }
           
           if (updatedAny) {
-            // Throttle UI updates to max 2 per second for stability
+            // Throttle UI updates to max 5 per second for balance between real-time and stability
             const timeSinceLastUIUpdate = now - lastUpdateTime;
-            if (timeSinceLastUIUpdate >= 500) {
+            if (timeSinceLastUIUpdate >= 200) {
               setPricesVersion(v => v + 1);
               setUpdateCount(c => c + 1);
               setLastUpdateTime(now);
