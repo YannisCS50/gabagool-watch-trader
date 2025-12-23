@@ -6,38 +6,60 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Gabagool-style trading: Always dual-side hedge with directional bias
+// GABAGOOL STRATEGY - Based on deep-dive analysis of real trading patterns
+// Key insights:
+// 1. Arbitrage requires combined < 98¢ (2%+ edge) - from hedge pair analysis
+// 2. Sweet spot is 35-45¢ price range - from DCA bucket analysis
+// 3. Late entry 0-5 min before expiry at cheap prices - from expiry analysis
+// 4. More neutral/DCA trades than pure arb - 60%+ are neutral hedges
+
 const TRADE_CONFIG = {
-  // Main strategy: Dual-side hedge with bias (like gabagool22)
-  gabagoolStyle: {
-    enabled: true,
-    baseBudget: 80,           // Total budget per market
-    minEdge: 0.5,             // FIXED: Require at least 0.5% edge (99.5¢ combined max)
-    maxCombinedPrice: 0.995,  // FIXED: Only trade when combined < 99.5¢ (guaranteed profit)
-    biasMultiplier: 1.15,     // 15% more shares on favored side
-    minPriceMove: 0.05,       // 0.05% crypto move to trigger bias
-    maxSlippage: 2.5,
-    minLiquidity: 50,
-    minRemainingSeconds: 60,
-    minAskPrice: 0.10,        // Don't buy if price < 10¢ (unrealistic fills)
-    maxAskPrice: 0.90,        // Don't buy if price > 90¢ (too expensive)
-  },
-  // Arbitrage: capture when combined price < 99¢
+  // Strategy 1: Pure Arbitrage - combined < 98¢ = guaranteed profit
   arbitrage: {
-    minEdge: 1.0,             // 1% edge minimum for pure arb
-    budget: 100,
+    enabled: true,
+    minEdge: 2.0,             // 2%+ edge = combined < 98¢ (from deep-dive: "arbitrage" category)
+    maxCombinedPrice: 0.98,   // Must be < 98¢ for true arbitrage
+    budget: 100,              // Full budget for arb opportunities
+    maxSlippage: 1.5,         // Tight slippage for guaranteed fills
+    minLiquidity: 80,         // Need good liquidity
+  },
+  
+  // Strategy 2: DCA Hedge - accumulate in sweet spot price range
+  dcaHedge: {
+    enabled: true,
+    baseBudget: 60,           // Conservative budget per side
+    maxCombinedPrice: 1.00,   // Allow breakeven trades (DCA now, arb later)
+    minCombinedPrice: 0.95,   // Don't overpay
+    sweetSpotMin: 0.35,       // From deep-dive: 35-45¢ is the sweet spot
+    sweetSpotMax: 0.45,       // Gabagool buys most in this range
+    outsideSpotMin: 0.20,     // Also buys outside but less
+    outsideSpotMax: 0.55,     // Upper bound for entries
+    biasMultiplier: 1.2,      // 20% more shares on favored side (crypto direction)
+    minPriceMove: 0.03,       // 0.03% crypto move to trigger bias
     maxSlippage: 2.0,
-    minLiquidity: 60,
+    minLiquidity: 40,
+    minRemainingSeconds: 120, // Need some time to let prices develop
   },
-  // Late entry: cheap single side near expiry
+  
+  // Strategy 3: Late Entry Sniper - cheap shots near expiry
+  // From deep-dive: 50%+ trades happen in last 5 minutes
   lateEntry: {
-    maxRemainingSeconds: 180,
-    minRemainingSeconds: 45,
-    maxPrice: 0.20,
-    minPrice: 0.08,
-    budget: 40,
-    maxSlippage: 3.0,
+    enabled: true,
+    maxRemainingSeconds: 300, // 5 min window (from expiry analysis)
+    minRemainingSeconds: 30,  // Not too close to prevent fills
+    sweetSpotPrice: 0.15,     // Sweet spot for late entries
+    maxPrice: 0.25,           // Don't pay more than 25¢
+    minPrice: 0.05,           // Need realistic fills
+    budget: 50,
+    maxSlippage: 3.0,         // Allow more slippage near expiry
+    minLiquidity: 30,
   },
+  
+  // Global settings
+  global: {
+    minAskPrice: 0.05,        // Absolute minimum (avoid penny stocks)
+    maxAskPrice: 0.95,        // Absolute maximum (avoid expensive fills)
+  }
 };
 
 interface OrderbookLevel {
@@ -153,7 +175,8 @@ function calculateSlippage(
 }
 
 /**
- * Gabagool-style trading: Always hedge both sides with directional bias
+ * Gabagool-style trading based on deep-dive analysis
+ * Priority: 1) Arbitrage (<98¢), 2) DCA in sweet spot, 3) Late entry sniper
  */
 function makeGabagoolTradeDecision(
   orderbook: MarketOrderbook,
@@ -170,46 +193,110 @@ function makeGabagoolTradeDecision(
   const priceDelta = cryptoPrice && openPrice ? cryptoPrice - openPrice : null;
   const priceDeltaPercent = priceDelta && openPrice ? (priceDelta / openPrice) * 100 : null;
 
-  // Skip if too close to expiry
-  if (remainingSeconds < TRADE_CONFIG.gabagoolStyle.minRemainingSeconds) {
-    return { shouldTrade: false, reasoning: `Too close to expiry: ${remainingSeconds}s` };
+  // Global price filters
+  const globalCfg = TRADE_CONFIG.global;
+  if (upBestAsk < globalCfg.minAskPrice || downBestAsk < globalCfg.minAskPrice) {
+    return { shouldTrade: false, reasoning: `Price too low: UP=${(upBestAsk*100).toFixed(0)}¢ DOWN=${(downBestAsk*100).toFixed(0)}¢` };
+  }
+  if (upBestAsk > globalCfg.maxAskPrice || downBestAsk > globalCfg.maxAskPrice) {
+    return { shouldTrade: false, reasoning: `Price too high: UP=${(upBestAsk*100).toFixed(0)}¢ DOWN=${(downBestAsk*100).toFixed(0)}¢` };
   }
 
-  // NEW: Skip if prices are unrealistic (too cheap = no real liquidity)
-  const cfg = TRADE_CONFIG.gabagoolStyle;
-  if (upBestAsk < cfg.minAskPrice || downBestAsk < cfg.minAskPrice) {
-    return { shouldTrade: false, reasoning: `Price too low: UP=${(upBestAsk*100).toFixed(0)}¢ DOWN=${(downBestAsk*100).toFixed(0)}¢ (min ${cfg.minAskPrice*100}¢)` };
-  }
-  if (upBestAsk > cfg.maxAskPrice || downBestAsk > cfg.maxAskPrice) {
-    return { shouldTrade: false, reasoning: `Price too high: UP=${(upBestAsk*100).toFixed(0)}¢ DOWN=${(downBestAsk*100).toFixed(0)}¢ (max ${cfg.maxAskPrice*100}¢)` };
-  }
-
-  // Strategy 1: Pure Arbitrage (highest priority)
-  if (arbitrageEdge >= TRADE_CONFIG.arbitrage.minEdge) {
-    const halfBudget = TRADE_CONFIG.arbitrage.budget / 2;
+  // ============================================
+  // STRATEGY 1: Pure Arbitrage (highest priority)
+  // Combined price < 98¢ = guaranteed 2%+ profit
+  // ============================================
+  const arbCfg = TRADE_CONFIG.arbitrage;
+  if (arbCfg.enabled && combinedPrice <= arbCfg.maxCombinedPrice) {
+    const halfBudget = arbCfg.budget / 2;
     const upSlippage = calculateSlippage(orderbook.upAsks, halfBudget);
     const downSlippage = calculateSlippage(orderbook.downAsks, halfBudget);
 
-    if (upSlippage.slippagePercent <= TRADE_CONFIG.arbitrage.maxSlippage &&
-        downSlippage.slippagePercent <= TRADE_CONFIG.arbitrage.maxSlippage &&
-        upSlippage.availableLiquidity >= TRADE_CONFIG.arbitrage.minLiquidity &&
-        downSlippage.availableLiquidity >= TRADE_CONFIG.arbitrage.minLiquidity) {
+    if (upSlippage.slippagePercent <= arbCfg.maxSlippage &&
+        downSlippage.slippagePercent <= arbCfg.maxSlippage &&
+        upSlippage.availableLiquidity >= arbCfg.minLiquidity &&
+        downSlippage.availableLiquidity >= arbCfg.minLiquidity) {
+      
+      const totalCost = (upSlippage.filledShares * upSlippage.avgFillPrice) + 
+                        (downSlippage.filledShares * downSlippage.avgFillPrice);
+      const minPayout = Math.min(upSlippage.filledShares, downSlippage.filledShares);
+      const guaranteedProfit = minPayout - totalCost;
+      
       return {
         shouldTrade: true,
         outcome: 'BOTH',
         upShares: upSlippage.filledShares,
         downShares: downSlippage.filledShares,
         tradeType: 'ARBITRAGE',
-        reasoning: `🎯 Arb ${arbitrageEdge.toFixed(1)}% edge | UP=${(upBestAsk*100).toFixed(0)}¢ DOWN=${(downBestAsk*100).toFixed(0)}¢`,
+        reasoning: `🎯 ARB ${arbitrageEdge.toFixed(1)}% | ${(upBestAsk*100).toFixed(0)}¢+${(downBestAsk*100).toFixed(0)}¢=${(combinedPrice*100).toFixed(0)}¢ | +$${guaranteedProfit.toFixed(2)}`,
         upSlippage,
         downSlippage,
       };
     }
   }
 
-  // Strategy 2: Gabagool-style dual-side with bias
-  if (TRADE_CONFIG.gabagoolStyle.enabled && combinedPrice <= TRADE_CONFIG.gabagoolStyle.maxCombinedPrice) {
-    const cfg = TRADE_CONFIG.gabagoolStyle;
+  // ============================================
+  // STRATEGY 2: Late Entry Sniper (before DCA)
+  // Last 5 minutes, cheap single-side bets
+  // ============================================
+  const lateCfg = TRADE_CONFIG.lateEntry;
+  if (lateCfg.enabled && 
+      remainingSeconds <= lateCfg.maxRemainingSeconds && 
+      remainingSeconds >= lateCfg.minRemainingSeconds) {
+    
+    // Prefer the cheaper side
+    const cheaperSide = upBestAsk <= downBestAsk ? 'UP' : 'DOWN';
+    const cheaperPrice = Math.min(upBestAsk, downBestAsk);
+    
+    if (cheaperPrice <= lateCfg.maxPrice && cheaperPrice >= lateCfg.minPrice) {
+      const orderbook_side = cheaperSide === 'UP' ? orderbook.upAsks : orderbook.downAsks;
+      const slippage = calculateSlippage(orderbook_side, lateCfg.budget);
+      
+      if (slippage.slippagePercent <= lateCfg.maxSlippage && 
+          slippage.availableLiquidity >= lateCfg.minLiquidity) {
+        
+        // Check if crypto price direction supports the bet
+        let directionBonus = '';
+        if (priceDeltaPercent !== null) {
+          if (cheaperSide === 'UP' && priceDeltaPercent > 0) directionBonus = '📈';
+          if (cheaperSide === 'DOWN' && priceDeltaPercent < 0) directionBonus = '📉';
+        }
+        
+        return {
+          shouldTrade: true,
+          outcome: cheaperSide,
+          upShares: cheaperSide === 'UP' ? slippage.filledShares : undefined,
+          downShares: cheaperSide === 'DOWN' ? slippage.filledShares : undefined,
+          tradeType: `LATE_${cheaperSide}`,
+          reasoning: `⏰ Late ${cheaperSide} @ ${(cheaperPrice*100).toFixed(0)}¢ | ${remainingSeconds}s left ${directionBonus}`,
+          upSlippage: cheaperSide === 'UP' ? slippage : undefined,
+          downSlippage: cheaperSide === 'DOWN' ? slippage : undefined,
+        };
+      }
+    }
+  }
+
+  // ============================================
+  // STRATEGY 3: DCA Hedge in Sweet Spot
+  // Accumulate positions in 35-45¢ range
+  // ============================================
+  const dcaCfg = TRADE_CONFIG.dcaHedge;
+  if (dcaCfg.enabled && remainingSeconds >= dcaCfg.minRemainingSeconds) {
+    // Check if combined price is acceptable
+    if (combinedPrice > dcaCfg.maxCombinedPrice || combinedPrice < dcaCfg.minCombinedPrice) {
+      return { shouldTrade: false, reasoning: `Combined ${(combinedPrice*100).toFixed(0)}¢ outside DCA range` };
+    }
+    
+    // Check if at least one side is in sweet spot range
+    const upInSweetSpot = upBestAsk >= dcaCfg.sweetSpotMin && upBestAsk <= dcaCfg.sweetSpotMax;
+    const downInSweetSpot = downBestAsk >= dcaCfg.sweetSpotMin && downBestAsk <= dcaCfg.sweetSpotMax;
+    const upInRange = upBestAsk >= dcaCfg.outsideSpotMin && upBestAsk <= dcaCfg.outsideSpotMax;
+    const downInRange = downBestAsk >= dcaCfg.outsideSpotMin && downBestAsk <= dcaCfg.outsideSpotMax;
+    
+    // Prefer when at least one side is in sweet spot
+    if (!upInSweetSpot && !downInSweetSpot && !upInRange && !downInRange) {
+      return { shouldTrade: false, reasoning: `Prices outside DCA range: UP=${(upBestAsk*100).toFixed(0)}¢ DOWN=${(downBestAsk*100).toFixed(0)}¢` };
+    }
     
     // Determine bias direction based on crypto price movement
     let upBudgetMultiplier = 1.0;
@@ -217,91 +304,62 @@ function makeGabagoolTradeDecision(
     let biasDirection = 'NEUTRAL';
     
     if (priceDeltaPercent !== null) {
-      if (priceDeltaPercent > cfg.minPriceMove) {
-        // Crypto going UP -> favor UP outcome
-        upBudgetMultiplier = cfg.biasMultiplier;
+      if (priceDeltaPercent > dcaCfg.minPriceMove) {
+        upBudgetMultiplier = dcaCfg.biasMultiplier;
         biasDirection = 'UP';
-      } else if (priceDeltaPercent < -cfg.minPriceMove) {
-        // Crypto going DOWN -> favor DOWN outcome
-        downBudgetMultiplier = cfg.biasMultiplier;
+      } else if (priceDeltaPercent < -dcaCfg.minPriceMove) {
+        downBudgetMultiplier = dcaCfg.biasMultiplier;
         biasDirection = 'DOWN';
       }
     }
     
-    // Calculate budget split with bias
+    // Bonus multiplier for sweet spot prices
+    if (upInSweetSpot) upBudgetMultiplier *= 1.1;
+    if (downInSweetSpot) downBudgetMultiplier *= 1.1;
+    
+    // Calculate budget split
     const totalMultiplier = upBudgetMultiplier + downBudgetMultiplier;
-    const upBudget = (cfg.baseBudget * upBudgetMultiplier) / totalMultiplier;
-    const downBudget = (cfg.baseBudget * downBudgetMultiplier) / totalMultiplier;
+    const upBudget = (dcaCfg.baseBudget * upBudgetMultiplier) / totalMultiplier;
+    const downBudget = (dcaCfg.baseBudget * downBudgetMultiplier) / totalMultiplier;
     
     const upSlippage = calculateSlippage(orderbook.upAsks, upBudget);
     const downSlippage = calculateSlippage(orderbook.downAsks, downBudget);
     
     // Check slippage and liquidity
     const avgSlippage = (upSlippage.slippagePercent + downSlippage.slippagePercent) / 2;
-    if (avgSlippage > cfg.maxSlippage) {
+    if (avgSlippage > dcaCfg.maxSlippage) {
       return { shouldTrade: false, reasoning: `Slippage too high: ${avgSlippage.toFixed(1)}%` };
     }
     
-    if (upSlippage.availableLiquidity < cfg.minLiquidity || downSlippage.availableLiquidity < cfg.minLiquidity) {
-      return { shouldTrade: false, reasoning: `Low liquidity: UP=$${upSlippage.availableLiquidity.toFixed(0)} DOWN=$${downSlippage.availableLiquidity.toFixed(0)}` };
+    if (upSlippage.availableLiquidity < dcaCfg.minLiquidity || 
+        downSlippage.availableLiquidity < dcaCfg.minLiquidity) {
+      return { shouldTrade: false, reasoning: `Low liquidity` };
     }
     
     // Calculate expected outcome
-    const totalCost = (upSlippage.filledShares * upSlippage.avgFillPrice) + (downSlippage.filledShares * downSlippage.avgFillPrice);
+    const totalCost = (upSlippage.filledShares * upSlippage.avgFillPrice) + 
+                      (downSlippage.filledShares * downSlippage.avgFillPrice);
     const profitIfUp = upSlippage.filledShares - totalCost;
     const profitIfDown = downSlippage.filledShares - totalCost;
     const minProfit = Math.min(profitIfUp, profitIfDown);
+    
+    const spotLabel = (upInSweetSpot || downInSweetSpot) ? '⭐' : '';
     
     return {
       shouldTrade: true,
       outcome: 'BOTH',
       upShares: upSlippage.filledShares,
       downShares: downSlippage.filledShares,
-      tradeType: `GABAGOOL_${biasDirection}`,
-      reasoning: `🎲 Hedge+Bias(${biasDirection}) | Δ=${priceDeltaPercent?.toFixed(2) ?? '0'}% | UP=${upSlippage.filledShares.toFixed(1)} DOWN=${downSlippage.filledShares.toFixed(1)} | Min P/L: $${minProfit.toFixed(2)}`,
+      tradeType: `DCA_${biasDirection}`,
+      reasoning: `${spotLabel} DCA(${biasDirection}) | ${(upBestAsk*100).toFixed(0)}¢+${(downBestAsk*100).toFixed(0)}¢ | Δ=${priceDeltaPercent?.toFixed(2) ?? '0'}% | P/L: $${minProfit.toFixed(2)}`,
       upSlippage,
       downSlippage,
     };
   }
 
-  // Strategy 3: Late entry single side (when one side is very cheap near expiry)
-  if (remainingSeconds <= TRADE_CONFIG.lateEntry.maxRemainingSeconds && 
-      remainingSeconds >= TRADE_CONFIG.lateEntry.minRemainingSeconds) {
-    const lateCfg = TRADE_CONFIG.lateEntry;
-    
-    // NEW: Check minimum price to avoid illiquid fills
-    if (upBestAsk <= lateCfg.maxPrice && upBestAsk >= lateCfg.minPrice) {
-      const upSlippage = calculateSlippage(orderbook.upAsks, lateCfg.budget);
-      if (upSlippage.slippagePercent <= lateCfg.maxSlippage) {
-        return {
-          shouldTrade: true,
-          outcome: 'UP',
-          upShares: upSlippage.filledShares,
-          tradeType: 'LATE_ENTRY_UP',
-          reasoning: `⏰ Late UP @ ${(upBestAsk*100).toFixed(0)}¢ | ${remainingSeconds}s left`,
-          upSlippage,
-        };
-      }
-    }
-    
-    if (downBestAsk <= lateCfg.maxPrice && downBestAsk >= lateCfg.minPrice) {
-      const downSlippage = calculateSlippage(orderbook.downAsks, lateCfg.budget);
-      if (downSlippage.slippagePercent <= lateCfg.maxSlippage) {
-        return {
-          shouldTrade: true,
-          outcome: 'DOWN',
-          downShares: downSlippage.filledShares,
-          tradeType: 'LATE_ENTRY_DOWN',
-          reasoning: `⏰ Late DOWN @ ${(downBestAsk*100).toFixed(0)}¢ | ${remainingSeconds}s left`,
-          downSlippage,
-        };
-      }
-    }
-  }
-
   return { 
     shouldTrade: false, 
-    reasoning: `No opportunity: combined=${(combinedPrice*100).toFixed(1)}¢, edge=${arbitrageEdge.toFixed(1)}%, Δ=${priceDeltaPercent?.toFixed(2) ?? 'N/A'}%` 
+    reasoning: `No opportunity: ${(combinedPrice*100).toFixed(0)}¢ combined | ${remainingSeconds}s left | Δ=${priceDeltaPercent?.toFixed(2) ?? 'N/A'}%` 
   };
 }
 
