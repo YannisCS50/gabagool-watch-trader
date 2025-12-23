@@ -13,7 +13,7 @@ const corsHeaders = {
 
 type Outcome = "UP" | "DOWN";
 type OrderSide = "BUY" | "SELL";
-type TradeType = "OPENING" | "HEDGE" | "REBALANCE" | "ACCUMULATE";
+type TradeType = "OPENING" | "HEDGE" | "REBALANCE" | "ACCUMULATE" | "GROW";
 
 interface TopOfBook {
   up: { bid: number | null; ask: number | null };
@@ -356,7 +356,47 @@ function decideTrades(
     }
 
     // ========================================================================
-    // PHASE 4: ACCUMULATE - Shares balanced, add more at very good combined
+    // PHASE 4: GROW - Use guaranteed profit to add more shares risk-free
+    // If we have positive P/L buffer, we can buy more shares
+    // ========================================================================
+    const minShares = Math.min(pos.upShares, pos.downShares);
+    const growTotalInvested = pos.upInvested + pos.downInvested;
+    const guaranteedPayout = minShares; // Winner pays $1 per share
+    const guaranteedPL = guaranteedPayout - growTotalInvested;
+    
+    // Only grow if we have positive guaranteed profit
+    if (guaranteedPL > 0.50) { // At least 50 cents profit buffer
+      // Find which side is cheaper and buy that side
+      // This will increase our shares and potentially improve edge
+      const cheaperSide: Outcome = upExec <= downExec ? "UP" : "DOWN";
+      const cheaperPrice = cheaperSide === "UP" ? upExec : downExec;
+      
+      // Only buy if price is reasonable (< 52 cents)
+      if (cheaperPrice <= 0.52) {
+        // Use half of the profit buffer as budget for growth
+        const growBudget = guaranteedPL * 0.5;
+        const sharesToBuy = Math.floor(growBudget / cheaperPrice);
+        
+        if (sharesToBuy >= 1) {
+          // Check limits
+          const targetShares = cheaperSide === "UP" ? pos.upShares + sharesToBuy : pos.downShares + sharesToBuy;
+          if (targetShares <= cfg.positionLimits.maxSharesPerSide) {
+            const trade = mkTrade(
+              cheaperSide,
+              cheaperPrice,
+              sharesToBuy,
+              "GROW",
+              `Grow ${cheaperSide} @ ${(cheaperPrice*100).toFixed(0)}¢ (using $${guaranteedPL.toFixed(2)} profit buffer)`
+            );
+            
+            return commit(ctx, nowMs, "GROW", [trade], cfg);
+          }
+        }
+      }
+    }
+    
+    // ========================================================================
+    // PHASE 5: ACCUMULATE - If very good combined, add equal shares both sides
     // ========================================================================
     if (combined < cfg.accumulate.triggerCombined) {
       // Calculate equal shares to add on both sides
@@ -379,10 +419,10 @@ function decideTrades(
         mkTrade("DOWN", downExec, sharesToAdd, "ACCUMULATE", `Accumulate DOWN @ ${(downExec*100).toFixed(0)}¢ (${edgePct}% edge)`),
       ];
     
-    return commit(ctx, nowMs, "ACCUMULATE", trades, cfg);
-  }
+      return commit(ctx, nowMs, "ACCUMULATE", trades, cfg);
+    }
 
-  return skip(`NO_SIGNAL: combined=${(combined*100).toFixed(0)}¢`);
+    return skip(`NO_SIGNAL: combined=${(combined*100).toFixed(0)}¢ PL=$${guaranteedPL.toFixed(2)}`);
 }
 
 // ============================================================================
