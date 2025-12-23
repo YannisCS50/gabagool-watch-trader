@@ -345,23 +345,21 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
           setIsConnected(true);
           setConnectionState("connected");
           
-          // Subscribe to markets - both MARKET (price_change) and BOOK (bid/ask) channels
+          // Subscribe to market channel (this single channel streams both price_change and book)
           const tokenIds: string[] = [];
           for (const m of marketsRef.current) {
             if (m.upTokenId) tokenIds.push(m.upTokenId);
             if (m.downTokenId) tokenIds.push(m.downTokenId);
           }
-          
-          if (tokenIds.length > 0 && ws.readyState === WebSocket.OPEN) {
-            // Subscribe to MARKET channel for price_change events
-            const marketSubscribeMsg = { type: "MARKET", assets_ids: tokenIds };
-            console.log(`[WS] Subscribing to ${tokenIds.length} tokens (MARKET channel)`);
-            ws.send(JSON.stringify(marketSubscribeMsg));
-            
-            // Subscribe to BOOK channel for bid/ask orderbook data
-            const bookSubscribeMsg = { type: "BOOK", assets_ids: tokenIds };
-            console.log(`[WS] Subscribing to ${tokenIds.length} tokens (BOOK channel)`);
-            ws.send(JSON.stringify(bookSubscribeMsg));
+
+          const uniqueTokenIds = Array.from(new Set(tokenIds));
+
+          if (uniqueTokenIds.length > 0 && ws.readyState === WebSocket.OPEN) {
+            // Polymarket CLOB Market Channel subscription format
+            // See: https://docs.polymarket.com/developers/CLOB/websocket/market-channel
+            const subscribeMsg = { type: "market", assets_ids: uniqueTokenIds };
+            console.log(`[WS] Subscribing to ${uniqueTokenIds.length} tokens (market channel)`);
+            ws.send(JSON.stringify(subscribeMsg));
           }
           return;
         }
