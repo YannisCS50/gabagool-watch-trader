@@ -76,6 +76,7 @@ const RealTimeSignalsPage = () => {
     markets: discoveredMarkets,
     expiredMarkets: dbExpiredMarkets,
     getPrice,
+    getOrderbook,
     isConnected: clobConnected,
     connectionState: clobState,
     updateCount: clobUpdates,
@@ -347,8 +348,8 @@ const RealTimeSignalsPage = () => {
                       <th className="text-left pb-3 font-medium">Asset</th>
                       <th className="text-left pb-3 font-medium">Time</th>
                       <th className="text-center pb-3 font-medium">Strike</th>
-                      <th className="text-center pb-3 font-medium">UP</th>
-                      <th className="text-center pb-3 font-medium">DOWN</th>
+                      <th className="text-center pb-3 font-medium">UP Orderbook</th>
+                      <th className="text-center pb-3 font-medium">DOWN Orderbook</th>
                       <th className="text-center pb-3 font-medium">Combined</th>
                       <th className="text-right pb-3 font-medium">Edge</th>
                     </tr>
@@ -359,6 +360,10 @@ const RealTimeSignalsPage = () => {
                       const isExpiringSoon = market.remainingSeconds < 120;
                       const currentPrice = market.asset === "BTC" ? btcPrice : ethPrice;
                       const priceDiff = currentPrice && market.openPrice ? currentPrice - market.openPrice : null;
+                      
+                      // Get orderbook data
+                      const upBook = getOrderbook(market.slug, "up");
+                      const downBook = getOrderbook(market.slug, "down");
                       
                       return (
                         <tr key={market.slug} className="group hover:bg-muted/30 transition-colors">
@@ -395,14 +400,40 @@ const RealTimeSignalsPage = () => {
                             )}
                           </td>
                           <td className="py-3 text-center">
-                            <span className="font-mono text-sm text-emerald-500">
-                              {(market.upPrice * 100).toFixed(0)}¢
-                            </span>
+                            <div className="flex flex-col items-center gap-0.5">
+                              <span className="font-mono text-sm text-emerald-500">
+                                {(market.upPrice * 100).toFixed(0)}¢
+                              </span>
+                              {upBook && (
+                                <div className="flex gap-1 text-[10px] text-muted-foreground">
+                                  <span className="text-blue-400">
+                                    {upBook.bid !== null ? `B:${(upBook.bid * 100).toFixed(0)}¢` : 'B:—'}
+                                  </span>
+                                  <span>/</span>
+                                  <span className="text-orange-400">
+                                    {upBook.ask !== null ? `A:${(upBook.ask * 100).toFixed(0)}¢` : 'A:—'}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
                           </td>
                           <td className="py-3 text-center">
-                            <span className="font-mono text-sm text-red-500">
-                              {(market.downPrice * 100).toFixed(0)}¢
-                            </span>
+                            <div className="flex flex-col items-center gap-0.5">
+                              <span className="font-mono text-sm text-red-500">
+                                {(market.downPrice * 100).toFixed(0)}¢
+                              </span>
+                              {downBook && (
+                                <div className="flex gap-1 text-[10px] text-muted-foreground">
+                                  <span className="text-blue-400">
+                                    {downBook.bid !== null ? `B:${(downBook.bid * 100).toFixed(0)}¢` : 'B:—'}
+                                  </span>
+                                  <span>/</span>
+                                  <span className="text-orange-400">
+                                    {downBook.ask !== null ? `A:${(downBook.ask * 100).toFixed(0)}¢` : 'A:—'}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
                           </td>
                           <td className="py-3 text-center">
                             <span className={`font-mono text-sm font-medium ${market.combinedPrice < 1 ? "text-primary" : ""}`}>
