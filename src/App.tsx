@@ -16,6 +16,7 @@ import StrategyDeepDive from "./pages/StrategyDeepDive";
 import RealTimeSignalsPage from "./pages/RealTimeSignalsPage";
 import PaperTrading from "./pages/PaperTrading";
 import GabagoolStrategyAnalysis from "./pages/GabagoolStrategyAnalysis";
+import StrategyCode from "./pages/StrategyCode";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -40,6 +41,7 @@ const App = () => (
           <Route path="/real-time-signals" element={<RealTimeSignalsPage />} />
           <Route path="/paper-trading" element={<PaperTrading />} />
           <Route path="/gabagool-analysis" element={<GabagoolStrategyAnalysis />} />
+          <Route path="/strategy-code" element={<StrategyCode />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>

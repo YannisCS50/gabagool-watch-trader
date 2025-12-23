@@ -1,10 +1,14 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { ArrowLeft, TrendingUp, TrendingDown, Activity, Zap, Shield, Target, Clock, DollarSign, BarChart3, PieChart, Layers, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { ArrowLeft, TrendingUp, TrendingDown, Activity, Zap, Shield, Target, Clock, DollarSign, BarChart3, PieChart, Layers, AlertTriangle, CheckCircle2, Download, Code } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart as RechartsPie, Pie, Cell, LineChart, Line, Legend, ComposedChart, Area } from 'recharts';
+import html2canvas from 'html2canvas';
+import jsPDF from 'jspdf';
+import { toast } from 'sonner';
 import { GabagoolTradesTable } from '@/components/GabagoolTradesTable';
 
 interface Trade {
@@ -60,6 +64,64 @@ export default function GabagoolStrategyAnalysis() {
   const [trades, setTrades] = useState<Trade[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [marketStats, setMarketStats] = useState<MarketStats[]>([]);
+  const [isExporting, setIsExporting] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  const handleExportPDF = async () => {
+    if (!contentRef.current) return;
+    
+    setIsExporting(true);
+    toast.info('PDF wordt gegenereerd...');
+    
+    try {
+      const canvas = await html2canvas(contentRef.current, {
+        scale: 2,
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#1a1a2e',
+      });
+      
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: 'a4',
+      });
+      
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = pdf.internal.pageSize.getHeight();
+      const imgWidth = canvas.width;
+      const imgHeight = canvas.height;
+      const ratio = Math.min(pdfWidth / imgWidth, pdfHeight / imgHeight);
+      const imgX = (pdfWidth - imgWidth * ratio) / 2;
+      
+      // Calculate how many pages we need
+      const scaledHeight = imgHeight * ratio;
+      const pageCount = Math.ceil(scaledHeight / pdfHeight);
+      
+      for (let i = 0; i < pageCount; i++) {
+        if (i > 0) {
+          pdf.addPage();
+        }
+        pdf.addImage(
+          imgData,
+          'PNG',
+          imgX,
+          -(i * pdfHeight),
+          imgWidth * ratio,
+          imgHeight * ratio
+        );
+      }
+      
+      pdf.save('gabagool-strategy-analysis.pdf');
+      toast.success('PDF succesvol gedownload!');
+    } catch (error) {
+      console.error('PDF export error:', error);
+      toast.error('Er ging iets mis bij het exporteren');
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   useEffect(() => {
     const fetchData = async () => {
@@ -342,15 +404,29 @@ export default function GabagoolStrategyAnalysis() {
 
   return (
     <div className="min-h-screen bg-background">
-      <div className="container mx-auto p-6 space-y-8">
+      <div className="container mx-auto p-6 space-y-8" ref={contentRef}>
         {/* Header */}
-        <div className="flex items-center gap-4">
-          <Link to="/strategy" className="p-2 hover:bg-accent rounded-lg transition-colors">
-            <ArrowLeft className="h-5 w-5" />
-          </Link>
-          <div>
-            <h1 className="text-3xl font-bold tracking-tight">Gabagool Strategy Deep Dive</h1>
-            <p className="text-muted-foreground">Uitgebreide analyse van 109.654 trades over 316 markten</p>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <Link to="/strategy" className="p-2 hover:bg-accent rounded-lg transition-colors">
+              <ArrowLeft className="h-5 w-5" />
+            </Link>
+            <div>
+              <h1 className="text-3xl font-bold tracking-tight">Gabagool Strategy Deep Dive</h1>
+              <p className="text-muted-foreground">Uitgebreide analyse van 109.654 trades over 316 markten</p>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <Link to="/strategy-code">
+              <Button variant="outline" className="gap-2">
+                <Code className="h-4 w-4" />
+                Bekijk Code
+              </Button>
+            </Link>
+            <Button onClick={handleExportPDF} disabled={isExporting} className="gap-2">
+              <Download className="h-4 w-4" />
+              {isExporting ? 'Exporteren...' : 'Export PDF'}
+            </Button>
           </div>
         </div>
 
