@@ -9,93 +9,134 @@ interface TokenPrice {
   tokenId: string;
   bestBid: number | null;
   bestAsk: number | null;
+  mid: number | null;
+  spread: number | null;
   price: number | null;
   timestamp: number;
+  bidLevels: number;
+  askLevels: number;
 }
 
 interface PriceResponse {
   success: boolean;
   timestamp: string;
+  durationMs: number;
   prices: Record<string, TokenPrice>;
 }
 
+type Level = { price: number; size: number };
+
 /**
- * Fetch order book for a token from CLOB API
+ * Parse levels from Polymarket book format
+ * Returns sorted levels: bids DESC (highest first), asks ASC (lowest first)
+ */
+function parseLevels(raw: unknown, type: 'bids' | 'asks'): Level[] {
+  if (!Array.isArray(raw)) return [];
+  
+  const levels: Level[] = [];
+  
+  for (const lvl of raw) {
+    if (!lvl || typeof lvl !== 'object') continue;
+    
+    // Polymarket format: { price: "0.52", size: "123" }
+    const priceVal = (lvl as Record<string, unknown>).price;
+    const sizeVal = (lvl as Record<string, unknown>).size;
+    
+    const price = parseFloat(String(priceVal));
+    const size = parseFloat(String(sizeVal));
+    
+    if (!Number.isFinite(price) || !Number.isFinite(size)) continue;
+    if (price <= 0 || size <= 0) continue;
+    
+    levels.push({ price, size });
+  }
+  
+  // Sort: bids DESC (highest first), asks ASC (lowest first)
+  if (type === 'bids') {
+    levels.sort((a, b) => b.price - a.price);
+  } else {
+    levels.sort((a, b) => a.price - b.price);
+  }
+  
+  return levels;
+}
+
+/**
+ * Fetch order book for a token from CLOB API with correct sorting
  */
 async function fetchTokenBook(tokenId: string): Promise<TokenPrice | null> {
   try {
     const response = await fetch(
       `https://clob.polymarket.com/book?token_id=${tokenId}`,
-      {
-        headers: { 'Accept': 'application/json' }
-      }
+      { headers: { 'Accept': 'application/json' } }
     );
     
     if (!response.ok) {
-      console.log(`[CLOB] Book fetch failed for ${tokenId.slice(0, 20)}...: ${response.status}`);
+      console.log(`[CLOB] Book fetch failed for ${tokenId.slice(0, 16)}...: ${response.status}`);
       return null;
     }
     
     const book = await response.json();
     
-    // Extract best bid and ask
-    const bids = book.bids || [];
-    const asks = book.asks || [];
+    // Parse and sort levels correctly
+    const bids = parseLevels(book?.bids, 'bids');
+    const asks = parseLevels(book?.asks, 'asks');
     
-    const bestBid = bids.length > 0 ? parseFloat(bids[0].price) : null;
-    const bestAsk = asks.length > 0 ? parseFloat(asks[0].price) : null;
+    // Best bid = highest bid (first after DESC sort)
+    // Best ask = lowest ask (first after ASC sort)
+    const bestBid = bids.length > 0 ? bids[0].price : null;
+    const bestAsk = asks.length > 0 ? asks[0].price : null;
     
-    // Price is typically the midpoint or best ask for buying
-    const price = bestAsk ?? bestBid ?? null;
+    // Calculate mid and spread
+    const mid = (bestBid !== null && bestAsk !== null) 
+      ? (bestBid + bestAsk) / 2 
+      : null;
+    const spread = (bestBid !== null && bestAsk !== null)
+      ? bestAsk - bestBid
+      : null;
     
-    console.log(`[CLOB] Token ${tokenId.slice(0, 20)}...: bid=${bestBid}, ask=${bestAsk}`);
+    // Price is mid if available, otherwise best ask or best bid
+    const price = mid ?? bestAsk ?? bestBid ?? null;
+    
+    console.log(`[CLOB] ${tokenId.slice(0, 16)}... bid=${bestBid?.toFixed(2)} ask=${bestAsk?.toFixed(2)} mid=${mid?.toFixed(3)} spread=${spread?.toFixed(3)} (${bids.length}b/${asks.length}a)`);
     
     return {
       tokenId,
       bestBid,
       bestAsk,
+      mid,
+      spread,
       price,
       timestamp: Date.now(),
+      bidLevels: bids.length,
+      askLevels: asks.length,
     };
     
   } catch (error) {
-    console.error(`[CLOB] Error fetching book for ${tokenId.slice(0, 20)}...:`, error);
+    console.error(`[CLOB] Error fetching book for ${tokenId.slice(0, 16)}...:`, error);
     return null;
   }
 }
 
 /**
- * Alternative: Fetch price from prices endpoint
+ * Fetch with concurrency limit
  */
-async function fetchTokenPrice(tokenId: string): Promise<TokenPrice | null> {
-  try {
-    const response = await fetch(
-      `https://clob.polymarket.com/price?token_id=${tokenId}&side=buy`,
-      {
-        headers: { 'Accept': 'application/json' }
-      }
-    );
-    
-    if (!response.ok) {
-      return null;
+async function fetchWithLimit<T>(
+  tasks: (() => Promise<T>)[],
+  limit: number = 8
+): Promise<T[]> {
+  const results: T[] = new Array(tasks.length);
+  let idx = 0;
+  
+  const workers = Array.from({ length: Math.min(limit, tasks.length) }, async () => {
+    while (idx < tasks.length) {
+      const i = idx++;
+      results[i] = await tasks[i]();
     }
-    
-    const data = await response.json();
-    const price = parseFloat(data.price);
-    
-    if (isNaN(price)) return null;
-    
-    return {
-      tokenId,
-      bestBid: null,
-      bestAsk: price,
-      price,
-      timestamp: Date.now(),
-    };
-    
-  } catch {
-    return null;
-  }
+  });
+  
+  await Promise.all(workers);
+  return results;
 }
 
 serve(async (req) => {
@@ -104,7 +145,7 @@ serve(async (req) => {
   }
 
   const startTime = Date.now();
-  console.log('=== Fetching CLOB prices ===');
+  console.log('=== CLOB PRICES v2 ===');
 
   try {
     const body = await req.json();
@@ -114,26 +155,22 @@ serve(async (req) => {
       return new Response(JSON.stringify({
         success: true,
         timestamp: new Date().toISOString(),
+        durationMs: Date.now() - startTime,
         prices: {}
       }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }
     
-    console.log(`[CLOB] Fetching prices for ${tokenIds.length} tokens`);
+    console.log(`[CLOB] Fetching ${tokenIds.length} tokens (no slice limit)`);
     
-    // Fetch all books in parallel (limit to 20 to avoid rate limiting)
-    const tokensToFetch = tokenIds.slice(0, 20);
-    const fetchPromises = tokensToFetch.map(async (tokenId) => {
-      // Try book endpoint first, fall back to price endpoint
-      let result = await fetchTokenBook(tokenId);
-      if (!result || result.price === null) {
-        result = await fetchTokenPrice(tokenId);
-      }
-      return { tokenId, result };
+    // Create fetch tasks for ALL tokens (no more slice(0,20))
+    const tasks = tokenIds.map(tokenId => async () => {
+      return { tokenId, result: await fetchTokenBook(tokenId) };
     });
     
-    const results = await Promise.all(fetchPromises);
+    // Fetch with concurrency limit of 10
+    const results = await fetchWithLimit(tasks, 10);
     
     const prices: Record<string, TokenPrice> = {};
     for (const { tokenId, result } of results) {
@@ -143,14 +180,14 @@ serve(async (req) => {
     }
     
     const duration = Date.now() - startTime;
-    console.log(`=== Fetched ${Object.keys(prices).length} prices in ${duration}ms ===`);
+    console.log(`=== Fetched ${Object.keys(prices).length}/${tokenIds.length} prices in ${duration}ms ===`);
 
     return new Response(JSON.stringify({
       success: true,
       timestamp: new Date().toISOString(),
       durationMs: duration,
       prices
-    }), {
+    } as PriceResponse), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
     
@@ -159,6 +196,7 @@ serve(async (req) => {
     return new Response(JSON.stringify({ 
       success: false, 
       error: error instanceof Error ? error.message : 'Unknown error',
+      durationMs: Date.now() - startTime,
       prices: {}
     }), {
       status: 500,
