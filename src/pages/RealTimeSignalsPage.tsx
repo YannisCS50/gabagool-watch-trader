@@ -474,14 +474,20 @@ const RealTimeSignalsPage = () => {
           </Card>
         </div>
 
-        {/* Paper Trade Bot Dashboard */}
-        <Card className="border-purple-500/30">
-          <CardContent className="pt-4 pb-4">
+        {/* Paper Trade Bot Dashboard - Enhanced */}
+        <Card className="border-purple-500/30 bg-gradient-to-br from-purple-500/5 to-transparent">
+          <CardContent className="pt-4 pb-4 space-y-4">
+            {/* Header Row */}
             <div className="flex items-center justify-between gap-4 flex-wrap">
               <div className="flex items-center gap-3 flex-wrap">
                 <div className="flex items-center gap-2">
-                  <Bot className="w-5 h-5 text-purple-400" />
-                  <span className="font-medium text-purple-400">Paper Bot</span>
+                  <div className="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center">
+                    <Bot className="w-5 h-5 text-purple-400" />
+                  </div>
+                  <div>
+                    <span className="font-medium text-purple-400">Paper Bot</span>
+                    <div className="text-[10px] text-muted-foreground">Gabagool HF Strategy</div>
+                  </div>
                 </div>
                 <div className="flex items-center gap-2">
                   <Switch 
@@ -490,39 +496,39 @@ const RealTimeSignalsPage = () => {
                     disabled={botLoading}
                     className="data-[state=checked]:bg-purple-500"
                   />
-                  <span className={`text-sm ${botEnabled ? 'text-emerald-400' : 'text-muted-foreground'}`}>
-                    {botEnabled ? 'AAN' : 'UIT'}
+                  <span className={`text-sm font-medium ${botEnabled ? 'text-emerald-400' : 'text-muted-foreground'}`}>
+                    {botEnabled ? 'LIVE' : 'OFF'}
                   </span>
                 </div>
                 
-                {/* RUST-style Real-time Indicator */}
+                {/* Connection Status */}
                 {botEnabled && (
                   <div className="flex items-center gap-2">
                     <Badge 
                       variant="outline" 
-                      className={`flex items-center gap-1 ${
+                      className={`flex items-center gap-1.5 ${
                         realtimeBotStatus.isConnected 
-                          ? 'text-orange-400 border-orange-500/30 bg-orange-500/10 animate-pulse' 
+                          ? 'text-orange-400 border-orange-500/30 bg-orange-500/10' 
                           : 'text-muted-foreground border-muted'
                       }`}
                     >
                       <Cpu className="w-3 h-3" />
-                      RUST
+                      <span>HF Engine</span>
                       {realtimeBotStatus.isConnected && (
-                        <span className="ml-1 text-xs">
+                        <span className="text-[10px] opacity-70">
                           {realtimeBotStatus.marketsCount}M/{realtimeBotStatus.tokensCount}T
                         </span>
                       )}
                     </Badge>
                     
                     {realtimeBotStatus.isConnected ? (
-                      <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30 text-xs">
-                        <Activity className="w-2.5 h-2.5 mr-1 animate-pulse" />
-                        LIVE TRADING
+                      <Badge className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30 text-xs animate-pulse">
+                        <Activity className="w-2.5 h-2.5 mr-1" />
+                        TRADING
                       </Badge>
                     ) : (
                       <Badge variant="outline" className="text-yellow-400 border-yellow-500/30 text-xs">
-                        <Radio className="w-2.5 h-2.5 mr-1" />
+                        <Radio className="w-2.5 h-2.5 mr-1 animate-pulse" />
                         Connecting...
                       </Badge>
                     )}
@@ -530,35 +536,106 @@ const RealTimeSignalsPage = () => {
                 )}
               </div>
               
-              <div className="flex items-center gap-3">
-                <PaperTradeDashboard compact />
-                <Link to="/paper-trading" className="text-sm text-purple-400 hover:underline flex items-center gap-1">
-                  Full Dashboard →
-                </Link>
-              </div>
+              <Link to="/paper-trading" className="text-sm text-purple-400 hover:underline flex items-center gap-1">
+                Full Dashboard →
+              </Link>
             </div>
             
-            {/* Recent realtime trades */}
+            {/* Live Crypto Prices with Strike Context */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {/* BTC Price Card */}
+              <div className="p-3 rounded-xl bg-gradient-to-br from-orange-500/10 to-transparent border border-orange-500/20">
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="w-6 h-6 rounded-md bg-orange-500/20 flex items-center justify-center text-orange-400 font-bold text-xs">₿</div>
+                  <span className="text-xs text-muted-foreground">Bitcoin</span>
+                </div>
+                <div className="font-mono font-bold text-lg text-orange-400">
+                  ${btcPrice?.toLocaleString(undefined, { maximumFractionDigits: 0 }) ?? '—'}
+                </div>
+                {liveMarkets.filter(m => m.asset === 'BTC' && m.openPrice).length > 0 && (() => {
+                  const btcMarket = liveMarkets.find(m => m.asset === 'BTC' && m.openPrice);
+                  if (!btcMarket || !btcPrice || !btcMarket.openPrice) return null;
+                  const diff = btcPrice - btcMarket.openPrice;
+                  const diffPct = (diff / btcMarket.openPrice) * 100;
+                  return (
+                    <div className="mt-1 text-[10px] space-y-0.5">
+                      <div className="text-muted-foreground">Strike: ${btcMarket.openPrice.toLocaleString()}</div>
+                      <div className={diff >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+                        {diff >= 0 ? '↑' : '↓'} ${Math.abs(diff).toFixed(0)} ({diffPct >= 0 ? '+' : ''}{diffPct.toFixed(2)}%)
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+              
+              {/* ETH Price Card */}
+              <div className="p-3 rounded-xl bg-gradient-to-br from-blue-500/10 to-transparent border border-blue-500/20">
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="w-6 h-6 rounded-md bg-blue-500/20 flex items-center justify-center text-blue-400 font-bold text-xs">Ξ</div>
+                  <span className="text-xs text-muted-foreground">Ethereum</span>
+                </div>
+                <div className="font-mono font-bold text-lg text-blue-400">
+                  ${ethPrice?.toLocaleString(undefined, { maximumFractionDigits: 0 }) ?? '—'}
+                </div>
+                {liveMarkets.filter(m => m.asset === 'ETH' && m.openPrice).length > 0 && (() => {
+                  const ethMarket = liveMarkets.find(m => m.asset === 'ETH' && m.openPrice);
+                  if (!ethMarket || !ethPrice || !ethMarket.openPrice) return null;
+                  const diff = ethPrice - ethMarket.openPrice;
+                  const diffPct = (diff / ethMarket.openPrice) * 100;
+                  return (
+                    <div className="mt-1 text-[10px] space-y-0.5">
+                      <div className="text-muted-foreground">Strike: ${ethMarket.openPrice.toLocaleString()}</div>
+                      <div className={diff >= 0 ? 'text-emerald-400' : 'text-red-400'}>
+                        {diff >= 0 ? '↑' : '↓'} ${Math.abs(diff).toFixed(0)} ({diffPct >= 0 ? '+' : ''}{diffPct.toFixed(2)}%)
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+              
+              {/* Quick Stats */}
+              <div className="p-3 rounded-xl bg-muted/30 border border-border/50">
+                <div className="text-[10px] text-muted-foreground mb-1">Open Positions</div>
+                <div className="font-mono font-bold text-lg">{realtimeBotStatus.marketsCount || 0}</div>
+                <div className="text-[10px] text-muted-foreground mt-1">
+                  {realtimeBotStatus.lastTrades.length} recent trades
+                </div>
+              </div>
+              
+              {/* Compact Dashboard */}
+              <PaperTradeDashboard compact />
+            </div>
+            
+            {/* Recent realtime trades - Enhanced */}
             {realtimeBotStatus.lastTrades.length > 0 && (
-              <div className="mt-3 pt-3 border-t border-border/50">
-                <div className="text-xs text-muted-foreground mb-2">Recent Real-time Trades:</div>
+              <div className="pt-3 border-t border-border/50">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+                    <Zap className="w-3 h-3 text-yellow-400" />
+                    Recent HF Trades
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">
+                    Last: {realtimeBotStatus.lastTrades[0] ? new Date().toLocaleTimeString() : '—'}
+                  </div>
+                </div>
                 <div className="flex flex-wrap gap-2">
-                  {realtimeBotStatus.lastTrades.slice(0, 5).map((trade, i) => (
+                  {realtimeBotStatus.lastTrades.slice(0, 8).map((trade, i) => (
                     <Badge 
                       key={i} 
                       variant="outline" 
-                      className={`text-xs ${
+                      className={`text-xs transition-all hover:scale-105 ${
                         trade.outcome === 'UP' 
-                          ? 'text-emerald-400 border-emerald-500/30' 
-                          : 'text-red-400 border-red-500/30'
+                          ? 'text-emerald-400 border-emerald-500/30 bg-emerald-500/5' 
+                          : 'text-red-400 border-red-500/30 bg-red-500/5'
                       }`}
                     >
-                      {trade.slug.split('-')[0].toUpperCase()} {trade.outcome} @ {(trade.price * 100).toFixed(0)}¢
-                      {trade.slippage != null && (
-                        <span className="ml-1 text-muted-foreground">
-                          ({trade.slippage?.toFixed(1)}% slip)
-                        </span>
-                      )}
+                      <span className="font-medium">{trade.slug.split('-')[0].toUpperCase()}</span>
+                      <span className="mx-1 opacity-50">|</span>
+                      {trade.outcome === 'UP' ? <TrendingUp className="w-3 h-3 mr-0.5" /> : <TrendingDown className="w-3 h-3 mr-0.5" />}
+                      {(trade.price * 100).toFixed(0)}¢
+                      <span className="ml-1 text-[10px] opacity-60">
+                        {trade.shares}sh
+                      </span>
                     </Badge>
                   ))}
                 </div>
