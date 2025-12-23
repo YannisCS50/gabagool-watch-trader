@@ -16,42 +16,14 @@ interface MarketToken {
   eventStartTime: string;
   eventEndTime: string;
   marketType: 'price_above' | 'price_target' | '15min' | 'other';
-  strikePrice?: number | null;
+  strikePrice?: number | null; // Legacy alias for openPrice
+  openPrice?: number | null;   // The "Price to Beat"
 }
 
-/**
- * Parse strike price from market question
- * Examples:
- * - "Bitcoin Up or Down - December 23, 8:15AM-8:30AM ET" -> parse from question patterns
- * - "Will BTC be above $95,000 at 9:00 AM?" -> 95000
- * - "Ethereum above $3,400?" -> 3400
- */
-function parseStrikePriceFromQuestion(question: string): number | null {
-  if (!question) return null;
-  
-  // Pattern 1: "$XX,XXX" or "$X,XXX" format
-  const dollarMatch = question.match(/\$([0-9,]+(?:\.[0-9]+)?)/);
-  if (dollarMatch) {
-    const priceStr = dollarMatch[1].replace(/,/g, '');
-    const price = parseFloat(priceStr);
-    if (!isNaN(price) && price > 0) {
-      console.log(`[Parse] Found strike price $${price} from question: ${question.slice(0, 50)}...`);
-      return price;
-    }
-  }
-  
-  // Pattern 2: "above XXXXX" without dollar sign
-  const aboveMatch = question.match(/above\s+([0-9,]+(?:\.[0-9]+)?)/i);
-  if (aboveMatch) {
-    const priceStr = aboveMatch[1].replace(/,/g, '');
-    const price = parseFloat(priceStr);
-    if (!isNaN(price) && price > 0) {
-      console.log(`[Parse] Found strike price ${price} from question: ${question.slice(0, 50)}...`);
-      return price;
-    }
-  }
-  
-  return null;
+// Parse timestamp from slug (e.g., btc-updown-15m-1766485800 -> 1766485800)
+function parseTimestampFromSlug(slug: string): number | null {
+  const match = slug.match(/(\d{10})$/);
+  return match ? parseInt(match[1], 10) : null;
 }
 
 /**
@@ -114,19 +86,6 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
     const outcomes = market.outcomes || ['Yes', 'No'];
     
     console.log(`[Gamma] Found market: ${question.slice(0, 50)}...`);
-    console.log(`[Gamma] conditionId: ${conditionId}`);
-    console.log(`[Gamma] Raw clobTokenIds type: ${typeof market.clobTokenIds}`);
-    console.log(`[Gamma] Raw clobTokenIds: ${JSON.stringify(market.clobTokenIds)?.slice(0, 100)}`);
-    console.log(`[Gamma] Parsed clobTokenIds: ${clobTokenIds.length} tokens`);
-    
-    // Check for strike price in metadata first (Gamma API)
-    const metadataStrikePrice = market.metadata?.strike_price;
-    console.log(`[Gamma] metadata.strike_price: ${metadataStrikePrice}`);
-    
-    if (clobTokenIds.length >= 2) {
-      console.log(`[Gamma] Token 0: ${clobTokenIds[0].slice(0, 30)}...`);
-      console.log(`[Gamma] Token 1: ${clobTokenIds[1].slice(0, 30)}...`);
-    }
     
     if (clobTokenIds.length < 2) {
       console.log(`[Gamma] Not enough valid token IDs for slug: ${slug}`);
@@ -155,15 +114,19 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
       downTokenId = clobTokenIds[0];
     }
     
-    console.log(`[Gamma] UP token: ${upTokenId.slice(0, 30)}...`);
-    console.log(`[Gamma] DOWN token: ${downTokenId.slice(0, 30)}...`);
+    // Derive event times from slug for 15m markets (slug = truth)
+    const slugTimestamp = parseTimestampFromSlug(slug);
+    let eventStartTime: string;
+    let eventEndTime: string;
     
-    // Priority for strike price: 1) metadata.strike_price, 2) parsed from question
-    const parsedStrikePrice = parseStrikePriceFromQuestion(question);
-    const strikePrice = metadataStrikePrice ?? parsedStrikePrice;
-    
-    if (strikePrice) {
-      console.log(`[Gamma] Strike price: $${strikePrice} (source: ${metadataStrikePrice ? 'metadata' : 'question'})`);
+    if (slugTimestamp && is15Min) {
+      // Slug is truth - derive times from it
+      eventStartTime = new Date(slugTimestamp * 1000).toISOString();
+      eventEndTime = new Date((slugTimestamp + 15 * 60) * 1000).toISOString();
+    } else {
+      // Fallback to Gamma API times
+      eventStartTime = market.startDate || market.gameStartTime || new Date().toISOString();
+      eventEndTime = market.endDate || market.endDateIso || new Date(Date.now() + 15 * 60000).toISOString();
     }
     
     return {
@@ -173,10 +136,11 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
       conditionId,
       upTokenId,
       downTokenId,
-      eventStartTime: market.startDate || market.gameStartTime || new Date().toISOString(),
-      eventEndTime: market.endDate || market.endDateIso || new Date(Date.now() + 15 * 60000).toISOString(),
+      eventStartTime,
+      eventEndTime,
       marketType,
-      strikePrice,
+      strikePrice: null, // Will be populated from oracle data
+      openPrice: null,
     };
     
   } catch (error) {
@@ -212,7 +176,7 @@ async function searchActive15mMarkets(): Promise<string[]> {
       const eventSlug = (event.slug || '').toLowerCase();
       const title = (event.title || '').toLowerCase();
       
-      // Look for 15-minute patterns: "15m", "updown", "up-down"
+      // Look for 15-minute patterns
       const is15MinEvent = eventSlug.includes('15m') || 
                           eventSlug.includes('updown') ||
                           title.includes('15 min') ||
@@ -227,24 +191,19 @@ async function searchActive15mMarkets(): Promise<string[]> {
                       title.includes('ethereum');
       
       if (is15MinEvent && isCrypto) {
-        console.log(`[Gamma] Found 15m event: ${event.slug}`);
-        
-        // Get market slugs from the event
         const markets = event.markets || [];
         for (const market of markets) {
           if (market.slug) {
             slugs.push(market.slug);
           }
         }
-        
-        // Also add event slug as a potential market slug
         if (event.slug) {
           slugs.push(event.slug);
         }
       }
     }
     
-    // Also search markets directly for 15m patterns
+    // Also search markets directly
     const marketsResponse = await fetch(
       'https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=200',
       {
@@ -271,7 +230,6 @@ async function searchActive15mMarkets(): Promise<string[]> {
         
         if (is15MinMarket && isCrypto && market.slug) {
           if (!slugs.includes(market.slug)) {
-            console.log(`[Gamma] Found 15m market: ${market.slug}`);
             slugs.push(market.slug);
           }
         }
@@ -284,15 +242,13 @@ async function searchActive15mMarkets(): Promise<string[]> {
   
   // Also try known slug patterns for current time
   const now = Date.now();
-  const intervals = [0, 1, 2, 3, 4]; // Check current and next few 15-min intervals
+  const intervals = [0, 1, 2, 3, 4];
   
   for (const offset of intervals) {
-    // 15-minute intervals: round to nearest 15 min
     const intervalMs = 15 * 60 * 1000;
     const intervalTime = Math.floor((now + offset * intervalMs) / intervalMs) * intervalMs;
     const intervalSecs = Math.floor(intervalTime / 1000);
     
-    // Try different slug patterns
     const patterns = [
       `btc-updown-15m-${intervalSecs}`,
       `eth-updown-15m-${intervalSecs}`,
@@ -308,7 +264,7 @@ async function searchActive15mMarkets(): Promise<string[]> {
   }
   
   console.log(`[Gamma] Total slugs to check: ${slugs.length}`);
-  return [...new Set(slugs)]; // Dedupe
+  return [...new Set(slugs)];
 }
 
 /**
@@ -333,7 +289,6 @@ async function fetchPriceMarkets(): Promise<MarketToken[]> {
       const question = (market.question || '').toLowerCase();
       const slug = market.slug || '';
       
-      // Match "bitcoin above" or "ethereum above" markets
       const isBtcAbove = question.includes('bitcoin') && question.includes('above');
       const isEthAbove = question.includes('ethereum') && question.includes('above');
       
@@ -353,12 +308,6 @@ async function fetchPriceMarkets(): Promise<MarketToken[]> {
         downTokenId = clobTokenIds[0];
       }
       
-      console.log(`[Gamma] Found price market: ${question.slice(0, 60)}...`);
-      console.log(`[Gamma] UP: ${upTokenId.slice(0, 30)}... DOWN: ${downTokenId.slice(0, 30)}...`);
-      
-      // Parse strike price from question
-      const parsedStrikePrice = parseStrikePriceFromQuestion(market.question || '');
-      
       results.push({
         slug,
         question: market.question || '',
@@ -369,7 +318,8 @@ async function fetchPriceMarkets(): Promise<MarketToken[]> {
         eventStartTime: market.startDate || new Date().toISOString(),
         eventEndTime: market.endDate || new Date(Date.now() + 24 * 60 * 60000).toISOString(),
         marketType: 'price_above',
-        strikePrice: parsedStrikePrice,
+        strikePrice: null,
+        openPrice: null,
       });
     }
     
@@ -377,7 +327,7 @@ async function fetchPriceMarkets(): Promise<MarketToken[]> {
     console.error('[Gamma] Error fetching price markets:', error);
   }
   
-  return results.slice(0, 10); // Limit to 10 price markets
+  return results.slice(0, 10);
 }
 
 serve(async (req) => {
@@ -389,29 +339,23 @@ serve(async (req) => {
   console.log('=== Fetching market tokens ===');
 
   try {
-    // Parse request body for optional slug parameter
     let requestedSlug: string | null = null;
     try {
       const body = await req.json();
       requestedSlug = body.slug || null;
     } catch {
-      // No body or invalid JSON - that's fine
+      // No body or invalid JSON
     }
     
     const markets: MarketToken[] = [];
     
     if (requestedSlug) {
-      // Fetch specific market by slug
-      console.log(`[Get Tokens] Fetching specific slug: ${requestedSlug}`);
       const market = await fetchMarketBySlug(requestedSlug);
       if (market) {
         markets.push(market);
       }
     } else {
-      // Search for active 15m markets
       const slugs = await searchActive15mMarkets();
-      
-      // Fetch each slug in parallel (limit to first 10)
       const slugsToFetch = slugs.slice(0, 10);
       const fetchPromises = slugsToFetch.map(slug => fetchMarketBySlug(slug));
       const fetchResults = await Promise.all(fetchPromises);
@@ -422,10 +366,8 @@ serve(async (req) => {
         }
       }
       
-      // Also fetch some price markets as fallback
       const priceMarkets = await fetchPriceMarkets();
       for (const pm of priceMarkets) {
-        // Don't add duplicates
         if (!markets.find(m => m.slug === pm.slug)) {
           markets.push(pm);
         }
@@ -439,73 +381,83 @@ serve(async (req) => {
       return new Date(a.eventEndTime).getTime() - new Date(b.eventEndTime).getTime();
     });
     
-    // Fetch strike prices from database
+    // Connect to Supabase for oracle prices
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseKey);
     
     const marketSlugs = markets.map(m => m.slug);
+    
+    // Fetch oracle prices from strike_prices (the reliable source)
     const { data: strikePrices } = await supabase
       .from('strike_prices')
-      .select('market_slug, strike_price')
+      .select('market_slug, open_price, strike_price, close_price')
       .in('market_slug', marketSlugs);
     
-    // Map strike prices to markets
-    const strikePriceMap = new Map<string, number>();
+    // Map prices
+    interface StrikePriceData {
+      market_slug: string;
+      open_price: number | null;
+      strike_price: number | null;
+      close_price: number | null;
+    }
+    const strikePriceMap = new Map<string, StrikePriceData>();
     if (strikePrices) {
       for (const sp of strikePrices) {
-        strikePriceMap.set(sp.market_slug, sp.strike_price);
+        strikePriceMap.set(sp.market_slug, sp);
       }
     }
     
-    // Fetch previous market data from market_history for strike price chain
-    // For each market, find the previous market that ended when this one started
-    const { data: marketHistory } = await supabase
-      .from('market_history')
-      .select('slug, asset, event_end_time, strike_price, close_price, result')
-      .in('asset', ['BTC', 'ETH'])
-      .order('event_end_time', { ascending: false })
-      .limit(50);
+    // Also get previous interval close prices for fallback
+    const previousSlugs: string[] = [];
+    for (const market of markets) {
+      const slugTs = parseTimestampFromSlug(market.slug);
+      if (slugTs) {
+        const prevTs = slugTs - 15 * 60;
+        const slugParts = market.slug.replace(/\d{10}$/, '');
+        previousSlugs.push(`${slugParts}${prevTs}`);
+      }
+    }
     
-    // Create a map of previous market close prices by asset and start time
-    const previousMarketMap = new Map<string, { strikePrice: number | null, closePrice: number | null, result: string | null }>();
+    const { data: prevPrices } = await supabase
+      .from('strike_prices')
+      .select('market_slug, close_price')
+      .in('market_slug', previousSlugs);
     
-    if (marketHistory) {
-      for (const market of markets) {
-        const marketStartTime = new Date(market.eventStartTime).getTime();
-        
-        // Find the previous market for this asset that ended at or before this market started
-        const previousMarket = marketHistory.find(h => 
-          h.asset === market.asset && 
-          new Date(h.event_end_time).getTime() <= marketStartTime
-        );
-        
-        if (previousMarket) {
-          // The "price to beat" for the current market is the close price of the previous market
-          // which becomes the strike price for this market
-          previousMarketMap.set(market.slug, {
-            strikePrice: previousMarket.close_price || previousMarket.strike_price,
-            closePrice: previousMarket.close_price,
-            result: previousMarket.result
-          });
-          console.log(`[History] Found previous market for ${market.slug}: close=$${previousMarket.close_price}`);
+    const prevPriceMap = new Map<string, number>();
+    if (prevPrices) {
+      for (const pp of prevPrices) {
+        if (pp.close_price) {
+          prevPriceMap.set(pp.market_slug, pp.close_price);
         }
       }
     }
     
-    // Add strike prices to markets - priority: previous market close > DB strike_prices > parsed from question
-    const marketsWithStrike = markets.map(m => {
-      const previousData = previousMarketMap.get(m.slug);
-      const dbStrike = strikePriceMap.get(m.slug);
+    // Add open_price to markets - priority: current oracle > previous close
+    const marketsWithPrice = markets.map(m => {
+      const oracleData = strikePriceMap.get(m.slug);
       
-      // Use previous market's close price as the strike (price to beat)
-      const finalStrikePrice = previousData?.strikePrice || dbStrike || m.strikePrice || null;
+      // Primary: current market's open_price from oracle
+      let openPrice = oracleData?.open_price ?? oracleData?.strike_price ?? null;
+      
+      // Fallback: previous interval's close_price (price to beat = prev close)
+      if (openPrice === null) {
+        const slugTs = parseTimestampFromSlug(m.slug);
+        if (slugTs) {
+          const prevTs = slugTs - 15 * 60;
+          const slugParts = m.slug.replace(/\d{10}$/, '');
+          const prevSlug = `${slugParts}${prevTs}`;
+          openPrice = prevPriceMap.get(prevSlug) ?? null;
+          if (openPrice) {
+            console.log(`[Price] Using prev close for ${m.slug}: $${openPrice}`);
+          }
+        }
+      }
       
       return {
         ...m,
-        strikePrice: finalStrikePrice,
-        previousMarketClosePrice: previousData?.closePrice || null,
-        previousMarketResult: previousData?.result || null
+        openPrice,
+        strikePrice: openPrice, // Legacy alias
       };
     });
     
@@ -516,7 +468,7 @@ serve(async (req) => {
       success: true,
       timestamp: new Date().toISOString(),
       durationMs: duration,
-      markets: marketsWithStrike
+      markets: marketsWithPrice
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
