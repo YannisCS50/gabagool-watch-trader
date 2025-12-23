@@ -199,17 +199,22 @@ export function useChainlinkRealtime(enabled: boolean = true): UseChainlinkRealt
   }, [stopRestPolling]);
 
   useEffect(() => {
-    if (enabled) {
+    let mounted = true;
+    
+    if (enabled && mounted) {
       // Start with REST polling immediately for fast initial data
       startRestPolling();
       // Then try WebSocket for real-time updates
       connect();
-    } else {
+    } else if (!enabled) {
       disconnect();
     }
 
-    return () => disconnect();
-  }, [enabled, connect, disconnect, startRestPolling]);
+    return () => {
+      mounted = false;
+      disconnect();
+    };
+  }, [enabled]); // Reduced deps to avoid re-runs during HMR
 
   return {
     btcPrice,
