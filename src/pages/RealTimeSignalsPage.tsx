@@ -25,7 +25,8 @@ import { LivePrice } from "@/components/LivePrice";
 
 interface LiveMarket {
   slug: string;
-  asset: "BTC" | "ETH";
+  question: string;
+  asset: "BTC" | "ETH" | "SOL" | "XRP";
   upPrice: number;
   downPrice: number;
   combinedPrice: number;
@@ -33,6 +34,7 @@ interface LiveMarket {
   eventStartTime: Date;
   eventEndTime: Date;
   remainingSeconds: number;
+  marketType: string;
 }
 
 const RealTimeSignalsPage = () => {
@@ -84,6 +86,7 @@ const RealTimeSignalsPage = () => {
 
         return {
           slug: market.slug,
+          question: market.question,
           asset: market.asset,
           upPrice,
           downPrice,
@@ -92,9 +95,11 @@ const RealTimeSignalsPage = () => {
           eventStartTime: market.eventStartTime,
           eventEndTime: market.eventEndTime,
           remainingSeconds,
+          marketType: market.marketType,
         };
       })
-      .filter((m) => m.remainingSeconds > 0 && m.remainingSeconds <= 900)
+      // Show markets with remaining time (up to 7 days for daily markets)
+      .filter((m) => m.remainingSeconds > 0 && m.remainingSeconds <= 7 * 24 * 3600)
       .sort((a, b) => a.remainingSeconds - b.remainingSeconds);
   }, [discoveredMarkets, nowMs, getPrice]);
 

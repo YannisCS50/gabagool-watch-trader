@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
- * True realtime Up/Down pricing for Polymarket 15-min crypto markets.
+ * True realtime pricing for Polymarket crypto markets.
  *
- * 1. Fetches active 15m markets from our edge function (avoids CORS)
- * 2. Extracts clobTokenIds (Up/Down token IDs)
+ * 1. Fetches active crypto markets from our edge function (avoids CORS)
+ * 2. Extracts clobTokenIds (Yes/No token IDs)
  * 3. Subscribes to CLOB market channel for best_ask prices
  */
 
@@ -15,13 +15,15 @@ interface PricePoint {
   timestampMs: number;
 }
 
-interface MarketInfo {
+export interface MarketInfo {
   slug: string;
-  asset: "BTC" | "ETH";
+  question: string;
+  asset: "BTC" | "ETH" | "SOL" | "XRP";
   upTokenId: string;
   downTokenId: string;
   eventStartTime: Date;
   eventEndTime: Date;
+  marketType: "price_above" | "price_target" | "15min" | "other";
 }
 
 interface UsePolymarketRealtimeResult {
@@ -52,9 +54,9 @@ function parseNumber(n: unknown): number | null {
 }
 
 /**
- * Fetch active 15-minute crypto markets from our edge function
+ * Fetch active crypto markets from our edge function
  */
-async function fetchActive15mMarkets(): Promise<MarketInfo[]> {
+async function fetchActiveMarkets(): Promise<MarketInfo[]> {
   console.log("[Market Discovery] Fetching from edge function...");
   
   try {
@@ -79,11 +81,13 @@ async function fetchActive15mMarkets(): Promise<MarketInfo[]> {
     
     const markets: MarketInfo[] = data.markets.map((m: any) => ({
       slug: m.slug,
-      asset: m.asset as "BTC" | "ETH",
+      question: m.question || '',
+      asset: m.asset as "BTC" | "ETH" | "SOL" | "XRP",
       upTokenId: m.upTokenId,
       downTokenId: m.downTokenId,
       eventStartTime: new Date(m.eventStartTime),
       eventEndTime: new Date(m.eventEndTime),
+      marketType: m.marketType || 'other',
     }));
     
     console.log("[Market Discovery] Found", markets.length, "markets");
@@ -164,7 +168,7 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
   const discoverMarkets = useCallback(async () => {
     setConnectionState("discovering");
     
-    const discovered = await fetchActive15mMarkets();
+    const discovered = await fetchActiveMarkets();
     setMarkets(discovered);
     
     const mapping = new Map<string, { slug: string; outcome: "up" | "down" }>();
