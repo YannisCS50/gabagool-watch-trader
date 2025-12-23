@@ -764,12 +764,34 @@ async function handleWebSocket(req: Request): Promise<Response> {
     connectToRtds();
     startStatusLogging();
     
+    // Auto-settle expired markets every 30 seconds
+    const settleInterval = setInterval(async () => {
+      try {
+        const response = await fetch(`${supabaseUrl}/functions/v1/settle-paper-trades`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${supabaseKey}`,
+            'Content-Type': 'application/json',
+          },
+        });
+        if (response.ok) {
+          const result = await response.json();
+          if (result.settled > 0) {
+            log(`💰 Auto-settled ${result.settled} markets`);
+          }
+        }
+      } catch (err) {
+        // Silent fail - settlement will retry
+      }
+    }, 30000);
+    
     const refreshInterval = setInterval(async () => {
       isEnabled = await checkBotEnabled();
       if (!isEnabled) {
         log('🔴 Bot disabled, stopping');
         clobSocket?.close();
         clearInterval(refreshInterval);
+        clearInterval(settleInterval);
         if (statusLogInterval) clearInterval(statusLogInterval);
         return;
       }
