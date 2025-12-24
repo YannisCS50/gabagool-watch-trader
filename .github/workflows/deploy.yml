@@ -1,0 +1,33 @@
+name: Deploy to Hetzner
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.HETZNER_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H ${{ secrets.HETZNER_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Deploy (pull + docker compose)
+        run: |
+          ssh ${{ secrets.HETZNER_USER }}@${{ secrets.HETZNER_HOST }} << 'EOF'
+            set -e
+            mkdir -p /home/deploy/app
+            if [ ! -d "/home/deploy/app/.git" ]; then
+              git clone https://github.com/gabagool-watch/gabagool-watch-trader.git /home/deploy/app
+            fi
+            cd /home/deploy/app
+            git fetch --all
+            git reset --hard origin/main
+            docker compose up -d --build
+          EOF
