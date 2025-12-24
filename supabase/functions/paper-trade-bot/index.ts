@@ -486,9 +486,12 @@ Deno.serve(async (req) => {
     }
 
     const marketsData = await marketsResponse.json();
-    const markets: MarketToken[] = marketsData.markets || [];
+    const allMarkets: MarketToken[] = marketsData.markets || [];
     
-    console.log(`[PaperBot] 📊 Found ${markets.length} active markets`);
+    // Filter to only BTC markets
+    const markets = allMarkets.filter(m => m.asset === 'BTC');
+    
+    console.log(`[PaperBot] 📊 Found ${markets.length} BTC markets (filtered from ${allMarkets.length} total)`);
 
     if (markets.length === 0) {
       return new Response(JSON.stringify({ 
