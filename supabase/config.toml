@@ -38,3 +38,6 @@ verify_jwt = false
 
 [functions.reset-paper-trades]
 verify_jwt = false
+
+[functions.live-trade-bot]
+verify_jwt = false
