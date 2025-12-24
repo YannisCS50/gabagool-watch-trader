@@ -34,29 +34,95 @@ function parseTimestampFromSlug(slug: string): number | null {
   return match ? parseInt(match[1], 10) : null;
 }
 
-// Fetch current Chainlink prices from RTDS WebSocket
+// Fetch current Chainlink prices - try multiple sources
 async function fetchCurrentChainlinkPrices(): Promise<{ btc: number | null; eth: number | null }> {
+  const prices = { btc: null as number | null, eth: null as number | null };
+  
+  // Try CoinGecko API first (public, no auth needed)
+  try {
+    console.log('[settle] Fetching prices from CoinGecko...');
+    const response = await fetch(
+      'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd',
+      { headers: { 'Accept': 'application/json' } }
+    );
+    
+    if (response.ok) {
+      const data = await response.json();
+      if (data.bitcoin?.usd) {
+        prices.btc = data.bitcoin.usd;
+        console.log(`[settle] BTC price from CoinGecko: $${prices.btc}`);
+      }
+      if (data.ethereum?.usd) {
+        prices.eth = data.ethereum.usd;
+        console.log(`[settle] ETH price from CoinGecko: $${prices.eth}`);
+      }
+      
+      if (prices.btc && prices.eth) {
+        return prices;
+      }
+    }
+  } catch (e) {
+    console.error('[settle] CoinGecko error:', e);
+  }
+  
+  // Fallback to Binance API
+  try {
+    console.log('[settle] Trying Binance API...');
+    const [btcRes, ethRes] = await Promise.all([
+      fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT'),
+      fetch('https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT'),
+    ]);
+    
+    if (btcRes.ok) {
+      const btcData = await btcRes.json();
+      prices.btc = parseFloat(btcData.price);
+      console.log(`[settle] BTC price from Binance: $${prices.btc}`);
+    }
+    if (ethRes.ok) {
+      const ethData = await ethRes.json();
+      prices.eth = parseFloat(ethData.price);
+      console.log(`[settle] ETH price from Binance: $${prices.eth}`);
+    }
+  } catch (e) {
+    console.error('[settle] Binance error:', e);
+  }
+  
+  // Last resort: try RTDS WebSocket with shorter timeout
+  if (!prices.btc || !prices.eth) {
+    console.log('[settle] Trying RTDS WebSocket...');
+    try {
+      const rtdsPrices = await fetchFromRTDS();
+      if (!prices.btc && rtdsPrices.btc) prices.btc = rtdsPrices.btc;
+      if (!prices.eth && rtdsPrices.eth) prices.eth = rtdsPrices.eth;
+    } catch (e) {
+      console.error('[settle] RTDS error:', e);
+    }
+  }
+  
+  return prices;
+}
+
+// RTDS WebSocket fallback
+async function fetchFromRTDS(): Promise<{ btc: number | null; eth: number | null }> {
   return new Promise((resolve) => {
     const prices = { btc: null as number | null, eth: null as number | null };
     let ws: WebSocket | null = null;
     
     const timeout = setTimeout(() => {
-      console.log('[settle] RTDS timeout - using available prices');
+      console.log('[settle] RTDS timeout');
       if (ws) ws.close();
       resolve(prices);
-    }, 8000); // 8 second timeout
+    }, 5000);
     
     try {
       ws = new WebSocket('wss://rtds.polymarket.com');
     } catch (e) {
-      console.error('[settle] Failed to connect to RTDS:', e);
       clearTimeout(timeout);
       resolve(prices);
       return;
     }
     
     ws.onopen = () => {
-      console.log('[settle] Connected to RTDS for price fetch');
       ws!.send(JSON.stringify({
         action: 'subscribe',
         subscriptions: [{
@@ -74,24 +140,16 @@ async function fetchCurrentChainlinkPrices(): Promise<{ btc: number | null; eth:
           const symbol = data.payload.symbol?.toUpperCase().replace('/USD', '') || '';
           const value = data.payload.value;
           
-          if (symbol === 'BTC' && value) {
-            prices.btc = value;
-            console.log(`[settle] BTC price: $${value}`);
-          } else if (symbol === 'ETH' && value) {
-            prices.eth = value;
-            console.log(`[settle] ETH price: $${value}`);
-          }
+          if (symbol === 'BTC' && value) prices.btc = value;
+          else if (symbol === 'ETH' && value) prices.eth = value;
           
-          // If we have both prices, we're done
           if (prices.btc !== null && prices.eth !== null) {
             clearTimeout(timeout);
             ws!.close();
             resolve(prices);
           }
         }
-      } catch (e) {
-        // Ignore parse errors
-      }
+      } catch (e) { /* ignore */ }
     };
     
     ws.onerror = () => {
