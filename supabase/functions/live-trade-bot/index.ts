@@ -380,17 +380,14 @@ async function createL2Headers(
   method: string,
   requestPath: string,
   body?: string,
-  timestamp?: number,
-  addressOverride?: string
+  timestamp?: number
 ): Promise<Record<string, string>> {
   let ts = Math.floor(Date.now() / 1000);
   if (timestamp !== undefined) {
     ts = timestamp;
   }
 
-  // NOTE: clob-client uses signer.getAddress(); for Polymarket contract wallets we must
-  // send the funder (Safe/Proxy) address here. If not provided, default to signer.
-  const address = addressOverride ?? wallet.address;
+  const address = wallet.address;
 
   const sig = await buildPolyHmacSignature(
     creds.secret,
@@ -400,8 +397,9 @@ async function createL2Headers(
     body
   );
 
+  console.log('[LiveBot] API KEY PRESENT:', !!creds.key);
   console.log(
-    `[L2 Headers] address=${address}, ts=${ts}, method=${method}, path=${requestPath.slice(0, 50)}, apiKeyPresent=${!!creds.key}`
+    `[L2 Headers] address=${address}, ts=${ts}, method=${method}, path=${requestPath.slice(0, 50)}`
   );
 
   return {
@@ -539,15 +537,25 @@ async function deriveApiCredentials(privateKey: string): Promise<{
 async function getBalanceAllowance(
   wallet: ethers.Wallet,
   creds: { key: string; secret: string; passphrase: string },
-  assetType: 'COLLATERAL' | 'CONDITIONAL' = 'COLLATERAL',
-  funderAddress?: string
+  assetType: 'COLLATERAL' | 'CONDITIONAL' = 'COLLATERAL'
 ): Promise<{ balance: string; allowance: string }> {
-  const path = `/balance-allowance?asset_type=${assetType}`;
-  const headers = await createL2Headers(wallet, creds, 'GET', path, undefined, undefined, funderAddress);
+  // IMPORTANT: clob-client signs the endpoint path ONLY (no query string)
+  // and sends query params separately.
+  const endpoint = `/balance-allowance`;
 
-  console.log(`[LiveBot] Fetching balance from ${POLYMARKET_CLOB_HOST}${path}`);
+  const signatureType = Number(Deno.env.get('POLYMARKET_SIGNATURE_TYPE') ?? '0');
 
-  const response = await fetch(`${POLYMARKET_CLOB_HOST}${path}`, {
+  const headers = await createL2Headers(wallet, creds, 'GET', endpoint);
+
+  const params = new URLSearchParams({
+    asset_type: assetType,
+    signature_type: String(signatureType),
+  });
+
+  const url = `${POLYMARKET_CLOB_HOST}${endpoint}?${params.toString()}`;
+  console.log(`[LiveBot] Fetching balance from ${url}`);
+
+  const response = await fetch(url, {
     method: 'GET',
     headers: { ...headers, 'Content-Type': 'application/json' },
   });
@@ -581,8 +589,6 @@ async function createOrder(
   try {
     const walletAddress = wallet.address;
     console.log(`[LiveBot] Wallet address: ${walletAddress}`);
-
-    const funder = await resolvePolymarketFunder(privateKey);
 
     // Calculate amounts (USDC has 6 decimals, outcome tokens have 6 decimals on Polymarket)
     const sizeInUnits = Math.floor(order.size * 1e6);
@@ -624,7 +630,7 @@ async function createOrder(
 
     const path = '/order';
     const body = JSON.stringify(orderPayload);
-    const headers = await createL2Headers(wallet, creds, 'POST', path, body, undefined, funder.funderAddress);
+    const headers = await createL2Headers(wallet, creds, 'POST', path, body);
 
     console.log('[LiveBot] Submitting order to CLOB...');
 
@@ -804,8 +810,7 @@ serve(async (req) => {
             balanceData = await getBalanceAllowance(
               wallet,
               { key: creds.apiKey, secret: creds.apiSecret, passphrase: creds.passphrase },
-              'COLLATERAL',
-              funder.funderAddress
+              'COLLATERAL'
             );
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -823,8 +828,7 @@ serve(async (req) => {
               balanceData = await getBalanceAllowance(
                 wallet,
                 { key: creds.apiKey, secret: creds.apiSecret, passphrase: creds.passphrase },
-                'COLLATERAL',
-                funder.funderAddress
+                'COLLATERAL'
               );
             } else {
               throw err;
@@ -988,7 +992,6 @@ serve(async (req) => {
           const wallet = new ethers.Wallet(privateKey!);
           const walletAddress = wallet.address;
           const creds = await getCredentials();
-          const funder = await resolvePolymarketFunder(privateKey!);
 
           // Test 1: Public endpoint (no auth needed)
           console.log('[DEBUG] Testing public endpoint...');
@@ -1003,10 +1006,7 @@ serve(async (req) => {
             wallet,
             { key: creds.apiKey, secret: creds.apiSecret, passphrase: creds.passphrase },
             'GET',
-            apiKeysPath,
-            undefined,
-            undefined,
-            funder.funderAddress
+            apiKeysPath
           );
           const apiKeysTest = await fetch(`${POLYMARKET_CLOB_HOST}${apiKeysPath}`, {
             method: 'GET',
