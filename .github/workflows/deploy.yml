@@ -12,16 +12,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup SSH
+      - name: Start ssh-agent and add key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.HETZNER_SSH_KEY }}
+
+      - name: Trust host key
         run: |
           mkdir -p ~/.ssh
-          echo "${{ secrets.HETZNER_SSH_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H ${{ secrets.HETZNER_HOST }} >> ~/.ssh/known_hosts
 
-      - name: SSH smoke test (show exact error)
+      - name: SSH smoke test (prints real reason if it fails)
         run: |
-          set -x
           ssh -vvv -o BatchMode=yes ${{ secrets.HETZNER_USER }}@${{ secrets.HETZNER_HOST }} "whoami && hostname && date"
 
       - name: Deploy (pull + docker compose)
