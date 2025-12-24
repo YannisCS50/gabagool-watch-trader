@@ -19,8 +19,14 @@ const POLYGON_RPC_URL = 'https://polygon-rpc.com';
 // Polymarket CTF Exchange contract address on Polygon
 const CTF_EXCHANGE_ADDRESS = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
 
-// USDC contract on Polygon
+// USDC contract on Polygon (Bridged USDC)
 const USDC_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+
+// USDT contract on Polygon
+const USDT_ADDRESS = '0xc2132D05D31c914a87C6611C10748AEb04B58e8F';
+
+// Uniswap V3 SwapRouter02 on Polygon
+const UNISWAP_ROUTER_ADDRESS = '0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45';
 
 // Standard ERC20 ABI for approve and balanceOf
 const ERC20_ABI = [
@@ -28,6 +34,11 @@ const ERC20_ABI = [
   'function allowance(address owner, address spender) view returns (uint256)',
   'function approve(address spender, uint256 amount) returns (bool)',
   'function decimals() view returns (uint8)',
+];
+
+// Uniswap V3 SwapRouter ABI
+const SWAP_ROUTER_ABI = [
+  'function exactInputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96)) external payable returns (uint256 amountOut)',
 ];
 
 // Polymarket Exchange ABI for deposits
@@ -765,9 +776,9 @@ serve(async (req) => {
       }
       
       case 'wallet-balance': {
-        // Check wallet USDC balance (not Polymarket balance, but actual wallet balance)
+        // Check wallet balances (MATIC, USDC, USDT)
         try {
-          console.log('[LiveBot] Checking wallet USDC balance...');
+          console.log('[LiveBot] Checking wallet balances...');
           const provider = new ethers.JsonRpcProvider(POLYGON_RPC_URL);
           const wallet = new ethers.Wallet(privateKey!, provider);
           const walletAddress = wallet.address;
@@ -784,6 +795,13 @@ serve(async (req) => {
           const usdcBalanceFormatted = Number(usdcBalance) / Math.pow(10, Number(usdcDecimals));
           console.log(`[LiveBot] USDC balance: ${usdcBalanceFormatted}`);
           
+          // Get USDT balance
+          const usdtContract = new ethers.Contract(USDT_ADDRESS, ERC20_ABI, provider);
+          const usdtBalance = await usdtContract.balanceOf(walletAddress);
+          const usdtDecimals = await usdtContract.decimals();
+          const usdtBalanceFormatted = Number(usdtBalance) / Math.pow(10, Number(usdtDecimals));
+          console.log(`[LiveBot] USDT balance: ${usdtBalanceFormatted}`);
+          
           // Check current allowance to CTF Exchange
           const allowance = await usdcContract.allowance(walletAddress, CTF_EXCHANGE_ADDRESS);
           const allowanceFormatted = Number(allowance) / Math.pow(10, Number(usdcDecimals));
@@ -795,10 +813,12 @@ serve(async (req) => {
             balances: {
               matic: parseFloat(maticBalanceFormatted),
               usdc: usdcBalanceFormatted,
+              usdt: usdtBalanceFormatted,
               usdcAllowanceToExchange: allowanceFormatted,
             },
             hasGasForTx: parseFloat(maticBalanceFormatted) > 0.001,
             canDeposit: usdcBalanceFormatted > 0 && parseFloat(maticBalanceFormatted) > 0.001,
+            canSwapUsdtToUsdc: usdtBalanceFormatted > 0 && parseFloat(maticBalanceFormatted) > 0.001,
           }), {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
@@ -895,11 +915,133 @@ serve(async (req) => {
         }
       }
       
+      case 'swap': {
+        // Swap USDT to USDC via Uniswap V3 on Polygon
+        try {
+          const { amount, fromToken = 'USDT' } = body;
+          
+          if (!amount || amount <= 0) {
+            return new Response(JSON.stringify({
+              success: false,
+              error: 'Missing or invalid amount parameter',
+            }), {
+              status: 400,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            });
+          }
+          
+          console.log(`[LiveBot] Swapping ${amount} ${fromToken} to USDC...`);
+          const provider = new ethers.JsonRpcProvider(POLYGON_RPC_URL);
+          const wallet = new ethers.Wallet(privateKey!, provider);
+          const walletAddress = wallet.address;
+          
+          // Both USDT and USDC have 6 decimals on Polygon
+          const amountInUnits = BigInt(Math.floor(amount * 1e6));
+          
+          // Determine token addresses
+          const tokenInAddress = fromToken.toUpperCase() === 'USDT' ? USDT_ADDRESS : USDT_ADDRESS;
+          const tokenOutAddress = USDC_ADDRESS;
+          
+          console.log(`[LiveBot] Token in: ${tokenInAddress}`);
+          console.log(`[LiveBot] Token out: ${tokenOutAddress}`);
+          console.log(`[LiveBot] Amount: ${amountInUnits}`);
+          
+          // Check balance
+          const tokenInContract = new ethers.Contract(tokenInAddress, ERC20_ABI, wallet);
+          const balance = await tokenInContract.balanceOf(walletAddress);
+          console.log(`[LiveBot] ${fromToken} balance: ${balance}`);
+          
+          if (balance < amountInUnits) {
+            return new Response(JSON.stringify({
+              success: false,
+              error: `Insufficient ${fromToken} balance. Have ${Number(balance) / 1e6}, need ${amount}`,
+            }), {
+              status: 400,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            });
+          }
+          
+          // Check MATIC for gas
+          const maticBalance = await provider.getBalance(walletAddress);
+          if (maticBalance < ethers.parseEther('0.001')) {
+            return new Response(JSON.stringify({
+              success: false,
+              error: `Insufficient MATIC for gas. Have ${ethers.formatEther(maticBalance)}, need at least 0.001`,
+            }), {
+              status: 400,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            });
+          }
+          
+          // Approve router if needed
+          const currentAllowance = await tokenInContract.allowance(walletAddress, UNISWAP_ROUTER_ADDRESS);
+          console.log(`[LiveBot] Current allowance to router: ${currentAllowance}`);
+          
+          if (currentAllowance < amountInUnits) {
+            console.log('[LiveBot] Approving token spend to router...');
+            const maxApproval = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
+            const approveTx = await tokenInContract.approve(UNISWAP_ROUTER_ADDRESS, maxApproval);
+            console.log(`[LiveBot] Approve tx: ${approveTx.hash}`);
+            await approveTx.wait();
+            console.log('[LiveBot] Approval confirmed');
+          }
+          
+          // Execute swap via Uniswap V3
+          // Using 0.01% fee tier (100) which is common for stablecoin pairs
+          const swapRouter = new ethers.Contract(UNISWAP_ROUTER_ADDRESS, SWAP_ROUTER_ABI, wallet);
+          
+          // Calculate minimum output (0.5% slippage for stablecoins)
+          const minAmountOut = (amountInUnits * 995n) / 1000n;
+          
+          const swapParams = {
+            tokenIn: tokenInAddress,
+            tokenOut: tokenOutAddress,
+            fee: 100, // 0.01% fee tier for stablecoins
+            recipient: walletAddress,
+            amountIn: amountInUnits,
+            amountOutMinimum: minAmountOut,
+            sqrtPriceLimitX96: 0n, // No price limit
+          };
+          
+          console.log('[LiveBot] Executing swap...');
+          console.log('[LiveBot] Swap params:', JSON.stringify(swapParams, (_, v) => typeof v === 'bigint' ? v.toString() : v));
+          
+          const swapTx = await swapRouter.exactInputSingle(swapParams);
+          console.log(`[LiveBot] Swap tx: ${swapTx.hash}`);
+          const receipt = await swapTx.wait();
+          console.log(`[LiveBot] Swap confirmed in block ${receipt.blockNumber}`);
+          
+          // Get new USDC balance
+          const usdcContract = new ethers.Contract(USDC_ADDRESS, ERC20_ABI, provider);
+          const newUsdcBalance = await usdcContract.balanceOf(walletAddress);
+          
+          return new Response(JSON.stringify({
+            success: true,
+            message: `✅ Successfully swapped ${amount} ${fromToken} to USDC`,
+            swapTxHash: swapTx.hash,
+            blockNumber: receipt.blockNumber,
+            newUsdcBalance: Number(newUsdcBalance) / 1e6,
+            walletAddress,
+          }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        } catch (error) {
+          console.error('[LiveBot] Swap error:', error);
+          return new Response(JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+      }
+      
       default:
         return new Response(JSON.stringify({
           success: false,
           error: `Unknown action: ${action}`,
-          availableActions: ['status', 'balance', 'wallet-balance', 'deposit', 'order', 'kill', 'derive-credentials', 'debug-auth'],
+          availableActions: ['status', 'balance', 'wallet-balance', 'deposit', 'swap', 'order', 'kill', 'derive-credentials', 'debug-auth'],
         }), {
           status: 400,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
