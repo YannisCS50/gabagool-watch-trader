@@ -306,8 +306,8 @@ async function getApiHeaders(
   path: string,
   body?: string
 ): Promise<Record<string, string>> {
-  // CRITICAL: Polymarket uses SECONDS not milliseconds for timestamp!
-  const timestamp = Math.floor(Date.now() / 1000);
+  // Polymarket HMAC signing uses a millisecond timestamp (Date.now())
+  const timestamp = Date.now();
   
   console.log('=== HMAC DEBUG START ===');
   console.log(`[HMAC] API Key: ${apiKey.slice(0, 10)}...${apiKey.slice(-5)}`);
@@ -316,7 +316,7 @@ async function getApiHeaders(
   console.log(`[HMAC] Wallet Address: ${walletAddress}`);
   console.log(`[HMAC] Method: ${method}`);
   console.log(`[HMAC] Path: ${path}`);
-  console.log(`[HMAC] Timestamp (SECONDS): ${timestamp}`);
+  console.log(`[HMAC] Timestamp (ms): ${timestamp}`);
   if (body) {
     console.log(`[HMAC] Body (first 100 chars): ${body.slice(0, 100)}...`);
   }
@@ -377,6 +377,29 @@ async function signOrder(
 function getWalletAddress(privateKey: string): string {
   const wallet = new ethers.Wallet(privateKey);
   return wallet.address;
+}
+
+// Polymarket uses a "funder" address (typically a Safe/Proxy shown in the UI) for authenticated CLOB requests.
+// If we sign requests with the EOA instead, CLOB can reject them with 401.
+async function resolvePolymarketFunder(privateKey: string): Promise<{ funderAddress: string; funderType: string }> {
+  const eoaAddress = getWalletAddress(privateKey);
+
+  try {
+    const provider = new ethers.JsonRpcProvider(POLYGON_RPC_URL);
+    const exchangeContract = new ethers.Contract(CTF_EXCHANGE_ADDRESS, EXCHANGE_ABI, provider);
+
+    const receiverInfo = await resolvePolymarketReceiver(exchangeContract, provider, eoaAddress);
+    return {
+      funderAddress: receiverInfo.receiver,
+      funderType: receiverInfo.receiverType,
+    };
+  } catch (err) {
+    console.warn('[LiveBot] Failed to resolve funder (Safe/Proxy). Falling back to EOA:', err);
+    return {
+      funderAddress: eoaAddress,
+      funderType: 'eoa',
+    };
+  }
 }
 
 // ============================================================================
@@ -687,26 +710,34 @@ serve(async (req) => {
       case 'status': {
         // Return bot status and configuration
         const walletAddress = getWalletAddress(privateKey);
-        return new Response(JSON.stringify({
-          success: true,
-          status: 'READY',
-          message: '✅ Live trading bot fully configured and ready',
-          walletAddress,
-          limits: DEFAULT_LIMITS,
-          implementation: {
-            authentication: '✅ HMAC API headers ready',
-            orderSigning: '✅ EIP-712 signing with ethers.js',
-            safetyChecks: '✅ Daily loss, position limits',
-            killSwitch: '✅ Emergency stop available',
-          },
-        }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
+        const funder = await resolvePolymarketFunder(privateKey);
+
+        return new Response(
+          JSON.stringify({
+            success: true,
+            status: 'READY',
+            message: '✅ Live trading bot fully configured and ready',
+            walletAddress,
+            funderAddress: funder.funderAddress,
+            funderType: funder.funderType,
+            limits: DEFAULT_LIMITS,
+            implementation: {
+              authentication: '✅ HMAC API headers ready',
+              orderSigning: '✅ EIP-712 signing with ethers.js',
+              safetyChecks: '✅ Daily loss, position limits',
+              killSwitch: '✅ Emergency stop available',
+            },
+          }),
+          {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          }
+        );
       }
-      
+
       case 'balance': {
         try {
           const walletAddress = getWalletAddress(privateKey!);
+          const funder = await resolvePolymarketFunder(privateKey!);
 
           let creds = await getCredentials();
           let balanceData: { balance: string; allowance: string };
@@ -716,14 +747,18 @@ serve(async (req) => {
               creds.apiKey,
               creds.apiSecret,
               creds.passphrase,
-              walletAddress,
+              funder.funderAddress,
               'COLLATERAL'
             );
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
 
             // Stored creds can be stale/incorrect. If we get a 401, derive fresh creds and retry once.
-            if (msg.includes('401') || msg.toLowerCase().includes('unauthorized') || msg.toLowerCase().includes('invalid api key')) {
+            if (
+              msg.includes('401') ||
+              msg.toLowerCase().includes('unauthorized') ||
+              msg.toLowerCase().includes('invalid api key')
+            ) {
               console.warn('[LiveBot] Stored API credentials rejected (401). Deriving fresh credentials and retrying...');
               apiCredentials = await deriveApiCredentials(privateKey!);
               creds = apiCredentials;
@@ -732,7 +767,7 @@ serve(async (req) => {
                 creds.apiKey,
                 creds.apiSecret,
                 creds.passphrase,
-                walletAddress,
+                funder.funderAddress,
                 'COLLATERAL'
               );
             } else {
@@ -749,6 +784,8 @@ serve(async (req) => {
               allowance: balanceData.allowance,
               currency: 'USDC',
               walletAddress,
+              funderAddress: funder.funderAddress,
+              funderType: funder.funderType,
             }),
             {
               headers: { ...corsHeaders, 'Content-Type': 'application/json' },
