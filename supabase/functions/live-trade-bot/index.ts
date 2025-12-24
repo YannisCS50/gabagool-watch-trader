@@ -98,34 +98,44 @@ async function getApiHeaders(
   apiKey: string,
   apiSecret: string,
   passphrase: string,
+  walletAddress: string,
   method: string,
   path: string,
   body?: string
 ): Promise<Record<string, string>> {
   const timestamp = Math.floor(Date.now() / 1000).toString();
   
-  // Create HMAC signature
-  const message = timestamp + method + path + (body || '');
-  const encoder = new TextEncoder();
-  const keyData = encoder.encode(apiSecret);
-  const messageData = encoder.encode(message);
+  // Build message for HMAC: timestamp + method + path + body
+  let message = timestamp + method + path;
+  if (body) {
+    // Replace single quotes with double quotes for consistency with Python/Go clients
+    message += body.replace(/'/g, '"');
+  }
+  
+  // Decode base64url secret (Polymarket uses URL-safe base64)
+  const base64Standard = apiSecret.replace(/-/g, '+').replace(/_/g, '/');
+  const secretDecoded = Uint8Array.from(atob(base64Standard), c => c.charCodeAt(0));
   
   const cryptoKey = await crypto.subtle.importKey(
     'raw',
-    keyData,
+    secretDecoded,
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign']
   );
   
-  const signature = await crypto.subtle.sign('HMAC', cryptoKey, messageData);
-  const signatureBase64 = btoa(String.fromCharCode(...new Uint8Array(signature)));
+  const messageData = new TextEncoder().encode(message);
+  const signatureBytes = await crypto.subtle.sign('HMAC', cryptoKey, messageData);
+  
+  // Encode signature as URL-safe base64 (matching Python's urlsafe_b64encode)
+  const signatureBase64 = btoa(String.fromCharCode(...new Uint8Array(signatureBytes)))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_');
   
   return {
-    'POLY_ADDRESS': '', // Will be set from private key
+    'POLY_ADDRESS': walletAddress,
     'POLY_SIGNATURE': signatureBase64,
     'POLY_TIMESTAMP': timestamp,
-    'POLY_NONCE': '0',
     'POLY_API_KEY': apiKey,
     'POLY_PASSPHRASE': passphrase,
     'Content-Type': 'application/json',
@@ -255,8 +265,7 @@ async function getBalanceAllowance(
   assetType: 'COLLATERAL' | 'CONDITIONAL' = 'COLLATERAL'
 ): Promise<{ balance: string; allowance: string }> {
   const path = `/balance-allowance?asset_type=${assetType}`;
-  const headers = await getApiHeaders(apiKey, apiSecret, passphrase, 'GET', path);
-  headers['POLY_ADDRESS'] = walletAddress;
+  const headers = await getApiHeaders(apiKey, apiSecret, passphrase, walletAddress, 'GET', path);
   
   console.log(`[LiveBot] Fetching balance from ${POLYMARKET_CLOB_HOST}${path}`);
   
@@ -333,8 +342,7 @@ async function createOrder(
     
     const path = '/order';
     const body = JSON.stringify(orderPayload);
-    const headers = await getApiHeaders(apiKey, apiSecret, passphrase, 'POST', path, body);
-    headers['POLY_ADDRESS'] = walletAddress;
+    const headers = await getApiHeaders(apiKey, apiSecret, passphrase, walletAddress, 'POST', path, body);
     
     console.log('[LiveBot] Submitting order to CLOB...');
     
@@ -431,27 +439,29 @@ serve(async (req) => {
   const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
   const supabase = createClient(supabaseUrl, supabaseKey);
   
-  // Get Polymarket credentials from secrets
-  const apiKey = Deno.env.get('POLYMARKET_API_KEY');
-  const apiSecret = Deno.env.get('POLYMARKET_API_SECRET');
-  const passphrase = Deno.env.get('POLYMARKET_PASSPHRASE');
+  // Only private key is required - credentials are derived automatically
   const privateKey = Deno.env.get('POLYMARKET_PRIVATE_KEY');
   
-  if (!apiKey || !apiSecret || !passphrase || !privateKey) {
-    console.error('[LiveBot] Missing Polymarket credentials');
+  if (!privateKey) {
+    console.error('[LiveBot] Missing Polymarket private key');
     return new Response(JSON.stringify({
       success: false,
-      error: 'Missing Polymarket API credentials',
-      configured: {
-        apiKey: !!apiKey,
-        apiSecret: !!apiSecret,
-        passphrase: !!passphrase,
-        privateKey: !!privateKey,
-      }
+      error: 'Missing POLYMARKET_PRIVATE_KEY',
     }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
+  }
+  
+  // Derive API credentials from private key (cached per request)
+  let apiCredentials: { apiKey: string; apiSecret: string; passphrase: string } | null = null;
+  
+  async function getCredentials() {
+    if (!apiCredentials) {
+      console.log('[LiveBot] Deriving API credentials from private key...');
+      apiCredentials = await deriveApiCredentials(privateKey!);
+    }
+    return apiCredentials;
   }
   
   try {
@@ -481,8 +491,9 @@ serve(async (req) => {
       
       case 'balance': {
         try {
-          const walletAddress = getWalletAddress(privateKey);
-          const balanceData = await getBalanceAllowance(apiKey, apiSecret, passphrase, walletAddress, 'COLLATERAL');
+          const walletAddress = getWalletAddress(privateKey!);
+          const creds = await getCredentials();
+          const balanceData = await getBalanceAllowance(creds.apiKey, creds.apiSecret, creds.passphrase, walletAddress, 'COLLATERAL');
           const balanceUSDC = parseFloat(balanceData.balance) / 1e6; // USDC has 6 decimals
           return new Response(JSON.stringify({
             success: true,
@@ -534,7 +545,8 @@ serve(async (req) => {
         }
         
         // Create order
-        const result = await createOrder(apiKey, apiSecret, passphrase, privateKey, {
+        const creds = await getCredentials();
+        const result = await createOrder(creds.apiKey, creds.apiSecret, creds.passphrase, privateKey!, {
           tokenId,
           side: side.toUpperCase() as 'BUY' | 'SELL',
           price,
