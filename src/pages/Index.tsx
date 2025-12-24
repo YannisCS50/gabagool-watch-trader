@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, Brain, AlertCircle, Calculator, ChevronDown, Book, Cpu, Radio } from 'lucide-react';
+import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, Brain, AlertCircle, Calculator, ChevronDown, Book, Cpu, Radio, Wallet } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { StatCard } from '@/components/StatCard';
 import { TradesTable } from '@/components/TradesTable';
@@ -149,6 +149,12 @@ const Index = () => {
                       <Badge className="ml-auto bg-emerald-500/20 text-emerald-400 border-emerald-500/30 text-[10px] px-1.5">
                         LIVE
                       </Badge>
+                    </Link>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem asChild>
+                    <Link to="/wallet" className="flex items-center gap-2">
+                      <Wallet className="w-4 h-4" />
+                      Wallet
                     </Link>
                   </DropdownMenuItem>
                 </DropdownMenuContent>
