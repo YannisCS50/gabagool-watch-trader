@@ -40,6 +40,7 @@ import { LivePrice } from "@/components/LivePrice";
 import { GabagoolTradesSummary } from "@/components/GabagoolTradesSummary";
 import { PaperBotTradesSummary } from "@/components/PaperBotTradesSummary";
 import { PaperBotOverview } from "@/components/PaperBotOverview";
+import { LiveBotOverview } from "@/components/LiveBotOverview";
 import { Switch } from "@/components/ui/switch";
 
 interface LiveMarket {
@@ -309,6 +310,9 @@ const RealTimeSignalsPage = () => {
           realtimeBotStatus={realtimeBotStatus}
           getPrice={getPrice}
         />
+
+        {/* Live Bot Section */}
+        <LiveBotOverview getPrice={getPrice} />
 
         {/* Status Messages */}
         {clobState === "discovering" && isLive && (
