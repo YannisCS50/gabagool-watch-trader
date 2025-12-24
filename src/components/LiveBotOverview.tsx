@@ -1,8 +1,9 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import {
   Bot,
   Zap,
@@ -16,6 +17,7 @@ import {
   AlertTriangle,
   DollarSign,
   RefreshCw,
+  Power,
 } from 'lucide-react';
 import { useLiveBotSettings } from '@/hooks/useLiveBotSettings';
 import { useLiveTrades } from '@/hooks/useLiveTrades';
@@ -26,6 +28,9 @@ interface LiveBotOverviewProps {
 }
 
 export const LiveBotOverview = ({ getPrice }: LiveBotOverviewProps) => {
+  const [isEnabled, setIsEnabled] = useState(false);
+  const [isToggling, setIsToggling] = useState(false);
+  
   const { 
     isReady, 
     isLoading, 
@@ -33,7 +38,8 @@ export const LiveBotOverview = ({ getPrice }: LiveBotOverviewProps) => {
     walletAddress, 
     limits, 
     error,
-    refetch 
+    refetch,
+    killSwitch,
   } = useLiveBotSettings();
   
   const { trades, results, isLoading: tradesLoading } = useLiveTrades();
@@ -104,7 +110,26 @@ export const LiveBotOverview = ({ getPrice }: LiveBotOverviewProps) => {
   }, [trades, results, getPrice]);
 
   const totalPL = stats.totalPL + unrealizedStats.unrealizedPL;
-  const startingBalance = balance || 0;
+
+  const handleToggle = async () => {
+    if (isToggling) return;
+    setIsToggling(true);
+    try {
+      if (isEnabled) {
+        // Turn off → kill switch
+        await killSwitch();
+        setIsEnabled(false);
+      } else {
+        // Turn on → just enable (no backend call needed, bot is ready if isReady)
+        setIsEnabled(true);
+      }
+      await refetch();
+    } catch (err) {
+      console.error('Toggle error:', err);
+    } finally {
+      setIsToggling(false);
+    }
+  };
 
   return (
     <Card className="border-amber-500/20 bg-gradient-to-br from-amber-500/5 to-transparent">
@@ -115,9 +140,16 @@ export const LiveBotOverview = ({ getPrice }: LiveBotOverviewProps) => {
               <Zap className="w-4 h-4 text-amber-500" />
             </div>
             Live Trading Bot
-            <Badge variant={isReady ? "default" : "secondary"} className={isReady ? "bg-amber-500" : ""}>
-              {isLoading ? "Loading..." : isReady ? "Ready" : "Offline"}
-            </Badge>
+            <div className="flex items-center gap-2">
+              <Switch 
+                checked={isEnabled && isReady} 
+                onCheckedChange={handleToggle}
+                disabled={isLoading || isToggling || !isReady}
+              />
+              <Badge variant={isEnabled && isReady ? "default" : "secondary"} className={isEnabled && isReady ? "bg-amber-500" : ""}>
+                {isLoading ? "Loading..." : isEnabled && isReady ? "Active" : isReady ? "Ready" : "Offline"}
+              </Badge>
+            </div>
             {limits && (
               <Badge variant="outline" className="text-xs">
                 Max ${limits.maxOrderSize}/order
