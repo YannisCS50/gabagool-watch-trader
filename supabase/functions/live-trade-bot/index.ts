@@ -14,9 +14,27 @@ const corsHeaders = {
 
 const POLYMARKET_CLOB_HOST = 'https://clob.polymarket.com';
 const POLYGON_CHAIN_ID = 137;
+const POLYGON_RPC_URL = 'https://polygon-rpc.com';
 
 // Polymarket CTF Exchange contract address on Polygon
 const CTF_EXCHANGE_ADDRESS = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
+
+// USDC contract on Polygon
+const USDC_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+
+// Standard ERC20 ABI for approve and balanceOf
+const ERC20_ABI = [
+  'function balanceOf(address owner) view returns (uint256)',
+  'function allowance(address owner, address spender) view returns (uint256)',
+  'function approve(address spender, uint256 amount) returns (bool)',
+  'function decimals() view returns (uint8)',
+];
+
+// Polymarket Exchange ABI for deposits
+const EXCHANGE_ABI = [
+  'function getCollateral() view returns (address)',
+  'function deposit(address receiver, uint256 amount) external',
+];
 
 // EIP-712 Domain for Polymarket orders
 const ORDER_DOMAIN = {
@@ -746,11 +764,142 @@ serve(async (req) => {
         }
       }
       
+      case 'wallet-balance': {
+        // Check wallet USDC balance (not Polymarket balance, but actual wallet balance)
+        try {
+          console.log('[LiveBot] Checking wallet USDC balance...');
+          const provider = new ethers.JsonRpcProvider(POLYGON_RPC_URL);
+          const wallet = new ethers.Wallet(privateKey!, provider);
+          const walletAddress = wallet.address;
+          
+          // Get MATIC balance for gas
+          const maticBalance = await provider.getBalance(walletAddress);
+          const maticBalanceFormatted = ethers.formatEther(maticBalance);
+          console.log(`[LiveBot] MATIC balance: ${maticBalanceFormatted}`);
+          
+          // Get USDC balance
+          const usdcContract = new ethers.Contract(USDC_ADDRESS, ERC20_ABI, provider);
+          const usdcBalance = await usdcContract.balanceOf(walletAddress);
+          const usdcDecimals = await usdcContract.decimals();
+          const usdcBalanceFormatted = Number(usdcBalance) / Math.pow(10, Number(usdcDecimals));
+          console.log(`[LiveBot] USDC balance: ${usdcBalanceFormatted}`);
+          
+          // Check current allowance to CTF Exchange
+          const allowance = await usdcContract.allowance(walletAddress, CTF_EXCHANGE_ADDRESS);
+          const allowanceFormatted = Number(allowance) / Math.pow(10, Number(usdcDecimals));
+          console.log(`[LiveBot] USDC allowance to exchange: ${allowanceFormatted}`);
+          
+          return new Response(JSON.stringify({
+            success: true,
+            walletAddress,
+            balances: {
+              matic: parseFloat(maticBalanceFormatted),
+              usdc: usdcBalanceFormatted,
+              usdcAllowanceToExchange: allowanceFormatted,
+            },
+            hasGasForTx: parseFloat(maticBalanceFormatted) > 0.001,
+            canDeposit: usdcBalanceFormatted > 0 && parseFloat(maticBalanceFormatted) > 0.001,
+          }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        } catch (error) {
+          console.error('[LiveBot] Wallet balance error:', error);
+          return new Response(JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+      }
+      
+      case 'deposit': {
+        // Deposit USDC from wallet to Polymarket exchange
+        try {
+          const { amount } = body;
+          if (!amount || amount <= 0) {
+            return new Response(JSON.stringify({
+              success: false,
+              error: 'Missing or invalid amount parameter',
+            }), {
+              status: 400,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            });
+          }
+          
+          console.log(`[LiveBot] Depositing ${amount} USDC to Polymarket...`);
+          const provider = new ethers.JsonRpcProvider(POLYGON_RPC_URL);
+          const wallet = new ethers.Wallet(privateKey!, provider);
+          const walletAddress = wallet.address;
+          
+          // USDC has 6 decimals
+          const amountInUnits = BigInt(Math.floor(amount * 1e6));
+          console.log(`[LiveBot] Amount in units: ${amountInUnits}`);
+          
+          // Check USDC balance first
+          const usdcContract = new ethers.Contract(USDC_ADDRESS, ERC20_ABI, wallet);
+          const currentBalance = await usdcContract.balanceOf(walletAddress);
+          console.log(`[LiveBot] Current USDC balance: ${currentBalance}`);
+          
+          if (currentBalance < amountInUnits) {
+            return new Response(JSON.stringify({
+              success: false,
+              error: `Insufficient USDC balance. Have ${Number(currentBalance) / 1e6}, need ${amount}`,
+            }), {
+              status: 400,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            });
+          }
+          
+          // Check and set allowance if needed
+          const currentAllowance = await usdcContract.allowance(walletAddress, CTF_EXCHANGE_ADDRESS);
+          console.log(`[LiveBot] Current allowance: ${currentAllowance}`);
+          
+          if (currentAllowance < amountInUnits) {
+            console.log('[LiveBot] Approving USDC spend...');
+            // Approve max uint256 so we don't need to approve again
+            const maxApproval = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
+            const approveTx = await usdcContract.approve(CTF_EXCHANGE_ADDRESS, maxApproval);
+            console.log(`[LiveBot] Approve tx: ${approveTx.hash}`);
+            await approveTx.wait();
+            console.log('[LiveBot] Approval confirmed');
+          }
+          
+          // Now deposit to the exchange
+          console.log('[LiveBot] Calling deposit on exchange...');
+          const exchangeContract = new ethers.Contract(CTF_EXCHANGE_ADDRESS, EXCHANGE_ABI, wallet);
+          const depositTx = await exchangeContract.deposit(walletAddress, amountInUnits);
+          console.log(`[LiveBot] Deposit tx: ${depositTx.hash}`);
+          const receipt = await depositTx.wait();
+          console.log(`[LiveBot] Deposit confirmed in block ${receipt.blockNumber}`);
+          
+          return new Response(JSON.stringify({
+            success: true,
+            message: `✅ Successfully deposited ${amount} USDC to Polymarket`,
+            depositTxHash: depositTx.hash,
+            blockNumber: receipt.blockNumber,
+            walletAddress,
+          }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        } catch (error) {
+          console.error('[LiveBot] Deposit error:', error);
+          return new Response(JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+      }
+      
       default:
         return new Response(JSON.stringify({
           success: false,
           error: `Unknown action: ${action}`,
-          availableActions: ['status', 'balance', 'order', 'kill', 'derive-credentials'],
+          availableActions: ['status', 'balance', 'wallet-balance', 'deposit', 'order', 'kill', 'derive-credentials', 'debug-auth'],
         }), {
           status: 400,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
