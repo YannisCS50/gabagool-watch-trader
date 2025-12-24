@@ -953,13 +953,48 @@ serve(async (req) => {
             const maxApproval = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
             const approveTx = await usdcContract.approve(CTF_EXCHANGE_ADDRESS, maxApproval);
             console.log(`[LiveBot] Approve tx: ${approveTx.hash}`);
-            await approveTx.wait();
-            console.log('[LiveBot] Approval confirmed');
+            const approveReceipt = await approveTx.wait();
+            console.log(`[LiveBot] Approval confirmed in block ${approveReceipt.blockNumber}`);
+            
+            // Wait a moment for state to propagate on RPC nodes
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Verify allowance is now set
+            const newAllowance = await usdcContract.allowance(walletAddress, CTF_EXCHANGE_ADDRESS);
+            console.log(`[LiveBot] New allowance after approval: ${newAllowance}`);
+            
+            if (newAllowance < amountInUnits) {
+              return new Response(JSON.stringify({
+                success: false,
+                error: 'Approval transaction confirmed but allowance not updated. Please try again.',
+                approveTxHash: approveTx.hash,
+              }), {
+                status: 500,
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+              });
+            }
           }
           
           // Now deposit to the exchange
           console.log('[LiveBot] Calling deposit on exchange...');
           const exchangeContract = new ethers.Contract(CTF_EXCHANGE_ADDRESS, EXCHANGE_ABI, wallet);
+          
+          // Manually estimate gas first to get better error messages
+          try {
+            const gasEstimate = await exchangeContract.deposit.estimateGas(walletAddress, amountInUnits);
+            console.log(`[LiveBot] Gas estimate for deposit: ${gasEstimate}`);
+          } catch (gasError) {
+            console.error('[LiveBot] Gas estimation failed:', gasError);
+            return new Response(JSON.stringify({
+              success: false,
+              error: `Deposit would fail: ${gasError instanceof Error ? gasError.message : String(gasError)}`,
+              hint: 'This usually means USDC approval is not yet visible. Please try again in a few seconds.',
+            }), {
+              status: 500,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            });
+          }
+          
           const depositTx = await exchangeContract.deposit(walletAddress, amountInUnits);
           console.log(`[LiveBot] Deposit tx: ${depositTx.hash}`);
           const receipt = await depositTx.wait();
