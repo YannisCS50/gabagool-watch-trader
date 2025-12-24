@@ -14,6 +14,123 @@ export type Database = {
   }
   public: {
     Tables: {
+      live_trade_results: {
+        Row: {
+          asset: string
+          created_at: string | null
+          down_avg_price: number | null
+          down_cost: number | null
+          down_shares: number | null
+          event_end_time: string | null
+          id: string
+          market_slug: string
+          payout: number | null
+          profit_loss: number | null
+          profit_loss_percent: number | null
+          result: string | null
+          settled_at: string | null
+          total_invested: number | null
+          up_avg_price: number | null
+          up_cost: number | null
+          up_shares: number | null
+        }
+        Insert: {
+          asset: string
+          created_at?: string | null
+          down_avg_price?: number | null
+          down_cost?: number | null
+          down_shares?: number | null
+          event_end_time?: string | null
+          id?: string
+          market_slug: string
+          payout?: number | null
+          profit_loss?: number | null
+          profit_loss_percent?: number | null
+          result?: string | null
+          settled_at?: string | null
+          total_invested?: number | null
+          up_avg_price?: number | null
+          up_cost?: number | null
+          up_shares?: number | null
+        }
+        Update: {
+          asset?: string
+          created_at?: string | null
+          down_avg_price?: number | null
+          down_cost?: number | null
+          down_shares?: number | null
+          event_end_time?: string | null
+          id?: string
+          market_slug?: string
+          payout?: number | null
+          profit_loss?: number | null
+          profit_loss_percent?: number | null
+          result?: string | null
+          settled_at?: string | null
+          total_invested?: number | null
+          up_avg_price?: number | null
+          up_cost?: number | null
+          up_shares?: number | null
+        }
+        Relationships: []
+      }
+      live_trades: {
+        Row: {
+          arbitrage_edge: number | null
+          asset: string
+          avg_fill_price: number | null
+          created_at: string | null
+          estimated_slippage: number | null
+          event_end_time: string | null
+          event_start_time: string | null
+          id: string
+          market_slug: string
+          order_id: string | null
+          outcome: string
+          price: number
+          reasoning: string | null
+          shares: number
+          status: string | null
+          total: number
+        }
+        Insert: {
+          arbitrage_edge?: number | null
+          asset: string
+          avg_fill_price?: number | null
+          created_at?: string | null
+          estimated_slippage?: number | null
+          event_end_time?: string | null
+          event_start_time?: string | null
+          id?: string
+          market_slug: string
+          order_id?: string | null
+          outcome: string
+          price: number
+          reasoning?: string | null
+          shares: number
+          status?: string | null
+          total: number
+        }
+        Update: {
+          arbitrage_edge?: number | null
+          asset?: string
+          avg_fill_price?: number | null
+          created_at?: string | null
+          estimated_slippage?: number | null
+          event_end_time?: string | null
+          event_start_time?: string | null
+          id?: string
+          market_slug?: string
+          order_id?: string | null
+          outcome?: string
+          price?: number
+          reasoning?: string | null
+          shares?: number
+          status?: string | null
+          total?: number
+        }
+        Relationships: []
+      }
       market_history: {
         Row: {
           asset: string
