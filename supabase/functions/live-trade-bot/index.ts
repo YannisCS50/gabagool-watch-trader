@@ -48,85 +48,82 @@ const SWAP_ROUTER_ABI = [
   'function exactInputSingle((address tokenIn, address tokenOut, uint24 fee, address recipient, uint256 amountIn, uint256 amountOutMinimum, uint160 sqrtPriceLimitX96)) external payable returns (uint256 amountOut)',
 ];
 
-// Polymarket Exchange ABI for deposits and proxy helpers
+// Polymarket Exchange ABI for deposits and contract-wallet helpers
 const EXCHANGE_ABI = [
   'function getCollateral() view returns (address)',
   'function deposit(address receiver, uint256 amount) external',
   'function getProxyFactory() view returns (address)',
   'function getSafeFactory() view returns (address)',
+  'function getPolyProxyWalletAddress(address _addr) view returns (address)',
+  'function getSafeAddress(address _addr) view returns (address)',
 ];
 
 // ============================================================================
-// Polymarket Proxy Wallet Address Derivation
+// Polymarket Contract Wallet Resolution (Proxy/Safe)
 // ============================================================================
 
-/**
- * Computes the Polymarket proxy wallet address for a given signer EOA.
- * This matches the PolyProxyLib.getProxyWalletAddress implementation from the CTF Exchange.
- */
-function computePolyProxyWalletAddress(signerAddress: string): string {
-  // CREATE2 address = keccak256(0xff ++ deployerAddress ++ salt ++ keccak256(initCode))[12:]
-  // salt = keccak256(signerAddress)
-  // initCode = minimal proxy clone pointing to implementation
-  
-  const salt = ethers.keccak256(ethers.solidityPacked(['address'], [signerAddress]));
-  
-  // Minimal proxy clone creation code (EIP-1167)
-  // This is the bytecode that creates a proxy pointing to POLY_PROXY_IMPLEMENTATION
-  const initCode = computeProxyCreationCode(POLYMARKET_PROXY_FACTORY, POLY_PROXY_IMPLEMENTATION);
-  const initCodeHash = ethers.keccak256(initCode);
-  
-  // CREATE2 formula
-  const create2Hash = ethers.keccak256(
-    ethers.concat([
-      '0xff',
-      POLYMARKET_PROXY_FACTORY,
-      salt,
-      initCodeHash,
-    ])
-  );
-  
-  // Take last 20 bytes as address
-  return ethers.getAddress('0x' + create2Hash.slice(-40));
+async function resolvePolymarketReceiver(
+  exchangeContract: ethers.Contract,
+  provider: ethers.Provider,
+  eoaAddress: string
+): Promise<{
+  receiver: string;
+  receiverType: 'safe' | 'proxy' | 'safe_uninitialized' | 'proxy_uninitialized';
+  safeAddress: string;
+  proxyAddress: string;
+  safeDeployed: boolean;
+  proxyDeployed: boolean;
+}> {
+  const [safeAddressRaw, proxyAddressRaw] = await Promise.all([
+    exchangeContract.getSafeAddress(eoaAddress),
+    exchangeContract.getPolyProxyWalletAddress(eoaAddress),
+  ]);
+
+  const safeAddress = ethers.getAddress(safeAddressRaw);
+  const proxyAddress = ethers.getAddress(proxyAddressRaw);
+
+  const [safeCode, proxyCode] = await Promise.all([
+    provider.getCode(safeAddress),
+    provider.getCode(proxyAddress),
+  ]);
+
+  const safeDeployed = safeCode !== '0x';
+  const proxyDeployed = proxyCode !== '0x';
+
+  // Prefer deployed Safe (newer Polymarket default), otherwise deployed Proxy.
+  if (safeDeployed) {
+    return {
+      receiver: safeAddress,
+      receiverType: 'safe',
+      safeAddress,
+      proxyAddress,
+      safeDeployed,
+      proxyDeployed,
+    };
+  }
+
+  if (proxyDeployed) {
+    return {
+      receiver: proxyAddress,
+      receiverType: 'proxy',
+      safeAddress,
+      proxyAddress,
+      safeDeployed,
+      proxyDeployed,
+    };
+  }
+
+  // If neither is deployed yet, still use the deterministic Safe address.
+  return {
+    receiver: safeAddress,
+    receiverType: 'safe_uninitialized',
+    safeAddress,
+    proxyAddress,
+    safeDeployed,
+    proxyDeployed,
+  };
 }
 
-/**
- * Computes the minimal proxy creation code for the Polymarket proxy factory.
- * This matches _computeCreationCode from PolyProxyLib.sol
- */
-function computeProxyCreationCode(deployer: string, target: string): string {
-  // From PolyProxyLib.sol _computeCreationCode:
-  // The creation code creates a minimal proxy that:
-  // 1. Delegates all calls to the target
-  // 2. Calls cloneConstructor(bytes) on the target
-  
-  // Standard EIP-1167 minimal proxy with custom creation code
-  // This is simplified - in reality the Polymarket code is more complex
-  // For now, let's try the standard CREATE2 with simple salt
-  
-  const deployerLower = deployer.toLowerCase().slice(2);
-  const targetLower = target.toLowerCase().slice(2);
-  
-  // Polymarket uses a custom clone factory - the bytecode is:
-  // 0x3d3d606380380380913d393d73 + target + 0x5af43d82803e903d91602b57fd5bf3
-  // Plus constructor call encoding
-  
-  // Standard minimal proxy bytecode (EIP-1167)
-  const proxyBytecode = `0x3d602d80600a3d3981f3363d3d373d3d3d363d73${targetLower}5af43d82803e903d91602b57fd5bf3`;
-  
-  return proxyBytecode;
-}
-
-/**
- * Alternative: Compute Gnosis Safe proxy address for a signer.
- * Some Polymarket users use Gnosis Safes instead of the custom proxy.
- */
-function computeSafeProxyAddress(signerAddress: string): string {
-  // Gnosis Safe uses a different CREATE2 pattern
-  // For now we focus on the Polymarket custom proxy
-  // This can be extended later if needed
-  return signerAddress; // Fallback to EOA
-}
 
 // EIP-712 Domain for Polymarket orders
 const ORDER_DOMAIN = {
@@ -1004,12 +1001,24 @@ serve(async (req) => {
           const provider = new ethers.JsonRpcProvider(POLYGON_RPC_URL);
           const wallet = new ethers.Wallet(privateKey!, provider);
           const walletAddress = wallet.address;
-          
-          // Compute the Polymarket proxy wallet address for this EOA
-          const proxyWalletAddress = computePolyProxyWalletAddress(walletAddress);
+
+          const exchangeContract = new ethers.Contract(CTF_EXCHANGE_ADDRESS, EXCHANGE_ABI, wallet);
+
+          // Resolve the correct contract wallet (Safe/Proxy) directly from the exchange contract
+          const {
+            receiver,
+            receiverType,
+            safeAddress,
+            proxyAddress,
+            safeDeployed,
+            proxyDeployed,
+          } = await resolvePolymarketReceiver(exchangeContract, provider, walletAddress);
+
           console.log(`[LiveBot] EOA Address: ${walletAddress}`);
-          console.log(`[LiveBot] Proxy Wallet Address: ${proxyWalletAddress}`);
-          
+          console.log(`[LiveBot] Safe Address: ${safeAddress} (deployed=${safeDeployed})`);
+          console.log(`[LiveBot] Proxy Address: ${proxyAddress} (deployed=${proxyDeployed})`);
+          console.log(`[LiveBot] Using receiver: ${receiver} (type=${receiverType})`);
+
           // USDC has 6 decimals
           const amountInUnits = BigInt(Math.floor(amount * 1e6));
           console.log(`[LiveBot] Amount in units: ${amountInUnits}`);
@@ -1061,72 +1070,57 @@ serve(async (req) => {
             }
           }
           
-          // Now deposit to the exchange - use PROXY WALLET ADDRESS as receiver
-          console.log(`[LiveBot] Calling deposit on exchange to proxy wallet ${proxyWalletAddress}...`);
-          const exchangeContract = new ethers.Contract(CTF_EXCHANGE_ADDRESS, EXCHANGE_ABI, wallet);
-          
-          // Manually estimate gas first to get better error messages
+          // Now deposit to the exchange - use the resolved contract wallet receiver (Safe/Proxy)
+          console.log(`[LiveBot] Calling deposit on exchange to receiver ${receiver} (${receiverType})...`);
+
+          // Manually estimate gas first to get clearer errors
           try {
-            const gasEstimate = await exchangeContract.deposit.estimateGas(proxyWalletAddress, amountInUnits);
+            const gasEstimate = await exchangeContract.deposit.estimateGas(receiver, amountInUnits);
             console.log(`[LiveBot] Gas estimate for deposit: ${gasEstimate}`);
           } catch (gasError) {
-            console.error('[LiveBot] Gas estimation failed for proxy wallet:', gasError);
-            
-            // If proxy wallet fails, try the EOA as fallback (some accounts may work differently)
-            console.log('[LiveBot] Trying EOA as fallback...');
-            try {
-              const gasEstimateEoa = await exchangeContract.deposit.estimateGas(walletAddress, amountInUnits);
-              console.log(`[LiveBot] Gas estimate for EOA deposit: ${gasEstimateEoa}`);
-              // EOA works, use it instead
-              const depositTx = await exchangeContract.deposit(walletAddress, amountInUnits);
-              console.log(`[LiveBot] Deposit tx (EOA fallback): ${depositTx.hash}`);
-              const receipt = await depositTx.wait();
-              console.log(`[LiveBot] Deposit confirmed in block ${receipt.blockNumber}`);
-              
-              return new Response(JSON.stringify({
-                success: true,
-                message: `✅ Successfully deposited ${amount} USDC to Polymarket (EOA)`,
-                depositTxHash: depositTx.hash,
-                blockNumber: receipt.blockNumber,
-                walletAddress,
-                receiverAddress: walletAddress,
-                note: 'Deposited to EOA as proxy wallet was not available',
-              }), {
-                headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-              });
-            } catch (eoaError) {
-              console.error('[LiveBot] EOA fallback also failed:', eoaError);
-              return new Response(JSON.stringify({
+            console.error('[LiveBot] Gas estimation failed for contract wallet deposit:', gasError);
+            return new Response(
+              JSON.stringify({
                 success: false,
-                error: `Deposit would fail for both proxy wallet and EOA`,
-                proxyWallet: proxyWalletAddress,
+                error: 'Deposit would fail for resolved contract wallet receiver',
                 eoaWallet: walletAddress,
-                proxyError: gasError instanceof Error ? gasError.message : String(gasError),
-                eoaError: eoaError instanceof Error ? eoaError.message : String(eoaError),
+                receiver,
+                receiverType,
+                safeAddress,
+                proxyAddress,
+                safeDeployed,
+                proxyDeployed,
+                details: gasError instanceof Error ? gasError.message : String(gasError),
                 hint: 'Your account may need to be registered on Polymarket first. Please visit polymarket.com and complete onboarding.',
-              }), {
+              }),
+              {
                 status: 500,
                 headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-              });
-            }
+              }
+            );
           }
-          
-          const depositTx = await exchangeContract.deposit(proxyWalletAddress, amountInUnits);
+
+          const depositTx = await exchangeContract.deposit(receiver, amountInUnits);
           console.log(`[LiveBot] Deposit tx: ${depositTx.hash}`);
           const receipt = await depositTx.wait();
           console.log(`[LiveBot] Deposit confirmed in block ${receipt.blockNumber}`);
-          
-          return new Response(JSON.stringify({
-            success: true,
-            message: `✅ Successfully deposited ${amount} USDC to Polymarket`,
-            depositTxHash: depositTx.hash,
-            blockNumber: receipt.blockNumber,
-            walletAddress,
-            receiverAddress: proxyWalletAddress,
-            note: 'Deposited to Polymarket proxy wallet',
-          }), {
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          });
+
+          return new Response(
+            JSON.stringify({
+              success: true,
+              message: `✅ Successfully deposited ${amount} USDC to Polymarket`,
+              depositTxHash: depositTx.hash,
+              blockNumber: receipt.blockNumber,
+              walletAddress,
+              receiverAddress: receiver,
+              receiverType,
+              safeAddress,
+              proxyAddress,
+            }),
+            {
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            }
+          );
         } catch (error) {
           console.error('[LiveBot] Deposit error:', error);
           return new Response(JSON.stringify({
