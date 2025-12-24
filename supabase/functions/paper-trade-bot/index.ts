@@ -19,27 +19,27 @@ const corsHeaders = {
 const STRATEGY_CONFIG = {
   // Initiële opening trade
   opening: {
-    shares: 100,              // 100 shares per opening
-    maxPrice: 0.55,           // Alleen openen als prijs ≤ 55¢
+    shares: 50,               // 50 shares per opening (kleiner = minder risico)
+    maxPrice: 0.52,           // Alleen openen als prijs ≤ 52¢ (strenger)
   },
   
-  // Hedge settings
+  // Hedge settings - VEEL AGRESSIEVER
   hedge: {
-    shares: 100,              // 100 shares voor hedge
-    maxCombined: 0.97,        // Alleen hedgen als combined ≤ 97¢ (3% winst gegarandeerd)
-    targetCombined: 0.95,     // Ideaal: combined ≤ 95¢ (5% winst)
+    shares: 50,               // Match opening shares
+    maxCombined: 1.00,        // Hedge ALTIJD als combined < 100¢ (break-even of beter)
+    targetCombined: 0.97,     // Ideaal: combined ≤ 97¢ (3% winst)
   },
   
   // Accumulation settings
   accumulate: {
-    minShares: 20,
-    maxShares: 50,
-    maxCombined: 0.99,        // Alleen accumuleren als combined < 99¢
-    maxPositionPerSide: 500,  // Max 500 shares per kant
+    minShares: 10,
+    maxShares: 25,
+    maxCombined: 0.98,        // Alleen accumuleren als combined < 98¢
+    maxPositionPerSide: 200,  // Max 200 shares per kant
   },
   
   // General settings
-  minSecondsRemaining: 60,    // Stop 60s voor expiry
+  minSecondsRemaining: 45,    // Stop 45s voor expiry (iets agressiever)
   minPrice: 0.02,             // Niet kopen onder 2¢
   maxPrice: 0.98,             // Niet kopen boven 98¢
 };
@@ -196,6 +196,7 @@ function makeDecision(
   
   // === PHASE 2: HEDGE ===
   // We hebben één kant, nu de andere kant pakken voor gegarandeerde winst
+  // AGRESSIEF: Hedge zodra break-even of beter mogelijk is
   if (!isHedged) {
     const needsUp = !hasUpPosition;
     const hedgePrice = needsUp ? upPrice : downPrice;
@@ -206,18 +207,25 @@ function makeDecision(
     // Check of hedge combined price acceptabel is
     const projectedCombined = existingPrice + hedgePrice;
     
-    if (projectedCombined > STRATEGY_CONFIG.hedge.maxCombined) {
+    // Hedge als: 1) combined < max, EN 2) prijs is niet te hoog
+    const hedgePriceOk = hedgePrice <= STRATEGY_CONFIG.opening.maxPrice;
+    
+    if (projectedCombined > STRATEGY_CONFIG.hedge.maxCombined || !hedgePriceOk) {
+      const reason = !hedgePriceOk 
+        ? `${hedgeOutcome}=${(hedgePrice*100).toFixed(0)}¢ > ${STRATEGY_CONFIG.opening.maxPrice*100}¢`
+        : `combined=${(projectedCombined*100).toFixed(0)}¢ > ${STRATEGY_CONFIG.hedge.maxCombined*100}¢`;
       return {
         shouldTrade: false,
         trades: [],
-        summaryReasoning: `⏳ HEDGE_WAIT: ${hedgeOutcome} @ ${(hedgePrice*100).toFixed(0)}¢ te duur. Combined zou ${(projectedCombined*100).toFixed(0)}¢ zijn (max ${STRATEGY_CONFIG.hedge.maxCombined*100}¢)`,
+        summaryReasoning: `⏳ HEDGE_WAIT: ${reason}`,
       };
     }
     
     // Hedge met dezelfde hoeveelheid shares als opening
-    const hedgeShares = Math.min(STRATEGY_CONFIG.hedge.shares, existingShares * 1.2); // Max 20% meer dan existing
+    const hedgeShares = existingShares;
     const hedgeTotal = hedgeShares * hedgePrice;
     const projectedProfit = ((1 - projectedCombined) * 100).toFixed(1);
+    const profitStatus = projectedCombined < 1 ? `${projectedProfit}% winst` : 'break-even';
     
     trades.push({
       outcome: hedgeOutcome,
@@ -225,13 +233,13 @@ function makeDecision(
       price: hedgePrice,
       total: hedgeTotal,
       tradeType: 'HEDGE',
-      reasoning: `🛡️ HEDGE: ${hedgeOutcome} @ ${(hedgePrice*100).toFixed(1)}¢. Combined=${(projectedCombined*100).toFixed(0)}¢ = ${projectedProfit}% locked profit`,
+      reasoning: `🛡️ HEDGE: ${hedgeOutcome} @ ${(hedgePrice*100).toFixed(1)}¢. Combined=${(projectedCombined*100).toFixed(0)}¢ = ${profitStatus}`,
     });
     
     return {
       shouldTrade: true,
       trades,
-      summaryReasoning: `🛡️ HEDGE: ${hedgeOutcome} @ ${(hedgePrice*100).toFixed(0)}¢. Σ${(projectedCombined*100).toFixed(0)}¢ = ${projectedProfit}% winst gelockt!`,
+      summaryReasoning: `🛡️ HEDGE: ${hedgeOutcome} @ ${(hedgePrice*100).toFixed(0)}¢. Σ${(projectedCombined*100).toFixed(0)}¢ = ${profitStatus}`,
     };
   }
   
