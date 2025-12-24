@@ -34,134 +34,123 @@ function parseTimestampFromSlug(slug: string): number | null {
   return match ? parseInt(match[1], 10) : null;
 }
 
-// Fetch current Chainlink prices - try multiple sources
-async function fetchCurrentChainlinkPrices(): Promise<{ btc: number | null; eth: number | null }> {
-  const prices = { btc: null as number | null, eth: null as number | null };
-  
-  // Try CoinGecko API first (public, no auth needed)
+// Fetch market result from Polymarket Gamma API
+async function fetchMarketResult(slug: string): Promise<'UP' | 'DOWN' | null> {
   try {
-    console.log('[settle] Fetching prices from CoinGecko...');
+    console.log(`[settle] Fetching Polymarket result for ${slug}...`);
+    
+    // Get market data from Gamma API
     const response = await fetch(
-      'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd',
+      `https://gamma-api.polymarket.com/events?slug=${encodeURIComponent(slug)}`,
       { headers: { 'Accept': 'application/json' } }
     );
     
-    if (response.ok) {
-      const data = await response.json();
-      if (data.bitcoin?.usd) {
-        prices.btc = data.bitcoin.usd;
-        console.log(`[settle] BTC price from CoinGecko: $${prices.btc}`);
-      }
-      if (data.ethereum?.usd) {
-        prices.eth = data.ethereum.usd;
-        console.log(`[settle] ETH price from CoinGecko: $${prices.eth}`);
-      }
+    if (!response.ok) {
+      console.log(`[settle] Gamma API returned ${response.status} for ${slug}`);
+      return null;
+    }
+    
+    const events = await response.json();
+    
+    if (!events || events.length === 0) {
+      console.log(`[settle] No event found for slug ${slug}`);
+      return null;
+    }
+    
+    const event = events[0];
+    const markets = event.markets || [];
+    
+    // Find UP and DOWN markets
+    for (const market of markets) {
+      const outcome = market.outcome?.toUpperCase() || '';
+      const groupItemTitle = market.groupItemTitle?.toUpperCase() || '';
       
-      if (prices.btc && prices.eth) {
-        return prices;
-      }
-    }
-  } catch (e) {
-    console.error('[settle] CoinGecko error:', e);
-  }
-  
-  // Fallback to Binance API
-  try {
-    console.log('[settle] Trying Binance API...');
-    const [btcRes, ethRes] = await Promise.all([
-      fetch('https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT'),
-      fetch('https://api.binance.com/api/v3/ticker/price?symbol=ETHUSDT'),
-    ]);
-    
-    if (btcRes.ok) {
-      const btcData = await btcRes.json();
-      prices.btc = parseFloat(btcData.price);
-      console.log(`[settle] BTC price from Binance: $${prices.btc}`);
-    }
-    if (ethRes.ok) {
-      const ethData = await ethRes.json();
-      prices.eth = parseFloat(ethData.price);
-      console.log(`[settle] ETH price from Binance: $${prices.eth}`);
-    }
-  } catch (e) {
-    console.error('[settle] Binance error:', e);
-  }
-  
-  // Last resort: try RTDS WebSocket with shorter timeout
-  if (!prices.btc || !prices.eth) {
-    console.log('[settle] Trying RTDS WebSocket...');
-    try {
-      const rtdsPrices = await fetchFromRTDS();
-      if (!prices.btc && rtdsPrices.btc) prices.btc = rtdsPrices.btc;
-      if (!prices.eth && rtdsPrices.eth) prices.eth = rtdsPrices.eth;
-    } catch (e) {
-      console.error('[settle] RTDS error:', e);
-    }
-  }
-  
-  return prices;
-}
-
-// RTDS WebSocket fallback
-async function fetchFromRTDS(): Promise<{ btc: number | null; eth: number | null }> {
-  return new Promise((resolve) => {
-    const prices = { btc: null as number | null, eth: null as number | null };
-    let ws: WebSocket | null = null;
-    
-    const timeout = setTimeout(() => {
-      console.log('[settle] RTDS timeout');
-      if (ws) ws.close();
-      resolve(prices);
-    }, 5000);
-    
-    try {
-      ws = new WebSocket('wss://rtds.polymarket.com');
-    } catch (e) {
-      clearTimeout(timeout);
-      resolve(prices);
-      return;
-    }
-    
-    ws.onopen = () => {
-      ws!.send(JSON.stringify({
-        action: 'subscribe',
-        subscriptions: [{
-          topic: 'crypto_prices_chainlink',
-          type: '*',
-          filters: ''
-        }]
-      }));
-    };
-    
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.topic === 'crypto_prices_chainlink' && data.payload) {
-          const symbol = data.payload.symbol?.toUpperCase().replace('/USD', '') || '';
-          const value = data.payload.value;
-          
-          if (symbol === 'BTC' && value) prices.btc = value;
-          else if (symbol === 'ETH' && value) prices.eth = value;
-          
-          if (prices.btc !== null && prices.eth !== null) {
-            clearTimeout(timeout);
-            ws!.close();
-            resolve(prices);
+      // Check if this is an UP market
+      const isUp = outcome === 'UP' || outcome.includes('UP') || 
+                   groupItemTitle === 'UP' || groupItemTitle.includes('UP');
+      
+      // Check if market is resolved
+      if (market.closed && market.resolutionPrice !== undefined) {
+        const resPrice = parseFloat(market.resolutionPrice);
+        
+        if (isUp) {
+          // UP market: if resolution price is 1, UP won; if 0, DOWN won
+          if (resPrice >= 0.99) {
+            console.log(`[settle] ${slug}: UP market resolved YES (price=${resPrice})`);
+            return 'UP';
+          } else if (resPrice <= 0.01) {
+            console.log(`[settle] ${slug}: UP market resolved NO (price=${resPrice})`);
+            return 'DOWN';
           }
         }
-      } catch (e) { /* ignore */ }
-    };
+      }
+      
+      // Also check winningOutcome if available
+      if (market.winningOutcome) {
+        const winner = market.winningOutcome.toUpperCase();
+        console.log(`[settle] ${slug}: winningOutcome = ${winner}`);
+        if (winner === 'YES' && isUp) return 'UP';
+        if (winner === 'NO' && isUp) return 'DOWN';
+      }
+    }
     
-    ws.onerror = () => {
-      clearTimeout(timeout);
-      resolve(prices);
-    };
+    // Also check event-level resolution
+    if (event.outcome || event.winningOutcome) {
+      const winner = (event.outcome || event.winningOutcome).toUpperCase();
+      console.log(`[settle] ${slug}: Event outcome = ${winner}`);
+      if (winner === 'UP' || winner.includes('UP')) return 'UP';
+      if (winner === 'DOWN' || winner.includes('DOWN')) return 'DOWN';
+    }
     
-    ws.onclose = () => {
-      clearTimeout(timeout);
-      resolve(prices);
-    };
-  });
+    console.log(`[settle] ${slug}: Market not yet resolved on Polymarket`);
+    return null;
+    
+  } catch (e) {
+    console.error(`[settle] Error fetching Polymarket result for ${slug}:`, e);
+    return null;
+  }
+}
+
+// Fetch final token prices from CLOB (for markets that have ended)
+async function fetchFinalClobPrices(slug: string): Promise<{ upPrice: number | null; downPrice: number | null }> {
+  try {
+    // Get token IDs from market history or Gamma API
+    const response = await fetch(
+      `https://gamma-api.polymarket.com/events?slug=${encodeURIComponent(slug)}`,
+      { headers: { 'Accept': 'application/json' } }
+    );
+    
+    if (!response.ok) return { upPrice: null, downPrice: null };
+    
+    const events = await response.json();
+    if (!events || events.length === 0) return { upPrice: null, downPrice: null };
+    
+    const markets = events[0].markets || [];
+    let upPrice: number | null = null;
+    let downPrice: number | null = null;
+    
+    for (const market of markets) {
+      const outcome = market.outcome?.toUpperCase() || '';
+      const groupItemTitle = market.groupItemTitle?.toUpperCase() || '';
+      const isUp = outcome === 'UP' || outcome.includes('UP') || 
+                   groupItemTitle === 'UP' || groupItemTitle.includes('UP');
+      
+      // Use outcomePrices or lastTradePrice
+      const price = market.outcomePrices ? 
+        parseFloat(JSON.parse(market.outcomePrices)[0]) :
+        market.lastTradePrice ? parseFloat(market.lastTradePrice) : null;
+      
+      if (price !== null) {
+        if (isUp) upPrice = price;
+        else downPrice = price;
+      }
+    }
+    
+    return { upPrice, downPrice };
+  } catch (e) {
+    console.error(`[settle] Error fetching CLOB prices for ${slug}:`, e);
+    return { upPrice: null, downPrice: null };
+  }
 }
 
 Deno.serve(async (req) => {
@@ -251,97 +240,42 @@ Deno.serve(async (req) => {
     const marketSlugs = Array.from(positionMap.keys());
     console.log(`[settle-paper-trades] Processing ${marketSlugs.length} unsettled markets`);
 
-    // 4. Get existing oracle prices from strike_prices table
-    const { data: oracleData } = await supabase
-      .from('strike_prices')
-      .select('market_slug, open_price, close_price, strike_price')
-      .in('market_slug', marketSlugs);
-
-    const oracleMap = new Map<string, { openPrice: number | null; closePrice: number | null }>();
-    if (oracleData) {
-      for (const oracle of oracleData) {
-        oracleMap.set(oracle.market_slug, {
-          openPrice: oracle.open_price ?? oracle.strike_price,
-          closePrice: oracle.close_price,
-        });
-      }
-    }
-
-    // 5. Check which markets need close prices - fetch from RTDS if needed
-    const marketsNeedingClosePrice = marketSlugs.filter(slug => {
-      const oracle = oracleMap.get(slug);
-      return !oracle || oracle.closePrice === null;
-    });
-
-    if (marketsNeedingClosePrice.length > 0) {
-      console.log(`[settle] ${marketsNeedingClosePrice.length} markets need close prices - fetching from RTDS...`);
-      
-      const currentPrices = await fetchCurrentChainlinkPrices();
-      
-      // Store close prices for markets that need them
-      for (const slug of marketsNeedingClosePrice) {
-        const position = positionMap.get(slug)!;
-        const asset = position.asset.toUpperCase();
-        const closePrice = asset === 'BTC' ? currentPrices.btc : 
-                           asset === 'ETH' ? currentPrices.eth : null;
-        
-        if (closePrice !== null) {
-          const eventStartTime = parseTimestampFromSlug(slug);
-          
-          // Get or create oracle entry
-          let oracle = oracleMap.get(slug);
-          if (!oracle) {
-            oracle = { openPrice: null, closePrice: null };
-            oracleMap.set(slug, oracle);
-          }
-          oracle.closePrice = closePrice;
-          
-          // Upsert to strike_prices for future reference
-          const upsertData: Record<string, unknown> = {
-            market_slug: slug,
-            asset: asset,
-            close_price: closePrice,
-            close_timestamp: Date.now(),
-          };
-          
-          if (eventStartTime) {
-            upsertData.event_start_time = new Date(eventStartTime * 1000).toISOString();
-            // If no open price, estimate it (close price is current, open was ~15 min ago)
-            if (!oracle.openPrice) {
-              upsertData.strike_price = closePrice; // Use current as fallback
-              upsertData.open_price = closePrice;
-              upsertData.chainlink_timestamp = eventStartTime * 1000;
-              oracle.openPrice = closePrice;
-              console.log(`[settle] ${slug}: No open price, using current $${closePrice} as estimate`);
-            }
-          }
-          
-          await supabase.from('strike_prices').upsert(upsertData, { onConflict: 'market_slug' });
-          console.log(`[settle] ${slug}: Stored close price $${closePrice}`);
-        }
-      }
-    }
-
-    // 6. Calculate results and settle
+    // 4. Calculate results and settle - using Polymarket data ONLY
     const resultsToInsert = [];
     let settledCount = 0;
     let pendingCount = 0;
 
     for (const [slug, position] of positionMap) {
-      const oracle = oracleMap.get(slug);
       const totalInvested = position.upCost + position.downCost;
 
-      // Determine result from oracle prices
-      let result: 'UP' | 'DOWN' | null = null;
+      // Try to get result from Polymarket API
+      let result: 'UP' | 'DOWN' | null = await fetchMarketResult(slug);
       
-      if (oracle && oracle.openPrice !== null && oracle.closePrice !== null) {
-        // We have both prices - can determine result
-        // UP wins if close >= open (price went up or stayed same)
-        result = oracle.closePrice >= oracle.openPrice ? 'UP' : 'DOWN';
-        console.log(`[settle] ${slug}: open=$${oracle.openPrice.toFixed(2)}, close=$${oracle.closePrice.toFixed(2)} => ${result}`);
-      } else {
-        // Still no oracle data - skip this market
-        console.log(`[settle] ${slug}: ⏳ WAITING for prices (open=${oracle?.openPrice ?? 'missing'}, close=${oracle?.closePrice ?? 'missing'})`);
+      // If Polymarket hasn't resolved yet, check CLOB prices as indicator
+      if (result === null) {
+        const clobPrices = await fetchFinalClobPrices(slug);
+        
+        // If one side is trading near 0 or 1, we can infer the result
+        if (clobPrices.upPrice !== null && clobPrices.downPrice !== null) {
+          if (clobPrices.upPrice >= 0.95) {
+            result = 'UP';
+            console.log(`[settle] ${slug}: CLOB indicates UP won (upPrice=${clobPrices.upPrice.toFixed(3)})`);
+          } else if (clobPrices.downPrice >= 0.95) {
+            result = 'DOWN';
+            console.log(`[settle] ${slug}: CLOB indicates DOWN won (downPrice=${clobPrices.downPrice.toFixed(3)})`);
+          } else if (clobPrices.upPrice <= 0.05) {
+            result = 'DOWN';
+            console.log(`[settle] ${slug}: CLOB indicates DOWN won (upPrice=${clobPrices.upPrice.toFixed(3)})`);
+          } else if (clobPrices.downPrice <= 0.05) {
+            result = 'UP';
+            console.log(`[settle] ${slug}: CLOB indicates UP won (downPrice=${clobPrices.downPrice.toFixed(3)})`);
+          }
+        }
+      }
+      
+      if (result === null) {
+        // Still no result - skip this market
+        console.log(`[settle] ${slug}: ⏳ WAITING for Polymarket resolution`);
         pendingCount++;
         continue;
       }
