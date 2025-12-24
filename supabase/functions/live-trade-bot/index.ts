@@ -925,61 +925,74 @@ serve(async (req) => {
       }
       
       case 'wallet-balance': {
-        // Check wallet balances (MATIC, USDC, USDT)
+        // Check wallet balances (MATIC + Polymarket collateral token)
         try {
           console.log('[LiveBot] Checking wallet balances...');
           const provider = new ethers.JsonRpcProvider(POLYGON_RPC_URL);
           const wallet = new ethers.Wallet(privateKey!, provider);
           const walletAddress = wallet.address;
-          
+
           // Get MATIC balance for gas
           const maticBalance = await provider.getBalance(walletAddress);
           const maticBalanceFormatted = ethers.formatEther(maticBalance);
           console.log(`[LiveBot] MATIC balance: ${maticBalanceFormatted}`);
-          
-          // Get USDC balance
-          const usdcContract = new ethers.Contract(USDC_ADDRESS, ERC20_ABI, provider);
-          const usdcBalance = await usdcContract.balanceOf(walletAddress);
-          const usdcDecimals = await usdcContract.decimals();
-          const usdcBalanceFormatted = Number(usdcBalance) / Math.pow(10, Number(usdcDecimals));
-          console.log(`[LiveBot] USDC balance: ${usdcBalanceFormatted}`);
-          
-          // Get USDT balance
+
+          // Resolve collateral token from exchange (critical: do NOT assume USDC contract)
+          const exchangeRead = new ethers.Contract(CTF_EXCHANGE_ADDRESS, EXCHANGE_ABI, provider);
+          const collateralAddressRaw = await exchangeRead.getCollateral();
+          const collateralAddress = ethers.getAddress(collateralAddressRaw);
+          console.log(`[LiveBot] Exchange collateral token: ${collateralAddress}`);
+
+          const collateralContract = new ethers.Contract(collateralAddress, ERC20_ABI, provider);
+          const collateralBalance = await collateralContract.balanceOf(walletAddress);
+          const collateralDecimals = await collateralContract.decimals();
+          const collateralBalanceFormatted = Number(collateralBalance) / Math.pow(10, Number(collateralDecimals));
+          console.log(`[LiveBot] Collateral balance: ${collateralBalanceFormatted}`);
+
+          // (Optional) show USDT balance because swap uses it
           const usdtContract = new ethers.Contract(USDT_ADDRESS, ERC20_ABI, provider);
           const usdtBalance = await usdtContract.balanceOf(walletAddress);
           const usdtDecimals = await usdtContract.decimals();
           const usdtBalanceFormatted = Number(usdtBalance) / Math.pow(10, Number(usdtDecimals));
           console.log(`[LiveBot] USDT balance: ${usdtBalanceFormatted}`);
-          
-          // Check current allowance to CTF Exchange
-          const allowance = await usdcContract.allowance(walletAddress, CTF_EXCHANGE_ADDRESS);
-          const allowanceFormatted = Number(allowance) / Math.pow(10, Number(usdcDecimals));
-          console.log(`[LiveBot] USDC allowance to exchange: ${allowanceFormatted}`);
-          
-          return new Response(JSON.stringify({
-            success: true,
-            walletAddress,
-            balances: {
-              matic: parseFloat(maticBalanceFormatted),
-              usdc: usdcBalanceFormatted,
-              usdt: usdtBalanceFormatted,
-              usdcAllowanceToExchange: allowanceFormatted,
-            },
-            hasGasForTx: parseFloat(maticBalanceFormatted) > 0.001,
-            canDeposit: usdcBalanceFormatted > 0 && parseFloat(maticBalanceFormatted) > 0.001,
-            canSwapUsdtToUsdc: usdtBalanceFormatted > 0 && parseFloat(maticBalanceFormatted) > 0.001,
-          }), {
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          });
+
+          // Check current allowance to CTF Exchange for the collateral token
+          const allowance = await collateralContract.allowance(walletAddress, CTF_EXCHANGE_ADDRESS);
+          const allowanceFormatted = Number(allowance) / Math.pow(10, Number(collateralDecimals));
+          console.log(`[LiveBot] Collateral allowance to exchange: ${allowanceFormatted}`);
+
+          return new Response(
+            JSON.stringify({
+              success: true,
+              walletAddress,
+              collateralAddress,
+              balances: {
+                matic: parseFloat(maticBalanceFormatted),
+                // Keep the existing field names for UI compatibility:
+                usdc: collateralBalanceFormatted,
+                usdt: usdtBalanceFormatted,
+                usdcAllowanceToExchange: allowanceFormatted,
+              },
+              hasGasForTx: parseFloat(maticBalanceFormatted) > 0.001,
+              canDeposit: collateralBalanceFormatted > 0 && parseFloat(maticBalanceFormatted) > 0.001,
+              canSwapUsdtToUsdc: usdtBalanceFormatted > 0 && parseFloat(maticBalanceFormatted) > 0.001,
+            }),
+            {
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            }
+          );
         } catch (error) {
           console.error('[LiveBot] Wallet balance error:', error);
-          return new Response(JSON.stringify({
-            success: false,
-            error: error instanceof Error ? error.message : String(error),
-          }), {
-            status: 500,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          });
+          return new Response(
+            JSON.stringify({
+              success: false,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+            {
+              status: 500,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            }
+          );
         }
       }
       
@@ -1004,6 +1017,14 @@ serve(async (req) => {
 
           const exchangeContract = new ethers.Contract(CTF_EXCHANGE_ADDRESS, EXCHANGE_ABI, wallet);
 
+          // Resolve collateral token from exchange (critical: do NOT assume USDC contract)
+          const collateralAddressRaw = await exchangeContract.getCollateral();
+          const collateralAddress = ethers.getAddress(collateralAddressRaw);
+          console.log(`[LiveBot] Exchange collateral token: ${collateralAddress}`);
+
+          const collateralContract = new ethers.Contract(collateralAddress, ERC20_ABI, wallet);
+          const collateralDecimals = await collateralContract.decimals();
+
           // Resolve possible receivers directly from the exchange contract
           const {
             receiver: preferredReceiver,
@@ -1019,20 +1040,20 @@ serve(async (req) => {
           console.log(`[LiveBot] Proxy Address: ${proxyAddress} (deployed=${proxyDeployed})`);
           console.log(`[LiveBot] Preferred receiver: ${preferredReceiver} (type=${preferredReceiverType})`);
 
-          // USDC has 6 decimals
-          const amountInUnits = BigInt(Math.floor(amount * 1e6));
-          console.log(`[LiveBot] Amount in units: ${amountInUnits}`);
+          // Amount in collateral units (typically 6 decimals, but we read it from-chain)
+          const amountInUnits = BigInt(Math.floor(amount * Math.pow(10, Number(collateralDecimals))));
+          console.log(`[LiveBot] Amount in units: ${amountInUnits} (decimals=${collateralDecimals})`);
 
-          // Check USDC balance first
-          const usdcContract = new ethers.Contract(USDC_ADDRESS, ERC20_ABI, wallet);
-          const currentBalance = await usdcContract.balanceOf(walletAddress);
-          console.log(`[LiveBot] Current USDC balance: ${currentBalance}`);
+          // Check collateral balance first
+          const currentBalance = await collateralContract.balanceOf(walletAddress);
+          console.log(`[LiveBot] Current collateral balance: ${currentBalance}`);
 
           if (currentBalance < amountInUnits) {
             return new Response(
               JSON.stringify({
                 success: false,
-                error: `Insufficient USDC balance. Have ${Number(currentBalance) / 1e6}, need ${amount}`,
+                error: `Insufficient collateral balance. Have ${Number(currentBalance) / Math.pow(10, Number(collateralDecimals))}, need ${amount}`,
+                collateralAddress,
               }),
               {
                 status: 400,
@@ -1042,14 +1063,14 @@ serve(async (req) => {
           }
 
           // Check and set allowance if needed
-          const currentAllowance = await usdcContract.allowance(walletAddress, CTF_EXCHANGE_ADDRESS);
+          const currentAllowance = await collateralContract.allowance(walletAddress, CTF_EXCHANGE_ADDRESS);
           console.log(`[LiveBot] Current allowance: ${currentAllowance}`);
 
           if (currentAllowance < amountInUnits) {
-            console.log('[LiveBot] Approving USDC spend...');
+            console.log('[LiveBot] Approving collateral spend...');
             // Approve max uint256 so we don't need to approve again
             const maxApproval = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
-            const approveTx = await usdcContract.approve(CTF_EXCHANGE_ADDRESS, maxApproval);
+            const approveTx = await collateralContract.approve(CTF_EXCHANGE_ADDRESS, maxApproval);
             console.log(`[LiveBot] Approve tx: ${approveTx.hash}`);
             const approveReceipt = await approveTx.wait();
             console.log(`[LiveBot] Approval confirmed in block ${approveReceipt.blockNumber}`);
@@ -1058,7 +1079,7 @@ serve(async (req) => {
             await new Promise((resolve) => setTimeout(resolve, 2000));
 
             // Verify allowance is now set
-            const newAllowance = await usdcContract.allowance(walletAddress, CTF_EXCHANGE_ADDRESS);
+            const newAllowance = await collateralContract.allowance(walletAddress, CTF_EXCHANGE_ADDRESS);
             console.log(`[LiveBot] New allowance after approval: ${newAllowance}`);
 
             if (newAllowance < amountInUnits) {
@@ -1067,6 +1088,7 @@ serve(async (req) => {
                   success: false,
                   error: 'Approval transaction confirmed but allowance not updated. Please try again.',
                   approveTxHash: approveTx.hash,
+                  collateralAddress,
                 }),
                 {
                   status: 500,
@@ -1194,15 +1216,18 @@ serve(async (req) => {
           const wallet = new ethers.Wallet(privateKey!, provider);
           const walletAddress = wallet.address;
           
-          // Both USDT and USDC have 6 decimals on Polygon
-          const amountInUnits = BigInt(Math.floor(amount * 1e6));
-          
+          // Both USDT and the exchange collateral token are expected to be 6 decimals on Polygon,
+          // but we resolve collateral from-chain to avoid mismatches.
+          const exchangeRead = new ethers.Contract(CTF_EXCHANGE_ADDRESS, EXCHANGE_ABI, provider);
+          const collateralAddressRaw = await exchangeRead.getCollateral();
+          const collateralAddress = ethers.getAddress(collateralAddressRaw);
+
           // Determine token addresses
           const tokenInAddress = fromToken.toUpperCase() === 'USDT' ? USDT_ADDRESS : USDT_ADDRESS;
-          const tokenOutAddress = USDC_ADDRESS;
-          
+          const tokenOutAddress = collateralAddress;
+
           console.log(`[LiveBot] Token in: ${tokenInAddress}`);
-          console.log(`[LiveBot] Token out: ${tokenOutAddress}`);
+          console.log(`[LiveBot] Token out (collateral): ${tokenOutAddress}`);
           console.log(`[LiveBot] Amount: ${amountInUnits}`);
           
           // Check balance
