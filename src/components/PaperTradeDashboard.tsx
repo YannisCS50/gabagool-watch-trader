@@ -19,6 +19,7 @@ import {
   ArrowUpRight,
   ArrowDownRight,
 } from 'lucide-react';
+import { HourlyPnLChart } from '@/components/HourlyPnLChart';
 import { usePaperTrades, PaperTrade, PaperTradeResult } from '@/hooks/usePaperTrades';
 import { formatDistanceToNow } from 'date-fns';
 import { usePolymarketRealtime } from '@/hooks/usePolymarketRealtime';
@@ -227,6 +228,9 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
           </CardContent>
         </Card>
       </div>
+
+      {/* Hourly P/L Analysis */}
+      <HourlyPnLChart results={results} hoursToShow={24} />
 
       {/* Open Positions */}
       {openMarkets.length > 0 && (
