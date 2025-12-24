@@ -256,6 +256,7 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
                 <thead>
                   <tr className="text-xs text-muted-foreground border-b border-border/50">
                     <th className="text-left pb-3 font-medium">Market</th>
+                    <th className="text-center pb-3 font-medium">Status</th>
                     <th className="text-center pb-3 font-medium">Position</th>
                     <th className="text-center pb-3 font-medium">Edge</th>
                     <th className="text-right pb-3 font-medium">UP Cost</th>
@@ -304,6 +305,12 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
                                     const combinedEntry = upAvg + downAvg;
                                     const arbEdge = (1 - combinedEntry) * 100; // percentage edge
 
+                    // Determine market status: OPEN (market active), PENDING (ended, awaiting resolution), CLOSED (settled)
+                    const eventEndTime = marketTrades[0]?.event_end_time;
+                    const now = new Date();
+                    const marketEnded = eventEndTime ? new Date(eventEndTime) < now : false;
+                    const marketStatus: 'OPEN' | 'PENDING' = marketEnded ? 'PENDING' : 'OPEN';
+
                     return (
                       <tr key={slug} className="group hover:bg-muted/30 transition-colors">
                         <td className="py-3">
@@ -320,6 +327,19 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
                               </div>
                             </div>
                           </div>
+                        </td>
+                        <td className="py-3 text-center">
+                          {marketStatus === 'OPEN' ? (
+                            <Badge variant="outline" className="text-xs text-emerald-500 border-emerald-500/50 bg-emerald-500/10">
+                              <Activity className="w-3 h-3 mr-1" />
+                              OPEN
+                            </Badge>
+                          ) : (
+                            <Badge variant="outline" className="text-xs text-yellow-500 border-yellow-500/50 bg-yellow-500/10 animate-pulse">
+                              <Clock className="w-3 h-3 mr-1" />
+                              PENDING
+                            </Badge>
+                          )}
                         </td>
                         <td className="py-3">
                           <div className="flex flex-col items-center gap-1">
