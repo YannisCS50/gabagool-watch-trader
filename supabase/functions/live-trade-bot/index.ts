@@ -1,6 +1,6 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { encode as hexEncode } from "https://deno.land/std@0.168.0/encoding/hex.ts";
+import { ethers } from "https://esm.sh/ethers@6.13.1";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -14,6 +14,35 @@ const corsHeaders = {
 
 const POLYMARKET_CLOB_HOST = 'https://clob.polymarket.com';
 const POLYGON_CHAIN_ID = 137;
+
+// Polymarket CTF Exchange contract address on Polygon
+const CTF_EXCHANGE_ADDRESS = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
+
+// EIP-712 Domain for Polymarket orders
+const ORDER_DOMAIN = {
+  name: 'Polymarket CTF Exchange',
+  version: '1',
+  chainId: POLYGON_CHAIN_ID,
+  verifyingContract: CTF_EXCHANGE_ADDRESS,
+};
+
+// EIP-712 Types for Order
+const ORDER_TYPES = {
+  Order: [
+    { name: 'salt', type: 'uint256' },
+    { name: 'maker', type: 'address' },
+    { name: 'signer', type: 'address' },
+    { name: 'taker', type: 'address' },
+    { name: 'tokenId', type: 'uint256' },
+    { name: 'makerAmount', type: 'uint256' },
+    { name: 'takerAmount', type: 'uint256' },
+    { name: 'expiration', type: 'uint256' },
+    { name: 'nonce', type: 'uint256' },
+    { name: 'feeRateBps', type: 'uint256' },
+    { name: 'side', type: 'uint8' },
+    { name: 'signatureType', type: 'uint8' },
+  ],
+};
 
 interface OrderRequest {
   tokenId: string;
@@ -86,10 +115,10 @@ async function getApiHeaders(
   };
 }
 
-// EIP-712 Order Signing for Polymarket
+// EIP-712 Order Signing for Polymarket using ethers.js
 async function signOrder(
   privateKey: string,
-  order: {
+  orderData: {
     salt: string;
     maker: string;
     signer: string;
@@ -104,15 +133,21 @@ async function signOrder(
     signatureType: number;
   }
 ): Promise<string> {
-  // For now, we'll use a simplified signing approach
-  // Full EIP-712 signing requires ethers.js or similar
-  // This is a placeholder that needs proper implementation
+  console.log('[LiveBot] Signing order with EIP-712...');
   
-  console.log('[LiveBot] Order signing requested for:', order.tokenId);
+  const wallet = new ethers.Wallet(privateKey);
   
-  // TODO: Implement proper EIP-712 signing
-  // This requires importing ethers.js or using Web3 primitives
-  throw new Error('EIP-712 signing not yet implemented - need ethers.js integration');
+  // Sign typed data (EIP-712)
+  const signature = await wallet.signTypedData(ORDER_DOMAIN, ORDER_TYPES, orderData);
+  
+  console.log('[LiveBot] Order signed successfully');
+  return signature;
+}
+
+// Get wallet address from private key
+function getWalletAddress(privateKey: string): string {
+  const wallet = new ethers.Wallet(privateKey);
+  return wallet.address;
 }
 
 // ============================================================================
@@ -146,48 +181,54 @@ async function createOrder(
   console.log(`[LiveBot] Creating order: ${order.side} ${order.size} @ $${order.price} for ${order.tokenId.slice(0, 20)}...`);
   
   try {
-    // Calculate amounts
+    const walletAddress = getWalletAddress(privateKey);
+    console.log(`[LiveBot] Wallet address: ${walletAddress}`);
+    
+    // Calculate amounts (USDC has 6 decimals, outcome tokens have 6 decimals on Polymarket)
+    const sizeInUnits = Math.floor(order.size * 1e6);
+    const priceInUnits = Math.floor(order.price * 1e6);
+    
     const makerAmount = order.side === 'BUY' 
-      ? Math.floor(order.size * order.price * 1e6).toString() // USDC has 6 decimals
-      : Math.floor(order.size * 1e6).toString();
+      ? Math.floor(order.size * order.price * 1e6).toString() // USDC to pay
+      : sizeInUnits.toString(); // Outcome tokens to sell
     
     const takerAmount = order.side === 'BUY'
-      ? Math.floor(order.size * 1e6).toString()
-      : Math.floor(order.size * order.price * 1e6).toString();
+      ? sizeInUnits.toString() // Outcome tokens to receive
+      : Math.floor(order.size * order.price * 1e6).toString(); // USDC to receive
     
-    // Create order payload
+    // Create order data
+    const salt = Math.floor(Math.random() * 1e18).toString();
+    const orderData = {
+      salt,
+      maker: walletAddress,
+      signer: walletAddress,
+      taker: '0x0000000000000000000000000000000000000000',
+      tokenId: order.tokenId,
+      makerAmount,
+      takerAmount,
+      expiration: '0', // Never expires for GTC
+      nonce: '0',
+      feeRateBps: '0',
+      side: order.side === 'BUY' ? 0 : 1,
+      signatureType: 0, // EOA signature
+    };
+    
+    // Sign the order with EIP-712
+    const signature = await signOrder(privateKey, orderData);
+    
+    // Prepare API request
     const orderPayload = {
-      order: {
-        salt: Math.floor(Math.random() * 1e18).toString(),
-        maker: '', // Will be derived from private key
-        signer: '',
-        taker: '0x0000000000000000000000000000000000000000',
-        tokenId: order.tokenId,
-        makerAmount,
-        takerAmount,
-        expiration: '0', // Never expires for GTC
-        nonce: '0',
-        feeRateBps: '0',
-        side: order.side === 'BUY' ? 0 : 1,
-        signatureType: 1, // Magic link signature type
-      },
+      order: orderData,
+      signature,
       orderType: order.orderType,
     };
     
-    // Sign the order (throws for now)
-    // const signature = await signOrder(privateKey, orderPayload.order);
-    
-    // For now, return error since signing isn't implemented
-    return {
-      success: false,
-      error: 'Order signing not yet implemented - requires ethers.js for EIP-712',
-    };
-    
-    /*
-    // Once signing is implemented:
     const path = '/order';
-    const body = JSON.stringify({ ...orderPayload, signature });
+    const body = JSON.stringify(orderPayload);
     const headers = await getApiHeaders(apiKey, apiSecret, passphrase, 'POST', path, body);
+    headers['POLY_ADDRESS'] = walletAddress;
+    
+    console.log('[LiveBot] Submitting order to CLOB...');
     
     const response = await fetch(`${POLYMARKET_CLOB_HOST}${path}`, {
       method: 'POST',
@@ -195,14 +236,24 @@ async function createOrder(
       body,
     });
     
+    const responseText = await response.text();
+    console.log(`[LiveBot] CLOB Response: ${response.status} - ${responseText}`);
+    
     if (!response.ok) {
-      const error = await response.text();
-      return { success: false, error };
+      return { 
+        success: false, 
+        error: `CLOB API error: ${response.status} - ${responseText}` 
+      };
     }
     
-    const result = await response.json();
-    return { success: true, orderId: result.orderID, details: result };
-    */
+    const result = JSON.parse(responseText);
+    console.log('[LiveBot] ✅ Order submitted successfully:', result.orderID);
+    
+    return { 
+      success: true, 
+      orderId: result.orderID || result.id, 
+      details: result 
+    };
   } catch (error) {
     console.error('[LiveBot] Order creation failed:', error);
     return { success: false, error: error instanceof Error ? error.message : String(error) };
@@ -302,16 +353,18 @@ serve(async (req) => {
     switch (action) {
       case 'status': {
         // Return bot status and configuration
+        const walletAddress = getWalletAddress(privateKey);
         return new Response(JSON.stringify({
           success: true,
-          status: 'CONFIGURED',
-          message: '⚠️ Live trading bot configured but order signing not yet implemented',
+          status: 'READY',
+          message: '✅ Live trading bot fully configured and ready',
+          walletAddress,
           limits: DEFAULT_LIMITS,
           implementation: {
-            authentication: '✅ API headers ready',
-            orderSigning: '❌ EIP-712 signing needs ethers.js',
-            safetyChecks: '✅ Daily loss, position limits implemented',
-            nextStep: 'Need to add ethers.js for order signing',
+            authentication: '✅ HMAC API headers ready',
+            orderSigning: '✅ EIP-712 signing with ethers.js',
+            safetyChecks: '✅ Daily loss, position limits',
+            killSwitch: '✅ Emergency stop available',
           },
         }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
