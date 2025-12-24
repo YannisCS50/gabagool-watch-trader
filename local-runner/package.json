@@ -1,0 +1,21 @@
+{
+  "name": "polymarket-live-trader",
+  "version": "1.0.0",
+  "description": "Local/VPS runner for Polymarket live trading - bypasses Cloudflare blocks",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.89.0",
+    "ws": "^8.16.0",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/ws": "^8.5.10",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3"
+  }
+}
