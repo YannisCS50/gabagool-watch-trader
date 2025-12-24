@@ -156,8 +156,11 @@ Deno.serve(async (req) => {
     }
   };
 
-  const fetchMarkets = async () => {
+  const fetchMarkets = async (): Promise<boolean> => {
     try {
+      const previousTokenCount = tokenToMarket.size;
+      const previousTokenIds = new Set(tokenToMarket.keys());
+      
       const marketsResponse = await fetch(`${supabaseUrl}/functions/v1/get-market-tokens`, {
         method: 'POST',
         headers: {
@@ -211,10 +214,23 @@ Deno.serve(async (req) => {
           if (!activeSlugs.has(slug)) marketContexts.delete(slug);
         }
 
-        log(`📊 Loaded ${markets.size} ACTIVE BTC markets`);
+        // Check if tokens changed - need to reconnect CLOB
+        const newTokenIds = new Set(tokenToMarket.keys());
+        const tokensChanged = newTokenIds.size !== previousTokenIds.size || 
+          [...newTokenIds].some(id => !previousTokenIds.has(id));
+
+        if (tokensChanged) {
+          log(`📊 Markets changed: ${previousTokenCount} → ${tokenToMarket.size} tokens (${markets.size} BTC markets)`);
+          return true; // Signal to reconnect
+        } else {
+          log(`📊 Markets unchanged: ${markets.size} BTC markets`);
+          return false;
+        }
       }
+      return false;
     } catch (error) {
       log(`❌ Error fetching markets: ${error}`);
+      return false;
     }
   };
 
@@ -631,7 +647,7 @@ Deno.serve(async (req) => {
 
     sendStatus();
 
-    // Periodic status check
+    // Periodic status check & market refresh
     statusLogInterval = setInterval(async () => {
       const wasEnabled = isEnabled;
       isEnabled = await checkBotEnabled();
@@ -640,7 +656,7 @@ Deno.serve(async (req) => {
         log(isEnabled ? '✅ Bot ENABLED' : '⏸️ Bot DISABLED');
 
         if (isEnabled && !clobSocket) {
-          await fetchMarkets();
+          const marketsChanged = await fetchMarkets();
           await fetchExistingTrades();
           connectToClob();
         } else if (!isEnabled && clobSocket) {
@@ -649,13 +665,20 @@ Deno.serve(async (req) => {
         }
       }
 
-      // Refresh markets every minute if enabled
+      // Refresh markets every 15 seconds if enabled - reconnect if new markets found
       if (isEnabled) {
-        await fetchMarkets();
+        const marketsChanged = await fetchMarkets();
+        if (marketsChanged && clobSocket) {
+          log('🔄 New markets detected - reconnecting CLOB...');
+          clobSocket.close();
+          clobSocket = null;
+          await fetchExistingTrades();
+          connectToClob();
+        }
       }
 
       sendStatus();
-    }, 30000);
+    }, 15000); // Check every 15 seconds for new markets
   };
 
   socket.onopen = () => {
