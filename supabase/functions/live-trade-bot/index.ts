@@ -742,12 +742,16 @@ serve(async (req) => {
           let creds = await getCredentials();
           let balanceData: { balance: string; allowance: string };
 
+          // Per Polymarket docs, POLY_ADDRESS must be the Polygon *signer* (EOA) address.
+          // The funder (Safe/Proxy) is used for where funds are held, but not as POLY_ADDRESS.
+          const signerAddress = walletAddress;
+
           try {
             balanceData = await getBalanceAllowance(
               creds.apiKey,
               creds.apiSecret,
               creds.passphrase,
-              funder.funderAddress,
+              signerAddress,
               'COLLATERAL'
             );
           } catch (err) {
@@ -767,7 +771,7 @@ serve(async (req) => {
                 creds.apiKey,
                 creds.apiSecret,
                 creds.passphrase,
-                funder.funderAddress,
+                signerAddress,
                 'COLLATERAL'
               );
             } else {
