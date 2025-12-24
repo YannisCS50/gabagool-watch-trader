@@ -57,6 +57,23 @@ const EXCHANGE_ABI = [
   'function getSafeFactory() view returns (address)',
   'function getPolyProxyWalletAddress(address _addr) view returns (address)',
   'function getSafeAddress(address _addr) view returns (address)',
+  'function getCtf() view returns (address)',
+];
+
+// Gnosis Conditional Tokens (CTF) ABI for redemption
+const CONDITIONAL_TOKENS_ABI = [
+  'function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] calldata indexSets) external',
+  'function balanceOf(address owner, uint256 positionId) view returns (uint256)',
+  'function payoutNumerators(bytes32 conditionId, uint256 index) view returns (uint256)',
+  'function payoutDenominator(bytes32 conditionId) view returns (uint256)',
+  'function getConditionId(address oracle, bytes32 questionId, uint256 outcomeSlotCount) pure returns (bytes32)',
+  'function getCollectionId(bytes32 parentCollectionId, bytes32 conditionId, uint256 indexSet) view returns (bytes32)',
+  'function getPositionId(address collateralToken, bytes32 collectionId) pure returns (uint256)',
+];
+
+// Polymarket Neg Risk CTF Exchange for redemption (used for some markets)
+const NEG_RISK_CTF_EXCHANGE_ABI = [
+  'function redeemPositions(bytes32 conditionId, uint256[] calldata amounts) external',
 ];
 
 // ============================================================================
@@ -1506,11 +1523,146 @@ serve(async (req) => {
         }
       }
       
+      case 'redeem': {
+        // Redeem winning positions from resolved markets
+        try {
+          const { conditionId, tokenIds } = body;
+          
+          if (!conditionId) {
+            return new Response(JSON.stringify({
+              success: false,
+              error: 'Missing conditionId parameter. Get this from market data.',
+            }), {
+              status: 400,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            });
+          }
+          
+          console.log(`[LiveBot] Redeeming positions for condition: ${conditionId}`);
+          const provider = new ethers.JsonRpcProvider(POLYGON_RPC_URL);
+          const wallet = new ethers.Wallet(privateKey!, provider);
+          const walletAddress = wallet.address;
+
+          // Get CTF (Conditional Tokens) contract address from exchange
+          const exchangeContract = new ethers.Contract(CTF_EXCHANGE_ADDRESS, EXCHANGE_ABI, provider);
+          const ctfAddressRaw = await exchangeContract.getCtf();
+          const ctfAddress = ethers.getAddress(ctfAddressRaw);
+          console.log(`[LiveBot] CTF contract: ${ctfAddress}`);
+
+          // Get collateral token
+          const collateralAddressRaw = await exchangeContract.getCollateral();
+          const collateralAddress = ethers.getAddress(collateralAddressRaw);
+          console.log(`[LiveBot] Collateral: ${collateralAddress}`);
+
+          // Resolve the wallet address we should redeem from (Safe or Proxy)
+          const receiverInfo = await resolvePolymarketReceiver(exchangeContract, provider, walletAddress);
+          const redeemFrom = receiverInfo.receiver;
+          console.log(`[LiveBot] Redeeming from: ${redeemFrom} (${receiverInfo.receiverType})`);
+
+          // Connect to CTF contract
+          const ctfContract = new ethers.Contract(ctfAddress, CONDITIONAL_TOKENS_ABI, wallet);
+
+          // Check payout denominator (if > 0, market is resolved)
+          const payoutDenom = await ctfContract.payoutDenominator(conditionId);
+          console.log(`[LiveBot] Payout denominator: ${payoutDenom}`);
+
+          if (payoutDenom === 0n) {
+            return new Response(JSON.stringify({
+              success: false,
+              error: 'Market not yet resolved (payoutDenominator = 0)',
+              conditionId,
+            }), {
+              status: 400,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            });
+          }
+
+          // For binary markets, indexSets are [1, 2] representing outcome 0 and outcome 1
+          // indexSet 1 = 0b01 = outcome index 0 (YES/UP)
+          // indexSet 2 = 0b10 = outcome index 1 (NO/DOWN)
+          const indexSets = [1, 2];
+          const parentCollectionId = '0x' + '0'.repeat(64); // Zero bytes32 for root collection
+
+          // Check balances before redeem
+          const collectionId0 = await ctfContract.getCollectionId(parentCollectionId, conditionId, 1);
+          const collectionId1 = await ctfContract.getCollectionId(parentCollectionId, conditionId, 2);
+          const positionId0 = await ctfContract.getPositionId(collateralAddress, collectionId0);
+          const positionId1 = await ctfContract.getPositionId(collateralAddress, collectionId1);
+          
+          const balance0 = await ctfContract.balanceOf(redeemFrom, positionId0);
+          const balance1 = await ctfContract.balanceOf(redeemFrom, positionId1);
+          
+          console.log(`[LiveBot] Position balances - UP: ${balance0}, DOWN: ${balance1}`);
+
+          if (balance0 === 0n && balance1 === 0n) {
+            return new Response(JSON.stringify({
+              success: false,
+              error: 'No positions to redeem (both balances are 0)',
+              conditionId,
+              balances: { up: '0', down: '0' },
+            }), {
+              status: 400,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            });
+          }
+
+          // Get collateral balance before
+          const collateralContract = new ethers.Contract(collateralAddress, ERC20_ABI, provider);
+          const balanceBefore = await collateralContract.balanceOf(redeemFrom);
+          console.log(`[LiveBot] Collateral balance before: ${balanceBefore}`);
+
+          // Execute redemption
+          console.log('[LiveBot] Calling redeemPositions...');
+          const redeemTx = await ctfContract.redeemPositions(
+            collateralAddress,
+            parentCollectionId,
+            conditionId,
+            indexSets
+          );
+          console.log(`[LiveBot] Redeem tx: ${redeemTx.hash}`);
+          const receipt = await redeemTx.wait();
+          console.log(`[LiveBot] Redeem confirmed in block ${receipt.blockNumber}`);
+
+          // Get collateral balance after
+          const balanceAfter = await collateralContract.balanceOf(redeemFrom);
+          const redeemed = balanceAfter - balanceBefore;
+          const redeemedFormatted = Number(redeemed) / 1e6;
+          console.log(`[LiveBot] Collateral redeemed: ${redeemedFormatted} USDC`);
+
+          return new Response(JSON.stringify({
+            success: true,
+            message: `✅ Successfully redeemed positions`,
+            conditionId,
+            redeemedAmount: redeemedFormatted,
+            currency: 'USDC',
+            txHash: redeemTx.hash,
+            blockNumber: receipt.blockNumber,
+            walletAddress,
+            redeemFrom,
+            positionBalances: {
+              up: balance0.toString(),
+              down: balance1.toString(),
+            },
+          }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        } catch (error) {
+          console.error('[LiveBot] Redeem error:', error);
+          return new Response(JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+      }
+      
       default:
         return new Response(JSON.stringify({
           success: false,
           error: `Unknown action: ${action}`,
-          availableActions: ['status', 'balance', 'wallet-balance', 'deposit', 'swap', 'order', 'kill', 'derive-credentials', 'debug-auth'],
+          availableActions: ['status', 'balance', 'wallet-balance', 'deposit', 'swap', 'order', 'redeem', 'kill', 'derive-credentials', 'debug-auth'],
         }), {
           status: 400,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },

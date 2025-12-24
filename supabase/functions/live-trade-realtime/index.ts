@@ -351,7 +351,7 @@ Deno.serve(async (req) => {
     }
   };
 
-  // Check for expired markets and redeem
+  // Check for expired markets and redeem on-chain
   const checkAndRedeem = async () => {
     const now = new Date();
 
@@ -366,27 +366,58 @@ Deno.serve(async (req) => {
       log(`🔄 Market expired: ${slug}, checking for redemption...`);
 
       try {
-        // Fetch market result from API
+        // Fetch market result from Gamma API
         const resultResponse = await fetch(`${GAMMA_API}/markets/${slug}`);
         if (!resultResponse.ok) continue;
 
         const marketData = await resultResponse.json();
         const result = marketData.outcome?.toUpperCase();
+        const conditionId = marketData.conditionId;
 
         if (!result || (result !== 'UP' && result !== 'DOWN' && result !== 'YES' && result !== 'NO')) {
           log(`Market ${slug} not yet resolved`);
           continue;
         }
 
+        if (!conditionId) {
+          log(`Market ${slug} has no conditionId, skipping on-chain redeem`);
+          continue;
+        }
+
         const winningOutcome = result === 'YES' ? 'UP' : result === 'NO' ? 'DOWN' : result;
         const winningShares = winningOutcome === 'UP' ? pos.upShares : pos.downShares;
-        const losingShares = winningOutcome === 'UP' ? pos.downShares : pos.upShares;
         
-        const payout = winningShares; // Each winning share = $1
+        // Try to redeem on-chain via live-trade-bot
+        log(`💰 Attempting on-chain redemption for ${slug} (condition: ${conditionId.slice(0, 20)}...)`);
+        
+        const { data: redeemResult, error: redeemError } = await supabase.functions.invoke('live-trade-bot', {
+          body: {
+            action: 'redeem',
+            conditionId,
+          },
+        });
+
+        let redeemedAmount = 0;
+        let redeemSuccess = false;
+        let redeemTxHash = null;
+
+        if (redeemError) {
+          log(`⚠️ Redeem invoke error: ${redeemError.message}`);
+        } else if (redeemResult?.success) {
+          redeemSuccess = true;
+          redeemedAmount = redeemResult.redeemedAmount || 0;
+          redeemTxHash = redeemResult.txHash;
+          log(`✅ On-chain redeem successful: ${redeemedAmount} USDC (tx: ${redeemTxHash?.slice(0, 20)}...)`);
+        } else {
+          log(`⚠️ Redeem failed: ${redeemResult?.error || 'Unknown error'}`);
+        }
+
+        // Calculate P&L
+        const payout = redeemSuccess ? redeemedAmount : winningShares; // Fallback to estimated if on-chain failed
         const totalInvested = (pos.upShares + pos.downShares) * 0.5; // Approximate
         const profitLoss = payout - totalInvested;
 
-        // Record result
+        // Record result in database
         await supabase.from('live_trade_results').upsert({
           market_slug: slug,
           asset: market.asset,
@@ -401,7 +432,7 @@ Deno.serve(async (req) => {
           settled_at: new Date().toISOString(),
         }, { onConflict: 'market_slug' });
 
-        log(`✅ Redeemed ${slug}: ${winningOutcome} won, payout: $${payout.toFixed(2)}, P/L: $${profitLoss.toFixed(2)}`);
+        log(`✅ Settled ${slug}: ${winningOutcome} won, payout: $${payout.toFixed(2)}, P/L: $${profitLoss.toFixed(2)}${redeemSuccess ? ' (on-chain)' : ' (estimated)'}`);
         
         if (socket.readyState === WebSocket.OPEN) {
           socket.send(JSON.stringify({
@@ -410,6 +441,8 @@ Deno.serve(async (req) => {
             result: winningOutcome,
             payout,
             profitLoss,
+            redeemSuccess,
+            redeemTxHash,
             timestamp: Date.now(),
           }));
         }
