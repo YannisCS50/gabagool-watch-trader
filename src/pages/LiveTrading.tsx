@@ -21,13 +21,11 @@ interface WalletBalance {
   matic: string;
 }
 
-interface PolymarketBalance {
-  USDC: string;
-}
+const ZERO = 0;
 
 export default function LiveTrading() {
   const [walletBalance, setWalletBalance] = useState<WalletBalance | null>(null);
-  const [polymarketBalance, setPolymarketBalance] = useState<PolymarketBalance | null>(null);
+  const [polymarketBalance, setPolymarketBalance] = useState<number | null>(null);
   const [isLoadingWallet, setIsLoadingWallet] = useState(true);
 
   const fetchBalances = async () => {
@@ -47,7 +45,7 @@ export default function LiveTrading() {
         body: { action: 'balance' }
       });
       
-      if (pmData?.balance) {
+      if (typeof pmData?.balance === 'number') {
         setPolymarketBalance(pmData.balance);
       }
     } catch (err) {
@@ -103,7 +101,7 @@ export default function LiveTrading() {
             <CardContent className="p-4">
               <div className="text-sm text-muted-foreground mb-1">Trading Balance</div>
               <div className="text-2xl font-bold font-mono">
-                ${polymarketBalance ? parseFloat(polymarketBalance.USDC || '0').toFixed(2) : '...' }
+                ${polymarketBalance !== null ? polymarketBalance.toFixed(2) : '...'}
               </div>
               <div className="text-xs text-muted-foreground">Polymarket USDC</div>
             </CardContent>
