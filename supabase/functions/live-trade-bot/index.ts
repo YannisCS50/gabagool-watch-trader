@@ -232,9 +232,15 @@ const DEFAULT_LIMITS: SafetyLimits = {
 
 // ============================================================================
 // CLOB API Authentication & Order Signing
+// Exact implementation matching @polymarket/clob-client headers/index.ts
 // ============================================================================
 
-// Helper functions matching official Polymarket clob-client implementation
+// Helper: replaceAll for URL-safe base64
+function replaceAll(s: string, search: string, replace: string): string {
+  return s.split(search).join(replace);
+}
+
+// Helper: base64 to ArrayBuffer (matching clob-client/src/signing/hmac.ts)
 function base64ToArrayBuffer(base64: string): ArrayBuffer {
   const sanitizedBase64 = base64
     .replace(/-/g, '+')
@@ -248,6 +254,7 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
   return bytes.buffer as ArrayBuffer;
 }
 
+// Helper: ArrayBuffer to base64 (matching clob-client/src/signing/hmac.ts)
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   let binary = '';
@@ -257,7 +264,10 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
-// Exact implementation from Polymarket clob-client/src/signing/hmac.ts
+/**
+ * Builds the canonical Polymarket CLOB HMAC signature
+ * Exact implementation from @polymarket/clob-client/src/signing/hmac.ts
+ */
 async function buildPolyHmacSignature(
   secret: string,
   timestamp: number,
@@ -265,19 +275,15 @@ async function buildPolyHmacSignature(
   requestPath: string,
   body?: string
 ): Promise<string> {
-  // Build message: timestamp (as number) + method + path + body
   let message = timestamp + method + requestPath;
   if (body !== undefined) {
     message += body;
   }
-  
-  console.log(`[HMAC] Message to sign: "${message.slice(0, 100)}..."`);
-  console.log(`[HMAC] Message length: ${message.length}`);
+
+  console.log(`[HMAC] Building signature for: ts=${timestamp}, method=${method}, path=${requestPath.slice(0, 50)}`);
 
   // Import the secret key from base64
   const keyData = base64ToArrayBuffer(secret);
-  console.log(`[HMAC] Key data length: ${new Uint8Array(keyData).length} bytes`);
-  
   const cryptoKey = await crypto.subtle.importKey(
     'raw',
     keyData,
@@ -291,57 +297,114 @@ async function buildPolyHmacSignature(
   const signatureBuffer = await crypto.subtle.sign('HMAC', cryptoKey, messageBuffer);
   const sig = arrayBufferToBase64(signatureBuffer);
 
-  // Must be url safe base64 encoding, but keep base64 "=" suffix
-  const sigUrlSafe = sig.replace(/\+/g, '-').replace(/\//g, '_');
-  console.log(`[HMAC] Signature: ${sigUrlSafe}`);
+  // Must be URL-safe base64 encoding, but keep base64 "=" suffix
+  const sigUrlSafe = replaceAll(replaceAll(sig, '+', '-'), '/', '_');
   return sigUrlSafe;
 }
 
-async function getApiHeaders(
-  apiKey: string,
-  apiSecret: string,
-  passphrase: string,
-  walletAddress: string,
-  method: string,
-  path: string,
-  body?: string
+/**
+ * Build EIP-712 signature for L1 authentication
+ * Exact implementation from @polymarket/clob-client/src/signing/eip712.ts
+ */
+async function buildClobEip712Signature(
+  wallet: ethers.Wallet,
+  chainId: number,
+  timestamp: number,
+  nonce: number
+): Promise<string> {
+  const domain = {
+    name: 'ClobAuthDomain',
+    version: '1',
+    chainId: chainId,
+  };
+
+  const types = {
+    ClobAuth: [
+      { name: 'address', type: 'address' },
+      { name: 'timestamp', type: 'string' },
+      { name: 'nonce', type: 'uint256' },
+      { name: 'message', type: 'string' },
+    ],
+  };
+
+  const value = {
+    address: wallet.address,
+    timestamp: timestamp.toString(),
+    nonce: nonce,
+    message: 'This message attests that I control the given wallet',
+  };
+
+  const sig = await wallet.signTypedData(domain, types, value);
+  return sig;
+}
+
+/**
+ * Create L1 Headers for API key derivation/creation
+ * Exact implementation from @polymarket/clob-client/src/headers/index.ts
+ */
+async function createL1Headers(
+  wallet: ethers.Wallet,
+  chainId: number,
+  nonce?: number,
+  timestamp?: number
 ): Promise<Record<string, string>> {
-  // Polymarket clob-client uses a UNIX timestamp in *seconds* for L2 auth headers
-  const timestamp = Math.floor(Date.now() / 1000);
-  
-  console.log('=== HMAC DEBUG START ===');
-  console.log(`[HMAC] API Key: ${apiKey.slice(0, 10)}...${apiKey.slice(-5)}`);
-  console.log(`[HMAC] API Secret length: ${apiSecret.length} chars`);
-  console.log(`[HMAC] Passphrase length: ${passphrase.length}`);
-  console.log(`[HMAC] Wallet Address: ${walletAddress}`);
-  console.log(`[HMAC] Method: ${method}`);
-  console.log(`[HMAC] Path: ${path}`);
-  console.log(`[HMAC] Timestamp (s): ${timestamp}`);
-  if (body) {
-    console.log(`[HMAC] Body (first 100 chars): ${body.slice(0, 100)}...`);
+  let ts = Math.floor(Date.now() / 1000);
+  if (timestamp !== undefined) {
+    ts = timestamp;
+  }
+  let n = 0;
+  if (nonce !== undefined) {
+    n = nonce;
   }
 
+  const sig = await buildClobEip712Signature(wallet, chainId, ts, n);
+  const address = wallet.address;
+
+  console.log(`[L1 Headers] address=${address}, ts=${ts}, nonce=${n}`);
+
+  return {
+    'POLY_ADDRESS': address,
+    'POLY_SIGNATURE': sig,
+    'POLY_TIMESTAMP': `${ts}`,
+    'POLY_NONCE': `${n}`,
+  };
+}
+
+/**
+ * Create L2 Headers for authenticated API requests
+ * Exact implementation from @polymarket/clob-client/src/headers/index.ts
+ */
+async function createL2Headers(
+  wallet: ethers.Wallet,
+  creds: { key: string; secret: string; passphrase: string },
+  method: string,
+  requestPath: string,
+  body?: string,
+  timestamp?: number
+): Promise<Record<string, string>> {
+  let ts = Math.floor(Date.now() / 1000);
+  if (timestamp !== undefined) {
+    ts = timestamp;
+  }
+  const address = wallet.address;
+
   const sig = await buildPolyHmacSignature(
-    apiSecret,
-    timestamp,
+    creds.secret,
+    ts,
     method,
-    path,
+    requestPath,
     body
   );
 
-  const headers = {
-    'POLY_ADDRESS': walletAddress,
+  console.log(`[L2 Headers] address=${address}, ts=${ts}, method=${method}, path=${requestPath.slice(0, 50)}`);
+
+  return {
+    'POLY_ADDRESS': address,
     'POLY_SIGNATURE': sig,
-    'POLY_TIMESTAMP': `${timestamp}`,
-    'POLY_API_KEY': apiKey,
-    'POLY_PASSPHRASE': passphrase,
-    'Content-Type': 'application/json',
+    'POLY_TIMESTAMP': `${ts}`,
+    'POLY_API_KEY': creds.key,
+    'POLY_PASSPHRASE': creds.passphrase,
   };
-  
-  console.log('[HMAC] Headers:', JSON.stringify(headers, null, 2));
-  console.log('=== HMAC DEBUG END ===');
-  
-  return headers;
 }
 
 // EIP-712 Order Signing for Polymarket using ethers.js
@@ -407,6 +470,7 @@ async function resolvePolymarketFunder(privateKey: string): Promise<{ funderAddr
 // ============================================================================
 
 // Derive or create API credentials from private key using EIP-712 L1 auth
+// Uses official createL1Headers implementation
 async function deriveApiCredentials(privateKey: string): Promise<{
   apiKey: string;
   apiSecret: string;
@@ -415,34 +479,18 @@ async function deriveApiCredentials(privateKey: string): Promise<{
   console.log('[LiveBot] Deriving API credentials from private key...');
   
   const wallet = new ethers.Wallet(privateKey);
-  const address = wallet.address;
-  const timestamp = Math.floor(Date.now() / 1000).toString();
-  const nonce = 0;
   
-  // Create EIP-712 signature for CLOB auth
-  const authMessage = {
-    address: address,
-    timestamp: timestamp,
-    nonce: nonce,
-    message: 'This message attests that I control the given wallet',
-  };
+  // Use official L1 headers function
+  const l1Headers = await createL1Headers(wallet, POLYGON_CHAIN_ID, 0);
+  const headers = { ...l1Headers, 'Content-Type': 'application/json' };
   
-  const signature = await wallet.signTypedData(CLOB_AUTH_DOMAIN, CLOB_AUTH_TYPES, authMessage);
-  console.log(`[LiveBot] Created L1 auth signature for ${address}`);
+  console.log(`[LiveBot] Created L1 auth headers for ${wallet.address}`);
   
   // First try to derive existing API key
-  const deriveHeaders = {
-    'Content-Type': 'application/json',
-    'POLY_ADDRESS': address,
-    'POLY_SIGNATURE': signature,
-    'POLY_TIMESTAMP': timestamp,
-    'POLY_NONCE': nonce.toString(),
-  };
-  
   console.log('[LiveBot] Attempting to derive existing API key...');
   const deriveResponse = await fetch(`${POLYMARKET_CLOB_HOST}/auth/derive-api-key`, {
     method: 'GET',
-    headers: deriveHeaders,
+    headers,
   });
   
   const deriveText = await deriveResponse.text();
@@ -462,7 +510,7 @@ async function deriveApiCredentials(privateKey: string): Promise<{
   console.log('[LiveBot] No existing credentials, creating new API key...');
   const createResponse = await fetch(`${POLYMARKET_CLOB_HOST}/auth/api-key`, {
     method: 'POST',
-    headers: deriveHeaders,
+    headers,
   });
   
   const createText = await createResponse.text();
@@ -483,20 +531,18 @@ async function deriveApiCredentials(privateKey: string): Promise<{
 }
 
 async function getBalanceAllowance(
-  apiKey: string, 
-  apiSecret: string, 
-  passphrase: string,
-  walletAddress: string,
+  wallet: ethers.Wallet,
+  creds: { key: string; secret: string; passphrase: string },
   assetType: 'COLLATERAL' | 'CONDITIONAL' = 'COLLATERAL'
 ): Promise<{ balance: string; allowance: string }> {
   const path = `/balance-allowance?asset_type=${assetType}`;
-  const headers = await getApiHeaders(apiKey, apiSecret, passphrase, walletAddress, 'GET', path);
+  const headers = await createL2Headers(wallet, creds, 'GET', path);
   
   console.log(`[LiveBot] Fetching balance from ${POLYMARKET_CLOB_HOST}${path}`);
   
   const response = await fetch(`${POLYMARKET_CLOB_HOST}${path}`, {
     method: 'GET',
-    headers,
+    headers: { ...headers, 'Content-Type': 'application/json' },
   });
   
   const responseText = await response.text();
@@ -514,21 +560,19 @@ async function getBalanceAllowance(
 }
 
 async function createOrder(
-  apiKey: string,
-  apiSecret: string,
-  passphrase: string,
+  wallet: ethers.Wallet,
+  creds: { key: string; secret: string; passphrase: string },
   privateKey: string,
   order: OrderRequest
 ): Promise<TradeResult> {
   console.log(`[LiveBot] Creating order: ${order.side} ${order.size} @ $${order.price} for ${order.tokenId.slice(0, 20)}...`);
   
   try {
-    const walletAddress = getWalletAddress(privateKey);
+    const walletAddress = wallet.address;
     console.log(`[LiveBot] Wallet address: ${walletAddress}`);
     
     // Calculate amounts (USDC has 6 decimals, outcome tokens have 6 decimals on Polymarket)
     const sizeInUnits = Math.floor(order.size * 1e6);
-    const priceInUnits = Math.floor(order.price * 1e6);
     
     const makerAmount = order.side === 'BUY' 
       ? Math.floor(order.size * order.price * 1e6).toString() // USDC to pay
@@ -567,13 +611,13 @@ async function createOrder(
     
     const path = '/order';
     const body = JSON.stringify(orderPayload);
-    const headers = await getApiHeaders(apiKey, apiSecret, passphrase, walletAddress, 'POST', path, body);
+    const headers = await createL2Headers(wallet, creds, 'POST', path, body);
     
     console.log('[LiveBot] Submitting order to CLOB...');
     
     const response = await fetch(`${POLYMARKET_CLOB_HOST}${path}`, {
       method: 'POST',
-      headers,
+      headers: { ...headers, 'Content-Type': 'application/json' },
       body,
     });
     
@@ -736,22 +780,17 @@ serve(async (req) => {
 
       case 'balance': {
         try {
-          const walletAddress = getWalletAddress(privateKey!);
+          const wallet = new ethers.Wallet(privateKey!);
+          const walletAddress = wallet.address;
           const funder = await resolvePolymarketFunder(privateKey!);
 
           let creds = await getCredentials();
           let balanceData: { balance: string; allowance: string };
 
-          // Per Polymarket docs, POLY_ADDRESS must be the Polygon *signer* (EOA) address.
-          // The funder (Safe/Proxy) is used for where funds are held, but not as POLY_ADDRESS.
-          const signerAddress = walletAddress;
-
           try {
             balanceData = await getBalanceAllowance(
-              creds.apiKey,
-              creds.apiSecret,
-              creds.passphrase,
-              signerAddress,
+              wallet,
+              { key: creds.apiKey, secret: creds.apiSecret, passphrase: creds.passphrase },
               'COLLATERAL'
             );
           } catch (err) {
@@ -768,10 +807,8 @@ serve(async (req) => {
               creds = apiCredentials;
 
               balanceData = await getBalanceAllowance(
-                creds.apiKey,
-                creds.apiSecret,
-                creds.passphrase,
-                signerAddress,
+                wallet,
+                { key: creds.apiKey, secret: creds.apiSecret, passphrase: creds.passphrase },
                 'COLLATERAL'
               );
             } else {
@@ -844,14 +881,20 @@ serve(async (req) => {
         }
 
         // Create order (retry once if stored creds are invalid)
+        const wallet = new ethers.Wallet(privateKey!);
         let creds = await getCredentials();
-        let result = await createOrder(creds.apiKey, creds.apiSecret, creds.passphrase, privateKey!, {
-          tokenId,
-          side: side.toUpperCase() as 'BUY' | 'SELL',
-          price,
-          size,
-          orderType,
-        });
+        let result = await createOrder(
+          wallet,
+          { key: creds.apiKey, secret: creds.apiSecret, passphrase: creds.passphrase },
+          privateKey!,
+          {
+            tokenId,
+            side: side.toUpperCase() as 'BUY' | 'SELL',
+            price,
+            size,
+            orderType,
+          }
+        );
 
         const errMsg = (result.error || '').toLowerCase();
         if (!result.success && (errMsg.includes('401') || errMsg.includes('unauthorized') || errMsg.includes('invalid api key'))) {
@@ -859,13 +902,18 @@ serve(async (req) => {
           apiCredentials = await deriveApiCredentials(privateKey!);
           creds = apiCredentials;
 
-          result = await createOrder(creds.apiKey, creds.apiSecret, creds.passphrase, privateKey!, {
-            tokenId,
-            side: side.toUpperCase() as 'BUY' | 'SELL',
-            price,
-            size,
-            orderType,
-          });
+          result = await createOrder(
+            wallet,
+            { key: creds.apiKey, secret: creds.apiSecret, passphrase: creds.passphrase },
+            privateKey!,
+            {
+              tokenId,
+              side: side.toUpperCase() as 'BUY' | 'SELL',
+              price,
+              size,
+              orderType,
+            }
+          );
         }
 
         return new Response(JSON.stringify(result), {
@@ -922,7 +970,8 @@ serve(async (req) => {
       case 'debug-auth': {
         // Debug authentication by testing multiple endpoints
         try {
-          const walletAddress = getWalletAddress(privateKey!);
+          const wallet = new ethers.Wallet(privateKey!);
+          const walletAddress = wallet.address;
           const creds = await getCredentials();
           
           // Test 1: Public endpoint (no auth needed)
@@ -934,39 +983,26 @@ serve(async (req) => {
           // Test 2: Get API key info (L2 auth)
           console.log('[DEBUG] Testing /auth/api-keys endpoint...');
           const apiKeysPath = '/auth/api-keys';
-          const apiKeysHeaders = await getApiHeaders(creds.apiKey, creds.apiSecret, creds.passphrase, walletAddress, 'GET', apiKeysPath);
+          const apiKeysHeaders = await createL2Headers(
+            wallet,
+            { key: creds.apiKey, secret: creds.apiSecret, passphrase: creds.passphrase },
+            'GET',
+            apiKeysPath
+          );
           const apiKeysTest = await fetch(`${POLYMARKET_CLOB_HOST}${apiKeysPath}`, {
             method: 'GET',
-            headers: apiKeysHeaders,
+            headers: { ...apiKeysHeaders, 'Content-Type': 'application/json' },
           });
           const apiKeysResult = await apiKeysTest.text();
           console.log(`[DEBUG] /auth/api-keys: ${apiKeysTest.status} - ${apiKeysResult}`);
           
-          // Test 3: Check if using correct nonce
+          // Test 3: Check if using correct nonce using L1 headers
           console.log('[DEBUG] Testing /auth/api-key endpoint (check key exists)...');
-          // Use L1 auth to check current key status
-          const wallet = new ethers.Wallet(privateKey!);
-          const timestamp = Math.floor(Date.now() / 1000).toString();
-          const nonce = 0;
-          const authMessage = {
-            address: walletAddress,
-            timestamp: timestamp,
-            nonce: nonce,
-            message: 'This message attests that I control the given wallet',
-          };
-          const l1Signature = await wallet.signTypedData(CLOB_AUTH_DOMAIN, CLOB_AUTH_TYPES, authMessage);
-          
-          const l1Headers = {
-            'Content-Type': 'application/json',
-            'POLY_ADDRESS': walletAddress,
-            'POLY_SIGNATURE': l1Signature,
-            'POLY_TIMESTAMP': timestamp,
-            'POLY_NONCE': nonce.toString(),
-          };
+          const l1Headers = await createL1Headers(wallet, POLYGON_CHAIN_ID, 0);
           
           const getKeyTest = await fetch(`${POLYMARKET_CLOB_HOST}/auth/api-key`, {
             method: 'GET',
-            headers: l1Headers,
+            headers: { ...l1Headers, 'Content-Type': 'application/json' },
           });
           const getKeyResult = await getKeyTest.text();
           console.log(`[DEBUG] GET /auth/api-key: ${getKeyTest.status} - ${getKeyResult}`);
