@@ -932,95 +932,108 @@ async function handleWebSocket(req: Request): Promise<Response> {
     }
   };
 
-  const connectToRtds = () => {
-    const rtdsSocket = new WebSocket(`${supabaseUrl.replace('https', 'wss')}/functions/v1/rtds-proxy`);
+  // HTTP-based strike price capture (more reliable than WebSocket edge-to-edge)
+  const fetchChainlinkPrice = async (asset: 'BTC' | 'ETH'): Promise<number | null> => {
+    try {
+      const symbol = asset.toLowerCase();
+      // Use external RTDS API directly (more reliable than edge function WebSocket)
+      const response = await fetch(`https://rtds.xyz/v1/current/${symbol}/usd`, {
+        headers: { 'Accept': 'application/json' },
+      });
+      
+      if (!response.ok) {
+        // Fallback: Try our chainlink-price-collector data from database
+        const { data } = await supabase
+          .from('strike_prices')
+          .select('strike_price')
+          .eq('asset', asset)
+          .order('created_at', { ascending: false })
+          .limit(1);
+        
+        if (data && data.length > 0) {
+          return data[0].strike_price;
+        }
+        return null;
+      }
+      
+      const data = await response.json();
+      return data.value || data.price || null;
+    } catch (error) {
+      log(`⚠️ Failed to fetch ${asset} price: ${error}`);
+      return null;
+    }
+  };
+
+  const captureStrikePrices = async () => {
+    const nowMs = Date.now();
     
-    rtdsSocket.onopen = () => {
-      log('✅ Connected to Chainlink RTDS');
-      rtdsSocket.send(JSON.stringify({
-        action: 'subscribe',
-        subscriptions: [{ topic: 'crypto_prices_chainlink', type: '*', filters: '' }]
-      }));
-    };
-    
-    rtdsSocket.onmessage = async (event) => {
-      try {
-        const data = JSON.parse(event.data.toString());
-        const symbol = data.payload?.symbol?.toLowerCase();
-        const price = data.payload?.value;
-        const timestamp = data.payload?.timestamp || Date.now();
+    for (const [slug, market] of markets.entries()) {
+      const ctx = marketContexts.get(slug);
+      if (!ctx) continue;
+      
+      // Skip if already captured
+      if (strikePricesCaptured.has(slug)) continue;
+      
+      // Check if market has started
+      const startMs = new Date(market.eventStartTime).getTime();
+      const endMs = new Date(market.eventEndTime).getTime();
+      
+      // Only capture if:
+      // 1. Market has started (now >= start)
+      // 2. Market hasn't ended (now < end)
+      // 3. We're within first 60 seconds of market start (relaxed window for HTTP polling)
+      const withinCaptureWindow = nowMs >= startMs && nowMs < endMs && (nowMs - startMs) < 60000;
+      
+      if (withinCaptureWindow) {
+        const price = await fetchChainlinkPrice(market.asset);
         
-        if (!symbol || !price) return;
-        
-        // Update crypto prices
-        if (symbol === 'btc/usd') cryptoPrices.btc = price;
-        else if (symbol === 'eth/usd') cryptoPrices.eth = price;
-        
-        // STRIKE PRICE CAPTURE: For each active market, check if we need to capture strike price
-        // Strike price = first Chainlink price at or after market start time
-        const nowMs = Date.now();
-        
-        for (const [slug, market] of markets.entries()) {
-          const ctx = marketContexts.get(slug);
-          if (!ctx) continue;
+        if (price) {
+          // Capture the strike price!
+          ctx.strikePrice = price;
+          ctx.strikePriceCaptured = true;
+          strikePricesCaptured.add(slug);
           
-          // Skip if already captured
-          if (strikePricesCaptured.has(slug)) continue;
+          // Update crypto prices cache
+          if (market.asset === 'BTC') cryptoPrices.btc = price;
+          else if (market.asset === 'ETH') cryptoPrices.eth = price;
           
-          // Check if this price is for the right asset
-          const marketAsset = market.asset.toLowerCase();
-          const priceAsset = symbol.replace('/usd', '');
-          if (marketAsset !== priceAsset) continue;
+          // Store in database
+          const strikePriceRecord = {
+            market_slug: slug,
+            asset: market.asset,
+            strike_price: price,
+            open_price: price,
+            open_timestamp: nowMs,
+            chainlink_timestamp: nowMs,
+            event_start_time: market.eventStartTime,
+            source: 'realtime_bot_http',
+            quality: (nowMs - startMs) < 10000 ? 'exact' : ((nowMs - startMs) < 30000 ? 'good' : 'late'),
+          };
           
-          // Check if market has started (we're in active window)
-          const startMs = new Date(market.eventStartTime).getTime();
-          const endMs = new Date(market.eventEndTime).getTime();
+          const { error } = await supabase
+            .from('strike_prices')
+            .upsert(strikePriceRecord, { onConflict: 'market_slug' });
           
-          // Only capture if:
-          // 1. Market has started (now >= start)
-          // 2. Market hasn't ended (now < end)
-          // 3. We're within first 30 seconds of market start (for accurate strike)
-          const withinCaptureWindow = nowMs >= startMs && nowMs < endMs && (nowMs - startMs) < 30000;
-          
-          if (withinCaptureWindow) {
-            // Capture the strike price!
-            ctx.strikePrice = price;
-            ctx.strikePriceCaptured = true;
-            strikePricesCaptured.add(slug);
-            
-            // Store in database
-            const strikePriceRecord = {
-              market_slug: slug,
-              asset: market.asset,
-              strike_price: price,
-              open_price: price,
-              open_timestamp: timestamp,
-              chainlink_timestamp: timestamp,
-              event_start_time: market.eventStartTime,
-              source: 'realtime_bot',
-              quality: (nowMs - startMs) < 5000 ? 'exact' : 'late',
-            };
-            
-            const { error } = await supabase
-              .from('strike_prices')
-              .upsert(strikePriceRecord, { onConflict: 'market_slug' });
-            
-            if (error) {
-              log(`❌ Failed to save strike price for ${slug}: ${error.message}`);
-            } else {
-              const delay = ((nowMs - startMs) / 1000).toFixed(1);
-              log(`📌 STRIKE PRICE CAPTURED: ${slug} ${market.asset} @ $${price.toFixed(2)} (delay: ${delay}s)`);
-            }
+          if (error) {
+            log(`❌ Failed to save strike price for ${slug}: ${error.message}`);
+          } else {
+            const delay = ((nowMs - startMs) / 1000).toFixed(1);
+            log(`📌 STRIKE PRICE CAPTURED: ${slug.slice(-20)} ${market.asset} @ $${price.toFixed(2)} (delay: ${delay}s)`);
           }
         }
-      } catch {}
-    };
+      }
+    }
+  };
+
+  const updateCryptoPrices = async () => {
+    // Fetch current crypto prices (for display and trade logging)
+    const [btcPrice, ethPrice] = await Promise.all([
+      fetchChainlinkPrice('BTC'),
+      fetchChainlinkPrice('ETH'),
+    ]);
     
-    rtdsSocket.onerror = () => log('⚠️ RTDS error');
-    rtdsSocket.onclose = () => {
-      log('🔌 RTDS disconnected');
-      setTimeout(connectToRtds, 5000);
-    };
+    if (btcPrice) cryptoPrices.btc = btcPrice;
+    if (ethPrice) cryptoPrices.eth = ethPrice;
   };
 
   const startStatusLogging = () => {
@@ -1053,8 +1066,17 @@ async function handleWebSocket(req: Request): Promise<Response> {
     await fetchExistingTrades();
     
     connectToClob();
-    connectToRtds();
     startStatusLogging();
+    
+    // Initial crypto price fetch & strike capture
+    await updateCryptoPrices();
+    await captureStrikePrices();
+    
+    // Poll for crypto prices and strike capture every 10 seconds
+    const priceInterval = setInterval(async () => {
+      await updateCryptoPrices();
+      await captureStrikePrices();
+    }, 10000);
     
     // Auto-settle expired markets every 30 seconds
     const settleInterval = setInterval(async () => {
@@ -1084,11 +1106,13 @@ async function handleWebSocket(req: Request): Promise<Response> {
         clobSocket?.close();
         clearInterval(refreshInterval);
         clearInterval(settleInterval);
+        clearInterval(priceInterval);
         if (statusLogInterval) clearInterval(statusLogInterval);
         return;
       }
       await fetchMarkets();
       await fetchExistingTrades();
+      await captureStrikePrices(); // Check for new markets needing strike capture
     }, 60000);
   };
 
