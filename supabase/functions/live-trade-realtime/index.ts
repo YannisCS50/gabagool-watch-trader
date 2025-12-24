@@ -293,13 +293,29 @@ Deno.serve(async (req) => {
     };
   };
 
+  let bookEventCount = 0;
+  
   const processMarketEvent = async (data: any) => {
     const eventType = data.event_type;
     const nowMs = Date.now();
 
+    // Log first 3 raw events
+    if (bookEventCount < 3) {
+      log(`📨 RAW: type=${eventType}, keys=${Object.keys(data).join(',')}`);
+    }
+
     if (eventType === 'book') {
+      bookEventCount++;
       const assetId = data.asset_id;
       const marketInfo = tokenToMarket.get(assetId);
+
+      // Log first 3 book events
+      if (bookEventCount <= 3) {
+        log(`📖 BOOK #${bookEventCount}: asset=${assetId?.slice(0,10)}..., matched=${!!marketInfo}, asks=${(data.asks||[]).length}, bids=${(data.bids||[]).length}`);
+        if (data.asks?.length > 0) {
+          log(`📖 Ask[0]: ${JSON.stringify(data.asks[0])}`);
+        }
+      }
 
       if (marketInfo) {
         const ctx = marketContexts.get(marketInfo.slug);
@@ -313,15 +329,49 @@ Deno.serve(async (req) => {
           if (marketInfo.side === 'up') {
             ctx.book.up.ask = topAsk;
             ctx.book.up.bid = topBid;
-            if (topAsk !== null) ctx.book.up.isFromRealBook = true;
+            if (topAsk !== null && !isNaN(topAsk)) ctx.book.up.isFromRealBook = true;
           } else {
             ctx.book.down.ask = topAsk;
             ctx.book.down.bid = topBid;
-            if (topAsk !== null) ctx.book.down.isFromRealBook = true;
+            if (topAsk !== null && !isNaN(topAsk)) ctx.book.down.isFromRealBook = true;
           }
           ctx.book.updatedAtMs = nowMs;
 
           await evaluateTradeOpportunity(marketInfo.slug, nowMs);
+        }
+      }
+    } else if (eventType === 'price_change') {
+      // Also handle price_change events as fallback
+      const changes = data.changes || data.price_changes || [];
+      
+      // Log first price_change
+      if (bookEventCount < 5) {
+        log(`💰 PRICE_CHANGE: ${changes.length} changes`);
+      }
+      
+      for (const change of changes) {
+        const assetId = change.asset_id;
+        const marketInfo = tokenToMarket.get(assetId);
+        if (marketInfo) {
+          const ctx = marketContexts.get(marketInfo.slug);
+          if (ctx) {
+            const price = parseFloat(change.price);
+            if (!isNaN(price)) {
+              if (marketInfo.side === 'up') {
+                if (ctx.book.up.ask === null || isNaN(ctx.book.up.ask as number)) {
+                  ctx.book.up.ask = price;
+                  ctx.book.up.isFromRealBook = true;
+                }
+              } else {
+                if (ctx.book.down.ask === null || isNaN(ctx.book.down.ask as number)) {
+                  ctx.book.down.ask = price;
+                  ctx.book.down.isFromRealBook = true;
+                }
+              }
+              ctx.book.updatedAtMs = nowMs;
+              await evaluateTradeOpportunity(marketInfo.slug, nowMs);
+            }
+          }
         }
       }
     }
@@ -341,7 +391,10 @@ Deno.serve(async (req) => {
     try {
       const startTime = new Date(market.eventStartTime).getTime();
       const endTime = new Date(market.eventEndTime).getTime();
-      if (nowMs < startTime || nowMs >= endTime) return;
+      if (nowMs < startTime || nowMs >= endTime) {
+        log(`⏭️ SKIP: Market not in active window`);
+        return;
+      }
 
       ctx.remainingSeconds = Math.floor((endTime - nowMs) / 1000);
       evaluationCount++;
@@ -350,24 +403,45 @@ Deno.serve(async (req) => {
       if (ctx.lastTradeAtMs && nowMs - ctx.lastTradeAtMs < STRATEGY.cooldownMs) return;
 
       // Time check
-      if (ctx.remainingSeconds < STRATEGY.entry.minSecondsRemaining) return;
+      if (ctx.remainingSeconds < STRATEGY.entry.minSecondsRemaining) {
+        if (evaluationCount % 20 === 0) log(`⏭️ SKIP: Too close to expiry (${ctx.remainingSeconds}s)`);
+        return;
+      }
 
       // Book freshness
-      if (nowMs - ctx.book.updatedAtMs > STRATEGY.entry.staleBookMs) return;
+      if (nowMs - ctx.book.updatedAtMs > STRATEGY.entry.staleBookMs) {
+        if (evaluationCount % 20 === 0) log(`⏭️ SKIP: Stale book data`);
+        return;
+      }
 
       // Need real book data
-      if (!ctx.book.up.isFromRealBook || !ctx.book.down.isFromRealBook) return;
+      if (!ctx.book.up.isFromRealBook || !ctx.book.down.isFromRealBook) {
+        if (evaluationCount % 20 === 0) log(`⏭️ SKIP: No real book data (up=${ctx.book.up.isFromRealBook}, down=${ctx.book.down.isFromRealBook})`);
+        return;
+      }
 
       const upAsk = ctx.book.up.ask;
       const downAsk = ctx.book.down.ask;
-      if (!isNum(upAsk) || !isNum(downAsk)) return;
+      if (!isNum(upAsk) || !isNum(downAsk)) {
+        if (evaluationCount % 20 === 0) log(`⏭️ SKIP: Missing prices (up=${upAsk}, down=${downAsk})`);
+        return;
+      }
 
       const combined = upAsk + downAsk;
 
       // Sanity checks
-      if (combined < 0.90 || combined > 1.10) return;
-      if (upAsk < STRATEGY.entry.minPrice || upAsk > STRATEGY.entry.maxPrice) return;
-      if (downAsk < STRATEGY.entry.minPrice || downAsk > STRATEGY.entry.maxPrice) return;
+      if (combined < 0.90 || combined > 1.10) {
+        if (evaluationCount % 20 === 0) log(`⏭️ SKIP: Combined out of range (${(combined*100).toFixed(0)}¢)`);
+        return;
+      }
+      if (upAsk < STRATEGY.entry.minPrice || upAsk > STRATEGY.entry.maxPrice) {
+        if (evaluationCount % 20 === 0) log(`⏭️ SKIP: UP price out of range (${(upAsk*100).toFixed(0)}¢)`);
+        return;
+      }
+      if (downAsk < STRATEGY.entry.minPrice || downAsk > STRATEGY.entry.maxPrice) {
+        if (evaluationCount % 20 === 0) log(`⏭️ SKIP: DOWN price out of range (${(downAsk*100).toFixed(0)}¢)`);
+        return;
+      }
 
       // Position limits
       const totalInvested = ctx.position.upInvested + ctx.position.downInvested;
@@ -380,9 +454,9 @@ Deno.serve(async (req) => {
 
       const pos = ctx.position;
 
-      // Log every 50th evaluation
-      if (evaluationCount % 50 === 0) {
-        log(`📊 ${slug.slice(-15)}: ${(upAsk*100).toFixed(0)}¢+${(downAsk*100).toFixed(0)}¢=${(combined*100).toFixed(0)}¢ | pos: ${pos.upShares}UP/${pos.downShares}DOWN`);
+      // Log every 10th evaluation with full info
+      if (evaluationCount % 10 === 0) {
+        log(`📊 ${slug.slice(-15)}: ${(upAsk*100).toFixed(0)}¢+${(downAsk*100).toFixed(0)}¢=${(combined*100).toFixed(0)}¢ | pos: ${pos.upShares}UP/${pos.downShares}DOWN | eval #${evaluationCount}`);
       }
 
       // ========== TRADING LOGIC ==========
@@ -392,12 +466,16 @@ Deno.serve(async (req) => {
         const cheaperSide: Outcome = upAsk <= downAsk ? "UP" : "DOWN";
         const cheaperPrice = cheaperSide === "UP" ? upAsk : downAsk;
 
+        log(`🎯 OPENING CHECK: ${cheaperSide} @ ${(cheaperPrice*100).toFixed(0)}¢ (max: ${(STRATEGY.opening.maxPrice*100).toFixed(0)}¢)`);
+
         if (cheaperPrice <= STRATEGY.opening.maxPrice) {
           const shares = calcShares(STRATEGY.opening.notional, cheaperPrice);
           if (shares >= 1) {
             await executeTrade(market, ctx, cheaperSide, cheaperPrice, shares, 
               `Opening ${cheaperSide} @ ${(cheaperPrice*100).toFixed(0)}¢`);
           }
+        } else {
+          log(`⏭️ SKIP OPENING: ${(cheaperPrice*100).toFixed(0)}¢ > max ${(STRATEGY.opening.maxPrice*100).toFixed(0)}¢`);
         }
         return;
       }
