@@ -195,7 +195,7 @@ async function getApiHeaders(
   path: string,
   body?: string
 ): Promise<Record<string, string>> {
-  const timestamp = Math.floor(Date.now() / 1000);
+  const timestamp = Date.now();
   
   console.log('=== HMAC DEBUG START ===');
   console.log(`[HMAC] API Key: ${apiKey.slice(0, 10)}...${apiKey.slice(-5)}`);
@@ -204,7 +204,7 @@ async function getApiHeaders(
   console.log(`[HMAC] Wallet Address: ${walletAddress}`);
   console.log(`[HMAC] Method: ${method}`);
   console.log(`[HMAC] Path: ${path}`);
-  console.log(`[HMAC] Timestamp (number): ${timestamp}`);
+  console.log(`[HMAC] Timestamp (ms): ${timestamp}`);
   if (body) {
     console.log(`[HMAC] Body (first 100 chars): ${body.slice(0, 100)}...`);
   }
