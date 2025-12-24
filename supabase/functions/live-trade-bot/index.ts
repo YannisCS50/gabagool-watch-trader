@@ -1004,10 +1004,10 @@ serve(async (req) => {
 
           const exchangeContract = new ethers.Contract(CTF_EXCHANGE_ADDRESS, EXCHANGE_ABI, wallet);
 
-          // Resolve the correct contract wallet (Safe/Proxy) directly from the exchange contract
+          // Resolve possible receivers directly from the exchange contract
           const {
-            receiver,
-            receiverType,
+            receiver: preferredReceiver,
+            receiverType: preferredReceiverType,
             safeAddress,
             proxyAddress,
             safeDeployed,
@@ -1017,31 +1017,34 @@ serve(async (req) => {
           console.log(`[LiveBot] EOA Address: ${walletAddress}`);
           console.log(`[LiveBot] Safe Address: ${safeAddress} (deployed=${safeDeployed})`);
           console.log(`[LiveBot] Proxy Address: ${proxyAddress} (deployed=${proxyDeployed})`);
-          console.log(`[LiveBot] Using receiver: ${receiver} (type=${receiverType})`);
+          console.log(`[LiveBot] Preferred receiver: ${preferredReceiver} (type=${preferredReceiverType})`);
 
           // USDC has 6 decimals
           const amountInUnits = BigInt(Math.floor(amount * 1e6));
           console.log(`[LiveBot] Amount in units: ${amountInUnits}`);
-          
+
           // Check USDC balance first
           const usdcContract = new ethers.Contract(USDC_ADDRESS, ERC20_ABI, wallet);
           const currentBalance = await usdcContract.balanceOf(walletAddress);
           console.log(`[LiveBot] Current USDC balance: ${currentBalance}`);
-          
+
           if (currentBalance < amountInUnits) {
-            return new Response(JSON.stringify({
-              success: false,
-              error: `Insufficient USDC balance. Have ${Number(currentBalance) / 1e6}, need ${amount}`,
-            }), {
-              status: 400,
-              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-            });
+            return new Response(
+              JSON.stringify({
+                success: false,
+                error: `Insufficient USDC balance. Have ${Number(currentBalance) / 1e6}, need ${amount}`,
+              }),
+              {
+                status: 400,
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+              }
+            );
           }
-          
+
           // Check and set allowance if needed
           const currentAllowance = await usdcContract.allowance(walletAddress, CTF_EXCHANGE_ADDRESS);
           console.log(`[LiveBot] Current allowance: ${currentAllowance}`);
-          
+
           if (currentAllowance < amountInUnits) {
             console.log('[LiveBot] Approving USDC spend...');
             // Approve max uint256 so we don't need to approve again
@@ -1050,48 +1053,84 @@ serve(async (req) => {
             console.log(`[LiveBot] Approve tx: ${approveTx.hash}`);
             const approveReceipt = await approveTx.wait();
             console.log(`[LiveBot] Approval confirmed in block ${approveReceipt.blockNumber}`);
-            
+
             // Wait a moment for state to propagate on RPC nodes
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+
             // Verify allowance is now set
             const newAllowance = await usdcContract.allowance(walletAddress, CTF_EXCHANGE_ADDRESS);
             console.log(`[LiveBot] New allowance after approval: ${newAllowance}`);
-            
+
             if (newAllowance < amountInUnits) {
-              return new Response(JSON.stringify({
-                success: false,
-                error: 'Approval transaction confirmed but allowance not updated. Please try again.',
-                approveTxHash: approveTx.hash,
-              }), {
-                status: 500,
-                headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-              });
+              return new Response(
+                JSON.stringify({
+                  success: false,
+                  error: 'Approval transaction confirmed but allowance not updated. Please try again.',
+                  approveTxHash: approveTx.hash,
+                }),
+                {
+                  status: 500,
+                  headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+                }
+              );
             }
           }
-          
-          // Now deposit to the exchange - use the resolved contract wallet receiver (Safe/Proxy)
-          console.log(`[LiveBot] Calling deposit on exchange to receiver ${receiver} (${receiverType})...`);
 
-          // Manually estimate gas first to get clearer errors
-          try {
-            const gasEstimate = await exchangeContract.deposit.estimateGas(receiver, amountInUnits);
-            console.log(`[LiveBot] Gas estimate for deposit: ${gasEstimate}`);
-          } catch (gasError) {
-            console.error('[LiveBot] Gas estimation failed for contract wallet deposit:', gasError);
+          // Try deposit receivers in order. Some accounts only accept deposits to a specific receiver.
+          const candidateReceivers: Array<{ address: string; type: 'safe' | 'proxy' | 'eoa' }> = [];
+
+          // Always try preferred first
+          candidateReceivers.push({
+            address: preferredReceiver,
+            type: preferredReceiverType.startsWith('safe') ? 'safe' : 'proxy',
+          });
+
+          // Then try the other contract-wallet addresses
+          if (preferredReceiver.toLowerCase() !== safeAddress.toLowerCase()) {
+            candidateReceivers.push({ address: safeAddress, type: 'safe' });
+          }
+          if (preferredReceiver.toLowerCase() !== proxyAddress.toLowerCase()) {
+            candidateReceivers.push({ address: proxyAddress, type: 'proxy' });
+          }
+
+          // Finally try EOA
+          if (
+            walletAddress.toLowerCase() !== preferredReceiver.toLowerCase() &&
+            walletAddress.toLowerCase() !== safeAddress.toLowerCase() &&
+            walletAddress.toLowerCase() !== proxyAddress.toLowerCase()
+          ) {
+            candidateReceivers.push({ address: walletAddress, type: 'eoa' });
+          }
+
+          const simulationErrors: Record<string, string> = {};
+          let receiverToUse: { address: string; type: 'safe' | 'proxy' | 'eoa' } | null = null;
+
+          for (const candidate of candidateReceivers) {
+            console.log(`[LiveBot] Simulating deposit for receiver ${candidate.address} (${candidate.type})...`);
+            try {
+              const gasEstimate = await exchangeContract.deposit.estimateGas(candidate.address, amountInUnits);
+              console.log(`[LiveBot] Gas estimate ok (${candidate.type}): ${gasEstimate}`);
+              receiverToUse = candidate;
+              break;
+            } catch (e) {
+              const msg = e instanceof Error ? e.message : String(e);
+              simulationErrors[`${candidate.type}:${candidate.address}`] = msg;
+              console.warn(`[LiveBot] Deposit simulation failed (${candidate.type}): ${msg}`);
+            }
+          }
+
+          if (!receiverToUse) {
             return new Response(
               JSON.stringify({
                 success: false,
-                error: 'Deposit would fail for resolved contract wallet receiver',
+                error: 'Deposit simulation failed for all receivers',
                 eoaWallet: walletAddress,
-                receiver,
-                receiverType,
                 safeAddress,
                 proxyAddress,
                 safeDeployed,
                 proxyDeployed,
-                details: gasError instanceof Error ? gasError.message : String(gasError),
-                hint: 'Your account may need to be registered on Polymarket first. Please visit polymarket.com and complete onboarding.',
+                details: simulationErrors,
+                hint: 'Your account may need to be registered/onboarded on Polymarket first. Please visit polymarket.com and complete onboarding.',
               }),
               {
                 status: 500,
@@ -1100,7 +1139,9 @@ serve(async (req) => {
             );
           }
 
-          const depositTx = await exchangeContract.deposit(receiver, amountInUnits);
+          console.log(`[LiveBot] Calling deposit on exchange to receiver ${receiverToUse.address} (${receiverToUse.type})...`);
+
+          const depositTx = await exchangeContract.deposit(receiverToUse.address, amountInUnits);
           console.log(`[LiveBot] Deposit tx: ${depositTx.hash}`);
           const receipt = await depositTx.wait();
           console.log(`[LiveBot] Deposit confirmed in block ${receipt.blockNumber}`);
@@ -1112,8 +1153,8 @@ serve(async (req) => {
               depositTxHash: depositTx.hash,
               blockNumber: receipt.blockNumber,
               walletAddress,
-              receiverAddress: receiver,
-              receiverType,
+              receiverAddress: receiverToUse.address,
+              receiverType: receiverToUse.type,
               safeAddress,
               proxyAddress,
             }),
