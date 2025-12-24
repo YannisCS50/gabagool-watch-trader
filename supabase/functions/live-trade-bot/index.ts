@@ -40,6 +40,7 @@ const ERC20_ABI = [
   'function balanceOf(address owner) view returns (uint256)',
   'function allowance(address owner, address spender) view returns (uint256)',
   'function approve(address spender, uint256 amount) returns (bool)',
+  'function transfer(address to, uint256 amount) returns (bool)',
   'function decimals() view returns (uint8)',
 ];
 
@@ -1142,23 +1143,75 @@ serve(async (req) => {
           }
 
           if (!receiverToUse) {
-            return new Response(
-              JSON.stringify({
-                success: false,
-                error: 'Deposit simulation failed for all receivers',
-                eoaWallet: walletAddress,
-                safeAddress,
-                proxyAddress,
-                safeDeployed,
-                proxyDeployed,
-                details: simulationErrors,
-                hint: 'Your account may need to be registered/onboarded on Polymarket first. Please visit polymarket.com and complete onboarding.',
-              }),
-              {
-                status: 500,
-                headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            console.warn('[LiveBot] Exchange deposit simulation failed for all receivers. Falling back to Polymarket bridge deposit address.');
+
+            try {
+              const bridgeResp = await fetch('https://bridge.polymarket.com/deposit', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ address: walletAddress }),
+              });
+
+              const bridgeText = await bridgeResp.text();
+              console.log(`[LiveBot] Bridge deposit response: ${bridgeResp.status} - ${bridgeText}`);
+
+              if (!bridgeResp.ok) {
+                throw new Error(`Bridge deposit endpoint failed: ${bridgeResp.status} - ${bridgeText}`);
               }
-            );
+
+              const bridgeJson = JSON.parse(bridgeText);
+              const depositAddressRaw = bridgeJson?.address?.evm;
+
+              if (!depositAddressRaw || !ethers.isAddress(depositAddressRaw)) {
+                throw new Error(`Bridge deposit endpoint returned invalid evm address: ${depositAddressRaw}`);
+              }
+
+              const bridgeDepositAddress = ethers.getAddress(depositAddressRaw);
+              console.log(`[LiveBot] Bridge deposit address (EVM): ${bridgeDepositAddress}`);
+
+              // Transfer collateral directly to Polymarket bridge deposit address.
+              const transferTx = await collateralContract.transfer(bridgeDepositAddress, amountInUnits);
+              console.log(`[LiveBot] Bridge transfer tx: ${transferTx.hash}`);
+              const transferReceipt = await transferTx.wait();
+              console.log(`[LiveBot] Bridge transfer confirmed in block ${transferReceipt.blockNumber}`);
+
+              return new Response(
+                JSON.stringify({
+                  success: true,
+                  message: `✅ Sent ${amount} collateral to Polymarket deposit address (bridge)`,
+                  method: 'bridge_transfer',
+                  walletAddress,
+                  receiverAddress: bridgeDepositAddress,
+                  collateralAddress,
+                  txHash: transferTx.hash,
+                  blockNumber: transferReceipt.blockNumber,
+                  note: 'Funds may take a few minutes to appear in your Polymarket balance.',
+                }),
+                {
+                  headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+                }
+              );
+            } catch (bridgeError) {
+              const bridgeMsg = bridgeError instanceof Error ? bridgeError.message : String(bridgeError);
+              return new Response(
+                JSON.stringify({
+                  success: false,
+                  error: 'Deposit simulation failed for all receivers (exchange) and bridge fallback failed',
+                  eoaWallet: walletAddress,
+                  safeAddress,
+                  proxyAddress,
+                  safeDeployed,
+                  proxyDeployed,
+                  details: simulationErrors,
+                  bridgeError: bridgeMsg,
+                  hint: 'If this is a brand-new wallet, you may need to complete Polymarket onboarding first.',
+                }),
+                {
+                  status: 500,
+                  headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+                }
+              );
+            }
           }
 
           console.log(`[LiveBot] Calling deposit on exchange to receiver ${receiverToUse.address} (${receiverToUse.type})...`);
