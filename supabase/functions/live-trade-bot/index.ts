@@ -529,8 +529,11 @@ serve(async (req) => {
   const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
   const supabase = createClient(supabaseUrl, supabaseKey);
   
-  // Only private key is required - credentials are derived automatically
+  // Get credentials from environment (preferred) or derive from private key
   const privateKey = Deno.env.get('POLYMARKET_PRIVATE_KEY');
+  const storedApiKey = Deno.env.get('POLYMARKET_API_KEY');
+  const storedApiSecret = Deno.env.get('POLYMARKET_API_SECRET');
+  const storedPassphrase = Deno.env.get('POLYMARKET_PASSPHRASE');
   
   if (!privateKey) {
     console.error('[LiveBot] Missing Polymarket private key');
@@ -543,12 +546,22 @@ serve(async (req) => {
     });
   }
   
-  // Derive API credentials from private key (cached per request)
+  // Use stored credentials if available, otherwise derive from private key
   let apiCredentials: { apiKey: string; apiSecret: string; passphrase: string } | null = null;
+  
+  // Check if we have stored API credentials
+  if (storedApiKey && storedApiSecret && storedPassphrase) {
+    console.log('[LiveBot] Using stored API credentials from environment');
+    apiCredentials = {
+      apiKey: storedApiKey,
+      apiSecret: storedApiSecret,
+      passphrase: storedPassphrase,
+    };
+  }
   
   async function getCredentials() {
     if (!apiCredentials) {
-      console.log('[LiveBot] Deriving API credentials from private key...');
+      console.log('[LiveBot] No stored credentials, deriving from private key...');
       apiCredentials = await deriveApiCredentials(privateKey!);
     }
     return apiCredentials;
