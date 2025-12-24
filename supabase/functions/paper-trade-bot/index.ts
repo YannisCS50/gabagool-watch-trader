@@ -23,11 +23,10 @@ const STRATEGY_CONFIG = {
     maxPrice: 0.52,           // Alleen openen als prijs ≤ 52¢ (strenger)
   },
   
-  // Hedge settings - VEEL AGRESSIEVER
+  // Hedge settings - alleen hedgen als er winst is
   hedge: {
     shares: 50,               // Match opening shares
-    maxCombined: 1.00,        // Hedge ALTIJD als combined < 100¢ (break-even of beter)
-    targetCombined: 0.97,     // Ideaal: combined ≤ 97¢ (3% winst)
+    maxCombined: 0.97,        // ALLEEN hedgen als combined < 97¢ (3%+ winst)
   },
   
   // Accumulation settings
