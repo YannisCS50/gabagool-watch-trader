@@ -35,6 +35,7 @@ interface MarketContext {
   position: MarketPosition;
   cryptoPrice?: number | null;
   strikePrice?: number | null;
+  strikePriceCaptured?: boolean; // Has strike price been captured for this market?
   lastTradeAtMs: number;
   lastDecisionKey?: string | null;
   inFlight?: boolean;
@@ -510,6 +511,9 @@ async function handleWebSocket(req: Request): Promise<Response> {
   let tokenToMarket: Map<string, { slug: string; side: 'up' | 'down' }> = new Map();
   let cryptoPrices: { btc: number | null; eth: number | null } = { btc: null, eth: null };
   
+  // Track which markets have had their strike price captured
+  let strikePricesCaptured: Set<string> = new Set();
+  
   // Store per-market context for strategy
   let marketContexts: Map<string, MarketContext> = new Map();
   
@@ -578,6 +582,8 @@ async function handleWebSocket(req: Request): Promise<Response> {
                 upInvested: 0,
                 downInvested: 0,
               },
+              strikePrice: null,
+              strikePriceCaptured: strikePricesCaptured.has(market.slug),
               lastTradeAtMs: 0,
               lastDecisionKey: null,
               inFlight: false,
@@ -846,8 +852,10 @@ async function handleWebSocket(req: Request): Promise<Response> {
       const arbitrageEdge = (1 - combinedPrice) * 100;
       
       const cryptoPrice = market.asset === 'BTC' ? cryptoPrices.btc : cryptoPrices.eth;
-      const priceDelta = cryptoPrice && market.openPrice ? cryptoPrice - market.openPrice : null;
-      const priceDeltaPercent = priceDelta && market.openPrice ? (priceDelta / market.openPrice) * 100 : null;
+      // Use our captured strike price from context, fallback to market.openPrice
+      const strikePrice = ctx.strikePrice ?? market.openPrice;
+      const priceDelta = cryptoPrice && strikePrice ? cryptoPrice - strikePrice : null;
+      const priceDeltaPercent = priceDelta && strikePrice ? (priceDelta / strikePrice) * 100 : null;
       
       for (const intent of result.trades) {
         const bestAsk = intent.outcome === 'UP' ? ctx.book.up.ask : ctx.book.down.ask;
@@ -863,7 +871,7 @@ async function handleWebSocket(req: Request): Promise<Response> {
           trade_type: intent.type,
           reasoning: intent.reason,
           crypto_price: cryptoPrice,
-          open_price: market.openPrice,
+          open_price: strikePrice, // Use our captured strike price
           combined_price: combinedPrice,
           arbitrage_edge: arbitrageEdge,
           event_start_time: market.eventStartTime,
@@ -935,11 +943,76 @@ async function handleWebSocket(req: Request): Promise<Response> {
       }));
     };
     
-    rtdsSocket.onmessage = (event) => {
+    rtdsSocket.onmessage = async (event) => {
       try {
         const data = JSON.parse(event.data.toString());
-        if (data.payload?.symbol === 'btc/usd') cryptoPrices.btc = data.payload.value;
-        else if (data.payload?.symbol === 'eth/usd') cryptoPrices.eth = data.payload.value;
+        const symbol = data.payload?.symbol?.toLowerCase();
+        const price = data.payload?.value;
+        const timestamp = data.payload?.timestamp || Date.now();
+        
+        if (!symbol || !price) return;
+        
+        // Update crypto prices
+        if (symbol === 'btc/usd') cryptoPrices.btc = price;
+        else if (symbol === 'eth/usd') cryptoPrices.eth = price;
+        
+        // STRIKE PRICE CAPTURE: For each active market, check if we need to capture strike price
+        // Strike price = first Chainlink price at or after market start time
+        const nowMs = Date.now();
+        
+        for (const [slug, market] of markets.entries()) {
+          const ctx = marketContexts.get(slug);
+          if (!ctx) continue;
+          
+          // Skip if already captured
+          if (strikePricesCaptured.has(slug)) continue;
+          
+          // Check if this price is for the right asset
+          const marketAsset = market.asset.toLowerCase();
+          const priceAsset = symbol.replace('/usd', '');
+          if (marketAsset !== priceAsset) continue;
+          
+          // Check if market has started (we're in active window)
+          const startMs = new Date(market.eventStartTime).getTime();
+          const endMs = new Date(market.eventEndTime).getTime();
+          
+          // Only capture if:
+          // 1. Market has started (now >= start)
+          // 2. Market hasn't ended (now < end)
+          // 3. We're within first 30 seconds of market start (for accurate strike)
+          const withinCaptureWindow = nowMs >= startMs && nowMs < endMs && (nowMs - startMs) < 30000;
+          
+          if (withinCaptureWindow) {
+            // Capture the strike price!
+            ctx.strikePrice = price;
+            ctx.strikePriceCaptured = true;
+            strikePricesCaptured.add(slug);
+            
+            // Store in database
+            const strikePriceRecord = {
+              market_slug: slug,
+              asset: market.asset,
+              strike_price: price,
+              open_price: price,
+              open_timestamp: timestamp,
+              chainlink_timestamp: timestamp,
+              event_start_time: market.eventStartTime,
+              source: 'realtime_bot',
+              quality: (nowMs - startMs) < 5000 ? 'exact' : 'late',
+            };
+            
+            const { error } = await supabase
+              .from('strike_prices')
+              .upsert(strikePriceRecord, { onConflict: 'market_slug' });
+            
+            if (error) {
+              log(`❌ Failed to save strike price for ${slug}: ${error.message}`);
+            } else {
+              const delay = ((nowMs - startMs) / 1000).toFixed(1);
+              log(`📌 STRIKE PRICE CAPTURED: ${slug} ${market.asset} @ $${price.toFixed(2)} (delay: ${delay}s)`);
+            }
+          }
+        }
       } catch {}
     };
     
@@ -955,10 +1028,11 @@ async function handleWebSocket(req: Request): Promise<Response> {
       const marketsWithBook = [...marketContexts.values()].filter(
         c => c.book.up.ask !== null || c.book.down.ask !== null
       ).length;
+      const marketsWithStrike = strikePricesCaptured.size;
       const totalInvested = [...marketContexts.values()].reduce(
         (sum, c) => sum + c.position.upInvested + c.position.downInvested, 0
       );
-      log(`📈 Status: ${marketsWithBook}/${markets.size} markets | BTC:$${cryptoPrices.btc?.toFixed(0) ?? 'N/A'} ETH:$${cryptoPrices.eth?.toFixed(0) ?? 'N/A'} | Invested:$${totalInvested.toFixed(0)} | Evals:${evaluationCount} Trades:${tradeCount}`);
+      log(`📈 Status: ${marketsWithBook}/${markets.size} books | ${marketsWithStrike} strikes | BTC:$${cryptoPrices.btc?.toFixed(0) ?? 'N/A'} ETH:$${cryptoPrices.eth?.toFixed(0) ?? 'N/A'} | Invested:$${totalInvested.toFixed(0)} | Trades:${tradeCount}`);
     }, 30000);
   };
 
