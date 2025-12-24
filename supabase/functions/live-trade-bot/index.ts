@@ -595,68 +595,126 @@ serve(async (req) => {
       case 'balance': {
         try {
           const walletAddress = getWalletAddress(privateKey!);
-          const creds = await getCredentials();
-          const balanceData = await getBalanceAllowance(creds.apiKey, creds.apiSecret, creds.passphrase, walletAddress, 'COLLATERAL');
+
+          let creds = await getCredentials();
+          let balanceData: { balance: string; allowance: string };
+
+          try {
+            balanceData = await getBalanceAllowance(
+              creds.apiKey,
+              creds.apiSecret,
+              creds.passphrase,
+              walletAddress,
+              'COLLATERAL'
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+
+            // Stored creds can be stale/incorrect. If we get a 401, derive fresh creds and retry once.
+            if (msg.includes('401') || msg.toLowerCase().includes('unauthorized') || msg.toLowerCase().includes('invalid api key')) {
+              console.warn('[LiveBot] Stored API credentials rejected (401). Deriving fresh credentials and retrying...');
+              apiCredentials = await deriveApiCredentials(privateKey!);
+              creds = apiCredentials;
+
+              balanceData = await getBalanceAllowance(
+                creds.apiKey,
+                creds.apiSecret,
+                creds.passphrase,
+                walletAddress,
+                'COLLATERAL'
+              );
+            } else {
+              throw err;
+            }
+          }
+
           const balanceUSDC = parseFloat(balanceData.balance) / 1e6; // USDC has 6 decimals
-          return new Response(JSON.stringify({
-            success: true,
-            balance: balanceUSDC,
-            balanceRaw: balanceData.balance,
-            allowance: balanceData.allowance,
-            currency: 'USDC',
-            walletAddress,
-          }), {
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          });
+          return new Response(
+            JSON.stringify({
+              success: true,
+              balance: balanceUSDC,
+              balanceRaw: balanceData.balance,
+              allowance: balanceData.allowance,
+              currency: 'USDC',
+              walletAddress,
+            }),
+            {
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            }
+          );
         } catch (error) {
           console.error('[LiveBot] Balance error:', error);
-          return new Response(JSON.stringify({
-            success: false,
-            error: error instanceof Error ? error.message : 'Failed to get balance',
-          }), {
-            status: 500,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          });
+          return new Response(
+            JSON.stringify({
+              success: false,
+              error: error instanceof Error ? error.message : 'Failed to get balance',
+            }),
+            {
+              status: 500,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            }
+          );
         }
       }
       
       case 'order': {
         const { tokenId, side, price, size, orderType = 'GTC', marketSlug } = body;
-        
+
         if (!tokenId || !side || !price || !size) {
-          return new Response(JSON.stringify({
-            success: false,
-            error: 'Missing required fields: tokenId, side, price, size',
-          }), {
-            status: 400,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          });
+          return new Response(
+            JSON.stringify({
+              success: false,
+              error: 'Missing required fields: tokenId, side, price, size',
+            }),
+            {
+              status: 400,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            }
+          );
         }
-        
+
         // Safety checks
         const safetyCheck = await checkSafetyLimits(supabase, size * price, marketSlug || '', DEFAULT_LIMITS);
         if (!safetyCheck.allowed) {
           console.log(`[LiveBot] Order blocked by safety: ${safetyCheck.reason}`);
-          return new Response(JSON.stringify({
-            success: false,
-            error: safetyCheck.reason,
-            blocked: true,
-          }), {
-            status: 403,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-          });
+          return new Response(
+            JSON.stringify({
+              success: false,
+              error: safetyCheck.reason,
+              blocked: true,
+            }),
+            {
+              status: 403,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            }
+          );
         }
-        
-        // Create order
-        const creds = await getCredentials();
-        const result = await createOrder(creds.apiKey, creds.apiSecret, creds.passphrase, privateKey!, {
+
+        // Create order (retry once if stored creds are invalid)
+        let creds = await getCredentials();
+        let result = await createOrder(creds.apiKey, creds.apiSecret, creds.passphrase, privateKey!, {
           tokenId,
           side: side.toUpperCase() as 'BUY' | 'SELL',
           price,
           size,
           orderType,
         });
-        
+
+        const errMsg = (result.error || '').toLowerCase();
+        if (!result.success && (errMsg.includes('401') || errMsg.includes('unauthorized') || errMsg.includes('invalid api key'))) {
+          console.warn('[LiveBot] Stored API credentials rejected (401). Deriving fresh credentials and retrying order...');
+          apiCredentials = await deriveApiCredentials(privateKey!);
+          creds = apiCredentials;
+
+          result = await createOrder(creds.apiKey, creds.apiSecret, creds.passphrase, privateKey!, {
+            tokenId,
+            side: side.toUpperCase() as 'BUY' | 'SELL',
+            price,
+            size,
+            orderType,
+          });
+        }
+
         return new Response(JSON.stringify(result), {
           status: result.success ? 200 : 500,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
