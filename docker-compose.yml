@@ -4,3 +4,17 @@ services:
     restart: always
     ports:
       - "80:80"
+
+  runner:
+    build:
+      context: ./local-runner
+      dockerfile: Dockerfile
+    restart: always
+    env_file:
+      - /home/deploy/secrets/local-runner.env
+    # optional: container logs are useful
+    # logging:
+    #   driver: "json-file"
+    #   options:
+    #     max-size: "10m"
+    #     max-file: "3"
