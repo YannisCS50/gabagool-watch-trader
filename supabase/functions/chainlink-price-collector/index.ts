@@ -14,12 +14,20 @@ interface ChainlinkTick {
 
 interface MarketToTrack {
   slug: string;
-  asset: 'BTC' | 'ETH';
+  asset: 'BTC' | 'ETH' | 'SOL' | 'XRP';
   eventStartTime: number; // seconds (Unix)
   eventEndTime: number; // seconds (Unix)
   needsOpenPrice: boolean;
   needsClosePrice: boolean;
 }
+
+// Chainlink feed IDs for Polygon
+const CHAINLINK_FEEDS: Record<string, string> = {
+  'BTC': '0xc907E116054Ad103354f2D350FD2514433D57F6f', // BTC/USD on Polygon
+  'ETH': '0xF9680D99D6C9589e2a93a78A04A279e509205945', // ETH/USD on Polygon
+  'SOL': '0x4ffcB8A5e03D303C90f8878fA85EBA22F4603c69', // SOL/USD on Polygon
+  'XRP': '0x4046332373C24Aed1dC8bAd489A04E187833B28d', // XRP/USD on Polygon
+};
 
 // Parse timestamp from market slug like btc-updown-15m-1766485800
 function parseTimestampFromSlug(slug: string): number | null {
@@ -28,6 +36,62 @@ function parseTimestampFromSlug(slug: string): number | null {
     return parseInt(match[1], 10);
   }
   return null;
+}
+
+// Fetch current price from Chainlink via public RPC
+async function fetchChainlinkPrice(asset: string): Promise<{ price: number; timestamp: number } | null> {
+  const feedAddress = CHAINLINK_FEEDS[asset];
+  if (!feedAddress) {
+    console.log(`[chainlink] No feed for ${asset}`);
+    return null;
+  }
+
+  try {
+    // ABI for latestRoundData: returns (roundId, answer, startedAt, updatedAt, answeredInRound)
+    const data = '0xfeaf968c'; // function signature for latestRoundData()
+    
+    const response = await fetch('https://polygon-rpc.com', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'eth_call',
+        params: [{
+          to: feedAddress,
+          data: data
+        }, 'latest'],
+        id: 1
+      })
+    });
+
+    if (!response.ok) {
+      console.log(`[chainlink] RPC error: ${response.status}`);
+      return null;
+    }
+
+    const result = await response.json();
+    if (result.error) {
+      console.log(`[chainlink] RPC error:`, result.error);
+      return null;
+    }
+
+    // Parse the response - each value is 32 bytes (64 hex chars)
+    const hex = result.result.slice(2); // remove 0x
+    const answerHex = hex.slice(64, 128); // second 32-byte slot (answer)
+    const updatedAtHex = hex.slice(192, 256); // fourth 32-byte slot (updatedAt)
+    
+    const answer = BigInt('0x' + answerHex);
+    const updatedAt = Number(BigInt('0x' + updatedAtHex));
+    
+    // Chainlink uses 8 decimals for most feeds
+    const price = Number(answer) / 1e8;
+    
+    console.log(`[chainlink] ${asset} price: $${price.toFixed(2)} at ${new Date(updatedAt * 1000).toISOString()}`);
+    return { price, timestamp: updatedAt * 1000 };
+  } catch (e) {
+    console.error(`[chainlink] Error fetching ${asset}:`, e);
+    return null;
+  }
 }
 
 // Generate all active 15m market slugs deterministically based on time
@@ -56,7 +120,6 @@ async function getMarketsNeedingPrices(supabase: any): Promise<MarketToTrack[]> 
   const now = Date.now();
   const slugs = generateActiveMarketSlugs();
   
-  // Check existing strike prices
   interface ExistingPrice {
     market_slug: string;
     open_price: number | null;
@@ -83,29 +146,30 @@ async function getMarketsNeedingPrices(supabase: any): Promise<MarketToTrack[]> 
     const eventStartTime = parseTimestampFromSlug(slug);
     if (!eventStartTime) continue;
     
-    const eventEndTime = eventStartTime + 15 * 60; // 15 minutes later
+    const eventEndTime = eventStartTime + 15 * 60;
     const eventStartMs = eventStartTime * 1000;
     const eventEndMs = eventEndTime * 1000;
     
-    // Collection windows:
-    // - For open_price: market started <= 5 minutes ago
-    // - For close_price: market ended <= 5 minutes ago
-    const openWindowEnd = eventStartMs + 5 * 60 * 1000;
-    const closeWindowEnd = eventEndMs + 5 * 60 * 1000;
+    // Extended collection windows (10 minutes instead of 5)
+    const openWindowEnd = eventStartMs + 10 * 60 * 1000;
+    const closeWindowEnd = eventEndMs + 10 * 60 * 1000;
     
     const existing = priceMap.get(slug);
-    const hasExactOpenPrice = existing?.quality === 'exact' && existing?.open_price != null;
+    const hasOpenPrice = existing?.open_price != null;
     const hasClosePrice = existing?.close_price != null;
     
-    // Need open price if market just started (within 5 min) and we don't have exact one
-    const needsOpenPrice = !hasExactOpenPrice && now >= eventStartMs && now <= openWindowEnd;
+    // Need open price if market started and within window
+    const needsOpenPrice = !hasOpenPrice && now >= eventStartMs && now <= openWindowEnd;
     
-    // Need close price if market just ended (within 5 min) and we don't have one
+    // Need close price if market ended and within window
     const needsClosePrice = !hasClosePrice && now >= eventEndMs && now <= closeWindowEnd;
     
     if (needsOpenPrice || needsClosePrice) {
       const slugLower = slug.toLowerCase();
-      const asset: 'BTC' | 'ETH' = slugLower.includes('btc') ? 'BTC' : 'ETH';
+      const asset: 'BTC' | 'ETH' | 'SOL' | 'XRP' = 
+        slugLower.includes('btc') ? 'BTC' : 
+        slugLower.includes('sol') ? 'SOL' :
+        slugLower.includes('xrp') ? 'XRP' : 'ETH';
       
       marketsNeeding.push({
         slug,
@@ -123,153 +187,96 @@ async function getMarketsNeedingPrices(supabase: any): Promise<MarketToTrack[]> 
   return marketsNeeding;
 }
 
-// Connect to Polymarket RTDS WebSocket and collect Chainlink ticks
-async function collectChainlinkTicks(
-  durationMs: number = 30000
-): Promise<Map<string, ChainlinkTick[]>> {
-  return new Promise((resolve, reject) => {
-    const ticksBySymbol = new Map<string, ChainlinkTick[]>();
-    ticksBySymbol.set('BTC', []);
-    ticksBySymbol.set('ETH', []);
-    
-    const timeout = setTimeout(() => {
-      console.log(`Collection complete. BTC ticks: ${ticksBySymbol.get('BTC')?.length}, ETH ticks: ${ticksBySymbol.get('ETH')?.length}`);
-      ws.close();
-      resolve(ticksBySymbol);
-    }, durationMs);
-    
-    const ws = new WebSocket('wss://rtds.polymarket.com');
-    
-    ws.onopen = () => {
-      console.log('Connected to Polymarket RTDS for tick collection');
-      
-      // Subscribe to Chainlink prices
-      ws.send(JSON.stringify({
-        action: 'subscribe',
-        subscriptions: [{
-          topic: 'crypto_prices_chainlink',
-          type: '*',
-          filters: ''
-        }]
-      }));
-    };
-    
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        
-        if (data.topic === 'crypto_prices_chainlink' && data.payload) {
-          const payload = data.payload;
-          const symbol = payload.symbol?.toUpperCase().replace('/USD', '') || '';
-          
-          if (symbol === 'BTC' || symbol === 'ETH') {
-            const tick: ChainlinkTick = {
-              symbol,
-              timestamp: payload.timestamp || Date.now(),
-              value: payload.value
-            };
-            
-            ticksBySymbol.get(symbol)?.push(tick);
-            console.log(`RTDS tick: ${symbol} $${tick.value} at ${new Date(tick.timestamp).toISOString()}`);
-          }
-        }
-      } catch (e) {
-        console.error('Error parsing RTDS message:', e);
-      }
-    };
-    
-    ws.onerror = (error) => {
-      console.error('RTDS WebSocket error:', error);
-      clearTimeout(timeout);
-      reject(error);
-    };
-    
-    ws.onclose = () => {
-      console.log('RTDS WebSocket closed');
-      clearTimeout(timeout);
-      resolve(ticksBySymbol);
-    };
-  });
-}
-
-// Find the first tick with timestamp >= targetTime
-function findFirstTickAfter(ticks: ChainlinkTick[], targetTimeMs: number): ChainlinkTick | null {
-  // Sort ticks by timestamp
-  const sorted = [...ticks].sort((a, b) => a.timestamp - b.timestamp);
-  
-  // Find first tick at or after target time
-  for (const tick of sorted) {
-    if (tick.timestamp >= targetTimeMs) {
-      return tick;
-    }
-  }
-  
-  // If no tick after target, return the closest one before (within 10 seconds)
-  const ticksBefore = sorted.filter(t => t.timestamp < targetTimeMs);
-  if (ticksBefore.length > 0) {
-    const lastBefore = ticksBefore[ticksBefore.length - 1];
-    const diff = targetTimeMs - lastBefore.timestamp;
-    if (diff <= 10000) {
-      return lastBefore;
-    }
-  }
-  
-  return null;
-}
-
 // Determine quality based on time difference
 function determineQuality(tickTimestamp: number, targetTimeMs: number): string {
   const diffMs = Math.abs(tickTimestamp - targetTimeMs);
-  if (diffMs <= 5000) return 'exact'; // within 5 seconds
-  if (diffMs <= 60000) return 'late'; // within 1 minute
+  if (diffMs <= 5000) return 'exact';
+  if (diffMs <= 60000) return 'late';
   return 'estimated';
 }
 
-// Store strike prices in database
-async function storePrices(
+// Store strike prices in database using direct Chainlink RPC
+async function storePricesFromChainlink(
   supabase: any, 
-  markets: MarketToTrack[], 
-  ticksBySymbol: Map<string, ChainlinkTick[]>
+  markets: MarketToTrack[]
 ): Promise<{ openStored: number; closeStored: number }> {
   let openStored = 0;
   let closeStored = 0;
   
+  // Fetch current prices for all needed assets
+  const assetsNeeded = [...new Set(markets.map(m => m.asset))];
+  const currentPrices: Record<string, { price: number; timestamp: number }> = {};
+  
+  for (const asset of assetsNeeded) {
+    const result = await fetchChainlinkPrice(asset);
+    if (result) {
+      currentPrices[asset] = result;
+    }
+  }
+  
+  const now = Date.now();
+  
   for (const market of markets) {
-    const ticks = ticksBySymbol.get(market.asset) || [];
-    if (ticks.length === 0) {
-      console.log(`No ticks for ${market.asset}, skipping ${market.slug}`);
+    const priceData = currentPrices[market.asset];
+    if (!priceData) {
+      console.log(`No Chainlink price for ${market.asset}, skipping ${market.slug}`);
       continue;
     }
+    
+    // Get existing data to preserve
+    const { data: existing } = await supabase
+      .from('strike_prices')
+      .select('*')
+      .eq('market_slug', market.slug)
+      .maybeSingle();
     
     const updates: any = {
       market_slug: market.slug,
       asset: market.asset,
       event_start_time: new Date(market.eventStartTime * 1000).toISOString(),
-      source: 'polymarket_rtds'
+      source: 'chainlink_rpc',
+      chainlink_timestamp: Math.floor(priceData.timestamp / 1000)
     };
     
-    // Handle open price (price to beat)
-    if (market.needsOpenPrice) {
-      const openTick = findFirstTickAfter(ticks, market.eventStartTime * 1000);
-      if (openTick) {
-        updates.open_price = Math.round(openTick.value * 100) / 100; // Round to 2 decimals
-        updates.open_timestamp = openTick.timestamp;
-        updates.strike_price = updates.open_price; // Keep for backward compatibility
-        updates.chainlink_timestamp = openTick.timestamp;
-        updates.quality = determineQuality(openTick.timestamp, market.eventStartTime * 1000);
+    // Preserve existing prices
+    if (existing?.open_price) {
+      updates.open_price = existing.open_price;
+      updates.open_timestamp = existing.open_timestamp;
+      updates.strike_price = existing.strike_price || existing.open_price;
+      updates.quality = existing.quality;
+    }
+    if (existing?.close_price) {
+      updates.close_price = existing.close_price;
+      updates.close_timestamp = existing.close_timestamp;
+    }
+    
+    // Handle open price
+    if (market.needsOpenPrice && !existing?.open_price) {
+      const targetOpenTime = market.eventStartTime * 1000;
+      // Only use current price if we're close to the event start
+      const timeSinceStart = now - targetOpenTime;
+      
+      if (timeSinceStart <= 10 * 60 * 1000) { // Within 10 minutes of start
+        updates.open_price = Math.round(priceData.price * 100) / 100;
+        updates.open_timestamp = priceData.timestamp;
+        updates.strike_price = updates.open_price;
+        updates.quality = determineQuality(priceData.timestamp, targetOpenTime);
         openStored++;
-        console.log(`Open price for ${market.slug}: $${updates.open_price} (${updates.quality}) at ${new Date(openTick.timestamp).toISOString()}`);
+        console.log(`✅ Open price for ${market.slug}: $${updates.open_price} (${updates.quality})`);
       }
     }
     
-    // Handle close price (settlement)
-    if (market.needsClosePrice) {
-      const closeTick = findFirstTickAfter(ticks, market.eventEndTime * 1000);
-      if (closeTick) {
-        updates.close_price = Math.round(closeTick.value * 100) / 100; // Round to 2 decimals
-        updates.close_timestamp = closeTick.timestamp;
+    // Handle close price
+    if (market.needsClosePrice && !existing?.close_price) {
+      const targetCloseTime = market.eventEndTime * 1000;
+      // Only use current price if we're close to the event end
+      const timeSinceEnd = now - targetCloseTime;
+      
+      if (timeSinceEnd >= 0 && timeSinceEnd <= 10 * 60 * 1000) { // 0-10 minutes after end
+        updates.close_price = Math.round(priceData.price * 100) / 100;
+        updates.close_timestamp = priceData.timestamp;
         closeStored++;
-        console.log(`Close price for ${market.slug}: $${updates.close_price} at ${new Date(closeTick.timestamp).toISOString()}`);
+        console.log(`✅ Close price for ${market.slug}: $${updates.close_price}`);
       }
     }
     
@@ -294,13 +301,13 @@ serve(async (req) => {
   }
 
   try {
-    console.log('=== Starting Chainlink price collector (deterministic, cron-ready) ===');
+    console.log('=== Starting Chainlink price collector (RPC-based) ===');
     
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseKey);
     
-    // 1. Get markets that need prices (deterministic, not trade-based)
+    // 1. Get markets that need prices
     const marketsNeeding = await getMarketsNeedingPrices(supabase);
     console.log(`Found ${marketsNeeding.length} markets needing prices`);
     
@@ -316,14 +323,10 @@ serve(async (req) => {
       });
     }
     
-    // 2. Collect RTDS Chainlink ticks for ~30 seconds
-    console.log('Collecting Chainlink ticks via RTDS for 30 seconds...');
-    const ticksBySymbol = await collectChainlinkTicks(30000);
+    // 2. Fetch prices directly from Chainlink RPC and store them
+    const { openStored, closeStored } = await storePricesFromChainlink(supabase, marketsNeeding);
     
-    // 3. Find and store the correct ticks for each market
-    const { openStored, closeStored } = await storePrices(supabase, marketsNeeding, ticksBySymbol);
-    
-    // 4. Return summary
+    // 3. Return summary
     return new Response(JSON.stringify({
       success: true,
       timestamp: new Date().toISOString(),
@@ -336,10 +339,6 @@ serve(async (req) => {
         needsOpenPrice: m.needsOpenPrice,
         needsClosePrice: m.needsClosePrice
       })),
-      ticksCollected: {
-        BTC: ticksBySymbol.get('BTC')?.length || 0,
-        ETH: ticksBySymbol.get('ETH')?.length || 0
-      },
       openPricesStored: openStored,
       closePricesStored: closeStored
     }), {
