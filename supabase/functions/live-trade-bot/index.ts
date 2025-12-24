@@ -154,21 +154,36 @@ function getWalletAddress(privateKey: string): string {
 // CLOB API Methods
 // ============================================================================
 
-async function getBalance(apiKey: string, apiSecret: string, passphrase: string): Promise<number> {
-  const path = '/balance';
+async function getBalanceAllowance(
+  apiKey: string, 
+  apiSecret: string, 
+  passphrase: string,
+  walletAddress: string,
+  assetType: 'COLLATERAL' | 'CONDITIONAL' = 'COLLATERAL'
+): Promise<{ balance: string; allowance: string }> {
+  const path = `/balance-allowance?asset_type=${assetType}`;
   const headers = await getApiHeaders(apiKey, apiSecret, passphrase, 'GET', path);
+  headers['POLY_ADDRESS'] = walletAddress;
+  
+  console.log(`[LiveBot] Fetching balance from ${POLYMARKET_CLOB_HOST}${path}`);
   
   const response = await fetch(`${POLYMARKET_CLOB_HOST}${path}`, {
     method: 'GET',
     headers,
   });
   
+  const responseText = await response.text();
+  console.log(`[LiveBot] Balance response: ${response.status} - ${responseText}`);
+  
   if (!response.ok) {
-    throw new Error(`Failed to get balance: ${response.status}`);
+    throw new Error(`Failed to get balance: ${response.status} - ${responseText}`);
   }
   
-  const data = await response.json();
-  return parseFloat(data.balance || '0');
+  const data = JSON.parse(responseText);
+  return {
+    balance: data.balance || '0',
+    allowance: data.allowance || '0',
+  };
 }
 
 async function createOrder(
@@ -373,15 +388,21 @@ serve(async (req) => {
       
       case 'balance': {
         try {
-          const balance = await getBalance(apiKey, apiSecret, passphrase);
+          const walletAddress = getWalletAddress(privateKey);
+          const balanceData = await getBalanceAllowance(apiKey, apiSecret, passphrase, walletAddress, 'COLLATERAL');
+          const balanceUSDC = parseFloat(balanceData.balance) / 1e6; // USDC has 6 decimals
           return new Response(JSON.stringify({
             success: true,
-            balance,
+            balance: balanceUSDC,
+            balanceRaw: balanceData.balance,
+            allowance: balanceData.allowance,
             currency: 'USDC',
+            walletAddress,
           }), {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         } catch (error) {
+          console.error('[LiveBot] Balance error:', error);
           return new Response(JSON.stringify({
             success: false,
             error: error instanceof Error ? error.message : 'Failed to get balance',
