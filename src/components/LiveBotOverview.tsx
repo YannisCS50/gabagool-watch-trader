@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -18,19 +18,18 @@ import {
   DollarSign,
   RefreshCw,
   Power,
+  Wifi,
+  WifiOff,
 } from 'lucide-react';
 import { useLiveBotSettings } from '@/hooks/useLiveBotSettings';
 import { useLiveTrades } from '@/hooks/useLiveTrades';
-import { usePolymarketRealtime } from '@/hooks/usePolymarketRealtime';
+import { useRealtimeLiveBot } from '@/hooks/useRealtimeLiveBot';
 
 interface LiveBotOverviewProps {
   getPrice: (slug: string, outcome: 'up' | 'down' | 'yes' | 'no') => number | null;
 }
 
 export const LiveBotOverview = ({ getPrice }: LiveBotOverviewProps) => {
-  const [isEnabled, setIsEnabled] = useState(false);
-  const [isToggling, setIsToggling] = useState(false);
-  
   const { 
     isReady, 
     isLoading, 
@@ -39,8 +38,16 @@ export const LiveBotOverview = ({ getPrice }: LiveBotOverviewProps) => {
     limits, 
     error,
     refetch,
-    killSwitch,
   } = useLiveBotSettings();
+  
+  const {
+    isConnected,
+    isEnabled,
+    marketsCount,
+    positionsCount,
+    toggleEnabled,
+    logs,
+  } = useRealtimeLiveBot();
   
   const { trades, results, isLoading: tradesLoading } = useLiveTrades();
 
@@ -111,26 +118,6 @@ export const LiveBotOverview = ({ getPrice }: LiveBotOverviewProps) => {
 
   const totalPL = stats.totalPL + unrealizedStats.unrealizedPL;
 
-  const handleToggle = async () => {
-    if (isToggling) return;
-    setIsToggling(true);
-    try {
-      if (isEnabled) {
-        // Turn off → kill switch
-        await killSwitch();
-        setIsEnabled(false);
-      } else {
-        // Turn on → just enable (no backend call needed, bot is ready if isReady)
-        setIsEnabled(true);
-      }
-      await refetch();
-    } catch (err) {
-      console.error('Toggle error:', err);
-    } finally {
-      setIsToggling(false);
-    }
-  };
-
   return (
     <Card className="border-amber-500/20 bg-gradient-to-br from-amber-500/5 to-transparent">
       <CardHeader className="pb-3">
@@ -141,15 +128,25 @@ export const LiveBotOverview = ({ getPrice }: LiveBotOverviewProps) => {
             </div>
             Live Trading Bot
             <div className="flex items-center gap-2">
+              {isConnected ? (
+                <Wifi className="w-3 h-3 text-emerald-500" />
+              ) : (
+                <WifiOff className="w-3 h-3 text-muted-foreground" />
+              )}
               <Switch 
-                checked={isEnabled && isReady} 
-                onCheckedChange={handleToggle}
-                disabled={isLoading || isToggling || !isReady}
+                checked={isEnabled} 
+                onCheckedChange={toggleEnabled}
+                disabled={isLoading || !isReady}
               />
-              <Badge variant={isEnabled && isReady ? "default" : "secondary"} className={isEnabled && isReady ? "bg-amber-500" : ""}>
-                {isLoading ? "Loading..." : isEnabled && isReady ? "Active" : isReady ? "Ready" : "Offline"}
+              <Badge variant={isEnabled && isConnected ? "default" : "secondary"} className={isEnabled && isConnected ? "bg-amber-500" : ""}>
+                {isLoading ? "Loading..." : isEnabled && isConnected ? "Active" : isEnabled ? "Starting..." : isReady ? "Ready" : "Offline"}
               </Badge>
             </div>
+            {isEnabled && marketsCount > 0 && (
+              <Badge variant="outline" className="text-xs text-emerald-500">
+                {marketsCount} markets
+              </Badge>
+            )}
             {limits && (
               <Badge variant="outline" className="text-xs">
                 Max ${limits.maxOrderSize}/order
