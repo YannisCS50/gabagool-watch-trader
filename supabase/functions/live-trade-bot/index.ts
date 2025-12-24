@@ -26,6 +26,23 @@ const ORDER_DOMAIN = {
   verifyingContract: CTF_EXCHANGE_ADDRESS,
 };
 
+// EIP-712 Domain for CLOB Authentication (API key derivation)
+const CLOB_AUTH_DOMAIN = {
+  name: 'ClobAuthDomain',
+  version: '1',
+  chainId: POLYGON_CHAIN_ID,
+};
+
+// EIP-712 Types for CLOB Auth
+const CLOB_AUTH_TYPES = {
+  ClobAuth: [
+    { name: 'address', type: 'address' },
+    { name: 'timestamp', type: 'string' },
+    { name: 'nonce', type: 'uint256' },
+    { name: 'message', type: 'string' },
+  ],
+};
+
 // EIP-712 Types for Order
 const ORDER_TYPES = {
   Order: [
@@ -153,6 +170,82 @@ function getWalletAddress(privateKey: string): string {
 // ============================================================================
 // CLOB API Methods
 // ============================================================================
+
+// Derive or create API credentials from private key using EIP-712 L1 auth
+async function deriveApiCredentials(privateKey: string): Promise<{
+  apiKey: string;
+  apiSecret: string;
+  passphrase: string;
+}> {
+  console.log('[LiveBot] Deriving API credentials from private key...');
+  
+  const wallet = new ethers.Wallet(privateKey);
+  const address = wallet.address;
+  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const nonce = 0;
+  
+  // Create EIP-712 signature for CLOB auth
+  const authMessage = {
+    address: address,
+    timestamp: timestamp,
+    nonce: nonce,
+    message: 'This message attests that I control the given wallet',
+  };
+  
+  const signature = await wallet.signTypedData(CLOB_AUTH_DOMAIN, CLOB_AUTH_TYPES, authMessage);
+  console.log(`[LiveBot] Created L1 auth signature for ${address}`);
+  
+  // First try to derive existing API key
+  const deriveHeaders = {
+    'Content-Type': 'application/json',
+    'POLY_ADDRESS': address,
+    'POLY_SIGNATURE': signature,
+    'POLY_TIMESTAMP': timestamp,
+    'POLY_NONCE': nonce.toString(),
+  };
+  
+  console.log('[LiveBot] Attempting to derive existing API key...');
+  const deriveResponse = await fetch(`${POLYMARKET_CLOB_HOST}/auth/derive-api-key`, {
+    method: 'GET',
+    headers: deriveHeaders,
+  });
+  
+  const deriveText = await deriveResponse.text();
+  console.log(`[LiveBot] Derive response: ${deriveResponse.status} - ${deriveText}`);
+  
+  if (deriveResponse.ok) {
+    const credentials = JSON.parse(deriveText);
+    console.log('[LiveBot] ✅ Successfully derived existing API credentials');
+    return {
+      apiKey: credentials.apiKey,
+      apiSecret: credentials.secret,
+      passphrase: credentials.passphrase,
+    };
+  }
+  
+  // If no existing key, create new one
+  console.log('[LiveBot] No existing credentials, creating new API key...');
+  const createResponse = await fetch(`${POLYMARKET_CLOB_HOST}/auth/api-key`, {
+    method: 'POST',
+    headers: deriveHeaders,
+  });
+  
+  const createText = await createResponse.text();
+  console.log(`[LiveBot] Create response: ${createResponse.status} - ${createText}`);
+  
+  if (!createResponse.ok) {
+    throw new Error(`Failed to create API key: ${createResponse.status} - ${createText}`);
+  }
+  
+  const newCredentials = JSON.parse(createText);
+  console.log('[LiveBot] ✅ Successfully created new API credentials');
+  
+  return {
+    apiKey: newCredentials.apiKey,
+    apiSecret: newCredentials.secret,
+    passphrase: newCredentials.passphrase,
+  };
+}
 
 async function getBalanceAllowance(
   apiKey: string, 
@@ -467,11 +560,44 @@ serve(async (req) => {
         });
       }
       
+      case 'derive-credentials': {
+        // Generate new API credentials from private key using L1 auth
+        try {
+          const walletAddress = getWalletAddress(privateKey);
+          console.log(`[LiveBot] Deriving credentials for wallet: ${walletAddress}`);
+          
+          const credentials = await deriveApiCredentials(privateKey);
+          
+          return new Response(JSON.stringify({
+            success: true,
+            message: '✅ API credentials derived/created successfully',
+            walletAddress,
+            credentials: {
+              apiKey: credentials.apiKey,
+              apiSecret: credentials.apiSecret,
+              passphrase: credentials.passphrase,
+            },
+            instructions: 'Save these credentials to your Supabase secrets: POLYMARKET_API_KEY, POLYMARKET_API_SECRET, POLYMARKET_PASSPHRASE',
+          }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        } catch (error) {
+          console.error('[LiveBot] Credential derivation failed:', error);
+          return new Response(JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to derive credentials',
+          }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+      }
+      
       default:
         return new Response(JSON.stringify({
           success: false,
           error: `Unknown action: ${action}`,
-          availableActions: ['status', 'balance', 'order', 'kill'],
+          availableActions: ['status', 'balance', 'order', 'kill', 'derive-credentials'],
         }), {
           status: 400,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
