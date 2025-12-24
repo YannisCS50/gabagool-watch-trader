@@ -219,7 +219,11 @@ const RealTimeSignalsPage = () => {
                   {chainlinkConnected && <Badge variant="secondary" className="text-[10px] px-1 py-0">LIVE</Badge>}
                 </div>
               </div>
-              <LivePrice price={btcPrice ?? 0} format="dollars" className="text-2xl font-bold text-orange-500" showFlash={chainlinkConnected} />
+              {btcPrice !== null ? (
+                <LivePrice price={btcPrice} format="dollars" className="text-2xl font-bold text-orange-500" showFlash={chainlinkConnected} />
+              ) : (
+                <div className="text-2xl font-bold text-muted-foreground animate-pulse">Loading...</div>
+              )}
               {btcMarkets.length > 0 && btcMarkets[0].openPrice && btcPrice && (
                 <div className="mt-2 text-xs">
                   <div className="text-muted-foreground">Strike: ${btcMarkets[0].openPrice.toLocaleString()}</div>
@@ -248,7 +252,11 @@ const RealTimeSignalsPage = () => {
                   {chainlinkConnected && <Badge variant="secondary" className="text-[10px] px-1 py-0">LIVE</Badge>}
                 </div>
               </div>
-              <LivePrice price={ethPrice ?? 0} format="dollars" className="text-2xl font-bold text-blue-500" showFlash={chainlinkConnected} />
+              {ethPrice !== null ? (
+                <LivePrice price={ethPrice} format="dollars" className="text-2xl font-bold text-blue-500" showFlash={chainlinkConnected} />
+              ) : (
+                <div className="text-2xl font-bold text-muted-foreground animate-pulse">Loading...</div>
+              )}
               {ethMarkets.length > 0 && ethMarkets[0].openPrice && ethPrice && (
                 <div className="mt-2 text-xs">
                   <div className="text-muted-foreground">Strike: ${ethMarkets[0].openPrice.toLocaleString()}</div>

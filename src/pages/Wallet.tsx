@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { Wallet as WalletIcon, RefreshCw, ArrowLeftRight, ArrowDown, BarChart3, Copy, Check, ExternalLink, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -36,21 +36,24 @@ interface PolymarketBalance {
 const Wallet = () => {
   const [walletData, setWalletData] = useState<WalletData | null>(null);
   const [polymarketBalance, setPolymarketBalance] = useState<PolymarketBalance | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true); // Start loading immediately
   const [isSwapping, setIsSwapping] = useState(false);
   const [isDepositing, setIsDepositing] = useState(false);
   const [swapAmount, setSwapAmount] = useState('');
   const [depositAmount, setDepositAmount] = useState('');
   const [copied, setCopied] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const fetchWalletBalance = async () => {
     setIsLoading(true);
+    setLoadError(null);
     try {
       const { data, error } = await supabase.functions.invoke('live-trade-bot', {
         body: { action: 'wallet-balance' },
       });
 
       if (error) throw error;
+      if (data?.error) throw new Error(data.error);
       setWalletData(data);
 
       // Also fetch Polymarket balance
@@ -58,16 +61,21 @@ const Wallet = () => {
         body: { action: 'balance' },
       });
 
-      if (!polyError && polyData.success) {
+      if (!polyError && polyData?.success) {
         setPolymarketBalance(polyData);
       }
     } catch (error) {
       console.error('Error fetching wallet balance:', error);
-      toast.error('Failed to fetch wallet balance');
+      setLoadError(error instanceof Error ? error.message : 'Failed to load wallet');
     } finally {
       setIsLoading(false);
     }
   };
+
+  // Auto-load on mount
+  useEffect(() => {
+    fetchWalletBalance();
+  }, []);
 
   const handleSwap = async () => {
     const amount = parseFloat(swapAmount);
@@ -187,7 +195,23 @@ const Wallet = () => {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {walletData ? (
+              {isLoading ? (
+                <div className="flex items-center gap-3 p-3 bg-muted rounded-lg">
+                  <RefreshCw className="w-4 h-4 animate-spin text-muted-foreground" />
+                  <span className="text-muted-foreground">Loading wallet data...</span>
+                </div>
+              ) : loadError ? (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 p-3 bg-destructive/10 text-destructive rounded-lg text-sm">
+                    <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                    <span>{loadError}</span>
+                  </div>
+                  <Button onClick={fetchWalletBalance} variant="outline" size="sm">
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    Try Again
+                  </Button>
+                </div>
+              ) : walletData ? (
                 <div className="space-y-4">
                   <div className="flex items-center gap-2 p-3 bg-muted rounded-lg font-mono text-sm">
                     <span className="flex-1 truncate">{walletData.walletAddress}</span>
@@ -214,14 +238,7 @@ const Wallet = () => {
                 </div>
               ) : (
                 <Button onClick={fetchWalletBalance} disabled={isLoading}>
-                  {isLoading ? (
-                    <>
-                      <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
-                      Loading...
-                    </>
-                  ) : (
-                    'Load Wallet'
-                  )}
+                  Load Wallet
                 </Button>
               )}
             </CardContent>
