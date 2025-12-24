@@ -191,11 +191,43 @@ interface SafetyLimits {
   enabled: boolean;          // Kill switch
 }
 
+// ============================================================================
+// LIVE STRATEGY CONFIG - 20x smaller than paper trading for safety
+// Paper: 100 shares → Live: 5 shares
+// ============================================================================
+const LIVE_STRATEGY_CONFIG = {
+  // Initiële opening trade (paper = 100, live = 5)
+  opening: {
+    shares: 5,                // 5 shares per opening (20x kleiner)
+    maxPrice: 0.55,           // Alleen openen als prijs ≤ 55¢
+  },
+  
+  // Hedge settings (paper = 100, live = 5)
+  hedge: {
+    shares: 5,                // 5 shares voor hedge (20x kleiner)
+    maxCombined: 0.97,        // Alleen hedgen als combined ≤ 97¢ (3% winst gegarandeerd)
+    targetCombined: 0.95,     // Ideaal: combined ≤ 95¢ (5% winst)
+  },
+  
+  // Accumulation settings (paper = 20-50, live = 1-3)
+  accumulate: {
+    minShares: 1,             // Min 1 share (20x kleiner)
+    maxShares: 3,             // Max 3 shares (20x kleiner)
+    maxCombined: 0.99,        // Alleen accumuleren als combined < 99¢
+    maxPositionPerSide: 25,   // Max 25 shares per kant (paper = 500)
+  },
+  
+  // General settings
+  minSecondsRemaining: 60,    // Stop 60s voor expiry
+  minPrice: 0.02,             // Niet kopen onder 2¢
+  maxPrice: 0.98,             // Niet kopen boven 98¢
+};
+
 const DEFAULT_LIMITS: SafetyLimits = {
-  maxDailyLoss: 50,         // $50 max loss per day
-  maxPositionSize: 100,     // $100 max per market
-  maxOrderSize: 25,         // $25 max per order
-  enabled: true,            // Bot enabled by default
+  maxDailyLoss: 10,          // $10 max loss per day (was $50)
+  maxPositionSize: 20,       // $20 max per market (was $100)
+  maxOrderSize: 5,           // $5 max per order (was $25)
+  enabled: true,             // Bot enabled by default
 };
 
 // ============================================================================
