@@ -94,6 +94,69 @@ const DEFAULT_LIMITS: SafetyLimits = {
 // CLOB API Authentication & Order Signing
 // ============================================================================
 
+// Helper functions matching official Polymarket clob-client implementation
+function base64ToArrayBuffer(base64: string): ArrayBuffer {
+  const sanitizedBase64 = base64
+    .replace(/-/g, '+')
+    .replace(/_/g, '/')
+    .replace(/[^A-Za-z0-9+/=]/g, '');
+  const binaryString = atob(sanitizedBase64);
+  const bytes = new Uint8Array(binaryString.length);
+  for (let i = 0; i < binaryString.length; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes.buffer as ArrayBuffer;
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  for (let i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+
+// Exact implementation from Polymarket clob-client/src/signing/hmac.ts
+async function buildPolyHmacSignature(
+  secret: string,
+  timestamp: number,
+  method: string,
+  requestPath: string,
+  body?: string
+): Promise<string> {
+  // Build message: timestamp (as number) + method + path + body
+  let message = timestamp + method + requestPath;
+  if (body !== undefined) {
+    message += body;
+  }
+  
+  console.log(`[HMAC] Message to sign: "${message.slice(0, 100)}..."`);
+  console.log(`[HMAC] Message length: ${message.length}`);
+
+  // Import the secret key from base64
+  const keyData = base64ToArrayBuffer(secret);
+  console.log(`[HMAC] Key data length: ${new Uint8Array(keyData).length} bytes`);
+  
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw',
+    keyData,
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign']
+  );
+
+  // Sign the message
+  const messageBuffer = new TextEncoder().encode(message);
+  const signatureBuffer = await crypto.subtle.sign('HMAC', cryptoKey, messageBuffer);
+  const sig = arrayBufferToBase64(signatureBuffer);
+
+  // Must be url safe base64 encoding, but keep base64 "=" suffix
+  const sigUrlSafe = sig.replace(/\+/g, '-').replace(/\//g, '_');
+  console.log(`[HMAC] Signature: ${sigUrlSafe}`);
+  return sigUrlSafe;
+}
+
 async function getApiHeaders(
   apiKey: string,
   apiSecret: string,
@@ -103,43 +166,41 @@ async function getApiHeaders(
   path: string,
   body?: string
 ): Promise<Record<string, string>> {
-  const timestamp = Math.floor(Date.now() / 1000).toString();
+  const timestamp = Math.floor(Date.now() / 1000);
   
-  // Build message for HMAC: timestamp + method + path + body
-  let message = timestamp + method + path;
+  console.log('=== HMAC DEBUG START ===');
+  console.log(`[HMAC] API Key: ${apiKey.slice(0, 10)}...${apiKey.slice(-5)}`);
+  console.log(`[HMAC] API Secret length: ${apiSecret.length} chars`);
+  console.log(`[HMAC] Passphrase length: ${passphrase.length}`);
+  console.log(`[HMAC] Wallet Address: ${walletAddress}`);
+  console.log(`[HMAC] Method: ${method}`);
+  console.log(`[HMAC] Path: ${path}`);
+  console.log(`[HMAC] Timestamp (number): ${timestamp}`);
   if (body) {
-    // Replace single quotes with double quotes for consistency with Python/Go clients
-    message += body.replace(/'/g, '"');
+    console.log(`[HMAC] Body (first 100 chars): ${body.slice(0, 100)}...`);
   }
-  
-  // Decode base64url secret (Polymarket uses URL-safe base64)
-  const base64Standard = apiSecret.replace(/-/g, '+').replace(/_/g, '/');
-  const secretDecoded = Uint8Array.from(atob(base64Standard), c => c.charCodeAt(0));
-  
-  const cryptoKey = await crypto.subtle.importKey(
-    'raw',
-    secretDecoded,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
+
+  const sig = await buildPolyHmacSignature(
+    apiSecret,
+    timestamp,
+    method,
+    path,
+    body
   );
-  
-  const messageData = new TextEncoder().encode(message);
-  const signatureBytes = await crypto.subtle.sign('HMAC', cryptoKey, messageData);
-  
-  // Encode signature as URL-safe base64 (matching Python's urlsafe_b64encode)
-  const signatureBase64 = btoa(String.fromCharCode(...new Uint8Array(signatureBytes)))
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_');
-  
-  return {
+
+  const headers = {
     'POLY_ADDRESS': walletAddress,
-    'POLY_SIGNATURE': signatureBase64,
-    'POLY_TIMESTAMP': timestamp,
+    'POLY_SIGNATURE': sig,
+    'POLY_TIMESTAMP': `${timestamp}`,
     'POLY_API_KEY': apiKey,
     'POLY_PASSPHRASE': passphrase,
     'Content-Type': 'application/json',
   };
+  
+  console.log('[HMAC] Headers:', JSON.stringify(headers, null, 2));
+  console.log('=== HMAC DEBUG END ===');
+  
+  return headers;
 }
 
 // EIP-712 Order Signing for Polymarket using ethers.js
@@ -598,6 +659,86 @@ serve(async (req) => {
           return new Response(JSON.stringify({
             success: false,
             error: error instanceof Error ? error.message : 'Failed to derive credentials',
+          }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+      }
+      
+      case 'debug-auth': {
+        // Debug authentication by testing multiple endpoints
+        try {
+          const walletAddress = getWalletAddress(privateKey!);
+          const creds = await getCredentials();
+          
+          // Test 1: Public endpoint (no auth needed)
+          console.log('[DEBUG] Testing public endpoint...');
+          const publicTest = await fetch(`${POLYMARKET_CLOB_HOST}/time`);
+          const publicResult = await publicTest.text();
+          console.log(`[DEBUG] Public /time: ${publicTest.status} - ${publicResult}`);
+          
+          // Test 2: Get API key info (L2 auth)
+          console.log('[DEBUG] Testing /auth/api-keys endpoint...');
+          const apiKeysPath = '/auth/api-keys';
+          const apiKeysHeaders = await getApiHeaders(creds.apiKey, creds.apiSecret, creds.passphrase, walletAddress, 'GET', apiKeysPath);
+          const apiKeysTest = await fetch(`${POLYMARKET_CLOB_HOST}${apiKeysPath}`, {
+            method: 'GET',
+            headers: apiKeysHeaders,
+          });
+          const apiKeysResult = await apiKeysTest.text();
+          console.log(`[DEBUG] /auth/api-keys: ${apiKeysTest.status} - ${apiKeysResult}`);
+          
+          // Test 3: Check if using correct nonce
+          console.log('[DEBUG] Testing /auth/api-key endpoint (check key exists)...');
+          // Use L1 auth to check current key status
+          const wallet = new ethers.Wallet(privateKey!);
+          const timestamp = Math.floor(Date.now() / 1000).toString();
+          const nonce = 0;
+          const authMessage = {
+            address: walletAddress,
+            timestamp: timestamp,
+            nonce: nonce,
+            message: 'This message attests that I control the given wallet',
+          };
+          const l1Signature = await wallet.signTypedData(CLOB_AUTH_DOMAIN, CLOB_AUTH_TYPES, authMessage);
+          
+          const l1Headers = {
+            'Content-Type': 'application/json',
+            'POLY_ADDRESS': walletAddress,
+            'POLY_SIGNATURE': l1Signature,
+            'POLY_TIMESTAMP': timestamp,
+            'POLY_NONCE': nonce.toString(),
+          };
+          
+          const getKeyTest = await fetch(`${POLYMARKET_CLOB_HOST}/auth/api-key`, {
+            method: 'GET',
+            headers: l1Headers,
+          });
+          const getKeyResult = await getKeyTest.text();
+          console.log(`[DEBUG] GET /auth/api-key: ${getKeyTest.status} - ${getKeyResult}`);
+          
+          return new Response(JSON.stringify({
+            success: true,
+            walletAddress,
+            credentials: {
+              apiKey: creds.apiKey,
+              secretLength: creds.apiSecret.length,
+              passphraseLength: creds.passphrase.length,
+            },
+            tests: {
+              publicEndpoint: { status: publicTest.status, result: publicResult },
+              apiKeysEndpoint: { status: apiKeysTest.status, result: apiKeysResult },
+              getKeyEndpoint: { status: getKeyTest.status, result: getKeyResult },
+            }
+          }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        } catch (error) {
+          console.error('[DEBUG] Error:', error);
+          return new Response(JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
           }), {
             status: 500,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
