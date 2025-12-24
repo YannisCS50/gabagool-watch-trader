@@ -380,13 +380,17 @@ async function createL2Headers(
   method: string,
   requestPath: string,
   body?: string,
-  timestamp?: number
+  timestamp?: number,
+  addressOverride?: string
 ): Promise<Record<string, string>> {
   let ts = Math.floor(Date.now() / 1000);
   if (timestamp !== undefined) {
     ts = timestamp;
   }
-  const address = wallet.address;
+
+  // NOTE: clob-client uses signer.getAddress(); for Polymarket contract wallets we must
+  // send the funder (Safe/Proxy) address here. If not provided, default to signer.
+  const address = addressOverride ?? wallet.address;
 
   const sig = await buildPolyHmacSignature(
     creds.secret,
@@ -396,7 +400,9 @@ async function createL2Headers(
     body
   );
 
-  console.log(`[L2 Headers] address=${address}, ts=${ts}, method=${method}, path=${requestPath.slice(0, 50)}`);
+  console.log(
+    `[L2 Headers] address=${address}, ts=${ts}, method=${method}, path=${requestPath.slice(0, 50)}, apiKeyPresent=${!!creds.key}`
+  );
 
   return {
     'POLY_ADDRESS': address,
@@ -533,25 +539,30 @@ async function deriveApiCredentials(privateKey: string): Promise<{
 async function getBalanceAllowance(
   wallet: ethers.Wallet,
   creds: { key: string; secret: string; passphrase: string },
-  assetType: 'COLLATERAL' | 'CONDITIONAL' = 'COLLATERAL'
+  assetType: 'COLLATERAL' | 'CONDITIONAL' = 'COLLATERAL',
+  funderAddress?: string
 ): Promise<{ balance: string; allowance: string }> {
   const path = `/balance-allowance?asset_type=${assetType}`;
-  const headers = await createL2Headers(wallet, creds, 'GET', path);
-  
+  const headers = await createL2Headers(wallet, creds, 'GET', path, undefined, undefined, funderAddress);
+
   console.log(`[LiveBot] Fetching balance from ${POLYMARKET_CLOB_HOST}${path}`);
-  
+
   const response = await fetch(`${POLYMARKET_CLOB_HOST}${path}`, {
     method: 'GET',
     headers: { ...headers, 'Content-Type': 'application/json' },
   });
-  
+
   const responseText = await response.text();
   console.log(`[LiveBot] Balance response: ${response.status} - ${responseText}`);
-  
+
+  if (response.status === 401) {
+    throw new Error(`API key invalid or unauthorized (401): ${responseText}`);
+  }
+
   if (!response.ok) {
     throw new Error(`Failed to get balance: ${response.status} - ${responseText}`);
   }
-  
+
   const data = JSON.parse(responseText);
   return {
     balance: data.balance || '0',
@@ -566,22 +577,24 @@ async function createOrder(
   order: OrderRequest
 ): Promise<TradeResult> {
   console.log(`[LiveBot] Creating order: ${order.side} ${order.size} @ $${order.price} for ${order.tokenId.slice(0, 20)}...`);
-  
+
   try {
     const walletAddress = wallet.address;
     console.log(`[LiveBot] Wallet address: ${walletAddress}`);
-    
+
+    const funder = await resolvePolymarketFunder(privateKey);
+
     // Calculate amounts (USDC has 6 decimals, outcome tokens have 6 decimals on Polymarket)
     const sizeInUnits = Math.floor(order.size * 1e6);
-    
-    const makerAmount = order.side === 'BUY' 
+
+    const makerAmount = order.side === 'BUY'
       ? Math.floor(order.size * order.price * 1e6).toString() // USDC to pay
       : sizeInUnits.toString(); // Outcome tokens to sell
-    
+
     const takerAmount = order.side === 'BUY'
       ? sizeInUnits.toString() // Outcome tokens to receive
       : Math.floor(order.size * order.price * 1e6).toString(); // USDC to receive
-    
+
     // Create order data
     const salt = Math.floor(Math.random() * 1e18).toString();
     const orderData = {
@@ -598,46 +611,46 @@ async function createOrder(
       side: order.side === 'BUY' ? 0 : 1,
       signatureType: 0, // EOA signature
     };
-    
+
     // Sign the order with EIP-712
     const signature = await signOrder(privateKey, orderData);
-    
+
     // Prepare API request
     const orderPayload = {
       order: orderData,
       signature,
       orderType: order.orderType,
     };
-    
+
     const path = '/order';
     const body = JSON.stringify(orderPayload);
-    const headers = await createL2Headers(wallet, creds, 'POST', path, body);
-    
+    const headers = await createL2Headers(wallet, creds, 'POST', path, body, undefined, funder.funderAddress);
+
     console.log('[LiveBot] Submitting order to CLOB...');
-    
+
     const response = await fetch(`${POLYMARKET_CLOB_HOST}${path}`, {
       method: 'POST',
       headers: { ...headers, 'Content-Type': 'application/json' },
       body,
     });
-    
+
     const responseText = await response.text();
     console.log(`[LiveBot] CLOB Response: ${response.status} - ${responseText}`);
-    
+
     if (!response.ok) {
-      return { 
-        success: false, 
-        error: `CLOB API error: ${response.status} - ${responseText}` 
+      return {
+        success: false,
+        error: `CLOB API error: ${response.status} - ${responseText}`
       };
     }
-    
+
     const result = JSON.parse(responseText);
     console.log('[LiveBot] ✅ Order submitted successfully:', result.orderID);
-    
-    return { 
-      success: true, 
-      orderId: result.orderID || result.id, 
-      details: result 
+
+    return {
+      success: true,
+      orderId: result.orderID || result.id,
+      details: result
     };
   } catch (error) {
     console.error('[LiveBot] Order creation failed:', error);
@@ -791,7 +804,8 @@ serve(async (req) => {
             balanceData = await getBalanceAllowance(
               wallet,
               { key: creds.apiKey, secret: creds.apiSecret, passphrase: creds.passphrase },
-              'COLLATERAL'
+              'COLLATERAL',
+              funder.funderAddress
             );
           } catch (err) {
             const msg = err instanceof Error ? err.message : String(err);
@@ -809,7 +823,8 @@ serve(async (req) => {
               balanceData = await getBalanceAllowance(
                 wallet,
                 { key: creds.apiKey, secret: creds.apiSecret, passphrase: creds.passphrase },
-                'COLLATERAL'
+                'COLLATERAL',
+                funder.funderAddress
               );
             } else {
               throw err;
@@ -973,13 +988,14 @@ serve(async (req) => {
           const wallet = new ethers.Wallet(privateKey!);
           const walletAddress = wallet.address;
           const creds = await getCredentials();
-          
+          const funder = await resolvePolymarketFunder(privateKey!);
+
           // Test 1: Public endpoint (no auth needed)
           console.log('[DEBUG] Testing public endpoint...');
           const publicTest = await fetch(`${POLYMARKET_CLOB_HOST}/time`);
           const publicResult = await publicTest.text();
           console.log(`[DEBUG] Public /time: ${publicTest.status} - ${publicResult}`);
-          
+
           // Test 2: Get API key info (L2 auth)
           console.log('[DEBUG] Testing /auth/api-keys endpoint...');
           const apiKeysPath = '/auth/api-keys';
@@ -987,7 +1003,10 @@ serve(async (req) => {
             wallet,
             { key: creds.apiKey, secret: creds.apiSecret, passphrase: creds.passphrase },
             'GET',
-            apiKeysPath
+            apiKeysPath,
+            undefined,
+            undefined,
+            funder.funderAddress
           );
           const apiKeysTest = await fetch(`${POLYMARKET_CLOB_HOST}${apiKeysPath}`, {
             method: 'GET',
