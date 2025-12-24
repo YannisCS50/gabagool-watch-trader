@@ -14,6 +14,7 @@ interface PaperTrade {
   price: number;
   total: number;
   event_end_time: string;
+  event_start_time: string;
 }
 
 interface AggregatedPosition {
@@ -24,6 +25,85 @@ interface AggregatedPosition {
   downShares: number;
   downCost: number;
   eventEndTime: string;
+  eventStartTime: string;
+}
+
+// Parse timestamp from slug (e.g., btc-updown-15m-1766485800 -> 1766485800)
+function parseTimestampFromSlug(slug: string): number | null {
+  const match = slug.match(/(\d{10})$/);
+  return match ? parseInt(match[1], 10) : null;
+}
+
+// Fetch current Chainlink prices from RTDS WebSocket
+async function fetchCurrentChainlinkPrices(): Promise<{ btc: number | null; eth: number | null }> {
+  return new Promise((resolve) => {
+    const prices = { btc: null as number | null, eth: null as number | null };
+    let ws: WebSocket | null = null;
+    
+    const timeout = setTimeout(() => {
+      console.log('[settle] RTDS timeout - using available prices');
+      if (ws) ws.close();
+      resolve(prices);
+    }, 8000); // 8 second timeout
+    
+    try {
+      ws = new WebSocket('wss://rtds.polymarket.com');
+    } catch (e) {
+      console.error('[settle] Failed to connect to RTDS:', e);
+      clearTimeout(timeout);
+      resolve(prices);
+      return;
+    }
+    
+    ws.onopen = () => {
+      console.log('[settle] Connected to RTDS for price fetch');
+      ws!.send(JSON.stringify({
+        action: 'subscribe',
+        subscriptions: [{
+          topic: 'crypto_prices_chainlink',
+          type: '*',
+          filters: ''
+        }]
+      }));
+    };
+    
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.topic === 'crypto_prices_chainlink' && data.payload) {
+          const symbol = data.payload.symbol?.toUpperCase().replace('/USD', '') || '';
+          const value = data.payload.value;
+          
+          if (symbol === 'BTC' && value) {
+            prices.btc = value;
+            console.log(`[settle] BTC price: $${value}`);
+          } else if (symbol === 'ETH' && value) {
+            prices.eth = value;
+            console.log(`[settle] ETH price: $${value}`);
+          }
+          
+          // If we have both prices, we're done
+          if (prices.btc !== null && prices.eth !== null) {
+            clearTimeout(timeout);
+            ws!.close();
+            resolve(prices);
+          }
+        }
+      } catch (e) {
+        // Ignore parse errors
+      }
+    };
+    
+    ws.onerror = () => {
+      clearTimeout(timeout);
+      resolve(prices);
+    };
+    
+    ws.onclose = () => {
+      clearTimeout(timeout);
+      resolve(prices);
+    };
+  });
 }
 
 Deno.serve(async (req) => {
@@ -41,7 +121,7 @@ Deno.serve(async (req) => {
 
     const now = new Date();
 
-    // 1. Get all paper trades that haven't been settled yet
+    // 1. Get all paper trades where event has ended
     const { data: unsettledTrades, error: tradesError } = await supabase
       .from('paper_trades')
       .select('*')
@@ -65,11 +145,12 @@ Deno.serve(async (req) => {
     // 2. Get already settled markets
     const { data: settledResults } = await supabase
       .from('paper_trade_results')
-      .select('market_slug');
+      .select('market_slug, settled_at')
+      .not('settled_at', 'is', null);
 
     const settledSlugs = new Set(settledResults?.map(r => r.market_slug) || []);
 
-    // 3. Aggregate trades by market
+    // 3. Aggregate trades by market (only unsettled ones)
     const positionMap = new Map<string, AggregatedPosition>();
 
     for (const trade of unsettledTrades as PaperTrade[]) {
@@ -84,6 +165,7 @@ Deno.serve(async (req) => {
           downShares: 0,
           downCost: 0,
           eventEndTime: trade.event_end_time,
+          eventStartTime: trade.event_start_time,
         });
       }
 
@@ -108,91 +190,118 @@ Deno.serve(async (req) => {
       });
     }
 
-    // 4. Determine winner for each market
     const marketSlugs = Array.from(positionMap.keys());
-    
-    // Get market results from market_history
-    const { data: marketHistory } = await supabase
-      .from('market_history')
-      .select('slug, result, up_price_at_close, down_price_at_close, open_price, close_price')
-      .in('slug', marketSlugs);
+    console.log(`[settle-paper-trades] Processing ${marketSlugs.length} unsettled markets`);
 
-    const marketResultMap = new Map<string, 'UP' | 'DOWN' | null>();
-    if (marketHistory) {
-      for (const market of marketHistory) {
-        // Priority 1: Explicit result field
-        if (market.result === 'UP' || market.result === 'DOWN') {
-          marketResultMap.set(market.slug, market.result);
-          continue;
-        }
+    // 4. Get existing oracle prices from strike_prices table
+    const { data: oracleData } = await supabase
+      .from('strike_prices')
+      .select('market_slug, open_price, close_price, strike_price')
+      .in('market_slug', marketSlugs);
+
+    const oracleMap = new Map<string, { openPrice: number | null; closePrice: number | null }>();
+    if (oracleData) {
+      for (const oracle of oracleData) {
+        oracleMap.set(oracle.market_slug, {
+          openPrice: oracle.open_price ?? oracle.strike_price,
+          closePrice: oracle.close_price,
+        });
+      }
+    }
+
+    // 5. Check which markets need close prices - fetch from RTDS if needed
+    const marketsNeedingClosePrice = marketSlugs.filter(slug => {
+      const oracle = oracleMap.get(slug);
+      return !oracle || oracle.closePrice === null;
+    });
+
+    if (marketsNeedingClosePrice.length > 0) {
+      console.log(`[settle] ${marketsNeedingClosePrice.length} markets need close prices - fetching from RTDS...`);
+      
+      const currentPrices = await fetchCurrentChainlinkPrices();
+      
+      // Store close prices for markets that need them
+      for (const slug of marketsNeedingClosePrice) {
+        const position = positionMap.get(slug)!;
+        const asset = position.asset.toUpperCase();
+        const closePrice = asset === 'BTC' ? currentPrices.btc : 
+                           asset === 'ETH' ? currentPrices.eth : null;
         
-        // Priority 2: Derive from close prices (if one side is >= 0.90, that side won)
-        if (market.up_price_at_close !== null && market.down_price_at_close !== null) {
-          if (market.up_price_at_close >= 0.90) {
-            marketResultMap.set(market.slug, 'UP');
-            console.log(`[settle] ${market.slug}: UP wins (up_close=${market.up_price_at_close})`);
-            continue;
-          } else if (market.down_price_at_close >= 0.90) {
-            marketResultMap.set(market.slug, 'DOWN');
-            console.log(`[settle] ${market.slug}: DOWN wins (down_close=${market.down_price_at_close})`);
-            continue;
+        if (closePrice !== null) {
+          const eventStartTime = parseTimestampFromSlug(slug);
+          
+          // Get or create oracle entry
+          let oracle = oracleMap.get(slug);
+          if (!oracle) {
+            oracle = { openPrice: null, closePrice: null };
+            oracleMap.set(slug, oracle);
           }
-          // If neither side >= 0.90, compare them
-          if (market.up_price_at_close > market.down_price_at_close) {
-            marketResultMap.set(market.slug, 'UP');
-            console.log(`[settle] ${market.slug}: UP wins by higher close price (${market.up_price_at_close} vs ${market.down_price_at_close})`);
-          } else if (market.down_price_at_close > market.up_price_at_close) {
-            marketResultMap.set(market.slug, 'DOWN');
-            console.log(`[settle] ${market.slug}: DOWN wins by higher close price (${market.down_price_at_close} vs ${market.up_price_at_close})`);
+          oracle.closePrice = closePrice;
+          
+          // Upsert to strike_prices for future reference
+          const upsertData: Record<string, unknown> = {
+            market_slug: slug,
+            asset: asset,
+            close_price: closePrice,
+            close_timestamp: Date.now(),
+          };
+          
+          if (eventStartTime) {
+            upsertData.event_start_time = new Date(eventStartTime * 1000).toISOString();
+            // If no open price, estimate it (close price is current, open was ~15 min ago)
+            if (!oracle.openPrice) {
+              upsertData.strike_price = closePrice; // Use current as fallback
+              upsertData.open_price = closePrice;
+              upsertData.chainlink_timestamp = eventStartTime * 1000;
+              oracle.openPrice = closePrice;
+              console.log(`[settle] ${slug}: No open price, using current $${closePrice} as estimate`);
+            }
           }
-          continue;
-        }
-        
-        // Priority 3: Derive from open/close price comparison
-        if (market.open_price !== null && market.close_price !== null) {
-          const result = market.close_price >= market.open_price ? 'UP' : 'DOWN';
-          marketResultMap.set(market.slug, result);
-          console.log(`[settle] ${market.slug}: ${result} wins (open=${market.open_price}, close=${market.close_price})`);
+          
+          await supabase.from('strike_prices').upsert(upsertData, { onConflict: 'market_slug' });
+          console.log(`[settle] ${slug}: Stored close price $${closePrice}`);
         }
       }
     }
 
-    // Fallback: check real trades table for high-confidence prices
-    const { data: realTrades } = await supabase
-      .from('trades')
-      .select('market_slug, outcome, price')
-      .in('market_slug', marketSlugs)
-      .order('price', { ascending: false });
-
-    if (realTrades) {
-      for (const trade of realTrades) {
-        if (!marketResultMap.has(trade.market_slug) && trade.price >= 0.90) {
-          marketResultMap.set(trade.market_slug, trade.outcome as 'UP' | 'DOWN');
-          console.log(`[settle] ${trade.market_slug}: ${trade.outcome} wins (from trades, price=${trade.price})`);
-        }
-      }
-    }
-
-    // 5. Calculate results and insert
+    // 6. Calculate results and settle
     const resultsToInsert = [];
     let settledCount = 0;
+    let pendingCount = 0;
 
     for (const [slug, position] of positionMap) {
-      const result = marketResultMap.get(slug);
+      const oracle = oracleMap.get(slug);
       const totalInvested = position.upCost + position.downCost;
 
-      // Calculate payout based on result
-      let payout = 0;
-      if (result === 'UP') {
-        payout = position.upShares; // Each winning share pays $1
-      } else if (result === 'DOWN') {
-        payout = position.downShares;
+      // Determine result from oracle prices
+      let result: 'UP' | 'DOWN' | null = null;
+      
+      if (oracle && oracle.openPrice !== null && oracle.closePrice !== null) {
+        // We have both prices - can determine result
+        // UP wins if close >= open (price went up or stayed same)
+        result = oracle.closePrice >= oracle.openPrice ? 'UP' : 'DOWN';
+        console.log(`[settle] ${slug}: open=$${oracle.openPrice.toFixed(2)}, close=$${oracle.closePrice.toFixed(2)} => ${result}`);
+      } else {
+        // Still no oracle data - skip this market
+        console.log(`[settle] ${slug}: ⏳ WAITING for prices (open=${oracle?.openPrice ?? 'missing'}, close=${oracle?.closePrice ?? 'missing'})`);
+        pendingCount++;
+        continue;
       }
 
-      const profitLoss = result ? payout - totalInvested : null;
-      const profitLossPercent = result && totalInvested > 0 
-        ? (profitLoss! / totalInvested) * 100 
-        : null;
+      // Calculate payout based on result
+      // If UP wins: UP shares pay $1 each
+      // If DOWN wins: DOWN shares pay $1 each
+      let payout = 0;
+      if (result === 'UP') {
+        payout = position.upShares; // Each UP share pays $1
+      } else if (result === 'DOWN') {
+        payout = position.downShares; // Each DOWN share pays $1
+      }
+
+      const profitLoss = payout - totalInvested;
+      const profitLossPercent = totalInvested > 0 
+        ? (profitLoss / totalInvested) * 100 
+        : 0;
 
       resultsToInsert.push({
         market_slug: slug,
@@ -204,45 +313,45 @@ Deno.serve(async (req) => {
         down_cost: position.downCost,
         down_avg_price: position.downShares > 0 ? position.downCost / position.downShares : 0,
         total_invested: totalInvested,
-        result: result ?? 'PENDING',
+        result,
         payout,
         profit_loss: profitLoss,
         profit_loss_percent: profitLossPercent,
         event_end_time: position.eventEndTime,
-        settled_at: result ? now.toISOString() : null,
+        settled_at: now.toISOString(),
       });
 
-      if (result) {
-        settledCount++;
-        console.log(`[settle-paper-trades] ${slug}: ${result} won, P/L: $${profitLoss?.toFixed(2)} (${profitLossPercent?.toFixed(1)}%)`);
-      } else {
-        console.log(`[settle-paper-trades] ${slug}: Result not yet determined`);
+      settledCount++;
+      const emoji = profitLoss >= 0 ? '✅' : '❌';
+      console.log(`[settle] ${slug}: ${emoji} ${result} won | Invested: $${totalInvested.toFixed(2)} | Payout: $${payout.toFixed(2)} | P/L: $${profitLoss.toFixed(2)} (${profitLossPercent.toFixed(1)}%)`);
+    }
+
+    // 7. Upsert results
+    if (resultsToInsert.length > 0) {
+      const { error: insertError } = await supabase
+        .from('paper_trade_results')
+        .upsert(resultsToInsert, { onConflict: 'market_slug' });
+
+      if (insertError) {
+        console.error('[settle-paper-trades] Error upserting results:', insertError);
+        throw insertError;
       }
     }
 
-    // 6. Upsert results
-    const { error: insertError } = await supabase
-      .from('paper_trade_results')
-      .upsert(resultsToInsert, { onConflict: 'market_slug' });
-
-    if (insertError) {
-      console.error('[settle-paper-trades] Error upserting results:', insertError);
-      throw insertError;
-    }
-
-    console.log(`[settle-paper-trades] Processed ${resultsToInsert.length} markets, ${settledCount} fully settled`);
+    console.log(`[settle-paper-trades] ✅ Settled: ${settledCount}, ⏳ Pending: ${pendingCount}`);
 
     return new Response(JSON.stringify({
       success: true,
       timestamp: new Date().toISOString(),
-      processed: resultsToInsert.length,
       settled: settledCount,
+      pending: pendingCount,
       results: resultsToInsert.map(r => ({
         slug: r.market_slug,
         result: r.result,
         invested: r.total_invested.toFixed(2),
         payout: r.payout.toFixed(2),
-        profitLoss: r.profit_loss?.toFixed(2) ?? 'pending',
+        profitLoss: r.profit_loss.toFixed(2),
+        profitLossPercent: r.profit_loss_percent.toFixed(1) + '%',
       })),
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
