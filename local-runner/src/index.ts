@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import WebSocket from 'ws';
+import os from 'os';
 import { config } from './config.js';
 import { placeOrder, testConnection, getBalance } from './polymarket.js';
 import { evaluateOpportunity, TopOfBook, MarketPosition, STRATEGY, Outcome } from './strategy.js';
@@ -8,6 +9,9 @@ console.log('🚀 Polymarket Live Trader - Local Runner');
 console.log('========================================');
 
 const supabase = createClient(config.supabase.url, config.supabase.serviceRoleKey);
+const RUNNER_ID = `local-${os.hostname()}`;
+const RUNNER_VERSION = '1.0.0';
+let currentBalance = 0;
 
 interface MarketToken {
   slug: string;
@@ -315,6 +319,30 @@ async function processMarketEvent(data: any): Promise<void> {
   }
 }
 
+async function sendHeartbeat(): Promise<void> {
+  try {
+    const positions = [...markets.values()].filter(
+      c => c.position.upShares > 0 || c.position.downShares > 0
+    ).length;
+
+    await supabase
+      .from('runner_heartbeats' as any)
+      .upsert({
+        runner_id: RUNNER_ID,
+        runner_type: 'local',
+        last_heartbeat: new Date().toISOString(),
+        status: 'active',
+        markets_count: markets.size,
+        positions_count: positions,
+        trades_count: tradeCount,
+        balance: currentBalance,
+        version: RUNNER_VERSION,
+      }, { onConflict: 'runner_id' });
+  } catch (error) {
+    console.error('❌ Heartbeat error:', error);
+  }
+}
+
 async function main(): Promise<void> {
   // Test Polymarket connection
   const connected = await testConnection();
@@ -323,10 +351,17 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Get initial balance
+  const balanceResult = await getBalance();
+  currentBalance = balanceResult.usdc;
+
   // Initial setup
   await fetchMarkets();
   await fetchExistingTrades();
   connectToClob();
+
+  // Send initial heartbeat
+  await sendHeartbeat();
 
   // Periodic market refresh
   setInterval(async () => {
@@ -340,24 +375,41 @@ async function main(): Promise<void> {
     }
   }, 15000);
 
-  // Status logging
+  // Heartbeat every 10 seconds
   setInterval(async () => {
-    const balance = await getBalance();
+    const balanceResult = await getBalance();
+    currentBalance = balanceResult.usdc;
+    await sendHeartbeat();
+  }, 10000);
+
+  // Status logging every minute
+  setInterval(async () => {
     const positions = [...markets.values()].filter(
       c => c.position.upShares > 0 || c.position.downShares > 0
     ).length;
     
-    console.log(`\n📊 Status: ${markets.size} markets | ${positions} positions | ${tradeCount} trades | $${balance.usdc.toFixed(2)} balance`);
+    console.log(`\n📊 Status: ${markets.size} markets | ${positions} positions | ${tradeCount} trades | $${currentBalance.toFixed(2)} balance`);
   }, 60000);
 
   console.log('\n✅ Live trader running! Press Ctrl+C to stop.\n');
 }
 
 // Graceful shutdown
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   console.log('\n\n👋 Shutting down...');
   isRunning = false;
+  
+  // Send offline heartbeat
+  await supabase
+    .from('runner_heartbeats' as any)
+    .update({ status: 'offline', last_heartbeat: new Date().toISOString() })
+    .eq('runner_id', RUNNER_ID);
+  
   if (clobSocket) clobSocket.close();
+  process.exit(0);
+});
+
+main().catch(console.error);
   process.exit(0);
 });
 

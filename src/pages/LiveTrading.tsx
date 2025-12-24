@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { LiveTradeDashboard } from '@/components/LiveTradeDashboard';
 import { PaperTradeDashboard } from '@/components/PaperTradeDashboard';
+import { RunnerStatus } from '@/components/RunnerStatus';
 import { supabase } from '@/integrations/supabase/client';
 
 interface WalletBalance {
@@ -138,16 +139,9 @@ export default function LiveTrading() {
           </Card>
         </div>
 
-        {/* Warning */}
-        <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4 mb-8 flex items-start gap-3">
-          <AlertTriangle className="w-5 h-5 text-yellow-500 flex-shrink-0 mt-0.5" />
-          <div className="text-sm">
-            <span className="font-semibold text-yellow-500">Let op:</span>{' '}
-            <span className="text-muted-foreground">
-              De live bot is momenteel niet automatisch actief. Trades moeten handmatig getriggerd worden via de API.
-              Ga naar <Link to="/wallet" className="text-primary underline">Wallet</Link> om je balances te beheren.
-            </span>
-          </div>
+        {/* Runner Status */}
+        <div className="mb-8">
+          <RunnerStatus />
         </div>
 
         {/* Live Trading Dashboard */}

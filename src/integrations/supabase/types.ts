@@ -416,6 +416,51 @@ export type Database = {
         }
         Relationships: []
       }
+      runner_heartbeats: {
+        Row: {
+          balance: number | null
+          created_at: string
+          id: string
+          ip_address: string | null
+          last_heartbeat: string
+          markets_count: number | null
+          positions_count: number | null
+          runner_id: string
+          runner_type: string
+          status: string
+          trades_count: number | null
+          version: string | null
+        }
+        Insert: {
+          balance?: number | null
+          created_at?: string
+          id?: string
+          ip_address?: string | null
+          last_heartbeat?: string
+          markets_count?: number | null
+          positions_count?: number | null
+          runner_id: string
+          runner_type?: string
+          status?: string
+          trades_count?: number | null
+          version?: string | null
+        }
+        Update: {
+          balance?: number | null
+          created_at?: string
+          id?: string
+          ip_address?: string | null
+          last_heartbeat?: string
+          markets_count?: number | null
+          positions_count?: number | null
+          runner_id?: string
+          runner_type?: string
+          status?: string
+          trades_count?: number | null
+          version?: string | null
+        }
+        Relationships: []
+      }
       strike_prices: {
         Row: {
           asset: string
