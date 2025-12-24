@@ -1222,6 +1222,9 @@ serve(async (req) => {
           const collateralAddressRaw = await exchangeRead.getCollateral();
           const collateralAddress = ethers.getAddress(collateralAddressRaw);
 
+          // Amount in token-in units (USDT is 6 decimals on Polygon)
+          const amountInUnits = BigInt(Math.floor(amount * 1e6));
+
           // Determine token addresses
           const tokenInAddress = fromToken.toUpperCase() === 'USDT' ? USDT_ADDRESS : USDT_ADDRESS;
           const tokenOutAddress = collateralAddress;
