@@ -18,6 +18,7 @@ import {
   PieChart,
   ArrowUpRight,
   ArrowDownRight,
+  ExternalLink,
 } from 'lucide-react';
 import { HourlyPnLChart } from '@/components/HourlyPnLChart';
 import { usePaperTrades, PaperTrade, PaperTradeResult } from '@/hooks/usePaperTrades';
@@ -318,19 +319,27 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
                     return (
                       <tr key={slug} className="group hover:bg-muted/30 transition-colors">
                         <td className="py-3">
-                          <div className="flex items-center gap-2">
+                          <a 
+                            href={`https://polymarket.com/event/${slug}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-2 hover:opacity-80 transition-opacity"
+                          >
                             <div className={`w-8 h-8 rounded-lg flex items-center justify-center font-bold text-sm ${
                               asset === 'BTC' ? 'bg-orange-500/10 text-orange-500' : 'bg-blue-500/10 text-blue-500'
                             }`}>
                               {asset === 'BTC' ? '₿' : 'Ξ'}
                             </div>
-                            <div>
-                              <div className="font-medium text-sm">{asset} 15m</div>
-                              <div className="text-xs text-muted-foreground font-mono">
-                                {slug.split('-').slice(-1)[0]}
+                            <div className="flex-1 min-w-0">
+                              <div className="font-medium text-sm flex items-center gap-1">
+                                Will {asset} go up or down in 15 min?
+                                <ExternalLink className="w-3 h-3 text-muted-foreground" />
+                              </div>
+                              <div className="text-xs text-muted-foreground font-mono truncate">
+                                {marketTrades[0]?.event_start_time ? new Date(marketTrades[0].event_start_time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : slug.split('-').slice(-1)[0]}
                               </div>
                             </div>
-                          </div>
+                          </a>
                         </td>
                         <td className="py-3 text-center">
                           {marketStatus === 'OPEN' ? (
@@ -467,19 +476,27 @@ export const PaperTradeDashboard: React.FC<PaperTradeDashboardProps> = ({ compac
                     return (
                       <tr key={result.id} className="group hover:bg-muted/30 transition-colors">
                         <td className="py-3">
-                          <div className="flex items-center gap-2">
+                          <a 
+                            href={`https://polymarket.com/event/${result.market_slug}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-2 hover:opacity-80 transition-opacity"
+                          >
                             <div className={`w-7 h-7 rounded flex items-center justify-center text-xs font-bold ${
                               result.asset === 'BTC' ? 'bg-orange-500/10 text-orange-500' : 'bg-blue-500/10 text-blue-500'
                             }`}>
                               {result.asset === 'BTC' ? '₿' : 'Ξ'}
                             </div>
-                            <div>
-                              <div className="font-medium text-sm">{result.asset} 15m</div>
+                            <div className="flex-1 min-w-0">
+                              <div className="font-medium text-sm flex items-center gap-1">
+                                Will {result.asset} go up or down?
+                                <ExternalLink className="w-3 h-3 text-muted-foreground" />
+                              </div>
                               <div className="text-xs text-muted-foreground font-mono">
-                                {result.market_slug.split('-').slice(-1)[0]}
+                                {result.event_end_time ? new Date(result.event_end_time).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : result.market_slug.split('-').slice(-1)[0]}
                               </div>
                             </div>
-                          </div>
+                          </a>
                         </td>
                         <td className="py-3 text-center">
                           <Badge variant="outline" className={`text-xs ${
