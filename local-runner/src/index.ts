@@ -1,17 +1,16 @@
-import { createClient } from '@supabase/supabase-js';
 import WebSocket from 'ws';
 import os from 'os';
 import { config } from './config.js';
 import { placeOrder, testConnection, getBalance } from './polymarket.js';
-import { evaluateOpportunity, TopOfBook, MarketPosition, STRATEGY, Outcome } from './strategy.js';
+import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome } from './strategy.js';
 import { enforceVpnOrExit } from './vpn-check.js';
+import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline } from './backend.js';
 
 console.log('🚀 Polymarket Live Trader - Local Runner');
 console.log('========================================');
 
-const supabase = createClient(config.supabase.url, config.supabase.serviceRoleKey);
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '1.1.0';
+const RUNNER_VERSION = '1.2.0';
 let currentBalance = 0;
 
 interface MarketToken {
@@ -41,15 +40,7 @@ let isRunning = true;
 
 async function fetchMarkets(): Promise<void> {
   try {
-    const response = await fetch(`${config.supabase.url}/functions/v1/get-market-tokens`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${config.supabase.serviceRoleKey}`,
-        'Content-Type': 'application/json',
-      },
-    });
-
-    const data = await response.json();
+    const data = await backendFetchMarkets();
     if (!data.success || !data.markets) {
       console.error('❌ Failed to fetch markets');
       return;
@@ -114,32 +105,27 @@ async function fetchExistingTrades(): Promise<void> {
   const slugs = Array.from(markets.keys());
   if (slugs.length === 0) return;
 
-  const { data } = await supabase
-    .from('live_trades')
-    .select('market_slug, outcome, shares, total')
-    .in('market_slug', slugs);
+  const trades = await fetchTrades(slugs);
 
   // Reset positions
   for (const ctx of markets.values()) {
     ctx.position = { upShares: 0, downShares: 0, upInvested: 0, downInvested: 0 };
   }
 
-  if (data) {
-    for (const trade of data) {
-      const ctx = markets.get(trade.market_slug);
-      if (ctx) {
-        if (trade.outcome === 'UP') {
-          ctx.position.upShares += trade.shares;
-          ctx.position.upInvested += trade.total;
-        } else {
-          ctx.position.downShares += trade.shares;
-          ctx.position.downInvested += trade.total;
-        }
+  for (const trade of trades) {
+    const ctx = markets.get(trade.market_slug);
+    if (ctx) {
+      if (trade.outcome === 'UP') {
+        ctx.position.upShares += trade.shares;
+        ctx.position.upInvested += trade.total;
+      } else {
+        ctx.position.downShares += trade.shares;
+        ctx.position.downInvested += trade.total;
       }
     }
   }
 
-  console.log(`📋 Loaded ${data?.length || 0} existing trades`);
+  console.log(`📋 Loaded ${trades.length} existing trades`);
 }
 
 async function executeTrade(
@@ -177,8 +163,8 @@ async function executeTrade(
   }
   ctx.lastTradeAtMs = Date.now();
 
-  // Record in database
-  await supabase.from('live_trades').insert({
+  // Record in database via backend
+  await saveTrade({
     market_slug: ctx.slug,
     asset: ctx.market.asset,
     outcome,
@@ -320,25 +306,23 @@ async function processMarketEvent(data: any): Promise<void> {
   }
 }
 
-async function sendHeartbeat(): Promise<void> {
+async function doHeartbeat(): Promise<void> {
   try {
     const positions = [...markets.values()].filter(
       c => c.position.upShares > 0 || c.position.downShares > 0
     ).length;
 
-    await supabase
-      .from('runner_heartbeats' as any)
-      .upsert({
-        runner_id: RUNNER_ID,
-        runner_type: 'local',
-        last_heartbeat: new Date().toISOString(),
-        status: 'active',
-        markets_count: markets.size,
-        positions_count: positions,
-        trades_count: tradeCount,
-        balance: currentBalance,
-        version: RUNNER_VERSION,
-      }, { onConflict: 'runner_id' });
+    await sendHeartbeat({
+      runner_id: RUNNER_ID,
+      runner_type: 'local',
+      last_heartbeat: new Date().toISOString(),
+      status: 'active',
+      markets_count: markets.size,
+      positions_count: positions,
+      trades_count: tradeCount,
+      balance: currentBalance,
+      version: RUNNER_VERSION,
+    });
   } catch (error) {
     console.error('❌ Heartbeat error:', error);
   }
@@ -365,7 +349,7 @@ async function main(): Promise<void> {
   connectToClob();
 
   // Send initial heartbeat
-  await sendHeartbeat();
+  await doHeartbeat();
 
   // Periodic market refresh
   setInterval(async () => {
@@ -383,7 +367,7 @@ async function main(): Promise<void> {
   setInterval(async () => {
     const balanceResult = await getBalance();
     currentBalance = balanceResult.usdc;
-    await sendHeartbeat();
+    await doHeartbeat();
   }, 10000);
 
   // Status logging every minute
@@ -403,11 +387,8 @@ process.on('SIGINT', async () => {
   console.log('\n\n👋 Shutting down...');
   isRunning = false;
   
-  // Send offline heartbeat
-  await supabase
-    .from('runner_heartbeats' as any)
-    .update({ status: 'offline', last_heartbeat: new Date().toISOString() })
-    .eq('runner_id', RUNNER_ID);
+  // Send offline heartbeat via backend
+  await sendOffline(RUNNER_ID);
   
   if (clobSocket) clobSocket.close();
   process.exit(0);

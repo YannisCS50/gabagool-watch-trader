@@ -44,3 +44,6 @@ verify_jwt = false
 
 [functions.live-trade-realtime]
 verify_jwt = false
+
+[functions.runner-proxy]
+verify_jwt = false
