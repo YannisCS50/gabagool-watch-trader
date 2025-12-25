@@ -4,13 +4,14 @@ import os from 'os';
 import { config } from './config.js';
 import { placeOrder, testConnection, getBalance } from './polymarket.js';
 import { evaluateOpportunity, TopOfBook, MarketPosition, STRATEGY, Outcome } from './strategy.js';
+import { enforceVpnOrExit } from './vpn-check.js';
 
 console.log('🚀 Polymarket Live Trader - Local Runner');
 console.log('========================================');
 
 const supabase = createClient(config.supabase.url, config.supabase.serviceRoleKey);
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '1.0.0';
+const RUNNER_VERSION = '1.1.0';
 let currentBalance = 0;
 
 interface MarketToken {
@@ -344,6 +345,9 @@ async function sendHeartbeat(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // CRITICAL: Verify VPN is active before ANY trading activity
+  await enforceVpnOrExit();
+
   // Test Polymarket connection
   const connected = await testConnection();
   if (!connected) {
@@ -406,10 +410,6 @@ process.on('SIGINT', async () => {
     .eq('runner_id', RUNNER_ID);
   
   if (clobSocket) clobSocket.close();
-  process.exit(0);
-});
-
-main().catch(console.error);
   process.exit(0);
 });
 

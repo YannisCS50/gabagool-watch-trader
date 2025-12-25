@@ -1,20 +1,64 @@
 services:
+  # ============================================
+  # Frontend (optional - only if you need the web UI)
+  # ============================================
   web:
     build: .
     restart: always
     ports:
       - "80:80"
 
+  # ============================================
+  # WireGuard VPN Container (Mullvad)
+  # All bot traffic routes through this container
+  # ============================================
+  wireguard:
+    image: linuxserver/wireguard:latest
+    container_name: wg
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=UTC
+    volumes:
+      - /home/deploy/wireguard:/config
+      - /lib/modules:/lib/modules:ro
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv6.conf.all.disable_ipv6=1
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-s", "--max-time", "5", "https://api.ipify.org"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # ============================================
+  # Trading Bot - Uses WireGuard network
+  # network_mode ensures ALL traffic goes via VPN
+  # ============================================
   runner:
     build:
       context: ./local-runner
       dockerfile: Dockerfile
+    container_name: trading-bot
     restart: always
     env_file:
       - /home/deploy/secrets/local-runner.env
-    # optional: container logs are useful
-    # logging:
-    #   driver: "json-file"
-    #   options:
-    #     max-size: "10m"
-    #     max-file: "3"
+    environment:
+      - VPN_REQUIRED=true
+      - EXPECTED_VPN_PROVIDER=Mullvad
+    # CRITICAL: Share network with WireGuard container
+    # This ensures all outbound traffic goes through VPN
+    network_mode: "container:wg"
+    depends_on:
+      wireguard:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
