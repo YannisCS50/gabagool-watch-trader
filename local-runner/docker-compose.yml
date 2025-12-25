@@ -1,0 +1,27 @@
+version: "3.8"
+
+services:
+  local-runner:
+    build: .
+    container_name: polymarket-local-runner
+    restart: unless-stopped
+    env_file:
+      - .env
+    network_mode: "service:wireguard"
+    depends_on:
+      - wireguard
+
+  wireguard:
+    image: lscr.io/linuxserver/wireguard:latest
+    container_name: wireguard
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    environment:
+      - PUID=1000
+      - PGID=1000
+    volumes:
+      - ./wireguard:/config
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+    restart: unless-stopped
