@@ -95,10 +95,10 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
 
 export async function testConnection(): Promise<boolean> {
   console.log('🔌 Testing Polymarket connection...');
-  
+
   try {
-    // Test with the public orderbook endpoint (no auth needed)
-    const response = await fetch(`${CLOB_URL}/tick-sizes`, {
+    // Test with a known public endpoint
+    const response = await fetch(`${CLOB_URL}/markets?limit=1`, {
       method: 'GET',
       headers: { 'Content-Type': 'application/json' },
     });
