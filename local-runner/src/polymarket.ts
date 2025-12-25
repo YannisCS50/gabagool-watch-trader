@@ -1,7 +1,9 @@
-import crypto from 'crypto';
+import { ClobClient, Side, OrderType } from '@polymarket/clob-client';
+import { Wallet } from 'ethers';
 import { config } from './config.js';
 
 const CLOB_URL = 'https://clob.polymarket.com';
+const CHAIN_ID = 137; // Polygon mainnet
 
 interface OrderRequest {
   tokenId: string;
@@ -19,91 +21,103 @@ interface OrderResponse {
   error?: string;
 }
 
-function normalizeBase64Secret(secret: string): Buffer {
-  // Accept both base64 and base64url ("-"/"_") and strip non-base64 chars
-  const sanitized = secret
-    .trim()
-    .replace(/-/g, '+')
-    .replace(/_/g, '/')
-    .replace(/[^A-Za-z0-9+/=]/g, '');
+// Singleton ClobClient instance
+let clobClient: ClobClient | null = null;
 
-  return Buffer.from(sanitized, 'base64');
-}
+async function getClient(): Promise<ClobClient> {
+  if (clobClient) {
+    return clobClient;
+  }
 
-function toBase64Url(base64: string): string {
-  // Polymarket expects url-safe base64, while keeping "=" padding
-  return base64.replace(/\+/g, '-').replace(/\//g, '_');
-}
+  console.log('🔧 Initializing Polymarket CLOB client...');
 
-// Generate L2 authentication headers for Polymarket CLOB
-function generateAuthHeaders(method: string, path: string, body?: string): Record<string, string> {
-  // Docs + SDK use ms timestamps
-  const timestamp = Date.now().toString();
-  const message = timestamp + method.toUpperCase() + path + (body ?? '');
+  const signer = new Wallet(config.polymarket.privateKey);
 
-  const rawSig = crypto
-    .createHmac('sha256', normalizeBase64Secret(config.polymarket.apiSecret))
-    .update(message)
-    .digest('base64');
-
-  const signature = toBase64Url(rawSig);
-
-  return {
-    POLY_ADDRESS: config.polymarket.address,
-    POLY_API_KEY: config.polymarket.apiKey,
-    POLY_PASSPHRASE: config.polymarket.passphrase,
-    POLY_SIGNATURE: signature,
-    POLY_TIMESTAMP: timestamp,
-    'Content-Type': 'application/json',
+  // API credentials from Polymarket
+  const apiCreds = {
+    key: config.polymarket.apiKey,
+    secret: config.polymarket.apiSecret,
+    passphrase: config.polymarket.passphrase,
   };
+
+  // Signature type 2 = Safe proxy wallet (Polymarket default)
+  // Funder address = your Polymarket wallet address
+  clobClient = new ClobClient(
+    CLOB_URL,
+    CHAIN_ID,
+    signer,
+    apiCreds,
+    2, // signatureType: 2 for Safe proxy
+    config.polymarket.address // funder address (your Polymarket profile address)
+  );
+
+  console.log(`✅ CLOB client initialized for ${config.polymarket.address}`);
+  return clobClient;
 }
 
 export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
-  const path = '/order';
-  const body = JSON.stringify({
-    token_id: order.tokenId,
-    side: order.side,
-    price: order.price.toString(),
-    size: order.size.toString(),
-    type: order.orderType || 'GTC',
-  });
-
-  const headers = generateAuthHeaders('POST', path, body);
-
   console.log(`📤 Placing order: ${order.side} ${order.size} @ ${(order.price * 100).toFixed(0)}¢`);
 
   try {
-    const response = await fetch(`${CLOB_URL}${path}`, {
-      method: 'POST',
-      headers,
-      body,
-    });
+    const client = await getClient();
 
-    const responseText = await response.text();
-    
-    if (!response.ok) {
-      console.error(`❌ Order failed (${response.status}): ${responseText.slice(0, 200)}`);
-      
-      // Check for Cloudflare block
-      if (responseText.includes('Cloudflare') || responseText.includes('blocked')) {
-        return { success: false, error: 'Cloudflare blocked - check your IP/VPN' };
-      }
-      
-      return { success: false, error: `HTTP ${response.status}: ${responseText.slice(0, 100)}` };
+    const side = order.side === 'BUY' ? Side.BUY : Side.SELL;
+    let orderType: OrderType;
+    switch (order.orderType) {
+      case 'FOK':
+        orderType = OrderType.FOK;
+        break;
+      case 'GTD':
+        orderType = OrderType.GTD;
+        break;
+      default:
+        orderType = OrderType.GTC;
     }
 
-    const data = JSON.parse(responseText);
-    console.log(`✅ Order placed: ${data.id || 'unknown'}`);
-    
+    // Use createAndPostOrder which handles order signing
+    const response = await client.createAndPostOrder(
+      {
+        tokenID: order.tokenId,
+        price: order.price,
+        size: order.size,
+        side,
+      },
+      {
+        tickSize: '0.01', // Standard tick size for most markets
+        negRisk: false,   // Set based on market type
+      },
+      orderType
+    );
+
+    if (response.success === false || response.errorMsg) {
+      console.error(`❌ Order failed: ${response.errorMsg || 'Unknown error'}`);
+      return { success: false, error: response.errorMsg || 'Order failed' };
+    }
+
+    console.log(`✅ Order placed: ${response.orderID || 'pending'}`);
+
     return {
       success: true,
-      orderId: data.id,
-      avgPrice: parseFloat(data.avg_price || order.price),
-      filledSize: parseFloat(data.filled_size || order.size),
+      orderId: response.orderID,
+      avgPrice: order.price,
+      filledSize: order.size,
     };
-  } catch (error) {
-    console.error(`❌ Order error:`, error);
-    return { success: false, error: String(error) };
+  } catch (error: any) {
+    const errorMsg = error?.message || String(error);
+    console.error(`❌ Order error:`, errorMsg);
+
+    // Check for common errors
+    if (errorMsg.includes('Cloudflare') || errorMsg.includes('blocked')) {
+      return { success: false, error: 'Cloudflare blocked - check your IP/VPN' };
+    }
+    if (errorMsg.includes('401') || errorMsg.includes('Unauthorized')) {
+      return { success: false, error: 'Invalid API key - regenerate on Polymarket' };
+    }
+    if (errorMsg.includes('insufficient')) {
+      return { success: false, error: 'Insufficient balance' };
+    }
+
+    return { success: false, error: errorMsg };
   }
 }
 
