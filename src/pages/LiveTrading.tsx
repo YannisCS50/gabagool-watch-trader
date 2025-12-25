@@ -22,11 +22,34 @@ interface WalletBalance {
   matic: string;
 }
 
-const ZERO = 0;
+interface Portfolio {
+  totalValue: number;
+  cashBalance: number;
+  positionsValue: number;
+  unrealizedPnl: number;
+  realizedPnl: number;
+  totalPnl: number;
+}
+
+interface Position {
+  title: string;
+  slug: string;
+  outcome: string;
+  size: number;
+  avgPrice: number;
+  currentPrice: number;
+  currentValue: number;
+  initialValue: number;
+  cashPnl: number;
+  percentPnl: number;
+  redeemable: boolean;
+  endDate: string;
+}
 
 export default function LiveTrading() {
   const [walletBalance, setWalletBalance] = useState<WalletBalance | null>(null);
-  const [polymarketBalance, setPolymarketBalance] = useState<number | null>(null);
+  const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
+  const [positions, setPositions] = useState<Position[]>([]);
   const [isLoadingWallet, setIsLoadingWallet] = useState(true);
 
   const fetchBalances = async () => {
@@ -41,13 +64,16 @@ export default function LiveTrading() {
         setWalletBalance(walletData.balances);
       }
 
-      // Fetch Polymarket balance
-      const { data: pmData } = await supabase.functions.invoke('live-trade-bot', {
-        body: { action: 'balance' }
+      // Fetch portfolio with positions from Polymarket
+      const { data: portfolioData } = await supabase.functions.invoke('live-trade-bot', {
+        body: { action: 'portfolio' }
       });
       
-      if (typeof pmData?.balance === 'number') {
-        setPolymarketBalance(pmData.balance);
+      if (portfolioData?.portfolio) {
+        setPortfolio(portfolioData.portfolio);
+      }
+      if (portfolioData?.positions) {
+        setPositions(portfolioData.positions);
       }
     } catch (err) {
       console.error('Error fetching balances:', err);
@@ -96,15 +122,45 @@ export default function LiveTrading() {
           </div>
         </div>
 
-        {/* Balance Cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-          <Card className="border-red-500/20">
+        {/* Portfolio Cards */}
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
+          <Card className="border-emerald-500/20 bg-gradient-to-br from-emerald-500/5 to-transparent">
             <CardContent className="p-4">
-              <div className="text-sm text-muted-foreground mb-1">Trading Balance</div>
-              <div className="text-2xl font-bold font-mono">
-                ${polymarketBalance !== null ? polymarketBalance.toFixed(2) : '...'}
+              <div className="text-sm text-muted-foreground mb-1">Portfolio Value</div>
+              <div className="text-2xl font-bold font-mono text-emerald-500">
+                ${portfolio ? portfolio.totalValue.toFixed(2) : '...'}
               </div>
-              <div className="text-xs text-muted-foreground">Polymarket USDC</div>
+              <div className="text-xs text-muted-foreground">Cash + Positions</div>
+            </CardContent>
+          </Card>
+
+          <Card className="border-amber-500/20">
+            <CardContent className="p-4">
+              <div className="text-sm text-muted-foreground mb-1">Cash Balance</div>
+              <div className="text-2xl font-bold font-mono">
+                ${portfolio ? portfolio.cashBalance.toFixed(2) : '...'}
+              </div>
+              <div className="text-xs text-muted-foreground">Available USDC</div>
+            </CardContent>
+          </Card>
+          
+          <Card>
+            <CardContent className="p-4">
+              <div className="text-sm text-muted-foreground mb-1">Positions Value</div>
+              <div className="text-2xl font-bold font-mono">
+                ${portfolio ? portfolio.positionsValue.toFixed(2) : '...'}
+              </div>
+              <div className="text-xs text-muted-foreground">{positions.length} open positions</div>
+            </CardContent>
+          </Card>
+          
+          <Card className={portfolio && portfolio.totalPnl >= 0 ? "border-emerald-500/20" : "border-red-500/20"}>
+            <CardContent className="p-4">
+              <div className="text-sm text-muted-foreground mb-1">Total P/L</div>
+              <div className={`text-2xl font-bold font-mono ${portfolio && portfolio.totalPnl >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                {portfolio ? `${portfolio.totalPnl >= 0 ? '+' : ''}$${portfolio.totalPnl.toFixed(2)}` : '...'}
+              </div>
+              <div className="text-xs text-muted-foreground">Unrealized + Realized</div>
             </CardContent>
           </Card>
           
@@ -115,26 +171,6 @@ export default function LiveTrading() {
                 ${walletBalance ? parseFloat(walletBalance.usdc).toFixed(2) : '...'}
               </div>
               <div className="text-xs text-muted-foreground">Ready to deposit</div>
-            </CardContent>
-          </Card>
-          
-          <Card>
-            <CardContent className="p-4">
-              <div className="text-sm text-muted-foreground mb-1">Wallet USDT</div>
-              <div className="text-2xl font-bold font-mono">
-                ${walletBalance ? parseFloat(walletBalance.usdt).toFixed(2) : '...'}
-              </div>
-              <div className="text-xs text-muted-foreground">Needs swap</div>
-            </CardContent>
-          </Card>
-          
-          <Card>
-            <CardContent className="p-4">
-              <div className="text-sm text-muted-foreground mb-1">MATIC</div>
-              <div className="text-2xl font-bold font-mono">
-                {walletBalance ? parseFloat(walletBalance.matic).toFixed(4) : '...'}
-              </div>
-              <div className="text-xs text-muted-foreground">For gas fees</div>
             </CardContent>
           </Card>
         </div>

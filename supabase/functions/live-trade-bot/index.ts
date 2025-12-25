@@ -1658,11 +1658,121 @@ serve(async (req) => {
         }
       }
       
+      case 'portfolio': {
+        // Fetch portfolio data including positions from Polymarket Data API
+        try {
+          const wallet = new ethers.Wallet(privateKey!);
+          const funder = await resolvePolymarketFunder(privateKey!);
+          
+          console.log(`[LiveBot] Fetching portfolio for ${funder.funderAddress}...`);
+          
+          // Get cash balance first
+          let creds = await getCredentials();
+          let balanceData: { balance: string; allowance: string };
+          
+          try {
+            balanceData = await getBalanceAllowance(
+              wallet,
+              { key: creds.apiKey, secret: creds.apiSecret, passphrase: creds.passphrase },
+              'COLLATERAL'
+            );
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (msg.includes('401') || msg.toLowerCase().includes('unauthorized')) {
+              console.warn('[LiveBot] Stored API credentials rejected. Deriving fresh credentials...');
+              apiCredentials = await deriveApiCredentials(privateKey!);
+              creds = apiCredentials;
+              balanceData = await getBalanceAllowance(
+                wallet,
+                { key: creds.apiKey, secret: creds.apiSecret, passphrase: creds.passphrase },
+                'COLLATERAL'
+              );
+            } else {
+              throw err;
+            }
+          }
+          
+          const cashBalance = parseFloat(balanceData.balance) / 1e6;
+          
+          // Fetch positions from Polymarket Data API (public endpoint)
+          const positionsUrl = `https://data-api.polymarket.com/positions?user=${funder.funderAddress}&sizeThreshold=0&limit=100`;
+          console.log(`[LiveBot] Fetching positions from ${positionsUrl}`);
+          
+          const positionsResponse = await fetch(positionsUrl, {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' },
+          });
+          
+          let positions: any[] = [];
+          let positionsValue = 0;
+          let unrealizedPnl = 0;
+          let realizedPnl = 0;
+          
+          if (positionsResponse.ok) {
+            const positionsData = await positionsResponse.json();
+            positions = Array.isArray(positionsData) ? positionsData : [];
+            
+            console.log(`[LiveBot] Found ${positions.length} positions`);
+            
+            // Calculate totals from positions
+            for (const pos of positions) {
+              positionsValue += pos.currentValue || 0;
+              unrealizedPnl += pos.cashPnl || 0;
+              realizedPnl += pos.realizedPnl || 0;
+            }
+          } else {
+            console.warn(`[LiveBot] Failed to fetch positions: ${positionsResponse.status}`);
+          }
+          
+          const portfolioValue = cashBalance + positionsValue;
+          
+          return new Response(JSON.stringify({
+            success: true,
+            portfolio: {
+              totalValue: portfolioValue,
+              cashBalance: cashBalance,
+              positionsValue: positionsValue,
+              unrealizedPnl: unrealizedPnl,
+              realizedPnl: realizedPnl,
+              totalPnl: unrealizedPnl + realizedPnl,
+            },
+            positions: positions.map(p => ({
+              title: p.title,
+              slug: p.slug,
+              outcome: p.outcome,
+              size: p.size,
+              avgPrice: p.avgPrice,
+              currentPrice: p.curPrice,
+              currentValue: p.currentValue,
+              initialValue: p.initialValue,
+              cashPnl: p.cashPnl,
+              percentPnl: p.percentPnl,
+              redeemable: p.redeemable,
+              endDate: p.endDate,
+            })),
+            walletAddress: wallet.address,
+            funderAddress: funder.funderAddress,
+            funderType: funder.funderType,
+          }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        } catch (error) {
+          console.error('[LiveBot] Portfolio error:', error);
+          return new Response(JSON.stringify({
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to get portfolio',
+          }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+      }
+      
       default:
         return new Response(JSON.stringify({
           success: false,
           error: `Unknown action: ${action}`,
-          availableActions: ['status', 'balance', 'wallet-balance', 'deposit', 'swap', 'order', 'redeem', 'kill', 'derive-credentials', 'debug-auth'],
+          availableActions: ['status', 'balance', 'wallet-balance', 'deposit', 'swap', 'order', 'redeem', 'kill', 'derive-credentials', 'debug-auth', 'portfolio'],
         }), {
           status: 400,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
