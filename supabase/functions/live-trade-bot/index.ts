@@ -1692,7 +1692,53 @@ serve(async (req) => {
             }
           }
           
-          const cashBalance = parseFloat(balanceData.balance) / 1e6;
+          // The CLOB balance only shows USDC, but Polymarket also uses USDC.e
+          // We need to fetch the on-chain USDC.e balance for accurate portfolio value
+          const clobBalance = parseFloat(balanceData.balance) / 1e6;
+          console.log(`[LiveBot] CLOB balance: $${clobBalance.toFixed(2)}`);
+          
+          // Fetch USDC.e balance on-chain (this is where Polymarket holds most funds)
+          // USDC.e contract on Polygon: 0x2791bca1f2de4661ed88a30c99a7a9449aa84174
+          const USDC_E_CONTRACT = '0x2791bca1f2de4661ed88a30c99a7a9449aa84174';
+          const POLYGON_RPC = 'https://polygon-rpc.com';
+          
+          let onChainBalance = 0;
+          try {
+            // Call balanceOf function on USDC.e contract
+            // balanceOf(address) selector: 0x70a08231
+            const paddedAddress = funder.funderAddress.slice(2).padStart(64, '0');
+            const callData = `0x70a08231${paddedAddress}`;
+            
+            const rpcResponse = await fetch(POLYGON_RPC, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                jsonrpc: '2.0',
+                id: 1,
+                method: 'eth_call',
+                params: [
+                  { to: USDC_E_CONTRACT, data: callData },
+                  'latest'
+                ]
+              })
+            });
+            
+            if (rpcResponse.ok) {
+              const rpcData = await rpcResponse.json();
+              if (rpcData.result) {
+                // USDC.e has 6 decimals
+                onChainBalance = parseInt(rpcData.result, 16) / 1e6;
+                console.log(`[LiveBot] On-chain USDC.e balance: $${onChainBalance.toFixed(2)}`);
+              }
+            }
+          } catch (err) {
+            console.warn('[LiveBot] Failed to fetch on-chain balance:', err);
+          }
+          
+          // Use the higher of CLOB balance or on-chain balance
+          // (The on-chain balance is the source of truth)
+          const cashBalance = onChainBalance > 0 ? onChainBalance : clobBalance;
+          console.log(`[LiveBot] Using cash balance: $${cashBalance.toFixed(2)}`);
           
           // Fetch positions from Polymarket Data API (public endpoint)
           const positionsUrl = `https://data-api.polymarket.com/positions?user=${funder.funderAddress}&sizeThreshold=0&limit=100`;
