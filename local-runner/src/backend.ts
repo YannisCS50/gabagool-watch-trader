@@ -111,3 +111,45 @@ export async function sendOffline(runnerId: string): Promise<void> {
     console.error('❌ sendOffline error:', error);
   }
 }
+
+interface PendingOrder {
+  id: string;
+  market_slug: string;
+  asset: string;
+  outcome: string;
+  token_id: string;
+  price: number;
+  shares: number;
+  order_type: string;
+  reasoning: string | null;
+  event_start_time: string | null;
+  event_end_time: string | null;
+}
+
+export async function fetchPendingOrders(): Promise<PendingOrder[]> {
+  try {
+    const result = await callProxy<{ success: boolean; orders?: PendingOrder[] }>('get-pending-orders');
+    return result.orders || [];
+  } catch (error) {
+    console.error('❌ fetchPendingOrders error:', error);
+    return [];
+  }
+}
+
+export async function updateOrder(
+  orderId: string,
+  status: 'filled' | 'failed' | 'cancelled',
+  result?: { order_id?: string; avg_fill_price?: number; error?: string }
+): Promise<boolean> {
+  try {
+    const response = await callProxy<{ success: boolean }>('update-order', {
+      order_id: orderId,
+      status,
+      result,
+    });
+    return response.success;
+  } catch (error) {
+    console.error('❌ updateOrder error:', error);
+    return false;
+  }
+}

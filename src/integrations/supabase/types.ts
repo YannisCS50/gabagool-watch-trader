@@ -212,6 +212,66 @@ export type Database = {
         }
         Relationships: []
       }
+      order_queue: {
+        Row: {
+          asset: string
+          avg_fill_price: number | null
+          created_at: string
+          error_message: string | null
+          event_end_time: string | null
+          event_start_time: string | null
+          executed_at: string | null
+          id: string
+          market_slug: string
+          order_id: string | null
+          order_type: string
+          outcome: string
+          price: number
+          reasoning: string | null
+          shares: number
+          status: string
+          token_id: string
+        }
+        Insert: {
+          asset: string
+          avg_fill_price?: number | null
+          created_at?: string
+          error_message?: string | null
+          event_end_time?: string | null
+          event_start_time?: string | null
+          executed_at?: string | null
+          id?: string
+          market_slug: string
+          order_id?: string | null
+          order_type?: string
+          outcome: string
+          price: number
+          reasoning?: string | null
+          shares: number
+          status?: string
+          token_id: string
+        }
+        Update: {
+          asset?: string
+          avg_fill_price?: number | null
+          created_at?: string
+          error_message?: string | null
+          event_end_time?: string | null
+          event_start_time?: string | null
+          executed_at?: string | null
+          id?: string
+          market_slug?: string
+          order_id?: string | null
+          order_type?: string
+          outcome?: string
+          price?: number
+          reasoning?: string | null
+          shares?: number
+          status?: string
+          token_id?: string
+        }
+        Relationships: []
+      }
       paper_bot_settings: {
         Row: {
           id: string
