@@ -22,20 +22,39 @@ jobs:
           mkdir -p ~/.ssh
           ssh-keyscan -H ${{ secrets.HETZNER_HOST }} >> ~/.ssh/known_hosts
 
-      - name: SSH smoke test (prints real reason if it fails)
-        run: |
-          ssh -vvv -o BatchMode=yes ${{ secrets.HETZNER_USER }}@${{ secrets.HETZNER_HOST }} "whoami && hostname && date"
-
       - name: Deploy (pull + docker compose)
         run: |
           ssh ${{ secrets.HETZNER_USER }}@${{ secrets.HETZNER_HOST }} << 'EOF'
             set -e
             mkdir -p /home/deploy/app
+            mkdir -p /home/deploy/secrets
+            
+            # Clone or update repo
             if [ ! -d "/home/deploy/app/.git" ]; then
               git clone https://github.com/gabagool-watch/gabagool-watch-trader.git /home/deploy/app
             fi
             cd /home/deploy/app
             git fetch --all
             git reset --hard origin/main
+            
+            # Build and restart containers
             docker compose up -d --build
+            
+            # Cleanup old images
+            docker image prune -f || true
+            
+            # Show status
+            docker compose ps
+          EOF
+
+      - name: Verify secrets exist
+        run: |
+          ssh ${{ secrets.HETZNER_USER }}@${{ secrets.HETZNER_HOST }} << 'EOF'
+            if [ ! -f "/home/deploy/secrets/local-runner.env" ]; then
+              echo "⚠️ WARNING: /home/deploy/secrets/local-runner.env not found!"
+              echo "Create it with your Polymarket credentials before the runner will work."
+              exit 1
+            else
+              echo "✅ Secrets file found"
+            fi
           EOF
