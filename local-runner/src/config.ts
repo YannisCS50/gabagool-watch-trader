@@ -1,9 +1,9 @@
 import 'dotenv/config';
 
 export const config = {
-  supabase: {
-    url: process.env.SUPABASE_URL!,
-    serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY!,
+  backend: {
+    url: process.env.BACKEND_URL!,
+    secret: process.env.RUNNER_SHARED_SECRET!,
   },
   polymarket: {
     apiKey: process.env.POLYMARKET_API_KEY!,
@@ -20,8 +20,8 @@ export const config = {
 
 // Validate required config
 const required = [
-  ['SUPABASE_URL', config.supabase.url],
-  ['SUPABASE_SERVICE_ROLE_KEY', config.supabase.serviceRoleKey],
+  ['BACKEND_URL', config.backend.url],
+  ['RUNNER_SHARED_SECRET', config.backend.secret],
   ['POLYMARKET_API_KEY', config.polymarket.apiKey],
   ['POLYMARKET_API_SECRET', config.polymarket.apiSecret],
   ['POLYMARKET_PASSPHRASE', config.polymarket.passphrase],
