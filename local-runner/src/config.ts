@@ -10,6 +10,7 @@ export const config = {
     apiSecret: process.env.POLYMARKET_API_SECRET!,
     passphrase: process.env.POLYMARKET_PASSPHRASE!,
     privateKey: process.env.POLYMARKET_PRIVATE_KEY!,
+    address: process.env.POLYMARKET_ADDRESS!,
   },
   trading: {
     assets: (process.env.TRADE_ASSETS || 'BTC').split(','),
@@ -26,6 +27,7 @@ const required = [
   ['POLYMARKET_API_SECRET', config.polymarket.apiSecret],
   ['POLYMARKET_PASSPHRASE', config.polymarket.passphrase],
   ['POLYMARKET_PRIVATE_KEY', config.polymarket.privateKey],
+  ['POLYMARKET_ADDRESS', config.polymarket.address],
 ];
 
 for (const [name, value] of required) {

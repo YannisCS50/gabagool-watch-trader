@@ -19,21 +19,41 @@ interface OrderResponse {
   error?: string;
 }
 
-// Generate L1 authentication headers for Polymarket CLOB
+function normalizeBase64Secret(secret: string): Buffer {
+  // Accept both base64 and base64url ("-"/"_") and strip non-base64 chars
+  const sanitized = secret
+    .trim()
+    .replace(/-/g, '+')
+    .replace(/_/g, '/')
+    .replace(/[^A-Za-z0-9+/=]/g, '');
+
+  return Buffer.from(sanitized, 'base64');
+}
+
+function toBase64Url(base64: string): string {
+  // Polymarket expects url-safe base64, while keeping "=" padding
+  return base64.replace(/\+/g, '-').replace(/\//g, '_');
+}
+
+// Generate L2 authentication headers for Polymarket CLOB
 function generateAuthHeaders(method: string, path: string, body?: string): Record<string, string> {
-  const timestamp = Math.floor(Date.now() / 1000).toString();
-  const message = timestamp + method + path + (body || '');
-  
-  const signature = crypto
-    .createHmac('sha256', Buffer.from(config.polymarket.apiSecret, 'base64'))
+  // Docs + SDK use ms timestamps
+  const timestamp = Date.now().toString();
+  const message = timestamp + method.toUpperCase() + path + (body ?? '');
+
+  const rawSig = crypto
+    .createHmac('sha256', normalizeBase64Secret(config.polymarket.apiSecret))
     .update(message)
     .digest('base64');
 
+  const signature = toBase64Url(rawSig);
+
   return {
-    'POLY_API_KEY': config.polymarket.apiKey,
-    'POLY_SIGNATURE': signature,
-    'POLY_TIMESTAMP': timestamp,
-    'POLY_PASSPHRASE': config.polymarket.passphrase,
+    POLY_ADDRESS: config.polymarket.address,
+    POLY_API_KEY: config.polymarket.apiKey,
+    POLY_PASSPHRASE: config.polymarket.passphrase,
+    POLY_SIGNATURE: signature,
+    POLY_TIMESTAMP: timestamp,
     'Content-Type': 'application/json',
   };
 }
