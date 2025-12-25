@@ -23,31 +23,31 @@ export interface TradeSignal {
   type: 'opening' | 'hedge' | 'accumulate';
 }
 
-// Strategy configuration
+// Strategy configuration - LIVE TRADING PARAMETERS
 export const STRATEGY = {
   opening: {
     notional: config.trading.maxNotionalPerTrade,
-    maxPrice: config.trading.openingMaxPrice,
+    maxPrice: 0.55, // More aggressive: buy up to 55¢ (was 52¢ via env)
   },
   hedge: {
-    triggerCombined: 0.98,
+    triggerCombined: 0.99, // Hedge when combined < 99¢ (2% edge minimum)
     notional: config.trading.maxNotionalPerTrade,
   },
   accumulate: {
-    triggerCombined: 0.97,
+    triggerCombined: 0.98, // Accumulate when combined < 98¢ (3% edge)
     notional: config.trading.maxNotionalPerTrade,
   },
   limits: {
-    maxSharesPerSide: 100,
-    maxTotalInvested: 50,
+    maxSharesPerSide: 150,
+    maxTotalInvested: 75, // Allow more capital per market
   },
   entry: {
-    minSecondsRemaining: 60,
+    minSecondsRemaining: 45, // Enter closer to expiry (was 60s)
     minPrice: 0.03,
     maxPrice: 0.92,
-    staleBookMs: 3000,
+    staleBookMs: 5000, // More tolerance for stale data
   },
-  cooldownMs: 5000,
+  cooldownMs: 3000, // Faster cooldown between trades
 };
 
 function isNum(x: unknown): x is number {
