@@ -4,7 +4,7 @@ import { config } from './config.js';
 import { placeOrder, testConnection, getBalance } from './polymarket.js';
 import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome } from './strategy.js';
 import { enforceVpnOrExit } from './vpn-check.js';
-import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline } from './backend.js';
+import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder } from './backend.js';
 
 console.log('🚀 Polymarket Live Trader - Local Runner');
 console.log('========================================');
@@ -362,6 +362,58 @@ async function main(): Promise<void> {
       clobSocket.close();
     }
   }, 15000);
+
+  // Poll order queue every 2 seconds (execute orders from edge function)
+  setInterval(async () => {
+    const orders = await fetchPendingOrders();
+    
+    for (const order of orders) {
+      console.log(`\n📥 RECEIVED ORDER: ${order.outcome} ${order.shares}@${(order.price * 100).toFixed(0)}¢ on ${order.market_slug}`);
+      
+      try {
+        const result = await placeOrder({
+          tokenId: order.token_id,
+          side: 'BUY',
+          price: order.price,
+          size: order.shares,
+          orderType: order.order_type as 'GTC' | 'FOK' | 'GTD',
+        });
+
+        if (result.success) {
+          // Save trade to database
+          await saveTrade({
+            market_slug: order.market_slug,
+            asset: order.asset,
+            outcome: order.outcome,
+            shares: order.shares,
+            price: order.price,
+            total: order.shares * order.price,
+            order_id: result.orderId,
+            status: 'filled',
+            reasoning: order.reasoning || 'Order from edge function',
+            event_start_time: order.event_start_time || new Date().toISOString(),
+            event_end_time: order.event_end_time || new Date().toISOString(),
+            avg_fill_price: result.avgPrice || order.price,
+          });
+
+          await updateOrder(order.id, 'filled', {
+            order_id: result.orderId,
+            avg_fill_price: result.avgPrice,
+          });
+
+          tradeCount++;
+          console.log(`✅ ORDER EXECUTED: ${order.outcome} ${order.shares}@${(order.price * 100).toFixed(0)}¢`);
+        } else {
+          await updateOrder(order.id, 'failed', { error: result.error });
+          console.error(`❌ ORDER FAILED: ${result.error}`);
+        }
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        await updateOrder(order.id, 'failed', { error: msg });
+        console.error(`❌ ORDER ERROR: ${msg}`);
+      }
+    }
+  }, 2000);
 
   // Heartbeat every 10 seconds
   setInterval(async () => {

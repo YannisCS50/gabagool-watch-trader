@@ -9,7 +9,7 @@ const RUNNER_SECRET = Deno.env.get('RUNNER_SHARED_SECRET');
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
-type Action = 'get-markets' | 'get-trades' | 'save-trade' | 'heartbeat' | 'offline';
+type Action = 'get-markets' | 'get-trades' | 'save-trade' | 'heartbeat' | 'offline' | 'get-pending-orders' | 'update-order';
 
 interface RequestBody {
   action: Action;
@@ -150,6 +150,81 @@ Deno.serve(async (req) => {
           console.error('[runner-proxy] offline error:', error);
         }
 
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      case 'get-pending-orders': {
+        // Fetch pending orders for the runner to execute
+        const { data: orders, error } = await supabase
+          .from('order_queue')
+          .select('*')
+          .eq('status', 'pending')
+          .order('created_at', { ascending: true })
+          .limit(10);
+
+        if (error) {
+          console.error('[runner-proxy] get-pending-orders error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        // Mark orders as "processing" to prevent double-execution
+        if (orders && orders.length > 0) {
+          const orderIds = orders.map(o => o.id);
+          await supabase
+            .from('order_queue')
+            .update({ status: 'processing' })
+            .in('id', orderIds);
+          
+          console.log(`[runner-proxy] ✅ Sending ${orders.length} orders to runner`);
+        }
+
+        return new Response(JSON.stringify({ success: true, orders: orders || [] }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      case 'update-order': {
+        const orderId = data?.order_id as string | undefined;
+        const status = data?.status as string | undefined;
+        const orderResult = data?.result as Record<string, unknown> | undefined;
+
+        if (!orderId || !status) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing order_id or status' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const updateData: Record<string, unknown> = {
+          status,
+          executed_at: new Date().toISOString(),
+        };
+
+        if (orderResult) {
+          if (orderResult.order_id) updateData.order_id = orderResult.order_id;
+          if (orderResult.avg_fill_price) updateData.avg_fill_price = orderResult.avg_fill_price;
+          if (orderResult.error) updateData.error_message = orderResult.error;
+        }
+
+        const { error } = await supabase
+          .from('order_queue')
+          .update(updateData)
+          .eq('id', orderId);
+
+        if (error) {
+          console.error('[runner-proxy] update-order error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] ✅ Order ${orderId} updated to ${status}`);
         return new Response(JSON.stringify({ success: true }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });

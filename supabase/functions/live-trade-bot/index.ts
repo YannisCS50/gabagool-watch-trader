@@ -1814,11 +1814,79 @@ serve(async (req) => {
         }
       }
       
+      case 'queue-order': {
+        // Queue an order for the local runner to execute
+        // This bypasses the geo-restriction since the runner is behind VPN
+        const orderData = body.orderData as {
+          market_slug: string;
+          asset: string;
+          outcome: string;
+          token_id: string;
+          price: number;
+          shares: number;
+          reasoning?: string;
+          event_start_time?: string;
+          event_end_time?: string;
+        } | undefined;
+
+        if (!orderData) {
+          return new Response(JSON.stringify({
+            success: false,
+            error: 'Missing orderData',
+          }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        // Insert into order queue
+        const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+        const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+        const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+        const { data: queuedOrder, error: queueError } = await supabase
+          .from('order_queue')
+          .insert({
+            market_slug: orderData.market_slug,
+            asset: orderData.asset,
+            outcome: orderData.outcome,
+            token_id: orderData.token_id,
+            price: orderData.price,
+            shares: orderData.shares,
+            reasoning: orderData.reasoning || 'Queued from dashboard',
+            event_start_time: orderData.event_start_time,
+            event_end_time: orderData.event_end_time,
+            status: 'pending',
+          })
+          .select()
+          .single();
+
+        if (queueError) {
+          console.error('[LiveBot] Queue order error:', queueError);
+          return new Response(JSON.stringify({
+            success: false,
+            error: queueError.message,
+          }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[LiveBot] ✅ Order queued: ${orderData.outcome} ${orderData.shares}@${orderData.price}`);
+        return new Response(JSON.stringify({
+          success: true,
+          orderId: queuedOrder.id,
+          message: 'Order queued for local runner execution',
+        }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+      
       default:
         return new Response(JSON.stringify({
           success: false,
           error: `Unknown action: ${action}`,
-          availableActions: ['status', 'balance', 'wallet-balance', 'deposit', 'swap', 'order', 'redeem', 'kill', 'derive-credentials', 'debug-auth', 'portfolio'],
+          availableActions: ['status', 'balance', 'wallet-balance', 'deposit', 'swap', 'order', 'redeem', 'kill', 'derive-credentials', 'debug-auth', 'portfolio', 'queue-order'],
         }), {
           status: 400,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
