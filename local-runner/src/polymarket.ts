@@ -75,6 +75,16 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
     }
 
     // Use createAndPostOrder which handles order signing
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`🔍 POLYMARKET API DEBUG - ${new Date().toISOString()}`);
+    console.log(`${'='.repeat(60)}`);
+    console.log(`📤 Request parameters:`);
+    console.log(`   - tokenID: ${order.tokenId}`);
+    console.log(`   - price: ${order.price}`);
+    console.log(`   - size: ${order.size}`);
+    console.log(`   - side: ${side}`);
+    console.log(`   - orderType: ${orderType}`);
+    
     const response = await client.createAndPostOrder(
       {
         tokenID: order.tokenId,
@@ -89,12 +99,40 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
       orderType
     );
 
-    // Log full response for debugging
-    console.log(`📋 Polymarket response:`, JSON.stringify(response, null, 2));
+    // Log EVERYTHING about the response
+    console.log(`\n📋 RAW RESPONSE TYPE: ${typeof response}`);
+    console.log(`📋 RAW RESPONSE (JSON):`);
+    console.log(JSON.stringify(response, null, 2));
+    
+    console.log(`\n📋 RESPONSE KEYS: ${response ? Object.keys(response).join(', ') : 'null/undefined'}`);
+    
+    if (response && typeof response === 'object') {
+      console.log(`\n📋 INDIVIDUAL FIELDS:`);
+      console.log(`   - response.success: ${(response as any).success}`);
+      console.log(`   - response.orderID: ${(response as any).orderID}`);
+      console.log(`   - response.orderId: ${(response as any).orderId}`);
+      console.log(`   - response.order_id: ${(response as any).order_id}`);
+      console.log(`   - response.id: ${(response as any).id}`);
+      console.log(`   - response.errorMsg: ${(response as any).errorMsg}`);
+      console.log(`   - response.error: ${(response as any).error}`);
+      console.log(`   - response.order: ${JSON.stringify((response as any).order)}`);
+      console.log(`   - response.data: ${JSON.stringify((response as any).data)}`);
+      console.log(`   - response.result: ${JSON.stringify((response as any).result)}`);
+      console.log(`   - response.orderIds: ${JSON.stringify((response as any).orderIds)}`);
+      
+      // Check if response is an array
+      if (Array.isArray(response)) {
+        console.log(`\n📋 RESPONSE IS AN ARRAY with ${response.length} items:`);
+        response.forEach((item, i) => {
+          console.log(`   [${i}]: ${JSON.stringify(item)}`);
+        });
+      }
+    }
+    console.log(`${'='.repeat(60)}\n`);
 
-    if (response.success === false || response.errorMsg) {
-      console.error(`❌ Order failed: ${response.errorMsg || 'Unknown error'}`);
-      return { success: false, error: response.errorMsg || 'Order failed' };
+    if ((response as any).success === false || (response as any).errorMsg) {
+      console.error(`❌ Order failed: ${(response as any).errorMsg || 'Unknown error'}`);
+      return { success: false, error: (response as any).errorMsg || 'Order failed' };
     }
 
     const extractOrderId = (resp: any): string | undefined => {
