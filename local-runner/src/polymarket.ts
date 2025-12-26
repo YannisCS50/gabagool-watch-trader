@@ -97,16 +97,50 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
       return { success: false, error: response.errorMsg || 'Order failed' };
     }
 
-    // Extract order ID from various possible response formats
-    const orderId = response.orderID || response.order_id || response.id || 
-                    (response.orderIds && response.orderIds[0]) ||
-                    (response.order && response.order.id);
+    const extractOrderId = (resp: any): string | undefined => {
+      if (!resp) return undefined;
+      if (Array.isArray(resp)) return extractOrderId(resp[0]);
 
-    console.log(`✅ Order placed: ${orderId || 'no-id-returned'}`);
+      const candidates: unknown[] = [
+        resp.orderID,
+        resp.orderId,
+        resp.order_id,
+        resp.id,
+        resp?.data?.orderID,
+        resp?.data?.orderId,
+        resp?.data?.order_id,
+        resp?.data?.id,
+        resp?.order?.orderID,
+        resp?.order?.orderId,
+        resp?.order?.order_id,
+        resp?.order?.id,
+        resp?.result?.orderID,
+        resp?.result?.orderId,
+        resp?.result?.order_id,
+        resp?.result?.id,
+        resp?.orderIds?.[0],
+        resp?.data?.orderIds?.[0],
+      ];
+
+      const found = candidates.find((x) =>
+        (typeof x === 'string' && x.trim().length > 0) || typeof x === 'number' || typeof x === 'bigint'
+      );
+      return found !== undefined ? String(found) : undefined;
+    };
+
+    // Extract order ID from various possible response formats
+    const orderId = extractOrderId(response);
+
+    if (!orderId) {
+      console.error('❌ Order response had no order ID; treating as failure to avoid false "filled" status.');
+      return { success: false, error: 'No order id returned by Polymarket API' };
+    }
+
+    console.log(`✅ Order placed: ${orderId}`);
 
     return {
       success: true,
-      orderId: orderId,
+      orderId,
       avgPrice: order.price,
       filledSize: order.size,
     };
