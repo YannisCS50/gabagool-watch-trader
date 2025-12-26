@@ -195,12 +195,51 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
     }
   } catch (error: any) {
     const errorMsg = error?.message || String(error);
-    console.error(`❌ Order error:`, errorMsg);
-
-    // Check for common errors
-    if (errorMsg.includes('Cloudflare') || errorMsg.includes('blocked')) {
+    
+    // Enhanced error logging for Cloudflare/WAF detection
+    console.error(`\n${'='.repeat(60)}`);
+    console.error(`❌ ORDER ERROR - ${new Date().toISOString()}`);
+    console.error(`${'='.repeat(60)}`);
+    console.error(`   Message: ${errorMsg}`);
+    
+    // Check for HTTP response details (Axios-style errors)
+    if (error?.response) {
+      const status = error.response.status;
+      const contentType = error.response.headers?.['content-type'] || 'unknown';
+      const dataPreview = typeof error.response.data === 'string' 
+        ? error.response.data.slice(0, 300) 
+        : JSON.stringify(error.response.data)?.slice(0, 300);
+      
+      console.error(`   HTTP Status: ${status}`);
+      console.error(`   Content-Type: ${contentType}`);
+      console.error(`   Response Preview: ${dataPreview}`);
+      
+      // Detect Cloudflare block
+      if (status === 403 && (contentType.includes('text/html') || dataPreview?.includes('Cloudflare') || dataPreview?.includes('blocked'))) {
+        console.error(`\n   🚨 CLOUDFLARE WAF BLOCK DETECTED!`);
+        console.error(`   Your IP is blocked by Polymarket's Cloudflare protection.`);
+        console.error(`   Solutions:`);
+        console.error(`     1. Use a VPN with residential IP`);
+        console.error(`     2. Don't run from datacenter IPs`);
+        console.error(`     3. Contact Polymarket support with Ray ID from response`);
+        return { success: false, error: 'Cloudflare blocked - use VPN with residential IP' };
+      }
+    }
+    
+    // Check for fetch-style errors
+    if (errorMsg.includes('403') || errorMsg.includes('Forbidden')) {
+      console.error(`   🚨 Likely Cloudflare block (403 in message)`);
       return { success: false, error: 'Cloudflare blocked - check your IP/VPN' };
     }
+    
+    if (errorMsg.includes('Cloudflare') || errorMsg.includes('blocked') || errorMsg.includes('Ray ID')) {
+      console.error(`   🚨 Cloudflare block detected in error message`);
+      return { success: false, error: 'Cloudflare blocked - use VPN with residential IP' };
+    }
+    
+    console.error(`${'='.repeat(60)}\n`);
+
+    // Other common errors
     if (errorMsg.includes('401') || errorMsg.includes('Unauthorized')) {
       return { success: false, error: 'Invalid API key - regenerate on Polymarket' };
     }
