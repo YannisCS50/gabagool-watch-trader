@@ -25,6 +25,14 @@ interface OrderResponse {
 // Singleton ClobClient instance
 let clobClient: ClobClient | null = null;
 
+// Simple in-process throttling/backoff to reduce WAF triggers
+let lastOrderAttemptAtMs = 0;
+let blockedUntilMs = 0;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function getClient(): Promise<ClobClient> {
   if (clobClient) {
     return clobClient;
@@ -57,6 +65,27 @@ async function getClient(): Promise<ClobClient> {
 }
 
 export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
+  const nowMs = Date.now();
+
+  // Hard backoff after Cloudflare/WAF blocks
+  if (blockedUntilMs && nowMs < blockedUntilMs) {
+    const remainingMs = blockedUntilMs - nowMs;
+    return {
+      success: false,
+      error: `Cloudflare blocked (cooldown ${Math.ceil(remainingMs / 1000)}s)`,
+    };
+  }
+
+  // Throttle order attempts to avoid spamming WAF
+  const minIntervalMs = Math.max(0, config.trading.minOrderIntervalMs || 0);
+  const sinceLastMs = nowMs - lastOrderAttemptAtMs;
+  if (lastOrderAttemptAtMs > 0 && sinceLastMs < minIntervalMs) {
+    const waitMs = minIntervalMs - sinceLastMs;
+    console.log(`⏱️ Throttling order: waiting ${waitMs}ms`);
+    await sleep(waitMs);
+  }
+  lastOrderAttemptAtMs = Date.now();
+
   console.log(`📤 Placing order: ${order.side} ${order.size} @ ${(order.price * 100).toFixed(0)}¢`);
 
   try {
@@ -216,8 +245,11 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
       
       // Detect Cloudflare block
       if (status === 403 && (contentType.includes('text/html') || dataPreview?.includes('Cloudflare') || dataPreview?.includes('blocked'))) {
+        blockedUntilMs = Date.now() + Math.max(1000, config.trading.cloudflareBackoffMs || 60000);
+
         console.error(`\n   🚨 CLOUDFLARE WAF BLOCK DETECTED!`);
         console.error(`   Your IP is blocked by Polymarket's Cloudflare protection.`);
+        console.error(`   Cooling down for ${Math.ceil((blockedUntilMs - Date.now()) / 1000)}s to avoid repeated blocks.`);
         console.error(`   Solutions:`);
         console.error(`     1. Use a VPN with residential IP`);
         console.error(`     2. Don't run from datacenter IPs`);
