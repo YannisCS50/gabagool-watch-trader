@@ -95,6 +95,52 @@ async function getClient(): Promise<ClobClient> {
   console.log(`✅ CLOB client initialized`);
   console.log(`   Signer (EOA): ${signerAddress}`);
   console.log(`   Funder (Safe): ${config.polymarket.address}`);
+
+  // 🔐 Validate credentials with an authenticated API call BEFORE any orders
+  console.log(`\n🔐 VALIDATING CREDENTIALS...`);
+  try {
+    // getApiKeys() is an authenticated endpoint - if this fails, credentials are wrong
+    const apiKeys = await clobClient.getApiKeys();
+    console.log(`✅ API credentials VALID!`);
+    console.log(`   API keys response:`, JSON.stringify(apiKeys, null, 2));
+    
+    // Also verify the API key belongs to the right address
+    if (apiKeys && Array.isArray(apiKeys)) {
+      const matchingKey = apiKeys.find((k: any) => k.apiKey === config.polymarket.apiKey);
+      if (matchingKey) {
+        console.log(`✅ Found matching API key for this config`);
+      } else {
+        console.warn(`⚠️ API key not found in getApiKeys response - may be stale`);
+      }
+    }
+  } catch (authError: any) {
+    console.error(`\n❌ CREDENTIAL VALIDATION FAILED!`);
+    console.error(`   Error: ${authError?.message || authError}`);
+    
+    // Check for specific error types
+    if (authError?.response) {
+      const status = authError.response.status;
+      const data = authError.response.data;
+      console.error(`   HTTP Status: ${status}`);
+      console.error(`   Response: ${JSON.stringify(data)}`);
+      
+      if (status === 401) {
+        console.error(`\n   🚨 401 Unauthorized - Your API credentials are INVALID:`);
+        console.error(`      - API Key: ${config.polymarket.apiKey.slice(0, 12)}...`);
+        console.error(`      - API Secret length: ${config.polymarket.apiSecret?.length || 0} chars`);
+        console.error(`      - Passphrase length: ${config.polymarket.passphrase?.length || 0} chars`);
+        console.error(`\n   LIKELY CAUSES:`);
+        console.error(`      1. API Key expired or revoked - regenerate at polymarket.com`);
+        console.error(`      2. API Secret is wrong (should be base64, ~44 chars)`);
+        console.error(`      3. Passphrase is wrong`);
+        console.error(`      4. API Key belongs to different wallet than POLYMARKET_ADDRESS`);
+      }
+    }
+    
+    // Don't throw - let orders fail with the actual error
+    console.error(`   ⚠️ Continuing anyway, but orders will likely fail\n`);
+  }
+
   return clobClient;
 }
 
