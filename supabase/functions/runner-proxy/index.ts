@@ -23,10 +23,23 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // Validate secret
+    // Debug logging (presence/length only, not values)
     const providedSecret = req.headers.get('x-runner-secret');
+    const authHeader = req.headers.get('authorization');
+    
+    console.log('[runner-proxy] 🔍 DEBUG Auth check:', {
+      'x-runner-secret_present': !!providedSecret,
+      'x-runner-secret_length': providedSecret?.length ?? 0,
+      'authorization_present': !!authHeader,
+      'authorization_length': authHeader?.length ?? 0,
+      'env_RUNNER_SHARED_SECRET_present': !!RUNNER_SECRET,
+      'env_RUNNER_SHARED_SECRET_length': RUNNER_SECRET?.length ?? 0,
+      'secrets_match': providedSecret === RUNNER_SECRET,
+    });
+    
+    // Validate secret
     if (!RUNNER_SECRET || providedSecret !== RUNNER_SECRET) {
-      console.error('[runner-proxy] ❌ Invalid or missing secret');
+      console.error('[runner-proxy] ❌ Invalid or missing secret - check env var RUNNER_SHARED_SECRET');
       return new Response(JSON.stringify({ success: false, error: 'Unauthorized' }), {
         status: 401,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
