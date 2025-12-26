@@ -14,6 +14,75 @@ export type Database = {
   }
   public: {
     Tables: {
+      bot_config: {
+        Row: {
+          backend_url: string | null
+          cloudflare_backoff_ms: number | null
+          created_at: string | null
+          id: string
+          max_notional_per_trade: number | null
+          max_position_size: number | null
+          min_edge_threshold: number | null
+          min_order_interval_ms: number | null
+          opening_max_price: number | null
+          polymarket_address: string | null
+          polymarket_api_key: string | null
+          polymarket_api_secret: string | null
+          polymarket_passphrase: string | null
+          polymarket_private_key: string | null
+          runner_shared_secret: string | null
+          strategy_enabled: boolean | null
+          trade_assets: string[] | null
+          updated_at: string | null
+          vpn_endpoint: string | null
+          vpn_required: boolean | null
+        }
+        Insert: {
+          backend_url?: string | null
+          cloudflare_backoff_ms?: number | null
+          created_at?: string | null
+          id?: string
+          max_notional_per_trade?: number | null
+          max_position_size?: number | null
+          min_edge_threshold?: number | null
+          min_order_interval_ms?: number | null
+          opening_max_price?: number | null
+          polymarket_address?: string | null
+          polymarket_api_key?: string | null
+          polymarket_api_secret?: string | null
+          polymarket_passphrase?: string | null
+          polymarket_private_key?: string | null
+          runner_shared_secret?: string | null
+          strategy_enabled?: boolean | null
+          trade_assets?: string[] | null
+          updated_at?: string | null
+          vpn_endpoint?: string | null
+          vpn_required?: boolean | null
+        }
+        Update: {
+          backend_url?: string | null
+          cloudflare_backoff_ms?: number | null
+          created_at?: string | null
+          id?: string
+          max_notional_per_trade?: number | null
+          max_position_size?: number | null
+          min_edge_threshold?: number | null
+          min_order_interval_ms?: number | null
+          opening_max_price?: number | null
+          polymarket_address?: string | null
+          polymarket_api_key?: string | null
+          polymarket_api_secret?: string | null
+          polymarket_passphrase?: string | null
+          polymarket_private_key?: string | null
+          runner_shared_secret?: string | null
+          strategy_enabled?: boolean | null
+          trade_assets?: string[] | null
+          updated_at?: string | null
+          vpn_endpoint?: string | null
+          vpn_required?: boolean | null
+        }
+        Relationships: []
+      }
       live_bot_settings: {
         Row: {
           id: string

@@ -20,6 +20,7 @@ import StrategyCode from "./pages/StrategyCode";
 import PaperBotStrategy from "./pages/PaperBotStrategy";
 import Wallet from "./pages/Wallet";
 import LiveTrading from "./pages/LiveTrading";
+import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -48,6 +49,7 @@ const App = () => (
           <Route path="/paper-bot-strategy" element={<PaperBotStrategy />} />
           <Route path="/wallet" element={<Wallet />} />
           <Route path="/live-trading" element={<LiveTrading />} />
+          <Route path="/settings" element={<Settings />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>
