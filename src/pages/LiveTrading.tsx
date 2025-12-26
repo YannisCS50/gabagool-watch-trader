@@ -15,6 +15,8 @@ import { LiveTradeDashboard } from '@/components/LiveTradeDashboard';
 import { RunnerActivityLog } from '@/components/RunnerActivityLog';
 import { PaperTradeDashboard } from '@/components/PaperTradeDashboard';
 import { RunnerStatus } from '@/components/RunnerStatus';
+import { OrderQueueStatus } from '@/components/OrderQueueStatus';
+import { RunnerInstructions } from '@/components/RunnerInstructions';
 import { supabase } from '@/integrations/supabase/client';
 
 interface WalletBalance {
@@ -176,9 +178,15 @@ export default function LiveTrading() {
           </Card>
         </div>
 
-        {/* Runner Status */}
-        <div className="mb-8">
+        {/* Runner Status & Instructions */}
+        <div className="grid gap-4 md:grid-cols-2 mb-8">
           <RunnerStatus />
+          <RunnerInstructions />
+        </div>
+
+        {/* Order Queue */}
+        <div className="mb-8">
+          <OrderQueueStatus />
         </div>
 
         {/* Activity Log */}
