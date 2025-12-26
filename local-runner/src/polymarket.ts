@@ -39,8 +39,39 @@ async function getClient(): Promise<ClobClient> {
   }
 
   console.log('🔧 Initializing Polymarket CLOB client...');
+  console.log(`\n${'='.repeat(60)}`);
+  console.log(`🔐 AUTH CONFIGURATION DEBUG`);
+  console.log(`${'='.repeat(60)}`);
 
   const signer = new Wallet(config.polymarket.privateKey);
+  const signerAddress = signer.address;
+
+  console.log(`📍 Signer (from private key): ${signerAddress}`);
+  console.log(`📍 POLYMARKET_ADDRESS (funder): ${config.polymarket.address}`);
+  console.log(`📍 API Key: ${config.polymarket.apiKey.slice(0, 12)}...`);
+  console.log(`📍 Passphrase: ${config.polymarket.passphrase.slice(0, 12)}...`);
+  
+  // Critical validation: for signature type 2 (Safe proxy):
+  // - signer = your EOA (private key holder, does the signing)
+  // - funder = your Polymarket Safe wallet address (where funds are)
+  // - API key must be registered for the funder address
+  
+  if (signerAddress.toLowerCase() === config.polymarket.address.toLowerCase()) {
+    console.log(`⚠️ WARNING: Signer and funder are the SAME address.`);
+    console.log(`   This is only correct if you're NOT using a Safe proxy wallet.`);
+    console.log(`   For Polymarket, you typically have:`);
+    console.log(`   - Signer: your EOA (MetaMask wallet)`);
+    console.log(`   - Funder: your Polymarket Safe proxy`);
+  } else {
+    console.log(`✅ Signer ≠ Funder (correct for Safe proxy setup)`);
+    console.log(`   Signer (EOA): ${signerAddress}`);
+    console.log(`   Funder (Safe): ${config.polymarket.address}`);
+  }
+  
+  // Log current system time for timestamp debugging
+  console.log(`\n⏰ System time: ${new Date().toISOString()}`);
+  console.log(`   Unix timestamp (seconds): ${Math.floor(Date.now() / 1000)}`);
+  console.log(`${'='.repeat(60)}\n`);
 
   // API credentials from Polymarket
   const apiCreds = {
@@ -50,17 +81,20 @@ async function getClient(): Promise<ClobClient> {
   };
 
   // Signature type 2 = Safe proxy wallet (Polymarket default)
-  // Funder address = your Polymarket wallet address
+  // - signer: EOA that controls the Safe
+  // - funder: The Safe proxy wallet address where USDC lives
   clobClient = new ClobClient(
     CLOB_URL,
     CHAIN_ID,
     signer,
     apiCreds,
     2, // signatureType: 2 for Safe proxy
-    config.polymarket.address // funder address (your Polymarket profile address)
+    config.polymarket.address // funder address (your Polymarket Safe address)
   );
 
-  console.log(`✅ CLOB client initialized for ${config.polymarket.address}`);
+  console.log(`✅ CLOB client initialized`);
+  console.log(`   Signer (EOA): ${signerAddress}`);
+  console.log(`   Funder (Safe): ${config.polymarket.address}`);
   return clobClient;
 }
 
@@ -106,9 +140,23 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
 
     // Use createAndPostOrder which handles order signing
     console.log(`\n${'='.repeat(60)}`);
-    console.log(`🔍 POLYMARKET API DEBUG - ${new Date().toISOString()}`);
+    console.log(`🔍 POLYMARKET ORDER REQUEST - ${new Date().toISOString()}`);
     console.log(`${'='.repeat(60)}`);
-    console.log(`📤 Request parameters:`);
+    
+    // Log auth context for debugging 401s
+    const signer = new Wallet(config.polymarket.privateKey);
+    console.log(`🔐 AUTH CONTEXT:`);
+    console.log(`   - POLY_ADDRESS header will be: ${signer.address}`);
+    console.log(`   - API Key (owner): ${config.polymarket.apiKey.slice(0, 12)}...`);
+    console.log(`   - Order maker (Safe): ${config.polymarket.address}`);
+    console.log(`   - Order signer (EOA): ${signer.address}`);
+    console.log(`   - Current timestamp (s): ${Math.floor(Date.now() / 1000)}`);
+    
+    // Verify API key format (should be UUID)
+    const apiKeyIsUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(config.polymarket.apiKey);
+    console.log(`   - API Key is valid UUID: ${apiKeyIsUUID}`);
+    
+    console.log(`\n📤 Order parameters:`);
     console.log(`   - tokenID: ${order.tokenId}`);
     console.log(`   - price: ${order.price}`);
     console.log(`   - size: ${order.size}`);
