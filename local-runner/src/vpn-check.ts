@@ -1,6 +1,8 @@
+import { config } from './config.js';
+
 /**
  * VPN Verification Module
- * 
+ *
  * Ensures all bot traffic goes through VPN before starting.
  * If VPN is not active, the process exits immediately (fail-closed).
  */
@@ -129,31 +131,37 @@ export async function verifyVpnConnection(): Promise<VpnCheckResult> {
  * This is the main entry point called at bot startup
  */
 export async function enforceVpnOrExit(): Promise<void> {
-  const vpnRequired = process.env.VPN_REQUIRED === 'true';
-  
-  if (!vpnRequired) {
-    console.log('⚠️ VPN_REQUIRED not set, skipping VPN check (development mode)');
+  // Default ON: only disable explicitly with VPN_REQUIRED=false
+  if (!config.vpn.required) {
+    console.log('⚠️ VPN check disabled (VPN_REQUIRED=false)');
     return;
   }
-  
+
   const result = await verifyVpnConnection();
-  
-  if (result.passed) {
+
+  const expected = config.vpn.expectedEgressIp;
+  const expectedMismatch = !!expected && result.ip !== 'unknown' && result.ip !== expected;
+
+  if (result.passed && !expectedMismatch) {
     console.log(`✅ VPN verification passed: IP ${result.ip} (${result.provider})`);
     console.log('🔒 All traffic will route through VPN');
-  } else {
-    console.error('');
-    console.error('╔══════════════════════════════════════════════════════════════╗');
-    console.error('║  ❌ VPN VERIFICATION FAILED - EXITING TO PREVENT IP LEAK     ║');
-    console.error('╠══════════════════════════════════════════════════════════════╣');
-    console.error(`║  Detected IP: ${result.ip.padEnd(46)}║`);
-    console.error(`║  Error: ${(result.error || 'Unknown').padEnd(51)}║`);
-    console.error('║                                                              ║');
-    console.error('║  The trading bot requires VPN to be active.                  ║');
-    console.error('║  Check your WireGuard container and configuration.           ║');
-    console.error('╚══════════════════════════════════════════════════════════════╝');
-    console.error('');
-    
-    process.exit(1);
+    return;
   }
+
+  const extra = expectedMismatch ? ` (expected ${expected})` : '';
+
+  console.error('');
+  console.error('╔══════════════════════════════════════════════════════════════╗');
+  console.error('║  ❌ VPN VERIFICATION FAILED - EXITING TO PREVENT IP LEAK     ║');
+  console.error('╠══════════════════════════════════════════════════════════════╣');
+  console.error(`║  Detected IP: ${(`${result.ip}${extra}`).padEnd(46)}║`);
+  console.error(`║  Error: ${(result.error || 'Unknown').padEnd(51)}║`);
+  console.error('║                                                              ║');
+  console.error('║  The trading bot requires VPN to be active.                  ║');
+  console.error('║  Fix WireGuard routing before starting the runner.           ║');
+  console.error('╚══════════════════════════════════════════════════════════════╝');
+  console.error('');
+
+  process.exit(1);
 }
+

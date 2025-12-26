@@ -12,10 +12,19 @@ export const config = {
     privateKey: process.env.POLYMARKET_PRIVATE_KEY!,
     address: process.env.POLYMARKET_ADDRESS!,
   },
+  vpn: {
+    // Default ON: only disable explicitly with VPN_REQUIRED=false
+    required: (process.env.VPN_REQUIRED ?? 'true') !== 'false',
+    // Optional: hard-pin expected egress IP (e.g. Mullvad exit IP)
+    expectedEgressIp: process.env.EXPECTED_EGRESS_IP || null,
+  },
   trading: {
     assets: (process.env.TRADE_ASSETS || 'BTC').split(','),
     maxNotionalPerTrade: parseFloat(process.env.MAX_NOTIONAL_PER_TRADE || '5'),
     openingMaxPrice: parseFloat(process.env.OPENING_MAX_PRICE || '0.52'),
+    // Rate limiting / backoff
+    minOrderIntervalMs: parseInt(process.env.MIN_ORDER_INTERVAL_MS || '1500', 10),
+    cloudflareBackoffMs: parseInt(process.env.CLOUDFLARE_BACKOFF_MS || '60000', 10),
   },
 };
 

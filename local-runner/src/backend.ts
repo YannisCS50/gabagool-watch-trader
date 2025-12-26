@@ -138,7 +138,7 @@ export async function fetchPendingOrders(): Promise<PendingOrder[]> {
 
 export async function updateOrder(
   orderId: string,
-  status: 'filled' | 'failed' | 'cancelled',
+  status: 'filled' | 'failed' | 'cancelled' | 'placed' | 'partial',
   result?: { order_id?: string; avg_fill_price?: number; error?: string }
 ): Promise<boolean> {
   try {
