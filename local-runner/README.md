@@ -10,7 +10,7 @@ Deze standalone Node.js applicatie voert live trades uit op Polymarket vanaf je 
 
 - Node.js 18+ of Bun
 - Polymarket account met API credentials
-- Supabase service role key (uit je Lovable project)
+- Backend URL + shared secret (uit je Lovable project)
 
 ## Installatie
 
@@ -28,16 +28,17 @@ cp .env.example .env
 
 2. Vul je credentials in:
 
-### Supabase credentials
-- `SUPABASE_URL`: Al ingevuld (je project URL)
-- `SUPABASE_SERVICE_ROLE_KEY`: Vind je in Lovable → Settings → Cloud → Advanced
+### Backend
+- `BACKEND_URL`: de runner-proxy endpoint URL van je project
+- `RUNNER_SHARED_SECRET`: shared secret (moet matchen met de backend secret)
 
 ### Polymarket credentials
 Haal deze op via de Polymarket developer portal of je bestaande setup:
 - `POLYMARKET_API_KEY`
-- `POLYMARKET_API_SECRET`  
+- `POLYMARKET_API_SECRET`
 - `POLYMARKET_PASSPHRASE`
 - `POLYMARKET_PRIVATE_KEY` (je wallet private key)
+- `POLYMARKET_ADDRESS` (je Polymarket profile/proxy address)
 
 ### Trading settings (optioneel)
 - `TRADE_ASSETS`: Welke assets te traden (default: `BTC`)

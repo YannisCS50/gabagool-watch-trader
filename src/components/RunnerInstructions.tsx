@@ -130,31 +130,28 @@ export function RunnerInstructions() {
                 <div>POLYMARKET_ADDRESS=<span className="text-amber-500">your_wallet_address</span></div>
                 <div>POLYMARKET_PRIVATE_KEY=<span className="text-amber-500">your_private_key</span></div>
                 <div className="text-muted-foreground mt-2"># Backend</div>
-                <div>SUPABASE_URL=https://iuzpdjplasndyvbzhlzd.supabase.co</div>
-                <div>RUNNER_SECRET=<span className="text-amber-500">shared_secret</span></div>
+                <div>BACKEND_URL=<span className="text-amber-500">your_backend_url</span></div>
+                <div>RUNNER_SHARED_SECRET=<span className="text-amber-500">shared_secret</span></div>
               </div>
               <Button
                 variant="outline"
                 size="sm"
                 className="w-full"
-                onClick={() => copyToClipboard(
-`# Polymarket API credentials
-POLYMARKET_API_KEY=
-POLYMARKET_API_SECRET=
-POLYMARKET_PASSPHRASE=
-POLYMARKET_ADDRESS=
-POLYMARKET_PRIVATE_KEY=
-
-# Backend
-SUPABASE_URL=https://iuzpdjplasndyvbzhlzd.supabase.co
-RUNNER_SECRET=`,
-                  'env'
-                )}
+                onClick={() =>
+                  copyToClipboard(
+                    `# Polymarket API credentials\nPOLYMARKET_API_KEY=\nPOLYMARKET_API_SECRET=\nPOLYMARKET_PASSPHRASE=\nPOLYMARKET_ADDRESS=\nPOLYMARKET_PRIVATE_KEY=\n\n# Backend\nBACKEND_URL=\nRUNNER_SHARED_SECRET=`,
+                    'env'
+                  )
+                }
               >
                 {copiedCommand === 'env' ? (
-                  <><Check className="w-4 h-4 mr-2 text-emerald-500" /> Gekopieerd!</>
+                  <>
+                    <Check className="w-4 h-4 mr-2 text-emerald-500" /> Gekopieerd!
+                  </>
                 ) : (
-                  <><Copy className="w-4 h-4 mr-2" /> Kopieer .env template</>
+                  <>
+                    <Copy className="w-4 h-4 mr-2" /> Kopieer .env template
+                  </>
                 )}
               </Button>
             </div>
@@ -165,7 +162,7 @@ RUNNER_SECRET=`,
               <ul className="list-disc list-inside space-y-0.5">
                 <li>Cloudflare 403 → VPN niet actief of verkeerd IP</li>
                 <li>401 Unauthorized → API keys verlopen, regenereer op Polymarket</li>
-                <li>order_id is null → Check Polymarket response in logs</li>
+                <li><code className="font-mono">order_id</code> blijft leeg → de API response bevat geen ID; zie runner logs ("📋 Polymarket response")</li>
               </ul>
             </div>
           </CardContent>
