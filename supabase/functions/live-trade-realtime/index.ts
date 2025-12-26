@@ -3,7 +3,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 // ============================================================================
 // LIVE TRADING BOT - Real-time WebSocket Worker (Event-Driven)
 // Connects to Polymarket CLOB WebSocket and reacts to price changes
-// Executes REAL trades via live-trade-bot
+// SIGNALS ONLY - Orders go to order_queue for local-runner to execute
+// (Edge functions get blocked by Cloudflare, so we queue orders instead)
 // ============================================================================
 
 const corsHeaders = {
@@ -549,27 +550,29 @@ Deno.serve(async (req) => {
       const tokenId = outcome === "UP" ? market.upTokenId : market.downTokenId;
       const total = shares * price;
 
-      log(`📊 EXECUTING: ${outcome} ${shares} @ ${(price*100).toFixed(0)}¢ on ${market.slug.slice(-20)}`);
+      log(`📋 QUEUING: ${outcome} ${shares} @ ${(price*100).toFixed(0)}¢ on ${market.slug.slice(-20)}`);
 
-      // Call live-trade-bot to place REAL order
-      const { data, error } = await supabase.functions.invoke('live-trade-bot', {
-        body: {
-          action: 'order',
-          tokenId,
-          side: 'BUY',
-          price,
-          size: shares,
-          orderType: 'GTC',
-          marketSlug: market.slug,
-        },
+      // Queue order for local-runner to execute (edge functions get blocked by Cloudflare)
+      const { error: queueError } = await supabase.from('order_queue').insert({
+        market_slug: market.slug,
+        asset: market.asset,
+        outcome,
+        token_id: tokenId,
+        shares,
+        price,
+        reasoning,
+        order_type: 'GTC',
+        status: 'pending',
+        event_start_time: market.eventStartTime,
+        event_end_time: market.eventEndTime,
       });
 
-      if (error || !data?.success) {
-        log(`❌ Order failed: ${error?.message || data?.error || 'Unknown'}`);
+      if (queueError) {
+        log(`❌ Queue error: ${queueError.message}`);
         return false;
       }
 
-      // Update local position BEFORE db insert
+      // Update local position (optimistic - local-runner will confirm)
       if (outcome === "UP") {
         ctx.position.upShares += shares;
         ctx.position.upInvested += total;
@@ -579,56 +582,26 @@ Deno.serve(async (req) => {
       }
       ctx.lastTradeAtMs = Date.now();
 
-      // Record in database
-      const { error: insertError } = await supabase.from('live_trades').insert({
-        market_slug: market.slug,
-        asset: market.asset,
-        outcome,
-        shares,
-        price,
-        total,
-        order_id: data.orderId,
-        status: 'filled',
-        reasoning,
-        event_start_time: market.eventStartTime,
-        event_end_time: market.eventEndTime,
-        arbitrage_edge: (1 - (ctx.book.up.ask! + ctx.book.down.ask!)) * 100,
-        avg_fill_price: data.avgPrice || price,
-      });
-
-      if (insertError) {
-        log(`⚠️ DB insert error: ${insertError.message}`);
-        // Rollback position on DB error
-        if (outcome === "UP") {
-          ctx.position.upShares -= shares;
-          ctx.position.upInvested -= total;
-        } else {
-          ctx.position.downShares -= shares;
-          ctx.position.downInvested -= total;
-        }
-        return false;
-      }
-
       tradeCount++;
       const combined = (ctx.book.up.ask || 0) + (ctx.book.down.ask || 0);
-      log(`✅ TRADE #${tradeCount}: ${outcome} ${shares}@${(price*100).toFixed(0)}¢ | Bal: UP=${ctx.position.upShares} DOWN=${ctx.position.downShares} | Combined: ${(combined*100).toFixed(0)}¢`);
+      log(`✅ QUEUED #${tradeCount}: ${outcome} ${shares}@${(price*100).toFixed(0)}¢ | Combined: ${(combined*100).toFixed(0)}¢`);
 
       // Notify client
       if (socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({
-          type: 'trade',
+          type: 'signal',
           market: market.slug,
           outcome,
           shares,
           price,
-          orderId: data.orderId,
+          status: 'queued',
           timestamp: Date.now(),
         }));
       }
 
       return true;
     } catch (err) {
-      log(`❌ Trade execution error: ${err}`);
+      log(`❌ Queue error: ${err}`);
       return false;
     }
   };
