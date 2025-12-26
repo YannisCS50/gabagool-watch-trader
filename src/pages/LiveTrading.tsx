@@ -12,6 +12,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { LiveTradeDashboard } from '@/components/LiveTradeDashboard';
+import { RunnerActivityLog } from '@/components/RunnerActivityLog';
 import { PaperTradeDashboard } from '@/components/PaperTradeDashboard';
 import { RunnerStatus } from '@/components/RunnerStatus';
 import { supabase } from '@/integrations/supabase/client';
@@ -178,6 +179,11 @@ export default function LiveTrading() {
         {/* Runner Status */}
         <div className="mb-8">
           <RunnerStatus />
+        </div>
+
+        {/* Activity Log */}
+        <div className="mb-8">
+          <RunnerActivityLog />
         </div>
 
         {/* Live Trading Dashboard */}
