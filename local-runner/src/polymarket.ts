@@ -19,6 +19,7 @@ interface OrderResponse {
   avgPrice?: number;
   filledSize?: number;
   error?: string;
+  status?: 'filled' | 'partial' | 'open' | 'pending' | 'unknown';
 }
 
 // Singleton ClobClient instance
@@ -104,84 +105,94 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
     console.log(`📋 RAW RESPONSE (JSON):`);
     console.log(JSON.stringify(response, null, 2));
     
-    console.log(`\n📋 RESPONSE KEYS: ${response ? Object.keys(response).join(', ') : 'null/undefined'}`);
+    // Also check if response is wrapped in .data (Axios style)
+    const actualResponse = (response as any)?.data ?? response;
+    console.log(`\n📋 ACTUAL RESPONSE (after .data check):`);
+    console.log(JSON.stringify(actualResponse, null, 2));
     
-    if (response && typeof response === 'object') {
-      console.log(`\n📋 INDIVIDUAL FIELDS:`);
-      console.log(`   - response.success: ${(response as any).success}`);
-      console.log(`   - response.orderID: ${(response as any).orderID}`);
-      console.log(`   - response.orderId: ${(response as any).orderId}`);
-      console.log(`   - response.order_id: ${(response as any).order_id}`);
-      console.log(`   - response.id: ${(response as any).id}`);
-      console.log(`   - response.errorMsg: ${(response as any).errorMsg}`);
-      console.log(`   - response.error: ${(response as any).error}`);
-      console.log(`   - response.order: ${JSON.stringify((response as any).order)}`);
-      console.log(`   - response.data: ${JSON.stringify((response as any).data)}`);
-      console.log(`   - response.result: ${JSON.stringify((response as any).result)}`);
-      console.log(`   - response.orderIds: ${JSON.stringify((response as any).orderIds)}`);
-      
-      // Check if response is an array
-      if (Array.isArray(response)) {
-        console.log(`\n📋 RESPONSE IS AN ARRAY with ${response.length} items:`);
-        response.forEach((item, i) => {
-          console.log(`   [${i}]: ${JSON.stringify(item)}`);
-        });
-      }
-    }
+    console.log(`\n📋 RESPONSE KEYS: ${response ? Object.keys(response).join(', ') : 'null/undefined'}`);
+    console.log(`📋 ACTUAL RESPONSE KEYS: ${actualResponse ? Object.keys(actualResponse).join(', ') : 'null/undefined'}`);
+    
+    // Check all possible locations for order ID and status
+    console.log(`\n📋 FIELD SEARCH:`);
+    console.log(`   - response.success: ${(response as any)?.success}`);
+    console.log(`   - response.orderID: ${(response as any)?.orderID}`);
+    console.log(`   - response.orderId: ${(response as any)?.orderId}`);
+    console.log(`   - response.status: ${(response as any)?.status}`);
+    console.log(`   - response.errorMsg: ${(response as any)?.errorMsg}`);
+    console.log(`   - actualResponse.success: ${actualResponse?.success}`);
+    console.log(`   - actualResponse.orderID: ${actualResponse?.orderID}`);
+    console.log(`   - actualResponse.orderId: ${actualResponse?.orderId}`);
+    console.log(`   - actualResponse.status: ${actualResponse?.status}`);
+    console.log(`   - actualResponse.errorMsg: ${actualResponse?.errorMsg}`);
     console.log(`${'='.repeat(60)}\n`);
 
-    if ((response as any).success === false || (response as any).errorMsg) {
-      console.error(`❌ Order failed: ${(response as any).errorMsg || 'Unknown error'}`);
-      return { success: false, error: (response as any).errorMsg || 'Order failed' };
+    // Use actualResponse for all checks
+    const resp = actualResponse;
+
+    // Check for explicit failure
+    if (resp?.success === false || resp?.errorMsg) {
+      console.error(`❌ Order failed: ${resp?.errorMsg || 'Unknown error'}`);
+      return { success: false, error: resp?.errorMsg || 'Order failed' };
     }
 
-    const extractOrderId = (resp: any): string | undefined => {
-      if (!resp) return undefined;
-      if (Array.isArray(resp)) return extractOrderId(resp[0]);
+    // Extract order ID - check both SDK (orderID) and REST (orderId) formats
+    const orderId = resp?.orderID || resp?.orderId || (response as any)?.orderID || (response as any)?.orderId;
 
-      const candidates: unknown[] = [
-        resp.orderID,
-        resp.orderId,
-        resp.order_id,
-        resp.id,
-        resp?.data?.orderID,
-        resp?.data?.orderId,
-        resp?.data?.order_id,
-        resp?.data?.id,
-        resp?.order?.orderID,
-        resp?.order?.orderId,
-        resp?.order?.order_id,
-        resp?.order?.id,
-        resp?.result?.orderID,
-        resp?.result?.orderId,
-        resp?.result?.order_id,
-        resp?.result?.id,
-        resp?.orderIds?.[0],
-        resp?.data?.orderIds?.[0],
-      ];
-
-      const found = candidates.find((x) =>
-        (typeof x === 'string' && x.trim().length > 0) || typeof x === 'number' || typeof x === 'bigint'
-      );
-      return found !== undefined ? String(found) : undefined;
-    };
-
-    // Extract order ID from various possible response formats
-    const orderId = extractOrderId(response);
-
-    if (!orderId) {
-      console.error('❌ Order response had no order ID; treating as failure to avoid false "filled" status.');
-      return { success: false, error: 'No order id returned by Polymarket API' };
+    if (!orderId || (typeof orderId === 'string' && orderId.trim() === '')) {
+      console.error('❌ Order response had no order ID - NOT treating as filled');
+      console.error('   This means the order was likely NOT placed successfully');
+      return { success: false, error: 'No order ID returned - order not placed' };
     }
 
-    console.log(`✅ Order placed: ${orderId}`);
+    console.log(`✅ Order placed with ID: ${orderId}`);
+    console.log(`   Status from response: ${resp?.status || 'unknown'}`);
 
-    return {
-      success: true,
-      orderId,
-      avgPrice: order.price,
-      filledSize: order.size,
-    };
+    // Now verify the order exists and get fill status
+    try {
+      console.log(`🔍 Verifying order ${orderId} via getOrder()...`);
+      const orderDetails = await client.getOrder(orderId);
+      console.log(`📋 Order details:`, JSON.stringify(orderDetails, null, 2));
+      
+      const originalSize = parseFloat(orderDetails?.original_size || orderDetails?.originalSize || '0');
+      const sizeMatched = parseFloat(orderDetails?.size_matched || orderDetails?.sizeMatched || '0');
+      const orderStatus = orderDetails?.status;
+      
+      console.log(`   - Original size: ${originalSize}`);
+      console.log(`   - Size matched: ${sizeMatched}`);
+      console.log(`   - Order status: ${orderStatus}`);
+      
+      // Determine actual fill status
+      let fillStatus: 'filled' | 'partial' | 'open' | 'unknown';
+      if (sizeMatched >= originalSize && originalSize > 0) {
+        fillStatus = 'filled';
+      } else if (sizeMatched > 0) {
+        fillStatus = 'partial';
+      } else if (orderStatus === 'live') {
+        fillStatus = 'open';
+      } else {
+        fillStatus = 'unknown';
+      }
+      
+      console.log(`   ➡️ Fill status: ${fillStatus}`);
+      
+      return {
+        success: true,
+        orderId,
+        avgPrice: order.price,
+        filledSize: sizeMatched > 0 ? sizeMatched : undefined,
+        status: fillStatus,
+      };
+    } catch (verifyError: any) {
+      console.warn(`⚠️ Could not verify order: ${verifyError?.message}`);
+      // Order was placed but we couldn't verify - return as pending
+      return {
+        success: true,
+        orderId,
+        avgPrice: order.price,
+        status: 'pending',
+      };
+    }
   } catch (error: any) {
     const errorMsg = error?.message || String(error);
     console.error(`❌ Order error:`, errorMsg);
