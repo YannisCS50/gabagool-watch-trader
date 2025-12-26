@@ -89,16 +89,24 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
       orderType
     );
 
+    // Log full response for debugging
+    console.log(`📋 Polymarket response:`, JSON.stringify(response, null, 2));
+
     if (response.success === false || response.errorMsg) {
       console.error(`❌ Order failed: ${response.errorMsg || 'Unknown error'}`);
       return { success: false, error: response.errorMsg || 'Order failed' };
     }
 
-    console.log(`✅ Order placed: ${response.orderID || 'pending'}`);
+    // Extract order ID from various possible response formats
+    const orderId = response.orderID || response.order_id || response.id || 
+                    (response.orderIds && response.orderIds[0]) ||
+                    (response.order && response.order.id);
+
+    console.log(`✅ Order placed: ${orderId || 'no-id-returned'}`);
 
     return {
       success: true,
-      orderId: response.orderID,
+      orderId: orderId,
       avgPrice: order.price,
       filledSize: order.size,
     };
