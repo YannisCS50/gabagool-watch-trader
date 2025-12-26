@@ -29,6 +29,31 @@ let clobClient: ClobClient | null = null;
 let lastOrderAttemptAtMs = 0;
 let blockedUntilMs = 0;
 
+// Cache for orderbook existence checks
+const orderbookCache = new Map<string, boolean>();
+
+async function orderbookExists(tokenId: string): Promise<boolean> {
+  if (orderbookCache.has(tokenId)) {
+    return orderbookCache.get(tokenId)!;
+  }
+  
+  try {
+    const res = await fetch(`${CLOB_URL}/book?token_id=${tokenId}`);
+    const exists = res.status === 200;
+    orderbookCache.set(tokenId, exists);
+    
+    if (!exists) {
+      console.log(`📕 Orderbook check: tokenId ${tokenId.slice(0, 20)}... → ${res.status} (does not exist)`);
+    }
+    
+    return exists;
+  } catch (error) {
+    console.error(`⚠️ Orderbook check failed for ${tokenId.slice(0, 20)}...:`, error);
+    // Don't cache errors - allow retry
+    return false;
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -167,6 +192,12 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
   lastOrderAttemptAtMs = Date.now();
 
   console.log(`📤 Placing order: ${order.side} ${order.size} @ ${(order.price * 100).toFixed(0)}¢`);
+
+  // Check if orderbook exists before placing order
+  if (!(await orderbookExists(order.tokenId))) {
+    console.log(`⛔ Skip: no orderbook for tokenId ${order.tokenId.slice(0, 30)}...`);
+    return { success: false, error: 'Orderbook does not exist for this tokenId' };
+  }
 
   try {
     const client = await getClient();
