@@ -57,6 +57,10 @@ const STRATEGY = {
   hedge: {
     triggerCombined: 0.98, // Hedge when combined < 98¢
     notional: 5,           // $5 per hedge
+    cushionTicks: 3,       // Extra ticks above ask for guaranteed fill
+    tickSize: 0.01,        // 1¢ tick size
+    forceTimeoutSec: 45,   // Force hedge after 45s if still one-sided
+    maxPrice: 0.65,        // Max price for hedge (to prevent overpaying)
   },
   accumulate: {
     triggerCombined: 0.97, // Accumulate when combined < 97¢
@@ -505,19 +509,43 @@ Deno.serve(async (req) => {
         return;
       }
 
-      // PHASE 2: HEDGE - One side filled, buy other at good price
+      // PHASE 2: HEDGE - One side filled, buy other at MARKETABLE price
       if (pos.upShares === 0 || pos.downShares === 0) {
         const missingSide: Outcome = pos.upShares === 0 ? "UP" : "DOWN";
         const missingPrice = missingSide === "UP" ? upAsk : downAsk;
         const existingShares = missingSide === "UP" ? pos.downShares : pos.upShares;
         const existingInvested = missingSide === "UP" ? pos.downInvested : pos.upInvested;
         const existingAvg = existingShares > 0 ? existingInvested / existingShares : 0;
-        const projectedCombined = existingAvg + missingPrice;
+        
+        // MARKETABLE LIMIT: Add cushion ticks above ask for guaranteed fill
+        const cushion = STRATEGY.hedge.cushionTicks * STRATEGY.hedge.tickSize;
+        const marketablePrice = Math.min(
+          missingPrice + cushion, 
+          STRATEGY.hedge.maxPrice
+        );
+        const projectedCombined = existingAvg + marketablePrice;
 
+        // Calculate time since opening trade for force-hedge timeout
+        const timeSinceOpeningMs = ctx.lastTradeAtMs > 0 ? nowMs - ctx.lastTradeAtMs : 0;
+        const timeSinceOpeningSec = timeSinceOpeningMs / 1000;
+        const isForceHedge = timeSinceOpeningSec >= STRATEGY.hedge.forceTimeoutSec;
+
+        // Log hedge evaluation details
+        log(`🔍 HEDGE EVAL: ${missingSide} ask=${(missingPrice*100).toFixed(0)}¢ → marketable=${(marketablePrice*100).toFixed(0)}¢ | projected=${(projectedCombined*100).toFixed(0)}¢ | timeSinceOpen=${timeSinceOpeningSec.toFixed(0)}s | force=${isForceHedge}`);
+
+        // FORCE HEDGE: If timeout exceeded, hedge regardless of combined price
+        if (isForceHedge) {
+          log(`⚠️ FORCE HEDGE: ${timeSinceOpeningSec.toFixed(0)}s since opening > ${STRATEGY.hedge.forceTimeoutSec}s timeout`);
+          await executeTrade(market, ctx, missingSide, marketablePrice, existingShares,
+            `FORCE Hedge ${missingSide} @ ${(marketablePrice*100).toFixed(0)}¢ (timeout ${timeSinceOpeningSec.toFixed(0)}s)`);
+          return;
+        }
+
+        // NORMAL HEDGE: Check if combined price is good
         if (projectedCombined < STRATEGY.hedge.triggerCombined && missingPrice <= STRATEGY.opening.maxPrice) {
           const edgePct = ((1 - projectedCombined) * 100).toFixed(1);
-          await executeTrade(market, ctx, missingSide, missingPrice, existingShares,
-            `Hedge ${missingSide} @ ${(missingPrice*100).toFixed(0)}¢ (${edgePct}% edge)`);
+          await executeTrade(market, ctx, missingSide, marketablePrice, existingShares,
+            `Hedge ${missingSide} @ ${(marketablePrice*100).toFixed(0)}¢ (${edgePct}% edge, +${STRATEGY.hedge.cushionTicks} ticks)`);
         }
         return;
       }
