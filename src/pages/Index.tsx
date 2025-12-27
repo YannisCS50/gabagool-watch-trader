@@ -7,6 +7,7 @@ import { LiveOpenPositions } from '@/components/StrategyAnalysis';
 import { ActivityChart } from '@/components/ActivityChart';
 import { PnLChart } from '@/components/PnLChart';
 import { TraderHeader } from '@/components/TraderHeader';
+import { LiveRunnerStatus } from '@/components/LiveRunnerStatus';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useTrades } from '@/hooks/useTrades';
@@ -179,6 +180,9 @@ const Index = () => {
 
       {/* Main Content */}
       <main className="container mx-auto px-4 py-6 space-y-6">
+        {/* Live Runner Status Widget */}
+        <LiveRunnerStatus />
+
         {/* Trader Header */}
         <TraderHeader username="gabagool22" stats={displayStats} />
 

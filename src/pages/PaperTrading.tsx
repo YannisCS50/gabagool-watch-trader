@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Bot, Activity } from 'lucide-react';
 import { PaperTradeDashboard } from '@/components/PaperTradeDashboard';
+import { LiveRunnerStatus } from '@/components/LiveRunnerStatus';
 
 const PaperTrading = () => {
   return (
@@ -31,7 +32,8 @@ const PaperTrading = () => {
         </div>
       </header>
 
-      <main className="container mx-auto px-4 py-6">
+      <main className="container mx-auto px-4 py-6 space-y-6">
+        <LiveRunnerStatus />
         <PaperTradeDashboard />
       </main>
     </div>

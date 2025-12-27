@@ -10,6 +10,7 @@ import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import { toast } from 'sonner';
 import { GabagoolTradesTable } from '@/components/GabagoolTradesTable';
+import { LiveRunnerStatus } from '@/components/LiveRunnerStatus';
 
 interface Trade {
   id: string;
@@ -429,6 +430,9 @@ export default function GabagoolStrategyAnalysis() {
             </Button>
           </div>
         </div>
+
+        {/* Live Runner Status */}
+        <LiveRunnerStatus />
 
         {/* Executive Summary */}
         <Card className="border-primary/50 bg-gradient-to-br from-primary/5 to-transparent">
