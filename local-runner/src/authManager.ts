@@ -342,9 +342,9 @@ export class AuthManager {
   async getBalance(): Promise<{ usdc: number; error?: string; status?: number }> {
     const creds = this.getActiveCreds();
 
-    const pathWithQuery = `/balance-allowance?asset_type=0&signature_type=${this.getSignatureType()}&address=${encodeURIComponent(
-      this.getBalanceQueryAddress()
-    )}`;
+    const pathWithQuery = `/balance-allowance?asset_type=0&asset_address=${encodeURIComponent(
+      '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174'
+    )}&signature_type=${this.getSignatureType()}&address=${encodeURIComponent(this.getBalanceQueryAddress())}`;
 
     const timestampSeconds = String(Math.floor(Date.now() / 1000));
 
