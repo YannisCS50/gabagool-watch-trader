@@ -66,6 +66,8 @@ async function fetchRedeemablePositions(): Promise<RedeemablePosition[]> {
     // Use the Polymarket Safe proxy wallet address
     const walletAddress = config.polymarket.address;
     
+    console.log(`🔍 Checking redeemable positions for wallet: ${walletAddress}`);
+    
     const url = `${DATA_API_URL}/positions?user=${walletAddress}&sizeThreshold=0&limit=100`;
     
     const response = await fetch(url, {
@@ -76,17 +78,29 @@ async function fetchRedeemablePositions(): Promise<RedeemablePosition[]> {
     });
 
     if (!response.ok) {
+      const body = await response.text();
       console.error(`❌ Failed to fetch positions: HTTP ${response.status}`);
+      console.error(`   Response: ${body.slice(0, 200)}`);
       return [];
     }
 
     const positions: RedeemablePosition[] = await response.json();
     
+    console.log(`📊 Found ${positions.length} total positions`);
+    
+    // Log all positions for debugging
+    for (const p of positions) {
+      const status = p.redeemable ? '💰 REDEEMABLE' : '⏳ not yet';
+      console.log(`   ${status}: ${p.outcome} ${p.size.toFixed(0)} shares @ ${p.title?.slice(0, 40) || p.slug}`);
+    }
+    
     // Filter for redeemable positions only
     const redeemable = positions.filter(p => p.redeemable === true);
     
     if (redeemable.length > 0) {
-      console.log(`💰 Found ${redeemable.length} redeemable positions`);
+      console.log(`\n💰 ${redeemable.length} positions ready to claim!`);
+    } else {
+      console.log(`   No redeemable positions at this time`);
     }
     
     return redeemable;
