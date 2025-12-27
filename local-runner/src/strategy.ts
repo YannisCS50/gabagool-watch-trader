@@ -2,6 +2,12 @@ import { config } from './config.js';
 import type { OrderbookDepth } from './polymarket.js';
 
 // ============================================================
+// STRATEGY VERSION - Log this on startup to verify deployment
+// ============================================================
+export const STRATEGY_VERSION = '2.0.0-pdf-state-machine';
+export const STRATEGY_NAME = 'Polymarket 15m Hedge & Arbitrage (PDF Spec)';
+
+// ============================================================
 // TYPES & STATE MACHINE (PDF Section 3 & 12.1)
 // ============================================================
 
