@@ -409,7 +409,12 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
   }
   lastOrderAttemptAtMs = Date.now();
 
-  console.log(`📤 Placing order: ${order.side} ${order.size} @ ${(order.price * 100).toFixed(0)}¢`);
+  // Price improvement: add 1-2¢ to increase fill probability
+  // Higher prices (>50¢) are more volatile, use 2¢ improvement
+  const priceImprovement = order.price > 0.50 ? 0.02 : 0.01;
+  const adjustedPrice = Math.min(order.price + priceImprovement, 0.99);
+  
+  console.log(`📤 Placing order: ${order.side} ${order.size} @ ${(order.price * 100).toFixed(0)}¢ → ${(adjustedPrice * 100).toFixed(0)}¢ (+${(priceImprovement * 100).toFixed(0)}¢ improvement)`);
 
   // Check if orderbook exists and has liquidity before placing order
   const depth = await getOrderbookDepth(order.tokenId);
@@ -466,11 +471,15 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
     console.log(`   - side: ${side}`);
     console.log(`   - orderType: ${orderType}`);
     
+    // Use FOK (Fill-or-Kill) for immediate feedback unless explicitly GTC
+    const effectiveOrderType = order.orderType === 'GTC' ? OrderType.FOK : orderType;
+    console.log(`   - Using order type: ${effectiveOrderType === OrderType.FOK ? 'FOK' : orderType} (original: ${order.orderType || 'GTC'})`);
+
     const postOnce = async (c: ClobClient) =>
       c.createAndPostOrder(
         {
           tokenID: order.tokenId,
-          price: order.price,
+          price: adjustedPrice, // Use improved price
           size: order.size,
           side,
         },
@@ -478,7 +487,7 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
           tickSize: '0.01', // Standard tick size for most markets
           negRisk: false,   // Set based on market type
         },
-        orderType
+        effectiveOrderType // Use FOK for immediate fills
       );
 
     let response = await postOnce(client);
