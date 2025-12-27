@@ -179,6 +179,22 @@ if (envFromDockerOrCli) {
 
 console.log(`✅ Loaded env from: ${loadedEnvPath}`);
 
+// ERC20 address regex for validation (lowercase hex only for Polymarket compatibility)
+const ERC20_ADDRESS_RE = /^0x[0-9a-f]{40}$/;
+
+// Polygon USDC (PoS) default address
+const DEFAULT_USDC_ADDRESS = '0x2791bca1f2de4661ed88a30c99a7a9449aa84174';
+
+const parseUsdcAddress = (): string => {
+  const raw = process.env.POLYMARKET_USDC_ADDRESS ?? DEFAULT_USDC_ADDRESS;
+  const normalized = raw.toLowerCase();
+  if (!ERC20_ADDRESS_RE.test(normalized)) {
+    console.error(`❌ Invalid POLYMARKET_USDC_ADDRESS: "${raw}" (expected 0x + 40 hex chars)`);
+    process.exit(1);
+  }
+  return normalized;
+};
+
 export const config = {
   backend: {
     url: process.env.BACKEND_URL!,
@@ -190,6 +206,8 @@ export const config = {
     passphrase: process.env.POLYMARKET_PASSPHRASE!,
     privateKey: process.env.POLYMARKET_PRIVATE_KEY!,
     address: process.env.POLYMARKET_ADDRESS!,
+    // Collateral token address (Polygon USDC PoS by default, lowercase)
+    usdcAddress: parseUsdcAddress(),
     // Optional override (recommended for Magic/Google accounts):
     // 0 = EOA, 1 = POLY_PROXY (Magic), 2 = GNOSIS_SAFE
     signatureType: (() => {
