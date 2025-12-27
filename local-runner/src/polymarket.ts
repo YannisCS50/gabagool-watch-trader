@@ -733,11 +733,17 @@ export async function testConnection(): Promise<boolean> {
   console.log('🔌 Testing Polymarket connection...');
 
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
+
     // Test with a known public endpoint
     const response = await fetch(`${CLOB_URL}/markets?limit=1`, {
       method: 'GET',
       headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
     });
+
+    clearTimeout(timeout);
 
     if (!response.ok) {
       const text = await response.text();
@@ -751,7 +757,11 @@ export async function testConnection(): Promise<boolean> {
 
     console.log('✅ Connected to Polymarket CLOB!');
     return true;
-  } catch (error) {
+  } catch (error: any) {
+    if (String(error?.name) === 'AbortError') {
+      console.error('❌ Connection timeout (15s) - likely IPv6/VPN routing issue');
+      return false;
+    }
     console.error('❌ Connection error:', error);
     return false;
   }
