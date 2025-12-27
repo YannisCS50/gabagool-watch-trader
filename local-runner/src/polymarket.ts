@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { ClobClient, Side, OrderType } from '@polymarket/clob-client';
 import { Wallet } from 'ethers';
 import { config } from './config.js';
@@ -676,62 +677,114 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
     return { usdc: balanceCache.usdc };
   }
 
+  const toBase64Url = (input: string) => input.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  const fromBase64Url = (input: string) => {
+    let normalized = input.replace(/-/g, '+').replace(/_/g, '/');
+    const pad = normalized.length % 4;
+    if (pad === 2) normalized += '==';
+    if (pad === 3) normalized += '=';
+    return normalized;
+  };
+
+  const decodeSecret = (secret: string, variant: 'base64url' | 'base64') => {
+    const normalized = variant === 'base64url' ? fromBase64Url(secret) : secret;
+    return Buffer.from(normalized, 'base64');
+  };
+
+  const buildSignature = (
+    secretBytes: Buffer,
+    timestampSeconds: string,
+    method: string,
+    pathWithQuery: string,
+    bodyString?: string
+  ) => {
+    const prehash = `${timestampSeconds}${method.toUpperCase()}${pathWithQuery}${bodyString || ''}`;
+    const digest = crypto.createHmac('sha256', secretBytes).update(prehash).digest();
+    return toBase64Url(Buffer.from(digest).toString('base64'));
+  };
+
   try {
-    // Use authenticated SDK call so we get proper signing headers.
-    // NOTE: Polymarket has migrated some endpoints to prefer `assetAddress`.
-    // We send both `asset_type` and USDC `assetAddress` to stay compatible.
-    const client = await getClient();
+    const signer = new Wallet(config.polymarket.privateKey);
 
-    const USDC_POLYGON = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+    const apiCreds = derivedCreds || {
+      key: config.polymarket.apiKey,
+      secret: config.polymarket.apiSecret,
+      passphrase: config.polymarket.passphrase,
+    };
 
-    const balanceAllowance = await (client as any).getBalanceAllowance({
-      // 0 = COLLATERAL (USDC) in older API
-      asset_type: 0,
-      // Newer API expects an ERC20 address
-      assetAddress: USDC_POLYGON,
-      // Some versions use snake_case
-      asset_address: USDC_POLYGON,
-      // Safe proxy
-      signature_type: 2,
-      // Funder (Safe) address
-      address: config.polymarket.address,
-    });
-
-    if (isUnauthorizedPayload(balanceAllowance)) {
-      throw { status: 401, data: balanceAllowance, message: 'Unauthorized/Invalid api key' };
+    if (!apiCreds.key || !apiCreds.secret || !apiCreds.passphrase) {
+      return { usdc: 0, error: 'Missing API credentials' };
     }
 
-    const rawBalance =
-      balanceAllowance?.balance ??
-      balanceAllowance?.available_balance ??
-      balanceAllowance?.availableBalance ??
-      '0';
+    // Avoid the SDK getBalanceAllowance call (currently returning 400 "assetAddress invalid hex address").
+    // We do a signed HTTP GET ourselves.
+    const pathWithQuery = `/balance-allowance?asset_type=0&signature_type=2&address=${encodeURIComponent(
+      config.polymarket.address
+    )}`;
 
-    const balance = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
+    const timestampSeconds = String(Math.floor(Date.now() / 1000));
 
-    console.log(`💰 CLOB Balance: $${balance.toFixed(2)} USDC`);
+    // Try base64url first (what the SDK typically uses), then base64.
+    const secretVariants: Array<'base64url' | 'base64'> = ['base64url', 'base64'];
+    let lastError: { status?: number; text?: string } | null = null;
 
-    // Cache the result
-    balanceCache = { usdc: balance, fetchedAt: Date.now() };
+    for (const variant of secretVariants) {
+      try {
+        const secretBytes = decodeSecret(apiCreds.secret, variant);
+        if (!secretBytes?.length) continue;
 
-    return { usdc: balance };
+        const signature = buildSignature(secretBytes, timestampSeconds, 'GET', pathWithQuery);
+
+        const response = await fetch(`${CLOB_URL}${pathWithQuery}`, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            POLY_ADDRESS: signer.address,
+            POLY_API_KEY: apiCreds.key,
+            POLY_PASSPHRASE: apiCreds.passphrase,
+            POLY_SIGNATURE: signature,
+            POLY_TIMESTAMP: timestampSeconds,
+          } as any,
+        });
+
+        if (!response.ok) {
+          const text = await response.text();
+          lastError = { status: response.status, text };
+          // If signature variant was wrong, server usually responds 401.
+          if (response.status === 401) continue;
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const data = await response.json();
+        const rawBalance = (data as any)?.balance ?? (data as any)?.available_balance ?? '0';
+        const balance = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
+
+        console.log(`💰 CLOB Balance: $${balance.toFixed(2)} USDC`);
+
+        balanceCache = { usdc: balance, fetchedAt: Date.now() };
+        return { usdc: balance };
+      } catch (e) {
+        // Try next variant
+        continue;
+      }
+    }
+
+    if (lastError?.status) {
+      console.error(`❌ Balance fetch failed: HTTP ${lastError.status} - ${String(lastError.text).slice(0, 200)}`);
+      return { usdc: 0, error: `HTTP ${lastError.status}` };
+    }
+
+    console.error('❌ Balance fetch failed: Unable to sign request');
+    return { usdc: 0, error: 'Unable to sign request' };
   } catch (error: any) {
-    const status = error?.response?.status ?? error?.status;
-    const data = error?.response?.data ?? error?.data;
+    console.error(`❌ Failed to fetch balance: ${error?.message || error}`);
 
-    if (status) {
-      console.error(`❌ Balance fetch failed: HTTP ${status} - ${JSON.stringify(data)?.slice(0, 200)}`);
-    } else {
-      console.error(`❌ Failed to fetch balance: ${error?.message || error}`);
-    }
-
-    // Return cached balance if available (even if stale)
     if (balanceCache) {
       console.log(`   Using stale cached balance: $${balanceCache.usdc.toFixed(2)}`);
       return { usdc: balanceCache.usdc };
     }
 
-    return { usdc: 0, error: status ? `HTTP ${status}` : error?.message };
+    return { usdc: 0, error: error?.message };
   }
 }
 
