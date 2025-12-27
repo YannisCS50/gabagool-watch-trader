@@ -669,9 +669,6 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
 let balanceCache: { usdc: number; fetchedAt: number } | null = null;
 const BALANCE_CACHE_TTL_MS = 10000;
 
-// Polymarket USDC.e contract address on Polygon
-const USDC_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
-
 export async function getBalance(): Promise<{ usdc: number; error?: string }> {
   // Return cached balance if fresh
   if (balanceCache && Date.now() - balanceCache.fetchedAt < BALANCE_CACHE_TTL_MS) {
@@ -679,16 +676,29 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
   }
 
   try {
-    const client = await getClient();
-    
-    // Use the CLOB API to get balance/allowance for USDC collateral.
-    // IMPORTANT: for collateral, Polymarket expects ONLY asset_type (no token_id/assetAddress).
-    const balanceAllowance = await client.getBalanceAllowance({
-      asset_type: 0, // AssetType.COLLATERAL = 0 (USDC)
-    } as any);
-    
-    // The balance is returned as a string, convert to number
-    const balance = parseFloat(balanceAllowance?.balance || '0');
+    // Use direct HTTP call to avoid SDK issues with signature_type 2 (Safe proxy)
+    // The SDK's getBalanceAllowance has bugs with "assetAddress invalid hex address"
+    const response = await fetch(`${CLOB_URL}/balance-allowance?asset_type=0&signature_type=2`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      console.error(`❌ Balance fetch failed: HTTP ${response.status} - ${text.slice(0, 200)}`);
+      
+      // Return cached balance if available
+      if (balanceCache) {
+        console.log(`   Using stale cached balance: $${balanceCache.usdc.toFixed(2)}`);
+        return { usdc: balanceCache.usdc };
+      }
+      return { usdc: 0, error: `HTTP ${response.status}` };
+    }
+
+    const data = await response.json();
+    const balance = parseFloat(data?.balance || '0');
     
     console.log(`💰 CLOB Balance: $${balance.toFixed(2)} USDC`);
     
