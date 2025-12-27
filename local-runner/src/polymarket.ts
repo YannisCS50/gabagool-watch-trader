@@ -471,9 +471,10 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
     console.log(`   - side: ${side}`);
     console.log(`   - orderType: ${orderType}`);
     
-    // Use FOK (Fill-or-Kill) for immediate feedback unless explicitly GTC
-    const effectiveOrderType = order.orderType === 'GTC' ? OrderType.FOK : orderType;
-    console.log(`   - Using order type: ${effectiveOrderType === OrderType.FOK ? 'FOK' : orderType} (original: ${order.orderType || 'GTC'})`);
+    // Use GTC (Good-Til-Cancelled) - orders stay in orderbook until filled
+    // FOK fails if not enough liquidity at exact price, GTC waits for fills
+    const effectiveOrderType = orderType; // Keep original (GTC by default)
+    console.log(`   - Using order type: GTC (resting order - waits for fills)`);
 
     const postOnce = async (c: ClobClient) =>
       c.createAndPostOrder(
