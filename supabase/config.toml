@@ -47,3 +47,9 @@ verify_jwt = false
 
 [functions.runner-proxy]
 verify_jwt = false
+
+[functions.settle-live-trades]
+verify_jwt = false
+
+[functions.get-bot-config]
+verify_jwt = false
