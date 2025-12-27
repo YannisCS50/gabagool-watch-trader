@@ -1,23 +1,20 @@
 import { ethers, Contract, Wallet, providers } from 'ethers';
 import { config } from './config.js';
-
-// Polygon RPC endpoint
-const POLYGON_RPC = 'https://polygon-rpc.com';
+import {
+  getProvider,
+  rotateProvider,
+  CTF_ADDRESS,
+  USDC_ADDRESS,
+  CTF_ABI,
+  parsePayoutRedemptionEvents,
+  waitForTransaction,
+  getCurrentNonce,
+  PayoutRedemptionEvent,
+} from './chain.js';
+import { reconcile, printReconciliationReport } from './reconcile.js';
 
 // Polymarket Data API endpoint
 const DATA_API_URL = 'https://data-api.polymarket.com';
-
-// Conditional Tokens Framework (CTF) contract on Polygon
-const CTF_ADDRESS = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045';
-
-// USDC address on Polygon (collateral token)
-const USDC_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
-
-// Minimal ABI for ConditionalTokens redeemPositions function
-const CTF_ABI = [
-  'function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] calldata indexSets) external',
-  'event PayoutRedemption(address indexed redeemer, address indexed collateralToken, bytes32 indexed parentCollectionId, bytes32 conditionId, uint256[] indexSets, uint256 payout)',
-];
 
 // Interface for redeemable position from Polymarket API
 interface RedeemablePosition {
@@ -35,118 +32,140 @@ interface RedeemablePosition {
   outcomeIndex: number;
 }
 
-// Track claimed / in-flight condition IDs to avoid duplicate claims
-const claimedConditions = new Set<string>();
-const inFlightConditions = new Set<string>();
+// ============================================================================
+// MUTEX: Prevent concurrent claim loops
+// ============================================================================
+let claimMutexLocked = false;
 
-// Track pending on-chain tx per condition (prevents "stuck claiming" loops)
-const pendingTxByCondition = new Map<string, { hash: string; sentAtMs: number }>();
+async function acquireClaimMutex(): Promise<boolean> {
+  if (claimMutexLocked) {
+    console.log('🔒 Claim mutex already held, skipping');
+    return false;
+  }
+  claimMutexLocked = true;
+  return true;
+}
 
-// Provider and wallet instances
-let provider: providers.JsonRpcProvider | null = null;
+function releaseClaimMutex(): void {
+  claimMutexLocked = false;
+}
+
+// ============================================================================
+// NONCE MANAGER: Prevent nonce conflicts
+// ============================================================================
+let currentNonce: number | null = null;
+let nonceRefreshTimestamp = 0;
+
+async function getNextNonce(wallet: Wallet): Promise<number> {
+  const now = Date.now();
+  
+  // Refresh nonce from chain every 30 seconds or if never fetched
+  if (currentNonce === null || now - nonceRefreshTimestamp > 30000) {
+    currentNonce = await getCurrentNonce(wallet.address);
+    nonceRefreshTimestamp = now;
+    console.log(`🔢 Nonce refreshed from chain: ${currentNonce}`);
+  }
+  
+  const nonce = currentNonce!;
+  currentNonce! += 1;
+  return nonce;
+}
+
+async function resetNonce(wallet: Wallet): Promise<void> {
+  currentNonce = await getCurrentNonce(wallet.address);
+  nonceRefreshTimestamp = Date.now();
+  console.log(`🔢 Nonce reset to: ${currentNonce}`);
+}
+
+// ============================================================================
+// TRACKING: Event-based confirmation
+// ============================================================================
+
+// Track confirmed claims by conditionId (only after on-chain event confirmation)
+const confirmedClaims = new Map<string, {
+  txHash: string;
+  blockNumber: number;
+  payoutUSDC: number;
+  confirmedAt: number;
+}>();
+
+// Track pending transactions
+const pendingTransactions = new Map<string, {
+  conditionId: string;
+  sentAt: number;
+  nonce: number;
+}>();
+
+// Track tx hashes for reconciliation
+const claimTxHistory: Array<{
+  txHash: string;
+  conditionId: string;
+  status: 'pending' | 'confirmed' | 'failed';
+  sentAt: number;
+  confirmedAt?: number;
+}> = [];
+
+// ============================================================================
+// INITIALIZATION
+// ============================================================================
 let wallet: Wallet | null = null;
 let ctfContract: Contract | null = null;
 
-/**
- * Initialize the redeemer with provider and wallet
- */
 function initializeRedeemer(): void {
-  if (wallet) return; // Already initialized
+  if (wallet) return;
 
   console.log('🔧 Initializing redeemer...');
 
-  provider = new providers.JsonRpcProvider(POLYGON_RPC);
+  const provider = getProvider();
   wallet = new Wallet(config.polymarket.privateKey, provider);
   ctfContract = new Contract(CTF_ADDRESS, CTF_ABI, wallet);
 
-  console.log(`✅ Redeemer initialized with address: ${wallet.address}`);
+  console.log(`✅ Redeemer initialized`);
+  console.log(`   📍 Signer (EOA): ${wallet.address}`);
+  console.log(`   📍 Proxy wallet (config): ${config.polymarket.address || 'not set'}`);
 }
 
-async function getRedeemGasOverrides(): Promise<
-  | { maxFeePerGas: ethers.BigNumber; maxPriorityFeePerGas: ethers.BigNumber }
-  | undefined
-> {
-  if (!provider) return;
+// ============================================================================
+// GAS ESTIMATION
+// ============================================================================
+async function getRedeemGasOverrides(): Promise<{
+  maxFeePerGas: ethers.BigNumber;
+  maxPriorityFeePerGas: ethers.BigNumber;
+  nonce: number;
+}> {
+  const provider = getProvider();
 
   const floorPriority = ethers.utils.parseUnits('30', 'gwei');
   const floorMaxFee = ethers.utils.parseUnits('60', 'gwei');
 
+  let maxPriority = floorPriority;
+  let maxFee = floorMaxFee;
+
   try {
     const feeData = await provider.getFeeData();
-
-    let maxPriority = feeData.maxPriorityFeePerGas || feeData.gasPrice || floorPriority;
+    maxPriority = feeData.maxPriorityFeePerGas || feeData.gasPrice || floorPriority;
     if (maxPriority.lt(floorPriority)) maxPriority = floorPriority;
 
-    let maxFee = feeData.maxFeePerGas || feeData.gasPrice || floorMaxFee;
+    maxFee = feeData.maxFeePerGas || feeData.gasPrice || floorMaxFee;
     if (maxFee.lt(floorMaxFee)) maxFee = floorMaxFee;
-
-    if (maxFee.lt(maxPriority.mul(2))) {
-      maxFee = maxPriority.mul(2);
-    }
-
-    console.log(
-      `⛽ Redeem gas: priority=${ethers.utils.formatUnits(maxPriority, 'gwei')} gwei, max=${ethers.utils.formatUnits(maxFee, 'gwei')} gwei`
-    );
-
-    return { maxFeePerGas: maxFee, maxPriorityFeePerGas: maxPriority };
-  } catch (e: any) {
-    console.log(
-      `⚠️ Failed to fetch fee data, using floor gas settings: ${e?.message || e}`
-    );
-    return { maxFeePerGas: floorMaxFee, maxPriorityFeePerGas: floorPriority };
+    if (maxFee.lt(maxPriority.mul(2))) maxFee = maxPriority.mul(2);
+  } catch (e) {
+    console.log('⚠️ Using floor gas settings');
   }
-}
-async function refreshPendingTx(
-  conditionId: string
-): Promise<'none' | 'pending' | 'mined' | 'failed'> {
-  const pending = pendingTxByCondition.get(conditionId);
-  if (!pending) return 'none';
 
-  // Give the tx some time to be indexed/mined before allowing retries
-  const ageMs = Date.now() - pending.sentAtMs;
-  const maxPendingMs = 10 * 60 * 1000; // 10 minutes
+  const nonce = await getNextNonce(wallet!);
 
-  if (!provider) return 'pending';
+  console.log(
+    `⛽ Gas: priority=${ethers.utils.formatUnits(maxPriority, 'gwei')} gwei, max=${ethers.utils.formatUnits(maxFee, 'gwei')} gwei, nonce=${nonce}`
+  );
 
-  try {
-    const receipt = await provider.getTransactionReceipt(pending.hash);
-
-    if (!receipt) {
-      if (ageMs > maxPendingMs) {
-        console.log(
-          `   ⚠️ REDEEM: tx ${pending.hash} still missing after 10m; allowing retry for condition ${conditionId}`
-        );
-        pendingTxByCondition.delete(conditionId);
-        return 'failed';
-      }
-
-      return 'pending';
-    }
-
-    // Mined
-    pendingTxByCondition.delete(conditionId);
-
-    if (receipt.status === 1) {
-      console.log(`   ✅ REDEEM: confirmed ${pending.hash} in block ${receipt.blockNumber}`);
-      claimedConditions.add(conditionId);
-      return 'mined';
-    }
-
-    console.log(`   ❌ REDEEM: tx ${pending.hash} failed on-chain (status=0)`);
-    return 'failed';
-  } catch (e: any) {
-    // Don't crash claiming loop on transient RPC errors
-    console.log(`   ⚠️ REDEEM: failed to check tx ${pending.hash}: ${e?.message || e}`);
-    return 'pending';
-  }
+  return { maxFeePerGas: maxFee, maxPriorityFeePerGas: maxPriority, nonce };
 }
 
-/**
- * Fetch all redeemable positions from Polymarket Data API for BOTH wallets
- * (signing wallet + configured proxy wallet)
- */
+// ============================================================================
+// FETCH POSITIONS
+// ============================================================================
 async function fetchRedeemablePositions(): Promise<RedeemablePosition[]> {
-  // Get both wallet addresses
   const proxyWallet = config.polymarket.address;
   const signingWallet = wallet?.address;
 
@@ -154,7 +173,7 @@ async function fetchRedeemablePositions(): Promise<RedeemablePosition[]> {
   if (proxyWallet) walletsToCheck.add(proxyWallet.toLowerCase());
   if (signingWallet) walletsToCheck.add(signingWallet.toLowerCase());
 
-  console.log(`🔍 Checking redeemable positions for ${walletsToCheck.size} wallet(s):`);
+  console.log(`\n🔍 Fetching positions for ${walletsToCheck.size} wallet(s):`);
   for (const w of walletsToCheck) {
     console.log(`   📍 ${w}`);
   }
@@ -164,7 +183,7 @@ async function fetchRedeemablePositions(): Promise<RedeemablePosition[]> {
   for (const walletAddress of walletsToCheck) {
     let cursor: string | null = null;
     let pageCount = 0;
-    const maxPages = 10; // Safety limit
+    const maxPages = 10;
 
     try {
       while (pageCount < maxPages) {
@@ -174,42 +193,40 @@ async function fetchRedeemablePositions(): Promise<RedeemablePosition[]> {
 
         const response = await fetch(url, {
           method: 'GET',
-          headers: {
-            'Accept': 'application/json',
-          },
+          headers: { 'Accept': 'application/json' },
         });
 
         if (!response.ok) {
-          const body = await response.text();
-          console.error(`❌ Failed to fetch positions for ${walletAddress}: HTTP ${response.status}`);
-          console.error(`   Response: ${body.slice(0, 200)}`);
+          console.error(`❌ API error for ${walletAddress}: HTTP ${response.status}`);
           break;
         }
 
         const data = await response.json();
-        
-        // Handle both array response and paginated object response
+
         let positions: RedeemablePosition[];
         let nextCursor: string | null = null;
-        
+
         if (Array.isArray(data)) {
           positions = data;
         } else if (data.positions && Array.isArray(data.positions)) {
           positions = data.positions;
           nextCursor = data.next_cursor || data.nextCursor || null;
         } else {
-          console.log(`   ⚠️ Unexpected API response format for ${walletAddress}`);
+          console.log(`⚠️ Unexpected API response for ${walletAddress}`);
           break;
         }
 
-        allPositions.push(...positions);
-        console.log(`   📄 Page ${pageCount}: ${positions.length} positions for ${walletAddress.slice(0,10)}...`);
+        // Tag each position with its wallet
+        for (const p of positions) {
+          p.proxyWallet = p.proxyWallet || walletAddress;
+        }
 
-        // Stop if no more pages or same cursor returned
+        allPositions.push(...positions);
+        console.log(`   📄 Page ${pageCount}: ${positions.length} positions for ${walletAddress.slice(0, 10)}...`);
+
         if (!nextCursor || nextCursor === cursor || positions.length === 0) break;
         cursor = nextCursor;
       }
-
     } catch (error) {
       console.error(`❌ Error fetching positions for ${walletAddress}:`, error);
     }
@@ -217,17 +234,14 @@ async function fetchRedeemablePositions(): Promise<RedeemablePosition[]> {
 
   console.log(`📊 Total positions fetched: ${allPositions.length}`);
 
-  // Filter for redeemable positions only, exclude already-claimed and pending-tx ones,
-  // and de-dupe by conditionId (binary markets often return both UP and DOWN entries).
+  // Filter redeemable, exclude confirmed claims
   const redeemableByCondition = new Map<string, RedeemablePosition>();
 
   for (const p of allPositions) {
     if (!p.redeemable) continue;
-    if (claimedConditions.has(p.conditionId)) continue;
-    if (pendingTxByCondition.has(p.conditionId)) continue;
+    if (confirmedClaims.has(p.conditionId)) continue;
 
     const existing = redeemableByCondition.get(p.conditionId);
-    // Keep the larger currentValue entry for nicer logging (functionality is same)
     if (!existing || (p.currentValue || 0) > (existing.currentValue || 0)) {
       redeemableByCondition.set(p.conditionId, p);
     }
@@ -235,69 +249,42 @@ async function fetchRedeemablePositions(): Promise<RedeemablePosition[]> {
 
   const redeemable = [...redeemableByCondition.values()];
 
-  // Only log positions that are actually still pending
   if (redeemable.length > 0) {
-    console.log(
-      `💰 Found ${redeemable.length} redeemable conditions (skipping ${claimedConditions.size} claimed, ${pendingTxByCondition.size} pending-tx):`
-    );
+    console.log(`\n💰 ${redeemable.length} redeemable (skipping ${confirmedClaims.size} confirmed):`);
     for (const p of redeemable) {
-      console.log(
-        `   💰 REDEEMABLE: ${p.outcome} ${p.size.toFixed(0)} shares @ ${p.title?.slice(0, 50) || p.slug} [${p.proxyWallet?.slice(0,10)}...]`
-      );
+      console.log(`   💰 ${p.outcome} ${p.size.toFixed(0)} shares @ ${p.title?.slice(0, 50)}`);
+      console.log(`      Value: $${p.currentValue?.toFixed(2)} | Wallet: ${p.proxyWallet?.slice(0, 10)}...`);
     }
-  } else if (pendingTxByCondition.size > 0) {
-    console.log(`   ⏳ Claims pending on-chain (${pendingTxByCondition.size} tx), waiting...`);
-  } else if (claimedConditions.size > 0) {
-    console.log(`   ✅ All positions already claimed this session (${claimedConditions.size} total)`);
+  } else if (confirmedClaims.size > 0) {
+    console.log(`   ✅ All positions confirmed claimed (${confirmedClaims.size} total)`);
   } else {
-    console.log(`   No redeemable positions at this time`);
+    console.log(`   No redeemable positions`);
   }
 
   return redeemable;
 }
 
-/**
- * Redeem a single position by calling the CTF contract
- */
-async function redeemPosition(position: RedeemablePosition): Promise<boolean> {
-  if (!wallet || !ctfContract) {
-    initializeRedeemer();
-  }
-
+// ============================================================================
+// REDEEM WITH EVENT CONFIRMATION
+// ============================================================================
+async function redeemPositionWithConfirmation(position: RedeemablePosition): Promise<boolean> {
   const conditionId = position.conditionId;
-  
-  // If we already sent a tx for this condition, re-check its receipt first.
-  const pendingState = await refreshPendingTx(conditionId);
-  if (pendingState === 'pending') return false;
 
-  // Skip if already claimed or already being processed
-  if (claimedConditions.has(conditionId) || inFlightConditions.has(conditionId)) {
-    return false;
-  }
-
-  inFlightConditions.add(conditionId);
-
-  console.log(`\n💎 CLAIMING WINNINGS`);
-  console.log(`   Market: ${position.title}`);
-  console.log(`   Outcome: ${position.outcome}`);
-  console.log(`   Value: $${position.currentValue.toFixed(2)}`);
-  console.log(`   P&L: $${position.cashPnl.toFixed(2)}`);
-  console.log(`   Condition ID: ${conditionId}`);
+  console.log(`\n💎 CLAIMING: ${position.title?.slice(0, 50)}`);
+  console.log(`   Outcome: ${position.outcome} | Value: $${position.currentValue?.toFixed(2)}`);
+  console.log(`   ConditionId: ${conditionId}`);
+  console.log(`   Position wallet: ${position.proxyWallet}`);
+  console.log(`   Signer wallet: ${wallet?.address}`);
 
   try {
-    // For Polymarket binary markets, we need index sets [1, 2] for both outcomes
-    // outcomeIndex 0 = YES/UP = index set 1 (binary 01)
-    // outcomeIndex 1 = NO/DOWN = index set 2 (binary 10)
-    const indexSets = [1, 2]; // Redeem both outcome slots
-    
-    // Parent collection ID is zero for top-level conditions
+    const indexSets = [1, 2];
     const parentCollectionId = ethers.utils.hexZeroPad('0x00', 32);
-
-    console.log(`   📤 REDEEM: sending redeemPositions transaction...`);
 
     const overrides = await getRedeemGasOverrides();
 
-    let tx;
+    console.log(`   📤 Sending redeemPositions tx (nonce=${overrides.nonce})...`);
+
+    let tx: ethers.ContractTransaction;
     try {
       tx = await ctfContract!.redeemPositions(
         USDC_ADDRESS,
@@ -309,124 +296,244 @@ async function redeemPosition(position: RedeemablePosition): Promise<boolean> {
     } catch (error: any) {
       const msg = error?.message || String(error);
 
-      // Public RPC often rejects low tip caps; bump gas and retry once
-      if (msg.includes('gas price below minimum') || msg.includes('tip cap')) {
-        const bumped = {
-          maxPriorityFeePerGas: ethers.utils.parseUnits('40', 'gwei'),
-          maxFeePerGas: ethers.utils.parseUnits('100', 'gwei'),
-        };
-
-        console.log(
-          `   ⛽ REDEEM: gas too low for RPC, retrying with priority=40 gwei / max=100 gwei`
-        );
-
+      // Handle nonce errors
+      if (msg.includes('nonce') || msg.includes('NONCE')) {
+        console.log(`   🔢 Nonce error, resetting...`);
+        await resetNonce(wallet!);
+        
+        // Retry with fresh nonce
+        const newOverrides = await getRedeemGasOverrides();
         tx = await ctfContract!.redeemPositions(
           USDC_ADDRESS,
           parentCollectionId,
           conditionId,
           indexSets,
-          bumped
+          newOverrides
+        );
+      } else if (msg.includes('gas price below minimum') || msg.includes('tip cap')) {
+        // Bump gas
+        console.log(`   ⛽ Gas too low, bumping...`);
+        const bumpedOverrides = {
+          ...overrides,
+          maxPriorityFeePerGas: ethers.utils.parseUnits('50', 'gwei'),
+          maxFeePerGas: ethers.utils.parseUnits('120', 'gwei'),
+        };
+        tx = await ctfContract!.redeemPositions(
+          USDC_ADDRESS,
+          parentCollectionId,
+          conditionId,
+          indexSets,
+          bumpedOverrides
         );
       } else {
         throw error;
       }
     }
 
-    console.log(`   ⏳ REDEEM: tx sent ${tx.hash}`);
+    console.log(`   ⏳ Tx sent: ${tx.hash}`);
 
-    pendingTxByCondition.set(conditionId, { hash: tx.hash, sentAtMs: Date.now() });
+    // Track pending
+    pendingTransactions.set(tx.hash, {
+      conditionId,
+      sentAt: Date.now(),
+      nonce: overrides.nonce,
+    });
 
-    // Wait for confirmation (with timeout). If it stays pending, we will re-check next tick.
-    let receipt: ethers.providers.TransactionReceipt;
-    try {
-      if (provider) {
-        receipt = await provider.waitForTransaction(tx.hash, 1, 120_000);
-      } else {
-        receipt = await tx.wait(1);
-      }
-    } catch (e: any) {
-      const msg = (e?.message || String(e)).toLowerCase();
-      if (msg.includes('timeout')) {
-        console.log(`   ⏳ REDEEM: tx still pending after 120s, will re-check next tick`);
-        return false;
-      }
-      throw e;
-    }
+    claimTxHistory.push({
+      txHash: tx.hash,
+      conditionId,
+      status: 'pending',
+      sentAt: Date.now(),
+    });
 
-    // tx mined -> no longer pending
-    pendingTxByCondition.delete(conditionId);
-    if (receipt.status === 1) {
-      console.log(`   ✅ REDEEM: claimed in block ${receipt.blockNumber}`);
-      claimedConditions.add(conditionId);
-      return true;
-    } else {
-      console.error(`   ❌ REDEEM: transaction failed`);
+    // Wait for confirmation
+    const receipt = await waitForTransaction(tx.hash, 1, 120000);
+
+    if (!receipt) {
+      console.log(`   ⏳ Tx still pending, will re-check later`);
       return false;
     }
+
+    pendingTransactions.delete(tx.hash);
+
+    if (receipt.status !== 1) {
+      console.log(`   ❌ Tx failed on-chain (status=0)`);
+      
+      const historyEntry = claimTxHistory.find(h => h.txHash === tx.hash);
+      if (historyEntry) historyEntry.status = 'failed';
+      
+      return false;
+    }
+
+    // PARSE EVENTS - This is the source of truth!
+    const events = parsePayoutRedemptionEvents(receipt);
+
+    if (events.length === 0) {
+      console.log(`   ⚠️ Tx succeeded but no PayoutRedemption events found`);
+      console.log(`      This may indicate the position was already claimed or wrong wallet`);
+      return false;
+    }
+
+    // Mark as confirmed
+    for (const event of events) {
+      console.log(`   ✅ CONFIRMED: claimed $${event.payoutUSDC.toFixed(2)} in block ${event.blockNumber}`);
+      console.log(`      ConditionId: ${event.conditionId}`);
+
+      confirmedClaims.set(event.conditionId, {
+        txHash: event.transactionHash,
+        blockNumber: event.blockNumber,
+        payoutUSDC: event.payoutUSDC,
+        confirmedAt: Date.now(),
+      });
+
+      const historyEntry = claimTxHistory.find(h => h.txHash === tx.hash);
+      if (historyEntry) {
+        historyEntry.status = 'confirmed';
+        historyEntry.confirmedAt = Date.now();
+      }
+    }
+
+    return true;
   } catch (error: any) {
     const msg = error?.message || String(error);
 
-    // Check for common errors
     if (msg.includes('result for condition not received yet')) {
-      console.log(`   ⏳ REDEEM: market not yet resolved, skipping...`);
+      console.log(`   ⏳ Market not yet resolved, skipping`);
     } else if (msg.includes('insufficient funds')) {
-      console.error(`   ❌ REDEEM: insufficient gas funds for transaction`);
+      console.error(`   ❌ Insufficient gas funds`);
     } else if (msg.includes('execution reverted')) {
-      console.log(`   ⚠️ REDEEM: execution reverted (already claimed / not resolved / wrong wallet)`);
-      // Mark as claimed to avoid repeated attempts this session
-      claimedConditions.add(conditionId);
+      console.log(`   ⚠️ Execution reverted (already claimed / not resolved / wrong wallet)`);
+      // Mark as "confirmed" to stop retrying
+      confirmedClaims.set(conditionId, {
+        txHash: '',
+        blockNumber: 0,
+        payoutUSDC: 0,
+        confirmedAt: Date.now(),
+      });
     } else {
-      console.error(`   ❌ REDEEM: claim failed: ${msg}`);
+      console.error(`   ❌ Claim failed: ${msg}`);
     }
 
     return false;
-  } finally {
-    inFlightConditions.delete(conditionId);
   }
 }
 
-/**
- * Main function to check and claim all redeemable positions
- */
+// ============================================================================
+// MAIN ENTRY POINT
+// ============================================================================
 export async function checkAndClaimWinnings(): Promise<{ claimed: number; total: number }> {
-  initializeRedeemer();
-  
-  const positions = await fetchRedeemablePositions();
-  
-  if (positions.length === 0) {
+  // Acquire mutex
+  if (!await acquireClaimMutex()) {
     return { claimed: 0, total: 0 };
   }
 
-  let claimedCount = 0;
-  
-  for (const position of positions) {
-    // Skip positions we already tried to claim
-    if (claimedConditions.has(position.conditionId)) {
-      continue;
+  try {
+    initializeRedeemer();
+
+    const positions = await fetchRedeemablePositions();
+
+    if (positions.length === 0) {
+      return { claimed: 0, total: 0 };
     }
-    
-    // Small delay between claims to avoid rate limiting
+
+    let claimedCount = 0;
+
+    for (const position of positions) {
+      // Skip if already confirmed
+      if (confirmedClaims.has(position.conditionId)) continue;
+
+      // Delay between claims
+      if (claimedCount > 0) {
+        await new Promise(resolve => setTimeout(resolve, 3000));
+      }
+
+      const success = await redeemPositionWithConfirmation(position);
+      if (success) claimedCount++;
+    }
+
     if (claimedCount > 0) {
-      await new Promise(resolve => setTimeout(resolve, 2000));
-    }
-    
-    const success = await redeemPosition(position);
-    if (success) {
-      claimedCount++;
-    }
-  }
+      console.log(`\n🎉 Claimed ${claimedCount} of ${positions.length} positions`);
 
-  if (claimedCount > 0) {
-    console.log(`\n🎉 Claimed ${claimedCount} of ${positions.length} redeemable positions`);
-  }
+      // POST-CLAIM VERIFICATION: Re-fetch and compare
+      console.log(`\n🔄 Verifying claims...`);
+      await new Promise(resolve => setTimeout(resolve, 5000)); // Wait for indexer
+      
+      const remainingPositions = await fetchRedeemablePositions();
+      if (remainingPositions.length > 0) {
+        console.log(`⚠️ ${remainingPositions.length} positions still showing as claimable`);
+        console.log(`   This may be due to indexer delay or positions on different wallets`);
+      } else {
+        console.log(`✅ Verified: all positions claimed`);
+      }
+    }
 
-  return { claimed: claimedCount, total: positions.length };
+    return { claimed: claimedCount, total: positions.length };
+  } finally {
+    releaseClaimMutex();
+  }
 }
 
 /**
  * Get current claimable value from API
  */
 export async function getClaimableValue(): Promise<number> {
+  initializeRedeemer();
   const positions = await fetchRedeemablePositions();
   return positions.reduce((sum, p) => sum + (p.currentValue || 0), 0);
+}
+
+/**
+ * Run reconciliation and print report
+ */
+export async function runReconciliation(): Promise<void> {
+  initializeRedeemer();
+  const result = await reconcile(wallet!.address);
+  printReconciliationReport(result);
+}
+
+/**
+ * Get claim history for debugging
+ */
+export function getClaimHistory(): typeof claimTxHistory {
+  return [...claimTxHistory];
+}
+
+/**
+ * Get confirmed claims
+ */
+export function getConfirmedClaims(): Map<string, { txHash: string; blockNumber: number; payoutUSDC: number }> {
+  return new Map(confirmedClaims);
+}
+
+/**
+ * Debug: print current state
+ */
+export function printDebugState(): void {
+  console.log('\n' + '='.repeat(60));
+  console.log('REDEEMER DEBUG STATE');
+  console.log('='.repeat(60));
+
+  console.log(`\n📍 Wallets:`);
+  console.log(`   Signer: ${wallet?.address || 'not initialized'}`);
+  console.log(`   Proxy: ${config.polymarket.address || 'not set'}`);
+
+  console.log(`\n🔢 Nonce: ${currentNonce ?? 'not set'} (last refresh: ${new Date(nonceRefreshTimestamp).toISOString()})`);
+  console.log(`🔒 Mutex: ${claimMutexLocked ? 'LOCKED' : 'unlocked'}`);
+
+  console.log(`\n✅ Confirmed claims: ${confirmedClaims.size}`);
+  for (const [conditionId, claim] of confirmedClaims) {
+    console.log(`   • ${conditionId.slice(0, 20)}... | $${claim.payoutUSDC.toFixed(2)} | block ${claim.blockNumber}`);
+  }
+
+  console.log(`\n⏳ Pending txs: ${pendingTransactions.size}`);
+  for (const [txHash, pending] of pendingTransactions) {
+    console.log(`   • ${txHash.slice(0, 20)}... | nonce ${pending.nonce} | ${Date.now() - pending.sentAt}ms ago`);
+  }
+
+  console.log(`\n📜 Tx history: ${claimTxHistory.length} entries`);
+  for (const entry of claimTxHistory.slice(-10)) {
+    console.log(`   • ${entry.txHash.slice(0, 20)}... | ${entry.status} | ${entry.conditionId.slice(0, 20)}...`);
+  }
+
+  console.log('\n' + '='.repeat(60));
 }
