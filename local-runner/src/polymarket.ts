@@ -904,10 +904,10 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
     const addressParam = signatureType === 0 ? signer.address : config.polymarket.address;
 
     // Build the query path with all required parameters
-    // NOTE: CLOB expects asset_address for collateral balance/allowance.
-    const pathWithQuery = `/balance-allowance?asset_type=0&asset_address=${encodeURIComponent(
+    // CLOB expects the collateral token address as `assetAddress` (camelCase). Some versions may also accept `asset_address`.
+    const pathWithQuery = `/balance-allowance?asset_type=0&assetAddress=${encodeURIComponent(
       USDC_ASSET_ADDRESS
-    )}&signature_type=${signatureType}&address=${encodeURIComponent(addressParam)}`;
+    )}&asset_address=${encodeURIComponent(USDC_ASSET_ADDRESS)}&signature_type=${signatureType}&address=${encodeURIComponent(addressParam)}`;
 
     const timestampSeconds = String(Math.floor(Date.now() / 1000));
 
