@@ -61,12 +61,34 @@ function calcShares(notional: number, price: number): number {
   return Math.floor(notional / price);
 }
 
+/**
+ * Check if there's enough balance for an opening trade + hedge.
+ * Returns null if balance is sufficient, or a reason string if not.
+ */
+export function checkBalanceForOpening(
+  availableBalance: number,
+  requiredNotional: number
+): { canProceed: boolean; reason?: string } {
+  // Require at least 2x the trade size to ensure we can buy both sides
+  const minRequired = requiredNotional * 2;
+  
+  if (availableBalance < minRequired) {
+    return {
+      canProceed: false,
+      reason: `Insufficient balance: $${availableBalance.toFixed(2)} < $${minRequired.toFixed(2)} (need 2x trade size for opening + hedge)`,
+    };
+  }
+  
+  return { canProceed: true };
+}
+
 export function evaluateOpportunity(
   book: TopOfBook,
   position: MarketPosition,
   remainingSeconds: number,
   lastTradeAtMs: number,
-  nowMs: number
+  nowMs: number,
+  availableBalance?: number // Optional: if provided, checks balance for opening trades
 ): TradeSignal | null {
   // Cooldown check
   if (lastTradeAtMs && nowMs - lastTradeAtMs < STRATEGY.cooldownMs) {
@@ -105,6 +127,15 @@ export function evaluateOpportunity(
 
   // PHASE 1: OPENING - No position yet
   if (position.upShares === 0 && position.downShares === 0) {
+    // CRITICAL: Check balance before opening (need 2x for opening + hedge)
+    if (availableBalance !== undefined) {
+      const balanceCheck = checkBalanceForOpening(availableBalance, STRATEGY.opening.notional);
+      if (!balanceCheck.canProceed) {
+        // Return null silently - the caller will log if needed
+        return null;
+      }
+    }
+
     const cheaperSide: Outcome = upAsk <= downAsk ? 'UP' : 'DOWN';
     const cheaperPrice = cheaperSide === 'UP' ? upAsk : downAsk;
 

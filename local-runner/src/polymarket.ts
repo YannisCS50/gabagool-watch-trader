@@ -665,10 +665,49 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
   }
 }
 
+// Cache for balance (short TTL - 10 seconds)
+let balanceCache: { usdc: number; fetchedAt: number } | null = null;
+const BALANCE_CACHE_TTL_MS = 10000;
+
 export async function getBalance(): Promise<{ usdc: number; error?: string }> {
-  // Note: Balance check requires wallet address - for now just return 0
-  // Real balance would come from on-chain or Polymarket portfolio API
-  return { usdc: 0 };
+  // Return cached balance if fresh
+  if (balanceCache && Date.now() - balanceCache.fetchedAt < BALANCE_CACHE_TTL_MS) {
+    return { usdc: balanceCache.usdc };
+  }
+
+  try {
+    const client = await getClient();
+    
+    // Use the CLOB API to get balance allowance for USDC (COLLATERAL)
+    const balanceAllowance = await client.getBalanceAllowance({
+      asset_type: 0, // AssetType.COLLATERAL = 0 (USDC)
+    });
+    
+    // The balance is returned as a string, convert to number
+    const balance = parseFloat(balanceAllowance?.balance || '0');
+    
+    console.log(`💰 CLOB Balance: $${balance.toFixed(2)} USDC`);
+    
+    // Cache the result
+    balanceCache = { usdc: balance, fetchedAt: Date.now() };
+    
+    return { usdc: balance };
+  } catch (error: any) {
+    console.error(`❌ Failed to fetch balance: ${error?.message || error}`);
+    
+    // Return cached balance if available (even if stale)
+    if (balanceCache) {
+      console.log(`   Using stale cached balance: $${balanceCache.usdc.toFixed(2)}`);
+      return { usdc: balanceCache.usdc };
+    }
+    
+    return { usdc: 0, error: error?.message };
+  }
+}
+
+// Invalidate balance cache (call after trades)
+export function invalidateBalanceCache(): void {
+  balanceCache = null;
 }
 
 export async function testConnection(): Promise<boolean> {
