@@ -728,32 +728,40 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
     return { usdc: balanceCache.usdc };
   }
 
-  const toBase64Url = (input: string) => input.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-  const fromBase64Url = (input: string) => {
-    let normalized = input.replace(/-/g, '+').replace(/_/g, '/');
-    const pad = normalized.length % 4;
-    if (pad === 2) normalized += '==';
-    if (pad === 3) normalized += '=';
-    return normalized;
-  };
+  const toUrlSafeBase64KeepPadding = (b64: string) => b64.replace(/\+/g, '-').replace(/\//g, '_');
 
-  const decodeSecret = (secret: string, variant: 'base64url' | 'base64') => {
-    const normalized = variant === 'base64url' ? fromBase64Url(secret) : secret;
-    return Buffer.from(normalized, 'base64');
+  const sanitizeBase64Secret = (secret: string) => {
+    let s = secret.trim()
+      // Convert base64url → base64
+      .replace(/-/g, '+')
+      .replace(/_/g, '/')
+      // Remove any non-base64 characters (matches upstream SDK behavior)
+      .replace(/[^A-Za-z0-9+/=]/g, '');
+
+    // Add padding if missing
+    const pad = s.length % 4;
+    if (pad === 2) s += '==';
+    if (pad === 3) s += '=';
+
+    return s;
   };
 
   const buildSignature = (
     secretBytes: Buffer,
     timestampSeconds: string,
     method: string,
-    pathWithQuery: string,
-    signatureEncoding: 'base64' | 'base64url',
+    requestPath: string,
     bodyString?: string
   ) => {
-    const prehash = `${timestampSeconds}${method.toUpperCase()}${pathWithQuery}${bodyString || ''}`;
-    const digest = crypto.createHmac('sha256', secretBytes).update(prehash).digest();
+    // Upstream clob-client: message = timestamp + method + requestPath (+ body)
+    let message = `${timestampSeconds}${method.toUpperCase()}${requestPath}`;
+    if (bodyString !== undefined) message += bodyString;
+
+    const digest = crypto.createHmac('sha256', secretBytes).update(message).digest();
     const b64 = Buffer.from(digest).toString('base64');
-    return signatureEncoding === 'base64url' ? toBase64Url(b64) : b64;
+
+    // IMPORTANT: must be url-safe base64, but KEEP '=' padding (upstream behavior)
+    return toUrlSafeBase64KeepPadding(b64);
   };
 
   const attemptBalanceFetch = async (apiCreds: { key: string; secret: string; passphrase: string }) => {
@@ -765,57 +773,39 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
 
     const timestampSeconds = String(Math.floor(Date.now() / 1000));
 
-    // Some accounts use base64url secrets and/or different signature encodings.
-    // We try both secret decodings and both signature encodings (base64 + base64url).
-    const secretVariants: Array<'base64url' | 'base64'> = ['base64url', 'base64'];
-    const signatureEncodings: Array<'base64' | 'base64url'> = ['base64', 'base64url'];
-
-    let lastError: { status?: number; text?: string } | null = null;
-
-    for (const secretVariant of secretVariants) {
-      const secretBytes = decodeSecret(apiCreds.secret, secretVariant);
-      if (!secretBytes?.length) continue;
-
-      for (const sigEncoding of signatureEncodings) {
-        try {
-          const signature = buildSignature(secretBytes, timestampSeconds, 'GET', pathWithQuery, sigEncoding);
-
-          const response = await fetch(`${CLOB_URL}${pathWithQuery}`, {
-            method: 'GET',
-            headers: {
-              'Content-Type': 'application/json',
-              POLY_ADDRESS: signer.address,
-              POLY_API_KEY: apiCreds.key,
-              POLY_PASSPHRASE: apiCreds.passphrase,
-              POLY_SIGNATURE: signature,
-              POLY_TIMESTAMP: timestampSeconds,
-            } as any,
-          });
-
-          if (!response.ok) {
-            const text = await response.text();
-            lastError = { status: response.status, text };
-            // If signature variant was wrong, server usually responds 401.
-            if (response.status === 401) continue;
-            throw new Error(`HTTP ${response.status}`);
-          }
-
-          const data = await response.json();
-          const rawBalance = (data as any)?.balance ?? (data as any)?.available_balance ?? '0';
-          const balance = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
-
-          console.log(`💰 CLOB Balance: $${balance.toFixed(2)} USDC`);
-
-          balanceCache = { usdc: balance, fetchedAt: Date.now() };
-          return { usdc: balance };
-        } catch {
-          continue;
-        }
-      }
+    // Build signature exactly like upstream clob-client (url-safe base64 with '=' padding)
+    const secretBytes = Buffer.from(sanitizeBase64Secret(apiCreds.secret), 'base64');
+    if (!secretBytes?.length) {
+      return { error: { status: 0, text: 'Invalid API secret (base64 decode failed)' } };
     }
 
-    return { error: lastError };
-  };
+    const signature = buildSignature(secretBytes, timestampSeconds, 'GET', pathWithQuery);
+
+    const response = await fetch(`${CLOB_URL}${pathWithQuery}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        POLY_ADDRESS: signer.address,
+        POLY_API_KEY: apiCreds.key,
+        POLY_PASSPHRASE: apiCreds.passphrase,
+        POLY_SIGNATURE: signature,
+        POLY_TIMESTAMP: timestampSeconds,
+      } as any,
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      return { error: { status: response.status, text } };
+    }
+
+    const data = await response.json();
+    const rawBalance = (data as any)?.balance ?? (data as any)?.available_balance ?? '0';
+    const balance = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
+
+    console.log(`💰 CLOB Balance: $${balance.toFixed(2)} USDC`);
+
+    balanceCache = { usdc: balance, fetchedAt: Date.now() };
+    return { usdc: balance };
 
   try {
     let apiCreds = derivedCreds || {
