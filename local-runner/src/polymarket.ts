@@ -202,8 +202,22 @@ export async function deriveApiCredentials(): Promise<{ key: string; secret: str
     }
 
     const apiKey = newCreds?.apiKey ?? newCreds?.key;
-    const secret = newCreds?.secret;
+    const secretRaw = newCreds?.secret;
     const passphrase = newCreds?.passphrase;
+
+    // Normalize secret to standard base64 (the API sometimes returns base64url)
+    const normalizeToBase64 = (input: string) => {
+      let s = input.trim();
+      if (s.includes('-') || s.includes('_')) {
+        s = s.replace(/-/g, '+').replace(/_/g, '/');
+      }
+      const pad = s.length % 4;
+      if (pad === 2) s += '==';
+      if (pad === 3) s += '=';
+      return s;
+    };
+
+    const secret = typeof secretRaw === 'string' ? normalizeToBase64(secretRaw) : secretRaw;
 
     // Validate response - SDK may return error payload instead of throwing
     if (!apiKey || !secret || !passphrase) {
@@ -219,7 +233,7 @@ export async function deriveApiCredentials(): Promise<{ key: string; secret: str
     // Store in module-level cache
     derivedCreds = {
       key: apiKey,
-      secret,
+      secret: String(secret),
       passphrase,
     };
 
@@ -733,11 +747,13 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
     timestampSeconds: string,
     method: string,
     pathWithQuery: string,
+    signatureEncoding: 'base64' | 'base64url',
     bodyString?: string
   ) => {
     const prehash = `${timestampSeconds}${method.toUpperCase()}${pathWithQuery}${bodyString || ''}`;
     const digest = crypto.createHmac('sha256', secretBytes).update(prehash).digest();
-    return toBase64Url(Buffer.from(digest).toString('base64'));
+    const b64 = Buffer.from(digest).toString('base64');
+    return signatureEncoding === 'base64url' ? toBase64Url(b64) : b64;
   };
 
   const attemptBalanceFetch = async (apiCreds: { key: string; secret: string; passphrase: string }) => {
@@ -749,48 +765,52 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
 
     const timestampSeconds = String(Math.floor(Date.now() / 1000));
 
-    // Try base64url first (what the SDK typically uses), then base64.
+    // Some accounts use base64url secrets and/or different signature encodings.
+    // We try both secret decodings and both signature encodings (base64 + base64url).
     const secretVariants: Array<'base64url' | 'base64'> = ['base64url', 'base64'];
+    const signatureEncodings: Array<'base64' | 'base64url'> = ['base64', 'base64url'];
+
     let lastError: { status?: number; text?: string } | null = null;
 
-    for (const variant of secretVariants) {
-      try {
-        const secretBytes = decodeSecret(apiCreds.secret, variant);
-        if (!secretBytes?.length) continue;
+    for (const secretVariant of secretVariants) {
+      const secretBytes = decodeSecret(apiCreds.secret, secretVariant);
+      if (!secretBytes?.length) continue;
 
-        const signature = buildSignature(secretBytes, timestampSeconds, 'GET', pathWithQuery);
+      for (const sigEncoding of signatureEncodings) {
+        try {
+          const signature = buildSignature(secretBytes, timestampSeconds, 'GET', pathWithQuery, sigEncoding);
 
-        const response = await fetch(`${CLOB_URL}${pathWithQuery}`, {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-            POLY_ADDRESS: signer.address,
-            POLY_API_KEY: apiCreds.key,
-            POLY_PASSPHRASE: apiCreds.passphrase,
-            POLY_SIGNATURE: signature,
-            POLY_TIMESTAMP: timestampSeconds,
-          } as any,
-        });
+          const response = await fetch(`${CLOB_URL}${pathWithQuery}`, {
+            method: 'GET',
+            headers: {
+              'Content-Type': 'application/json',
+              POLY_ADDRESS: signer.address,
+              POLY_API_KEY: apiCreds.key,
+              POLY_PASSPHRASE: apiCreds.passphrase,
+              POLY_SIGNATURE: signature,
+              POLY_TIMESTAMP: timestampSeconds,
+            } as any,
+          });
 
-        if (!response.ok) {
-          const text = await response.text();
-          lastError = { status: response.status, text };
-          // If signature variant was wrong, server usually responds 401.
-          if (response.status === 401) continue;
-          throw new Error(`HTTP ${response.status}`);
+          if (!response.ok) {
+            const text = await response.text();
+            lastError = { status: response.status, text };
+            // If signature variant was wrong, server usually responds 401.
+            if (response.status === 401) continue;
+            throw new Error(`HTTP ${response.status}`);
+          }
+
+          const data = await response.json();
+          const rawBalance = (data as any)?.balance ?? (data as any)?.available_balance ?? '0';
+          const balance = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
+
+          console.log(`💰 CLOB Balance: $${balance.toFixed(2)} USDC`);
+
+          balanceCache = { usdc: balance, fetchedAt: Date.now() };
+          return { usdc: balance };
+        } catch {
+          continue;
         }
-
-        const data = await response.json();
-        const rawBalance = (data as any)?.balance ?? (data as any)?.available_balance ?? '0';
-        const balance = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
-
-        console.log(`💰 CLOB Balance: $${balance.toFixed(2)} USDC`);
-
-        balanceCache = { usdc: balance, fetchedAt: Date.now() };
-        return { usdc: balance };
-      } catch (e) {
-        // Try next variant
-        continue;
       }
     }
 
