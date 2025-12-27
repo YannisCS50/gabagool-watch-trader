@@ -61,6 +61,18 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function isUnauthorizedError(err: any): boolean {
+  const status = err?.response?.status ?? err?.status;
+  const dataError = err?.response?.data?.error ?? err?.data?.error;
+  const msg = String(err?.message || '').toLowerCase();
+
+  if (status === 401) return true;
+  if (msg.includes('401') || msg.includes('unauthorized')) return true;
+  if (typeof dataError === 'string' && dataError.toLowerCase().includes('unauthorized')) return true;
+
+  return false;
+}
+
 /**
  * Derive fresh API credentials using the private key.
  * This creates new CLOB API keys programmatically.
@@ -208,46 +220,44 @@ async function getClient(): Promise<ClobClient> {
   } catch (authError: any) {
     console.error(`\n❌ CREDENTIAL VALIDATION FAILED!`);
     console.error(`   Error: ${authError?.message || authError}`);
-    
-    // Check for specific error types
-    if (authError?.response) {
-      const status = authError.response.status;
-      const data = authError.response.data;
-      console.error(`   HTTP Status: ${status}`);
-      console.error(`   Response: ${JSON.stringify(data)}`);
-      
-      if (status === 401) {
-        console.log(`\n   🔄 401 Unauthorized - Attempting auto-derive of new credentials...`);
-        
-        // Reset client and try to derive new credentials
-        clobClient = null;
-        
-        try {
-          derivedCreds = await deriveApiCredentials();
-          
-          // Recreate client with new creds
-          clobClient = new ClobClient(
-            CLOB_URL,
-            CHAIN_ID,
-            signer,
-            { key: derivedCreds.key, secret: derivedCreds.secret, passphrase: derivedCreds.passphrase },
-            2,
-            config.polymarket.address
-          );
-          
-          // Validate new credentials
-          const newApiKeys = await clobClient.getApiKeys();
-          console.log(`   ✅ Auto-derived credentials VALID!`);
-          console.log(`   API keys response:`, JSON.stringify(newApiKeys, null, 2));
-        } catch (deriveError: any) {
-          console.error(`   ❌ Auto-derive failed: ${deriveError?.message || deriveError}`);
-          console.error(`\n   🚨 MANUAL ACTION REQUIRED:`);
-          console.error(`      1. Go to https://polymarket.com and log in`);
-          console.error(`      2. Open DevTools (F12) → Application → Local Storage`);
-          console.error(`      3. Find CLOB_API_KEY, CLOB_SECRET, CLOB_PASSPHRASE`);
-          console.error(`      4. Update your .env file with these values`);
-        }
+
+    const unauthorized = isUnauthorizedError(authError);
+
+    // Best-effort HTTP details (the SDK doesn't always throw Axios-style errors)
+    const status = authError?.response?.status ?? authError?.status;
+    const data = authError?.response?.data ?? authError?.data;
+    if (status) console.error(`   HTTP Status: ${status}`);
+    if (data) console.error(`   Response: ${JSON.stringify(data)}`);
+
+    if (unauthorized) {
+      console.log(`\n   🔄 Unauthorized - Attempting auto-derive of new credentials...`);
+
+      // Reset client and try to derive new credentials
+      clobClient = null;
+
+      try {
+        derivedCreds = await deriveApiCredentials();
+
+        // Recreate client with new creds
+        clobClient = new ClobClient(
+          CLOB_URL,
+          CHAIN_ID,
+          signer,
+          { key: derivedCreds.key, secret: derivedCreds.secret, passphrase: derivedCreds.passphrase },
+          2,
+          config.polymarket.address
+        );
+
+        // Validate new credentials
+        const newApiKeys = await clobClient.getApiKeys();
+        console.log(`   ✅ Auto-derived credentials VALID!`);
+        console.log(`   API keys response:`, JSON.stringify(newApiKeys, null, 2));
+      } catch (deriveError: any) {
+        console.error(`   ❌ Auto-derive failed: ${deriveError?.message || deriveError}`);
+        console.error(`   ⚠️ Continuing anyway, but orders will likely fail\n`);
       }
+    } else {
+      console.error(`   ⚠️ Continuing anyway, but orders will likely fail\n`);
     }
   }
 
@@ -307,15 +317,17 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
     
     // Log auth context for debugging 401s
     const signer = new Wallet(config.polymarket.privateKey);
+    const effectiveApiKey = derivedCreds?.key || config.polymarket.apiKey;
+
     console.log(`🔐 AUTH CONTEXT:`);
     console.log(`   - POLY_ADDRESS header will be: ${signer.address}`);
-    console.log(`   - API Key (owner): ${config.polymarket.apiKey.slice(0, 12)}...`);
+    console.log(`   - API Key (owner): ${effectiveApiKey.slice(0, 12)}...`);
     console.log(`   - Order maker (Safe): ${config.polymarket.address}`);
     console.log(`   - Order signer (EOA): ${signer.address}`);
     console.log(`   - Current timestamp (s): ${Math.floor(Date.now() / 1000)}`);
-    
+
     // Verify API key format (should be UUID)
-    const apiKeyIsUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(config.polymarket.apiKey);
+    const apiKeyIsUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(effectiveApiKey);
     console.log(`   - API Key is valid UUID: ${apiKeyIsUUID}`);
     
     console.log(`\n📤 Order parameters:`);
