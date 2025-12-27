@@ -126,10 +126,11 @@ export class AuthManager {
 
   /**
    * Which address should be used in POLY_ADDRESS for authenticated requests.
-   * Empirically for Safe proxy: POLY_ADDRESS must be the FUNDER (Safe) address.
+   * Per Polymarket docs, POLY_ADDRESS must be the Polygon SIGNER address (EOA),
+   * even when using a Safe (funder) with signatureType=2.
    */
   getPolyAddressHeader(): string {
-    return this.getAuthMode() === 'safe_proxy' ? this.getFunderAddress() : this.getSignerAddress();
+    return this.getSignerAddress();
   }
 
   /**
@@ -201,8 +202,8 @@ export class AuthManager {
     const signer = this.getSigner();
     const signatureType = this.getSignatureType();
 
-    // IMPORTANT: @polymarket/clob-client uses apiCreds.address to populate POLY_ADDRESS.
-    // For Safe proxy wallets, this must be the FUNDER (Safe) address.
+    // IMPORTANT: Per Polymarket docs, POLY_ADDRESS is the signer (EOA) address.
+    // The funder (Safe) is passed separately to the client when signatureType=2.
     const apiCreds = creds
       ? (
           {
