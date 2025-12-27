@@ -2,13 +2,29 @@
 
 ## Setup Instructions
 
-1. **Get your Mullvad WireGuard config:**
+1. **Get your Mullvad WireGuard config**
    - Log into https://mullvad.net/account
    - Go to WireGuard configuration
-   - Generate a new key or download an existing config
+   - Generate/download a config for your chosen location
 
-2. **Place the config file:**
-   Copy your Mullvad `.conf` file to `/home/deploy/wireguard/wg0.conf` on your VPS.
+2. **Place the config file in this repo folder on your VPS**
+   This docker-compose mounts `local-runner/wireguard` into the VPN container at `/config`.
+
+   Create:
+   - `local-runner/wireguard/wg_confs/wg0.conf`
+
+3. **Enable kill-switch + routing via PostUp/PostDown**
+   Your `wg0.conf` should include:
+
+   ```ini
+   [Interface]
+   PostUp = /config/postup.sh
+   PostDown = /config/postdown.sh
+   ```
+
+   These scripts are included here:
+   - `local-runner/wireguard/postup.sh`
+   - `local-runner/wireguard/postdown.sh`
 
 ## Example wg0.conf (from Mullvad)
 
@@ -17,6 +33,8 @@
 PrivateKey = YOUR_PRIVATE_KEY_HERE
 Address = 10.x.x.x/32,fc00:bbbb:bbbb:bb01::x:xxxx/128
 DNS = 10.64.0.1
+PostUp = /config/postup.sh
+PostDown = /config/postdown.sh
 
 [Peer]
 PublicKey = MULLVAD_SERVER_PUBLIC_KEY
@@ -27,8 +45,8 @@ Endpoint = MULLVAD_SERVER:51820
 ## Important Notes
 
 - **Never commit** your actual `wg0.conf` with private keys!
-- The `AllowedIPs = 0.0.0.0/0` routes ALL traffic through the VPN
-- The trading bot uses `network_mode: container:wg` so it shares the WireGuard network namespace
+- `AllowedIPs = 0.0.0.0/0` means we *intend* to route all traffic via the VPN.
+- The `postup.sh` script enforces this at the network level (routes + kill-switch).
 
 ## Verification
 
