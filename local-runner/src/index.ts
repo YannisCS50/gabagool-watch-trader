@@ -1,8 +1,8 @@
 import WebSocket from 'ws';
 import os from 'os';
 import { config } from './config.js';
-import { placeOrder, testConnection, getBalance } from './polymarket.js';
-import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome } from './strategy.js';
+import { placeOrder, testConnection, getBalance, getOrderbookDepth } from './polymarket.js';
+import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate } from './strategy.js';
 import { enforceVpnOrExit } from './vpn-check.js';
 import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder } from './backend.js';
 import { checkAndClaimWinnings, getClaimableValue } from './redeemer.js';
@@ -224,11 +224,39 @@ async function evaluateMarket(slug: string): Promise<void> {
     );
 
     if (signal) {
-      const success = await executeTrade(ctx, signal.outcome, signal.price, signal.shares, signal.reasoning);
-
-      // For accumulate, also do the other side
-      if (success && signal.type === 'accumulate' && ctx.book.down.ask) {
-        await executeTrade(ctx, 'DOWN', ctx.book.down.ask, signal.shares, signal.reasoning.replace('UP', 'DOWN'));
+      // For accumulate trades, check BOTH sides have liquidity first
+      if (signal.type === 'accumulate') {
+        const upDepth = await getOrderbookDepth(ctx.market.upTokenId);
+        const downDepth = await getOrderbookDepth(ctx.market.downTokenId);
+        
+        const liquidityOk = checkLiquidityForAccumulate(upDepth, downDepth, signal.shares);
+        if (!liquidityOk.canProceed) {
+          console.log(`⛔ Skip accumulate: ${liquidityOk.reason}`);
+          console.log(`   📊 UP liquidity: ${upDepth.askVolume.toFixed(0)} shares, DOWN: ${downDepth.askVolume.toFixed(0)} shares`);
+          ctx.inFlight = false;
+          return;
+        }
+        
+        // Execute both sides atomically
+        const upSuccess = await executeTrade(ctx, 'UP', ctx.book.up.ask!, signal.shares, signal.reasoning);
+        if (upSuccess && ctx.book.down.ask) {
+          await executeTrade(ctx, 'DOWN', ctx.book.down.ask, signal.shares, signal.reasoning.replace('UP', 'DOWN'));
+        } else if (!upSuccess) {
+          console.log(`⚠️ Accumulate aborted: UP side failed, skipping DOWN`);
+        }
+      } else {
+        // Single-side trade (opening or hedge)
+        const tokenId = signal.outcome === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
+        const depth = await getOrderbookDepth(tokenId);
+        
+        if (!depth.hasLiquidity || depth.askVolume < signal.shares) {
+          console.log(`⛔ Skip ${signal.type}: insufficient liquidity for ${signal.outcome}`);
+          console.log(`   📊 Need ${signal.shares} shares, only ${depth.askVolume.toFixed(0)} available`);
+          ctx.inFlight = false;
+          return;
+        }
+        
+        await executeTrade(ctx, signal.outcome, signal.price, signal.shares, signal.reasoning);
       }
     }
   } catch (error) {

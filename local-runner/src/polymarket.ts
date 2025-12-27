@@ -20,6 +20,17 @@ interface OrderResponse {
   filledSize?: number;
   error?: string;
   status?: 'filled' | 'partial' | 'open' | 'pending' | 'unknown';
+  failureReason?: 'no_liquidity' | 'cloudflare' | 'auth' | 'balance' | 'no_orderbook' | 'unknown';
+}
+
+export interface OrderbookDepth {
+  tokenId: string;
+  topAsk: number | null;
+  topBid: number | null;
+  askVolume: number; // Total volume at top 3 ask levels
+  bidVolume: number; // Total volume at top 3 bid levels
+  hasLiquidity: boolean;
+  levels: { price: number; size: number }[];
 }
 
 // Singleton ClobClient instance
@@ -54,6 +65,72 @@ async function orderbookExists(tokenId: string): Promise<boolean> {
     console.error(`⚠️ Orderbook check failed for ${tokenId.slice(0, 20)}...:`, error);
     // Don't cache errors - allow retry
     return false;
+  }
+}
+
+// Cache for orderbook depth (short TTL - 5 seconds)
+const orderbookDepthCache = new Map<string, { depth: OrderbookDepth; fetchedAt: number }>();
+const DEPTH_CACHE_TTL_MS = 5000;
+
+/**
+ * Fetch orderbook depth for a token - returns volume at top levels
+ * Useful to check if there's enough liquidity before placing an order
+ */
+export async function getOrderbookDepth(tokenId: string): Promise<OrderbookDepth> {
+  const cached = orderbookDepthCache.get(tokenId);
+  if (cached && Date.now() - cached.fetchedAt < DEPTH_CACHE_TTL_MS) {
+    return cached.depth;
+  }
+
+  const emptyDepth: OrderbookDepth = {
+    tokenId,
+    topAsk: null,
+    topBid: null,
+    askVolume: 0,
+    bidVolume: 0,
+    hasLiquidity: false,
+    levels: [],
+  };
+
+  try {
+    const res = await fetch(`${CLOB_URL}/book?token_id=${tokenId}`);
+    if (res.status !== 200) {
+      console.log(`📕 No orderbook for ${tokenId.slice(0, 20)}... (${res.status})`);
+      return emptyDepth;
+    }
+
+    const book = await res.json();
+    const asks = (book.asks || []) as { price: string; size: string }[];
+    const bids = (book.bids || []) as { price: string; size: string }[];
+
+    // Sum volume at top 3 levels
+    const topAsks = asks.slice(0, 3);
+    const topBids = bids.slice(0, 3);
+    
+    const askVolume = topAsks.reduce((sum, l) => sum + parseFloat(l.size), 0);
+    const bidVolume = topBids.reduce((sum, l) => sum + parseFloat(l.size), 0);
+    
+    const topAsk = asks.length > 0 ? parseFloat(asks[0].price) : null;
+    const topBid = bids.length > 0 ? parseFloat(bids[0].price) : null;
+
+    const depth: OrderbookDepth = {
+      tokenId,
+      topAsk,
+      topBid,
+      askVolume,
+      bidVolume,
+      hasLiquidity: askVolume >= 10, // At least 10 shares available
+      levels: topAsks.map(l => ({ price: parseFloat(l.price), size: parseFloat(l.size) })),
+    };
+
+    orderbookDepthCache.set(tokenId, { depth, fetchedAt: Date.now() });
+    
+    console.log(`📊 Orderbook depth for ${tokenId.slice(0, 20)}...: ask=${topAsk?.toFixed(2) || 'none'} (${askVolume.toFixed(0)} vol), bid=${topBid?.toFixed(2) || 'none'} (${bidVolume.toFixed(0)} vol)`);
+    
+    return depth;
+  } catch (error) {
+    console.error(`⚠️ Failed to fetch orderbook depth for ${tokenId.slice(0, 20)}...:`, error);
+    return emptyDepth;
   }
 }
 
@@ -334,10 +411,16 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
 
   console.log(`📤 Placing order: ${order.side} ${order.size} @ ${(order.price * 100).toFixed(0)}¢`);
 
-  // Check if orderbook exists before placing order
-  if (!(await orderbookExists(order.tokenId))) {
-    console.log(`⛔ Skip: no orderbook for tokenId ${order.tokenId.slice(0, 30)}...`);
-    return { success: false, error: 'Orderbook does not exist for this tokenId' };
+  // Check if orderbook exists and has liquidity before placing order
+  const depth = await getOrderbookDepth(order.tokenId);
+  if (!depth.hasLiquidity) {
+    console.log(`⛔ Skip: insufficient liquidity for tokenId ${order.tokenId.slice(0, 30)}...`);
+    console.log(`   📊 Orderbook state: topAsk=${depth.topAsk?.toFixed(2) || 'none'}, askVol=${depth.askVolume.toFixed(0)}, levels=${depth.levels.length}`);
+    return { 
+      success: false, 
+      error: `Insufficient liquidity (only ${depth.askVolume.toFixed(0)} shares available, need 10+)`,
+      failureReason: 'no_liquidity',
+    };
   }
 
   try {
@@ -452,7 +535,16 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
     if (!orderId || (typeof orderId === 'string' && orderId.trim() === '')) {
       console.error('❌ Order response had no order ID - NOT treating as filled');
       console.error('   This means the order was likely NOT placed successfully');
-      return { success: false, error: 'No order ID returned - order not placed' };
+      console.error(`   📊 Orderbook state at failure: topAsk=${depth.topAsk?.toFixed(2) || 'none'}, askVol=${depth.askVolume.toFixed(0)}`);
+      console.error(`   🔎 Possible reasons:`);
+      console.error(`      - Price ${order.price} may be too low for current market`);
+      console.error(`      - Order size ${order.size} may exceed available liquidity`);
+      console.error(`      - Market conditions changed during order submission`);
+      return { 
+        success: false, 
+        error: `No order ID returned - order not placed (liquidity: ${depth.askVolume.toFixed(0)} shares)`,
+        failureReason: 'unknown',
+      };
     }
 
     console.log(`✅ Order placed with ID: ${orderId}`);
@@ -554,13 +646,13 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
 
     // Other common errors
     if (errorMsg.includes('401') || errorMsg.includes('Unauthorized')) {
-      return { success: false, error: 'Invalid API key - regenerate on Polymarket' };
+      return { success: false, error: 'Invalid API key - regenerate on Polymarket', failureReason: 'auth' };
     }
     if (errorMsg.includes('insufficient')) {
-      return { success: false, error: 'Insufficient balance' };
+      return { success: false, error: 'Insufficient balance', failureReason: 'balance' };
     }
 
-    return { success: false, error: errorMsg };
+    return { success: false, error: errorMsg, failureReason: 'unknown' };
   }
 }
 
