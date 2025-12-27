@@ -115,6 +115,19 @@ export const STRATEGY = {
   
   // Cooldown
   cooldownMs: 15000,
+  
+  // ==========================================================
+  // PROBABILITY BIAS - Skip hedge als winnaar duidelijk is
+  // ==========================================================
+  probabilityBias: {
+    enabled: true,
+    // Skip hedge wanneer huidige prijs X% van strike afwijkt
+    skipHedgeThresholdPercent: 1.5,  // Als prijs 1.5% voorbij strike: skip losing hedge
+    // Confidence levels based on price distance
+    highConfidencePercent: 2.0,      // 2%+ voorbij strike = hoge zekerheid
+    // Minimale tijd over voordat we hedge skippen (safety)
+    minSecondsToSkip: 120,           // Alleen skippen als >2 min over
+  },
 };
 
 // ============================================================
@@ -421,6 +434,80 @@ export function checkBalanceForOpening(
 }
 
 // ============================================================
+// PROBABILITY BIAS FUNCTIONS
+// ============================================================
+
+export interface PriceBiasContext {
+  currentPrice: number;      // Current crypto price (e.g., BTC price)
+  strikePrice: number;       // Strike price for the market
+  remainingSeconds: number;
+}
+
+/**
+ * Calculate which side is likely to win based on current price vs strike
+ * Returns: 'UP' if price > strike, 'DOWN' if price < strike, null if too close
+ */
+export function calculateLikelySide(ctx: PriceBiasContext): {
+  likelySide: Outcome | null;
+  losingSide: Outcome | null;
+  distancePercent: number;
+  confidence: 'low' | 'medium' | 'high';
+} {
+  const { currentPrice, strikePrice, remainingSeconds } = ctx;
+  
+  if (!strikePrice || strikePrice <= 0) {
+    return { likelySide: null, losingSide: null, distancePercent: 0, confidence: 'low' };
+  }
+  
+  const distancePercent = ((currentPrice - strikePrice) / strikePrice) * 100;
+  const absDistance = Math.abs(distancePercent);
+  
+  const skipThreshold = STRATEGY.probabilityBias.skipHedgeThresholdPercent;
+  const highConfThreshold = STRATEGY.probabilityBias.highConfidencePercent;
+  
+  if (absDistance < skipThreshold) {
+    return { likelySide: null, losingSide: null, distancePercent, confidence: 'low' };
+  }
+  
+  const likelySide: Outcome = distancePercent > 0 ? 'UP' : 'DOWN';
+  const losingSide: Outcome = likelySide === 'UP' ? 'DOWN' : 'UP';
+  const confidence = absDistance >= highConfThreshold ? 'high' : 'medium';
+  
+  return { likelySide, losingSide, distancePercent, confidence };
+}
+
+/**
+ * Determine if we should skip hedging the losing side
+ */
+export function shouldSkipLosingHedge(
+  ctx: PriceBiasContext,
+  hedgeSide: Outcome
+): { skip: boolean; reason: string } {
+  if (!STRATEGY.probabilityBias.enabled) {
+    return { skip: false, reason: 'Probability bias disabled' };
+  }
+  
+  if (ctx.remainingSeconds < STRATEGY.probabilityBias.minSecondsToSkip) {
+    return { skip: false, reason: `Too close to expiry (${ctx.remainingSeconds}s < ${STRATEGY.probabilityBias.minSecondsToSkip}s)` };
+  }
+  
+  const bias = calculateLikelySide(ctx);
+  
+  if (!bias.losingSide) {
+    return { skip: false, reason: `Price too close to strike (${bias.distancePercent.toFixed(2)}%)` };
+  }
+  
+  if (hedgeSide === bias.losingSide) {
+    return { 
+      skip: true, 
+      reason: `Skip ${hedgeSide} hedge: price ${bias.distancePercent > 0 ? 'above' : 'below'} strike by ${Math.abs(bias.distancePercent).toFixed(2)}% (${bias.confidence} confidence)` 
+    };
+  }
+  
+  return { skip: false, reason: `${hedgeSide} is likely winning side` };
+}
+
+// ============================================================
 // MAIN EVALUATION FUNCTION (REFACTORED WITH STATE MACHINE)
 // ============================================================
 
@@ -434,6 +521,9 @@ export interface EvaluationContext {
   availableBalance?: number;
   noLiquidityStreak?: number;
   tick?: number;
+  // NEW: Price bias context
+  currentPrice?: number;
+  strikePrice?: number;
 }
 
 export function evaluateOpportunity(
@@ -480,6 +570,8 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
     availableBalance,
     noLiquidityStreak = 0,
     tick = STRATEGY.tick.fallback,
+    currentPrice,
+    strikePrice,
   } = ctx;
 
   // ========== PRE-CHECKS ==========
@@ -575,6 +667,20 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
       const existingShares = missingSide === 'UP' ? inv.downShares : inv.upShares;
       const existingCost = missingSide === 'UP' ? inv.downCost : inv.upCost;
       const existingAvg = existingShares > 0 ? existingCost / existingShares : 0;
+      
+      // ========== PROBABILITY BIAS CHECK ==========
+      // Als prijs ver van strike is, kunnen we hedge skippen
+      if (currentPrice !== undefined && strikePrice !== undefined) {
+        const biasCheck = shouldSkipLosingHedge(
+          { currentPrice, strikePrice, remainingSeconds },
+          missingSide
+        );
+        
+        if (biasCheck.skip) {
+          console.log(`[Strategy] ${biasCheck.reason} - holding ${inv.upShares > 0 ? 'UP' : 'DOWN'} position only`);
+          return null; // Skip hedge, we're betting the winning side holds
+        }
+      }
       
       // Check if hedge would lock in profit
       const projectedCombined = existingAvg + missingAsk;
