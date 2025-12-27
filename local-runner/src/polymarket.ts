@@ -287,8 +287,8 @@ export async function deriveApiCredentials(): Promise<{ key: string; secret: str
   }
   deriveAttempts += 1;
 
-  // Create a temporary client without API creds to derive new ones
-  const tempClient = new ClobClient(CLOB_URL, CHAIN_ID, signer, undefined, 0);
+  // Create a temporary client without API creds to derive new ones (match official SDK pattern exactly)
+  const tempClient = new ClobClient(CLOB_URL, CHAIN_ID, signer);
   
   try {
     const anyClient = tempClient as any;
