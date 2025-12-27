@@ -15,8 +15,9 @@ interface UseChainlinkRealtimeResult {
   lastUpdate: Date | null;
 }
 
-const PROXY_WS_URL = 'wss://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/rtds-proxy';
-const PROXY_REST_URL = 'https://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/rtds-proxy';
+const PROJECT_BASE_URL = (import.meta.env.VITE_SUPABASE_URL as string | undefined) ?? 'https://iuzpdjplasndyvbzhlzd.supabase.co';
+const PROXY_WS_URL = `${PROJECT_BASE_URL.replace(/^http/, 'ws')}/functions/v1/rtds-proxy`;
+const PROXY_REST_URL = `${PROJECT_BASE_URL}/functions/v1/rtds-proxy`;
 const RECONNECT_DELAY = 3000;
 const MAX_RECONNECT_ATTEMPTS = 5;
 const REST_POLL_INTERVAL = 5000;
