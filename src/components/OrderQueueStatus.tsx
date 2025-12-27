@@ -88,13 +88,40 @@ export function OrderQueueStatus() {
         return <Badge variant="outline" className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20"><Clock className="w-3 h-3 mr-1" /> Pending</Badge>;
       case 'processing':
         return <Badge variant="outline" className="bg-blue-500/10 text-blue-500 border-blue-500/20"><Loader2 className="w-3 h-3 mr-1 animate-spin" /> Processing</Badge>;
+      case 'placed':
+        return <Badge variant="outline" className="bg-blue-500/10 text-blue-400 border-blue-500/20"><Clock className="w-3 h-3 mr-1" /> Placed</Badge>;
       case 'filled':
         return <Badge variant="outline" className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20"><CheckCircle2 className="w-3 h-3 mr-1" /> Filled</Badge>;
+      case 'partial':
+        return <Badge variant="outline" className="bg-amber-500/10 text-amber-500 border-amber-500/20"><CheckCircle2 className="w-3 h-3 mr-1" /> Partial</Badge>;
       case 'failed':
         return <Badge variant="outline" className="bg-red-500/10 text-red-500 border-red-500/20"><XCircle className="w-3 h-3 mr-1" /> Failed</Badge>;
       default:
         return <Badge variant="outline">{status}</Badge>;
     }
+  };
+
+  // Categorize error messages
+  const getErrorCategory = (errorMessage: string | null) => {
+    if (!errorMessage) return null;
+    const lower = errorMessage.toLowerCase();
+    
+    if (lower.includes('liquidity') || lower.includes('shares available')) {
+      return { icon: '💧', label: 'No Liquidity', color: 'text-blue-400' };
+    }
+    if (lower.includes('cloudflare') || lower.includes('waf') || lower.includes('blocked')) {
+      return { icon: '🛡️', label: 'Cloudflare Block', color: 'text-orange-400' };
+    }
+    if (lower.includes('unauthorized') || lower.includes('api key') || lower.includes('401')) {
+      return { icon: '🔑', label: 'Auth Error', color: 'text-yellow-400' };
+    }
+    if (lower.includes('balance') || lower.includes('insufficient')) {
+      return { icon: '💰', label: 'Low Balance', color: 'text-red-400' };
+    }
+    if (lower.includes('no order id')) {
+      return { icon: '❓', label: 'Order Rejected', color: 'text-purple-400' };
+    }
+    return { icon: '⚠️', label: 'Error', color: 'text-red-400' };
   };
 
   const pendingCount = orders.filter(o => o.status === 'pending' || o.status === 'processing').length;
@@ -173,8 +200,19 @@ export function OrderQueueStatus() {
                       {order.market_slug}
                     </div>
                     {order.error_message && (
-                      <div className="text-xs text-red-400 mt-1 font-mono bg-red-500/10 p-1.5 rounded">
-                        {order.error_message}
+                      <div className="text-xs mt-1 font-mono bg-red-500/10 p-1.5 rounded">
+                        {(() => {
+                          const cat = getErrorCategory(order.error_message);
+                          return (
+                            <div className="flex items-start gap-2">
+                              <span>{cat?.icon}</span>
+                              <div className="flex-1">
+                                <span className={`font-medium ${cat?.color || 'text-red-400'}`}>{cat?.label}: </span>
+                                <span className="text-red-300">{order.error_message}</span>
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </div>
                     )}
                     {order.reasoning && (

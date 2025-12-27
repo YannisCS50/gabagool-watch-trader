@@ -1,4 +1,5 @@
 import { config } from './config.js';
+import type { OrderbookDepth } from './polymarket.js';
 
 export type Outcome = 'UP' | 'DOWN';
 
@@ -166,4 +167,46 @@ export function evaluateOpportunity(
   }
 
   return null;
+}
+
+/**
+ * Check if both sides have enough liquidity for an accumulate trade.
+ * Returns whether we can proceed and the reason if not.
+ */
+export function checkLiquidityForAccumulate(
+  upDepth: OrderbookDepth,
+  downDepth: OrderbookDepth,
+  requiredShares: number
+): { canProceed: boolean; reason?: string } {
+  const minLiquidity = Math.max(requiredShares, 10);
+  
+  if (!upDepth.hasLiquidity) {
+    return { 
+      canProceed: false, 
+      reason: `UP side has no liquidity (${upDepth.askVolume.toFixed(0)} shares)` 
+    };
+  }
+  
+  if (!downDepth.hasLiquidity) {
+    return { 
+      canProceed: false, 
+      reason: `DOWN side has no liquidity (${downDepth.askVolume.toFixed(0)} shares)` 
+    };
+  }
+  
+  if (upDepth.askVolume < minLiquidity) {
+    return { 
+      canProceed: false, 
+      reason: `UP side insufficient (${upDepth.askVolume.toFixed(0)} < ${minLiquidity} needed)` 
+    };
+  }
+  
+  if (downDepth.askVolume < minLiquidity) {
+    return { 
+      canProceed: false, 
+      reason: `DOWN side insufficient (${downDepth.askVolume.toFixed(0)} < ${minLiquidity} needed)` 
+    };
+  }
+  
+  return { canProceed: true };
 }
