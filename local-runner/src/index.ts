@@ -2,7 +2,7 @@ import WebSocket from 'ws';
 import os from 'os';
 import { config } from './config.js';
 import { placeOrder, testConnection, getBalance, getOrderbookDepth, invalidateBalanceCache } from './polymarket.js';
-import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, STRATEGY } from './strategy.js';
+import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, STRATEGY } from './strategy.js';
 import { enforceVpnOrExit } from './vpn-check.js';
 import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder } from './backend.js';
 import { checkAndClaimWinnings, getClaimableValue } from './redeemer.js';
@@ -291,7 +291,22 @@ async function evaluateMarket(slug: string): Promise<void> {
           return;
         }
         
-        await executeTrade(ctx, signal.outcome, signal.price, signal.shares, signal.reasoning);
+        const tradeSuccess = await executeTrade(ctx, signal.outcome, signal.price, signal.shares, signal.reasoning);
+        
+        // PRE-HEDGE: If this was an opening trade, immediately place limit order for hedge
+        if (tradeSuccess && signal.type === 'opening') {
+          const preHedge = calculatePreHedgePrice(signal.price, signal.outcome);
+          if (preHedge) {
+            const hedgeTokenId = preHedge.hedgeSide === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
+            
+            console.log(`\n🎯 PRE-HEDGE: Placing GTC limit order for ${preHedge.hedgeSide} @ ${(preHedge.hedgePrice * 100).toFixed(0)}¢`);
+            console.log(`   Opening: ${signal.outcome} @ ${(signal.price * 100).toFixed(0)}¢`);
+            console.log(`   Target combined: ${((signal.price + preHedge.hedgePrice) * 100).toFixed(0)}¢`);
+            
+            // Place pre-hedge as GTC limit order (will wait in orderbook)
+            await executeTrade(ctx, preHedge.hedgeSide, preHedge.hedgePrice, signal.shares, preHedge.reasoning);
+          }
+        }
       }
     }
   } catch (error) {
