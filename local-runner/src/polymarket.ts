@@ -669,6 +669,9 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
 let balanceCache: { usdc: number; fetchedAt: number } | null = null;
 const BALANCE_CACHE_TTL_MS = 10000;
 
+// Polymarket USDC.e contract address on Polygon
+const USDC_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+
 export async function getBalance(): Promise<{ usdc: number; error?: string }> {
   // Return cached balance if fresh
   if (balanceCache && Date.now() - balanceCache.fetchedAt < BALANCE_CACHE_TTL_MS) {
@@ -679,8 +682,10 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
     const client = await getClient();
     
     // Use the CLOB API to get balance allowance for USDC (COLLATERAL)
+    // The API requires the actual token address, not just asset_type
     const balanceAllowance = await client.getBalanceAllowance({
       asset_type: 0, // AssetType.COLLATERAL = 0 (USDC)
+      token_id: USDC_ADDRESS, // USDC contract address on Polygon
     });
     
     // The balance is returned as a string, convert to number
