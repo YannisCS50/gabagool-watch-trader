@@ -1,8 +1,8 @@
 import WebSocket from 'ws';
 import os from 'os';
 import { config } from './config.js';
-import { placeOrder, testConnection, getBalance, getOrderbookDepth } from './polymarket.js';
-import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate } from './strategy.js';
+import { placeOrder, testConnection, getBalance, getOrderbookDepth, invalidateBalanceCache } from './polymarket.js';
+import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, STRATEGY } from './strategy.js';
 import { enforceVpnOrExit } from './vpn-check.js';
 import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder } from './backend.js';
 import { checkAndClaimWinnings, getClaimableValue } from './redeemer.js';
@@ -198,6 +198,10 @@ async function executeTrade(
     tradeCount++;
     console.log(`✅ TRADE #${tradeCount}: ${outcome} ${filledShares}@${(price * 100).toFixed(0)}¢ (${status})`);
     console.log(`   Position: UP=${ctx.position.upShares} DOWN=${ctx.position.downShares}`);
+    
+    // Invalidate balance cache after trade
+    invalidateBalanceCache();
+    
     return true;
   }
 
@@ -216,12 +220,31 @@ async function evaluateMarket(slug: string): Promise<void> {
     const endTime = new Date(ctx.market.eventEndTime).getTime();
     const remainingSeconds = Math.floor((endTime - nowMs) / 1000);
 
+    // Check if this is a potential opening trade - if so, do balance check first
+    const isOpeningCandidate = ctx.position.upShares === 0 && ctx.position.downShares === 0;
+    let balanceForCheck: number | undefined = undefined;
+    
+    if (isOpeningCandidate) {
+      // Check balance before evaluating opening opportunity
+      const balanceResult = await getBalance();
+      balanceForCheck = balanceResult.usdc;
+      
+      // Pre-check: log if balance is too low for opening + hedge
+      const balanceCheck = checkBalanceForOpening(balanceForCheck, STRATEGY.opening.notional);
+      if (!balanceCheck.canProceed) {
+        console.log(`⚠️ ${ctx.slug}: ${balanceCheck.reason}`);
+        ctx.inFlight = false;
+        return;
+      }
+    }
+
     const signal = evaluateOpportunity(
       ctx.book,
       ctx.position,
       remainingSeconds,
       ctx.lastTradeAtMs,
-      nowMs
+      nowMs,
+      balanceForCheck // Pass balance for opening trade validation
     );
 
     if (signal) {
