@@ -913,6 +913,9 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
     console.log(`🔎 Balance request: ${CLOB_URL}${pathWithQuery}`);
 
     const timestampSeconds = String(Math.floor(Date.now() / 1000));
+
+    // Build signature like upstream clob-client (url-safe base64 with '=' padding)
+    const secretBytes = Buffer.from(sanitizeBase64Secret(apiCreds.secret), 'base64');
     if (!secretBytes?.length) {
       return { error: { status: 0, text: 'Invalid API secret (base64 decode failed)' } };
     }
