@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   ArrowLeft,
   Zap,
@@ -10,8 +11,11 @@ import {
   RefreshCw,
   Bot,
   AlertTriangle,
+  BarChart3,
+  Activity,
 } from 'lucide-react';
 import { LiveTradeDashboard } from '@/components/LiveTradeDashboard';
+import { LivePnLDashboard } from '@/components/LivePnLDashboard';
 import { RunnerActivityLog } from '@/components/RunnerActivityLog';
 import { MarketTradesLog } from '@/components/MarketTradesLog';
 import { PaperTradeDashboard } from '@/components/PaperTradeDashboard';
@@ -185,25 +189,38 @@ export default function LiveTrading() {
           <RunnerInstructions />
         </div>
 
-        {/* Order Queue */}
-        <div className="mb-8">
-          <OrderQueueStatus />
-        </div>
+        {/* Main Tabs */}
+        <Tabs defaultValue="pnl" className="mb-8">
+          <TabsList className="mb-4">
+            <TabsTrigger value="pnl" className="flex items-center gap-2">
+              <BarChart3 className="w-4 h-4" />
+              P/L Dashboard
+            </TabsTrigger>
+            <TabsTrigger value="activity" className="flex items-center gap-2">
+              <Activity className="w-4 h-4" />
+              Activity & Orders
+            </TabsTrigger>
+          </TabsList>
 
-        {/* Market Trades Log - Categorized per bet */}
-        <div className="mb-8">
-          <MarketTradesLog />
-        </div>
+          <TabsContent value="pnl" className="space-y-6">
+            {/* P/L Dashboard */}
+            <LivePnLDashboard />
+          </TabsContent>
 
-        {/* Runner Activity Log */}
-        <div className="mb-8">
-          <RunnerActivityLog />
-        </div>
+          <TabsContent value="activity" className="space-y-6">
+            {/* Order Queue */}
+            <OrderQueueStatus />
 
-        {/* Live Trading Dashboard */}
-        <div className="mb-8">
-          <LiveTradeDashboard />
-        </div>
+            {/* Market Trades Log - Categorized per bet */}
+            <MarketTradesLog />
+
+            {/* Runner Activity Log */}
+            <RunnerActivityLog />
+
+            {/* Live Trading Dashboard */}
+            <LiveTradeDashboard />
+          </TabsContent>
+        </Tabs>
 
         {/* Paper Trading Comparison */}
         <Card className="mb-8">
