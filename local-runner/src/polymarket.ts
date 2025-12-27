@@ -168,7 +168,7 @@ function isUnauthorizedPayload(payload: any): boolean {
  * NOTE: This only works if the wallet is properly set up on Polymarket.
  * For Safe proxy wallets, you may need to create keys manually via the Polymarket UI.
  */
-async function deriveApiCredentials(): Promise<{ key: string; secret: string; passphrase: string }> {
+export async function deriveApiCredentials(): Promise<{ key: string; secret: string; passphrase: string }> {
   console.log(`\n🔄 AUTO-DERIVING NEW API CREDENTIALS...`);
   
   const signer = new Wallet(config.polymarket.privateKey);
@@ -212,11 +212,14 @@ async function deriveApiCredentials(): Promise<{ key: string; secret: string; pa
     console.log(`      Secret length: ${newCreds.secret?.length || 0} chars`);
     console.log(`      Passphrase length: ${newCreds.passphrase?.length || 0} chars`);
     
-    return {
+    // Store in module-level cache
+    derivedCreds = {
       key: newCreds.apiKey,
       secret: newCreds.secret,
       passphrase: newCreds.passphrase,
     };
+    
+    return derivedCreds;
   } catch (error: any) {
     console.error(`   ❌ Failed to derive credentials: ${error?.message || error}`);
     console.error(`\n   🚨 MANUAL KEY CREATION REQUIRED:`);
@@ -229,6 +232,36 @@ async function deriveApiCredentials(): Promise<{ key: string; secret: string; pa
     console.error(`         POLYMARKET_PASSPHRASE=<passphrase>`);
     console.error(`      5. Restart: docker compose restart runner`);
     throw error;
+  }
+}
+
+/**
+ * Ensure valid CLOB API credentials exist.
+ * Call this at startup BEFORE any trading to force credential validation.
+ * Returns true if credentials are valid, false otherwise.
+ */
+export async function ensureValidCredentials(): Promise<boolean> {
+  console.log(`\n🔐 VALIDATING API CREDENTIALS AT STARTUP...`);
+  
+  try {
+    // Force getClient() which validates credentials and auto-derives if needed
+    await getClient();
+    
+    // Double-check with a balance call
+    const balanceResult = await getBalance();
+    if (balanceResult.error?.includes('401')) {
+      console.log(`⚠️ Balance check got 401, triggering auto-derive...`);
+      derivedCreds = await deriveApiCredentials();
+      // Reset client so next call uses new creds
+      clobClient = null;
+      await getClient();
+      return true;
+    }
+    
+    return true;
+  } catch (error: any) {
+    console.error(`❌ Credential validation failed: ${error?.message || error}`);
+    return false;
   }
 }
 
@@ -703,21 +736,9 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
     return toBase64Url(Buffer.from(digest).toString('base64'));
   };
 
-  try {
+  const attemptBalanceFetch = async (apiCreds: { key: string; secret: string; passphrase: string }) => {
     const signer = new Wallet(config.polymarket.privateKey);
 
-    const apiCreds = derivedCreds || {
-      key: config.polymarket.apiKey,
-      secret: config.polymarket.apiSecret,
-      passphrase: config.polymarket.passphrase,
-    };
-
-    if (!apiCreds.key || !apiCreds.secret || !apiCreds.passphrase) {
-      return { usdc: 0, error: 'Missing API credentials' };
-    }
-
-    // Avoid the SDK getBalanceAllowance call (currently returning 400 "assetAddress invalid hex address").
-    // We do a signed HTTP GET ourselves.
     const pathWithQuery = `/balance-allowance?asset_type=0&signature_type=2&address=${encodeURIComponent(
       config.polymarket.address
     )}`;
@@ -769,9 +790,60 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
       }
     }
 
-    if (lastError?.status) {
-      console.error(`❌ Balance fetch failed: HTTP ${lastError.status} - ${String(lastError.text).slice(0, 200)}`);
-      return { usdc: 0, error: `HTTP ${lastError.status}` };
+    return { error: lastError };
+  };
+
+  try {
+    let apiCreds = derivedCreds || {
+      key: config.polymarket.apiKey,
+      secret: config.polymarket.apiSecret,
+      passphrase: config.polymarket.passphrase,
+    };
+
+    if (!apiCreds.key || !apiCreds.secret || !apiCreds.passphrase) {
+      // No credentials at all - try to derive
+      console.log(`⚠️ No API credentials configured - attempting auto-derive...`);
+      try {
+        derivedCreds = await deriveApiCredentials();
+        apiCreds = derivedCreds;
+      } catch (deriveError) {
+        return { usdc: 0, error: 'Missing API credentials and auto-derive failed' };
+      }
+    }
+
+    // First attempt
+    const result = await attemptBalanceFetch(apiCreds);
+    
+    if ('usdc' in result) {
+      return result;
+    }
+
+    // If we got a 401, try auto-deriving new credentials
+    if (result.error?.status === 401) {
+      console.log(`\n🔄 Balance returned 401 - auto-deriving new credentials...`);
+      
+      try {
+        derivedCreds = await deriveApiCredentials();
+        // Reset clobClient so it picks up new creds
+        clobClient = null;
+        
+        // Retry with new credentials
+        const retryResult = await attemptBalanceFetch(derivedCreds);
+        if ('usdc' in retryResult) {
+          return retryResult;
+        }
+        
+        console.error(`❌ Balance still failing after auto-derive: HTTP ${retryResult.error?.status}`);
+        return { usdc: 0, error: `HTTP ${retryResult.error?.status} after auto-derive` };
+      } catch (deriveError: any) {
+        console.error(`❌ Auto-derive failed: ${deriveError?.message || deriveError}`);
+        return { usdc: 0, error: `401 and auto-derive failed: ${deriveError?.message}` };
+      }
+    }
+
+    if (result.error?.status) {
+      console.error(`❌ Balance fetch failed: HTTP ${result.error.status} - ${String(result.error.text).slice(0, 200)}`);
+      return { usdc: 0, error: `HTTP ${result.error.status}` };
     }
 
     console.error('❌ Balance fetch failed: Unable to sign request');
