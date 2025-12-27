@@ -25,6 +25,7 @@ export interface TradeSignal {
 }
 
 // Strategy configuration - LIVE TRADING PARAMETERS
+// POLYMARKET RATE LIMITS: Respect exchange rules to avoid order spam/bans
 export const STRATEGY = {
   opening: {
     notional: config.trading.maxNotionalPerTrade,
@@ -49,7 +50,7 @@ export const STRATEGY = {
     maxPrice: 0.92,
     staleBookMs: 5000,
   },
-  cooldownMs: 3000,
+  cooldownMs: 15000, // 15 seconds between trades per market (Polymarket-friendly)
 };
 
 function isNum(x: unknown): x is number {

@@ -48,6 +48,7 @@ interface MarketToken {
 }
 
 // Strategy config - CONSERVATIVE for live trading (smaller than paper)
+// POLYMARKET RATE LIMITS: Respect exchange rules to avoid bans
 const STRATEGY = {
   opening: {
     notional: 5,          // $5 initial trade
@@ -71,8 +72,9 @@ const STRATEGY = {
     maxPrice: 0.92,
     staleBookMs: 2000,
   },
-  cooldownMs: 5000,        // 5s cooldown between trades
-  dedupeWindowMs: 5000,
+  cooldownMs: 15000,       // 15s cooldown between trades per market (Polymarket-friendly)
+  dedupeWindowMs: 10000,   // 10s dedupe window
+  globalCooldownMs: 5000,  // 5s global cooldown between ANY orders
 };
 
 // Helper functions
@@ -120,6 +122,7 @@ Deno.serve(async (req) => {
   let tradeCount = 0;
   let evaluationCount = 0;
   let statusLogInterval: ReturnType<typeof setInterval> | null = null;
+  let lastGlobalOrderAtMs = 0; // Global cooldown tracker
 
   const log = (msg: string) => {
     console.log(`[LiveBot] ${msg}`);
@@ -416,7 +419,12 @@ Deno.serve(async (req) => {
       ctx.remainingSeconds = Math.floor((endTime - nowMs) / 1000);
       evaluationCount++;
 
-      // Cooldown check
+      // GLOBAL cooldown - prevent spamming Polymarket across ALL markets
+      if (lastGlobalOrderAtMs && nowMs - lastGlobalOrderAtMs < STRATEGY.globalCooldownMs) {
+        return; // Silent skip - global cooldown active
+      }
+
+      // Per-market cooldown check (longer to respect rate limits)
       if (ctx.lastTradeAtMs && nowMs - ctx.lastTradeAtMs < STRATEGY.cooldownMs) return;
 
       // Time check
@@ -552,6 +560,20 @@ Deno.serve(async (req) => {
 
       log(`📋 QUEUING: ${outcome} ${shares} @ ${(price*100).toFixed(0)}¢ on ${market.slug.slice(-20)}`);
 
+      // Check if we already have a pending order for this market+outcome (prevent duplicates)
+      const { data: existingOrders } = await supabase
+        .from('order_queue')
+        .select('id')
+        .eq('market_slug', market.slug)
+        .eq('outcome', outcome)
+        .in('status', ['pending', 'processing'])
+        .limit(1);
+
+      if (existingOrders && existingOrders.length > 0) {
+        log(`⏭️ SKIP: Already have pending order for ${outcome} on ${market.slug}`);
+        return false;
+      }
+
       // Queue order for local-runner to execute (edge functions get blocked by Cloudflare)
       const { error: queueError } = await supabase.from('order_queue').insert({
         market_slug: market.slug,
@@ -581,8 +603,7 @@ Deno.serve(async (req) => {
         ctx.position.downInvested += total;
       }
       ctx.lastTradeAtMs = Date.now();
-
-      tradeCount++;
+      lastGlobalOrderAtMs = Date.now(); // Update global cooldown
       const combined = (ctx.book.up.ask || 0) + (ctx.book.down.ask || 0);
       log(`✅ QUEUED #${tradeCount}: ${outcome} ${shares}@${(price*100).toFixed(0)}¢ | Combined: ${(combined*100).toFixed(0)}¢`);
 
