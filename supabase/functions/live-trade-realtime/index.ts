@@ -191,6 +191,10 @@ Deno.serve(async (req) => {
   let chainlinkBtcPrice: number | null = null;
   let chainlinkLastFetchMs = 0;
   const CHAINLINK_CACHE_MS = 10000; // Refresh every 10s
+  
+  // Track pending orders per market (realtime updated)
+  let pendingOrdersByMarket: Map<string, Set<string>> = new Map(); // market_slug -> Set of order IDs
+  let orderQueueChannel: any = null;
 
   const log = (msg: string) => {
     console.log(`[LiveBot] ${msg}`);
@@ -402,6 +406,93 @@ Deno.serve(async (req) => {
     return chainlinkBtcPrice;
   };
 
+  // Subscribe to order_queue changes for realtime order status tracking
+  const subscribeToOrderQueue = () => {
+    log('📡 Subscribing to order_queue realtime updates...');
+    
+    orderQueueChannel = supabase
+      .channel('order-queue-changes')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'order_queue'
+        },
+        (payload: any) => {
+          const { eventType, new: newRow, old: oldRow } = payload;
+          
+          if (eventType === 'INSERT' && newRow) {
+            // New order added - track it
+            const slug = newRow.market_slug;
+            if (!pendingOrdersByMarket.has(slug)) {
+              pendingOrdersByMarket.set(slug, new Set());
+            }
+            if (newRow.status === 'pending' || newRow.status === 'processing') {
+              pendingOrdersByMarket.get(slug)!.add(newRow.id);
+              log(`📥 Order ${newRow.id.slice(0, 8)} added to ${slug.slice(-15)} (${newRow.outcome})`);
+            }
+          } else if (eventType === 'UPDATE' && newRow) {
+            // Order status changed
+            const slug = newRow.market_slug;
+            const orderId = newRow.id;
+            
+            if (newRow.status === 'filled' || newRow.status === 'failed' || newRow.status === 'placed') {
+              // Order completed - remove from pending
+              if (pendingOrdersByMarket.has(slug)) {
+                pendingOrdersByMarket.get(slug)!.delete(orderId);
+                log(`✅ Order ${orderId.slice(0, 8)} ${newRow.status} on ${slug.slice(-15)} (${newRow.outcome})`);
+              }
+            } else if (newRow.status === 'processing') {
+              // Still pending
+              if (!pendingOrdersByMarket.has(slug)) {
+                pendingOrdersByMarket.set(slug, new Set());
+              }
+              pendingOrdersByMarket.get(slug)!.add(orderId);
+            }
+          } else if (eventType === 'DELETE' && oldRow) {
+            // Order deleted
+            const slug = oldRow.market_slug;
+            if (pendingOrdersByMarket.has(slug)) {
+              pendingOrdersByMarket.get(slug)!.delete(oldRow.id);
+            }
+          }
+        }
+      )
+      .subscribe((status: string) => {
+        log(`📡 Order queue subscription: ${status}`);
+      });
+  };
+
+  // Load initial pending orders
+  const loadPendingOrders = async () => {
+    try {
+      const { data } = await supabase
+        .from('order_queue')
+        .select('id, market_slug')
+        .in('status', ['pending', 'processing']);
+      
+      pendingOrdersByMarket.clear();
+      if (data) {
+        for (const order of data) {
+          if (!pendingOrdersByMarket.has(order.market_slug)) {
+            pendingOrdersByMarket.set(order.market_slug, new Set());
+          }
+          pendingOrdersByMarket.get(order.market_slug)!.add(order.id);
+        }
+        log(`📋 Loaded ${data.length} pending orders`);
+      }
+    } catch (error) {
+      log(`⚠️ Error loading pending orders: ${error}`);
+    }
+  };
+
+  // Check if market has pending orders (instant - no DB query)
+  const hasPendingOrders = (slug: string): boolean => {
+    const pending = pendingOrdersByMarket.get(slug);
+    return pending ? pending.size > 0 : false;
+  };
+
   const connectToClob = () => {
     const tokenIds = Array.from(tokenToMarket.keys());
     if (tokenIds.length === 0) {
@@ -549,15 +640,8 @@ Deno.serve(async (req) => {
       // Per-market cooldown check (longer to respect rate limits)
       if (ctx.lastTradeAtMs && nowMs - ctx.lastTradeAtMs < STRATEGY.cooldownMs) return;
 
-      // CHECK FOR ANY PENDING ORDERS ON THIS MARKET (prevent race conditions)
-      const { data: pendingOrders } = await supabase
-        .from('order_queue')
-        .select('id, outcome')
-        .eq('market_slug', slug)
-        .in('status', ['pending', 'processing'])
-        .limit(1);
-      
-      if (pendingOrders && pendingOrders.length > 0) {
+      // CHECK FOR PENDING ORDERS (realtime - no DB query needed!)
+      if (hasPendingOrders(slug)) {
         if (evaluationCount % 10 === 0) log(`⏸️ WAIT: Pending order on ${slug.slice(-15)}, skipping evaluation`);
         return;
       }
@@ -815,6 +899,10 @@ Deno.serve(async (req) => {
     isEnabled = await checkBotEnabled();
     log(isEnabled ? '✅ Bot is ENABLED' : '⏸️ Bot is DISABLED');
 
+    // Always subscribe to order queue for realtime status tracking
+    await loadPendingOrders();
+    subscribeToOrderQueue();
+
     if (isEnabled) {
       await fetchMarkets();
       await fetchExistingTrades();
@@ -884,6 +972,9 @@ Deno.serve(async (req) => {
     log('WebSocket client disconnected');
     if (statusLogInterval) clearInterval(statusLogInterval);
     if (clobSocket) clobSocket.close();
+    if (orderQueueChannel) {
+      supabase.removeChannel(orderQueueChannel);
+    }
   };
 
   return response;
