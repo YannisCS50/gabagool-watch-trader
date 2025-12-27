@@ -28,27 +28,28 @@ export interface TradeSignal {
 export const STRATEGY = {
   opening: {
     notional: config.trading.maxNotionalPerTrade,
-    maxPrice: 0.55, // More aggressive: buy up to 55¢ (was 52¢ via env)
+    maxPrice: 0.50, // Strenger: alleen tot 50¢ openen
   },
   hedge: {
-    triggerCombined: 0.99, // Hedge when combined < 99¢ (2% edge minimum)
+    triggerCombined: 0.97, // Hedge bij < 97¢ (3% edge minimum)
     notional: config.trading.maxNotionalPerTrade,
   },
   accumulate: {
-    triggerCombined: 0.98, // Accumulate when combined < 98¢ (3% edge)
+    triggerCombined: 0.96, // Accumulate bij < 96¢ (4% edge)
     notional: config.trading.maxNotionalPerTrade,
+    requireBalanced: true, // Alleen als UP shares == DOWN shares
   },
   limits: {
     maxSharesPerSide: 150,
-    maxTotalInvested: 75, // Allow more capital per market
+    maxTotalInvested: 75,
   },
   entry: {
-    minSecondsRemaining: 45, // Enter closer to expiry (was 60s)
+    minSecondsRemaining: 45,
     minPrice: 0.03,
     maxPrice: 0.92,
-    staleBookMs: 5000, // More tolerance for stale data
+    staleBookMs: 5000,
   },
-  cooldownMs: 3000, // Faster cooldown between trades
+  cooldownMs: 3000,
 };
 
 function isNum(x: unknown): x is number {
@@ -145,6 +146,12 @@ export function evaluateOpportunity(
   }
 
   // PHASE 3: ACCUMULATE - Both sides filled, add equal shares if good combined
+  // Only accumulate if position is balanced (UP shares == DOWN shares)
+  if (STRATEGY.accumulate.requireBalanced && position.upShares !== position.downShares) {
+    // Position not balanced, skip accumulate
+    return null;
+  }
+
   if (combined < STRATEGY.accumulate.triggerCombined) {
     const priceSum = upAsk + downAsk;
     const sharesToAdd = Math.floor(STRATEGY.accumulate.notional / priceSum);

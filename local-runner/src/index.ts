@@ -224,8 +224,15 @@ async function evaluateMarket(slug: string): Promise<void> {
     );
 
     if (signal) {
-      // For accumulate trades, check BOTH sides have liquidity first
+      // For accumulate trades, check position is balanced AND both sides have liquidity
       if (signal.type === 'accumulate') {
+        // Extra balance check (redundant with strategy, but safety net)
+        if (ctx.position.upShares !== ctx.position.downShares) {
+          console.log(`⚖️ Skip accumulate: position not balanced (${ctx.position.upShares} UP vs ${ctx.position.downShares} DOWN)`);
+          ctx.inFlight = false;
+          return;
+        }
+
         const upDepth = await getOrderbookDepth(ctx.market.upTokenId);
         const downDepth = await getOrderbookDepth(ctx.market.downTokenId);
         
@@ -236,6 +243,10 @@ async function evaluateMarket(slug: string): Promise<void> {
           ctx.inFlight = false;
           return;
         }
+
+        // Log projected combined cost
+        const projectedCombined = (ctx.book.up.ask || 0) + (ctx.book.down.ask || 0);
+        console.log(`📊 Accumulate: projected combined cost = ${(projectedCombined * 100).toFixed(0)}¢ (target < 96¢)`);
         
         // Execute both sides atomically
         const upSuccess = await executeTrade(ctx, 'UP', ctx.book.up.ask!, signal.shares, signal.reasoning);
