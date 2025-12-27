@@ -1,9 +1,7 @@
-#!/usr/bin/env npx ts-node
-
 /**
  * Claim Debug Script
  * 
- * Usage: npx ts-node scripts/claim-debug.ts
+ * Usage: npx tsx scripts/claim-debug.ts
  * 
  * This script:
  * 1. Lists all claimable positions per wallet
@@ -12,7 +10,7 @@
  */
 
 import { config } from '../src/config.js';
-import { ethers, Wallet, providers } from 'ethers';
+import { ethers, Wallet } from 'ethers';
 import {
   getProvider,
   getBlockNumber,
