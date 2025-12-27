@@ -35,6 +35,8 @@ interface MarketContext {
   lastTradeAtMs: number;
   lastDecisionKey?: string | null;
   inFlight?: boolean;
+  strikePrice?: number | null;  // Cached strike price for endgame logic
+  evidentSide?: Outcome | null; // Which side is likely to win
 }
 
 interface MarketToken {
@@ -74,7 +76,14 @@ const STRATEGY = {
     minSecondsRemaining: 60,
     minPrice: 0.03,
     maxPrice: 0.92,
+    maxPriceEndgame: 0.97, // Extended max price in last 3 min when side is evident
     staleBookMs: 2000,
+  },
+  // Endgame mode: last 3 min + evident side = relaxed limits
+  endgame: {
+    triggerSeconds: 180,      // Last 3 minutes
+    skipHedgeThresholdUsd: 120, // $120 distance from strike = evident
+    maxPrice: 0.97,           // Allow buying up to 97¢ in endgame
   },
   cooldownMs: 15000,       // 15s cooldown between trades per market (Polymarket-friendly)
   dedupeWindowMs: 10000,   // 10s dedupe window
@@ -95,6 +104,56 @@ function makeDecisionKey(slug: string, up: number, down: number, combined: numbe
 function calcShares(notional: number, price: number): number {
   if (price <= 0) return 0;
   return Math.floor(notional / price);
+}
+
+// Check if we're in endgame mode (last 3 min + evident side)
+interface EndgameCheck {
+  isEndgame: boolean;
+  evidentSide: Outcome | null;
+  distanceUsd: number;
+  maxPrice: number; // Allowed max price in current mode
+}
+
+function checkEndgameMode(
+  remainingSeconds: number,
+  currentPrice: number | null,
+  strikePrice: number | null,
+  asset: string
+): EndgameCheck {
+  const defaultResult: EndgameCheck = {
+    isEndgame: false,
+    evidentSide: null,
+    distanceUsd: 0,
+    maxPrice: STRATEGY.entry.maxPrice,
+  };
+
+  // Not in last 3 minutes? Normal mode
+  if (remainingSeconds > STRATEGY.endgame.triggerSeconds) {
+    return defaultResult;
+  }
+
+  // No strike price? Can't determine evident side
+  if (!strikePrice || strikePrice <= 0 || !currentPrice) {
+    return defaultResult;
+  }
+
+  const distanceUsd = currentPrice - strikePrice;
+  const absDistance = Math.abs(distanceUsd);
+
+  // Distance must exceed threshold to be "evident"
+  if (absDistance < STRATEGY.endgame.skipHedgeThresholdUsd) {
+    return defaultResult;
+  }
+
+  // Evident side: price above strike = UP wins, below = DOWN wins
+  const evidentSide: Outcome = distanceUsd > 0 ? 'UP' : 'DOWN';
+
+  return {
+    isEndgame: true,
+    evidentSide,
+    distanceUsd,
+    maxPrice: STRATEGY.endgame.maxPrice, // 97¢ in endgame
+  };
 }
 
 Deno.serve(async (req) => {
@@ -127,6 +186,11 @@ Deno.serve(async (req) => {
   let evaluationCount = 0;
   let statusLogInterval: ReturnType<typeof setInterval> | null = null;
   let lastGlobalOrderAtMs = 0; // Global cooldown tracker
+  
+  // Chainlink price cache for endgame logic
+  let chainlinkBtcPrice: number | null = null;
+  let chainlinkLastFetchMs = 0;
+  const CHAINLINK_CACHE_MS = 10000; // Refresh every 10s
 
   const log = (msg: string) => {
     console.log(`[LiveBot] ${msg}`);
@@ -213,6 +277,8 @@ Deno.serve(async (req) => {
               lastTradeAtMs: 0,
               lastDecisionKey: null,
               inFlight: false,
+              strikePrice: null,
+              evidentSide: null,
             });
           }
         }
@@ -282,6 +348,58 @@ Deno.serve(async (req) => {
     } catch (error) {
       log(`❌ Error fetching trades: ${error}`);
     }
+  };
+
+  // Fetch strike prices for all active markets
+  const fetchStrikePrices = async () => {
+    try {
+      const slugs = Array.from(markets.keys());
+      if (slugs.length === 0) return;
+
+      const { data } = await supabase
+        .from('strike_prices')
+        .select('market_slug, strike_price')
+        .in('market_slug', slugs);
+
+      if (data) {
+        for (const sp of data) {
+          const ctx = marketContexts.get(sp.market_slug);
+          if (ctx) {
+            ctx.strikePrice = sp.strike_price;
+          }
+        }
+        log(`📍 Loaded ${data.length} strike prices`);
+      }
+    } catch (error) {
+      log(`⚠️ Error fetching strike prices: ${error}`);
+    }
+  };
+
+  // Fetch current Chainlink BTC price (cached)
+  const fetchChainlinkPrice = async (): Promise<number | null> => {
+    const nowMs = Date.now();
+    if (chainlinkBtcPrice && nowMs - chainlinkLastFetchMs < CHAINLINK_CACHE_MS) {
+      return chainlinkBtcPrice;
+    }
+
+    try {
+      const response = await fetch(`${supabaseUrl}/functions/v1/chainlink-price-collector`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${supabaseKey}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      const data = await response.json();
+      if (data.btc && isNum(data.btc)) {
+        chainlinkBtcPrice = data.btc;
+        chainlinkLastFetchMs = nowMs;
+        return chainlinkBtcPrice;
+      }
+    } catch (error) {
+      // Silent fail - use cached value
+    }
+    return chainlinkBtcPrice;
   };
 
   const connectToClob = () => {
@@ -463,12 +581,34 @@ Deno.serve(async (req) => {
         if (evaluationCount % 20 === 0) log(`⏭️ SKIP: Combined out of range (${(combined*100).toFixed(0)}¢)`);
         return;
       }
-      if (upAsk < STRATEGY.entry.minPrice || upAsk > STRATEGY.entry.maxPrice) {
-        if (evaluationCount % 20 === 0) log(`⏭️ SKIP: UP price out of range (${(upAsk*100).toFixed(0)}¢)`);
+
+      // Check for endgame mode: last 3 min + evident side = allow up to 97¢
+      const currentBtcPrice = await fetchChainlinkPrice();
+      const endgame = checkEndgameMode(
+        ctx.remainingSeconds,
+        currentBtcPrice,
+        ctx.strikePrice ?? null,
+        market.asset
+      );
+      
+      // Cache evident side for logging
+      ctx.evidentSide = endgame.evidentSide;
+      
+      // Dynamic max price based on mode
+      const effectiveMaxPrice = endgame.isEndgame ? endgame.maxPrice : STRATEGY.entry.maxPrice;
+      
+      // Log endgame mode activation
+      if (endgame.isEndgame && evaluationCount % 10 === 0) {
+        log(`🎯 ENDGAME: ${ctx.remainingSeconds}s left, ${endgame.evidentSide} evident ($${Math.abs(endgame.distanceUsd).toFixed(0)} from strike), max price ${(effectiveMaxPrice*100).toFixed(0)}¢`);
+      }
+
+      // Price range check with dynamic max
+      if (upAsk < STRATEGY.entry.minPrice || upAsk > effectiveMaxPrice) {
+        if (evaluationCount % 20 === 0) log(`⏭️ SKIP: UP price out of range (${(upAsk*100).toFixed(0)}¢ > ${(effectiveMaxPrice*100).toFixed(0)}¢)`);
         return;
       }
-      if (downAsk < STRATEGY.entry.minPrice || downAsk > STRATEGY.entry.maxPrice) {
-        if (evaluationCount % 20 === 0) log(`⏭️ SKIP: DOWN price out of range (${(downAsk*100).toFixed(0)}¢)`);
+      if (downAsk < STRATEGY.entry.minPrice || downAsk > effectiveMaxPrice) {
+        if (evaluationCount % 20 === 0) log(`⏭️ SKIP: DOWN price out of range (${(downAsk*100).toFixed(0)}¢ > ${(effectiveMaxPrice*100).toFixed(0)}¢)`);
         return;
       }
 
@@ -664,6 +804,7 @@ Deno.serve(async (req) => {
     if (isEnabled) {
       await fetchMarkets();
       await fetchExistingTrades();
+      await fetchStrikePrices();
       connectToClob();
     }
 
@@ -680,6 +821,7 @@ Deno.serve(async (req) => {
         if (isEnabled && !clobSocket) {
           const marketsChanged = await fetchMarkets();
           await fetchExistingTrades();
+          await fetchStrikePrices();
           connectToClob();
         } else if (!isEnabled && clobSocket) {
           clobSocket.close();
@@ -695,6 +837,7 @@ Deno.serve(async (req) => {
           clobSocket.close();
           clobSocket = null;
           await fetchExistingTrades();
+          await fetchStrikePrices();
           connectToClob();
         }
       }
