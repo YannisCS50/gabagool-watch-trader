@@ -145,11 +145,11 @@ async function deriveApiCredentials(): Promise<{ key: string; secret: string; pa
     console.error(`      1. Go to https://polymarket.com and log in with the wallet that owns the funds (your Safe / funder).`);
     console.error(`      2. Open DevTools (F12) → Application → Local Storage`);
     console.error(`      3. Find the object that contains: key, secret, passphrase`);
-    console.error(`      4. Update the runner env file (default: local-runner/.env) with:`);
+    console.error(`      4. Update /home/deploy/secrets/local-runner.env with:`);
     console.error(`         POLYMARKET_API_KEY=<key>`);
     console.error(`         POLYMARKET_API_SECRET=<secret>`);
     console.error(`         POLYMARKET_PASSPHRASE=<passphrase>`);
-    console.error(`      5. Restart the container (service name may be local-runner): docker compose restart local-runner`);
+    console.error(`      5. Restart: docker compose restart runner`);
     throw error;
   }
 }
