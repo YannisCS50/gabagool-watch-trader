@@ -904,20 +904,21 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
     const addressParam = signatureType === 0 ? signer.address : config.polymarket.address;
 
     // Build candidate query paths for collateral balance.
-    // Polymarket CLOB has had multiple variants in the wild; try the most compatible ones first.
+    // NOTE: The server-side param validation differs across deployments; some require asset_address even for collateral.
     const addr = encodeURIComponent(addressParam);
     const sig = signatureType;
     const asset = encodeURIComponent(USDC_ASSET_ADDRESS);
 
     const balancePaths = [
-      // Most SDKs treat collateral as a distinct type (no asset address param)
+      // "collateral" as string (common in SDKs)
+      `/balance-allowance?asset_type=collateral&asset_address=${asset}&signature_type=${sig}&address=${addr}`,
+      `/balance-allowance?asset_type=collateral&assetAddress=${asset}&signature_type=${sig}&address=${addr}`,
       `/balance-allowance?asset_type=collateral&signature_type=${sig}&address=${addr}`,
-      // Some deployments use numeric asset_type
-      `/balance-allowance?asset_type=0&signature_type=${sig}&address=${addr}`,
-      // Some deployments use snake_case
+
+      // numeric asset_type variants
       `/balance-allowance?asset_type=0&asset_address=${asset}&signature_type=${sig}&address=${addr}`,
-      // Some deployments use camelCase
       `/balance-allowance?asset_type=0&assetAddress=${asset}&signature_type=${sig}&address=${addr}`,
+      `/balance-allowance?asset_type=0&signature_type=${sig}&address=${addr}`,
     ];
 
     const timestampSeconds = String(Math.floor(Date.now() / 1000));
@@ -959,6 +960,10 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
       if (!response.ok) {
         const text = await response.text();
         lastError = { status: response.status, text };
+
+        console.error(
+          `❌ Balance attempt failed: status=${response.status} path=${pathWithQuery} body=${text}`
+        );
 
         // If the server complains about invalid params, try the next variant.
         if (response.status === 400) continue;

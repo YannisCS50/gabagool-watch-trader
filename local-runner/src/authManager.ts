@@ -346,13 +346,15 @@ export class AuthManager {
 
     const addr = encodeURIComponent(this.getBalanceQueryAddress());
     const sig = this.getSignatureType();
-    const asset = encodeURIComponent(usdcAsset);
+    const asset = encodeURIComponent(usdcAsset.toLowerCase());
 
     const candidatePaths = [
+      `/balance-allowance?asset_type=collateral&asset_address=${asset}&signature_type=${sig}&address=${addr}`,
+      `/balance-allowance?asset_type=collateral&assetAddress=${asset}&signature_type=${sig}&address=${addr}`,
       `/balance-allowance?asset_type=collateral&signature_type=${sig}&address=${addr}`,
-      `/balance-allowance?asset_type=0&signature_type=${sig}&address=${addr}`,
       `/balance-allowance?asset_type=0&asset_address=${asset}&signature_type=${sig}&address=${addr}`,
       `/balance-allowance?asset_type=0&assetAddress=${asset}&signature_type=${sig}&address=${addr}`,
+      `/balance-allowance?asset_type=0&signature_type=${sig}&address=${addr}`,
     ];
 
     const timestampSeconds = String(Math.floor(Date.now() / 1000));
@@ -385,6 +387,7 @@ export class AuthManager {
       if (!res.ok) {
         const text = await res.text();
         lastErr = { status: res.status, error: text.slice(0, 300) };
+        console.error(`❌ Balance attempt failed: status=${res.status} path=${pathWithQuery} body=${lastErr.error}`);
         if (res.status === 400) continue;
         return { usdc: 0, error: lastErr.error, status: lastErr.status };
       }
