@@ -67,7 +67,7 @@ services:
       - /home/deploy/secrets/local-runner.env:/runner/secrets/local-runner.env:ro
     # CRITICAL: Share network with WireGuard container
     # This ensures all outbound traffic goes through VPN
-    network_mode: "container:wg"
+    network_mode: "service:wireguard"
     depends_on:
       - wireguard
     healthcheck:
