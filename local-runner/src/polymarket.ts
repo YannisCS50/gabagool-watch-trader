@@ -897,52 +897,57 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
     // Per Polymarket docs, POLY_ADDRESS is always the Polygon signer address.
     const polyAddressHeader = signer.address;
 
-    // Build SDK creds object (support both new + legacy field names)
-    const sdkCreds = {
-      apiKey: apiCreds.key,
-      apiSecret: apiCreds.secret,
-      apiPassphrase: apiCreds.passphrase,
-      address: polyAddressHeader,
-      // legacy
-      key: apiCreds.key,
-      secret: apiCreds.secret,
-      passphrase: apiCreds.passphrase,
-    } as any;
+    // Balance is held by the funder for proxy wallet modes.
+    const addressParam = signatureType === 0 ? signer.address : config.polymarket.address;
 
-    const client =
-      signatureType === 0
-        ? new ClobClient(CLOB_URL, CHAIN_ID, signer, sdkCreds, 0)
-        : new ClobClient(CLOB_URL, CHAIN_ID, signer, sdkCreds, signatureType, config.polymarket.address);
+    // Build the query path with all required parameters
+    const pathWithQuery = `/balance-allowance?asset_type=0&signature_type=${signatureType}&address=${encodeURIComponent(
+      addressParam
+    )}`;
 
-    try {
-      // Some SDK versions expect updateBalanceAllowance first.
-      if (typeof (client as any).updateBalanceAllowance === 'function') {
-        await (client as any).updateBalanceAllowance({ asset_type: 0 });
-      }
+    const timestampSeconds = String(Math.floor(Date.now() / 1000));
 
-      const balanceAllowance = await (client as any).getBalanceAllowance({ asset_type: 0 });
-      const rawBalance =
-        (balanceAllowance as any)?.balance ??
-        (balanceAllowance as any)?.available_balance ??
-        (balanceAllowance as any)?.availableBalance ??
-        0;
-
-      const balance = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
-
-      console.log(`💰 CLOB Balance: $${balance.toFixed(2)} USDC`);
-
-      balanceCache = { usdc: balance, fetchedAt: Date.now() };
-      return { usdc: balance };
-    } catch (e: any) {
-      const status = e?.response?.status ?? e?.status ?? 0;
-      const text =
-        typeof e?.response?.data === 'string'
-          ? e.response.data
-          : e?.response?.data
-            ? JSON.stringify(e.response.data)
-            : e?.message || String(e);
-      return { error: { status, text } };
+    // Build signature like upstream clob-client (url-safe base64 with '=' padding)
+    const secretBytes = Buffer.from(sanitizeBase64Secret(apiCreds.secret), 'base64');
+    if (!secretBytes?.length) {
+      return { error: { status: 0, text: 'Invalid API secret (base64 decode failed)' } };
     }
+
+    const fetchWithSignaturePath = async (signaturePath: string) => {
+      const signature = buildSignature(secretBytes, timestampSeconds, 'GET', signaturePath);
+      return fetch(`${CLOB_URL}${pathWithQuery}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          POLY_ADDRESS: polyAddressHeader,
+          POLY_API_KEY: apiCreds.key,
+          POLY_PASSPHRASE: apiCreds.passphrase,
+          POLY_SIGNATURE: signature,
+          POLY_TIMESTAMP: timestampSeconds,
+        } as any,
+      });
+    };
+
+    // Some CLOB endpoints verify the signature against only the pathname (no query string).
+    // Try the "full path" first, then retry once signing only the pathname.
+    let response = await fetchWithSignaturePath(pathWithQuery);
+    if (response.status === 401) {
+      response = await fetchWithSignaturePath('/balance-allowance');
+    }
+
+    if (!response.ok) {
+      const text = await response.text();
+      return { error: { status: response.status, text } };
+    }
+
+    const data = await response.json();
+    const rawBalance = (data as any)?.balance ?? (data as any)?.available_balance ?? '0';
+    const balance = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
+
+    console.log(`💰 CLOB Balance: $${balance.toFixed(2)} USDC`);
+
+    balanceCache = { usdc: balance, fetchedAt: Date.now() };
+    return { usdc: balance };
   };
 
   try {
