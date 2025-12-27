@@ -89,20 +89,45 @@ function validateEnvFile(filePath: string): EnvValidationResult {
 }
 
 // Priority for env file loading in Docker: ENV_FILE > DOTENV_CONFIG_PATH > default server path.
-// In Docker, env_file directive sets env vars BEFORE the process starts, so we should NOT
-// override with a different .env file from the filesystem.
+// In Docker, env_file directive sets env vars BEFORE the process starts.
+// To still catch duplicate keys, we optionally VALIDATE a mounted ENV_FILE (read-only) if provided.
 //
 // If running locally (npm start), we load from the first existing candidate.
 
-const envFromDockerOrCli = process.env.POLYMARKET_PRIVATE_KEY;
+const envFromDockerOrCli = Boolean(process.env.POLYMARKET_PRIVATE_KEY);
 
 let loadedEnvPath: string | null = null;
 
 if (envFromDockerOrCli) {
   // Docker already injected env vars via env_file — do NOT load any .env from disk
   loadedEnvPath = '(docker env_file / CLI)';
+
+  // Optional: validate a mounted env file (so we can detect duplicates even in Docker)
+  const mountedEnvPath = process.env.ENV_FILE;
+  if (mountedEnvPath) {
+    if (fs.existsSync(mountedEnvPath)) {
+      console.log(`\n🔍 Validating env file: ${mountedEnvPath}`);
+      const validation = validateEnvFile(mountedEnvPath);
+
+      for (const err of validation.errors) console.error(err);
+      for (const warn of validation.warnings) console.warn(warn);
+
+      if (!validation.valid) {
+        console.error('\n' + '='.repeat(60));
+        console.error('❌ ENV FILE VALIDATION FAILED');
+        console.error('='.repeat(60));
+        console.error('\nFix the duplicate keys in your env file before continuing.');
+        console.error('Each key should appear exactly ONCE.\n');
+        process.exit(1);
+      }
+    } else {
+      console.warn(`⚠️ ENV_FILE is set to "${mountedEnvPath}" but is not readable inside this container.`);
+      console.warn('   Mount the file into the container to enable duplicate-key validation.');
+    }
+  } else {
+    console.warn('ℹ️  Duplicate-key validation is skipped in Docker unless ENV_FILE is mounted into the container.');
+  }
 } else {
-  // Manual run: try candidates in order
   const envCandidates = [
     process.env.ENV_FILE,
     process.env.DOTENV_CONFIG_PATH,

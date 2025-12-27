@@ -58,10 +58,13 @@ services:
     environment:
       - VPN_REQUIRED=true
       - EXPECTED_VPN_PROVIDER=Mullvad
+      # Optional: mount the env file so the runner can validate duplicate keys at startup
+      - ENV_FILE=/runner/secrets/local-runner.env
     # NOTE: Docker does not allow `dns:` with `network_mode: container:...`.
     # We enforce DNS by mounting a deterministic resolv.conf instead.
     volumes:
       - ./local-runner/resolv.conf:/etc/resolv.conf:ro
+      - /home/deploy/secrets/local-runner.env:/runner/secrets/local-runner.env:ro
     # CRITICAL: Share network with WireGuard container
     # This ensures all outbound traffic goes through VPN
     network_mode: "container:wg"
