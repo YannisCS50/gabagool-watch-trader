@@ -785,7 +785,9 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
-        POLY_ADDRESS: signer.address,
+        // IMPORTANT (Safe proxy): auth headers should use the FUNDER (Safe) address,
+        // since balances live on the Safe, not the EOA signer.
+        POLY_ADDRESS: config.polymarket.address,
         POLY_API_KEY: apiCreds.key,
         POLY_PASSPHRASE: apiCreds.passphrase,
         POLY_SIGNATURE: signature,
