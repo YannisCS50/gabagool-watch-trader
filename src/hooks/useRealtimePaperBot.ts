@@ -44,15 +44,20 @@ export function useRealtimePaperBot() {
       wsRef.current.close();
     }
 
-    const wsUrl = `wss://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/paper-trade-realtime`;
+    const base = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+    const wsBase = base ? base.replace(/^http/, 'ws') : 'wss://iuzpdjplasndyvbzhlzd.supabase.co';
+    const wsUrl = `${wsBase}/functions/v1/paper-trade-realtime`;
     console.log('[RealtimeBot] Connecting to', wsUrl);
-    
+
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {
       console.log('[RealtimeBot] Connected');
       setStatus(prev => ({ ...prev, isConnected: true, isEnabled: true }));
+
+      // Ask server to send current status immediately
+      ws.send(JSON.stringify({ type: 'status' }));
     };
 
     ws.onmessage = (event) => {
