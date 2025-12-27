@@ -12,10 +12,6 @@ import { reconcile, printReconciliationReport } from './reconcile.js';
 
 // Polymarket API endpoints
 const DATA_API_URL = 'https://data-api.polymarket.com';
-const RELAYER_URL = 'https://relayer.polymarket.com';
-
-// Neg Risk Adapter address (for neg risk markets)
-const NEG_RISK_ADAPTER = '0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296';
 
 // CTF ABI for direct redeem
 const CTF_REDEEM_ABI = [
@@ -114,70 +110,16 @@ function isProxyWalletMode(): boolean {
 }
 
 // ============================================================================
-// RELAYER API: For proxy wallet claims
+// PROXY WALLET CLAIMING STATUS
 // ============================================================================
-
-interface RelayerTransaction {
-  to: string;
-  data: string;
-  value: string;
-}
-
-/**
- * Sign a message for Polymarket relayer authentication
- */
-async function signRelayerMessage(message: string): Promise<string> {
-  return wallet!.signMessage(message);
-}
-
-/**
- * Execute transactions via Polymarket relayer (for proxy wallets)
- */
-async function executeViaRelayer(transactions: RelayerTransaction[]): Promise<{ txHash: string }> {
-  const timestamp = Math.floor(Date.now() / 1000);
-  const message = `Execute transactions at ${timestamp}`;
-  const signature = await signRelayerMessage(message);
-
-  console.log(`   📤 Sending ${transactions.length} tx(s) via relayer...`);
-
-  const response = await fetch(`${RELAYER_URL}/execute`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'POLY-ADDRESS': wallet!.address,
-      'POLY-SIGNATURE': signature,
-      'POLY-TIMESTAMP': timestamp.toString(),
-    },
-    body: JSON.stringify({
-      funder: config.polymarket.address,
-      transactions,
-    }),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Relayer error ${response.status}: ${errorText}`);
-  }
-
-  const result = await response.json();
-  return { txHash: result.transactionHash || result.txHash };
-}
-
-/**
- * Create redeem transaction calldata for CTF contract
- */
-function createRedeemCalldata(conditionId: string): string {
-  const iface = new ethers.utils.Interface(CTF_REDEEM_ABI);
-  const parentCollectionId = ethers.utils.hexZeroPad('0x00', 32);
-  const indexSets = [1, 2]; // Both outcomes
-
-  return iface.encodeFunctionData('redeemPositions', [
-    USDC_ADDRESS,
-    parentCollectionId,
-    conditionId,
-    indexSets,
-  ]);
-}
+// NOTE: As of Dec 2025, Polymarket does NOT have an official API for redeeming
+// positions held by proxy wallets (Safe/Magic wallets). This is a known issue:
+// - https://github.com/Polymarket/py-clob-client/issues/139
+// - https://github.com/Polymarket/conditional-token-examples-py/issues/1
+//
+// For proxy wallets, users MUST claim via the Polymarket UI at:
+// https://polymarket.com/portfolio
+// ============================================================================
 
 // ============================================================================
 // FETCH POSITIONS
@@ -360,85 +302,33 @@ async function redeemDirectEOA(position: RedeemablePosition): Promise<boolean> {
 }
 
 // ============================================================================
-// REDEEM: Via Relayer (for proxy wallets)
+// REDEEM: Proxy wallet - NOT SUPPORTED VIA API
 // ============================================================================
-async function redeemViaRelayer(position: RedeemablePosition): Promise<boolean> {
-  const conditionId = position.conditionId;
-
-  console.log(`   🔧 Using Polymarket Relayer (proxy wallet mode)...`);
-
-  try {
-    // Create the redeem transaction
-    const redeemCalldata = createRedeemCalldata(conditionId);
-
-    const transaction: RelayerTransaction = {
-      to: CTF_ADDRESS,
-      data: redeemCalldata,
-      value: '0',
-    };
-
-    const result = await executeViaRelayer([transaction]);
-
-    console.log(`   ⏳ Relayer tx: ${result.txHash}`);
-
-    claimTxHistory.push({
-      txHash: result.txHash,
-      conditionId,
-      status: 'pending',
-      sentAt: Date.now(),
-    });
-
-    // Wait for confirmation
-    const receipt = await waitForTransaction(result.txHash, 1, 120000);
-
-    if (!receipt) {
-      console.log(`   ⏳ Tx still pending`);
-      return false;
-    }
-
-    if (receipt.status !== 1) {
-      console.log(`   ❌ Tx failed on-chain`);
-      return false;
-    }
-
-    const events = parsePayoutRedemptionEvents(receipt);
-
-    if (events.length === 0) {
-      console.log(`   ⚠️ Tx succeeded but no PayoutRedemption events`);
-      // May still have worked - mark as claimed to prevent retry loops
-      confirmedClaims.set(conditionId, {
-        txHash: result.txHash,
-        blockNumber: receipt.blockNumber,
-        payoutUSDC: position.currentValue || 0,
-        confirmedAt: Date.now(),
-      });
-      return true;
-    }
-
-    for (const event of events) {
-      console.log(`   ✅ CONFIRMED: claimed $${event.payoutUSDC.toFixed(2)}`);
-      confirmedClaims.set(event.conditionId, {
-        txHash: event.transactionHash,
-        blockNumber: event.blockNumber,
-        payoutUSDC: event.payoutUSDC,
-        confirmedAt: Date.now(),
-      });
-    }
-
-    return true;
-  } catch (error: any) {
-    const msg = error?.message || String(error);
-    console.error(`   ❌ Relayer redeem failed: ${msg}`);
-
-    // If relayer doesn't work, provide guidance
-    if (msg.includes('401') || msg.includes('403') || msg.includes('Unauthorized')) {
-      console.log(`\n   💡 TIP: Relayer authentication failed.`);
-      console.log(`      Your signer (${wallet?.address}) may not be authorized for this proxy.`);
-      console.log(`      Try claiming manually at https://polymarket.com/portfolio`);
-    }
-
-    return false;
+// Polymarket does NOT currently have an official API for redeeming positions
+// held by proxy wallets. This is a known limitation - see GitHub issues above.
+// Users with proxy wallets (MetaMask connection) must claim via the UI.
+// ============================================================================
+function printProxyWalletClaimInstructions(positions: RedeemablePosition[]): void {
+  const totalValue = positions.reduce((sum, p) => sum + (p.currentValue || 0), 0);
+  
+  console.log(`\n${'='.repeat(70)}`);
+  console.log(`⚠️  PROXY WALLET DETECTED - MANUAL CLAIM REQUIRED`);
+  console.log(`${'='.repeat(70)}`);
+  console.log(`\nYour positions are held by a proxy wallet (Safe/Magic).`);
+  console.log(`Polymarket does NOT yet support automated claiming via API for proxy wallets.`);
+  console.log(`\n📋 CLAIMABLE POSITIONS (${positions.length} total, $${totalValue.toFixed(2)} value):`);
+  
+  for (const p of positions) {
+    console.log(`   💰 ${p.outcome} ${p.size.toFixed(0)} shares @ ${p.title?.slice(0, 45)}`);
+    console.log(`      Value: $${p.currentValue?.toFixed(2)}`);
   }
+  
+  console.log(`\n🔗 TO CLAIM YOUR WINNINGS:`);
+  console.log(`   1. Go to: https://polymarket.com/portfolio`);
+  console.log(`   2. Connect your MetaMask wallet`);
+  console.log(`   3. Click the "Claim" button on each resolved market`);
+  console.log(`\n💡 TIP: Bookmark this page for easy access to claims!`);
+  console.log(`${'='.repeat(70)}\n`);
 }
 
 // ============================================================================
@@ -453,9 +343,10 @@ async function redeemPositionWithConfirmation(position: RedeemablePosition): Pro
   console.log(`   Position wallet: ${position.proxyWallet}`);
   console.log(`   Signer wallet: ${wallet?.address}`);
 
-  // Choose method based on wallet type
+  // Only EOA (direct) mode is supported for automated claims
   if (isProxyWalletMode()) {
-    return redeemViaRelayer(position);
+    console.log(`   ⚠️ Proxy wallet mode - automated claiming not available`);
+    return false;
   } else {
     return redeemDirectEOA(position);
   }
@@ -478,6 +369,14 @@ export async function checkAndClaimWinnings(): Promise<{ claimed: number; total:
       return { claimed: 0, total: 0 };
     }
 
+    // If proxy wallet mode, show instructions and exit
+    if (isProxyWalletMode()) {
+      printProxyWalletClaimInstructions(positions);
+      console.log(`\n📊 RESULT: ${positions.length} positions need manual claiming`);
+      return { claimed: 0, total: positions.length };
+    }
+
+    // EOA mode - attempt automated claiming
     let claimedCount = 0;
 
     for (const position of positions) {
