@@ -6,6 +6,9 @@ import { config } from './config.js';
 const CLOB_URL = 'https://clob.polymarket.com';
 const CHAIN_ID = 137; // Polygon mainnet
 
+// Polygon USDC (PoS) contract address; used by balance/allowance endpoints
+const USDC_ASSET_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+
 interface OrderRequest {
   tokenId: string;
   side: 'BUY' | 'SELL';
@@ -901,9 +904,10 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
     const addressParam = signatureType === 0 ? signer.address : config.polymarket.address;
 
     // Build the query path with all required parameters
-    const pathWithQuery = `/balance-allowance?asset_type=0&signature_type=${signatureType}&address=${encodeURIComponent(
-      addressParam
-    )}`;
+    // NOTE: CLOB expects asset_address for collateral balance/allowance.
+    const pathWithQuery = `/balance-allowance?asset_type=0&asset_address=${encodeURIComponent(
+      USDC_ASSET_ADDRESS
+    )}&signature_type=${signatureType}&address=${encodeURIComponent(addressParam)}`;
 
     const timestampSeconds = String(Math.floor(Date.now() / 1000));
 
