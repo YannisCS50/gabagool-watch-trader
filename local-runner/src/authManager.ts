@@ -201,16 +201,30 @@ export class AuthManager {
     const signer = this.getSigner();
     const signatureType = this.getSignatureType();
 
-    // IMPORTANT: @polymarket/clob-client expects apiCreds = { apiKey, secret, passphrase }
+    // IMPORTANT: @polymarket/clob-client uses apiCreds.address to populate POLY_ADDRESS.
+    // For Safe proxy wallets, this must be the FUNDER (Safe) address.
     const apiCreds = creds
-      ? { apiKey: creds.apiKey, secret: creds.secret, passphrase: creds.passphrase }
+      ? (
+          {
+            // Newer/official field names (per Polymarket docs)
+            apiKey: creds.apiKey,
+            apiSecret: creds.secret,
+            apiPassphrase: creds.passphrase,
+            address: this.getPolyAddressHeader(),
+
+            // Back-compat with older clob-client shapes
+            key: creds.apiKey,
+            secret: creds.secret,
+            passphrase: creds.passphrase,
+          } as any
+        )
       : undefined;
 
     if (signatureType === 2) {
-      return new ClobClient(CLOB_URL, CHAIN_ID, signer, apiCreds as any, 2, this.getFunderAddress());
+      return new ClobClient(CLOB_URL, CHAIN_ID, signer, apiCreds, 2, this.getFunderAddress());
     }
 
-    return new ClobClient(CLOB_URL, CHAIN_ID, signer, apiCreds as any, 0);
+    return new ClobClient(CLOB_URL, CHAIN_ID, signer, apiCreds, 0);
   }
 
   async getClient(): Promise<ClobClient> {
@@ -324,7 +338,7 @@ export class AuthManager {
   async getBalance(): Promise<{ usdc: number; error?: string; status?: number }> {
     const creds = this.getActiveCreds();
 
-    const pathWithQuery = `/balance-allowance?asset_type=0&signature_type=2&address=${encodeURIComponent(
+    const pathWithQuery = `/balance-allowance?asset_type=0&signature_type=${this.getSignatureType()}&address=${encodeURIComponent(
       this.getBalanceQueryAddress()
     )}`;
 
