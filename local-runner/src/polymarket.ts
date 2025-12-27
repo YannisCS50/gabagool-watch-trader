@@ -167,6 +167,96 @@ function isUnauthorizedPayload(payload: any): boolean {
 }
 
 /**
+ * Validate API credentials manually using a direct fetch call.
+ * This bypasses the ClobClient SDK which incorrectly uses the signer address
+ * in POLY_ADDRESS header for Safe proxy wallets.
+ */
+async function validateCredentialsManually(
+  apiCreds: { key: string; secret: string; passphrase: string },
+  signatureType: 0 | 2,
+  polyAddressHeader: string
+): Promise<{ ok: boolean; apiKeys?: string[]; error?: string }> {
+  const toUrlSafeBase64KeepPadding = (b64: string) => b64.replace(/\+/g, '-').replace(/\//g, '_');
+
+  const sanitizeBase64Secret = (secret: string) => {
+    let s = secret.trim()
+      .replace(/-/g, '+')
+      .replace(/_/g, '/')
+      .replace(/[^A-Za-z0-9+/=]/g, '');
+
+    const pad = s.length % 4;
+    if (pad === 2) s += '==';
+    if (pad === 3) s += '=';
+    return s;
+  };
+
+  const buildSignature = (
+    secretBytes: Buffer,
+    timestampSeconds: string,
+    method: string,
+    requestPath: string
+  ) => {
+    const message = `${timestampSeconds}${method.toUpperCase()}${requestPath}`;
+    const digest = crypto.createHmac('sha256', secretBytes).update(message).digest();
+    const b64 = Buffer.from(digest).toString('base64');
+    return toUrlSafeBase64KeepPadding(b64);
+  };
+
+  try {
+    const requestPath = '/auth/api-keys';
+    const timestampSeconds = String(Math.floor(Date.now() / 1000));
+
+    const secretBytes = Buffer.from(sanitizeBase64Secret(apiCreds.secret), 'base64');
+    if (!secretBytes?.length) {
+      return { ok: false, error: 'Invalid API secret (base64 decode failed)' };
+    }
+
+    const signature = buildSignature(secretBytes, timestampSeconds, 'GET', requestPath);
+
+    console.log(`   📡 Validating with POLY_ADDRESS: ${polyAddressHeader}`);
+
+    const response = await fetch(`${CLOB_URL}${requestPath}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        POLY_ADDRESS: polyAddressHeader,
+        POLY_API_KEY: apiCreds.key,
+        POLY_PASSPHRASE: apiCreds.passphrase,
+        POLY_SIGNATURE: signature,
+        POLY_TIMESTAMP: timestampSeconds,
+      } as any,
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      console.error(`   ❌ Validation failed: HTTP ${response.status}`);
+      console.error(`   Response: ${text.slice(0, 200)}`);
+      return { ok: false, error: `HTTP ${response.status}: ${text.slice(0, 100)}` };
+    }
+
+    const data = await response.json();
+    
+    // Extract API keys from response (various possible shapes)
+    let apiKeys: string[] = [];
+    if (Array.isArray(data)) {
+      if (data.length === 0) {
+        apiKeys = [];
+      } else if (typeof data[0] === 'string') {
+        apiKeys = data;
+      } else {
+        apiKeys = data.map((x: any) => x?.apiKey).filter(Boolean);
+      }
+    } else if (Array.isArray(data?.apiKeys)) {
+      apiKeys = data.apiKeys.filter((x: any) => typeof x === 'string');
+    }
+
+    return { ok: true, apiKeys };
+  } catch (err: any) {
+    return { ok: false, error: String(err?.message || err) };
+  }
+}
+
+/**
  * Derive fresh API credentials using the private key.
  * This creates new CLOB API keys programmatically.
  * NOTE: This only works if the wallet is properly set up on Polymarket.
@@ -379,24 +469,28 @@ async function getClient(): Promise<ClobClient> {
   console.log(`   Funder (Safe): ${config.polymarket.address}`);
 
   // 🔐 Validate credentials with an authenticated API call
+  // NOTE: We use a manual fetch instead of clobClient.getApiKeys() because the SDK
+  // incorrectly uses the signer address in POLY_ADDRESS header for Safe proxy wallets.
   console.log(`\n🔐 VALIDATING CREDENTIALS...`);
   try {
-    const apiKeys = await clobClient.getApiKeys();
-
-    if (isUnauthorizedPayload(apiKeys)) {
-      throw { status: 401, data: apiKeys, message: 'Unauthorized/Invalid api key' };
+    const validationResult = await validateCredentialsManually(apiCreds, signatureType, polyAddressHeader);
+    
+    if (!validationResult.ok) {
+      throw { status: 401, data: { error: validationResult.error }, message: validationResult.error };
     }
 
     console.log(`✅ API credentials VALID!`);
-    console.log(`   API keys response:`, JSON.stringify(apiKeys, null, 2));
+    console.log(`   API keys found: ${validationResult.apiKeys?.length || 0}`);
 
     // Verify the API key belongs to the right address
-    if (apiKeys && Array.isArray(apiKeys)) {
-      const matchingKey = apiKeys.find((k: any) => k.apiKey === apiCreds.key);
+    if (validationResult.apiKeys && Array.isArray(validationResult.apiKeys)) {
+      const matchingKey = validationResult.apiKeys.find((k: string) => k === apiCreds.key);
       if (matchingKey) {
         console.log(`✅ Found matching API key for this config`);
       } else {
         console.warn(`⚠️ API key not found in getApiKeys response - may be stale`);
+        console.warn(`   Expected: ${apiCreds.key?.slice(0, 12)}...`);
+        console.warn(`   Available: ${validationResult.apiKeys.map((k: string) => k?.slice(0, 12) + '...').join(', ')}`);
       }
     }
   } catch (authError: any) {
