@@ -190,6 +190,14 @@ export const config = {
     passphrase: process.env.POLYMARKET_PASSPHRASE!,
     privateKey: process.env.POLYMARKET_PRIVATE_KEY!,
     address: process.env.POLYMARKET_ADDRESS!,
+    // Optional override (recommended for Magic/Google accounts):
+    // 0 = EOA, 1 = POLY_PROXY (Magic), 2 = GNOSIS_SAFE
+    signatureType: (() => {
+      const raw = process.env.POLYMARKET_SIGNATURE_TYPE;
+      if (!raw) return undefined;
+      const n = Number(raw);
+      return n === 0 || n === 1 || n === 2 ? (n as 0 | 1 | 2) : undefined;
+    })(),
   },
   vpn: {
     // Default ON: only disable explicitly with VPN_REQUIRED=false
