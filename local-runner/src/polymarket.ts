@@ -87,6 +87,8 @@ function isUnauthorizedPayload(payload: any): boolean {
 /**
  * Derive fresh API credentials using the private key.
  * This creates new CLOB API keys programmatically.
+ * NOTE: This only works if the wallet is properly set up on Polymarket.
+ * For Safe proxy wallets, you may need to create keys manually via the Polymarket UI.
  */
 async function deriveApiCredentials(): Promise<{ key: string; secret: string; passphrase: string }> {
   console.log(`\n🔄 AUTO-DERIVING NEW API CREDENTIALS...`);
@@ -118,6 +120,15 @@ async function deriveApiCredentials(): Promise<{ key: string; secret: string; pa
     console.log(`   🔑 Creating new API key...`);
     const newCreds = await tempClient.createApiKey();
     
+    // Validate response - SDK may return error payload instead of throwing
+    if (!newCreds || !newCreds.apiKey || !newCreds.secret || !newCreds.passphrase) {
+      const errPayload = newCreds as any;
+      throw new Error(
+        errPayload?.error || 
+        'createApiKey returned invalid response - manual key creation required'
+      );
+    }
+    
     console.log(`   ✅ New API credentials created!`);
     console.log(`      API Key: ${newCreds.apiKey.slice(0, 12)}...`);
     console.log(`      Secret length: ${newCreds.secret?.length || 0} chars`);
@@ -130,6 +141,15 @@ async function deriveApiCredentials(): Promise<{ key: string; secret: string; pa
     };
   } catch (error: any) {
     console.error(`   ❌ Failed to derive credentials: ${error?.message || error}`);
+    console.error(`\n   🚨 MANUAL KEY CREATION REQUIRED:`);
+    console.error(`      1. Go to https://polymarket.com and log in with wallet ${config.polymarket.address}`);
+    console.error(`      2. Open DevTools (F12) → Application → Local Storage`);
+    console.error(`      3. Look for keys like CLOB_API_KEY, CLOB_SECRET, CLOB_PASSPHRASE`);
+    console.error(`      4. Update /home/deploy/secrets/local-runner.env with:`);
+    console.error(`         POLYMARKET_API_KEY=<CLOB_API_KEY value>`);
+    console.error(`         POLYMARKET_API_SECRET=<CLOB_SECRET value>`);
+    console.error(`         POLYMARKET_PASSPHRASE=<CLOB_PASSPHRASE value>`);
+    console.error(`      5. Restart: docker compose restart runner`);
     throw error;
   }
 }
@@ -270,7 +290,17 @@ async function getClient(): Promise<ClobClient> {
         console.log(`   API keys response:`, JSON.stringify(newApiKeys, null, 2));
       } catch (deriveError: any) {
         console.error(`   ❌ Auto-derive failed: ${deriveError?.message || deriveError}`);
-        console.error(`   ⚠️ Continuing anyway, but orders will likely fail\n`);
+        console.error(`   ⚠️ Continuing with existing client, but orders will likely fail\n`);
+        
+        // Re-create client with original (invalid) creds so we don't crash on null
+        clobClient = new ClobClient(
+          CLOB_URL,
+          CHAIN_ID,
+          signer,
+          { key: apiCreds.key, secret: apiCreds.secret, passphrase: apiCreds.passphrase },
+          2,
+          config.polymarket.address
+        );
       }
     } else {
       console.error(`   ⚠️ Continuing anyway, but orders will likely fail\n`);
