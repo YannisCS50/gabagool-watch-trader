@@ -1,11 +1,20 @@
 import WebSocket from 'ws';
 import os from 'os';
+import dns from 'node:dns';
 import { config } from './config.js';
 import { placeOrder, testConnection, getBalance, getOrderbookDepth, invalidateBalanceCache } from './polymarket.js';
 import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, STRATEGY } from './strategy.js';
 import { enforceVpnOrExit } from './vpn-check.js';
 import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder } from './backend.js';
 import { checkAndClaimWinnings, getClaimableValue } from './redeemer.js';
+
+// Ensure Node prefers IPv4 to avoid hangs on IPv6-only DNS results under some VPN setups.
+try {
+  dns.setDefaultResultOrder('ipv4first');
+  console.log('🌐 DNS: default result order set to ipv4first');
+} catch {
+  // ignore
+}
 
 console.log('🚀 Polymarket Live Trader - Local Runner');
 console.log('========================================');
