@@ -5,13 +5,15 @@ import { placeOrder, testConnection, getBalance } from './polymarket.js';
 import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome } from './strategy.js';
 import { enforceVpnOrExit } from './vpn-check.js';
 import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder } from './backend.js';
+import { checkAndClaimWinnings, getClaimableValue } from './redeemer.js';
 
 console.log('🚀 Polymarket Live Trader - Local Runner');
 console.log('========================================');
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '1.2.0';
+const RUNNER_VERSION = '1.3.0';
 let currentBalance = 0;
+let lastClaimCheck = 0;
 
 interface MarketToken {
   slug: string;
@@ -455,16 +457,37 @@ async function main(): Promise<void> {
     await doHeartbeat();
   }, 10000);
 
+  // Auto-claim winnings every 30 seconds
+  setInterval(async () => {
+    const nowMs = Date.now();
+    // Only check every 30 seconds
+    if (nowMs - lastClaimCheck < 30000) return;
+    lastClaimCheck = nowMs;
+    
+    try {
+      const result = await checkAndClaimWinnings();
+      if (result.claimed > 0) {
+        console.log(`💰 Auto-claimed ${result.claimed} winning positions!`);
+      }
+    } catch (error) {
+      console.error('❌ Auto-claim error:', error);
+    }
+  }, 30000);
+
   // Status logging every minute
   setInterval(async () => {
     const positions = [...markets.values()].filter(
       c => c.position.upShares > 0 || c.position.downShares > 0
     ).length;
     
-    console.log(`\n📊 Status: ${markets.size} markets | ${positions} positions | ${tradeCount} trades | $${currentBalance.toFixed(2)} balance`);
+    // Also show claimable value
+    const claimableValue = await getClaimableValue();
+    const claimableStr = claimableValue > 0 ? ` | $${claimableValue.toFixed(2)} claimable` : '';
+    
+    console.log(`\n📊 Status: ${markets.size} markets | ${positions} positions | ${tradeCount} trades | $${currentBalance.toFixed(2)} balance${claimableStr}`);
   }, 60000);
 
-  console.log('\n✅ Live trader running! Press Ctrl+C to stop.\n');
+  console.log('\n✅ Live trader running with auto-claim! Press Ctrl+C to stop.\n');
 }
 
 // Graceful shutdown
