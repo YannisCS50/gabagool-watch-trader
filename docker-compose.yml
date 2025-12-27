@@ -58,13 +58,10 @@ services:
     environment:
       - VPN_REQUIRED=true
       - EXPECTED_VPN_PROVIDER=Mullvad
-    # Even though network is shared with wireguard, keeping DNS here helps when not using container network_mode.
-    dns:
-      - 1.1.1.1
-      - 8.8.8.8
-    dns_opt:
-      - timeout:2
-      - attempts:3
+    # NOTE: Docker does not allow `dns:` with `network_mode: container:...`.
+    # We enforce DNS by mounting a deterministic resolv.conf instead.
+    volumes:
+      - ./local-runner/resolv.conf:/etc/resolv.conf:ro
     # CRITICAL: Share network with WireGuard container
     # This ensures all outbound traffic goes through VPN
     network_mode: "container:wg"
