@@ -833,256 +833,53 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
 let balanceCache: { usdc: number; fetchedAt: number } | null = null;
 const BALANCE_CACHE_TTL_MS = 10000;
 
+/**
+ * Fetches the USDC collateral balance using the official clob-client SDK.
+ */
 export async function getBalance(): Promise<{ usdc: number; error?: string }> {
   // Return cached balance if fresh
   if (balanceCache && Date.now() - balanceCache.fetchedAt < BALANCE_CACHE_TTL_MS) {
     return { usdc: balanceCache.usdc };
   }
 
-  const toUrlSafeBase64KeepPadding = (b64: string) => b64.replace(/\+/g, '-').replace(/\//g, '_');
+  try {
+    const client = await getClient();
 
-  const sanitizeBase64Secret = (secret: string) => {
-    let s = secret.trim()
-      // Convert base64url → base64
-      .replace(/-/g, '+')
-      .replace(/_/g, '/')
-      // Remove any non-base64 characters (matches upstream SDK behavior)
-      .replace(/[^A-Za-z0-9+/=]/g, '');
+    // Try SDK's getBalanceAllowance first (handles all param encoding internally)
+    if (typeof (client as any).getBalanceAllowance === 'function') {
+      console.log(`💰 Fetching balance via SDK getBalanceAllowance()...`);
 
-    // Add padding if missing
-    const pad = s.length % 4;
-    if (pad === 2) s += '==';
-    if (pad === 3) s += '=';
+      // AssetType.COLLATERAL = "COLLATERAL" in @polymarket/clob-client v5
+      const result = await (client as any).getBalanceAllowance({ asset_type: 'COLLATERAL' });
 
-    return s;
-  };
-
-  const buildSignature = (
-    secretBytes: Buffer,
-    timestampSeconds: string,
-    method: string,
-    requestPath: string,
-    bodyString?: string
-  ) => {
-    // Upstream clob-client: message = timestamp + method + requestPath (+ body)
-    let message = `${timestampSeconds}${method.toUpperCase()}${requestPath}`;
-    if (bodyString !== undefined) message += bodyString;
-
-    const digest = crypto.createHmac('sha256', secretBytes).update(message).digest();
-    const b64 = Buffer.from(digest).toString('base64');
-
-    // IMPORTANT: must be url-safe base64, but KEEP '=' padding (upstream behavior)
-    return toUrlSafeBase64KeepPadding(b64);
-  };
-
-  const attemptBalanceFetch = async (apiCreds: { key: string; secret: string; passphrase: string }) => {
-    const signer = new Wallet(config.polymarket.privateKey);
-
-    // IMPORTANT: When signer == funder, ALWAYS use signatureType=0 (regular EOA).
-    // An override of 1 or 2 only makes sense when signer ≠ funder (proxy wallet).
-    const signerIsFunder = signer.address.toLowerCase() === config.polymarket.address.toLowerCase();
-    const override = (config.polymarket as any).signatureType as (0 | 1 | 2 | undefined);
-
-    let signatureType: 0 | 1 | 2;
-    if (signerIsFunder) {
-      // Force 0 for regular EOA regardless of override
-      if (override !== undefined && override !== 0) {
-        console.warn(`⚠️ POLYMARKET_SIGNATURE_TYPE=${override} ignored: signer == funder means regular EOA (signatureType=0).`);
-      }
-      signatureType = 0;
-    } else {
-      signatureType =
-        override === 0 || override === 1 || override === 2
-          ? override
-          : 2; // default to Gnosis Safe for proxy
-    }
-
-    // Per Polymarket docs, POLY_ADDRESS is always the Polygon signer address.
-    const polyAddressHeader = signer.address;
-
-    // Balance is held by the funder for proxy wallet modes.
-    const addressParam = signatureType === 0 ? signer.address : config.polymarket.address;
-
-    // Build candidate query paths for collateral balance.
-    // NOTE: The server-side param validation differs across deployments; some require asset_address even for collateral.
-    const addr = encodeURIComponent(addressParam);
-    const sig = signatureType;
-    const asset = encodeURIComponent(USDC_ASSET_ADDRESS);
-
-    const balancePaths = [
-      // "collateral" as string (common in SDKs)
-      `/balance-allowance?asset_type=collateral&asset_address=${asset}&signature_type=${sig}&address=${addr}`,
-      `/balance-allowance?asset_type=collateral&assetAddress=${asset}&signature_type=${sig}&address=${addr}`,
-      `/balance-allowance?asset_type=collateral&signature_type=${sig}&address=${addr}`,
-
-      // numeric asset_type variants
-      `/balance-allowance?asset_type=0&asset_address=${asset}&signature_type=${sig}&address=${addr}`,
-      `/balance-allowance?asset_type=0&assetAddress=${asset}&signature_type=${sig}&address=${addr}`,
-      `/balance-allowance?asset_type=0&signature_type=${sig}&address=${addr}`,
-    ];
-
-    const timestampSeconds = String(Math.floor(Date.now() / 1000));
-
-    // Build signature like upstream clob-client (url-safe base64 with '=' padding)
-    const secretBytes = Buffer.from(sanitizeBase64Secret(apiCreds.secret), 'base64');
-    if (!secretBytes?.length) {
-      return { error: { status: 0, text: 'Invalid API secret (base64 decode failed)' } };
-    }
-
-    const fetchSigned = async (fetchPath: string, signaturePath: string) => {
-      const signature = buildSignature(secretBytes, timestampSeconds, 'GET', signaturePath);
-      return fetch(`${CLOB_URL}${fetchPath}`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          POLY_ADDRESS: polyAddressHeader,
-          POLY_API_KEY: apiCreds.key,
-          POLY_PASSPHRASE: apiCreds.passphrase,
-          POLY_SIGNATURE: signature,
-          POLY_TIMESTAMP: timestampSeconds,
-        } as any,
-      });
-    };
-
-    let lastError: { status: number; text: string } | null = null;
-
-    for (const pathWithQuery of balancePaths) {
-      // Debug: ensure our request actually includes address + signature_type (helps diagnose 400 invalid params)
-      console.log(`🔎 Balance request: ${CLOB_URL}${pathWithQuery}`);
-
-      // Some CLOB endpoints verify the signature against only the pathname (no query string).
-      // Try the "full path" first, then retry once signing only the pathname.
-      let response = await fetchSigned(pathWithQuery, pathWithQuery);
-      if (response.status === 401) {
-        response = await fetchSigned(pathWithQuery, '/balance-allowance');
+      // Handle SDK returning error payloads
+      if (result?.error || (typeof result?.status === 'number' && result.status >= 400)) {
+        const errMsg = result?.error ?? `status=${result?.status}`;
+        console.error(`❌ SDK getBalanceAllowance error: ${errMsg}`);
+        return { usdc: 0, error: String(errMsg) };
       }
 
-      if (!response.ok) {
-        const text = await response.text();
-        lastError = { status: response.status, text };
-
-        console.error(
-          `❌ Balance attempt failed: status=${response.status} path=${pathWithQuery} body=${text}`
-        );
-
-        // If the server complains about invalid params, try the next variant.
-        if (response.status === 400) continue;
-        break;
-      }
-
-      const data = await response.json();
-      const rawBalance = (data as any)?.balance ?? (data as any)?.available_balance ?? '0';
+      const rawBalance = result?.balance ?? result?.available_balance ?? '0';
       const balance = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
 
       console.log(`💰 CLOB Balance: $${balance.toFixed(2)} USDC`);
-
       balanceCache = { usdc: balance, fetchedAt: Date.now() };
       return { usdc: balance };
     }
 
-    return { error: lastError ?? { status: 0, text: 'Unknown error fetching balance' } };
-
-    const data = await response.json();
-    const rawBalance = (data as any)?.balance ?? (data as any)?.available_balance ?? '0';
-    const balance = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
-
-    console.log(`💰 CLOB Balance: $${balance.toFixed(2)} USDC`);
-
-    balanceCache = { usdc: balance, fetchedAt: Date.now() };
-    return { usdc: balance };
-  };
-
-  try {
-    let apiCreds = derivedCreds || {
-      key: config.polymarket.apiKey,
-      secret: config.polymarket.apiSecret,
-      passphrase: config.polymarket.passphrase,
-    };
-
-    if (!apiCreds.key || !apiCreds.secret || !apiCreds.passphrase) {
-      // No credentials at all - try to derive
-      console.log(`⚠️ No API credentials configured - attempting auto-derive...`);
-      try {
-        derivedCreds = await deriveApiCredentials();
-        apiCreds = derivedCreds;
-      } catch (deriveError) {
-        return { usdc: 0, error: 'Missing API credentials and auto-derive failed' };
-      }
-    }
-
-    // First attempt
-    const result = await attemptBalanceFetch(apiCreds);
-    
-    if ('usdc' in result) {
-      return result;
-    }
-
-    // If we got a 401, DO NOT try to create/derive API keys when:
-    // - signatureType is proxy (1/2) (auto-derive is disabled and will just spam logs)
-    // - the user already configured keys (likely stale/wrong account instead of "needs derive")
-    if (result.error?.status === 401) {
-      const signer = new Wallet(config.polymarket.privateKey);
-      const override = (config.polymarket as any).signatureType as (0 | 1 | 2 | undefined);
-      const signatureType: 0 | 1 | 2 =
-        override === 0 || override === 1 || override === 2
-          ? override
-          : signer.address.toLowerCase() === config.polymarket.address.toLowerCase()
-            ? 0
-            : 2;
-
-      if (signatureType !== 0) {
-        console.error(`\n❌ Balance returned 401 (signatureType=${signatureType}) — auto-derive disabled for proxy wallets.`);
-        console.error(`   Fix is almost always: API key belongs to a different account/address, or signatureType override is wrong.`);
-        return { usdc: 0, error: 'HTTP 401 (balance)' };
-      }
-
-      const credsWereExplicitlyConfigured =
-        !derivedCreds &&
-        Boolean(config.polymarket.apiKey && config.polymarket.apiSecret && config.polymarket.passphrase);
-
-      if (credsWereExplicitlyConfigured) {
-        console.error(`\n❌ Balance returned 401 with configured API credentials (no auto-derive).`);
-        console.error(`   This usually means the API key is for a different account/address or is stale/revoked.`);
-        return { usdc: 0, error: 'HTTP 401 (balance)' };
-      }
-
-      console.log(`\n🔄 Balance returned 401 - auto-deriving new credentials...`);
-
-      try {
-        derivedCreds = await deriveApiCredentials();
-        // Reset clobClient so it picks up new creds
-        clobClient = null;
-
-        // Retry with new credentials
-        const retryResult = await attemptBalanceFetch(derivedCreds);
-        if ('usdc' in retryResult) {
-          return retryResult;
-        }
-
-        console.error(`❌ Balance still failing after auto-derive: HTTP ${retryResult.error?.status}`);
-        return { usdc: 0, error: `HTTP ${retryResult.error?.status} after auto-derive` };
-      } catch (deriveError: any) {
-        console.error(`❌ Auto-derive failed: ${deriveError?.message || deriveError}`);
-        return { usdc: 0, error: `401 and auto-derive failed: ${deriveError?.message}` };
-      }
-    }
-
-    if (result.error?.status) {
-      console.error(`❌ Balance fetch failed: HTTP ${result.error.status} - ${String(result.error.text).slice(0, 200)}`);
-      return { usdc: 0, error: `HTTP ${result.error.status}` };
-    }
-
-    console.error('❌ Balance fetch failed: Unable to sign request');
-    return { usdc: 0, error: 'Unable to sign request' };
+    // SDK method not available - shouldn't happen with v5+
+    console.warn(`⚠️ SDK getBalanceAllowance not found - returning 0`);
+    return { usdc: 0, error: 'SDK method unavailable' };
   } catch (error: any) {
-    console.error(`❌ Failed to fetch balance: ${error?.message || error}`);
+    console.error('❌ Failed to fetch balance:', error?.message || error);
 
+    // Return stale cache if available
     if (balanceCache) {
       console.log(`   Using stale cached balance: $${balanceCache.usdc.toFixed(2)}`);
       return { usdc: balanceCache.usdc };
     }
 
-    return { usdc: 0, error: error?.message };
+    return { usdc: 0, error: error?.message || 'Unknown error' };
   }
 }
 
