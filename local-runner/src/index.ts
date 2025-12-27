@@ -2,7 +2,7 @@ import WebSocket from 'ws';
 import os from 'os';
 import dns from 'node:dns';
 import { config } from './config.js';
-import { placeOrder, testConnection, getBalance, getOrderbookDepth, invalidateBalanceCache } from './polymarket.js';
+import { placeOrder, testConnection, getBalance, getOrderbookDepth, invalidateBalanceCache, ensureValidCredentials } from './polymarket.js';
 import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, STRATEGY } from './strategy.js';
 import { enforceVpnOrExit } from './vpn-check.js';
 import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder } from './backend.js';
@@ -444,9 +444,21 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  // Get initial balance
+  // CRITICAL: Validate/derive API credentials BEFORE any trading
+  console.log('\n🔐 Ensuring valid API credentials...');
+  const credsValid = await ensureValidCredentials();
+  if (!credsValid) {
+    console.error('❌ Failed to validate API credentials. Check your private key and address.');
+    console.error('   The runner will continue but trading may fail.');
+  }
+
+  // Get initial balance (will use newly derived creds if auto-derived)
   const balanceResult = await getBalance();
   currentBalance = balanceResult.usdc;
+  
+  if (balanceResult.error) {
+    console.error(`⚠️ Initial balance check had error: ${balanceResult.error}`);
+  }
 
   // Initial setup
   await fetchMarkets();
