@@ -142,74 +142,88 @@ async function refreshPendingTx(
 }
 
 /**
- * Fetch all redeemable positions from Polymarket Data API
+ * Fetch all redeemable positions from Polymarket Data API for BOTH wallets
+ * (signing wallet + configured proxy wallet)
  */
 async function fetchRedeemablePositions(): Promise<RedeemablePosition[]> {
-  try {
-    // Use the Polymarket Safe proxy wallet address
-    const walletAddress = config.polymarket.address;
-    
-    console.log(`🔍 Checking redeemable positions for wallet: ${walletAddress}`);
-    
-    const url = `${DATA_API_URL}/positions?user=${walletAddress}&sizeThreshold=0&limit=100`;
-    
-    const response = await fetch(url, {
-      method: 'GET',
-      headers: {
-        'Accept': 'application/json',
-      },
-    });
+  // Get both wallet addresses
+  const proxyWallet = config.polymarket.address;
+  const signingWallet = wallet?.address;
 
-    if (!response.ok) {
-      const body = await response.text();
-      console.error(`❌ Failed to fetch positions: HTTP ${response.status}`);
-      console.error(`   Response: ${body.slice(0, 200)}`);
-      return [];
-    }
+  const walletsToCheck = new Set<string>();
+  if (proxyWallet) walletsToCheck.add(proxyWallet.toLowerCase());
+  if (signingWallet) walletsToCheck.add(signingWallet.toLowerCase());
 
-    const positions: RedeemablePosition[] = await response.json();
-    
-    // Filter for redeemable positions only, exclude already-claimed and pending-tx ones,
-    // and de-dupe by conditionId (binary markets often return both UP and DOWN entries).
-    const redeemableByCondition = new Map<string, RedeemablePosition>();
-
-    for (const p of positions) {
-      if (!p.redeemable) continue;
-      if (claimedConditions.has(p.conditionId)) continue;
-      if (pendingTxByCondition.has(p.conditionId)) continue;
-
-      const existing = redeemableByCondition.get(p.conditionId);
-      // Keep the larger currentValue entry for nicer logging (functionality is same)
-      if (!existing || (p.currentValue || 0) > (existing.currentValue || 0)) {
-        redeemableByCondition.set(p.conditionId, p);
-      }
-    }
-
-    const redeemable = [...redeemableByCondition.values()];
-
-    // Only log positions that are actually still pending
-    if (redeemable.length > 0) {
-      console.log(
-        `💰 Found ${redeemable.length} redeemable conditions (skipping ${claimedConditions.size} claimed, ${pendingTxByCondition.size} pending-tx):`
-      );
-      for (const p of redeemable) {
-        console.log(
-          `   💰 REDEEMABLE: ${p.outcome} ${p.size.toFixed(0)} shares @ ${p.title?.slice(0, 50) || p.slug}`
-        );
-      }
-    } else if (pendingTxByCondition.size > 0) {
-      console.log(`   ⏳ Claims pending on-chain (${pendingTxByCondition.size} tx), waiting...`);
-    } else if (claimedConditions.size > 0) {
-      console.log(`   ✅ All positions already claimed this session (${claimedConditions.size} total)`);
-    } else {
-      console.log(`   No redeemable positions at this time`);
-    }
-    
-    return redeemable;
-  } catch (error) {
-    console.error('❌ Error fetching redeemable positions:', error);
-    return [];
+  console.log(`🔍 Checking redeemable positions for ${walletsToCheck.size} wallet(s):`);
+  for (const w of walletsToCheck) {
+    console.log(`   📍 ${w}`);
   }
+
+  const allPositions: RedeemablePosition[] = [];
+
+  for (const walletAddress of walletsToCheck) {
+    try {
+      const url = `${DATA_API_URL}/positions?user=${walletAddress}&sizeThreshold=0&limit=100`;
+
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const body = await response.text();
+        console.error(`❌ Failed to fetch positions for ${walletAddress}: HTTP ${response.status}`);
+        console.error(`   Response: ${body.slice(0, 200)}`);
+        continue;
+      }
+
+      const positions: RedeemablePosition[] = await response.json();
+      allPositions.push(...positions);
+
+    } catch (error) {
+      console.error(`❌ Error fetching positions for ${walletAddress}:`, error);
+    }
+  }
+
+  // Filter for redeemable positions only, exclude already-claimed and pending-tx ones,
+  // and de-dupe by conditionId (binary markets often return both UP and DOWN entries).
+  const redeemableByCondition = new Map<string, RedeemablePosition>();
+
+  for (const p of allPositions) {
+    if (!p.redeemable) continue;
+    if (claimedConditions.has(p.conditionId)) continue;
+    if (pendingTxByCondition.has(p.conditionId)) continue;
+
+    const existing = redeemableByCondition.get(p.conditionId);
+    // Keep the larger currentValue entry for nicer logging (functionality is same)
+    if (!existing || (p.currentValue || 0) > (existing.currentValue || 0)) {
+      redeemableByCondition.set(p.conditionId, p);
+    }
+  }
+
+  const redeemable = [...redeemableByCondition.values()];
+
+  // Only log positions that are actually still pending
+  if (redeemable.length > 0) {
+    console.log(
+      `💰 Found ${redeemable.length} redeemable conditions (skipping ${claimedConditions.size} claimed, ${pendingTxByCondition.size} pending-tx):`
+    );
+    for (const p of redeemable) {
+      console.log(
+        `   💰 REDEEMABLE: ${p.outcome} ${p.size.toFixed(0)} shares @ ${p.title?.slice(0, 50) || p.slug} [${p.proxyWallet?.slice(0,10)}...]`
+      );
+    }
+  } else if (pendingTxByCondition.size > 0) {
+    console.log(`   ⏳ Claims pending on-chain (${pendingTxByCondition.size} tx), waiting...`);
+  } else if (claimedConditions.size > 0) {
+    console.log(`   ✅ All positions already claimed this session (${claimedConditions.size} total)`);
+  } else {
+    console.log(`   No redeemable positions at this time`);
+  }
+
+  return redeemable;
 }
 
 /**
