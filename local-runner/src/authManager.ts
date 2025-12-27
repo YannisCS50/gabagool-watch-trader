@@ -117,10 +117,13 @@ export class AuthManager {
 
   /**
    * signatureType:
-   * - regular EOA wallets: 0
-   * - Safe proxy wallets (Polymarket default): 2
+   * - EOA wallets: 0
+   * - POLY_PROXY (Magic login): 1
+   * - GNOSIS_SAFE: 2
    */
-  getSignatureType(): 0 | 2 {
+  getSignatureType(): 0 | 1 | 2 {
+    const override = (config.polymarket as any).signatureType as (0 | 1 | 2 | undefined);
+    if (override === 0 || override === 1 || override === 2) return override;
     return this.getAuthMode() === 'safe_proxy' ? 2 : 0;
   }
 
@@ -221,8 +224,8 @@ export class AuthManager {
         )
       : undefined;
 
-    if (signatureType === 2) {
-      return new ClobClient(CLOB_URL, CHAIN_ID, signer, apiCreds, 2, this.getFunderAddress());
+    if (signatureType !== 0) {
+      return new ClobClient(CLOB_URL, CHAIN_ID, signer, apiCreds, signatureType, this.getFunderAddress());
     }
 
     return new ClobClient(CLOB_URL, CHAIN_ID, signer, apiCreds, 0);

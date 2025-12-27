@@ -172,7 +172,7 @@ function isUnauthorizedPayload(payload: any): boolean {
  */
 async function validateCredentialsManually(
   apiCreds: { key: string; secret: string; passphrase: string },
-  signatureType: 0 | 2,
+  signatureType: 0 | 1 | 2,
   polyAddressHeader: string
 ): Promise<{ ok: boolean; apiKeys?: string[]; error?: string }> {
   const toUrlSafeBase64KeepPadding = (b64: string) => b64.replace(/\+/g, '-').replace(/\//g, '_');
@@ -267,12 +267,18 @@ export async function deriveApiCredentials(): Promise<{ key: string; secret: str
   // Hard stop: Safe proxy wallets commonly cannot create/derive via API (HTTP 400: "Could not create api key").
   // In that case, credentials must be created manually and configured.
   const signer = new Wallet(config.polymarket.privateKey);
-  const signatureType: 0 | 2 = signer.address.toLowerCase() === config.polymarket.address.toLowerCase() ? 0 : 2;
+  const override = (config.polymarket as any).signatureType as (0 | 1 | 2 | undefined);
+  const signatureType: 0 | 1 | 2 =
+    override === 0 || override === 1 || override === 2
+      ? override
+      : signer.address.toLowerCase() === config.polymarket.address.toLowerCase()
+        ? 0
+        : 2;
 
-  if (signatureType === 2) {
+  if (signatureType !== 0) {
     deriveAttempts = MAX_DERIVE_ATTEMPTS;
     throw new Error(
-      'Auto-derive is disabled for Safe proxy wallets. Create API credentials for the funder (Safe) and set POLYMARKET_API_KEY/POLYMARKET_API_SECRET/POLYMARKET_PASSPHRASE.'
+      'Auto-derive is disabled for proxy wallets (signatureType 1/2). Create API credentials in the Polymarket UI and set POLYMARKET_API_KEY/POLYMARKET_API_SECRET/POLYMARKET_PASSPHRASE.'
     );
   }
 
@@ -391,13 +397,22 @@ async function getClient(): Promise<ClobClient> {
 
   const signer = new Wallet(config.polymarket.privateKey);
   const signerAddress = signer.address;
-  const signatureType: 0 | 2 = signerAddress.toLowerCase() === config.polymarket.address.toLowerCase() ? 0 : 2;
+
+  const override = (config.polymarket as any).signatureType as (0 | 1 | 2 | undefined);
+  const signatureType: 0 | 1 | 2 =
+    override === 0 || override === 1 || override === 2
+      ? override
+      : signerAddress.toLowerCase() === config.polymarket.address.toLowerCase()
+        ? 0
+        : 2;
+
   // Per Polymarket docs, POLY_ADDRESS header must be the Polygon SIGNER address (EOA)
-  // even when trading with a Safe (funder).
+  // even when trading with a proxy wallet (signatureType 1/2).
   const polyAddressHeader = signerAddress;
 
   console.log(`📍 Signer (from private key): ${signerAddress}`);
   console.log(`📍 POLYMARKET_ADDRESS (funder): ${config.polymarket.address}`);
+  console.log(`📍 Signature type: ${signatureType}${override !== undefined ? ' (override)' : ''}`);
   
   // Use derived creds if available, otherwise use config
   let apiCreds = derivedCreds || {
@@ -411,14 +426,14 @@ async function getClient(): Promise<ClobClient> {
   console.log(`📍 POLY_ADDRESS (auth header): ${polyAddressHeader}`);
   
   // Critical validation:
-  // - signatureType=2: signer=EOA (signs), funder=Safe (owns funds & API keys)
   // - signatureType=0: regular EOA
+  // - signatureType=1/2: proxy wallet (funder holds funds; signer signs)
   if (signatureType === 0) {
     console.log(`✅ Regular account mode (Signer == Funder)`);
   } else {
-    console.log(`✅ Safe proxy mode (Signer ≠ Funder)`);
+    console.log(`✅ Proxy wallet mode (Signer ≠ Funder)`);
     console.log(`   Signer (EOA): ${signerAddress}`);
-    console.log(`   Funder (Safe): ${config.polymarket.address}`);
+    console.log(`   Funder: ${config.polymarket.address}`);
   }
   
   // Log current system time for timestamp debugging
@@ -461,13 +476,13 @@ async function getClient(): Promise<ClobClient> {
     passphrase: apiCreds.passphrase,
   } as any;
 
-  clobClient = signatureType === 2
-    ? new ClobClient(CLOB_URL, CHAIN_ID, signer, sdkCreds, 2, config.polymarket.address)
-    : new ClobClient(CLOB_URL, CHAIN_ID, signer, sdkCreds, 0);
+  clobClient = signatureType === 0
+    ? new ClobClient(CLOB_URL, CHAIN_ID, signer, sdkCreds, 0)
+    : new ClobClient(CLOB_URL, CHAIN_ID, signer, sdkCreds, signatureType, config.polymarket.address);
 
   console.log(`✅ CLOB client initialized`);
   console.log(`   Signer (EOA): ${signerAddress}`);
-  console.log(`   Funder (Safe): ${config.polymarket.address}`);
+  console.log(`   Funder: ${config.polymarket.address}`);
 
   // 🔐 Validate credentials with an authenticated API call
   // We use a manual fetch to keep the signing logic explicit and easy to debug.
@@ -502,12 +517,12 @@ async function getClient(): Promise<ClobClient> {
     if (status) console.error(`   HTTP Status: ${status}`);
     if (data) console.error(`   Response: ${JSON.stringify(data)}`);
 
-    // For Safe proxy: no auto-derive, just fail clearly
-    if (signatureType === 2) {
-      console.error(`\n   ❌ Safe proxy mode: credentials invalid.`);
-      console.error(`      1. Log into Polymarket with the Safe wallet (${config.polymarket.address})`);
-      console.error(`      2. Open DevTools → Application → Local Storage`);
-      console.error(`      3. Find key/secret/passphrase and update /home/deploy/secrets/local-runner.env`);
+    // For proxy wallets (signatureType 1/2): no auto-derive, just fail clearly
+    if (signatureType !== 0) {
+      console.error(`\n   ❌ Proxy wallet mode: credentials invalid.`);
+      console.error(`      1. Verify signature type. For Google/Magic accounts set POLYMARKET_SIGNATURE_TYPE=1.`);
+      console.error(`      2. Ensure API key/secret/passphrase were created for this funder: ${config.polymarket.address}`);
+      console.error(`      3. Update /home/deploy/secrets/local-runner.env`);
       console.error(`      4. Restart: docker compose restart runner`);
     }
     // Keep clobClient set (don't null it) so we don't crash, but orders will fail
@@ -849,10 +864,19 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
 
   const attemptBalanceFetch = async (apiCreds: { key: string; secret: string; passphrase: string }) => {
     const signer = new Wallet(config.polymarket.privateKey);
-    const signatureType: 0 | 2 = signer.address.toLowerCase() === config.polymarket.address.toLowerCase() ? 0 : 2;
-    const polyAddressHeader = signatureType === 2 ? config.polymarket.address : signer.address;
+    const override = (config.polymarket as any).signatureType as (0 | 1 | 2 | undefined);
+    const signatureType: 0 | 1 | 2 =
+      override === 0 || override === 1 || override === 2
+        ? override
+        : signer.address.toLowerCase() === config.polymarket.address.toLowerCase()
+          ? 0
+          : 2;
 
-    const addressParam = signatureType === 2 ? config.polymarket.address : signer.address;
+    // Per Polymarket docs, POLY_ADDRESS is always the Polygon signer address.
+    const polyAddressHeader = signer.address;
+
+    // Balance is held by the funder for proxy wallet modes.
+    const addressParam = signatureType === 0 ? signer.address : config.polymarket.address;
 
     const pathWithQuery = `/balance-allowance?asset_type=0&signature_type=${signatureType}&address=${encodeURIComponent(
       addressParam
