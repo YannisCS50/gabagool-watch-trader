@@ -35,6 +35,12 @@ export const STRATEGY = {
     triggerCombined: 0.97, // Hedge bij < 97¢ (3% edge minimum)
     notional: config.trading.maxNotionalPerTrade,
   },
+  // PRE-HEDGE: When opening, immediately place limit order for hedge
+  preHedge: {
+    enabled: true,
+    targetCombined: 0.96, // Target combined price for pre-hedge (4% edge)
+    maxHedgePrice: 0.58,  // Never pay more than 58¢ for hedge side
+  },
   accumulate: {
     triggerCombined: 0.96, // Accumulate bij < 96¢ (4% edge)
     notional: config.trading.maxNotionalPerTrade,
@@ -248,4 +254,35 @@ export function checkLiquidityForAccumulate(
   }
   
   return { canProceed: true };
+}
+
+/**
+ * Calculate the pre-hedge price based on opening price.
+ * If we open UP at X¢, we want DOWN at (target_combined - X)¢
+ * Example: open UP at 40¢, target 96¢ combined → hedge DOWN at 56¢
+ */
+export function calculatePreHedgePrice(
+  openingPrice: number,
+  openingSide: Outcome
+): { hedgeSide: Outcome; hedgePrice: number; reasoning: string } | null {
+  if (!STRATEGY.preHedge.enabled) return null;
+  
+  const hedgeSide: Outcome = openingSide === 'UP' ? 'DOWN' : 'UP';
+  const targetHedgePrice = STRATEGY.preHedge.targetCombined - openingPrice;
+  
+  // Round to nearest cent
+  const hedgePrice = Math.round(targetHedgePrice * 100) / 100;
+  
+  // Validate hedge price is within acceptable range
+  if (hedgePrice < STRATEGY.entry.minPrice || hedgePrice > STRATEGY.preHedge.maxHedgePrice) {
+    return null;
+  }
+  
+  const edgePct = ((1 - STRATEGY.preHedge.targetCombined) * 100).toFixed(1);
+  
+  return {
+    hedgeSide,
+    hedgePrice,
+    reasoning: `Pre-hedge ${hedgeSide} @ ${(hedgePrice * 100).toFixed(0)}¢ (target ${edgePct}% edge)`,
+  };
 }
