@@ -1,6 +1,93 @@
 import * as dotenv from 'dotenv';
 import fs from 'node:fs';
 
+// ============================================
+// ENV FILE VALIDATOR
+// Detects duplicate keys and other config issues
+// ============================================
+
+interface EnvValidationResult {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+  duplicates: Map<string, number>;
+}
+
+function validateEnvFile(filePath: string): EnvValidationResult {
+  const result: EnvValidationResult = {
+    valid: true,
+    errors: [],
+    warnings: [],
+    duplicates: new Map(),
+  };
+
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const lines = content.split('\n');
+    const keyCount = new Map<string, number>();
+    const keyLines = new Map<string, number[]>();
+
+    lines.forEach((line, lineNum) => {
+      const trimmed = line.trim();
+      
+      // Skip empty lines and comments
+      if (!trimmed || trimmed.startsWith('#')) return;
+      
+      // Parse KEY=value
+      const match = trimmed.match(/^([A-Z_][A-Z0-9_]*)=/i);
+      if (match) {
+        const key = match[1];
+        const count = (keyCount.get(key) || 0) + 1;
+        keyCount.set(key, count);
+        
+        const existingLines = keyLines.get(key) || [];
+        existingLines.push(lineNum + 1); // 1-indexed
+        keyLines.set(key, existingLines);
+      }
+    });
+
+    // Check for duplicates
+    for (const [key, count] of keyCount) {
+      if (count > 1) {
+        result.duplicates.set(key, count);
+        const lines = keyLines.get(key)!;
+        result.errors.push(
+          `❌ DUPLICATE KEY: "${key}" appears ${count} times (lines ${lines.join(', ')})`
+        );
+        result.valid = false;
+      }
+    }
+
+    // Check for critical keys
+    const criticalKeys = [
+      'POLYMARKET_PRIVATE_KEY',
+      'POLYMARKET_ADDRESS',
+      'POLYMARKET_API_KEY',
+      'POLYMARKET_API_SECRET',
+      'POLYMARKET_PASSPHRASE',
+      'BACKEND_URL',
+      'RUNNER_SHARED_SECRET',
+    ];
+
+    for (const key of criticalKeys) {
+      if (!keyCount.has(key)) {
+        result.warnings.push(`⚠️  Missing key: ${key}`);
+      }
+    }
+
+    // Check for Windows line endings (CRLF)
+    if (content.includes('\r\n')) {
+      result.warnings.push('⚠️  File contains Windows line endings (CRLF) - may cause parsing issues');
+    }
+
+  } catch (err) {
+    result.errors.push(`❌ Failed to read env file: ${err}`);
+    result.valid = false;
+  }
+
+  return result;
+}
+
 // Priority for env file loading in Docker: ENV_FILE > DOTENV_CONFIG_PATH > default server path.
 // In Docker, env_file directive sets env vars BEFORE the process starts, so we should NOT
 // override with a different .env file from the filesystem.
@@ -25,6 +112,28 @@ if (envFromDockerOrCli) {
   for (const p of envCandidates) {
     try {
       if (fs.existsSync(p)) {
+        // VALIDATE before loading
+        console.log(`\n🔍 Validating env file: ${p}`);
+        const validation = validateEnvFile(p);
+        
+        // Print all errors and warnings
+        for (const err of validation.errors) {
+          console.error(err);
+        }
+        for (const warn of validation.warnings) {
+          console.warn(warn);
+        }
+        
+        // FAIL HARD on duplicates
+        if (!validation.valid) {
+          console.error('\n' + '='.repeat(60));
+          console.error('❌ ENV FILE VALIDATION FAILED');
+          console.error('='.repeat(60));
+          console.error('\nFix the duplicate keys in your env file before continuing.');
+          console.error('Each key should appear exactly ONCE.\n');
+          process.exit(1);
+        }
+        
         dotenv.config({ path: p });
         loadedEnvPath = p;
         break;
