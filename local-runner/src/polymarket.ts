@@ -681,12 +681,11 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
   try {
     const client = await getClient();
     
-    // Use the CLOB API to get balance allowance for USDC (COLLATERAL)
-    // The API requires the actual token address, not just asset_type
+    // Use the CLOB API to get balance/allowance for USDC collateral.
+    // IMPORTANT: for collateral, Polymarket expects ONLY asset_type (no token_id/assetAddress).
     const balanceAllowance = await client.getBalanceAllowance({
       asset_type: 0, // AssetType.COLLATERAL = 0 (USDC)
-      token_id: USDC_ADDRESS, // USDC contract address on Polygon
-    });
+    } as any);
     
     // The balance is returned as a string, convert to number
     const balance = parseFloat(balanceAllowance?.balance || '0');
