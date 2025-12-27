@@ -120,9 +120,39 @@ function initializeRedeemer(): void {
   wallet = new Wallet(config.polymarket.privateKey, provider);
   ctfContract = new Contract(CTF_ADDRESS, CTF_ABI, wallet);
 
+  const signerAddress = wallet.address.toLowerCase();
+  const proxyAddress = (config.polymarket.address || '').toLowerCase();
+
   console.log(`✅ Redeemer initialized`);
   console.log(`   📍 Signer (EOA): ${wallet.address}`);
   console.log(`   📍 Proxy wallet (config): ${config.polymarket.address || 'not set'}`);
+
+  // CRITICAL: Check if signer matches proxy wallet
+  if (proxyAddress && signerAddress !== proxyAddress) {
+    console.error('\n' + '⚠️'.repeat(30));
+    console.error('🚨 CRITICAL WALLET MISMATCH DETECTED!');
+    console.error('='.repeat(60));
+    console.error(`   Your POLYMARKET_PRIVATE_KEY resolves to: ${wallet.address}`);
+    console.error(`   Your POLYMARKET_ADDRESS is set to:       ${config.polymarket.address}`);
+    console.error('');
+    console.error('   These addresses DO NOT MATCH!');
+    console.error('');
+    console.error('   CTF redeemPositions() only works for msg.sender.');
+    console.error('   If positions are held by POLYMARKET_ADDRESS but you sign');
+    console.error('   with a different key, claims will silently fail (0 events).');
+    console.error('');
+    console.error('   FIX: Update your .env so that:');
+    console.error('   - POLYMARKET_PRIVATE_KEY is the private key of the wallet');
+    console.error('     that actually holds the CTF position tokens');
+    console.error('   - OR set POLYMARKET_ADDRESS to match your signer address');
+    console.error('='.repeat(60));
+    console.error('⚠️'.repeat(30) + '\n');
+    
+    throw new Error(
+      `Signer mismatch: POLYMARKET_ADDRESS=${config.polymarket.address} but PRIVATE_KEY resolves to ${wallet.address}. ` +
+      `You can only redeem from the address that holds the position tokens (msg.sender).`
+    );
+  }
 }
 
 // ============================================================================
