@@ -3,11 +3,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { 
-  Activity, 
-  RefreshCw, 
-  CheckCircle, 
-  XCircle, 
+import {
+  Activity,
+  RefreshCw,
+  CheckCircle,
+  XCircle,
   AlertTriangle,
   Clock,
   Zap,
@@ -16,6 +16,7 @@ import {
   Trash2
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
+import { formatUsdcFromBaseUnits } from '@/lib/utils';
 import { format } from 'date-fns';
 
 interface LogEntry {
@@ -65,7 +66,7 @@ export function RunnerActivityLog() {
           timestamp: new Date(hb.last_heartbeat),
           type: 'heartbeat',
           message: `Runner ${hb.runner_id.substring(0, 20)}... heartbeat`,
-          details: `Status: ${hb.status} | Markets: ${hb.markets_count} | Trades: ${hb.trades_count} | Balance: $${hb.balance}`,
+          details: `Status: ${hb.status} | Markets: ${hb.markets_count} | Trades: ${hb.trades_count} | Balance: ${formatUsdcFromBaseUnits(hb.balance)}`,
           status: hb.status === 'active' ? 'success' : hb.status === 'offline' ? 'error' : 'warning'
         });
       });

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { supabase } from '@/integrations/supabase/client';
+import { formatUsdcFromBaseUnits } from '@/lib/utils';
 import { Activity, DollarSign, TrendingUp, TrendingDown, Clock, Cpu, AlertCircle, CheckCircle2, RefreshCw } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 
@@ -192,7 +193,7 @@ export function LiveRunnerStatus() {
               Balance
             </div>
             <div className="text-lg font-mono font-semibold">
-              ${(heartbeat?.balance || 0).toFixed(2)}
+              {formatUsdcFromBaseUnits(heartbeat?.balance)}
             </div>
           </div>
           <div className="bg-background/50 rounded-lg p-3 space-y-1">
