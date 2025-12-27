@@ -1,4 +1,39 @@
-import 'dotenv/config';
+import * as dotenv from 'dotenv';
+import fs from 'node:fs';
+
+// Ensure we load the same env file in all run modes (docker + manual npm start).
+// Priority:
+// 1) DOTENV_CONFIG_PATH (dotenv convention)
+// 2) ENV_FILE (our convenience)
+// 3) /home/deploy/secrets/local-runner.env (default server path)
+// 4) .env (project default)
+const envCandidates = [
+  process.env.DOTENV_CONFIG_PATH,
+  process.env.ENV_FILE,
+  '/home/deploy/secrets/local-runner.env',
+  '.env',
+].filter(Boolean) as string[];
+
+let loadedEnvPath: string | null = null;
+for (const p of envCandidates) {
+  try {
+    if (fs.existsSync(p)) {
+      dotenv.config({ path: p });
+      loadedEnvPath = p;
+      break;
+    }
+  } catch {
+    // ignore
+  }
+}
+
+if (!loadedEnvPath) {
+  // Fall back to default dotenv behavior (current working directory)
+  dotenv.config();
+  loadedEnvPath = 'default';
+}
+
+console.log(`✅ Loaded env from: ${loadedEnvPath}`);
 
 export const config = {
   backend: {
