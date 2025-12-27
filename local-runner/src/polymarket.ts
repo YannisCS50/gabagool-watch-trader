@@ -73,6 +73,17 @@ function isUnauthorizedError(err: any): boolean {
   return false;
 }
 
+function isUnauthorizedPayload(payload: any): boolean {
+  if (!payload) return false;
+  const status = payload?.status;
+  const err = payload?.error;
+
+  if (status === 401) return true;
+  if (typeof err === 'string' && err.toLowerCase().includes('unauthorized')) return true;
+
+  return false;
+}
+
 /**
  * Derive fresh API credentials using the private key.
  * This creates new CLOB API keys programmatically.
@@ -203,11 +214,16 @@ async function getClient(): Promise<ClobClient> {
   // 🔐 Validate credentials with an authenticated API call BEFORE any orders
   console.log(`\n🔐 VALIDATING CREDENTIALS...`);
   try {
-    // getApiKeys() is an authenticated endpoint - if this fails, credentials are wrong
+    // getApiKeys() sometimes returns an error payload instead of throwing.
     const apiKeys = await clobClient.getApiKeys();
+
+    if (isUnauthorizedPayload(apiKeys)) {
+      throw { status: 401, data: apiKeys, message: 'Unauthorized/Invalid api key' };
+    }
+
     console.log(`✅ API credentials VALID!`);
     console.log(`   API keys response:`, JSON.stringify(apiKeys, null, 2));
-    
+
     // Also verify the API key belongs to the right address
     if (apiKeys && Array.isArray(apiKeys)) {
       const matchingKey = apiKeys.find((k: any) => k.apiKey === apiCreds.key);
@@ -337,19 +353,32 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
     console.log(`   - side: ${side}`);
     console.log(`   - orderType: ${orderType}`);
     
-    const response = await client.createAndPostOrder(
-      {
-        tokenID: order.tokenId,
-        price: order.price,
-        size: order.size,
-        side,
-      },
-      {
-        tickSize: '0.01', // Standard tick size for most markets
-        negRisk: false,   // Set based on market type
-      },
-      orderType
-    );
+    const postOnce = async (c: ClobClient) =>
+      c.createAndPostOrder(
+        {
+          tokenID: order.tokenId,
+          price: order.price,
+          size: order.size,
+          side,
+        },
+        {
+          tickSize: '0.01', // Standard tick size for most markets
+          negRisk: false,   // Set based on market type
+        },
+        orderType
+      );
+
+    let response = await postOnce(client);
+
+    // The SDK may return an error payload instead of throwing.
+    const firstResp = (response as any)?.data ?? response;
+    if (isUnauthorizedPayload(firstResp)) {
+      console.log(`\n🔄 Order request unauthorized - auto-deriving credentials and retrying once...`);
+      clobClient = null;
+      derivedCreds = await deriveApiCredentials();
+      const freshClient = await getClient();
+      response = await postOnce(freshClient);
+    }
 
     // Log EVERYTHING about the response
     console.log(`\n📋 RAW RESPONSE TYPE: ${typeof response}`);
