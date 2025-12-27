@@ -50,14 +50,48 @@ function initializeRedeemer(): void {
   if (wallet) return; // Already initialized
 
   console.log('🔧 Initializing redeemer...');
-  
+
   provider = new providers.JsonRpcProvider(POLYGON_RPC);
   wallet = new Wallet(config.polymarket.privateKey, provider);
   ctfContract = new Contract(CTF_ADDRESS, CTF_ABI, wallet);
-  
+
   console.log(`✅ Redeemer initialized with address: ${wallet.address}`);
 }
 
+async function getRedeemGasOverrides(): Promise<
+  | { maxFeePerGas: ethers.BigNumber; maxPriorityFeePerGas: ethers.BigNumber }
+  | undefined
+> {
+  if (!provider) return;
+
+  const floorPriority = ethers.utils.parseUnits('30', 'gwei');
+  const floorMaxFee = ethers.utils.parseUnits('60', 'gwei');
+
+  try {
+    const feeData = await provider.getFeeData();
+
+    let maxPriority = feeData.maxPriorityFeePerGas || feeData.gasPrice || floorPriority;
+    if (maxPriority.lt(floorPriority)) maxPriority = floorPriority;
+
+    let maxFee = feeData.maxFeePerGas || feeData.gasPrice || floorMaxFee;
+    if (maxFee.lt(floorMaxFee)) maxFee = floorMaxFee;
+
+    if (maxFee.lt(maxPriority.mul(2))) {
+      maxFee = maxPriority.mul(2);
+    }
+
+    console.log(
+      `⛽ Redeem gas: priority=${ethers.utils.formatUnits(maxPriority, 'gwei')} gwei, max=${ethers.utils.formatUnits(maxFee, 'gwei')} gwei`
+    );
+
+    return { maxFeePerGas: maxFee, maxPriorityFeePerGas: maxPriority };
+  } catch (e: any) {
+    console.log(
+      `⚠️ Failed to fetch fee data, using floor gas settings: ${e?.message || e}`
+    );
+    return { maxFeePerGas: floorMaxFee, maxPriorityFeePerGas: floorPriority };
+  }
+}
 /**
  * Fetch all redeemable positions from Polymarket Data API
  */
@@ -144,13 +178,43 @@ async function redeemPosition(position: RedeemablePosition): Promise<boolean> {
     const parentCollectionId = ethers.utils.hexZeroPad('0x00', 32);
 
     console.log(`   📤 REDEEM: sending redeemPositions transaction...`);
-    
-    const tx = await ctfContract!.redeemPositions(
-      USDC_ADDRESS,
-      parentCollectionId,
-      conditionId,
-      indexSets
-    );
+
+    const overrides = await getRedeemGasOverrides();
+
+    let tx;
+    try {
+      tx = await ctfContract!.redeemPositions(
+        USDC_ADDRESS,
+        parentCollectionId,
+        conditionId,
+        indexSets,
+        overrides
+      );
+    } catch (error: any) {
+      const msg = error?.message || String(error);
+
+      // Public RPC often rejects low tip caps; bump gas and retry once
+      if (msg.includes('gas price below minimum') || msg.includes('tip cap')) {
+        const bumped = {
+          maxPriorityFeePerGas: ethers.utils.parseUnits('40', 'gwei'),
+          maxFeePerGas: ethers.utils.parseUnits('100', 'gwei'),
+        };
+
+        console.log(
+          `   ⛽ REDEEM: gas too low for RPC, retrying with priority=40 gwei / max=100 gwei`
+        );
+
+        tx = await ctfContract!.redeemPositions(
+          USDC_ADDRESS,
+          parentCollectionId,
+          conditionId,
+          indexSets,
+          bumped
+        );
+      } else {
+        throw error;
+      }
+    }
 
     console.log(`   ⏳ REDEEM: tx sent ${tx.hash}`);
     
