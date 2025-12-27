@@ -549,6 +549,39 @@ Deno.serve(async (req) => {
       // Per-market cooldown check (longer to respect rate limits)
       if (ctx.lastTradeAtMs && nowMs - ctx.lastTradeAtMs < STRATEGY.cooldownMs) return;
 
+      // CHECK FOR ANY PENDING ORDERS ON THIS MARKET (prevent race conditions)
+      const { data: pendingOrders } = await supabase
+        .from('order_queue')
+        .select('id, outcome')
+        .eq('market_slug', slug)
+        .in('status', ['pending', 'processing'])
+        .limit(1);
+      
+      if (pendingOrders && pendingOrders.length > 0) {
+        if (evaluationCount % 10 === 0) log(`⏸️ WAIT: Pending order on ${slug.slice(-15)}, skipping evaluation`);
+        return;
+      }
+
+      // REFRESH POSITION FROM DATABASE (not optimistic local state)
+      const { data: confirmedTrades } = await supabase
+        .from('live_trades')
+        .select('outcome, shares, total')
+        .eq('market_slug', slug);
+      
+      // Reset and recalculate from confirmed trades only
+      ctx.position = { upShares: 0, downShares: 0, upInvested: 0, downInvested: 0 };
+      if (confirmedTrades) {
+        for (const trade of confirmedTrades) {
+          if (trade.outcome === 'UP') {
+            ctx.position.upShares += trade.shares;
+            ctx.position.upInvested += trade.total;
+          } else {
+            ctx.position.downShares += trade.shares;
+            ctx.position.downInvested += trade.total;
+          }
+        }
+      }
+
       // Time check
       if (ctx.remainingSeconds < STRATEGY.entry.minSecondsRemaining) {
         if (evaluationCount % 20 === 0) log(`⏭️ SKIP: Too close to expiry (${ctx.remainingSeconds}s)`);
@@ -728,20 +761,6 @@ Deno.serve(async (req) => {
 
       log(`📋 QUEUING: ${outcome} ${shares} @ ${(price*100).toFixed(0)}¢ on ${market.slug.slice(-20)}`);
 
-      // Check if we already have a pending order for this market+outcome (prevent duplicates)
-      const { data: existingOrders } = await supabase
-        .from('order_queue')
-        .select('id')
-        .eq('market_slug', market.slug)
-        .eq('outcome', outcome)
-        .in('status', ['pending', 'processing'])
-        .limit(1);
-
-      if (existingOrders && existingOrders.length > 0) {
-        log(`⏭️ SKIP: Already have pending order for ${outcome} on ${market.slug}`);
-        return false;
-      }
-
       // Queue order for local-runner to execute (edge functions get blocked by Cloudflare)
       const { error: queueError } = await supabase.from('order_queue').insert({
         market_slug: market.slug,
@@ -762,16 +781,11 @@ Deno.serve(async (req) => {
         return false;
       }
 
-      // Update local position (optimistic - local-runner will confirm)
-      if (outcome === "UP") {
-        ctx.position.upShares += shares;
-        ctx.position.upInvested += total;
-      } else {
-        ctx.position.downShares += shares;
-        ctx.position.downInvested += total;
-      }
+      // NO optimistic update - we refresh from DB on next evaluation
+      // This prevents race conditions and ensures decisions are based on confirmed fills
       ctx.lastTradeAtMs = Date.now();
       lastGlobalOrderAtMs = Date.now(); // Update global cooldown
+      tradeCount++;
       const combined = (ctx.book.up.ask || 0) + (ctx.book.down.ask || 0);
       log(`✅ QUEUED #${tradeCount}: ${outcome} ${shares}@${(price*100).toFixed(0)}¢ | Combined: ${(combined*100).toFixed(0)}¢`);
 
