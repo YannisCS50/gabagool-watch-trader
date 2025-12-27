@@ -47,6 +47,10 @@ const orderbookCache = new Map<string, boolean>();
 // Dynamic credentials (can be auto-derived)
 let derivedCreds: { key: string; secret: string; passphrase: string } | null = null;
 
+// Prevent infinite auth loops: we only attempt auto-derive a limited number of times per process.
+let deriveAttempts = 0;
+const MAX_DERIVE_ATTEMPTS = 1;
+
 async function orderbookExists(tokenId: string): Promise<boolean> {
   if (orderbookCache.has(tokenId)) {
     return orderbookCache.get(tokenId)!;
@@ -170,24 +174,32 @@ function isUnauthorizedPayload(payload: any): boolean {
  */
 export async function deriveApiCredentials(): Promise<{ key: string; secret: string; passphrase: string }> {
   console.log(`\n🔄 AUTO-DERIVING NEW API CREDENTIALS...`);
-  
+
+  // Hard stop: Safe proxy wallets commonly cannot create/derive via API (HTTP 400: "Could not create api key").
+  // In that case, credentials must be created manually and configured.
   const signer = new Wallet(config.polymarket.privateKey);
-  
+  const signatureType: 0 | 2 = signer.address.toLowerCase() === config.polymarket.address.toLowerCase() ? 0 : 2;
+
+  if (signatureType === 2) {
+    deriveAttempts = MAX_DERIVE_ATTEMPTS;
+    throw new Error(
+      'Auto-derive is disabled for Safe proxy wallets. Create API credentials for the funder (Safe) and set POLYMARKET_API_KEY/POLYMARKET_API_SECRET/POLYMARKET_PASSPHRASE.'
+    );
+  }
+
+  if (deriveAttempts >= MAX_DERIVE_ATTEMPTS) {
+    throw new Error(`Auto-derive blocked (max ${MAX_DERIVE_ATTEMPTS} attempt per process).`);
+  }
+  deriveAttempts += 1;
+
   // Create a temporary client without API creds to derive new ones
-  const tempClient = new ClobClient(
-    CLOB_URL,
-    CHAIN_ID,
-    signer,
-    undefined, // No creds yet
-    2, // signatureType for Safe proxy
-    config.polymarket.address
-  );
+  const tempClient = new ClobClient(CLOB_URL, CHAIN_ID, signer, undefined, 0);
   
   try {
     const anyClient = tempClient as any;
 
     // IMPORTANT: Polymarket sometimes rejects *creating* new keys (HTTP 400: "Could not create api key")
-    // but still allows deriving existing creds. Prefer "createOrDerive" when available.
+    // and some SDK versions return error payloads instead of throwing.
     let newCreds: any;
 
     if (typeof anyClient.createOrDeriveApiKey === 'function') {
@@ -199,6 +211,11 @@ export async function deriveApiCredentials(): Promise<{ key: string; secret: str
     } else {
       console.log(`   🔑 Creating new API key (createApiKey)...`);
       newCreds = await anyClient.createApiKey();
+    }
+
+    // SDK may return { status, error } instead of throwing.
+    if (newCreds?.error || (typeof newCreds?.status === 'number' && newCreds.status >= 400)) {
+      throw new Error(String(newCreds?.error || `derive failed (status=${newCreds?.status})`));
     }
 
     const apiKey = newCreds?.apiKey ?? newCreds?.key;
@@ -219,10 +236,8 @@ export async function deriveApiCredentials(): Promise<{ key: string; secret: str
 
     const secret = typeof secretRaw === 'string' ? normalizeToBase64(secretRaw) : secretRaw;
 
-    // Validate response - SDK may return error payload instead of throwing
     if (!apiKey || !secret || !passphrase) {
-      const errPayload = newCreds as any;
-      throw new Error(errPayload?.error || 'derive/create returned invalid response - manual key creation required');
+      throw new Error('derive/create returned invalid response - manual key creation required');
     }
 
     console.log(`   ✅ API credentials ready!`);
@@ -230,7 +245,6 @@ export async function deriveApiCredentials(): Promise<{ key: string; secret: str
     console.log(`      Secret length: ${String(secret)?.length || 0} chars`);
     console.log(`      Passphrase length: ${String(passphrase)?.length || 0} chars`);
 
-    // Store in module-level cache
     derivedCreds = {
       key: apiKey,
       secret: String(secret),
@@ -239,16 +253,12 @@ export async function deriveApiCredentials(): Promise<{ key: string; secret: str
 
     return derivedCreds;
   } catch (error: any) {
-    console.error(`   ❌ Failed to derive credentials: ${error?.message || error}`);
-    console.error(`\n   🚨 MANUAL KEY CREATION REQUIRED:`);
-    console.error(`      1. Go to https://polymarket.com and log in with the wallet that owns the funds (your Safe / funder).`);
-    console.error(`      2. Open DevTools (F12) → Application → Local Storage`);
-    console.error(`      3. Find the object that contains: key, secret, passphrase`);
-    console.error(`      4. Update /home/deploy/secrets/local-runner.env with:`);
-    console.error(`         POLYMARKET_API_KEY=<key>`);
-    console.error(`         POLYMARKET_API_SECRET=<secret>`);
-    console.error(`         POLYMARKET_PASSPHRASE=<passphrase>`);
-    console.error(`      5. Restart: docker compose restart runner`);
+    const msg = String(error?.message || error);
+    if (msg.toLowerCase().includes('could not create api key')) {
+      deriveAttempts = MAX_DERIVE_ATTEMPTS;
+    }
+
+    console.error(`   ❌ Failed to derive credentials: ${msg}`);
     throw error;
   }
 }
@@ -260,22 +270,19 @@ export async function deriveApiCredentials(): Promise<{ key: string; secret: str
  */
 export async function ensureValidCredentials(): Promise<boolean> {
   console.log(`\n🔐 VALIDATING API CREDENTIALS AT STARTUP...`);
-  
+
   try {
-    // Force getClient() which validates credentials and auto-derives if needed
+    // Initializes client and validates API creds via getApiKeys()
     await getClient();
-    
-    // Double-check with a balance call
+
+    // One balance check; do NOT loop auto-derive here (avoid infinite loops on Safe proxy accounts)
     const balanceResult = await getBalance();
     if (balanceResult.error?.includes('401')) {
-      console.log(`⚠️ Balance check got 401, triggering auto-derive...`);
-      derivedCreds = await deriveApiCredentials();
-      // Reset client so next call uses new creds
-      clobClient = null;
-      await getClient();
-      return true;
+      console.error(`❌ Balance check returned 401 after credential validation.`);
+      console.error(`   This usually means POLY_ADDRESS/address mismatch (EOA vs Safe) or stale API key for this account.`);
+      return false;
     }
-    
+
     return true;
   } catch (error: any) {
     console.error(`❌ Credential validation failed: ${error?.message || error}`);
@@ -295,6 +302,8 @@ async function getClient(): Promise<ClobClient> {
 
   const signer = new Wallet(config.polymarket.privateKey);
   const signerAddress = signer.address;
+  const signatureType: 0 | 2 = signerAddress.toLowerCase() === config.polymarket.address.toLowerCase() ? 0 : 2;
+  const polyAddressHeader = signatureType === 2 ? config.polymarket.address : signerAddress;
 
   console.log(`📍 Signer (from private key): ${signerAddress}`);
   console.log(`📍 POLYMARKET_ADDRESS (funder): ${config.polymarket.address}`);
@@ -308,20 +317,15 @@ async function getClient(): Promise<ClobClient> {
   
   console.log(`📍 API Key: ${apiCreds.key?.slice(0, 12) || 'NOT SET'}...`);
   console.log(`📍 Passphrase: ${apiCreds.passphrase?.slice(0, 12) || 'NOT SET'}...`);
+  console.log(`📍 POLY_ADDRESS (auth header): ${polyAddressHeader}`);
   
-  // Critical validation: for signature type 2 (Safe proxy):
-  // - signer = your EOA (private key holder, does the signing)
-  // - funder = your Polymarket Safe wallet address (where funds are)
-  // - API key must be registered for the funder address
-  
-  if (signerAddress.toLowerCase() === config.polymarket.address.toLowerCase()) {
-    console.log(`⚠️ WARNING: Signer and funder are the SAME address.`);
-    console.log(`   This is only correct if you're NOT using a Safe proxy wallet.`);
-    console.log(`   For Polymarket, you typically have:`);
-    console.log(`   - Signer: your EOA (MetaMask wallet)`);
-    console.log(`   - Funder: your Polymarket Safe proxy`);
+  // Critical validation:
+  // - signatureType=2: signer=EOA (signs), funder=Safe (owns funds & API keys)
+  // - signatureType=0: regular EOA
+  if (signatureType === 0) {
+    console.log(`✅ Regular account mode (Signer == Funder)`);
   } else {
-    console.log(`✅ Signer ≠ Funder (correct for Safe proxy setup)`);
+    console.log(`✅ Safe proxy mode (Signer ≠ Funder)`);
     console.log(`   Signer (EOA): ${signerAddress}`);
     console.log(`   Funder (Safe): ${config.polymarket.address}`);
   }
@@ -331,30 +335,36 @@ async function getClient(): Promise<ClobClient> {
   console.log(`   Unix timestamp (seconds): ${Math.floor(Date.now() / 1000)}`);
   console.log(`${'='.repeat(60)}\n`);
 
-  // Check if we have valid credentials, if not try to derive
+  // Check if we have valid credentials, if not try to derive (regular accounts only)
   const hasValidCreds = apiCreds.key && apiCreds.secret && apiCreds.passphrase;
   
   if (!hasValidCreds) {
-    console.log(`⚠️ No valid API credentials configured - attempting auto-derive...`);
-    try {
+    console.log(`⚠️ No valid API credentials configured.`);
+    if (signatureType === 0) {
+      console.log(`   Attempting one-time auto-derive (regular account)...`);
       derivedCreds = await deriveApiCredentials();
       apiCreds = derivedCreds;
-    } catch (deriveError) {
-      console.error(`❌ Auto-derive failed, continuing with invalid creds`);
+    } else {
+      console.error(`   Auto-derive disabled for Safe proxy wallets. Configure API creds manually for the Safe address.`);
     }
   }
 
-  // Signature type 2 = Safe proxy wallet (Polymarket default)
-  // - signer: EOA that controls the Safe
-  // - funder: The Safe proxy wallet address where USDC lives
-  clobClient = new ClobClient(
-    CLOB_URL,
-    CHAIN_ID,
-    signer,
-    { key: apiCreds.key, secret: apiCreds.secret, passphrase: apiCreds.passphrase },
-    2, // signatureType: 2 for Safe proxy
-    config.polymarket.address // funder address (your Polymarket Safe address)
-  );
+  // IMPORTANT: clob-client uses apiCreds.address to set POLY_ADDRESS.
+  // Provide both new and legacy field names for compatibility.
+  const sdkCreds = {
+    apiKey: apiCreds.key,
+    apiSecret: apiCreds.secret,
+    apiPassphrase: apiCreds.passphrase,
+    address: polyAddressHeader,
+    // legacy
+    key: apiCreds.key,
+    secret: apiCreds.secret,
+    passphrase: apiCreds.passphrase,
+  } as any;
+
+  clobClient = signatureType === 2
+    ? new ClobClient(CLOB_URL, CHAIN_ID, signer, sdkCreds, 2, config.polymarket.address)
+    : new ClobClient(CLOB_URL, CHAIN_ID, signer, sdkCreds, 0);
 
   console.log(`✅ CLOB client initialized`);
   console.log(`   Signer (EOA): ${signerAddress}`);
@@ -395,41 +405,27 @@ async function getClient(): Promise<ClobClient> {
     if (data) console.error(`   Response: ${JSON.stringify(data)}`);
 
     if (unauthorized) {
-      console.log(`\n   🔄 Unauthorized - Attempting auto-derive of new credentials...`);
+      console.log(`\n   🔄 Unauthorized.`);
 
-      // Reset client and try to derive new credentials
-      clobClient = null;
+      // Avoid infinite loops: only attempt auto-derive for regular accounts, once per process.
+      const signerNow = new Wallet(config.polymarket.privateKey);
+      const signatureTypeNow: 0 | 2 = signerNow.address.toLowerCase() === config.polymarket.address.toLowerCase() ? 0 : 2;
 
-      try {
-        derivedCreds = await deriveApiCredentials();
-
-        // Recreate client with new creds
-        clobClient = new ClobClient(
-          CLOB_URL,
-          CHAIN_ID,
-          signer,
-          { key: derivedCreds.key, secret: derivedCreds.secret, passphrase: derivedCreds.passphrase },
-          2,
-          config.polymarket.address
-        );
-
-        // Validate new credentials
-        const newApiKeys = await clobClient.getApiKeys();
-        console.log(`   ✅ Auto-derived credentials VALID!`);
-        console.log(`   API keys response:`, JSON.stringify(newApiKeys, null, 2));
-      } catch (deriveError: any) {
-        console.error(`   ❌ Auto-derive failed: ${deriveError?.message || deriveError}`);
-        console.error(`   ⚠️ Continuing with existing client, but orders will likely fail\n`);
-        
-        // Re-create client with original (invalid) creds so we don't crash on null
-        clobClient = new ClobClient(
-          CLOB_URL,
-          CHAIN_ID,
-          signer,
-          { key: apiCreds.key, secret: apiCreds.secret, passphrase: apiCreds.passphrase },
-          2,
-          config.polymarket.address
-        );
+      if (signatureTypeNow === 2) {
+        console.error(`   ❌ Safe proxy mode: auto-derive disabled.`);
+        console.error(`      Ensure POLYMARKET_API_KEY/SECRET/PASSPHRASE belong to the Safe (funder) address and restart.`);
+      } else {
+        console.log(`   Attempting one-time auto-derive (regular account)...`);
+        try {
+          derivedCreds = await deriveApiCredentials();
+          clobClient = null;
+          const freshClient = await getClient();
+          const newApiKeys = await freshClient.getApiKeys();
+          console.log(`   ✅ Auto-derived credentials VALID!`);
+          console.log(`   API keys response:`, JSON.stringify(newApiKeys, null, 2));
+        } catch (deriveError: any) {
+          console.error(`   ❌ Auto-derive failed: ${deriveError?.message || deriveError}`);
+        }
       }
     } else {
       console.error(`   ⚠️ Continuing anyway, but orders will likely fail\n`);
@@ -766,9 +762,13 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
 
   const attemptBalanceFetch = async (apiCreds: { key: string; secret: string; passphrase: string }) => {
     const signer = new Wallet(config.polymarket.privateKey);
+    const signatureType: 0 | 2 = signer.address.toLowerCase() === config.polymarket.address.toLowerCase() ? 0 : 2;
+    const polyAddressHeader = signatureType === 2 ? config.polymarket.address : signer.address;
 
-    const pathWithQuery = `/balance-allowance?asset_type=0&signature_type=2&address=${encodeURIComponent(
-      config.polymarket.address
+    const addressParam = signatureType === 2 ? config.polymarket.address : signer.address;
+
+    const pathWithQuery = `/balance-allowance?asset_type=0&signature_type=${signatureType}&address=${encodeURIComponent(
+      addressParam
     )}`;
 
     const timestampSeconds = String(Math.floor(Date.now() / 1000));
@@ -785,9 +785,7 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
-        // IMPORTANT (Safe proxy): auth headers should use the FUNDER (Safe) address,
-        // since balances live on the Safe, not the EOA signer.
-        POLY_ADDRESS: config.polymarket.address,
+        POLY_ADDRESS: polyAddressHeader,
         POLY_API_KEY: apiCreds.key,
         POLY_PASSPHRASE: apiCreds.passphrase,
         POLY_SIGNATURE: signature,
