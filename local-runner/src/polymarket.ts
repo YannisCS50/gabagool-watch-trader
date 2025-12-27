@@ -909,10 +909,10 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
       USDC_ASSET_ADDRESS
     )}&asset_address=${encodeURIComponent(USDC_ASSET_ADDRESS)}&signature_type=${signatureType}&address=${encodeURIComponent(addressParam)}`;
 
-    const timestampSeconds = String(Math.floor(Date.now() / 1000));
+    // Debug: ensure our request actually includes assetAddress + address (helps diagnose 400 invalid params)
+    console.log(`🔎 Balance request: ${CLOB_URL}${pathWithQuery}`);
 
-    // Build signature like upstream clob-client (url-safe base64 with '=' padding)
-    const secretBytes = Buffer.from(sanitizeBase64Secret(apiCreds.secret), 'base64');
+    const timestampSeconds = String(Math.floor(Date.now() / 1000));
     if (!secretBytes?.length) {
       return { error: { status: 0, text: 'Invalid API secret (base64 decode failed)' } };
     }
