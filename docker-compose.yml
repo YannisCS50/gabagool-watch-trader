@@ -25,6 +25,13 @@ services:
     volumes:
       - /home/deploy/wireguard:/config
       - /lib/modules:/lib/modules:ro
+    # Explicit DNS to avoid transient resolver issues
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    dns_opt:
+      - timeout:2
+      - attempts:3
     sysctls:
       - net.ipv4.conf.all.src_valid_mark=1
       - net.ipv6.conf.all.disable_ipv6=1
@@ -45,18 +52,31 @@ services:
       context: ./local-runner
       dockerfile: Dockerfile
     container_name: trading-bot
-    restart: always
+    restart: unless-stopped
     env_file:
       - /home/deploy/secrets/local-runner.env
     environment:
       - VPN_REQUIRED=true
       - EXPECTED_VPN_PROVIDER=Mullvad
+    # Even though network is shared with wireguard, keeping DNS here helps when not using container network_mode.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    dns_opt:
+      - timeout:2
+      - attempts:3
     # CRITICAL: Share network with WireGuard container
     # This ensures all outbound traffic goes through VPN
     network_mode: "container:wg"
     depends_on:
       wireguard:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "getent hosts clob.polymarket.com >/dev/null 2>&1 && curl -fsS --max-time 10 https://api.ipify.org >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     logging:
       driver: "json-file"
       options:

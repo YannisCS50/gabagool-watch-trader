@@ -7,9 +7,37 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    dns_opt:
+      - timeout:2
+      - attempts:3
+    healthcheck:
+      test: ["CMD-SHELL", "getent hosts clob.polymarket.com >/dev/null 2>&1 && curl -fsS --max-time 10 https://api.ipify.org >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
     network_mode: "service:wireguard"
     depends_on:
       - wireguard
+
+  # Optional fallback without VPN container networking (debug only)
+  local-runner-hostnet:
+    profiles: ["hostnet"]
+    build: .
+    container_name: polymarket-local-runner-hostnet
+    restart: unless-stopped
+    env_file:
+      - .env
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    dns_opt:
+      - timeout:2
+      - attempts:3
+    network_mode: host
 
   wireguard:
     image: lscr.io/linuxserver/wireguard:latest
@@ -28,4 +56,13 @@ services:
       - 10.64.0.1      # Mullvad DNS
       - 1.1.1.1        # Cloudflare fallback
       - 8.8.8.8        # Google fallback
+    dns_opt:
+      - timeout:2
+      - attempts:3
+    healthcheck:
+      test: ["CMD", "curl", "-s", "--max-time", "5", "https://api.ipify.org"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
