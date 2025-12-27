@@ -14,6 +14,7 @@ const RUNNER_ID = `local-${os.hostname()}`;
 const RUNNER_VERSION = '1.3.0';
 let currentBalance = 0;
 let lastClaimCheck = 0;
+let claimInFlight = false;
 
 interface MarketToken {
   slug: string;
@@ -499,10 +500,19 @@ async function main(): Promise<void> {
   // Auto-claim winnings every 30 seconds
   setInterval(async () => {
     const nowMs = Date.now();
+
     // Only check every 30 seconds
     if (nowMs - lastClaimCheck < 30000) return;
+
+    // Prevent overlapping claim loops (can cause duplicate tx attempts)
+    if (claimInFlight) {
+      console.log('⏳ Auto-claim already running, skipping this tick');
+      return;
+    }
+
+    claimInFlight = true;
     lastClaimCheck = nowMs;
-    
+
     try {
       const result = await checkAndClaimWinnings();
       if (result.claimed > 0) {
@@ -510,6 +520,8 @@ async function main(): Promise<void> {
       }
     } catch (error) {
       console.error('❌ Auto-claim error:', error);
+    } finally {
+      claimInFlight = false;
     }
   }, 30000);
 

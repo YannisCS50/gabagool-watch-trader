@@ -35,9 +35,9 @@ interface RedeemablePosition {
   outcomeIndex: number;
 }
 
-// Track claimed condition IDs to avoid duplicate claims
+// Track claimed / in-flight condition IDs to avoid duplicate claims
 const claimedConditions = new Set<string>();
-
+const inFlightConditions = new Set<string>();
 // Provider and wallet instances
 let provider: providers.JsonRpcProvider | null = null;
 let wallet: Wallet | null = null;
@@ -120,10 +120,12 @@ async function redeemPosition(position: RedeemablePosition): Promise<boolean> {
 
   const conditionId = position.conditionId;
   
-  // Skip if already claimed this session
-  if (claimedConditions.has(conditionId)) {
+  // Skip if already claimed or already being processed
+  if (claimedConditions.has(conditionId) || inFlightConditions.has(conditionId)) {
     return false;
   }
+
+  inFlightConditions.add(conditionId);
 
   console.log(`\n💎 CLAIMING WINNINGS`);
   console.log(`   Market: ${position.title}`);
@@ -141,7 +143,7 @@ async function redeemPosition(position: RedeemablePosition): Promise<boolean> {
     // Parent collection ID is zero for top-level conditions
     const parentCollectionId = ethers.utils.hexZeroPad('0x00', 32);
 
-    console.log(`   📤 Sending redeemPositions transaction...`);
+    console.log(`   📤 REDEEM: sending redeemPositions transaction...`);
     
     const tx = await ctfContract!.redeemPositions(
       USDC_ADDRESS,
@@ -150,36 +152,38 @@ async function redeemPosition(position: RedeemablePosition): Promise<boolean> {
       indexSets
     );
 
-    console.log(`   ⏳ Transaction sent: ${tx.hash}`);
+    console.log(`   ⏳ REDEEM: tx sent ${tx.hash}`);
     
     // Wait for confirmation
     const receipt = await tx.wait(1);
     
     if (receipt.status === 1) {
-      console.log(`   ✅ CLAIMED! Transaction confirmed in block ${receipt.blockNumber}`);
+      console.log(`   ✅ REDEEM: claimed in block ${receipt.blockNumber}`);
       claimedConditions.add(conditionId);
       return true;
     } else {
-      console.error(`   ❌ Transaction failed`);
+      console.error(`   ❌ REDEEM: transaction failed`);
       return false;
     }
   } catch (error: any) {
     const msg = error?.message || String(error);
-    
+
     // Check for common errors
     if (msg.includes('result for condition not received yet')) {
-      console.log(`   ⏳ Market not yet resolved, skipping...`);
+      console.log(`   ⏳ REDEEM: market not yet resolved, skipping...`);
     } else if (msg.includes('insufficient funds')) {
-      console.error(`   ❌ Insufficient gas funds for transaction`);
+      console.error(`   ❌ REDEEM: insufficient gas funds for transaction`);
     } else if (msg.includes('execution reverted')) {
-      console.log(`   ⚠️ Revert - may already be claimed or not yet resolved`);
-      // Mark as claimed to avoid repeated attempts
+      console.log(`   ⚠️ REDEEM: execution reverted (already claimed / not resolved / wrong wallet)`);
+      // Mark as claimed to avoid repeated attempts this session
       claimedConditions.add(conditionId);
     } else {
-      console.error(`   ❌ Claim failed: ${msg}`);
+      console.error(`   ❌ REDEEM: claim failed: ${msg}`);
     }
-    
+
     return false;
+  } finally {
+    inFlightConditions.delete(conditionId);
   }
 }
 
