@@ -24,4 +24,8 @@ services:
       - ./wireguard:/config
     sysctls:
       - net.ipv4.conf.all.src_valid_mark=1
+    dns:
+      - 10.64.0.1      # Mullvad DNS
+      - 1.1.1.1        # Cloudflare fallback
+      - 8.8.8.8        # Google fallback
     restart: unless-stopped
