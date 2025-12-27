@@ -903,14 +903,22 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
     // Balance is held by the funder for proxy wallet modes.
     const addressParam = signatureType === 0 ? signer.address : config.polymarket.address;
 
-    // Build the query path with all required parameters
-    // CLOB expects the collateral token address as `assetAddress` (camelCase). Some versions may also accept `asset_address`.
-    const pathWithQuery = `/balance-allowance?asset_type=0&assetAddress=${encodeURIComponent(
-      USDC_ASSET_ADDRESS
-    )}&asset_address=${encodeURIComponent(USDC_ASSET_ADDRESS)}&signature_type=${signatureType}&address=${encodeURIComponent(addressParam)}`;
+    // Build candidate query paths for collateral balance.
+    // Polymarket CLOB has had multiple variants in the wild; try the most compatible ones first.
+    const addr = encodeURIComponent(addressParam);
+    const sig = signatureType;
+    const asset = encodeURIComponent(USDC_ASSET_ADDRESS);
 
-    // Debug: ensure our request actually includes assetAddress + address (helps diagnose 400 invalid params)
-    console.log(`🔎 Balance request: ${CLOB_URL}${pathWithQuery}`);
+    const balancePaths = [
+      // Most SDKs treat collateral as a distinct type (no asset address param)
+      `/balance-allowance?asset_type=collateral&signature_type=${sig}&address=${addr}`,
+      // Some deployments use numeric asset_type
+      `/balance-allowance?asset_type=0&signature_type=${sig}&address=${addr}`,
+      // Some deployments use snake_case
+      `/balance-allowance?asset_type=0&asset_address=${asset}&signature_type=${sig}&address=${addr}`,
+      // Some deployments use camelCase
+      `/balance-allowance?asset_type=0&assetAddress=${asset}&signature_type=${sig}&address=${addr}`,
+    ];
 
     const timestampSeconds = String(Math.floor(Date.now() / 1000));
 
@@ -920,9 +928,9 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
       return { error: { status: 0, text: 'Invalid API secret (base64 decode failed)' } };
     }
 
-    const fetchWithSignaturePath = async (signaturePath: string) => {
+    const fetchSigned = async (fetchPath: string, signaturePath: string) => {
       const signature = buildSignature(secretBytes, timestampSeconds, 'GET', signaturePath);
-      return fetch(`${CLOB_URL}${pathWithQuery}`, {
+      return fetch(`${CLOB_URL}${fetchPath}`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json',
@@ -935,17 +943,39 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
       });
     };
 
-    // Some CLOB endpoints verify the signature against only the pathname (no query string).
-    // Try the "full path" first, then retry once signing only the pathname.
-    let response = await fetchWithSignaturePath(pathWithQuery);
-    if (response.status === 401) {
-      response = await fetchWithSignaturePath('/balance-allowance');
+    let lastError: { status: number; text: string } | null = null;
+
+    for (const pathWithQuery of balancePaths) {
+      // Debug: ensure our request actually includes address + signature_type (helps diagnose 400 invalid params)
+      console.log(`🔎 Balance request: ${CLOB_URL}${pathWithQuery}`);
+
+      // Some CLOB endpoints verify the signature against only the pathname (no query string).
+      // Try the "full path" first, then retry once signing only the pathname.
+      let response = await fetchSigned(pathWithQuery, pathWithQuery);
+      if (response.status === 401) {
+        response = await fetchSigned(pathWithQuery, '/balance-allowance');
+      }
+
+      if (!response.ok) {
+        const text = await response.text();
+        lastError = { status: response.status, text };
+
+        // If the server complains about invalid params, try the next variant.
+        if (response.status === 400) continue;
+        break;
+      }
+
+      const data = await response.json();
+      const rawBalance = (data as any)?.balance ?? (data as any)?.available_balance ?? '0';
+      const balance = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
+
+      console.log(`💰 CLOB Balance: $${balance.toFixed(2)} USDC`);
+
+      balanceCache = { usdc: balance, fetchedAt: Date.now() };
+      return { usdc: balance };
     }
 
-    if (!response.ok) {
-      const text = await response.text();
-      return { error: { status: response.status, text } };
-    }
+    return { error: lastError ?? { status: 0, text: 'Unknown error fetching balance' } };
 
     const data = await response.json();
     const rawBalance = (data as any)?.balance ?? (data as any)?.available_balance ?? '0';

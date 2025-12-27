@@ -344,40 +344,58 @@ export class AuthManager {
 
     const usdcAsset = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
 
-    const pathWithQuery = `/balance-allowance?asset_type=0&assetAddress=${encodeURIComponent(
-      usdcAsset
-    )}&asset_address=${encodeURIComponent(usdcAsset)}&signature_type=${this.getSignatureType()}&address=${encodeURIComponent(
-      this.getBalanceQueryAddress()
-    )}`;
+    const addr = encodeURIComponent(this.getBalanceQueryAddress());
+    const sig = this.getSignatureType();
+    const asset = encodeURIComponent(usdcAsset);
+
+    const candidatePaths = [
+      `/balance-allowance?asset_type=collateral&signature_type=${sig}&address=${addr}`,
+      `/balance-allowance?asset_type=0&signature_type=${sig}&address=${addr}`,
+      `/balance-allowance?asset_type=0&asset_address=${asset}&signature_type=${sig}&address=${addr}`,
+      `/balance-allowance?asset_type=0&assetAddress=${asset}&signature_type=${sig}&address=${addr}`,
+    ];
 
     const timestampSeconds = String(Math.floor(Date.now() / 1000));
 
     const secretBytes = Buffer.from(normalizeToBase64(creds.secret), 'base64');
     if (!secretBytes?.length) return { usdc: 0, error: 'Invalid API secret (base64 decode failed)' };
 
-    const signature = buildSignature({
-      secretBytes,
-      timestampSeconds,
-      method: 'GET',
-      requestPath: pathWithQuery,
-    });
+    let lastErr: { status?: number; error: string } | null = null;
 
-    const res = await fetch(`${CLOB_URL}${pathWithQuery}`, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-        POLY_ADDRESS: this.getPolyAddressHeader(),
-        POLY_API_KEY: creds.apiKey,
-        POLY_PASSPHRASE: creds.passphrase,
-        POLY_SIGNATURE: signature,
-        POLY_TIMESTAMP: timestampSeconds,
-      } as any,
-    });
+    for (const pathWithQuery of candidatePaths) {
+      const signature = buildSignature({
+        secretBytes,
+        timestampSeconds,
+        method: 'GET',
+        requestPath: pathWithQuery,
+      });
 
-    if (!res.ok) {
-      const text = await res.text();
-      return { usdc: 0, error: text.slice(0, 300), status: res.status };
+      const res = await fetch(`${CLOB_URL}${pathWithQuery}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          POLY_ADDRESS: this.getPolyAddressHeader(),
+          POLY_API_KEY: creds.apiKey,
+          POLY_PASSPHRASE: creds.passphrase,
+          POLY_SIGNATURE: signature,
+          POLY_TIMESTAMP: timestampSeconds,
+        } as any,
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        lastErr = { status: res.status, error: text.slice(0, 300) };
+        if (res.status === 400) continue;
+        return { usdc: 0, error: lastErr.error, status: lastErr.status };
+      }
+
+      const data = await res.json();
+      const rawBalance = (data as any)?.balance ?? (data as any)?.available_balance ?? '0';
+      const balance = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
+      return { usdc: Number.isFinite(balance) ? balance : 0 };
     }
+
+    return { usdc: 0, error: lastErr?.error ?? 'Unknown error', status: lastErr?.status };
 
     const data = await res.json();
     const rawBalance = (data as any)?.balance ?? (data as any)?.available_balance ?? '0';
