@@ -884,25 +884,33 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
 
     const timestampSeconds = String(Math.floor(Date.now() / 1000));
 
-    // Build signature exactly like upstream clob-client (url-safe base64 with '=' padding)
+    // Build signature like upstream clob-client (url-safe base64 with '=' padding)
     const secretBytes = Buffer.from(sanitizeBase64Secret(apiCreds.secret), 'base64');
     if (!secretBytes?.length) {
       return { error: { status: 0, text: 'Invalid API secret (base64 decode failed)' } };
     }
 
-    const signature = buildSignature(secretBytes, timestampSeconds, 'GET', pathWithQuery);
+    const fetchWithSignaturePath = async (signaturePath: string) => {
+      const signature = buildSignature(secretBytes, timestampSeconds, 'GET', signaturePath);
+      return fetch(`${CLOB_URL}${pathWithQuery}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          POLY_ADDRESS: polyAddressHeader,
+          POLY_API_KEY: apiCreds.key,
+          POLY_PASSPHRASE: apiCreds.passphrase,
+          POLY_SIGNATURE: signature,
+          POLY_TIMESTAMP: timestampSeconds,
+        } as any,
+      });
+    };
 
-    const response = await fetch(`${CLOB_URL}${pathWithQuery}`, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-        POLY_ADDRESS: polyAddressHeader,
-        POLY_API_KEY: apiCreds.key,
-        POLY_PASSPHRASE: apiCreds.passphrase,
-        POLY_SIGNATURE: signature,
-        POLY_TIMESTAMP: timestampSeconds,
-      } as any,
-    });
+    // Some CLOB endpoints verify the signature against only the pathname (no query string).
+    // Try the "full path" first, then retry once signing only the pathname.
+    let response = await fetchWithSignaturePath(pathWithQuery);
+    if (response.status === 401) {
+      response = await fetchWithSignaturePath('/balance-allowance');
+    }
 
     if (!response.ok) {
       const text = await response.text();
@@ -944,21 +952,32 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
       return result;
     }
 
-    // If we got a 401, try auto-deriving new credentials
+    // If we got a 401, DO NOT try to create/derive API keys when the user already configured keys.
+    // That loop is noisy and often blocked (HTTP 400: "Could not create api key").
     if (result.error?.status === 401) {
+      const credsWereExplicitlyConfigured =
+        !derivedCreds &&
+        Boolean(config.polymarket.apiKey && config.polymarket.apiSecret && config.polymarket.passphrase);
+
+      if (credsWereExplicitlyConfigured) {
+        console.error(`\n❌ Balance returned 401 with configured API credentials (no auto-derive).`);
+        console.error(`   This usually means the API key is for a different account/address or is stale/revoked.`);
+        return { usdc: 0, error: 'HTTP 401 (balance)' };
+      }
+
       console.log(`\n🔄 Balance returned 401 - auto-deriving new credentials...`);
-      
+
       try {
         derivedCreds = await deriveApiCredentials();
         // Reset clobClient so it picks up new creds
         clobClient = null;
-        
+
         // Retry with new credentials
         const retryResult = await attemptBalanceFetch(derivedCreds);
         if ('usdc' in retryResult) {
           return retryResult;
         }
-        
+
         console.error(`❌ Balance still failing after auto-derive: HTTP ${retryResult.error?.status}`);
         return { usdc: 0, error: `HTTP ${retryResult.error?.status} after auto-derive` };
       } catch (deriveError: any) {
