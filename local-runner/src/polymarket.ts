@@ -168,8 +168,7 @@ function isUnauthorizedPayload(payload: any): boolean {
 
 /**
  * Validate API credentials manually using a direct fetch call.
- * This bypasses the ClobClient SDK which incorrectly uses the signer address
- * in POLY_ADDRESS header for Safe proxy wallets.
+ * This keeps the signing / header behavior explicit (useful for debugging).
  */
 async function validateCredentialsManually(
   apiCreds: { key: string; secret: string; passphrase: string },
@@ -393,7 +392,9 @@ async function getClient(): Promise<ClobClient> {
   const signer = new Wallet(config.polymarket.privateKey);
   const signerAddress = signer.address;
   const signatureType: 0 | 2 = signerAddress.toLowerCase() === config.polymarket.address.toLowerCase() ? 0 : 2;
-  const polyAddressHeader = signatureType === 2 ? config.polymarket.address : signerAddress;
+  // Per Polymarket docs, POLY_ADDRESS header must be the Polygon SIGNER address (EOA)
+  // even when trading with a Safe (funder).
+  const polyAddressHeader = signerAddress;
 
   console.log(`📍 Signer (from private key): ${signerAddress}`);
   console.log(`📍 POLYMARKET_ADDRESS (funder): ${config.polymarket.address}`);
@@ -469,8 +470,7 @@ async function getClient(): Promise<ClobClient> {
   console.log(`   Funder (Safe): ${config.polymarket.address}`);
 
   // 🔐 Validate credentials with an authenticated API call
-  // NOTE: We use a manual fetch instead of clobClient.getApiKeys() because the SDK
-  // incorrectly uses the signer address in POLY_ADDRESS header for Safe proxy wallets.
+  // We use a manual fetch to keep the signing logic explicit and easy to debug.
   console.log(`\n🔐 VALIDATING CREDENTIALS...`);
   try {
     const validationResult = await validateCredentialsManually(apiCreds, signatureType, polyAddressHeader);
