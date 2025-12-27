@@ -69,8 +69,7 @@ services:
     # This ensures all outbound traffic goes through VPN
     network_mode: "container:wg"
     depends_on:
-      wireguard:
-        condition: service_healthy
+      - wireguard
     healthcheck:
       test: ["CMD-SHELL", "getent hosts clob.polymarket.com >/dev/null 2>&1 && curl -fsS --max-time 10 https://api.ipify.org >/dev/null"]
       interval: 30s
