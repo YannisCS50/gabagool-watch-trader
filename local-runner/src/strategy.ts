@@ -121,10 +121,9 @@ export const STRATEGY = {
   // ==========================================================
   probabilityBias: {
     enabled: true,
-    // Skip hedge wanneer huidige prijs X% van strike afwijkt
-    skipHedgeThresholdPercent: 1.5,  // Als prijs 1.5% voorbij strike: skip losing hedge
-    // Confidence levels based on price distance
-    highConfidencePercent: 2.0,      // 2%+ voorbij strike = hoge zekerheid
+    // Skip hedge wanneer huidige prijs X dollar van strike afwijkt
+    skipHedgeThresholdUsd: 120,      // $120 verschil = skip losing hedge
+    highConfidenceUsd: 200,          // $200+ verschil = hoge zekerheid
     // Minimale tijd over voordat we hedge skippen (safety)
     minSecondsToSkip: 120,           // Alleen skippen als >2 min over
   },
@@ -450,30 +449,30 @@ export interface PriceBiasContext {
 export function calculateLikelySide(ctx: PriceBiasContext): {
   likelySide: Outcome | null;
   losingSide: Outcome | null;
-  distancePercent: number;
+  distanceUsd: number;
   confidence: 'low' | 'medium' | 'high';
 } {
   const { currentPrice, strikePrice, remainingSeconds } = ctx;
   
   if (!strikePrice || strikePrice <= 0) {
-    return { likelySide: null, losingSide: null, distancePercent: 0, confidence: 'low' };
+    return { likelySide: null, losingSide: null, distanceUsd: 0, confidence: 'low' };
   }
   
-  const distancePercent = ((currentPrice - strikePrice) / strikePrice) * 100;
-  const absDistance = Math.abs(distancePercent);
+  const distanceUsd = currentPrice - strikePrice;
+  const absDistance = Math.abs(distanceUsd);
   
-  const skipThreshold = STRATEGY.probabilityBias.skipHedgeThresholdPercent;
-  const highConfThreshold = STRATEGY.probabilityBias.highConfidencePercent;
+  const skipThreshold = STRATEGY.probabilityBias.skipHedgeThresholdUsd;
+  const highConfThreshold = STRATEGY.probabilityBias.highConfidenceUsd;
   
   if (absDistance < skipThreshold) {
-    return { likelySide: null, losingSide: null, distancePercent, confidence: 'low' };
+    return { likelySide: null, losingSide: null, distanceUsd, confidence: 'low' };
   }
   
-  const likelySide: Outcome = distancePercent > 0 ? 'UP' : 'DOWN';
+  const likelySide: Outcome = distanceUsd > 0 ? 'UP' : 'DOWN';
   const losingSide: Outcome = likelySide === 'UP' ? 'DOWN' : 'UP';
   const confidence = absDistance >= highConfThreshold ? 'high' : 'medium';
   
-  return { likelySide, losingSide, distancePercent, confidence };
+  return { likelySide, losingSide, distanceUsd, confidence };
 }
 
 /**
@@ -494,13 +493,13 @@ export function shouldSkipLosingHedge(
   const bias = calculateLikelySide(ctx);
   
   if (!bias.losingSide) {
-    return { skip: false, reason: `Price too close to strike (${bias.distancePercent.toFixed(2)}%)` };
+    return { skip: false, reason: `Price too close to strike ($${Math.abs(bias.distanceUsd).toFixed(0)} < $${STRATEGY.probabilityBias.skipHedgeThresholdUsd})` };
   }
   
   if (hedgeSide === bias.losingSide) {
     return { 
       skip: true, 
-      reason: `Skip ${hedgeSide} hedge: price ${bias.distancePercent > 0 ? 'above' : 'below'} strike by ${Math.abs(bias.distancePercent).toFixed(2)}% (${bias.confidence} confidence)` 
+      reason: `Skip ${hedgeSide} hedge: price $${Math.abs(bias.distanceUsd).toFixed(0)} ${bias.distanceUsd > 0 ? 'above' : 'below'} strike (${bias.confidence} confidence)` 
     };
   }
   
