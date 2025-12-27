@@ -63,6 +63,9 @@ export default function LiveTrading() {
   const fetchBalances = async () => {
     setIsLoadingWallet(true);
     try {
+      // Settle any expired trades first
+      await supabase.functions.invoke('settle-live-trades', { body: {} });
+      
       // Fetch wallet balance
       const { data: walletData } = await supabase.functions.invoke('live-trade-bot', {
         body: { action: 'wallet-balance' }
