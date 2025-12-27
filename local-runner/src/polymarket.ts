@@ -952,9 +952,25 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
       return result;
     }
 
-    // If we got a 401, DO NOT try to create/derive API keys when the user already configured keys.
-    // That loop is noisy and often blocked (HTTP 400: "Could not create api key").
+    // If we got a 401, DO NOT try to create/derive API keys when:
+    // - signatureType is proxy (1/2) (auto-derive is disabled and will just spam logs)
+    // - the user already configured keys (likely stale/wrong account instead of "needs derive")
     if (result.error?.status === 401) {
+      const signer = new Wallet(config.polymarket.privateKey);
+      const override = (config.polymarket as any).signatureType as (0 | 1 | 2 | undefined);
+      const signatureType: 0 | 1 | 2 =
+        override === 0 || override === 1 || override === 2
+          ? override
+          : signer.address.toLowerCase() === config.polymarket.address.toLowerCase()
+            ? 0
+            : 2;
+
+      if (signatureType !== 0) {
+        console.error(`\n❌ Balance returned 401 (signatureType=${signatureType}) — auto-derive disabled for proxy wallets.`);
+        console.error(`   Fix is almost always: API key belongs to a different account/address, or signatureType override is wrong.`);
+        return { usdc: 0, error: 'HTTP 401 (balance)' };
+      }
+
       const credsWereExplicitlyConfigured =
         !derivedCreds &&
         Boolean(config.polymarket.apiKey && config.polymarket.apiSecret && config.polymarket.passphrase);
