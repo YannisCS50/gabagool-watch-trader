@@ -38,6 +38,10 @@ interface RedeemablePosition {
 // Track claimed / in-flight condition IDs to avoid duplicate claims
 const claimedConditions = new Set<string>();
 const inFlightConditions = new Set<string>();
+
+// Track pending on-chain tx per condition (prevents "stuck claiming" loops)
+const pendingTxByCondition = new Map<string, { hash: string; sentAtMs: number }>();
+
 // Provider and wallet instances
 let provider: providers.JsonRpcProvider | null = null;
 let wallet: Wallet | null = null;
@@ -92,6 +96,51 @@ async function getRedeemGasOverrides(): Promise<
     return { maxFeePerGas: floorMaxFee, maxPriorityFeePerGas: floorPriority };
   }
 }
+async function refreshPendingTx(
+  conditionId: string
+): Promise<'none' | 'pending' | 'mined' | 'failed'> {
+  const pending = pendingTxByCondition.get(conditionId);
+  if (!pending) return 'none';
+
+  // Give the tx some time to be indexed/mined before allowing retries
+  const ageMs = Date.now() - pending.sentAtMs;
+  const maxPendingMs = 10 * 60 * 1000; // 10 minutes
+
+  if (!provider) return 'pending';
+
+  try {
+    const receipt = await provider.getTransactionReceipt(pending.hash);
+
+    if (!receipt) {
+      if (ageMs > maxPendingMs) {
+        console.log(
+          `   ⚠️ REDEEM: tx ${pending.hash} still missing after 10m; allowing retry for condition ${conditionId}`
+        );
+        pendingTxByCondition.delete(conditionId);
+        return 'failed';
+      }
+
+      return 'pending';
+    }
+
+    // Mined
+    pendingTxByCondition.delete(conditionId);
+
+    if (receipt.status === 1) {
+      console.log(`   ✅ REDEEM: confirmed ${pending.hash} in block ${receipt.blockNumber}`);
+      claimedConditions.add(conditionId);
+      return 'mined';
+    }
+
+    console.log(`   ❌ REDEEM: tx ${pending.hash} failed on-chain (status=0)`);
+    return 'failed';
+  } catch (e: any) {
+    // Don't crash claiming loop on transient RPC errors
+    console.log(`   ⚠️ REDEEM: failed to check tx ${pending.hash}: ${e?.message || e}`);
+    return 'pending';
+  }
+}
+
 /**
  * Fetch all redeemable positions from Polymarket Data API
  */
@@ -120,22 +169,36 @@ async function fetchRedeemablePositions(): Promise<RedeemablePosition[]> {
 
     const positions: RedeemablePosition[] = await response.json();
     
-    // Filter for redeemable positions only AND exclude already claimed ones
-    const redeemable = positions.filter(p => {
-      if (!p.redeemable) return false;
-      if (claimedConditions.has(p.conditionId)) {
-        // Don't log - we already claimed this
-        return false;
+    // Filter for redeemable positions only, exclude already-claimed and pending-tx ones,
+    // and de-dupe by conditionId (binary markets often return both UP and DOWN entries).
+    const redeemableByCondition = new Map<string, RedeemablePosition>();
+
+    for (const p of positions) {
+      if (!p.redeemable) continue;
+      if (claimedConditions.has(p.conditionId)) continue;
+      if (pendingTxByCondition.has(p.conditionId)) continue;
+
+      const existing = redeemableByCondition.get(p.conditionId);
+      // Keep the larger currentValue entry for nicer logging (functionality is same)
+      if (!existing || (p.currentValue || 0) > (existing.currentValue || 0)) {
+        redeemableByCondition.set(p.conditionId, p);
       }
-      return true;
-    });
+    }
+
+    const redeemable = [...redeemableByCondition.values()];
 
     // Only log positions that are actually still pending
     if (redeemable.length > 0) {
-      console.log(`💰 Found ${redeemable.length} redeemable positions (excluding ${claimedConditions.size} already claimed):`);
+      console.log(
+        `💰 Found ${redeemable.length} redeemable conditions (skipping ${claimedConditions.size} claimed, ${pendingTxByCondition.size} pending-tx):`
+      );
       for (const p of redeemable) {
-        console.log(`   💰 REDEEMABLE: ${p.outcome} ${p.size.toFixed(0)} shares @ ${p.title?.slice(0, 50) || p.slug}`);
+        console.log(
+          `   💰 REDEEMABLE: ${p.outcome} ${p.size.toFixed(0)} shares @ ${p.title?.slice(0, 50) || p.slug}`
+        );
       }
+    } else if (pendingTxByCondition.size > 0) {
+      console.log(`   ⏳ Claims pending on-chain (${pendingTxByCondition.size} tx), waiting...`);
     } else if (claimedConditions.size > 0) {
       console.log(`   ✅ All positions already claimed this session (${claimedConditions.size} total)`);
     } else {
@@ -159,6 +222,10 @@ async function redeemPosition(position: RedeemablePosition): Promise<boolean> {
 
   const conditionId = position.conditionId;
   
+  // If we already sent a tx for this condition, re-check its receipt first.
+  const pendingState = await refreshPendingTx(conditionId);
+  if (pendingState === 'pending') return false;
+
   // Skip if already claimed or already being processed
   if (claimedConditions.has(conditionId) || inFlightConditions.has(conditionId)) {
     return false;
@@ -222,10 +289,28 @@ async function redeemPosition(position: RedeemablePosition): Promise<boolean> {
     }
 
     console.log(`   ⏳ REDEEM: tx sent ${tx.hash}`);
-    
-    // Wait for confirmation
-    const receipt = await tx.wait(1);
-    
+
+    pendingTxByCondition.set(conditionId, { hash: tx.hash, sentAtMs: Date.now() });
+
+    // Wait for confirmation (with timeout). If it stays pending, we will re-check next tick.
+    let receipt: ethers.providers.TransactionReceipt;
+    try {
+      if (provider) {
+        receipt = await provider.waitForTransaction(tx.hash, 1, 120_000);
+      } else {
+        receipt = await tx.wait(1);
+      }
+    } catch (e: any) {
+      const msg = (e?.message || String(e)).toLowerCase();
+      if (msg.includes('timeout')) {
+        console.log(`   ⏳ REDEEM: tx still pending after 120s, will re-check next tick`);
+        return false;
+      }
+      throw e;
+    }
+
+    // tx mined -> no longer pending
+    pendingTxByCondition.delete(conditionId);
     if (receipt.status === 1) {
       console.log(`   ✅ REDEEM: claimed in block ${receipt.blockNumber}`);
       claimedConditions.add(conditionId);
