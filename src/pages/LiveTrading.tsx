@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { LiveTradeDashboard } from '@/components/LiveTradeDashboard';
 import { RunnerActivityLog } from '@/components/RunnerActivityLog';
+import { MarketTradesLog } from '@/components/MarketTradesLog';
 import { PaperTradeDashboard } from '@/components/PaperTradeDashboard';
 import { RunnerStatus } from '@/components/RunnerStatus';
 import { OrderQueueStatus } from '@/components/OrderQueueStatus';
@@ -189,7 +190,12 @@ export default function LiveTrading() {
           <OrderQueueStatus />
         </div>
 
-        {/* Activity Log */}
+        {/* Market Trades Log - Categorized per bet */}
+        <div className="mb-8">
+          <MarketTradesLog />
+        </div>
+
+        {/* Runner Activity Log */}
         <div className="mb-8">
           <RunnerActivityLog />
         </div>
