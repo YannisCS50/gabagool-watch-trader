@@ -835,6 +835,7 @@ const BALANCE_CACHE_TTL_MS = 10000;
 
 /**
  * Fetches the USDC collateral balance using the official clob-client SDK.
+ * Uses getBalanceAllowance({ asset_type: 'COLLATERAL' }) which handles all URL encoding internally.
  */
 export async function getBalance(): Promise<{ usdc: number; error?: string }> {
   // Return cached balance if fresh
@@ -845,33 +846,26 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
   try {
     const client = await getClient();
 
-    // Try SDK's getBalanceAllowance first (handles all param encoding internally)
-    if (typeof (client as any).getBalanceAllowance === 'function') {
-      console.log(`💰 Fetching balance via SDK getBalanceAllowance()...`);
+    // SDK v5+ uses getBalanceAllowance with asset_type: 'COLLATERAL'
+    // This handles all URL building, signing, and parameter encoding internally
+    const result = await (client as any).getBalanceAllowance({ asset_type: 'COLLATERAL' });
 
-      // AssetType.COLLATERAL = "COLLATERAL" in @polymarket/clob-client v5
-      const result = await (client as any).getBalanceAllowance({ asset_type: 'COLLATERAL' });
-
-      // Handle SDK returning error payloads
-      if (result?.error || (typeof result?.status === 'number' && result.status >= 400)) {
-        const errMsg = result?.error ?? `status=${result?.status}`;
-        console.error(`❌ SDK getBalanceAllowance error: ${errMsg}`);
-        return { usdc: 0, error: String(errMsg) };
-      }
-
-      const rawBalance = result?.balance ?? result?.available_balance ?? '0';
-      const balance = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
-
-      console.log(`💰 CLOB Balance: $${balance.toFixed(2)} USDC`);
-      balanceCache = { usdc: balance, fetchedAt: Date.now() };
-      return { usdc: balance };
+    // Handle SDK returning error payloads instead of throwing
+    if (result?.error || (typeof result?.status === 'number' && result.status >= 400)) {
+      const errMsg = result?.error ?? `status=${result?.status}`;
+      console.error(`❌ SDK getBalanceAllowance error: ${errMsg}`);
+      return { usdc: 0, error: String(errMsg) };
     }
 
-    // SDK method not available - shouldn't happen with v5+
-    console.warn(`⚠️ SDK getBalanceAllowance not found - returning 0`);
-    return { usdc: 0, error: 'SDK method unavailable' };
+    const rawBalance = result?.balance ?? result?.available_balance ?? '0';
+    const balance = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
+
+    console.log(`💰 CLOB Balance: $${balance.toFixed(2)} USDC`);
+    balanceCache = { usdc: balance, fetchedAt: Date.now() };
+    return { usdc: balance };
   } catch (error: any) {
-    console.error('❌ Failed to fetch balance:', error?.message || error);
+    const msg = String(error?.message || error);
+    console.error('❌ Failed to fetch balance:', msg);
 
     // Return stale cache if available
     if (balanceCache) {
@@ -879,7 +873,7 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
       return { usdc: balanceCache.usdc };
     }
 
-    return { usdc: 0, error: error?.message || 'Unknown error' };
+    return { usdc: 0, error: msg };
   }
 }
 

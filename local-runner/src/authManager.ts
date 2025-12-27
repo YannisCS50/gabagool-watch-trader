@@ -336,74 +336,35 @@ export class AuthManager {
   }
 
   /**
-   * Fetch balance using a signed request (mirrors upstream prehash rules).
-   * Returns USDC balance.
+   * Fetch USDC collateral balance using the official SDK method.
    */
   async getBalance(): Promise<{ usdc: number; error?: string; status?: number }> {
-    const creds = this.getActiveCreds();
+    try {
+      const client = await this.getClient();
 
-    const usdcAsset = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+      // Use SDK's getBalanceAllowance - it handles all URL/param encoding internally
+      // AssetType.COLLATERAL = "COLLATERAL" in @polymarket/clob-client v5+
+      const result = await (client as any).getBalanceAllowance({ asset_type: 'COLLATERAL' });
 
-    const addr = encodeURIComponent(this.getBalanceQueryAddress());
-    const sig = this.getSignatureType();
-    const asset = encodeURIComponent(usdcAsset.toLowerCase());
-
-    const candidatePaths = [
-      `/balance-allowance?asset_type=collateral&asset_address=${asset}&signature_type=${sig}&address=${addr}`,
-      `/balance-allowance?asset_type=collateral&assetAddress=${asset}&signature_type=${sig}&address=${addr}`,
-      `/balance-allowance?asset_type=collateral&signature_type=${sig}&address=${addr}`,
-      `/balance-allowance?asset_type=0&asset_address=${asset}&signature_type=${sig}&address=${addr}`,
-      `/balance-allowance?asset_type=0&assetAddress=${asset}&signature_type=${sig}&address=${addr}`,
-      `/balance-allowance?asset_type=0&signature_type=${sig}&address=${addr}`,
-    ];
-
-    const timestampSeconds = String(Math.floor(Date.now() / 1000));
-
-    const secretBytes = Buffer.from(normalizeToBase64(creds.secret), 'base64');
-    if (!secretBytes?.length) return { usdc: 0, error: 'Invalid API secret (base64 decode failed)' };
-
-    let lastErr: { status?: number; error: string } | null = null;
-
-    for (const pathWithQuery of candidatePaths) {
-      const signature = buildSignature({
-        secretBytes,
-        timestampSeconds,
-        method: 'GET',
-        requestPath: pathWithQuery,
-      });
-
-      const res = await fetch(`${CLOB_URL}${pathWithQuery}`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          POLY_ADDRESS: this.getPolyAddressHeader(),
-          POLY_API_KEY: creds.apiKey,
-          POLY_PASSPHRASE: creds.passphrase,
-          POLY_SIGNATURE: signature,
-          POLY_TIMESTAMP: timestampSeconds,
-        } as any,
-      });
-
-      if (!res.ok) {
-        const text = await res.text();
-        lastErr = { status: res.status, error: text.slice(0, 300) };
-        console.error(`❌ Balance attempt failed: status=${res.status} path=${pathWithQuery} body=${lastErr.error}`);
-        if (res.status === 400) continue;
-        return { usdc: 0, error: lastErr.error, status: lastErr.status };
+      // Handle SDK returning error payloads instead of throwing
+      if (result?.error || (typeof result?.status === 'number' && result.status >= 400)) {
+        const errMsg = result?.error ?? `status=${result?.status}`;
+        console.error(`❌ SDK getBalanceAllowance error: ${errMsg}`);
+        return { usdc: 0, error: String(errMsg), status: result?.status };
       }
 
-      const data = await res.json();
-      const rawBalance = (data as any)?.balance ?? (data as any)?.available_balance ?? '0';
+      const rawBalance = result?.balance ?? result?.available_balance ?? '0';
       const balance = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
+
       return { usdc: Number.isFinite(balance) ? balance : 0 };
+    } catch (error: any) {
+      const msg = String(error?.message || error);
+      console.error(`❌ getBalance error: ${msg}`);
+
+      // Extract HTTP status if available
+      const status = error?.response?.status ?? error?.status;
+      return { usdc: 0, error: msg, status };
     }
-
-    return { usdc: 0, error: lastErr?.error ?? 'Unknown error', status: lastErr?.status };
-
-    const data = await res.json();
-    const rawBalance = (data as any)?.balance ?? (data as any)?.available_balance ?? '0';
-    const balance = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
-    return { usdc: Number.isFinite(balance) ? balance : 0 };
   }
 
   async selfTest(): Promise<{ ok: boolean; details: string[] }> {
