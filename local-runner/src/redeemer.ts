@@ -1,4 +1,4 @@
-import { ethers, Contract, Wallet, JsonRpcProvider } from 'ethers';
+import { ethers, Contract, Wallet, providers } from 'ethers';
 import { config } from './config.js';
 
 // Polygon RPC endpoint
@@ -39,7 +39,7 @@ interface RedeemablePosition {
 const claimedConditions = new Set<string>();
 
 // Provider and wallet instances
-let provider: JsonRpcProvider | null = null;
+let provider: providers.JsonRpcProvider | null = null;
 let wallet: Wallet | null = null;
 let ctfContract: Contract | null = null;
 
@@ -51,7 +51,7 @@ function initializeRedeemer(): void {
 
   console.log('🔧 Initializing redeemer...');
   
-  provider = new JsonRpcProvider(POLYGON_RPC);
+  provider = new providers.JsonRpcProvider(POLYGON_RPC);
   wallet = new Wallet(config.polymarket.privateKey, provider);
   ctfContract = new Contract(CTF_ADDRESS, CTF_ABI, wallet);
   
@@ -125,7 +125,7 @@ async function redeemPosition(position: RedeemablePosition): Promise<boolean> {
     const indexSets = [1, 2]; // Redeem both outcome slots
     
     // Parent collection ID is zero for top-level conditions
-    const parentCollectionId = ethers.zeroPadValue('0x00', 32);
+    const parentCollectionId = ethers.utils.hexZeroPad('0x00', 32);
 
     console.log(`   📤 Sending redeemPositions transaction...`);
     
