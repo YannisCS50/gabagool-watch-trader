@@ -3,7 +3,7 @@ import os from 'os';
 import dns from 'node:dns';
 import { config } from './config.js';
 import { placeOrder, testConnection, getBalance, getOrderbookDepth, invalidateBalanceCache, ensureValidCredentials } from './polymarket.js';
-import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, STRATEGY } from './strategy.js';
+import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, STRATEGY, STRATEGY_VERSION, STRATEGY_NAME } from './strategy.js';
 import { enforceVpnOrExit } from './vpn-check.js';
 import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder } from './backend.js';
 import { checkAndClaimWinnings, getClaimableValue } from './redeemer.js';
@@ -18,6 +18,8 @@ try {
 
 console.log('🚀 Polymarket Live Trader - Local Runner');
 console.log('========================================');
+console.log(`📋 Strategy: ${STRATEGY_NAME}`);
+console.log(`📋 Strategy Version: ${STRATEGY_VERSION}`);
 
 const RUNNER_ID = `local-${os.hostname()}`;
 const RUNNER_VERSION = '1.3.0';
