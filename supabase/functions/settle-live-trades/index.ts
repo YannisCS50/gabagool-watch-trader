@@ -243,7 +243,18 @@ Deno.serve(async (req) => {
     const marketSlugs = Array.from(positionMap.keys());
     console.log(`[settle-live-trades] Processing ${marketSlugs.length} unsettled markets`);
 
-    // 4. Get strike prices from our database
+    // 4. FIRST check market_history - this is the most reliable source!
+    const { data: marketHistoryData } = await supabase
+      .from('market_history')
+      .select('slug, asset, result, open_price, close_price')
+      .in('slug', marketSlugs);
+
+    const marketHistoryMap = new Map(
+      (marketHistoryData || []).map(mh => [mh.slug, mh])
+    );
+    console.log(`[settle] Found ${marketHistoryData?.length || 0} markets in market_history`);
+
+    // 5. Get strike prices from our database as fallback
     const { data: strikePriceData } = await supabase
       .from('strike_prices')
       .select('market_slug, strike_price, open_price, close_price')
@@ -253,12 +264,15 @@ Deno.serve(async (req) => {
       (strikePriceData || []).map(sp => [sp.market_slug, sp])
     );
 
-    // 5. Fetch current Chainlink prices for assets we need
+    // 6. Fetch current Chainlink prices for assets we need (only if no result in market_history)
     const assetsNeeded = new Set<string>();
     for (const [slug, position] of positionMap) {
-      const sp = strikePriceMap.get(slug);
-      if (!sp?.close_price) {
-        assetsNeeded.add(position.asset);
+      const mh = marketHistoryMap.get(slug);
+      if (!mh?.result || mh.result === 'UNKNOWN') {
+        const sp = strikePriceMap.get(slug);
+        if (!sp?.close_price) {
+          assetsNeeded.add(position.asset);
+        }
       }
     }
 
@@ -270,27 +284,34 @@ Deno.serve(async (req) => {
       }
     }
 
-    // 6. Calculate results and settle
+    // 7. Calculate results and settle
     const resultsToInsert = [];
     let settledCount = 0;
     let pendingCount = 0;
 
     for (const [slug, position] of positionMap) {
       const totalInvested = position.upCost + position.downCost;
+      const mh = marketHistoryMap.get(slug);
       const sp = strikePriceMap.get(slug);
       
       let result: 'UP' | 'DOWN' | null = null;
-      let openPrice = sp?.open_price || sp?.strike_price || null;
-      let closePrice = sp?.close_price || null;
+      let openPrice = mh?.open_price || sp?.open_price || sp?.strike_price || null;
+      let closePrice = mh?.close_price || sp?.close_price || null;
 
-      // Strategy 1: Use our own strike_prices data
-      if (openPrice !== null && closePrice !== null) {
+      // Strategy 1: Use market_history result directly (MOST RELIABLE!)
+      if (mh?.result && mh.result !== 'UNKNOWN') {
+        result = mh.result as 'UP' | 'DOWN';
+        console.log(`[settle] ${slug}: market_history result = ${result}`);
+      }
+      
+      // Strategy 2: Use our own strike_prices data
+      else if (openPrice !== null && closePrice !== null) {
         result = closePrice > openPrice ? 'UP' : 'DOWN';
         console.log(`[settle] ${slug}: DB prices - Open: $${openPrice}, Close: $${closePrice} => ${result}`);
       }
       
-      // Strategy 2: Use current Chainlink price as close price if market ended
-      if (result === null && openPrice !== null) {
+      // Strategy 3: Use current Chainlink price as close price if market ended
+      else if (openPrice !== null) {
         const eventEnd = new Date(position.eventEndTime);
         if (eventEnd < now && currentPrices[position.asset]) {
           closePrice = currentPrices[position.asset];
@@ -314,13 +335,13 @@ Deno.serve(async (req) => {
         }
       }
 
-      // Strategy 3: Try Polymarket API as last resort
+      // Strategy 4: Try Polymarket API as last resort
       if (result === null) {
         result = await fetchMarketResult(slug);
       }
       
       if (result === null) {
-        console.log(`[settle] ${slug}: ⏳ WAITING for data (no open/close prices available)`);
+        console.log(`[settle] ${slug}: ⏳ WAITING for data (no result available)`);
         pendingCount++;
         continue;
       }
