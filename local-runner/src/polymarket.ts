@@ -677,26 +677,30 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
   }
 
   try {
-    // Use authenticated SDK call so we get proper signing headers.
-    // This also triggers the credential validation/auto-derive logic in getClient().
-    const client = await getClient();
+    // The SDK's getBalanceAllowance has bugs with Safe proxy (signature_type 2).
+    // Use a direct HTTP call with the funder address instead.
+    const response = await fetch(
+      `${CLOB_URL}/balance-allowance?asset_type=0&signature_type=2&address=${config.polymarket.address}`,
+      {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      }
+    );
 
-    const balanceAllowance = await (client as any).getBalanceAllowance({
-      // 0 = COLLATERAL (USDC)
-      asset_type: 0,
-    });
+    if (!response.ok) {
+      const text = await response.text();
+      console.error(`❌ Balance fetch failed: HTTP ${response.status} - ${text.slice(0, 200)}`);
 
-    if (isUnauthorizedPayload(balanceAllowance)) {
-      throw { status: 401, data: balanceAllowance, message: 'Unauthorized/Invalid api key' };
+      // Return cached balance if available
+      if (balanceCache) {
+        console.log(`   Using stale cached balance: $${balanceCache.usdc.toFixed(2)}`);
+        return { usdc: balanceCache.usdc };
+      }
+      return { usdc: 0, error: `HTTP ${response.status}` };
     }
 
-    const rawBalance =
-      balanceAllowance?.balance ??
-      balanceAllowance?.available_balance ??
-      balanceAllowance?.availableBalance ??
-      '0';
-
-    const balance = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
+    const data = await response.json();
+    const balance = parseFloat(data?.balance || '0');
 
     console.log(`💰 CLOB Balance: $${balance.toFixed(2)} USDC`);
 
@@ -705,14 +709,7 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
 
     return { usdc: balance };
   } catch (error: any) {
-    const status = error?.response?.status ?? error?.status;
-    const data = error?.response?.data ?? error?.data;
-
-    if (status) {
-      console.error(`❌ Balance fetch failed: HTTP ${status} - ${JSON.stringify(data)?.slice(0, 200)}`);
-    } else {
-      console.error(`❌ Failed to fetch balance: ${error?.message || error}`);
-    }
+    console.error(`❌ Failed to fetch balance: ${error?.message || error}`);
 
     // Return cached balance if available (even if stale)
     if (balanceCache) {
@@ -720,7 +717,7 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
       return { usdc: balanceCache.usdc };
     }
 
-    return { usdc: 0, error: status ? `HTTP ${status}` : error?.message };
+    return { usdc: 0, error: error?.message };
   }
 }
 
