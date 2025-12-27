@@ -864,13 +864,25 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
 
   const attemptBalanceFetch = async (apiCreds: { key: string; secret: string; passphrase: string }) => {
     const signer = new Wallet(config.polymarket.privateKey);
+
+    // IMPORTANT: When signer == funder, ALWAYS use signatureType=0 (regular EOA).
+    // An override of 1 or 2 only makes sense when signer ≠ funder (proxy wallet).
+    const signerIsFunder = signer.address.toLowerCase() === config.polymarket.address.toLowerCase();
     const override = (config.polymarket as any).signatureType as (0 | 1 | 2 | undefined);
-    const signatureType: 0 | 1 | 2 =
-      override === 0 || override === 1 || override === 2
-        ? override
-        : signer.address.toLowerCase() === config.polymarket.address.toLowerCase()
-          ? 0
-          : 2;
+
+    let signatureType: 0 | 1 | 2;
+    if (signerIsFunder) {
+      // Force 0 for regular EOA regardless of override
+      if (override !== undefined && override !== 0) {
+        console.warn(`⚠️ POLYMARKET_SIGNATURE_TYPE=${override} ignored: signer == funder means regular EOA (signatureType=0).`);
+      }
+      signatureType = 0;
+    } else {
+      signatureType =
+        override === 0 || override === 1 || override === 2
+          ? override
+          : 2; // default to Gnosis Safe for proxy
+    }
 
     // Per Polymarket docs, POLY_ADDRESS is always the Polygon signer address.
     const polyAddressHeader = signer.address;
