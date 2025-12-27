@@ -162,30 +162,60 @@ async function fetchRedeemablePositions(): Promise<RedeemablePosition[]> {
   const allPositions: RedeemablePosition[] = [];
 
   for (const walletAddress of walletsToCheck) {
+    let cursor: string | null = null;
+    let pageCount = 0;
+    const maxPages = 10; // Safety limit
+
     try {
-      const url = `${DATA_API_URL}/positions?user=${walletAddress}&sizeThreshold=0&limit=100`;
+      while (pageCount < maxPages) {
+        pageCount++;
+        let url = `${DATA_API_URL}/positions?user=${walletAddress}&sizeThreshold=0&limit=500`;
+        if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
 
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: {
-          'Accept': 'application/json',
-        },
-      });
+        const response = await fetch(url, {
+          method: 'GET',
+          headers: {
+            'Accept': 'application/json',
+          },
+        });
 
-      if (!response.ok) {
-        const body = await response.text();
-        console.error(`❌ Failed to fetch positions for ${walletAddress}: HTTP ${response.status}`);
-        console.error(`   Response: ${body.slice(0, 200)}`);
-        continue;
+        if (!response.ok) {
+          const body = await response.text();
+          console.error(`❌ Failed to fetch positions for ${walletAddress}: HTTP ${response.status}`);
+          console.error(`   Response: ${body.slice(0, 200)}`);
+          break;
+        }
+
+        const data = await response.json();
+        
+        // Handle both array response and paginated object response
+        let positions: RedeemablePosition[];
+        let nextCursor: string | null = null;
+        
+        if (Array.isArray(data)) {
+          positions = data;
+        } else if (data.positions && Array.isArray(data.positions)) {
+          positions = data.positions;
+          nextCursor = data.next_cursor || data.nextCursor || null;
+        } else {
+          console.log(`   ⚠️ Unexpected API response format for ${walletAddress}`);
+          break;
+        }
+
+        allPositions.push(...positions);
+        console.log(`   📄 Page ${pageCount}: ${positions.length} positions for ${walletAddress.slice(0,10)}...`);
+
+        // Stop if no more pages or same cursor returned
+        if (!nextCursor || nextCursor === cursor || positions.length === 0) break;
+        cursor = nextCursor;
       }
-
-      const positions: RedeemablePosition[] = await response.json();
-      allPositions.push(...positions);
 
     } catch (error) {
       console.error(`❌ Error fetching positions for ${walletAddress}:`, error);
     }
   }
+
+  console.log(`📊 Total positions fetched: ${allPositions.length}`);
 
   // Filter for redeemable positions only, exclude already-claimed and pending-tx ones,
   // and de-dupe by conditionId (binary markets often return both UP and DOWN entries).
