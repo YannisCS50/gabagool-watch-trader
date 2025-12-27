@@ -677,30 +677,37 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
   }
 
   try {
-    // The SDK's getBalanceAllowance has bugs with Safe proxy (signature_type 2).
-    // Use a direct HTTP call with the funder address instead.
-    const response = await fetch(
-      `${CLOB_URL}/balance-allowance?asset_type=0&signature_type=2&address=${config.polymarket.address}`,
-      {
-        method: 'GET',
-        headers: { 'Content-Type': 'application/json' },
-      }
-    );
+    // Use authenticated SDK call so we get proper signing headers.
+    // NOTE: Polymarket has migrated some endpoints to prefer `assetAddress`.
+    // We send both `asset_type` and USDC `assetAddress` to stay compatible.
+    const client = await getClient();
 
-    if (!response.ok) {
-      const text = await response.text();
-      console.error(`❌ Balance fetch failed: HTTP ${response.status} - ${text.slice(0, 200)}`);
+    const USDC_POLYGON = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
 
-      // Return cached balance if available
-      if (balanceCache) {
-        console.log(`   Using stale cached balance: $${balanceCache.usdc.toFixed(2)}`);
-        return { usdc: balanceCache.usdc };
-      }
-      return { usdc: 0, error: `HTTP ${response.status}` };
+    const balanceAllowance = await (client as any).getBalanceAllowance({
+      // 0 = COLLATERAL (USDC) in older API
+      asset_type: 0,
+      // Newer API expects an ERC20 address
+      assetAddress: USDC_POLYGON,
+      // Some versions use snake_case
+      asset_address: USDC_POLYGON,
+      // Safe proxy
+      signature_type: 2,
+      // Funder (Safe) address
+      address: config.polymarket.address,
+    });
+
+    if (isUnauthorizedPayload(balanceAllowance)) {
+      throw { status: 401, data: balanceAllowance, message: 'Unauthorized/Invalid api key' };
     }
 
-    const data = await response.json();
-    const balance = parseFloat(data?.balance || '0');
+    const rawBalance =
+      balanceAllowance?.balance ??
+      balanceAllowance?.available_balance ??
+      balanceAllowance?.availableBalance ??
+      '0';
+
+    const balance = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
 
     console.log(`💰 CLOB Balance: $${balance.toFixed(2)} USDC`);
 
@@ -709,7 +716,14 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
 
     return { usdc: balance };
   } catch (error: any) {
-    console.error(`❌ Failed to fetch balance: ${error?.message || error}`);
+    const status = error?.response?.status ?? error?.status;
+    const data = error?.response?.data ?? error?.data;
+
+    if (status) {
+      console.error(`❌ Balance fetch failed: HTTP ${status} - ${JSON.stringify(data)?.slice(0, 200)}`);
+    } else {
+      console.error(`❌ Failed to fetch balance: ${error?.message || error}`);
+    }
 
     // Return cached balance if available (even if stale)
     if (balanceCache) {
@@ -717,7 +731,7 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
       return { usdc: balanceCache.usdc };
     }
 
-    return { usdc: 0, error: error?.message };
+    return { usdc: 0, error: status ? `HTTP ${status}` : error?.message };
   }
 }
 
