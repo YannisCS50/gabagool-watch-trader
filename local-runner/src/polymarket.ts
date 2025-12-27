@@ -6,8 +6,20 @@ import { config } from './config.js';
 const CLOB_URL = 'https://clob.polymarket.com';
 const CHAIN_ID = 137; // Polygon mainnet
 
-// Polygon USDC (PoS) contract address; used by balance/allowance endpoints
-const USDC_ASSET_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+// Collateral token contract address (Polygon USDC PoS by default).
+// IMPORTANT: some Polymarket endpoints validate addresses as lowercase hex only.
+const DEFAULT_USDC_ASSET_ADDRESS = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+const ERC20_ADDRESS_RE = /^0x[0-9a-f]{40}$/;
+
+export const USDC_ASSET_ADDRESS = (
+  process.env.POLYMARKET_USDC_ADDRESS ?? DEFAULT_USDC_ASSET_ADDRESS
+).toLowerCase();
+
+if (!ERC20_ADDRESS_RE.test(USDC_ASSET_ADDRESS)) {
+  throw new Error(
+    `Invalid POLYMARKET_USDC_ADDRESS: "${process.env.POLYMARKET_USDC_ADDRESS}" (expected 0x + 40 hex chars)`
+  );
+}
 
 interface OrderRequest {
   tokenId: string;
