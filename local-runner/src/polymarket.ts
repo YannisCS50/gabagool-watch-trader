@@ -184,41 +184,45 @@ export async function deriveApiCredentials(): Promise<{ key: string; secret: str
   );
   
   try {
-    // First, delete any existing API keys for this address
-    console.log(`   🗑️ Deleting existing API keys...`);
-    try {
-      await tempClient.deleteApiKey();
-      console.log(`   ✅ Old API keys deleted`);
-    } catch (deleteError: any) {
-      // Ignore errors - may not have existing keys
-      console.log(`   ⚠️ No existing keys to delete or delete failed`);
+    const anyClient = tempClient as any;
+
+    // IMPORTANT: Polymarket sometimes rejects *creating* new keys (HTTP 400: "Could not create api key")
+    // but still allows deriving existing creds. Prefer "createOrDerive" when available.
+    let newCreds: any;
+
+    if (typeof anyClient.createOrDeriveApiKey === 'function') {
+      console.log(`   🔑 Deriving or creating API key (createOrDeriveApiKey)...`);
+      newCreds = await anyClient.createOrDeriveApiKey();
+    } else if (typeof anyClient.createOrDeriveApiCreds === 'function') {
+      console.log(`   🔑 Deriving or creating API creds (createOrDeriveApiCreds)...`);
+      newCreds = await anyClient.createOrDeriveApiCreds();
+    } else {
+      console.log(`   🔑 Creating new API key (createApiKey)...`);
+      newCreds = await anyClient.createApiKey();
     }
-    
-    // Create new API key
-    console.log(`   🔑 Creating new API key...`);
-    const newCreds = await tempClient.createApiKey();
-    
+
+    const apiKey = newCreds?.apiKey ?? newCreds?.key;
+    const secret = newCreds?.secret;
+    const passphrase = newCreds?.passphrase;
+
     // Validate response - SDK may return error payload instead of throwing
-    if (!newCreds || !newCreds.apiKey || !newCreds.secret || !newCreds.passphrase) {
+    if (!apiKey || !secret || !passphrase) {
       const errPayload = newCreds as any;
-      throw new Error(
-        errPayload?.error || 
-        'createApiKey returned invalid response - manual key creation required'
-      );
+      throw new Error(errPayload?.error || 'derive/create returned invalid response - manual key creation required');
     }
-    
-    console.log(`   ✅ New API credentials created!`);
-    console.log(`      API Key: ${newCreds.apiKey.slice(0, 12)}...`);
-    console.log(`      Secret length: ${newCreds.secret?.length || 0} chars`);
-    console.log(`      Passphrase length: ${newCreds.passphrase?.length || 0} chars`);
-    
+
+    console.log(`   ✅ API credentials ready!`);
+    console.log(`      API Key: ${String(apiKey).slice(0, 12)}...`);
+    console.log(`      Secret length: ${String(secret)?.length || 0} chars`);
+    console.log(`      Passphrase length: ${String(passphrase)?.length || 0} chars`);
+
     // Store in module-level cache
     derivedCreds = {
-      key: newCreds.apiKey,
-      secret: newCreds.secret,
-      passphrase: newCreds.passphrase,
+      key: apiKey,
+      secret,
+      passphrase,
     };
-    
+
     return derivedCreds;
   } catch (error: any) {
     console.error(`   ❌ Failed to derive credentials: ${error?.message || error}`);
