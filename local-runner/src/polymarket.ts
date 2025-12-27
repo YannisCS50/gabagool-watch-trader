@@ -806,6 +806,7 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
 
     balanceCache = { usdc: balance, fetchedAt: Date.now() };
     return { usdc: balance };
+  };
 
   try {
     let apiCreds = derivedCreds || {
