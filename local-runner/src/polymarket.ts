@@ -400,12 +400,21 @@ async function getClient(): Promise<ClobClient> {
   const signerAddress = signer.address;
 
   const override = (config.polymarket as any).signatureType as (0 | 1 | 2 | undefined);
-  const signatureType: 0 | 1 | 2 =
-    override === 0 || override === 1 || override === 2
-      ? override
-      : signerAddress.toLowerCase() === config.polymarket.address.toLowerCase()
-        ? 0
-        : 2;
+  const signerIsFunder = signerAddress.toLowerCase() === config.polymarket.address.toLowerCase();
+
+  let signatureType: 0 | 1 | 2;
+  if (signerIsFunder) {
+    // Force 0 for regular EOA regardless of override
+    if (override !== undefined && override !== 0) {
+      console.warn(
+        `⚠️ POLYMARKET_SIGNATURE_TYPE=${override} ignored: signer == funder means regular EOA (signatureType=0).`
+      );
+    }
+    signatureType = 0;
+  } else {
+    // Proxy wallet modes only apply when signer ≠ funder
+    signatureType = override === 0 || override === 1 || override === 2 ? override : 2;
+  }
 
   // Per Polymarket docs, POLY_ADDRESS header must be the Polygon SIGNER address (EOA)
   // even when trading with a proxy wallet (signatureType 1/2).
@@ -888,56 +897,52 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
     // Per Polymarket docs, POLY_ADDRESS is always the Polygon signer address.
     const polyAddressHeader = signer.address;
 
-    // Balance is held by the funder for proxy wallet modes.
-    const addressParam = signatureType === 0 ? signer.address : config.polymarket.address;
+    // Build SDK creds object (support both new + legacy field names)
+    const sdkCreds = {
+      apiKey: apiCreds.key,
+      apiSecret: apiCreds.secret,
+      apiPassphrase: apiCreds.passphrase,
+      address: polyAddressHeader,
+      // legacy
+      key: apiCreds.key,
+      secret: apiCreds.secret,
+      passphrase: apiCreds.passphrase,
+    } as any;
 
-    const pathWithQuery = `/balance-allowance?asset_type=0&signature_type=${signatureType}&address=${encodeURIComponent(
-      addressParam
-    )}`;
+    const client =
+      signatureType === 0
+        ? new ClobClient(CLOB_URL, CHAIN_ID, signer, sdkCreds, 0)
+        : new ClobClient(CLOB_URL, CHAIN_ID, signer, sdkCreds, signatureType, config.polymarket.address);
 
-    const timestampSeconds = String(Math.floor(Date.now() / 1000));
+    try {
+      // Some SDK versions expect updateBalanceAllowance first.
+      if (typeof (client as any).updateBalanceAllowance === 'function') {
+        await (client as any).updateBalanceAllowance({ asset_type: 0 });
+      }
 
-    // Build signature like upstream clob-client (url-safe base64 with '=' padding)
-    const secretBytes = Buffer.from(sanitizeBase64Secret(apiCreds.secret), 'base64');
-    if (!secretBytes?.length) {
-      return { error: { status: 0, text: 'Invalid API secret (base64 decode failed)' } };
+      const balanceAllowance = await (client as any).getBalanceAllowance({ asset_type: 0 });
+      const rawBalance =
+        (balanceAllowance as any)?.balance ??
+        (balanceAllowance as any)?.available_balance ??
+        (balanceAllowance as any)?.availableBalance ??
+        0;
+
+      const balance = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
+
+      console.log(`💰 CLOB Balance: $${balance.toFixed(2)} USDC`);
+
+      balanceCache = { usdc: balance, fetchedAt: Date.now() };
+      return { usdc: balance };
+    } catch (e: any) {
+      const status = e?.response?.status ?? e?.status ?? 0;
+      const text =
+        typeof e?.response?.data === 'string'
+          ? e.response.data
+          : e?.response?.data
+            ? JSON.stringify(e.response.data)
+            : e?.message || String(e);
+      return { error: { status, text } };
     }
-
-    const fetchWithSignaturePath = async (signaturePath: string) => {
-      const signature = buildSignature(secretBytes, timestampSeconds, 'GET', signaturePath);
-      return fetch(`${CLOB_URL}${pathWithQuery}`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-          POLY_ADDRESS: polyAddressHeader,
-          POLY_API_KEY: apiCreds.key,
-          POLY_PASSPHRASE: apiCreds.passphrase,
-          POLY_SIGNATURE: signature,
-          POLY_TIMESTAMP: timestampSeconds,
-        } as any,
-      });
-    };
-
-    // Some CLOB endpoints verify the signature against only the pathname (no query string).
-    // Try the "full path" first, then retry once signing only the pathname.
-    let response = await fetchWithSignaturePath(pathWithQuery);
-    if (response.status === 401) {
-      response = await fetchWithSignaturePath('/balance-allowance');
-    }
-
-    if (!response.ok) {
-      const text = await response.text();
-      return { error: { status: response.status, text } };
-    }
-
-    const data = await response.json();
-    const rawBalance = (data as any)?.balance ?? (data as any)?.available_balance ?? '0';
-    const balance = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
-
-    console.log(`💰 CLOB Balance: $${balance.toFixed(2)} USDC`);
-
-    balanceCache = { usdc: balance, fetchedAt: Date.now() };
-    return { usdc: balance };
   };
 
   try {
