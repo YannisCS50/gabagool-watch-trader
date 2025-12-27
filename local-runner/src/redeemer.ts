@@ -120,19 +120,24 @@ async function fetchRedeemablePositions(): Promise<RedeemablePosition[]> {
 
     const positions: RedeemablePosition[] = await response.json();
     
-    console.log(`📊 Found ${positions.length} total positions`);
-    
-    // Log all positions for debugging
-    for (const p of positions) {
-      const status = p.redeemable ? '💰 REDEEMABLE' : '⏳ not yet';
-      console.log(`   ${status}: ${p.outcome} ${p.size.toFixed(0)} shares @ ${p.title?.slice(0, 40) || p.slug}`);
-    }
-    
-    // Filter for redeemable positions only
-    const redeemable = positions.filter(p => p.redeemable === true);
-    
+    // Filter for redeemable positions only AND exclude already claimed ones
+    const redeemable = positions.filter(p => {
+      if (!p.redeemable) return false;
+      if (claimedConditions.has(p.conditionId)) {
+        // Don't log - we already claimed this
+        return false;
+      }
+      return true;
+    });
+
+    // Only log positions that are actually still pending
     if (redeemable.length > 0) {
-      console.log(`\n💰 ${redeemable.length} positions ready to claim!`);
+      console.log(`💰 Found ${redeemable.length} redeemable positions (excluding ${claimedConditions.size} already claimed):`);
+      for (const p of redeemable) {
+        console.log(`   💰 REDEEMABLE: ${p.outcome} ${p.size.toFixed(0)} shares @ ${p.title?.slice(0, 50) || p.slug}`);
+      }
+    } else if (claimedConditions.size > 0) {
+      console.log(`   ✅ All positions already claimed this session (${claimedConditions.size} total)`);
     } else {
       console.log(`   No redeemable positions at this time`);
     }
