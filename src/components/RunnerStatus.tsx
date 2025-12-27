@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { supabase } from '@/integrations/supabase/client';
+import { formatUsdcFromBaseUnits } from '@/lib/utils';
 import { Activity, Server, Clock, TrendingUp, Wallet, RefreshCw } from 'lucide-react';
 
 interface RunnerHeartbeat {
@@ -168,7 +169,7 @@ export function RunnerStatus() {
                 </div>
                 <div className="flex items-center gap-1 text-muted-foreground">
                   <Wallet className="h-3 w-3" />
-                  <span>${runner.balance?.toFixed(2) || '0.00'}</span>
+                  <span>{formatUsdcFromBaseUnits(runner.balance)}</span>
                 </div>
               </div>
 
