@@ -127,15 +127,20 @@ export async function reconcile(signerAddress: string): Promise<ReconciliationRe
 
   console.log(`   💰 Total unique claimables: ${claimables.length}`);
 
-  // 3. Get recent on-chain claims (last ~1 hour = ~1800 blocks on Polygon)
+  // 3. Get recent on-chain claims (last ~10 minutes = ~300 blocks on Polygon)
+  // Note: Polygon RPC limits block range queries, so we use a smaller range
   const currentBlock = await getBlockNumber();
-  const fromBlock = currentBlock - 1800;
+  const fromBlock = currentBlock - 300; // Reduced from 1800 to avoid "Block range too large"
 
   const allClaims: PayoutRedemptionEvent[] = [];
   for (const wallet of wallets) {
-    const claims = await getRecentPayoutRedemptions(wallet, fromBlock);
-    allClaims.push(...claims);
-    console.log(`   📤 ${wallet.slice(0, 10)}...: ${claims.length} recent claims`);
+    try {
+      const claims = await getRecentPayoutRedemptions(wallet, fromBlock);
+      allClaims.push(...claims);
+      console.log(`   📤 ${wallet.slice(0, 10)}...: ${claims.length} recent claims`);
+    } catch (e: any) {
+      console.log(`   ⚠️ ${wallet.slice(0, 10)}...: Could not fetch claims (RPC limit)`);
+    }
   }
 
   // 4. Identify discrepancies
