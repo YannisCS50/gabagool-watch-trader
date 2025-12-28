@@ -54,15 +54,15 @@ interface MarketToken {
 const STRATEGY = {
   opening: {
     notional: 5,          // $5 initial trade
-    maxPrice: 0.52,        // Only enter if price <= 52¢
+    maxPrice: 0.56,        // Only enter if price <= 56¢ (was 52¢)
   },
   hedge: {
     triggerCombined: 0.98, // Hedge when combined < 98¢
     notional: 5,           // $5 per hedge
     cushionTicks: 3,       // Extra ticks above ask for guaranteed fill
     tickSize: 0.01,        // 1¢ tick size
-    forceTimeoutSec: 45,   // Force hedge after 45s if still one-sided
-    maxPrice: 0.65,        // Max price for hedge (to prevent overpaying)
+    forceTimeoutSec: 25,   // Force hedge after 25s if still one-sided (was 45s)
+    maxPrice: 0.75,        // Max price for hedge (was 65¢)
   },
   accumulate: {
     triggerCombined: 0.97, // Accumulate when combined < 97¢
