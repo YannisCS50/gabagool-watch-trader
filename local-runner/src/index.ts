@@ -16,10 +16,25 @@ try {
   // ignore
 }
 
-console.log('🚀 Polymarket Live Trader - Local Runner');
-console.log('========================================');
-console.log(`📋 Strategy: ${STRATEGY_NAME}`);
-console.log(`📋 Strategy Version: ${STRATEGY_VERSION}`);
+console.log('');
+console.log('╔════════════════════════════════════════════════════════════════╗');
+console.log('║        🚀 POLYMARKET LIVE TRADER - LOCAL RUNNER                ║');
+console.log('╠════════════════════════════════════════════════════════════════╣');
+console.log(`║  📋 Strategy:  ${STRATEGY_NAME.padEnd(47)}║`);
+console.log(`║  📋 Version:   ${STRATEGY_VERSION.padEnd(47)}║`);
+console.log('╠════════════════════════════════════════════════════════════════╣');
+console.log('║  ⚙️  STRATEGY CONFIG:                                          ║');
+console.log(`║     Opening: max ${(STRATEGY.opening.maxPrice * 100).toFixed(0)}¢, notional $${STRATEGY.opening.notional}`.padEnd(66) + '║');
+console.log(`║     Edge buffer: ${(STRATEGY.edge.buffer * 100).toFixed(1)}¢, min executable: ${(STRATEGY.edge.minExecutableEdge * 100).toFixed(1)}¢`.padEnd(66) + '║');
+console.log(`║     Cooldown: ${STRATEGY.cooldownMs / 1000}s, hedge cushion: ${STRATEGY.tick.hedgeCushion} ticks`.padEnd(66) + '║');
+console.log(`║     Sizing: $${STRATEGY.sizing.minClipUsd}-$${STRATEGY.sizing.maxClipUsd} (base $${STRATEGY.sizing.baseClipUsd})`.padEnd(66) + '║');
+console.log(`║     Stop trades: last ${STRATEGY.limits.stopTradesSec}s, unwind: last ${STRATEGY.limits.unwindStartSec}s`.padEnd(66) + '║');
+console.log(`║     Prob bias: ${STRATEGY.probabilityBias.enabled ? 'ON' : 'OFF'}, skip hedge @ $${STRATEGY.probabilityBias.skipHedgeThresholdUsd} diff`.padEnd(66) + '║');
+console.log('╠════════════════════════════════════════════════════════════════╣');
+console.log(`║     Assets: ${config.trading.assets.join(', ')}`.padEnd(66) + '║');
+console.log(`║     Max notional/trade: $${config.trading.maxNotionalPerTrade}`.padEnd(66) + '║');
+console.log('╚════════════════════════════════════════════════════════════════╝');
+console.log('');
 
 const RUNNER_ID = `local-${os.hostname()}`;
 const RUNNER_VERSION = '1.3.0';
