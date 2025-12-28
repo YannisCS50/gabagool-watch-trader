@@ -20,6 +20,7 @@ import StrategyCode from "./pages/StrategyCode";
 import PaperBotStrategy from "./pages/PaperBotStrategy";
 import Wallet from "./pages/Wallet";
 import LiveTrading from "./pages/LiveTrading";
+import LiveBotStrategy from "./pages/LiveBotStrategy";
 import Settings from "./pages/Settings";
 import TradeAnalysis from "./pages/TradeAnalysis";
 import NotFound from "./pages/NotFound";
@@ -50,6 +51,7 @@ const App = () => (
           <Route path="/paper-bot-strategy" element={<PaperBotStrategy />} />
           <Route path="/wallet" element={<Wallet />} />
           <Route path="/live-trading" element={<LiveTrading />} />
+          <Route path="/live-bot-strategy" element={<LiveBotStrategy />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/trade-analysis" element={<TradeAnalysis />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
