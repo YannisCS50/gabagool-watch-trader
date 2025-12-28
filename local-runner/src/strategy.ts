@@ -65,8 +65,8 @@ export interface MarketState {
 export const STRATEGY = {
   // Edge & Entry (PDF Section 4 & 11)
   edge: {
-    buffer: 0.012,         // 1.2¢ edge buffer (range 0.6–2.0¢)
-    minExecutableEdge: 0.008, // Minimum edge after fees
+    buffer: 0.008,         // 0.8¢ edge buffer (was 1.2¢, range 0.6–2.0¢)
+    minExecutableEdge: 0.006, // Minimum edge after fees (was 0.008)
   },
   
   // Tick & Rounding (PDF Section 5)
@@ -78,9 +78,9 @@ export const STRATEGY = {
   
   // Sizing (PDF Section 6)
   sizing: {
-    baseClipUsd: 8,        // Base clip size
-    minClipUsd: 3,
-    maxClipUsd: 15,
+    baseClipUsd: 12,       // Base clip size (was $8)
+    minClipUsd: 5,         // (was $3)
+    maxClipUsd: 25,        // (was $15)
   },
   
   // Skew Management (PDF Section 7)
@@ -114,7 +114,7 @@ export const STRATEGY = {
   },
   
   // Cooldown
-  cooldownMs: 15000,
+  cooldownMs: 10000,      // Was 15000ms
   
   // ==========================================================
   // PROBABILITY BIAS - Skip hedge als winnaar duidelijk is
