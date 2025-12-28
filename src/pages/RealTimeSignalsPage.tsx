@@ -39,6 +39,7 @@ import { useRealtimePaperBot } from "@/hooks/useRealtimePaperBot";
 import { LivePrice } from "@/components/LivePrice";
 import { GabagoolTradesSummary } from "@/components/GabagoolTradesSummary";
 import { PaperBotTradesSummary } from "@/components/PaperBotTradesSummary";
+import { LiveBotTradesSummary } from "@/components/LiveBotTradesSummary";
 import { PaperBotOverview } from "@/components/PaperBotOverview";
 import { LiveBotOverview } from "@/components/LiveBotOverview";
 import { Switch } from "@/components/ui/switch";
@@ -584,6 +585,11 @@ const RealTimeSignalsPage = () => {
                       downClobPrice={market.downPrice} 
                     />
                     <PaperBotTradesSummary 
+                      marketSlug={market.slug} 
+                      upClobPrice={market.upPrice} 
+                      downClobPrice={market.downPrice} 
+                    />
+                    <LiveBotTradesSummary 
                       marketSlug={market.slug} 
                       upClobPrice={market.upPrice} 
                       downClobPrice={market.downPrice} 
