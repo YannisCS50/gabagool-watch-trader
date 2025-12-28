@@ -706,12 +706,53 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
       const currentShares = rebalanceSide === 'UP' ? inv.upShares : inv.downShares;
       const otherShares = rebalanceSide === 'UP' ? inv.downShares : inv.upShares;
       
-      // Buy enough to balance
+      // === AGGRESSIVE ACCUMULATE MODE ===
+      // If the underweight side is EXTREMELY cheap (< 10¢), accumulate aggressively
+      // This captures arbitrage opportunities where we can buy shares at 5¢ that pay $1
+      if (rebalanceAsk <= 0.10) {
+        // Check combined price for edge
+        const otherAsk = rebalanceSide === 'UP' ? downAsk : upAsk;
+        const combinedForArb = rebalanceAsk + otherAsk;
+        
+        // Even if combined > 1, at 5¢ we should still buy to create huge hedge potential
+        // Max out the clip size for cheap shares
+        const aggressiveClip = STRATEGY.sizing.maxClipUsd;
+        const sharesToBuy = Math.min(
+          Math.floor(aggressiveClip / rebalanceAsk),
+          otherShares - currentShares // Don't exceed what we need to balance
+        );
+        
+        if (sharesToBuy >= 5) {
+          const edgePct = ((1 - combinedForArb) * 100).toFixed(1);
+          return {
+            outcome: rebalanceSide,
+            price: roundDown(rebalanceAsk, tick),
+            shares: sharesToBuy,
+            reasoning: `AGGRESSIVE Rebalance ${rebalanceSide} @ ${(rebalanceAsk * 100).toFixed(0)}¢ (${edgePct}% edge, huge hedge opportunity)`,
+            type: 'accumulate',
+          };
+        }
+      }
+      
+      // Normal rebalance: buy enough to approach balance
       const sharesToBalance = Math.floor((otherShares - currentShares) / 2);
       if (sharesToBalance < 1) return null;
       
-      // Check skew cap
-      if (exceedsSkewCap(inv, rebalanceSide, sharesToBalance)) return null;
+      // Check skew cap - but allow larger rebalances if price is good
+      if (exceedsSkewCap(inv, rebalanceSide, sharesToBalance)) {
+        // Try a smaller amount that won't exceed cap
+        const smallerAmount = Math.floor(sharesToBalance / 2);
+        if (smallerAmount >= 5 && !exceedsSkewCap(inv, rebalanceSide, smallerAmount)) {
+          return {
+            outcome: rebalanceSide,
+            price: roundDown(rebalanceAsk, tick),
+            shares: smallerAmount,
+            reasoning: `Rebalance ${rebalanceSide} @ ${(rebalanceAsk * 100).toFixed(1)}¢ (partial skew correction)`,
+            type: 'rebalance',
+          };
+        }
+        return null;
+      }
       
       return {
         outcome: rebalanceSide,
