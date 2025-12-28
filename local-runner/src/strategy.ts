@@ -619,9 +619,13 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
     if (state === 'ONE_SIDED') {
       const missingSide: Outcome = inv.upShares === 0 ? 'UP' : 'DOWN';
       const missingAsk = missingSide === 'UP' ? upAsk : downAsk;
+      const existingShares = missingSide === 'UP' ? inv.downShares : inv.upShares;
       
-      return buildHedge(missingSide, missingAsk, tick, 
-        missingSide === 'UP' ? inv.downShares : inv.upShares);
+      // MINIMUM SHARES: Polymarket rejects orders < ~$1-2 notional
+      const minSharesForOrder = 5;
+      const hedgeShares = Math.max(existingShares, minSharesForOrder);
+      
+      return buildHedge(missingSide, missingAsk, tick, hedgeShares);
     }
     return null; // In UNWIND, don't take new risk
   }
@@ -676,6 +680,11 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
       const existingCost = missingSide === 'UP' ? inv.downCost : inv.upCost;
       const existingAvg = existingShares > 0 ? existingCost / existingShares : 0;
       
+      // MINIMUM SHARES: Polymarket rejects orders < ~$1-2 notional
+      // Ensure we always order at least 5 shares
+      const minSharesForOrder = 5;
+      const hedgeShares = Math.max(existingShares, minSharesForOrder);
+      
       // ========== PROBABILITY BIAS CHECK ==========
       // Als prijs ver van strike is, kunnen we hedge skippen
       if (currentPrice !== undefined && strikePrice !== undefined) {
@@ -705,23 +714,25 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
       const isTimeCritical = remainingSeconds < 120; // Less than 2 minutes
       const locksProfit = projectedCombined < 1 - STRATEGY.edge.minExecutableEdge;
       
+      console.log(`[Strategy] Hedge eval: ${missingSide} @ ${(missingAsk * 100).toFixed(0)}¢, shares ${existingShares}→${hedgeShares}, combined=${(projectedCombined * 100).toFixed(0)}¢`);
+      
       if (isExpensiveSide) {
         // Expensive side: only proceed if one of the safe conditions is met
         if (locksProfit) {
           // Safe: we still lock in profit even with expensive hedge
-          return buildHedge(missingSide, missingAsk, tick, existingShares);
+          return buildHedge(missingSide, missingAsk, tick, hedgeShares);
         }
         
         if (isHighCertainty) {
           // High certainty: market is 85%+ confident, likely to win
           console.log(`[Strategy] Buying expensive ${missingSide} @ ${(missingAsk * 100).toFixed(0)}¢ (high certainty ≥85%)`);
-          return buildHedge(missingSide, missingAsk, tick, existingShares);
+          return buildHedge(missingSide, missingAsk, tick, hedgeShares);
         }
         
         if (isTimeCritical && projectedCombined < 1.02) {
           // Time critical: must hedge, but only if not a huge loss
           console.log(`[Strategy] Time-critical hedge ${missingSide} @ ${(missingAsk * 100).toFixed(0)}¢ (${remainingSeconds}s left)`);
-          return buildHedge(missingSide, missingAsk, tick, existingShares);
+          return buildHedge(missingSide, missingAsk, tick, hedgeShares);
         }
         
         // Otherwise skip: too risky to buy expensive side without certainty
@@ -731,7 +742,7 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
       
       // Cheap side (<50¢): always hedge if it's profitable or break-even
       if (projectedCombined < 1.0) {
-        return buildHedge(missingSide, missingAsk, tick, existingShares);
+        return buildHedge(missingSide, missingAsk, tick, hedgeShares);
       }
       
       return null;
