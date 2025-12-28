@@ -122,7 +122,7 @@ export const STRATEGY = {
   probabilityBias: {
     enabled: true,
     // Skip hedge wanneer huidige prijs X dollar van strike afwijkt
-    skipHedgeThresholdUsd: 120,      // $120 verschil = skip losing hedge
+    skipHedgeThresholdUsd: 85,       // $85 verschil = skip losing hedge (was 120)
     highConfidenceUsd: 200,          // $200+ verschil = hoge zekerheid
     // Minimale tijd over voordat we hedge skippen (safety)
     minSecondsToSkip: 120,           // Alleen skippen als >2 min over
