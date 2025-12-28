@@ -102,7 +102,9 @@ export const STRATEGY = {
   // Opening parameters
   opening: {
     notional: config.trading.maxNotionalPerTrade,
-    maxPrice: 0.50,
+    maxPrice: 0.52,           // Markt start altijd rond 48-52¢
+    skipEdgeCheck: true,      // Bij opening: trade direct, skip edge buffer
+    maxDelayMs: 5000,         // Max 5s wachten na market open
   },
   
   // Entry conditions
@@ -637,9 +639,19 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
 
   switch (state) {
     case 'FLAT': {
-      // FLAT: Check for executable edge, buy cheapest side
-      if (!pairedLockOk(upAsk, downAsk, STRATEGY.edge.buffer)) {
-        return null; // No edge
+      // FLAT: Buy cheapest side if edge exists OR opening conditions met
+      const cheaperSide: Outcome = upAsk <= downAsk ? 'UP' : 'DOWN';
+      const cheaperPrice = cheaperSide === 'UP' ? upAsk : downAsk;
+      
+      // NEW: Opening trade can skip edge check if price is near fair value (48-52¢)
+      const isOpeningPrice = cheaperPrice <= STRATEGY.opening.maxPrice;
+      const hasEdge = pairedLockOk(upAsk, downAsk, STRATEGY.edge.buffer);
+      
+      if (STRATEGY.opening.skipEdgeCheck && isOpeningPrice) {
+        // Opening: trade direct bij markt start, skip edge buffer
+        console.log(`[Strategy] Opening trade @ ${(cheaperPrice * 100).toFixed(1)}¢ (skipEdgeCheck enabled)`);
+      } else if (!hasEdge) {
+        return null; // No edge and not opening price
       }
       
       // Balance check
@@ -647,9 +659,6 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
         const check = checkBalanceForOpening(availableBalance, STRATEGY.opening.notional);
         if (!check.canProceed) return null;
       }
-      
-      const cheaperSide: Outcome = upAsk <= downAsk ? 'UP' : 'DOWN';
-      const cheaperPrice = cheaperSide === 'UP' ? upAsk : downAsk;
       
       if (cheaperPrice > STRATEGY.opening.maxPrice) return null;
       
