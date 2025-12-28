@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -20,10 +20,13 @@ import {
   Power,
   Wifi,
   WifiOff,
+  Download,
 } from 'lucide-react';
 import { useLiveBotSettings } from '@/hooks/useLiveBotSettings';
 import { useLiveTrades } from '@/hooks/useLiveTrades';
 import { useRealtimeLiveBot } from '@/hooks/useRealtimeLiveBot';
+import { supabase } from '@/integrations/supabase/client';
+import { toast } from 'sonner';
 
 interface LiveBotOverviewProps {
   getPrice: (slug: string, outcome: 'up' | 'down' | 'yes' | 'no') => number | null;
@@ -49,7 +52,32 @@ export const LiveBotOverview = ({ getPrice }: LiveBotOverviewProps) => {
     logs,
   } = useRealtimeLiveBot();
   
-  const { trades, results, isLoading: tradesLoading } = useLiveTrades();
+  const { trades, results, isLoading: tradesLoading, refetch: refetchTrades } = useLiveTrades();
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  const syncTrades = async () => {
+    setIsSyncing(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('sync-polymarket-trades');
+      
+      if (error) {
+        toast.error(`Sync failed: ${error.message}`);
+        return;
+      }
+      
+      if (data?.success) {
+        toast.success(`Synced ${data.insertedTrades || 0} new trades from Polymarket`);
+        refetchTrades();
+      } else {
+        toast.error(data?.error || 'Sync failed');
+      }
+    } catch (err) {
+      toast.error('Failed to sync trades');
+      console.error('Sync error:', err);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   // Calculate stats from live trades
   const stats = useMemo(() => {
@@ -153,7 +181,17 @@ export const LiveBotOverview = ({ getPrice }: LiveBotOverviewProps) => {
               </Badge>
             )}
           </CardTitle>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <Button 
+              variant="outline" 
+              size="sm" 
+              onClick={syncTrades} 
+              disabled={isSyncing}
+              className="text-xs"
+            >
+              <Download className={`w-3 h-3 mr-1 ${isSyncing ? 'animate-pulse' : ''}`} />
+              {isSyncing ? 'Syncing...' : 'Sync'}
+            </Button>
             <Button variant="ghost" size="sm" onClick={refetch} disabled={isLoading}>
               <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
             </Button>

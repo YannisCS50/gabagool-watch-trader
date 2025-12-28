@@ -53,3 +53,6 @@ verify_jwt = false
 
 [functions.get-bot-config]
 verify_jwt = false
+
+[functions.sync-polymarket-trades]
+verify_jwt = false
