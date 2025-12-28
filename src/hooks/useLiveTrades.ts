@@ -70,21 +70,19 @@ export function useLiveTrades(): UseLiveTradesResult {
     try {
       setError(null);
 
-      // Fetch recent trades
+      // Fetch ALL trades (no limit for accurate stats)
       const { data: tradesData, error: tradesError } = await supabase
         .from('live_trades')
         .select('*')
-        .order('created_at', { ascending: false })
-        .limit(100);
+        .order('created_at', { ascending: false });
 
       if (tradesError) throw tradesError;
 
-      // Fetch results
+      // Fetch ALL results (no limit for accurate stats)
       const { data: resultsData, error: resultsError } = await supabase
         .from('live_trade_results')
         .select('*')
-        .order('created_at', { ascending: false })
-        .limit(50);
+        .order('created_at', { ascending: false });
 
       if (resultsError) throw resultsError;
 
@@ -134,7 +132,7 @@ export function useLiveTrades(): UseLiveTradesResult {
         { event: 'INSERT', schema: 'public', table: 'live_trades' },
         (payload) => {
           const newTrade = payload.new as LiveTrade;
-          setTrades(prev => [newTrade, ...prev.slice(0, 99)]);
+          setTrades(prev => [newTrade, ...prev]);
         }
       )
       .on(
@@ -154,7 +152,7 @@ export function useLiveTrades(): UseLiveTradesResult {
         { event: 'INSERT', schema: 'public', table: 'live_trade_results' },
         (payload) => {
           const newResult = payload.new as LiveTradeResult;
-          setResults(prev => [newResult, ...prev.slice(0, 49)]);
+          setResults(prev => [newResult, ...prev]);
         }
       )
       .on(
