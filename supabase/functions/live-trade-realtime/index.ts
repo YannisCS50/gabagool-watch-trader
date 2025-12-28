@@ -774,6 +774,11 @@ Deno.serve(async (req) => {
         const existingInvested = missingSide === "UP" ? pos.downInvested : pos.upInvested;
         const existingAvg = existingShares > 0 ? existingInvested / existingShares : 0;
         
+        // MINIMUM SHARES: Polymarket rejects orders < ~$1-2 notional
+        // Ensure we always order at least 5 shares (or use notional-based sizing)
+        const minSharesForOrder = 5;
+        const hedgeShares = Math.max(existingShares, minSharesForOrder);
+        
         // MARKETABLE LIMIT: Add cushion ticks above ask for guaranteed fill
         const cushion = STRATEGY.hedge.cushionTicks * STRATEGY.hedge.tickSize;
         const marketablePrice = Math.min(
@@ -787,13 +792,13 @@ Deno.serve(async (req) => {
         const timeSinceOpeningSec = timeSinceOpeningMs / 1000;
         const isForceHedge = timeSinceOpeningSec >= STRATEGY.hedge.forceTimeoutSec;
 
-        // Log hedge evaluation details
-        log(`🔍 HEDGE EVAL: ${missingSide} ask=${(missingPrice*100).toFixed(0)}¢ → marketable=${(marketablePrice*100).toFixed(0)}¢ | projected=${(projectedCombined*100).toFixed(0)}¢ | timeSinceOpen=${timeSinceOpeningSec.toFixed(0)}s | force=${isForceHedge}`);
+        // Log hedge evaluation details (include hedgeShares to show minimum enforcement)
+        log(`🔍 HEDGE EVAL: ${missingSide} ask=${(missingPrice*100).toFixed(0)}¢ → marketable=${(marketablePrice*100).toFixed(0)}¢ | projected=${(projectedCombined*100).toFixed(0)}¢ | shares=${existingShares}→${hedgeShares} | timeSinceOpen=${timeSinceOpeningSec.toFixed(0)}s | force=${isForceHedge}`);
 
         // FORCE HEDGE: If timeout exceeded, hedge regardless of combined price
         if (isForceHedge) {
-          log(`⚠️ FORCE HEDGE: ${timeSinceOpeningSec.toFixed(0)}s since opening > ${STRATEGY.hedge.forceTimeoutSec}s timeout`);
-          await executeTrade(market, ctx, missingSide, marketablePrice, existingShares,
+          log(`⚠️ FORCE HEDGE: ${timeSinceOpeningSec.toFixed(0)}s since opening > ${STRATEGY.hedge.forceTimeoutSec}s timeout (using ${hedgeShares} shares)`);
+          await executeTrade(market, ctx, missingSide, marketablePrice, hedgeShares,
             `FORCE Hedge ${missingSide} @ ${(marketablePrice*100).toFixed(0)}¢ (timeout ${timeSinceOpeningSec.toFixed(0)}s)`);
           return;
         }
@@ -801,7 +806,7 @@ Deno.serve(async (req) => {
         // NORMAL HEDGE: Check if combined price is good
         if (projectedCombined < STRATEGY.hedge.triggerCombined && missingPrice <= STRATEGY.opening.maxPrice) {
           const edgePct = ((1 - projectedCombined) * 100).toFixed(1);
-          await executeTrade(market, ctx, missingSide, marketablePrice, existingShares,
+          await executeTrade(market, ctx, missingSide, marketablePrice, hedgeShares,
             `Hedge ${missingSide} @ ${(marketablePrice*100).toFixed(0)}¢ (${edgePct}% edge, +${STRATEGY.hedge.cushionTicks} ticks)`);
         }
         return;
