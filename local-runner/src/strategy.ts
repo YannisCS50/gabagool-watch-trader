@@ -684,12 +684,43 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
       // Check if hedge would lock in profit
       const projectedCombined = existingAvg + missingAsk;
       
-      if (projectedCombined < 1 - STRATEGY.edge.minExecutableEdge) {
-        return buildHedge(missingSide, missingAsk, tick, existingShares);
+      // ========== CONSERVATIVE EXPENSIVE SIDE BUYING ==========
+      // If the missing (hedge) side is EXPENSIVE (>50¢), only buy if:
+      // 1. Combined still locks profit (safe hedge)
+      // 2. OR price is ≥85¢ (market is 85%+ confident = high certainty)
+      // 3. OR time is running out (<2 min)
+      // Otherwise we take too much risk on the expensive side
+      
+      const isExpensiveSide = missingAsk > 0.50;
+      const isHighCertainty = missingAsk >= 0.85; // Market is 85%+ confident
+      const isTimeCritical = remainingSeconds < 120; // Less than 2 minutes
+      const locksProfit = projectedCombined < 1 - STRATEGY.edge.minExecutableEdge;
+      
+      if (isExpensiveSide) {
+        // Expensive side: only proceed if one of the safe conditions is met
+        if (locksProfit) {
+          // Safe: we still lock in profit even with expensive hedge
+          return buildHedge(missingSide, missingAsk, tick, existingShares);
+        }
+        
+        if (isHighCertainty) {
+          // High certainty: market is 85%+ confident, likely to win
+          console.log(`[Strategy] Buying expensive ${missingSide} @ ${(missingAsk * 100).toFixed(0)}¢ (high certainty ≥85%)`);
+          return buildHedge(missingSide, missingAsk, tick, existingShares);
+        }
+        
+        if (isTimeCritical && projectedCombined < 1.02) {
+          // Time critical: must hedge, but only if not a huge loss
+          console.log(`[Strategy] Time-critical hedge ${missingSide} @ ${(missingAsk * 100).toFixed(0)}¢ (${remainingSeconds}s left)`);
+          return buildHedge(missingSide, missingAsk, tick, existingShares);
+        }
+        
+        // Otherwise skip: too risky to buy expensive side without certainty
+        console.log(`[Strategy] SKIP expensive ${missingSide} @ ${(missingAsk * 100).toFixed(0)}¢ - waiting for certainty or cheaper price`);
+        return null;
       }
       
-      // Even if edge is thin, we MUST hedge to reduce risk
-      // Only skip if it would be a guaranteed loss
+      // Cheap side (<50¢): always hedge if it's profitable or break-even
       if (projectedCombined < 1.0) {
         return buildHedge(missingSide, missingAsk, tick, existingShares);
       }
