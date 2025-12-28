@@ -302,6 +302,29 @@ async function evaluateMarket(slug: string): Promise<void> {
           return;
         }
         
+        // ========== PRE-FLIGHT HEDGE CHECK ==========
+        // For opening trades: verify we CAN hedge before opening
+        // This prevents exposed positions when hedge is too expensive
+        if (signal.type === 'opening') {
+          const hedgeSide = signal.outcome === 'UP' ? 'DOWN' : 'UP';
+          const hedgeTokenId = hedgeSide === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
+          const hedgeDepth = await getOrderbookDepth(hedgeTokenId);
+          const hedgeAsk = hedgeDepth.topAsk;
+          
+          // Pre-check if hedge would be possible
+          const preHedgeCheck = calculatePreHedgePrice(signal.price, signal.outcome, hedgeAsk ?? undefined);
+          if (!preHedgeCheck) {
+            console.log(`⛔ Skip opening: hedge would be too expensive or unavailable`);
+            console.log(`   Opening: ${signal.outcome} @ ${(signal.price * 100).toFixed(0)}¢`);
+            console.log(`   Hedge ask: ${hedgeAsk ? (hedgeAsk * 100).toFixed(0) + '¢' : 'unknown'}`);
+            console.log(`   ⚠️ Would create EXPOSED position - aborting!`);
+            ctx.inFlight = false;
+            return;
+          }
+          
+          console.log(`✅ Pre-flight hedge check passed: ${hedgeSide} @ ${(preHedgeCheck.hedgePrice * 100).toFixed(0)}¢`);
+        }
+        
         const tradeSuccess = await executeTrade(ctx, signal.outcome, signal.price, signal.shares, signal.reasoning);
         
         // PRE-HEDGE: If this was an opening trade, immediately place limit order for hedge
@@ -322,6 +345,8 @@ async function evaluateMarket(slug: string): Promise<void> {
             
             // Place pre-hedge as GTC limit order with proper ask-based pricing
             await executeTrade(ctx, preHedge.hedgeSide, preHedge.hedgePrice, signal.shares, preHedge.reasoning);
+          } else {
+            console.log(`⚠️ PRE-HEDGE FAILED: Could not calculate hedge price - position is EXPOSED!`);
           }
         }
       }
