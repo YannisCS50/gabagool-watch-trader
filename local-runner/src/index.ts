@@ -302,40 +302,36 @@ async function evaluateMarket(slug: string): Promise<void> {
           return;
         }
         
-        // ========== PRE-FLIGHT HEDGE CHECK ==========
-        // For opening trades: verify we CAN hedge before opening
-        // This prevents exposed positions when hedge is too expensive
+        // ========== PRE-FLIGHT HEDGE CHECK (SOFT) ==========
+        // For opening trades: LOG if hedge would be expensive, but DON'T block
+        // Exposed positions are OK at market open - we hedge later when prices stabilize
         if (signal.type === 'opening') {
           const hedgeSide = signal.outcome === 'UP' ? 'DOWN' : 'UP';
           const hedgeTokenId = hedgeSide === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
           const hedgeDepth = await getOrderbookDepth(hedgeTokenId);
           const hedgeAsk = hedgeDepth.topAsk;
           
-          // Pre-check if hedge would be possible
+          // Just log - don't block opening trades
           const preHedgeCheck = calculatePreHedgePrice(signal.price, signal.outcome, hedgeAsk ?? undefined);
           if (!preHedgeCheck) {
-            console.log(`⛔ Skip opening: hedge would be too expensive or unavailable`);
+            console.log(`⚠️ Opening with EXPENSIVE hedge warning:`);
             console.log(`   Opening: ${signal.outcome} @ ${(signal.price * 100).toFixed(0)}¢`);
             console.log(`   Hedge ask: ${hedgeAsk ? (hedgeAsk * 100).toFixed(0) + '¢' : 'unknown'}`);
-            console.log(`   ⚠️ Would create EXPOSED position - aborting!`);
-            ctx.inFlight = false;
-            return;
+            console.log(`   📊 Will hedge later when prices stabilize (gabagool style)`);
+          } else {
+            console.log(`✅ Hedge available: ${hedgeSide} @ ${(preHedgeCheck.hedgePrice * 100).toFixed(0)}¢`);
           }
-          
-          console.log(`✅ Pre-flight hedge check passed: ${hedgeSide} @ ${(preHedgeCheck.hedgePrice * 100).toFixed(0)}¢`);
         }
         
         const tradeSuccess = await executeTrade(ctx, signal.outcome, signal.price, signal.shares, signal.reasoning);
         
-        // PRE-HEDGE: If this was an opening trade, immediately place limit order for hedge
+        // PRE-HEDGE: Try to place hedge, but don't panic if too expensive
         if (tradeSuccess && signal.type === 'opening') {
-          // Get actual ask price from orderbook for the hedge side
           const hedgeSide = signal.outcome === 'UP' ? 'DOWN' : 'UP';
           const hedgeTokenId = hedgeSide === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
           const hedgeDepth = await getOrderbookDepth(hedgeTokenId);
           const hedgeAsk = hedgeDepth.topAsk;
           
-          // Pass actual orderbook ask to get proper fill price
           const preHedge = calculatePreHedgePrice(signal.price, signal.outcome, hedgeAsk ?? undefined);
           if (preHedge) {
             console.log(`\n🎯 PRE-HEDGE: Placing GTC limit order for ${preHedge.hedgeSide} @ ${(preHedge.hedgePrice * 100).toFixed(0)}¢`);
@@ -343,10 +339,9 @@ async function evaluateMarket(slug: string): Promise<void> {
             console.log(`   Orderbook ask: ${hedgeAsk ? (hedgeAsk * 100).toFixed(0) + '¢' : 'unknown'}`);
             console.log(`   Target combined: ${((signal.price + preHedge.hedgePrice) * 100).toFixed(0)}¢`);
             
-            // Place pre-hedge as GTC limit order with proper ask-based pricing
             await executeTrade(ctx, preHedge.hedgeSide, preHedge.hedgePrice, signal.shares, preHedge.reasoning);
           } else {
-            console.log(`⚠️ PRE-HEDGE FAILED: Could not calculate hedge price - position is EXPOSED!`);
+            console.log(`📊 Hedge skipped (too expensive) - will hedge later via ONE_SIDED logic`);
           }
         }
       }
