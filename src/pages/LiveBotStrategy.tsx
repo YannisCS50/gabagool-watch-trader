@@ -30,10 +30,12 @@ const STRATEGY_CONFIG = `const STRATEGY = {
   },
 };`;
 
-const OPENING_LOGIC = `// OPENING: First trade for a new market
+const OPENING_LOGIC = `// OPENING + ANTICIPATORY HEDGE: First trade + immediate hedge order
 function evaluateOpening(upPrice: number, downPrice: number) {
   const cheapestSide = upPrice <= downPrice ? 'UP' : 'DOWN';
   const cheapestPrice = Math.min(upPrice, downPrice);
+  const otherSide = cheapestSide === 'UP' ? 'DOWN' : 'UP';
+  const otherPrice = cheapestSide === 'UP' ? downPrice : upPrice;
   
   // Only enter if price is attractive enough
   if (cheapestPrice > STRATEGY.opening.maxPrice) {
@@ -41,13 +43,32 @@ function evaluateOpening(upPrice: number, downPrice: number) {
   }
   
   const shares = Math.floor(STRATEGY.opening.notional / cheapestPrice);
+  const orders = [];
   
-  return {
+  // 1. Opening order
+  orders.push({
     outcome: cheapestSide,
     price: cheapestPrice,
     shares: shares,
     reasoning: \`OPENING: \${cheapestSide} @ \${cheapestPrice}¢\`
-  };
+  });
+  
+  // 2. ANTICIPATORY HEDGE: Place hedge order immediately!
+  if (otherPrice <= STRATEGY.hedge.maxPrice) {
+    const hedgePrice = otherPrice + (STRATEGY.hedge.cushionTicks * STRATEGY.hedge.tickSize);
+    const projectedCombined = cheapestPrice + hedgePrice;
+    
+    if (projectedCombined < 1.0) { // Only if profitable
+      orders.push({
+        outcome: otherSide,
+        price: hedgePrice,
+        shares: shares,
+        reasoning: \`ANTICIPATORY HEDGE: \${otherSide} @ \${hedgePrice}¢\`
+      });
+    }
+  }
+  
+  return orders; // Returns 1-2 orders!
 }`;
 
 const HEDGE_LOGIC = `// HEDGE: Cover the other side after opening
