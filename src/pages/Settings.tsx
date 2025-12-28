@@ -7,18 +7,14 @@ import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
 import { useToast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
-import { Link } from 'react-router-dom';
-import { ArrowLeft, Save, Eye, EyeOff, Shield, Zap, Settings2, TrendingUp } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { ArrowLeft, Save, Shield, Zap, Settings2, TrendingUp, LogOut, AlertTriangle } from 'lucide-react';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 
 interface BotConfig {
   id: string;
-  polymarket_api_key: string | null;
-  polymarket_api_secret: string | null;
-  polymarket_passphrase: string | null;
-  polymarket_private_key: string | null;
   polymarket_address: string | null;
   backend_url: string | null;
-  runner_shared_secret: string | null;
   vpn_required: boolean | null;
   vpn_endpoint: string | null;
   trade_assets: string[] | null;
@@ -33,14 +29,36 @@ interface BotConfig {
 
 export default function Settings() {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [showSecrets, setShowSecrets] = useState(false);
   const [config, setConfig] = useState<BotConfig | null>(null);
+  const [user, setUser] = useState<any>(null);
 
   useEffect(() => {
-    fetchConfig();
-  }, []);
+    // Check authentication
+    const checkAuth = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) {
+        navigate('/auth');
+        return;
+      }
+      setUser(session.user);
+      fetchConfig();
+    };
+    
+    checkAuth();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!session) {
+        navigate('/auth');
+      } else {
+        setUser(session.user);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, [navigate]);
 
   const fetchConfig = async () => {
     try {
@@ -72,13 +90,8 @@ export default function Settings() {
       const { error } = await supabase
         .from('bot_config')
         .update({
-          polymarket_api_key: config.polymarket_api_key,
-          polymarket_api_secret: config.polymarket_api_secret,
-          polymarket_passphrase: config.polymarket_passphrase,
-          polymarket_private_key: config.polymarket_private_key,
           polymarket_address: config.polymarket_address,
           backend_url: config.backend_url,
-          runner_shared_secret: config.runner_shared_secret,
           vpn_required: config.vpn_required,
           vpn_endpoint: config.vpn_endpoint,
           trade_assets: config.trade_assets,
@@ -110,6 +123,11 @@ export default function Settings() {
     }
   };
 
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    navigate('/auth');
+  };
+
   const updateConfig = (field: keyof BotConfig, value: unknown) => {
     if (!config) return;
     setConfig({ ...config, [field]: value });
@@ -139,90 +157,52 @@ export default function Settings() {
               <p className="text-muted-foreground">Manage your trading bot settings</p>
             </div>
           </div>
-          <Button onClick={saveConfig} disabled={saving}>
-            <Save className="h-4 w-4 mr-2" />
-            {saving ? 'Saving...' : 'Save Changes'}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button onClick={saveConfig} disabled={saving}>
+              <Save className="h-4 w-4 mr-2" />
+              {saving ? 'Saving...' : 'Save Changes'}
+            </Button>
+            <Button variant="outline" onClick={handleLogout}>
+              <LogOut className="h-4 w-4 mr-2" />
+              Logout
+            </Button>
+          </div>
         </div>
 
         <div className="space-y-6">
-          {/* Polymarket API Credentials */}
+          {/* Security Notice */}
+          <Alert>
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>API Credentials Secured</AlertTitle>
+            <AlertDescription>
+              Private keys and API secrets are stored as encrypted environment variables only.
+              Configure them in your local-runner's <code className="bg-muted px-1 rounded">.env</code> file.
+            </AlertDescription>
+          </Alert>
+
+          {/* Polymarket Settings */}
           <Card>
             <CardHeader>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Shield className="h-5 w-5 text-primary" />
-                  <CardTitle>Polymarket API Credentials</CardTitle>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowSecrets(!showSecrets)}
-                >
-                  {showSecrets ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  {showSecrets ? 'Hide' : 'Show'}
-                </Button>
+              <div className="flex items-center gap-2">
+                <Shield className="h-5 w-5 text-primary" />
+                <CardTitle>Polymarket Settings</CardTitle>
               </div>
               <CardDescription>
-                Your Polymarket CLOB API credentials for order placement
+                Public wallet address and connection settings
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="api_key">API Key</Label>
-                  <Input
-                    id="api_key"
-                    type={showSecrets ? 'text' : 'password'}
-                    placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                    value={config?.polymarket_api_key || ''}
-                    onChange={(e) => updateConfig('polymarket_api_key', e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="api_secret">API Secret</Label>
-                  <Input
-                    id="api_secret"
-                    type={showSecrets ? 'text' : 'password'}
-                    placeholder="Your API secret"
-                    value={config?.polymarket_api_secret || ''}
-                    onChange={(e) => updateConfig('polymarket_api_secret', e.target.value)}
-                  />
-                </div>
-              </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="passphrase">Passphrase</Label>
-                  <Input
-                    id="passphrase"
-                    type={showSecrets ? 'text' : 'password'}
-                    placeholder="Your passphrase"
-                    value={config?.polymarket_passphrase || ''}
-                    onChange={(e) => updateConfig('polymarket_passphrase', e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="address">Wallet Address</Label>
-                  <Input
-                    id="address"
-                    type="text"
-                    placeholder="0x..."
-                    value={config?.polymarket_address || ''}
-                    onChange={(e) => updateConfig('polymarket_address', e.target.value)}
-                  />
-                </div>
-              </div>
               <div className="space-y-2">
-                <Label htmlFor="private_key">Private Key (EOA Signer)</Label>
+                <Label htmlFor="address">Wallet Address (Public)</Label>
                 <Input
-                  id="private_key"
-                  type={showSecrets ? 'text' : 'password'}
+                  id="address"
+                  type="text"
                   placeholder="0x..."
-                  value={config?.polymarket_private_key || ''}
-                  onChange={(e) => updateConfig('polymarket_private_key', e.target.value)}
+                  value={config?.polymarket_address || ''}
+                  onChange={(e) => updateConfig('polymarket_address', e.target.value)}
                 />
                 <p className="text-xs text-muted-foreground">
-                  The private key of the EOA that controls your Polymarket Safe wallet
+                  Your Polymarket profile/proxy address (this is public info)
                 </p>
               </div>
             </CardContent>
@@ -240,27 +220,15 @@ export default function Settings() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="backend_url">Backend URL</Label>
-                  <Input
-                    id="backend_url"
-                    type="text"
-                    placeholder="https://your-project.supabase.co"
-                    value={config?.backend_url || ''}
-                    onChange={(e) => updateConfig('backend_url', e.target.value)}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="runner_secret">Runner Shared Secret</Label>
-                  <Input
-                    id="runner_secret"
-                    type={showSecrets ? 'text' : 'password'}
-                    placeholder="Your shared secret"
-                    value={config?.runner_shared_secret || ''}
-                    onChange={(e) => updateConfig('runner_shared_secret', e.target.value)}
-                  />
-                </div>
+              <div className="space-y-2">
+                <Label htmlFor="backend_url">Backend URL</Label>
+                <Input
+                  id="backend_url"
+                  type="text"
+                  placeholder="https://your-project.supabase.co"
+                  value={config?.backend_url || ''}
+                  onChange={(e) => updateConfig('backend_url', e.target.value)}
+                />
               </div>
               <Separator />
               <div className="flex items-center justify-between">
@@ -421,6 +389,17 @@ export default function Settings() {
               </div>
             </CardContent>
           </Card>
+
+          {/* User Info */}
+          {user && (
+            <Card>
+              <CardContent className="pt-6">
+                <p className="text-sm text-muted-foreground">
+                  Logged in as: <span className="font-medium text-foreground">{user.email}</span>
+                </p>
+              </CardContent>
+            </Card>
+          )}
         </div>
       </div>
     </div>

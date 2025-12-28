@@ -26,11 +26,6 @@ export type Database = {
           min_order_interval_ms: number | null
           opening_max_price: number | null
           polymarket_address: string | null
-          polymarket_api_key: string | null
-          polymarket_api_secret: string | null
-          polymarket_passphrase: string | null
-          polymarket_private_key: string | null
-          runner_shared_secret: string | null
           strategy_enabled: boolean | null
           trade_assets: string[] | null
           updated_at: string | null
@@ -48,11 +43,6 @@ export type Database = {
           min_order_interval_ms?: number | null
           opening_max_price?: number | null
           polymarket_address?: string | null
-          polymarket_api_key?: string | null
-          polymarket_api_secret?: string | null
-          polymarket_passphrase?: string | null
-          polymarket_private_key?: string | null
-          runner_shared_secret?: string | null
           strategy_enabled?: boolean | null
           trade_assets?: string[] | null
           updated_at?: string | null
@@ -70,11 +60,6 @@ export type Database = {
           min_order_interval_ms?: number | null
           opening_max_price?: number | null
           polymarket_address?: string | null
-          polymarket_api_key?: string | null
-          polymarket_api_secret?: string | null
-          polymarket_passphrase?: string | null
-          polymarket_private_key?: string | null
-          runner_shared_secret?: string | null
           strategy_enabled?: boolean | null
           trade_assets?: string[] | null
           updated_at?: string | null
