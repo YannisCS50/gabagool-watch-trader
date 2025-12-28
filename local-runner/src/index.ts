@@ -306,15 +306,21 @@ async function evaluateMarket(slug: string): Promise<void> {
         
         // PRE-HEDGE: If this was an opening trade, immediately place limit order for hedge
         if (tradeSuccess && signal.type === 'opening') {
-          const preHedge = calculatePreHedgePrice(signal.price, signal.outcome);
+          // Get actual ask price from orderbook for the hedge side
+          const hedgeSide = signal.outcome === 'UP' ? 'DOWN' : 'UP';
+          const hedgeTokenId = hedgeSide === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
+          const hedgeDepth = await getOrderbookDepth(hedgeTokenId);
+          const hedgeAsk = hedgeDepth.topAsk;
+          
+          // Pass actual orderbook ask to get proper fill price
+          const preHedge = calculatePreHedgePrice(signal.price, signal.outcome, hedgeAsk ?? undefined);
           if (preHedge) {
-            const hedgeTokenId = preHedge.hedgeSide === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
-            
             console.log(`\n🎯 PRE-HEDGE: Placing GTC limit order for ${preHedge.hedgeSide} @ ${(preHedge.hedgePrice * 100).toFixed(0)}¢`);
             console.log(`   Opening: ${signal.outcome} @ ${(signal.price * 100).toFixed(0)}¢`);
+            console.log(`   Orderbook ask: ${hedgeAsk ? (hedgeAsk * 100).toFixed(0) + '¢' : 'unknown'}`);
             console.log(`   Target combined: ${((signal.price + preHedge.hedgePrice) * 100).toFixed(0)}¢`);
             
-            // Place pre-hedge as GTC limit order (will wait in orderbook)
+            // Place pre-hedge as GTC limit order with proper ask-based pricing
             await executeTrade(ctx, preHedge.hedgeSide, preHedge.hedgePrice, signal.shares, preHedge.reasoning);
           }
         }

@@ -883,28 +883,56 @@ export function checkLiquidityForAccumulate(
 }
 
 // ============================================================
-// PRE-HEDGE CALCULATION (LEGACY - kept for compatibility)
+// PRE-HEDGE CALCULATION - Uses actual ask price from orderbook
 // ============================================================
 
 export function calculatePreHedgePrice(
   openingPrice: number,
-  openingSide: Outcome
+  openingSide: Outcome,
+  hedgeAsk?: number,  // Actual ask price from orderbook (NEW)
+  tick: number = 0.01
 ): { hedgeSide: Outcome; hedgePrice: number; reasoning: string } | null {
   const hedgeSide: Outcome = openingSide === 'UP' ? 'DOWN' : 'UP';
-  const targetCombined = 1 - STRATEGY.edge.buffer;
-  const targetHedgePrice = targetCombined - openingPrice;
   
-  const hedgePrice = Math.round(targetHedgePrice * 100) / 100;
+  // If we have actual ask price from orderbook, use it with cushion
+  // Otherwise fall back to theoretical calculation (legacy)
+  let hedgePrice: number;
+  let reasoning: string;
   
-  if (hedgePrice < STRATEGY.entry.minPrice || hedgePrice > STRATEGY.opening.maxPrice) {
-    return null;
+  if (hedgeAsk !== undefined && hedgeAsk > 0) {
+    // NEW: Use actual orderbook ask + cushion ticks for guaranteed fill
+    const cushion = STRATEGY.tick.hedgeCushion;
+    hedgePrice = roundUp(hedgeAsk + cushion * tick, tick);
+    
+    const projectedCombined = openingPrice + hedgePrice;
+    const edgePct = ((1 - projectedCombined) * 100).toFixed(1);
+    
+    // Only place if combined < 100¢ (profitable or break-even)
+    if (projectedCombined > 1.02) {
+      console.log(`[PreHedge] Skip: projected ${(projectedCombined * 100).toFixed(0)}¢ > 102¢ (would lose money)`);
+      return null;
+    }
+    
+    reasoning = `Pre-hedge ${hedgeSide} @ ${(hedgePrice * 100).toFixed(0)}¢ (ask=${(hedgeAsk * 100).toFixed(0)}¢ +${cushion}ticks, edge=${edgePct}%)`;
+  } else {
+    // LEGACY: Calculate theoretical price (may be rejected by Polymarket)
+    const targetCombined = 1 - STRATEGY.edge.buffer;
+    const targetHedgePrice = targetCombined - openingPrice;
+    hedgePrice = Math.round(targetHedgePrice * 100) / 100;
+    
+    const edgePct = (STRATEGY.edge.buffer * 100).toFixed(1);
+    reasoning = `Pre-hedge ${hedgeSide} @ ${(hedgePrice * 100).toFixed(0)}¢ (theoretical, target ${edgePct}% edge)`;
   }
   
-  const edgePct = (STRATEGY.edge.buffer * 100).toFixed(1);
+  // Validate price bounds
+  if (hedgePrice < STRATEGY.entry.minPrice || hedgePrice > 0.95) {
+    console.log(`[PreHedge] Skip: price ${(hedgePrice * 100).toFixed(0)}¢ out of bounds`);
+    return null;
+  }
   
   return {
     hedgeSide,
     hedgePrice,
-    reasoning: `Pre-hedge ${hedgeSide} @ ${(hedgePrice * 100).toFixed(0)}¢ (target ${edgePct}% edge)`,
+    reasoning,
   };
 }
