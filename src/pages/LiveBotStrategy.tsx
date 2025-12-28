@@ -1,9 +1,11 @@
-import { ArrowLeft, Copy, Check, TrendingUp, Shield, Layers, Clock, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Copy, Check, TrendingUp, Shield, Layers, Clock, AlertTriangle, FileDown, Loader2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { toast } from 'sonner';
+import html2canvas from 'html2canvas';
+import jsPDF from 'jspdf';
 
 const STRATEGY_CONFIG = `const STRATEGY = {
   opening: {
@@ -207,6 +209,88 @@ const PROFIT_LOGIC = `// PROFIT CALCULATION
 export default function LiveBotStrategy() {
   const navigate = useNavigate();
   const [copiedSection, setCopiedSection] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  const handleExportPDF = async () => {
+    if (!contentRef.current) return;
+    
+    setIsExporting(true);
+    toast.info('PDF wordt gegenereerd...');
+    
+    try {
+      const canvas = await html2canvas(contentRef.current, {
+        scale: 2, // Hoge resolutie
+        useCORS: true,
+        logging: false,
+        backgroundColor: '#0a0a0b', // Match dark background
+        windowWidth: contentRef.current.scrollWidth,
+        windowHeight: contentRef.current.scrollHeight,
+      });
+      
+      const imgData = canvas.toDataURL('image/png', 1.0);
+      const imgWidth = canvas.width;
+      const imgHeight = canvas.height;
+      
+      // A4 dimensions in mm
+      const pdfWidth = 210;
+      const pdfHeight = 297;
+      
+      // Calculate scaling to fit width
+      const ratio = pdfWidth / imgWidth;
+      const scaledHeight = imgHeight * ratio;
+      
+      // Create PDF with multiple pages if needed
+      const pdf = new jsPDF({
+        orientation: 'portrait',
+        unit: 'mm',
+        format: 'a4',
+      });
+      
+      let yPosition = 0;
+      let remainingHeight = scaledHeight;
+      let pageNumber = 0;
+      
+      while (remainingHeight > 0) {
+        if (pageNumber > 0) {
+          pdf.addPage();
+        }
+        
+        // Calculate source and destination for this page
+        const sourceY = (pageNumber * pdfHeight) / ratio;
+        const sourceHeight = Math.min(pdfHeight / ratio, imgHeight - sourceY);
+        const destHeight = sourceHeight * ratio;
+        
+        // Create a canvas for this page section
+        const pageCanvas = document.createElement('canvas');
+        pageCanvas.width = imgWidth;
+        pageCanvas.height = sourceHeight;
+        const ctx = pageCanvas.getContext('2d');
+        
+        if (ctx) {
+          ctx.drawImage(
+            canvas,
+            0, sourceY, imgWidth, sourceHeight,
+            0, 0, imgWidth, sourceHeight
+          );
+          
+          const pageImgData = pageCanvas.toDataURL('image/png', 1.0);
+          pdf.addImage(pageImgData, 'PNG', 0, 0, pdfWidth, destHeight);
+        }
+        
+        remainingHeight -= pdfHeight;
+        pageNumber++;
+      }
+      
+      pdf.save('live-bot-strategy.pdf');
+      toast.success('PDF geëxporteerd!');
+    } catch (error) {
+      console.error('PDF export error:', error);
+      toast.error('Fout bij exporteren PDF');
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   const handleCopy = async (code: string, section: string) => {
     await navigator.clipboard.writeText(code);
@@ -240,16 +324,30 @@ export default function LiveBotStrategy() {
 
   return (
     <div className="min-h-screen bg-background p-6">
-      <div className="max-w-4xl mx-auto space-y-6">
+      <div ref={contentRef} className="max-w-4xl mx-auto space-y-6">
         {/* Header */}
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate(-1)}>
-            <ArrowLeft className="h-5 w-5" />
-          </Button>
-          <div>
-            <h1 className="text-2xl font-bold">Live Bot Strategie</h1>
-            <p className="text-muted-foreground">Volledige documentatie en code</p>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <Button variant="ghost" size="icon" onClick={() => navigate(-1)}>
+              <ArrowLeft className="h-5 w-5" />
+            </Button>
+            <div>
+              <h1 className="text-2xl font-bold">Live Bot Strategie</h1>
+              <p className="text-muted-foreground">Volledige documentatie en code</p>
+            </div>
           </div>
+          <Button 
+            onClick={handleExportPDF} 
+            disabled={isExporting}
+            className="gap-2"
+          >
+            {isExporting ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <FileDown className="h-4 w-4" />
+            )}
+            {isExporting ? 'Exporteren...' : 'Export PDF'}
+          </Button>
         </div>
 
         {/* Strategy Overview */}
