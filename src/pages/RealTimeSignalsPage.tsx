@@ -722,43 +722,109 @@ const RealTimeSignalsPage = () => {
               </CollapsibleTrigger>
               <CollapsibleContent>
                 <CardContent className="pt-0">
-                  <div className="space-y-2">
+                  <div className="space-y-4">
                     {recentExpiredMarkets.map((market) => (
                       <div
                         key={market.slug}
-                        className={`flex items-center justify-between p-3 rounded-lg ${
+                        className={`p-4 rounded-lg ${
                           market.result === 'UP' 
-                            ? 'bg-emerald-500/5 border border-emerald-500/10' 
+                            ? 'bg-emerald-500/5 border border-emerald-500/20' 
                             : market.result === 'DOWN'
-                              ? 'bg-red-500/5 border border-red-500/10'
-                              : 'bg-muted/30'
+                              ? 'bg-red-500/5 border border-red-500/20'
+                              : 'bg-muted/30 border border-border/50'
                         }`}
                       >
-                        <div className="flex items-center gap-2">
-                          <div className={`w-6 h-6 rounded flex items-center justify-center text-xs font-bold ${
-                            market.asset === "BTC" ? "bg-orange-500/10 text-orange-500" : "bg-blue-500/10 text-blue-500"
-                          }`}>
-                            {market.asset === "BTC" ? "₿" : "Ξ"}
+                        {/* Header Row */}
+                        <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center gap-3">
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold ${
+                              market.asset === "BTC" ? "bg-orange-500/10 text-orange-500" : "bg-blue-500/10 text-blue-500"
+                            }`}>
+                              {market.asset === "BTC" ? "₿" : "Ξ"}
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="font-medium">{market.asset} 15m</span>
+                                <Badge 
+                                  variant="outline"
+                                  className={
+                                    market.result === 'UP' ? 'text-emerald-500 border-emerald-500/30 bg-emerald-500/10' :
+                                    market.result === 'DOWN' ? 'text-red-500 border-red-500/30 bg-red-500/10' :
+                                    'text-muted-foreground'
+                                  }
+                                >
+                                  {market.result || "Pending"}
+                                </Badge>
+                              </div>
+                              {market.question && (
+                                <div className="text-xs text-muted-foreground line-clamp-1 mt-0.5 max-w-md">
+                                  {market.question}
+                                </div>
+                              )}
+                            </div>
                           </div>
-                          <Badge 
-                            variant="outline"
-                            className={
-                              market.result === 'UP' ? 'text-emerald-500 border-emerald-500/30' :
-                              market.result === 'DOWN' ? 'text-red-500 border-red-500/30' :
-                              'text-muted-foreground'
-                            }
-                          >
-                            {market.result || "Pending"}
-                          </Badge>
+                          <div className="text-right text-xs text-muted-foreground">
+                            {market.eventEndTime && (
+                              <div>{new Date(market.eventEndTime).toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })}</div>
+                            )}
+                          </div>
                         </div>
-                        <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                          {market.openPrice && <span>${market.openPrice.toLocaleString()}</span>}
+
+                        {/* Price Info */}
+                        <div className="flex items-center gap-4 text-sm mb-3 p-2 rounded bg-muted/30">
+                          {market.openPrice && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-muted-foreground">Strike:</span>
+                              <span className="font-mono">${market.openPrice.toLocaleString()}</span>
+                            </div>
+                          )}
                           {market.closePrice && (
                             <>
-                              <span>→</span>
-                              <span>${market.closePrice.toLocaleString()}</span>
+                              <span className="text-muted-foreground">→</span>
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-muted-foreground">Close:</span>
+                                <span className={`font-mono ${
+                                  market.openPrice && market.closePrice > market.openPrice ? 'text-emerald-500' : 
+                                  market.openPrice && market.closePrice < market.openPrice ? 'text-red-500' : ''
+                                }`}>
+                                  ${market.closePrice.toLocaleString()}
+                                </span>
+                              </div>
                             </>
                           )}
+                          {market.openPrice && market.closePrice && (
+                            <Badge variant="outline" className={`ml-auto ${
+                              market.closePrice > market.openPrice ? 'text-emerald-500 border-emerald-500/30' : 'text-red-500 border-red-500/30'
+                            }`}>
+                              {market.closePrice > market.openPrice ? '+' : ''}
+                              {((market.closePrice - market.openPrice) / market.openPrice * 100).toFixed(2)}%
+                            </Badge>
+                          )}
+                        </div>
+
+                        {/* Bot Summaries */}
+                        <div className="grid grid-cols-1 lg:grid-cols-3 gap-2">
+                          <GabagoolTradesSummary 
+                            marketSlug={market.slug} 
+                            upClobPrice={0.5} 
+                            downClobPrice={0.5} 
+                            compact={true}
+                            actualResult={market.result as 'UP' | 'DOWN' | null}
+                          />
+                          <PaperBotTradesSummary 
+                            marketSlug={market.slug} 
+                            upClobPrice={0.5} 
+                            downClobPrice={0.5} 
+                            compact={true}
+                            actualResult={market.result as 'UP' | 'DOWN' | null}
+                          />
+                          <LiveBotTradesSummary 
+                            marketSlug={market.slug} 
+                            upClobPrice={0.5} 
+                            downClobPrice={0.5} 
+                            compact={true}
+                            actualResult={market.result as 'UP' | 'DOWN' | null}
+                          />
                         </div>
                       </div>
                     ))}
