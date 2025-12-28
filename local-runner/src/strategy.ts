@@ -886,47 +886,67 @@ export function checkLiquidityForAccumulate(
 // PRE-HEDGE CALCULATION - Uses actual ask price from orderbook
 // ============================================================
 
+// Maximum we're willing to pay for a hedge side
+// This prevents buying at crazy prices like 95¢
+const MAX_HEDGE_PRICE = 0.75; // Never pay more than 75¢ for a hedge
+
+// Maximum combined cost we accept (loss limit)
+// At 105¢ combined, we lose max 5¢ per share
+const MAX_COMBINED_COST = 1.05;
+
 export function calculatePreHedgePrice(
   openingPrice: number,
   openingSide: Outcome,
-  hedgeAsk?: number,  // Actual ask price from orderbook (NEW)
+  hedgeAsk?: number,  // Actual ask price from orderbook
   tick: number = 0.01
 ): { hedgeSide: Outcome; hedgePrice: number; reasoning: string } | null {
   const hedgeSide: Outcome = openingSide === 'UP' ? 'DOWN' : 'UP';
   
-  // If we have actual ask price from orderbook, use it with cushion
-  // Otherwise fall back to theoretical calculation (legacy)
   let hedgePrice: number;
   let reasoning: string;
   
   if (hedgeAsk !== undefined && hedgeAsk > 0) {
     // NEW: Use actual orderbook ask + cushion ticks for guaranteed fill
     const cushion = STRATEGY.tick.hedgeCushion;
-    hedgePrice = roundUp(hedgeAsk + cushion * tick, tick);
+    const rawHedgePrice = roundUp(hedgeAsk + cushion * tick, tick);
+    
+    // Cap the hedge price to prevent overpaying
+    hedgePrice = Math.min(rawHedgePrice, MAX_HEDGE_PRICE);
     
     const projectedCombined = openingPrice + hedgePrice;
     const edgePct = ((1 - projectedCombined) * 100).toFixed(1);
     
-    // Only place if combined < 100¢ (profitable or break-even)
-    if (projectedCombined > 1.02) {
-      console.log(`[PreHedge] Skip: projected ${(projectedCombined * 100).toFixed(0)}¢ > 102¢ (would lose money)`);
+    // Risk check: don't hedge if combined cost is too high (limits loss)
+    if (projectedCombined > MAX_COMBINED_COST) {
+      console.log(`[PreHedge] RISK LIMIT: combined ${(projectedCombined * 100).toFixed(0)}¢ > ${(MAX_COMBINED_COST * 100).toFixed(0)}¢ max`);
+      console.log(`   Opening: ${openingSide} @ ${(openingPrice * 100).toFixed(0)}¢`);
+      console.log(`   Hedge ask: ${(hedgeAsk * 100).toFixed(0)}¢ → capped at ${(hedgePrice * 100).toFixed(0)}¢`);
+      console.log(`   ⚠️ Will remain EXPOSED - hedge too expensive!`);
       return null;
     }
     
-    reasoning = `Pre-hedge ${hedgeSide} @ ${(hedgePrice * 100).toFixed(0)}¢ (ask=${(hedgeAsk * 100).toFixed(0)}¢ +${cushion}ticks, edge=${edgePct}%)`;
+    // Log if we capped the price
+    if (rawHedgePrice > MAX_HEDGE_PRICE) {
+      console.log(`[PreHedge] Price capped: ${(rawHedgePrice * 100).toFixed(0)}¢ → ${(hedgePrice * 100).toFixed(0)}¢`);
+    }
+    
+    reasoning = `Pre-hedge ${hedgeSide} @ ${(hedgePrice * 100).toFixed(0)}¢ (ask=${(hedgeAsk * 100).toFixed(0)}¢ +${cushion}t, combined=${(projectedCombined * 100).toFixed(0)}¢)`;
   } else {
     // LEGACY: Calculate theoretical price (may be rejected by Polymarket)
     const targetCombined = 1 - STRATEGY.edge.buffer;
     const targetHedgePrice = targetCombined - openingPrice;
     hedgePrice = Math.round(targetHedgePrice * 100) / 100;
     
+    // Also apply max hedge price cap to legacy
+    hedgePrice = Math.min(hedgePrice, MAX_HEDGE_PRICE);
+    
     const edgePct = (STRATEGY.edge.buffer * 100).toFixed(1);
     reasoning = `Pre-hedge ${hedgeSide} @ ${(hedgePrice * 100).toFixed(0)}¢ (theoretical, target ${edgePct}% edge)`;
   }
   
   // Validate price bounds
-  if (hedgePrice < STRATEGY.entry.minPrice || hedgePrice > 0.95) {
-    console.log(`[PreHedge] Skip: price ${(hedgePrice * 100).toFixed(0)}¢ out of bounds`);
+  if (hedgePrice < STRATEGY.entry.minPrice) {
+    console.log(`[PreHedge] Skip: price ${(hedgePrice * 100).toFixed(0)}¢ below minimum ${(STRATEGY.entry.minPrice * 100).toFixed(0)}¢`);
     return null;
   }
   
