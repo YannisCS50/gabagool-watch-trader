@@ -125,23 +125,45 @@ export function useLiveTrades(): UseLiveTradesResult {
     fetchData();
   }, [fetchData]);
 
-  // Subscribe to realtime updates
+  // Subscribe to realtime updates with direct payload handling for faster updates
   useEffect(() => {
     const tradesChannel = supabase
-      .channel('live-trades-changes')
+      .channel('live-trades-realtime')
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'live_trades' },
-        () => fetchData()
+        { event: 'INSERT', schema: 'public', table: 'live_trades' },
+        (payload) => {
+          const newTrade = payload.new as LiveTrade;
+          setTrades(prev => [newTrade, ...prev.slice(0, 99)]);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'live_trades' },
+        (payload) => {
+          const updated = payload.new as LiveTrade;
+          setTrades(prev => prev.map(t => t.id === updated.id ? updated : t));
+        }
       )
       .subscribe();
 
     const resultsChannel = supabase
-      .channel('live-results-changes')
+      .channel('live-results-realtime')
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'live_trade_results' },
-        () => fetchData()
+        { event: 'INSERT', schema: 'public', table: 'live_trade_results' },
+        (payload) => {
+          const newResult = payload.new as LiveTradeResult;
+          setResults(prev => [newResult, ...prev.slice(0, 49)]);
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'live_trade_results' },
+        (payload) => {
+          const updated = payload.new as LiveTradeResult;
+          setResults(prev => prev.map(r => r.id === updated.id ? updated : r));
+        }
       )
       .subscribe();
 
@@ -149,7 +171,7 @@ export function useLiveTrades(): UseLiveTradesResult {
       supabase.removeChannel(tradesChannel);
       supabase.removeChannel(resultsChannel);
     };
-  }, [fetchData]);
+  }, []);
 
   return {
     trades,
