@@ -487,10 +487,12 @@ Deno.serve(async (req) => {
     }
   };
 
-  // Check if market has pending orders (instant - no DB query)
-  const hasPendingOrders = (slug: string): boolean => {
+  // Check if market has too many pending orders (instant - no DB query)
+  // Allow up to 3 pending orders per market for anticipatory ordering
+  const MAX_PENDING_PER_MARKET = 3;
+  const hasTooManyPendingOrders = (slug: string): boolean => {
     const pending = pendingOrdersByMarket.get(slug);
-    return pending ? pending.size > 0 : false;
+    return pending ? pending.size >= MAX_PENDING_PER_MARKET : false;
   };
 
   const connectToClob = () => {
@@ -641,8 +643,12 @@ Deno.serve(async (req) => {
       if (ctx.lastTradeAtMs && nowMs - ctx.lastTradeAtMs < STRATEGY.cooldownMs) return;
 
       // CHECK FOR PENDING ORDERS (realtime - no DB query needed!)
-      if (hasPendingOrders(slug)) {
-        if (evaluationCount % 10 === 0) log(`⏸️ WAIT: Pending order on ${slug.slice(-15)}, skipping evaluation`);
+      // Allow up to 3 pending orders per market for anticipatory ordering
+      if (hasTooManyPendingOrders(slug)) {
+        if (evaluationCount % 10 === 0) {
+          const pending = pendingOrdersByMarket.get(slug);
+          log(`⏸️ WAIT: ${pending?.size || 0}/${MAX_PENDING_PER_MARKET} pending on ${slug.slice(-15)}, skipping`);
+        }
         return;
       }
 
@@ -748,17 +754,35 @@ Deno.serve(async (req) => {
       // ========== TRADING LOGIC ==========
 
       // PHASE 1: OPENING - No position yet
+      // ANTICIPATORY ORDERING: Place opening + hedge order simultaneously
       if (pos.upShares === 0 && pos.downShares === 0) {
         const cheaperSide: Outcome = upAsk <= downAsk ? "UP" : "DOWN";
         const cheaperPrice = cheaperSide === "UP" ? upAsk : downAsk;
+        const otherSide: Outcome = cheaperSide === "UP" ? "DOWN" : "UP";
+        const otherPrice = otherSide === "UP" ? upAsk : downAsk;
 
         log(`🎯 OPENING CHECK: ${cheaperSide} @ ${(cheaperPrice*100).toFixed(0)}¢ (max: ${(STRATEGY.opening.maxPrice*100).toFixed(0)}¢)`);
 
         if (cheaperPrice <= STRATEGY.opening.maxPrice) {
           const shares = calcShares(STRATEGY.opening.notional, cheaperPrice);
           if (shares >= 1) {
-            await executeTrade(market, ctx, cheaperSide, cheaperPrice, shares, 
+            // 1. Place opening order
+            const openingSuccess = await executeTrade(market, ctx, cheaperSide, cheaperPrice, shares, 
               `Opening ${cheaperSide} @ ${(cheaperPrice*100).toFixed(0)}¢`);
+            
+            // 2. ANTICIPATORY: Also place hedge order if other side is cheap enough
+            if (openingSuccess && otherPrice <= STRATEGY.hedge.maxPrice) {
+              const cushion = STRATEGY.hedge.cushionTicks * STRATEGY.hedge.tickSize;
+              const hedgePrice = Math.min(otherPrice + cushion, STRATEGY.hedge.maxPrice);
+              const hedgeShares = Math.max(shares, 5); // Match opening shares or min 5
+              const projectedCombined = cheaperPrice + hedgePrice;
+              
+              if (projectedCombined < 1.0) { // Only if profitable
+                log(`🎯 ANTICIPATORY HEDGE: ${otherSide} @ ${(hedgePrice*100).toFixed(0)}¢ (projected combined: ${(projectedCombined*100).toFixed(0)}¢)`);
+                await executeTrade(market, ctx, otherSide, hedgePrice, hedgeShares,
+                  `Anticipatory Hedge ${otherSide} @ ${(hedgePrice*100).toFixed(0)}¢`);
+              }
+            }
           }
         } else {
           log(`⏭️ SKIP OPENING: ${(cheaperPrice*100).toFixed(0)}¢ > max ${(STRATEGY.opening.maxPrice*100).toFixed(0)}¢`);
