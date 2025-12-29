@@ -193,45 +193,53 @@ async function executeTrade(
         ? (result.filledSize ?? 0)
         : 0;
 
-  // Only treat as a trade when we have confirmed matched size
-  if (filledShares > 0) {
-    const filledTotal = filledShares * price;
+  // CRITICAL FIX: Log ALL orders, not just filled ones
+  // This ensures we track every order the bot places for accurate position tracking
+  const logShares = filledShares > 0 ? filledShares : shares;
+  const logStatus = filledShares > 0 
+    ? (status === 'partial' ? 'partial' : 'filled')
+    : 'pending';
+  const logTotal = logShares * price;
 
-    // Update local position with matched size only
+  // Update local position (use filledShares for actual position, but track pending too)
+  if (filledShares > 0) {
     if (outcome === 'UP') {
       ctx.position.upShares += filledShares;
-      ctx.position.upInvested += filledTotal;
+      ctx.position.upInvested += filledShares * price;
     } else {
       ctx.position.downShares += filledShares;
-      ctx.position.downInvested += filledTotal;
+      ctx.position.downInvested += filledShares * price;
     }
+  }
 
-    await saveTrade({
-      market_slug: ctx.slug,
-      asset: ctx.market.asset,
-      outcome,
-      shares: filledShares,
-      price,
-      total: filledTotal,
-      order_id: result.orderId,
-      status: status === 'partial' ? 'partial' : 'filled',
-      reasoning,
-      event_start_time: ctx.market.eventStartTime,
-      event_end_time: ctx.market.eventEndTime,
-      avg_fill_price: result.avgPrice || price,
-    });
+  // Always save trade to database (with appropriate status)
+  await saveTrade({
+    market_slug: ctx.slug,
+    asset: ctx.market.asset,
+    outcome,
+    shares: logShares,
+    price,
+    total: logTotal,
+    order_id: result.orderId,
+    status: logStatus,
+    reasoning,
+    event_start_time: ctx.market.eventStartTime,
+    event_end_time: ctx.market.eventEndTime,
+    avg_fill_price: result.avgPrice || price,
+  });
 
-    tradeCount++;
-    console.log(`✅ TRADE #${tradeCount}: ${outcome} ${filledShares}@${(price * 100).toFixed(0)}¢ (${status})`);
+  tradeCount++;
+  
+  if (filledShares > 0) {
+    console.log(`✅ TRADE #${tradeCount}: ${outcome} ${filledShares}@${(price * 100).toFixed(0)}¢ (${logStatus})`);
     console.log(`   Position: UP=${ctx.position.upShares} DOWN=${ctx.position.downShares}`);
     
     // Invalidate balance cache after trade
     invalidateBalanceCache();
-    
-    return true;
+  } else {
+    console.log(`📝 ORDER #${tradeCount}: ${outcome} ${shares}@${(price * 100).toFixed(0)}¢ (pending) - ${result.orderId}`);
   }
-
-  console.log(`🕒 Order placed (not filled yet): ${result.orderId} (${status})`);
+    
   return true;
 }
 
@@ -548,37 +556,40 @@ async function main(): Promise<void> {
                 ? (result.filledSize ?? 0)
                 : 0;
 
+          // CRITICAL FIX: Log ALL orders, not just filled ones
+          const logShares = filledShares > 0 ? filledShares : order.shares;
+          const logStatus = filledShares > 0 
+            ? (status === 'partial' ? 'partial' : 'filled')
+            : 'pending';
+
+          // Always save trade to database for tracking
+          await saveTrade({
+            market_slug: order.market_slug,
+            asset: order.asset,
+            outcome: order.outcome,
+            shares: logShares,
+            price: order.price,
+            total: logShares * order.price,
+            order_id: result.orderId,
+            status: logStatus,
+            reasoning: order.reasoning || 'Order from edge function',
+            event_start_time: order.event_start_time || new Date().toISOString(),
+            event_end_time: order.event_end_time || new Date().toISOString(),
+            avg_fill_price: result.avgPrice || order.price,
+          });
+
+          // Update order queue status
+          await updateOrder(order.id, logStatus === 'pending' ? 'placed' : logStatus, {
+            order_id: result.orderId,
+            avg_fill_price: result.avgPrice,
+          });
+
+          tradeCount++;
+          
           if (filledShares > 0) {
-            // Save trade to database (matched size only)
-            await saveTrade({
-              market_slug: order.market_slug,
-              asset: order.asset,
-              outcome: order.outcome,
-              shares: filledShares,
-              price: order.price,
-              total: filledShares * order.price,
-              order_id: result.orderId,
-              status: status === 'partial' ? 'partial' : 'filled',
-              reasoning: order.reasoning || 'Order from edge function',
-              event_start_time: order.event_start_time || new Date().toISOString(),
-              event_end_time: order.event_end_time || new Date().toISOString(),
-              avg_fill_price: result.avgPrice || order.price,
-            });
-
-            await updateOrder(order.id, status === 'partial' ? 'partial' : 'filled', {
-              order_id: result.orderId,
-              avg_fill_price: result.avgPrice,
-            });
-
-            tradeCount++;
-            console.log(`✅ ORDER EXECUTED: ${order.outcome} ${filledShares}@${(order.price * 100).toFixed(0)}¢ (${status})`);
+            console.log(`✅ ORDER EXECUTED: ${order.outcome} ${filledShares}@${(order.price * 100).toFixed(0)}¢ (${logStatus})`);
           } else {
-            // Order exists but isn't matched yet
-            await updateOrder(order.id, 'placed', {
-              order_id: result.orderId,
-              avg_fill_price: result.avgPrice,
-            });
-            console.log(`🕒 ORDER PLACED (not filled): ${order.outcome} ${order.shares}@${(order.price * 100).toFixed(0)}¢ (${status})`);
+            console.log(`📝 ORDER PLACED: ${order.outcome} ${order.shares}@${(order.price * 100).toFixed(0)}¢ (pending) - ${result.orderId}`);
           }
         } else {
           await updateOrder(order.id, 'failed', { error: result.error });
