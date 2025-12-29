@@ -316,15 +316,25 @@ Deno.serve(async (req) => {
     }
   };
 
+  // Fetch positions from BOTH live_trades AND order_queue to include pending orders
   const fetchExistingTrades = async () => {
     try {
       const slugs = Array.from(markets.keys());
       if (slugs.length === 0) return;
 
-      const { data } = await supabase
+      // Fetch from live_trades (confirmed fills)
+      const { data: liveTrades } = await supabase
         .from('live_trades')
         .select('market_slug, outcome, shares, total, created_at')
         .in('market_slug', slugs);
+
+      // Fetch from order_queue (pending + placed + filled orders)
+      // Include all non-failed orders to avoid double-ordering
+      const { data: queueOrders } = await supabase
+        .from('order_queue')
+        .select('market_slug, outcome, shares, price, created_at, status')
+        .in('market_slug', slugs)
+        .neq('status', 'failed');
 
       // Reset positions
       for (const ctx of marketContexts.values()) {
@@ -332,8 +342,39 @@ Deno.serve(async (req) => {
         ctx.lastTradeAtMs = 0;
       }
 
-      if (data) {
-        for (const trade of data) {
+      // Track order IDs we've already counted (to avoid duplicates)
+      const countedSlugsAndOutcomes = new Set<string>();
+
+      // First, count order_queue entries (these are the source of truth for pending)
+      if (queueOrders) {
+        for (const order of queueOrders) {
+          const ctx = marketContexts.get(order.market_slug);
+          if (ctx) {
+            const total = order.shares * order.price;
+            if (order.outcome === 'UP') {
+              ctx.position.upShares += order.shares;
+              ctx.position.upInvested += total;
+            } else {
+              ctx.position.downShares += order.shares;
+              ctx.position.downInvested += total;
+            }
+            const orderTime = new Date(order.created_at).getTime();
+            if (orderTime > (ctx.lastTradeAtMs ?? 0)) {
+              ctx.lastTradeAtMs = orderTime;
+            }
+            // Track this to avoid double-counting
+            countedSlugsAndOutcomes.add(`${order.market_slug}|${order.outcome}|${order.shares}|${order.created_at}`);
+          }
+        }
+      }
+
+      // Then, add live_trades that aren't in order_queue (legacy or external trades)
+      if (liveTrades) {
+        for (const trade of liveTrades) {
+          const key = `${trade.market_slug}|${trade.outcome}|${trade.shares}|${trade.created_at}`;
+          // Skip if already counted from order_queue
+          if (countedSlugsAndOutcomes.has(key)) continue;
+          
           const ctx = marketContexts.get(trade.market_slug);
           if (ctx) {
             if (trade.outcome === 'UP') {
@@ -351,8 +392,9 @@ Deno.serve(async (req) => {
         }
       }
 
-      const totalTrades = data?.length ?? 0;
-      log(`📋 Loaded ${totalTrades} existing trades`);
+      const liveCount = liveTrades?.length ?? 0;
+      const queueCount = queueOrders?.length ?? 0;
+      log(`📋 Loaded positions: ${queueCount} from order_queue + ${liveCount} from live_trades`);
     } catch (error) {
       log(`❌ Error fetching trades: ${error}`);
     }
@@ -667,16 +709,46 @@ Deno.serve(async (req) => {
         return;
       }
 
-      // REFRESH POSITION FROM DATABASE (not optimistic local state)
+      // REFRESH POSITION FROM BOTH order_queue AND live_trades
+      // order_queue is the source of truth for pending/placed orders
+      const { data: queueOrders } = await supabase
+        .from('order_queue')
+        .select('outcome, shares, price, created_at, status')
+        .eq('market_slug', slug)
+        .neq('status', 'failed');
+
       const { data: confirmedTrades } = await supabase
         .from('live_trades')
-        .select('outcome, shares, total')
+        .select('outcome, shares, total, created_at')
         .eq('market_slug', slug);
       
-      // Reset and recalculate from confirmed trades only
+      // Reset and recalculate from all orders
       ctx.position = { upShares: 0, downShares: 0, upInvested: 0, downInvested: 0 };
+      
+      // Track what we've counted to avoid duplicates
+      const countedKeys = new Set<string>();
+      
+      // First count order_queue (includes pending orders!)
+      if (queueOrders) {
+        for (const order of queueOrders) {
+          const total = order.shares * order.price;
+          if (order.outcome === 'UP') {
+            ctx.position.upShares += order.shares;
+            ctx.position.upInvested += total;
+          } else {
+            ctx.position.downShares += order.shares;
+            ctx.position.downInvested += total;
+          }
+          countedKeys.add(`${order.outcome}|${order.shares}|${order.created_at}`);
+        }
+      }
+      
+      // Then add any live_trades not in order_queue (external/legacy trades)
       if (confirmedTrades) {
         for (const trade of confirmedTrades) {
+          const key = `${trade.outcome}|${trade.shares}|${trade.created_at}`;
+          if (countedKeys.has(key)) continue; // Skip duplicates
+          
           if (trade.outcome === 'UP') {
             ctx.position.upShares += trade.shares;
             ctx.position.upInvested += trade.total;
