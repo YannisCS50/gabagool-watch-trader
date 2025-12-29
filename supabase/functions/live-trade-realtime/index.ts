@@ -1,11 +1,13 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 // ============================================================================
-// LIVE TRADING BOT - Real-time WebSocket Worker (Event-Driven)
+// LIVE TRADING BOT - Real-time WebSocket Worker (Event-Driven) v3.1.1
 // Connects to Polymarket CLOB WebSocket and reacts to price changes
 // SIGNALS ONLY - Orders go to order_queue for local-runner to execute
 // (Edge functions get blocked by Cloudflare, so we queue orders instead)
 // ============================================================================
+
+const BOT_VERSION = "3.1.1";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
