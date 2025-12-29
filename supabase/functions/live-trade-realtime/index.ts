@@ -49,23 +49,23 @@ interface MarketToken {
   marketType: string;
 }
 
-// Strategy config - CONSERVATIVE for live trading (smaller than paper)
+// Strategy config - AGGRESSIVE HEDGING for faster fills
 // POLYMARKET RATE LIMITS: Respect exchange rules to avoid bans
 const STRATEGY = {
   opening: {
     notional: 5,          // $5 initial trade
-    maxPrice: 0.56,        // Only enter if price <= 56¢ (was 52¢)
+    maxPrice: 0.52,       // Only enter if price <= 52¢ (strict!)
   },
   hedge: {
-    triggerCombined: 0.98, // Hedge when combined < 98¢
+    triggerCombined: 0.96, // Hedge when combined < 96¢ (was 98¢ - more strict)
     notional: 5,           // $5 per hedge
-    cushionTicks: 3,       // Extra ticks above ask for guaranteed fill
+    cushionTicks: 2,       // Extra ticks above ask for guaranteed fill (was 3)
     tickSize: 0.01,        // 1¢ tick size
-    forceTimeoutSec: 25,   // Force hedge after 25s if still one-sided (was 45s)
-    maxPrice: 0.75,        // Max price for hedge (was 65¢)
+    forceTimeoutSec: 12,   // Force hedge after 12s if still one-sided (was 25s!)
+    maxPrice: 0.55,        // Max price for hedge (was 75¢ - WAY too high!)
   },
   accumulate: {
-    triggerCombined: 0.97, // Accumulate when combined < 97¢
+    triggerCombined: 0.95, // Accumulate when combined < 95¢ (stricter)
     notional: 5,           // $5 per accumulate
   },
   limits: {
@@ -85,9 +85,11 @@ const STRATEGY = {
     skipHedgeThresholdUsd: 120, // $120 distance from strike = evident
     maxPrice: 0.97,           // Allow buying up to 97¢ in endgame
   },
-  cooldownMs: 15000,       // 15s cooldown between trades per market (Polymarket-friendly)
-  dedupeWindowMs: 10000,   // 10s dedupe window
-  globalCooldownMs: 5000,  // 5s global cooldown between ANY orders
+  // COOLDOWNS: Opening uses standard cooldown, hedge has NO cooldown
+  cooldownMs: 5000,        // 5s cooldown for opening trades (was 15s)
+  hedgeCooldownMs: 0,      // NO cooldown for hedge! Hedge immediately
+  dedupeWindowMs: 5000,    // 5s dedupe window (was 10s)
+  globalCooldownMs: 2000,  // 2s global cooldown (was 5s)
 };
 
 // Helper functions
@@ -639,8 +641,19 @@ Deno.serve(async (req) => {
         return; // Silent skip - global cooldown active
       }
 
-      // Per-market cooldown check (longer to respect rate limits)
-      if (ctx.lastTradeAtMs && nowMs - ctx.lastTradeAtMs < STRATEGY.cooldownMs) return;
+      // Determine if we need hedge (one-sided position)
+      const needsHedge = (ctx.position.upShares > 0 && ctx.position.downShares === 0) ||
+                         (ctx.position.downShares > 0 && ctx.position.upShares === 0);
+      
+      // Per-market cooldown check - HEDGE HAS NO COOLDOWN!
+      const effectiveCooldown = needsHedge ? STRATEGY.hedgeCooldownMs : STRATEGY.cooldownMs;
+      if (ctx.lastTradeAtMs && nowMs - ctx.lastTradeAtMs < effectiveCooldown) {
+        if (needsHedge && evaluationCount % 5 === 0) {
+          log(`⚡ HEDGE: Bypassing cooldown (hedge cooldown: ${effectiveCooldown}ms)`);
+        } else {
+          return;
+        }
+      }
 
       // CHECK FOR PENDING ORDERS (realtime - no DB query needed!)
       // Allow up to 3 pending orders per market for anticipatory ordering
@@ -819,7 +832,13 @@ Deno.serve(async (req) => {
         // Log hedge evaluation details (include hedgeShares to show minimum enforcement)
         log(`🔍 HEDGE EVAL: ${missingSide} ask=${(missingPrice*100).toFixed(0)}¢ → marketable=${(marketablePrice*100).toFixed(0)}¢ | projected=${(projectedCombined*100).toFixed(0)}¢ | shares=${existingShares}→${hedgeShares} | timeSinceOpen=${timeSinceOpeningSec.toFixed(0)}s | force=${isForceHedge}`);
 
-        // FORCE HEDGE: If timeout exceeded, hedge regardless of combined price
+        // CRITICAL SAFETY CHECK: Never hedge if combined > 99¢ (guaranteed loss)
+        if (projectedCombined >= 0.99) {
+          log(`🚫 HEDGE BLOCKED: Combined ${(projectedCombined*100).toFixed(0)}¢ >= 99¢ - would guarantee loss!`);
+          return;
+        }
+
+        // FORCE HEDGE: If timeout exceeded AND combined still profitable, hedge
         if (isForceHedge) {
           log(`⚠️ FORCE HEDGE: ${timeSinceOpeningSec.toFixed(0)}s since opening > ${STRATEGY.hedge.forceTimeoutSec}s timeout (using ${hedgeShares} shares)`);
           await executeTrade(market, ctx, missingSide, marketablePrice, hedgeShares,
@@ -827,11 +846,18 @@ Deno.serve(async (req) => {
           return;
         }
 
-        // NORMAL HEDGE: Check if combined price is good
-        if (projectedCombined < STRATEGY.hedge.triggerCombined && missingPrice <= STRATEGY.opening.maxPrice) {
+        // NORMAL HEDGE: Trigger earlier and allow higher hedge price if combined is still good
+        // Key change: missingPrice <= STRATEGY.hedge.maxPrice (55¢) instead of opening.maxPrice
+        if (projectedCombined < STRATEGY.hedge.triggerCombined && missingPrice <= STRATEGY.hedge.maxPrice) {
           const edgePct = ((1 - projectedCombined) * 100).toFixed(1);
+          log(`✅ HEDGE NOW: ${missingSide} @ ${(marketablePrice*100).toFixed(0)}¢ | combined ${(projectedCombined*100).toFixed(0)}¢ | ${edgePct}% edge`);
           await executeTrade(market, ctx, missingSide, marketablePrice, hedgeShares,
             `Hedge ${missingSide} @ ${(marketablePrice*100).toFixed(0)}¢ (${edgePct}% edge, +${STRATEGY.hedge.cushionTicks} ticks)`);
+        } else {
+          // Log why hedge was skipped
+          if (evaluationCount % 5 === 0) {
+            log(`⏸️ HEDGE WAIT: combined=${(projectedCombined*100).toFixed(0)}¢ (need <${(STRATEGY.hedge.triggerCombined*100).toFixed(0)}¢) | price=${(missingPrice*100).toFixed(0)}¢ (max ${(STRATEGY.hedge.maxPrice*100).toFixed(0)}¢)`);
+          }
         }
         return;
       }
