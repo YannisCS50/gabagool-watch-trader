@@ -7,7 +7,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 // (Edge functions get blocked by Cloudflare, so we queue orders instead)
 // ============================================================================
 
-const BOT_VERSION = "3.1.1";
+const BOT_VERSION = "3.2.0";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
