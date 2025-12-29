@@ -21,6 +21,7 @@ import {
 import { useLiveTrades, LiveTrade, LiveTradeResult } from '@/hooks/useLiveTrades';
 import { formatDistanceToNow } from 'date-fns';
 import { usePolymarketRealtime } from '@/hooks/usePolymarketRealtime';
+import { useStrikePrices } from '@/hooks/useStrikePrices';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 
@@ -31,6 +32,7 @@ interface LiveTradeDashboardProps {
 export const LiveTradeDashboard: React.FC<LiveTradeDashboardProps> = ({ compact = false }) => {
   const { trades, results, stats, isLoading, refetch } = useLiveTrades();
   const { getPrice, pricesVersion } = usePolymarketRealtime();
+  const { getStrikePrice } = useStrikePrices();
   const [isKilling, setIsKilling] = useState(false);
 
   const handleKillSwitch = async () => {
@@ -273,6 +275,8 @@ export const LiveTradeDashboard: React.FC<LiveTradeDashboardProps> = ({ compact 
                 <thead>
                   <tr className="text-xs text-muted-foreground border-b border-border/50">
                     <th className="text-left pb-3 font-medium">Market</th>
+                    <th className="text-center pb-3 font-medium">Strike</th>
+                    <th className="text-center pb-3 font-medium">Prices</th>
                     <th className="text-center pb-3 font-medium">Status</th>
                     <th className="text-center pb-3 font-medium">Position</th>
                     <th className="text-right pb-3 font-medium">Cost</th>
@@ -311,6 +315,8 @@ export const LiveTradeDashboard: React.FC<LiveTradeDashboardProps> = ({ compact 
                     const totalShares = upShares + downShares;
                     const upPct = totalShares > 0 ? (upShares / totalShares) * 100 : 50;
 
+                    const strikePrice = getStrikePrice(slug);
+
                     return (
                       <tr key={slug} className="group hover:bg-muted/30 transition-colors">
                         <td className="py-3">
@@ -327,6 +333,31 @@ export const LiveTradeDashboard: React.FC<LiveTradeDashboardProps> = ({ compact 
                               </div>
                             </div>
                           </div>
+                        </td>
+                        <td className="py-3 text-center">
+                          {strikePrice ? (
+                            <div className="font-mono text-xs">
+                              ${asset === 'BTC' ? strikePrice.toLocaleString(undefined, { maximumFractionDigits: 0 }) : strikePrice.toFixed(2)}
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground">-</span>
+                          )}
+                        </td>
+                        <td className="py-3 text-center">
+                          {hasLivePrices ? (
+                            <div className="flex flex-col items-center gap-0.5">
+                              <div className="flex items-center gap-1 text-xs">
+                                <span className="text-emerald-500 font-mono">{(currentUpPrice! * 100).toFixed(0)}¢</span>
+                                <span className="text-muted-foreground">/</span>
+                                <span className="text-red-500 font-mono">{(currentDownPrice! * 100).toFixed(0)}¢</span>
+                              </div>
+                              <div className="text-[10px] text-muted-foreground">
+                                Σ {((currentUpPrice! + currentDownPrice!) * 100).toFixed(0)}¢
+                              </div>
+                            </div>
+                          ) : (
+                            <span className="text-muted-foreground text-xs">-</span>
+                          )}
                         </td>
                         <td className="py-3 text-center">
                           {marketStatus === 'OPEN' ? (
