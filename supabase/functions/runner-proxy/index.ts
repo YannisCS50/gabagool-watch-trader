@@ -103,7 +103,19 @@ Deno.serve(async (req) => {
           });
         }
 
-        const { error } = await supabase.from('live_trades').insert(trade);
+        // Get wallet address from config to tag this trade
+        const { data: config } = await supabase
+          .from('bot_config')
+          .select('polymarket_address')
+          .single();
+
+        // Add wallet_address to trade
+        const tradeWithWallet = {
+          ...trade,
+          wallet_address: config?.polymarket_address || null,
+        };
+
+        const { error } = await supabase.from('live_trades').insert(tradeWithWallet);
 
         if (error) {
           console.error('[runner-proxy] save-trade error:', error);

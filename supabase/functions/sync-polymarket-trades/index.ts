@@ -265,6 +265,7 @@ serve(async (req) => {
         event_start_time: eventStartTime,
         event_end_time: eventEndTime,
         created_at: new Date(trade.timestamp * 1000).toISOString(),
+        wallet_address: walletAddress, // Track which wallet this trade belongs to
       };
     });
 

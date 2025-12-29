@@ -105,6 +105,7 @@ export type Database = {
           up_avg_price: number | null
           up_cost: number | null
           up_shares: number | null
+          wallet_address: string | null
         }
         Insert: {
           asset: string
@@ -124,6 +125,7 @@ export type Database = {
           up_avg_price?: number | null
           up_cost?: number | null
           up_shares?: number | null
+          wallet_address?: string | null
         }
         Update: {
           asset?: string
@@ -143,6 +145,7 @@ export type Database = {
           up_avg_price?: number | null
           up_cost?: number | null
           up_shares?: number | null
+          wallet_address?: string | null
         }
         Relationships: []
       }
@@ -164,6 +167,7 @@ export type Database = {
           shares: number
           status: string | null
           total: number
+          wallet_address: string | null
         }
         Insert: {
           arbitrage_edge?: number | null
@@ -182,6 +186,7 @@ export type Database = {
           shares: number
           status?: string | null
           total: number
+          wallet_address?: string | null
         }
         Update: {
           arbitrage_edge?: number | null
@@ -200,6 +205,7 @@ export type Database = {
           shares?: number
           status?: string | null
           total?: number
+          wallet_address?: string | null
         }
         Relationships: []
       }

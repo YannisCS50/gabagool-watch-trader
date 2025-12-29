@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { format } from 'date-fns';
+import { useCurrentWallet } from '@/hooks/useCurrentWallet';
 
 interface Trade {
   id: string;
@@ -103,14 +104,24 @@ export function MarketTradesLog() {
   const [isLoading, setIsLoading] = useState(true);
   const [autoRefresh, setAutoRefresh] = useState(true);
   const [expandedMarkets, setExpandedMarkets] = useState<Set<string>>(new Set());
+  const { walletAddress, isLoading: walletLoading } = useCurrentWallet();
 
   const fetchTrades = async () => {
+    if (walletLoading) return;
+    
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('live_trades')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(100);
+
+      // Filter by wallet if available
+      if (walletAddress) {
+        query = query.or(`wallet_address.eq.${walletAddress},wallet_address.is.null`);
+      }
+
+      const { data, error } = await query;
 
       if (error) throw error;
       setTrades(data || []);
@@ -122,13 +133,15 @@ export function MarketTradesLog() {
   };
 
   useEffect(() => {
-    fetchTrades();
+    if (!walletLoading) {
+      fetchTrades();
+    }
     
-    if (autoRefresh) {
+    if (autoRefresh && !walletLoading) {
       const interval = setInterval(fetchTrades, 5000);
       return () => clearInterval(interval);
     }
-  }, [autoRefresh]);
+  }, [autoRefresh, walletAddress, walletLoading]);
 
   // Subscribe to realtime updates
   useEffect(() => {
