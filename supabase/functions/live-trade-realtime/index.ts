@@ -55,12 +55,12 @@ interface MarketToken {
 // POLYMARKET RATE LIMITS: Respect exchange rules to avoid bans
 const STRATEGY = {
   opening: {
-    notional: 5,          // $5 initial trade
-    maxPrice: 0.52,       // Only enter if price <= 52¢ (strict!)
+    shares: 25,            // Fixed 25 shares per opening trade
+    maxPrice: 0.52,        // Only enter if price <= 52¢ (strict!)
   },
   hedge: {
     triggerCombined: 0.96, // Hedge when combined < 96¢ (was 98¢ - more strict)
-    notional: 5,           // $5 per hedge
+    shares: 25,            // Fixed 25 shares per hedge (match opening)
     cushionTicks: 2,       // Extra ticks above ask for guaranteed fill (was 3)
     tickSize: 0.01,        // 1¢ tick size
     forceTimeoutSec: 12,   // Force hedge after 12s if still one-sided (was 25s!)
@@ -68,11 +68,11 @@ const STRATEGY = {
   },
   accumulate: {
     triggerCombined: 0.95, // Accumulate when combined < 95¢ (stricter)
-    notional: 5,           // $5 per accumulate
+    shares: 10,            // 10 shares per accumulate
   },
   limits: {
     maxSharesPerSide: 100,  // Max 100 shares per side
-    maxTotalInvested: 50,   // Max $50 total per market
+    maxTotalInvested: 100,  // Max $100 total per market (increased for 25 shares)
   },
   entry: {
     minSecondsRemaining: 60,
@@ -779,7 +779,7 @@ Deno.serve(async (req) => {
         log(`🎯 OPENING CHECK: ${cheaperSide} @ ${(cheaperPrice*100).toFixed(0)}¢ (max: ${(STRATEGY.opening.maxPrice*100).toFixed(0)}¢)`);
 
         if (cheaperPrice <= STRATEGY.opening.maxPrice) {
-          const shares = calcShares(STRATEGY.opening.notional, cheaperPrice);
+          const shares = STRATEGY.opening.shares; // Fixed 25 shares
           if (shares >= 1) {
             // 1. Place opening order
             const openingSuccess = await executeTrade(market, ctx, cheaperSide, cheaperPrice, shares, 
@@ -789,7 +789,7 @@ Deno.serve(async (req) => {
             if (openingSuccess && otherPrice <= STRATEGY.hedge.maxPrice) {
               const cushion = STRATEGY.hedge.cushionTicks * STRATEGY.hedge.tickSize;
               const hedgePrice = Math.min(otherPrice + cushion, STRATEGY.hedge.maxPrice);
-              const hedgeShares = Math.max(shares, 5); // Match opening shares or min 5
+              const hedgeShares = STRATEGY.hedge.shares; // Fixed 25 shares for hedge
               const projectedCombined = cheaperPrice + hedgePrice;
               
               if (projectedCombined < 1.0) { // Only if profitable
@@ -813,10 +813,8 @@ Deno.serve(async (req) => {
         const existingInvested = missingSide === "UP" ? pos.downInvested : pos.upInvested;
         const existingAvg = existingShares > 0 ? existingInvested / existingShares : 0;
         
-        // MINIMUM SHARES: Polymarket rejects orders < ~$1-2 notional
-        // Ensure we always order at least 5 shares (or use notional-based sizing)
-        const minSharesForOrder = 5;
-        const hedgeShares = Math.max(existingShares, minSharesForOrder);
+        // Use fixed hedge shares from strategy, or match existing if larger
+        const hedgeShares = Math.max(existingShares, STRATEGY.hedge.shares);
         
         // MARKETABLE LIMIT: Add cushion ticks above ask for guaranteed fill
         const cushion = STRATEGY.hedge.cushionTicks * STRATEGY.hedge.tickSize;
@@ -866,8 +864,7 @@ Deno.serve(async (req) => {
 
       // PHASE 3: ACCUMULATE - Both sides filled, add equal shares if good combined
       if (combined < STRATEGY.accumulate.triggerCombined) {
-        const priceSum = upAsk + downAsk;
-        const sharesToAdd = Math.floor(STRATEGY.accumulate.notional / priceSum);
+        const sharesToAdd = STRATEGY.accumulate.shares; // Fixed 10 shares for accumulate
         
         if (sharesToAdd >= 1 && 
             pos.upShares + sharesToAdd <= STRATEGY.limits.maxSharesPerSide &&
