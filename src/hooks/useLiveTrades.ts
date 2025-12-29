@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
+import { useCurrentWallet } from './useCurrentWallet';
 
 export interface LiveTrade {
   id: string;
@@ -18,6 +19,7 @@ export interface LiveTrade {
   arbitrage_edge: number | null;
   avg_fill_price: number | null;
   estimated_slippage: number | null;
+  wallet_address: string | null;
 }
 
 export interface LiveTradeResult {
@@ -65,25 +67,35 @@ export function useLiveTrades(): UseLiveTradesResult {
   const [results, setResults] = useState<LiveTradeResult[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { walletAddress, isLoading: walletLoading } = useCurrentWallet();
 
   const fetchData = useCallback(async () => {
+    if (walletLoading) return;
+    
     try {
       setError(null);
 
-      // Fetch ALL trades (no limit for accurate stats)
-      const { data: tradesData, error: tradesError } = await supabase
+      // Build query - filter by wallet if available
+      let tradesQuery = supabase
         .from('live_trades')
         .select('*')
         .order('created_at', { ascending: false });
-
-      if (tradesError) throw tradesError;
-
-      // Fetch ALL results (no limit for accurate stats)
-      const { data: resultsData, error: resultsError } = await supabase
+      
+      let resultsQuery = supabase
         .from('live_trade_results')
         .select('*')
         .order('created_at', { ascending: false });
 
+      // Filter by wallet address if available
+      if (walletAddress) {
+        tradesQuery = tradesQuery.or(`wallet_address.eq.${walletAddress},wallet_address.is.null`);
+        resultsQuery = resultsQuery.or(`wallet_address.eq.${walletAddress},wallet_address.is.null`);
+      }
+
+      const { data: tradesData, error: tradesError } = await tradesQuery;
+      if (tradesError) throw tradesError;
+
+      const { data: resultsData, error: resultsError } = await resultsQuery;
       if (resultsError) throw resultsError;
 
       setTrades(tradesData || []);
@@ -94,7 +106,7 @@ export function useLiveTrades(): UseLiveTradesResult {
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [walletAddress, walletLoading]);
 
   // Calculate stats
   const openTradesInvested = trades.reduce((sum, t) => {
