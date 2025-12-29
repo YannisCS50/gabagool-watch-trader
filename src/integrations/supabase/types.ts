@@ -485,6 +485,57 @@ export type Database = {
         }
         Relationships: []
       }
+      position_snapshots: {
+        Row: {
+          avg_price: number
+          created_at: string
+          current_price: number | null
+          id: string
+          is_closed: boolean | null
+          market_slug: string
+          market_title: string | null
+          outcome: string
+          pnl: number | null
+          pnl_percent: number | null
+          shares: number
+          snapshot_at: string
+          trader_username: string
+          value: number | null
+        }
+        Insert: {
+          avg_price: number
+          created_at?: string
+          current_price?: number | null
+          id?: string
+          is_closed?: boolean | null
+          market_slug: string
+          market_title?: string | null
+          outcome: string
+          pnl?: number | null
+          pnl_percent?: number | null
+          shares: number
+          snapshot_at?: string
+          trader_username?: string
+          value?: number | null
+        }
+        Update: {
+          avg_price?: number
+          created_at?: string
+          current_price?: number | null
+          id?: string
+          is_closed?: boolean | null
+          market_slug?: string
+          market_title?: string | null
+          outcome?: string
+          pnl?: number | null
+          pnl_percent?: number | null
+          shares?: number
+          snapshot_at?: string
+          trader_username?: string
+          value?: number | null
+        }
+        Relationships: []
+      }
       positions: {
         Row: {
           avg_price: number

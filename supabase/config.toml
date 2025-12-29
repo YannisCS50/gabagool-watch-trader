@@ -56,3 +56,6 @@ verify_jwt = false
 
 [functions.sync-polymarket-trades]
 verify_jwt = false
+
+[functions.sync-gabagool-positions]
+verify_jwt = false
