@@ -34,8 +34,8 @@ export {
 // ============================================================
 // STRATEGY VERSION
 // ============================================================
-export const STRATEGY_VERSION = '3.1.0-gpt-strat';
-export const STRATEGY_NAME = 'Polymarket 15m Hedge/Arb (GPT-Grade v3.1)';
+export const STRATEGY_VERSION = '3.1.1-gpt-strat';
+export const STRATEGY_NAME = 'Polymarket 15m Hedge/Arb (GPT-Grade v3.1.1)';
 
 // ============================================================
 // BACKWARD COMPATIBILITY LAYER
@@ -116,12 +116,22 @@ export const STRATEGY = {
     unwindStartSec: DEFAULT_CONFIG.timing.unwindStartSec,
   },
   
-  // Opening parameters
+  // Opening parameters - FIXED 25 SHARES
   opening: {
-    notional: config.trading.maxNotionalPerTrade,
+    shares: 25,          // Fixed 25 shares per opening
+    notional: 12.50,     // ~$12.50 at 50¢ = 25 shares (for display only)
     maxPrice: 0.52,
     skipEdgeCheck: true,
     maxDelayMs: 5000,
+  },
+  
+  // Hedge parameters - FIXED 25 SHARES, NO COOLDOWN
+  hedge: {
+    shares: 25,          // Fixed 25 shares per hedge
+    maxPrice: 0.55,      // Max 55¢ for hedge
+    cushionTicks: 2,     // 2 ticks above ask
+    forceTimeoutSec: 12, // Force hedge after 12s
+    cooldownMs: 0,       // NO COOLDOWN for hedge!
   },
   
   // Entry conditions
@@ -133,7 +143,7 @@ export const STRATEGY = {
   },
   
   // Cooldown
-  cooldownMs: DEFAULT_CONFIG.limits.sideCooldownMs * 5, // 10s effective
+  cooldownMs: 5000, // 5s cooldown for opening trades (hedge has 0)
   
   // Probability Bias (GPT-strat doesn't have this, disable)
   probabilityBias: {
