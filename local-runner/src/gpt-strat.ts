@@ -163,21 +163,21 @@ export interface StrategyConfig {
 }
 
 export const DEFAULT_CONFIG: StrategyConfig = {
-  tradeSizeUsd: { base: 8, min: 3, max: 20 },
+  tradeSizeUsd: { base: 12.50, min: 10, max: 25 }, // ~25 shares at 50¢
 
   edge: {
     baseBuffer: 0.012,
-    strongEdge: 0.05,
-    allowOverpay: 0.02,
+    strongEdge: 0.04,      // 4c is strong edge
+    allowOverpay: 0.01,    // Only allow 1c overpay (was 2c)
     feesBuffer: 0.002,
     slippageBuffer: 0.004,
-    deepDislocationThreshold: 0.95,
+    deepDislocationThreshold: 0.96, // Stricter: 96¢ triggers DEEP (was 95¢)
   },
 
   timing: {
     stopNewTradesSec: 30,
-    hedgeTimeoutSec: 20,
-    hedgeMustBySec: 75,
+    hedgeTimeoutSec: 12,    // Force hedge after 12s (was 20s)
+    hedgeMustBySec: 60,     // Must hedge by 60s remaining (was 75s)
     unwindStartSec: 45,
   },
 
@@ -193,13 +193,13 @@ export const DEFAULT_CONFIG: StrategyConfig = {
     maxPerSideUsd: 150,
     minTopDepthShares: 50,
     maxPendingOrders: 3,
-    sideCooldownMs: 2000,
+    sideCooldownMs: 0,      // NO cooldown for hedge (was 2000ms)
   },
 
   execution: {
     tickFallback: 0.01,
     tickNiceSet: [0.01, 0.005, 0.002, 0.001],
-    hedgeCushionTicks: 1,      // Normal hedge: conservative
+    hedgeCushionTicks: 2,      // 2 ticks above ask (was 1)
     riskHedgeCushionTicks: 3,  // Risk/Unwind hedge: aggressive
     entryImproveTicks: 0,
   },
