@@ -639,21 +639,24 @@ async function main(): Promise<void> {
     }
   }, 30000);
 
-  // Sync positions from Polymarket API every 60 seconds
-  // This reconciles pending orders with actual fills
+  // Sync positions from Polymarket API every 10 seconds
+  // This reconciles pending orders with actual fills in near real-time
   let lastSyncAt = 0;
+  let syncInFlight = false;
   setInterval(async () => {
     const nowMs = Date.now();
-    if (nowMs - lastSyncAt < 60000) return;
+    if (nowMs - lastSyncAt < 10000) return;
+    if (syncInFlight) return; // Prevent overlapping syncs
+    
+    syncInFlight = true;
     lastSyncAt = nowMs;
 
     try {
-      console.log('\n🔄 Syncing positions from Polymarket API...');
       const syncResult = await syncPositions(config.polymarket.address);
       
-      // Print report for visibility
-      if (syncResult.positions.length > 0) {
-        printPositionsReport(syncResult);
+      // Only print report if we have positions (reduce noise)
+      if (syncResult.positions.length > 0 && syncResult.summary.totalPositions > 0) {
+        console.log(`🔄 Sync: ${syncResult.summary.totalPositions} positions, $${syncResult.summary.totalValue.toFixed(2)} value, $${syncResult.summary.unrealizedPnl.toFixed(2)} P/L`);
       }
 
       // Sync to backend (reconcile pending orders)
@@ -670,13 +673,15 @@ async function main(): Promise<void> {
       }));
 
       const backendResult = await syncPositionsToBackend(config.polymarket.address, positionsData);
-      if (backendResult.success) {
-        console.log(`✅ Backend sync: ${backendResult.updated || 0} fills confirmed, ${backendResult.cancelled || 0} cancelled`);
+      if (backendResult.success && (backendResult.updated || backendResult.cancelled)) {
+        console.log(`✅ Reconciled: ${backendResult.updated || 0} fills, ${backendResult.cancelled || 0} cancelled`);
       }
     } catch (error) {
       console.error('❌ Position sync error:', error);
+    } finally {
+      syncInFlight = false;
     }
-  }, 60000);
+  }, 10000);
 
   // Status logging every minute
   setInterval(async () => {
