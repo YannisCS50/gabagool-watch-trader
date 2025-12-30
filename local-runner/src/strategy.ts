@@ -34,8 +34,8 @@ export {
 // ============================================================
 // STRATEGY VERSION
 // ============================================================
-export const STRATEGY_VERSION = '3.2.1-big-hedger';
-export const STRATEGY_NAME = 'Polymarket 15m Hedge/Arb (Big Hedger v3.2.1 - 50/300/50)';
+export const STRATEGY_VERSION = '4.2.1-gabagool-adaptive';
+export const STRATEGY_NAME = 'Polymarket 15m Hedge/Arb (Gabagool v4.2.1 - Constant Regimes)';
 
 // ============================================================
 // BACKWARD COMPATIBILITY LAYER
@@ -108,39 +108,59 @@ export const STRATEGY = {
     hardCap: DEFAULT_CONFIG.skew.hardCap,
   },
   
-  // Risk Limits - v3.2.1: 300 shares max per side
+  // Risk Limits - v4.2.1: 300 shares max per side
   limits: {
     maxTotalNotional: 500,   // Increased for 300 shares
-    maxPerSide: 300,         // 300 shares max per side (was 150)
+    maxPerSide: 300,         // 300 shares max per side
     maxPerSideShares: 300,   // Explicit share limit
-    hedgeTimeoutSec: DEFAULT_CONFIG.timing.hedgeTimeoutSec,
     stopTradesSec: DEFAULT_CONFIG.timing.stopNewTradesSec,
     unwindStartSec: DEFAULT_CONFIG.timing.unwindStartSec,
   },
   
-  // Opening parameters - v3.2.1: 50 SHARES
+  // Opening parameters - v4.2.1: 50 SHARES
   opening: {
-    shares: 50,          // Fixed 50 shares per opening (was 25)
+    shares: 50,          // Fixed 50 shares per opening
     notional: 25,        // ~$25 at 50¢ = 50 shares
     maxPrice: 0.52,
     skipEdgeCheck: true,
     maxDelayMs: 5000,
   },
   
-  // Hedge parameters - v3.2.1: 50 SHARES to match opening
+  // Hedge parameters - v4.2.1: time-scaled timeout
   hedge: {
-    shares: 50,          // Fixed 50 shares per hedge (was 25)
+    shares: 50,          // Fixed 50 shares per hedge
     maxPrice: 0.55,      // Max 55¢ for hedge
     cushionTicks: 2,     // 2 ticks above ask
-    forceTimeoutSec: 12, // Force hedge after 12s
+    forceTimeoutSec: 35, // Base timeout, scaled by timeFactor
     cooldownMs: 0,       // NO COOLDOWN for hedge!
   },
   
-  // Accumulate parameters - v3.2.1: max 50 shares, only when hedged
+  // Accumulate parameters - v4.2.1: max 50 shares, only when hedged
   accumulate: {
     maxShares: 50,       // Max 50 shares per accumulate
     requireHedged: true, // Only accumulate when position is hedged
     minEdge: 0.02,       // Min 2% edge to accumulate
+  },
+  
+  // v4.2.1: Delta regime configuration
+  delta: {
+    lowThreshold: 0.0030,    // LOW: delta < 0.30%
+    midThreshold: 0.0070,    // MID: 0.30% - 0.70%
+    deepMaxDelta: 0.0040,    // DEEP only if delta < 0.40%
+  },
+  
+  // v4.2.1: Time-scaled parameters
+  timeScaled: {
+    hedgeTimeoutBaseSec: 35,  // Base: 35s, scaled by timeFactor
+    maxSkewBase: 0.70,        // Base: 70/30, shrinks toward 50/50
+    bufferAddBase: 0.008,     // Base: +0.8%, increases as time decreases
+  },
+  
+  // v4.2.1: DEEP mode conditions
+  deep: {
+    minTimeSec: 180,          // Only if > 180s remaining
+    maxCombinedAsk: 0.95,     // Only if combined < 95¢
+    maxDeltaPct: 0.0040,      // Only if delta < 0.40%
   },
   
   // Entry conditions
