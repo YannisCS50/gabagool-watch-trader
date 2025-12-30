@@ -313,8 +313,49 @@ export function calculatePreHedgePrice(
 }
 
 // ============================================================
-// LEGACY EVALUATION FUNCTION (ADAPTER)
-// Converts old API calls to GPT-strat logic
+// v4.2.1 HELPER FUNCTIONS
+// ============================================================
+
+/**
+ * v4.2.1: Compute timeFactor for parameter scaling
+ */
+function getTimeFactor(secondsRemaining: number): number {
+  return Math.max(secondsRemaining, 60) / 900;  // 1.0 at 900s, 0.07 at 60s
+}
+
+/**
+ * v4.2.1: Time-scaled hedge timeout
+ */
+function getScaledHedgeTimeout(timeFactor: number): number {
+  return Math.max(8, Math.floor(STRATEGY.timeScaled.hedgeTimeoutBaseSec * timeFactor));
+}
+
+/**
+ * v4.2.1: Time-scaled max skew (shrinks toward 50/50)
+ */
+function getScaledMaxSkew(timeFactor: number): number {
+  return 0.50 + (STRATEGY.timeScaled.maxSkewBase - 0.50) * timeFactor;
+}
+
+/**
+ * v4.2.1: Time-scaled buffer addition (increases as time decreases)
+ */
+function getScaledBufferAdd(timeFactor: number): number {
+  return STRATEGY.timeScaled.bufferAddBase * (1 - timeFactor);
+}
+
+/**
+ * v4.2.1: Check if DEEP mode is allowed
+ */
+function isDeepModeAllowed(secondsRemaining: number, combined: number): boolean {
+  // Note: We don't have delta/spotPrice in legacy API, so skip delta check
+  if (secondsRemaining <= STRATEGY.deep.minTimeSec) return false;
+  if (combined >= STRATEGY.deep.maxCombinedAsk) return false;
+  return true;
+}
+
+// ============================================================
+// LEGACY EVALUATION FUNCTION (v4.2.1 UPDATED)
 // ============================================================
 
 export type Outcome = 'UP' | 'DOWN';
@@ -350,6 +391,12 @@ export function evaluateOpportunity(
   nowMs: number,
   availableBalance?: number
 ): LegacyTradeSignal | null {
+  // ========== v4.2.1 TIME-SCALED PARAMETERS ==========
+  const timeFactor = getTimeFactor(remainingSeconds);
+  const scaledBuffer = STRATEGY.edge.buffer + getScaledBufferAdd(timeFactor);
+  const scaledMaxSkew = getScaledMaxSkew(timeFactor);
+  const scaledHedgeTimeout = getScaledHedgeTimeout(timeFactor);
+  
   // ========== PRE-CHECKS ==========
   
   // Cooldown check
@@ -388,8 +435,16 @@ export function evaluateOpportunity(
   const hasUp = position.upShares > 0;
   const hasDown = position.downShares > 0;
   const tick = DEFAULT_CONFIG.execution.tickFallback;
+  
+  // v4.2.1: Check if DEEP mode is allowed
+  const deepAllowed = isDeepModeAllowed(remainingSeconds, combined);
+  
+  // Log v4.2.1 parameters periodically
+  if (Math.random() < 0.02) { // 2% of evaluations
+    console.log(`[v4.2.1] timeFactor=${timeFactor.toFixed(2)} buffer=${(scaledBuffer*100).toFixed(2)}¢ maxSkew=${(scaledMaxSkew*100).toFixed(0)}% hedgeTimeout=${scaledHedgeTimeout}s DEEP=${deepAllowed}`);
+  }
 
-  // ========== STATE LOGIC (GPT-STRAT STYLE) ==========
+  // ========== STATE LOGIC (v4.2.1) ==========
 
   // FLAT: No position - look for opening trade
   if (!hasUp && !hasDown) {
@@ -397,7 +452,8 @@ export function evaluateOpportunity(
     const cheaperPrice = cheaperSide === 'UP' ? upAsk : downAsk;
     
     const isOpeningPrice = cheaperPrice <= STRATEGY.opening.maxPrice;
-    const hasEdge = pairedLockOk(upAsk, downAsk, STRATEGY.edge.buffer);
+    // v4.2.1: Use time-scaled buffer for edge check
+    const hasEdge = pairedLockOk(upAsk, downAsk, scaledBuffer);
     
     if (!isOpeningPrice && !hasEdge) {
       return null;
@@ -420,7 +476,7 @@ export function evaluateOpportunity(
       outcome: cheaperSide,
       price: cheaperPrice,
       shares,
-      reasoning: `ENTRY ${cheaperSide} @ ${(cheaperPrice * 100).toFixed(1)}¢ (GPT-strat cheapest-first)`,
+      reasoning: `ENTRY ${cheaperSide} @ ${(cheaperPrice * 100).toFixed(1)}¢ (v4.2.1 tf=${timeFactor.toFixed(2)})`,
       type: 'opening',
     };
   }
@@ -440,14 +496,14 @@ export function evaluateOpportunity(
     const existingAvg = existingShares > 0 ? existingCost / existingShares : 0;
     const projectedCombined = existingAvg + missingAsk;
     
-    // GPT-strat: Allow overpay up to 2% for hedging
+    // v4.2.1: Allow overpay for hedging
     const allowOverpay = DEFAULT_CONFIG.edge.allowOverpay;
     if (projectedCombined > 1 + allowOverpay) {
-      console.log(`[Strategy] HEDGE_SKIPPED: combined ${(projectedCombined * 100).toFixed(0)}¢ > ${((1 + allowOverpay) * 100).toFixed(0)}¢ max`);
+      console.log(`[v4.2.1] HEDGE_SKIPPED: combined ${(projectedCombined * 100).toFixed(0)}¢ > ${((1 + allowOverpay) * 100).toFixed(0)}¢ max`);
       return null;
     }
     
-    // Calculate limit price with cushion ticks
+    // v4.2.1: Use time-scaled cushion ticks
     const cushion = DEFAULT_CONFIG.execution.hedgeCushionTicks;
     const limitPrice = roundUp(missingAsk + cushion * tick, tick);
     
@@ -455,7 +511,7 @@ export function evaluateOpportunity(
       outcome: missingSide,
       price: limitPrice,
       shares: hedgeShares,
-      reasoning: `HEDGE ${missingSide} @ ${(limitPrice * 100).toFixed(0)}¢ (GPT-strat +${cushion} ticks cushion)`,
+      reasoning: `HEDGE ${missingSide} @ ${(limitPrice * 100).toFixed(0)}¢ (v4.2.1 timeout=${scaledHedgeTimeout}s)`,
       type: 'hedge',
       isMarketable: true,
       cushionTicks: cushion,
@@ -464,7 +520,9 @@ export function evaluateOpportunity(
 
   // HEDGED: Both sides have positions - look for accumulate
   const uf = position.upShares / (position.upShares + position.downShares);
-  const isSkewed = uf > DEFAULT_CONFIG.skew.hardCap || uf < (1 - DEFAULT_CONFIG.skew.hardCap);
+  
+  // v4.2.1: Use time-scaled max skew
+  const isSkewed = uf > scaledMaxSkew || uf < (1 - scaledMaxSkew);
   
   // SKEWED: Need to rebalance first
   if (isSkewed) {
@@ -472,8 +530,8 @@ export function evaluateOpportunity(
     const sideToBuy: Outcome = delta > 0 ? 'DOWN' : 'UP';
     const sideAsk = sideToBuy === 'UP' ? upAsk : downAsk;
     
-    // Only rebalance if still locks profit
-    if (!pairedLockOk(upAsk, downAsk, STRATEGY.edge.buffer)) {
+    // v4.2.1: Use time-scaled buffer for rebalance
+    if (!pairedLockOk(upAsk, downAsk, scaledBuffer)) {
       return null;
     }
     
@@ -487,14 +545,14 @@ export function evaluateOpportunity(
       outcome: sideToBuy,
       price: roundDown(sideAsk, tick),
       shares: sharesToBalance,
-      reasoning: `REBALANCE ${sideToBuy} @ ${(sideAsk * 100).toFixed(1)}¢ (GPT-strat skew correction)`,
+      reasoning: `REBALANCE ${sideToBuy} @ ${(sideAsk * 100).toFixed(1)}¢ (v4.2.1 maxSkew=${(scaledMaxSkew*100).toFixed(0)}%)`,
       type: 'rebalance',
     };
   }
 
   // HEDGED & BALANCED: Can accumulate if good edge
-  // v3.2.1: Only accumulate when properly hedged (balanced)
-  if (!pairedLockOk(upAsk, downAsk, STRATEGY.edge.buffer)) {
+  // v4.2.1: Use time-scaled buffer for accumulate
+  if (!pairedLockOk(upAsk, downAsk, scaledBuffer)) {
     return null;
   }
   
@@ -513,7 +571,7 @@ export function evaluateOpportunity(
   
   const edgePct = (1 - combined) * 100;
   
-  // v3.2.1: Max 50 shares per accumulate, calculate based on edge
+  // v4.2.1: Max 50 shares per accumulate, calculate based on edge
   let sharesToAdd: number;
   if (edgePct > 5) {
     // Strong edge: use max
@@ -544,7 +602,7 @@ export function evaluateOpportunity(
     outcome: 'UP',
     price: roundDown(upAsk, tick),
     shares: sharesToAdd,
-    reasoning: `ACCUMULATE ${sharesToAdd} @ ${(combined * 100).toFixed(1)}¢ (${edgePct.toFixed(1)}% edge, max 50/trade)`,
+    reasoning: `ACCUMULATE ${sharesToAdd} @ ${(combined * 100).toFixed(1)}¢ (v4.2.1 edge=${edgePct.toFixed(1)}% buffer=${(scaledBuffer*100).toFixed(2)}¢)`,
     type: 'accumulate',
   };
 }
