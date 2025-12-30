@@ -1,7 +1,14 @@
 /**
  * polymarket_15m_bot.ts
  * --------------------------------------------------------------------------
- * Polymarket 15m Hedge/Arbitrage Bot v3.1 — GPT-Grade Enhanced
+ * Polymarket 15m Hedge/Arbitrage Bot v3.2.1 — Big Hedger
+ *
+ * v3.2.1 Changes (Big Hedger):
+ * - Opening trade: 50 shares (was 25)
+ * - Max position: 300 shares per side (was 150)
+ * - Accumulate: max 50 shares per trade
+ * - Accumulate only when hedged (skew < 10%)
+ * - Exposure protection: no accumulate when one-sided
  *
  * v3.1 Changes:
  * - Execution-aware edge (expectedExecutedPairCost vs dynamicEdgeBuffer)

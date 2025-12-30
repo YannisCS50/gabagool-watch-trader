@@ -34,8 +34,8 @@ export {
 // ============================================================
 // STRATEGY VERSION
 // ============================================================
-export const STRATEGY_VERSION = '3.2.0-gpt-strat';
-export const STRATEGY_NAME = 'Polymarket 15m Hedge/Arb (GPT-Grade v3.2.0)';
+export const STRATEGY_VERSION = '3.2.1-big-hedger';
+export const STRATEGY_NAME = 'Polymarket 15m Hedge/Arb (Big Hedger v3.2.1 - 50/300/50)';
 
 // ============================================================
 // BACKWARD COMPATIBILITY LAYER
