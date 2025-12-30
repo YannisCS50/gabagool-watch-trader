@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { RefreshCw, Activity, TrendingUp, Clock, BarChart3, AlertTriangle, CheckCircle, XCircle, DollarSign } from "lucide-react";
+import { RefreshCw, Activity, TrendingUp, Clock, BarChart3, AlertTriangle, CheckCircle, XCircle, DollarSign, Download } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useNavigate } from "react-router-dom";
 
@@ -249,6 +249,39 @@ export default function DataLogging() {
     }
   };
 
+  const exportToCSV = (data: any[], filename: string) => {
+    if (data.length === 0) return;
+    const headers = Object.keys(data[0]);
+    const csvContent = [
+      headers.join(","),
+      ...data.map(row => headers.map(h => {
+        const val = row[h];
+        if (typeof val === "object") return JSON.stringify(val);
+        if (typeof val === "string" && val.includes(",")) return `"${val}"`;
+        return val;
+      }).join(","))
+    ].join("\n");
+    
+    const blob = new Blob([csvContent], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${filename}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const [activeTab, setActiveTab] = useState("fills");
+
+  const handleExport = () => {
+    switch (activeTab) {
+      case "fills": exportToCSV(fills, "fills"); break;
+      case "telemetry": exportToCSV(telemetry, "telemetry"); break;
+      case "settlements": exportToCSV(settlements, "settlements"); break;
+      case "prices": exportToCSV(prices, "prices"); break;
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background p-6">
       <div className="max-w-7xl mx-auto space-y-6">
@@ -264,6 +297,10 @@ export default function DataLogging() {
                 Last update: {lastUpdate.toLocaleTimeString("nl-NL")}
               </span>
             )}
+            <Button variant="outline" size="sm" onClick={handleExport}>
+              <Download className="h-4 w-4 mr-2" />
+              Export
+            </Button>
             <Button variant="outline" size="sm" onClick={loadData} disabled={loading}>
               <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
               Refresh
@@ -333,7 +370,7 @@ export default function DataLogging() {
         </div>
 
         {/* Main Content Tabs */}
-        <Tabs defaultValue="fills" className="w-full">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
           <TabsList className="bg-muted/50 border border-border">
             <TabsTrigger value="fills" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               <TrendingUp className="h-4 w-4 mr-2" />
