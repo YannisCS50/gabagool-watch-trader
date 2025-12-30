@@ -93,11 +93,12 @@ export const STRATEGY = {
     hedgeCushion: DEFAULT_CONFIG.execution.hedgeCushionTicks,
   },
   
-  // Sizing
+  // Sizing - v3.2.1: 50 shares opening, max 50 accumulate
   sizing: {
-    baseClipUsd: DEFAULT_CONFIG.tradeSizeUsd.base,
-    minClipUsd: DEFAULT_CONFIG.tradeSizeUsd.min,
-    maxClipUsd: DEFAULT_CONFIG.tradeSizeUsd.max,
+    baseClipUsd: 25,       // ~50 shares at 50¢
+    minClipUsd: 20,        // ~40 shares minimum
+    maxClipUsd: 50,        // ~100 shares max (for strong edge)
+    maxAccumulateShares: 50, // Max 50 shares per accumulate
   },
   
   // Skew Management
@@ -107,31 +108,39 @@ export const STRATEGY = {
     hardCap: DEFAULT_CONFIG.skew.hardCap,
   },
   
-  // Risk Limits
+  // Risk Limits - v3.2.1: 300 shares max per side
   limits: {
-    maxTotalNotional: DEFAULT_CONFIG.limits.maxTotalUsd,
-    maxPerSide: DEFAULT_CONFIG.limits.maxPerSideUsd,
+    maxTotalNotional: 500,   // Increased for 300 shares
+    maxPerSide: 300,         // 300 shares max per side (was 150)
+    maxPerSideShares: 300,   // Explicit share limit
     hedgeTimeoutSec: DEFAULT_CONFIG.timing.hedgeTimeoutSec,
     stopTradesSec: DEFAULT_CONFIG.timing.stopNewTradesSec,
     unwindStartSec: DEFAULT_CONFIG.timing.unwindStartSec,
   },
   
-  // Opening parameters - FIXED 25 SHARES
+  // Opening parameters - v3.2.1: 50 SHARES
   opening: {
-    shares: 25,          // Fixed 25 shares per opening
-    notional: 12.50,     // ~$12.50 at 50¢ = 25 shares (for display only)
+    shares: 50,          // Fixed 50 shares per opening (was 25)
+    notional: 25,        // ~$25 at 50¢ = 50 shares
     maxPrice: 0.52,
     skipEdgeCheck: true,
     maxDelayMs: 5000,
   },
   
-  // Hedge parameters - FIXED 25 SHARES, NO COOLDOWN
+  // Hedge parameters - v3.2.1: 50 SHARES to match opening
   hedge: {
-    shares: 25,          // Fixed 25 shares per hedge
+    shares: 50,          // Fixed 50 shares per hedge (was 25)
     maxPrice: 0.55,      // Max 55¢ for hedge
     cushionTicks: 2,     // 2 ticks above ask
     forceTimeoutSec: 12, // Force hedge after 12s
     cooldownMs: 0,       // NO COOLDOWN for hedge!
+  },
+  
+  // Accumulate parameters - v3.2.1: max 50 shares, only when hedged
+  accumulate: {
+    maxShares: 50,       // Max 50 shares per accumulate
+    requireHedged: true, // Only accumulate when position is hedged
+    minEdge: 0.02,       // Min 2% edge to accumulate
   },
   
   // Entry conditions
@@ -464,34 +473,58 @@ export function evaluateOpportunity(
   }
 
   // HEDGED & BALANCED: Can accumulate if good edge
+  // v3.2.1: Only accumulate when properly hedged (balanced)
   if (!pairedLockOk(upAsk, downAsk, STRATEGY.edge.buffer)) {
     return null;
   }
   
-  // Check per-side limits
-  if (position.upShares >= STRATEGY.limits.maxPerSide || 
-      position.downShares >= STRATEGY.limits.maxPerSide) {
+  // Check per-side share limits (300 max)
+  if (position.upShares >= STRATEGY.limits.maxPerSideShares || 
+      position.downShares >= STRATEGY.limits.maxPerSideShares) {
     return null;
   }
   
-  // Must be balanced to accumulate
+  // Must be balanced to accumulate (exposure check)
   const currentSkew = Math.abs(uf - 0.5);
-  if (currentSkew > 0.1) return null;
+  if (currentSkew > 0.1) {
+    // Position is exposed, don't accumulate
+    return null;
+  }
   
   const edgePct = (1 - combined) * 100;
-  const clipUsd = edgePct > 5 
-    ? STRATEGY.sizing.maxClipUsd 
-    : STRATEGY.sizing.baseClipUsd;
-  const sharesToAdd = Math.floor(clipUsd / combined);
   
-  if (sharesToAdd < 1) return null;
+  // v3.2.1: Max 50 shares per accumulate, calculate based on edge
+  let sharesToAdd: number;
+  if (edgePct > 5) {
+    // Strong edge: use max
+    sharesToAdd = STRATEGY.accumulate.maxShares; // 50
+  } else if (edgePct > 2) {
+    // Medium edge: base clip
+    sharesToAdd = Math.min(
+      Math.floor(STRATEGY.sizing.baseClipUsd / combined),
+      STRATEGY.accumulate.maxShares
+    );
+  } else {
+    // Weak edge: smaller accumulate
+    sharesToAdd = Math.min(
+      Math.floor(STRATEGY.sizing.minClipUsd / combined),
+      25 // Smaller for weak edge
+    );
+  }
+  
+  // Respect max position limit
+  const maxAddUp = STRATEGY.limits.maxPerSideShares - position.upShares;
+  const maxAddDown = STRATEGY.limits.maxPerSideShares - position.downShares;
+  sharesToAdd = Math.min(sharesToAdd, maxAddUp, maxAddDown);
+  
+  if (sharesToAdd < 5) return null;
   
   // Return UP first (caller should also do DOWN)
   return {
     outcome: 'UP',
     price: roundDown(upAsk, tick),
     shares: sharesToAdd,
-    reasoning: `ACCUMULATE @ ${(combined * 100).toFixed(1)}¢ (${edgePct.toFixed(1)}% edge, GPT-strat)`,
+    reasoning: `ACCUMULATE ${sharesToAdd} @ ${(combined * 100).toFixed(1)}¢ (${edgePct.toFixed(1)}% edge, max 50/trade)`,
     type: 'accumulate',
   };
 }

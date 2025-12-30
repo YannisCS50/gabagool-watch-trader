@@ -163,7 +163,8 @@ export interface StrategyConfig {
 }
 
 export const DEFAULT_CONFIG: StrategyConfig = {
-  tradeSizeUsd: { base: 12.50, min: 10, max: 25 }, // ~25 shares at 50¢
+  // v3.2.1: Opening 50 shares, accumulate max 50, max position 300
+  tradeSizeUsd: { base: 25, min: 20, max: 50 }, // ~50 shares at 50¢
 
   edge: {
     baseBuffer: 0.012,
@@ -189,8 +190,8 @@ export const DEFAULT_CONFIG: StrategyConfig = {
   },
 
   limits: {
-    maxTotalUsd: 250,
-    maxPerSideUsd: 150,
+    maxTotalUsd: 500,       // Increased for 300 shares (was 250)
+    maxPerSideUsd: 300,     // 300 shares max per side (was 150)
     minTopDepthShares: 50,
     maxPendingOrders: 3,
     sideCooldownMs: 0,      // NO cooldown for hedge (was 2000ms)
