@@ -15,10 +15,23 @@ import { createClient } from '@supabase/supabase-js';
 const DATA_API_URL = 'https://data-api.polymarket.com';
 const CLOB_URL = 'https://clob.polymarket.com';
 
-// Initialize Supabase client for database writes
-const supabaseUrl = process.env.SUPABASE_URL || config.supabase?.url || '';
-const supabaseKey = process.env.SUPABASE_SERVICE_KEY || config.supabase?.serviceKey || '';
-const supabase = createClient(supabaseUrl, supabaseKey);
+// Initialize Supabase client for database writes (lazy - only when needed)
+let supabaseClient: ReturnType<typeof createClient> | null = null;
+
+function getSupabaseClient() {
+  if (!supabaseClient) {
+    const supabaseUrl = process.env.SUPABASE_URL || '';
+    const supabaseKey = process.env.SUPABASE_SERVICE_KEY || '';
+    
+    if (!supabaseUrl || !supabaseKey) {
+      console.warn('⚠️ SUPABASE_URL or SUPABASE_SERVICE_KEY not configured - position sync to DB disabled');
+      return null;
+    }
+    
+    supabaseClient = createClient(supabaseUrl, supabaseKey);
+  }
+  return supabaseClient;
+}
 
 // ============================================================
 // TYPES
@@ -559,7 +572,8 @@ export async function writePositionsToDatabase(
 ): Promise<{ success: boolean; upserted: number; deleted: number; error?: string }> {
   console.log(`\n💾 Writing ${positions.length} positions to database...`);
   
-  if (!supabaseUrl || !supabaseKey) {
+  const supabase = getSupabaseClient();
+  if (!supabase) {
     console.log('   ⚠️ Supabase not configured, skipping database write');
     return { success: false, upserted: 0, deleted: 0, error: 'Supabase not configured' };
   }
