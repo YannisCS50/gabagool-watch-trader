@@ -119,6 +119,69 @@ export type Database = {
         }
         Relationships: []
       }
+      fill_logs: {
+        Row: {
+          asset: string
+          client_order_id: string | null
+          created_at: string
+          delta: number | null
+          fill_notional: number
+          fill_price: number
+          fill_qty: number
+          hedge_lag_ms: number | null
+          id: string
+          intent: string
+          iso: string
+          market_id: string
+          order_id: string | null
+          seconds_remaining: number
+          side: string
+          spot_price: number | null
+          strike_price: number | null
+          ts: number
+        }
+        Insert: {
+          asset: string
+          client_order_id?: string | null
+          created_at?: string
+          delta?: number | null
+          fill_notional: number
+          fill_price: number
+          fill_qty: number
+          hedge_lag_ms?: number | null
+          id?: string
+          intent: string
+          iso: string
+          market_id: string
+          order_id?: string | null
+          seconds_remaining: number
+          side: string
+          spot_price?: number | null
+          strike_price?: number | null
+          ts: number
+        }
+        Update: {
+          asset?: string
+          client_order_id?: string | null
+          created_at?: string
+          delta?: number | null
+          fill_notional?: number
+          fill_price?: number
+          fill_qty?: number
+          hedge_lag_ms?: number | null
+          id?: string
+          intent?: string
+          iso?: string
+          market_id?: string
+          order_id?: string | null
+          seconds_remaining?: number
+          side?: string
+          spot_price?: number | null
+          strike_price?: number | null
+          ts?: number
+        }
+        Relationships: []
+      }
       live_bot_settings: {
         Row: {
           id: string
@@ -638,6 +701,36 @@ export type Database = {
         }
         Relationships: []
       }
+      price_ticks: {
+        Row: {
+          asset: string
+          created_at: string
+          delta: number | null
+          delta_percent: number | null
+          id: string
+          price: number
+          source: string | null
+        }
+        Insert: {
+          asset: string
+          created_at?: string
+          delta?: number | null
+          delta_percent?: number | null
+          id?: string
+          price: number
+          source?: string | null
+        }
+        Update: {
+          asset?: string
+          created_at?: string
+          delta?: number | null
+          delta_percent?: number | null
+          id?: string
+          price?: number
+          source?: string | null
+        }
+        Relationships: []
+      }
       runner_heartbeats: {
         Row: {
           balance: number | null
@@ -680,6 +773,183 @@ export type Database = {
           status?: string
           trades_count?: number | null
           version?: string | null
+        }
+        Relationships: []
+      }
+      settlement_logs: {
+        Row: {
+          asset: string
+          avg_down_cost: number | null
+          avg_up_cost: number | null
+          close_ts: number
+          count_dislocation_95: number
+          count_dislocation_97: number
+          created_at: string
+          final_down_shares: number
+          final_up_shares: number
+          id: string
+          iso: string
+          last_180s_dislocation_95: number
+          market_id: string
+          max_delta: number | null
+          min_delta: number | null
+          open_ts: number | null
+          pair_cost: number | null
+          realized_pnl: number | null
+          time_in_high: number
+          time_in_low: number
+          time_in_mid: number
+          ts: number
+          winning_side: string | null
+        }
+        Insert: {
+          asset: string
+          avg_down_cost?: number | null
+          avg_up_cost?: number | null
+          close_ts: number
+          count_dislocation_95?: number
+          count_dislocation_97?: number
+          created_at?: string
+          final_down_shares?: number
+          final_up_shares?: number
+          id?: string
+          iso: string
+          last_180s_dislocation_95?: number
+          market_id: string
+          max_delta?: number | null
+          min_delta?: number | null
+          open_ts?: number | null
+          pair_cost?: number | null
+          realized_pnl?: number | null
+          time_in_high?: number
+          time_in_low?: number
+          time_in_mid?: number
+          ts: number
+          winning_side?: string | null
+        }
+        Update: {
+          asset?: string
+          avg_down_cost?: number | null
+          avg_up_cost?: number | null
+          close_ts?: number
+          count_dislocation_95?: number
+          count_dislocation_97?: number
+          created_at?: string
+          final_down_shares?: number
+          final_up_shares?: number
+          id?: string
+          iso?: string
+          last_180s_dislocation_95?: number
+          market_id?: string
+          max_delta?: number | null
+          min_delta?: number | null
+          open_ts?: number | null
+          pair_cost?: number | null
+          realized_pnl?: number | null
+          time_in_high?: number
+          time_in_low?: number
+          time_in_mid?: number
+          ts?: number
+          winning_side?: string | null
+        }
+        Relationships: []
+      }
+      snapshot_logs: {
+        Row: {
+          adverse_streak: number
+          asset: string
+          avg_down_cost: number | null
+          avg_up_cost: number | null
+          bot_state: string
+          cheapest_ask_plus_other_mid: number | null
+          combined_ask: number | null
+          combined_mid: number | null
+          created_at: string
+          delta: number | null
+          down_ask: number | null
+          down_bid: number | null
+          down_mid: number | null
+          down_shares: number
+          id: string
+          iso: string
+          market_id: string
+          no_liquidity_streak: number
+          pair_cost: number | null
+          seconds_remaining: number
+          skew: number | null
+          spot_price: number | null
+          spread_down: number | null
+          spread_up: number | null
+          strike_price: number | null
+          ts: number
+          up_ask: number | null
+          up_bid: number | null
+          up_mid: number | null
+          up_shares: number
+        }
+        Insert: {
+          adverse_streak?: number
+          asset: string
+          avg_down_cost?: number | null
+          avg_up_cost?: number | null
+          bot_state: string
+          cheapest_ask_plus_other_mid?: number | null
+          combined_ask?: number | null
+          combined_mid?: number | null
+          created_at?: string
+          delta?: number | null
+          down_ask?: number | null
+          down_bid?: number | null
+          down_mid?: number | null
+          down_shares?: number
+          id?: string
+          iso: string
+          market_id: string
+          no_liquidity_streak?: number
+          pair_cost?: number | null
+          seconds_remaining: number
+          skew?: number | null
+          spot_price?: number | null
+          spread_down?: number | null
+          spread_up?: number | null
+          strike_price?: number | null
+          ts: number
+          up_ask?: number | null
+          up_bid?: number | null
+          up_mid?: number | null
+          up_shares?: number
+        }
+        Update: {
+          adverse_streak?: number
+          asset?: string
+          avg_down_cost?: number | null
+          avg_up_cost?: number | null
+          bot_state?: string
+          cheapest_ask_plus_other_mid?: number | null
+          combined_ask?: number | null
+          combined_mid?: number | null
+          created_at?: string
+          delta?: number | null
+          down_ask?: number | null
+          down_bid?: number | null
+          down_mid?: number | null
+          down_shares?: number
+          id?: string
+          iso?: string
+          market_id?: string
+          no_liquidity_streak?: number
+          pair_cost?: number | null
+          seconds_remaining?: number
+          skew?: number | null
+          spot_price?: number | null
+          spread_down?: number | null
+          spread_up?: number | null
+          strike_price?: number | null
+          ts?: number
+          up_ask?: number | null
+          up_bid?: number | null
+          up_mid?: number | null
+          up_shares?: number
         }
         Relationships: []
       }
