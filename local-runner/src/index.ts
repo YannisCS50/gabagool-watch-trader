@@ -392,8 +392,13 @@ async function evaluateMarket(slug: string): Promise<void> {
             console.log(`   Target combined: ${((signal.price + preHedge.hedgePrice) * 100).toFixed(0)}¢`);
             
             await executeTrade(ctx, preHedge.hedgeSide, preHedge.hedgePrice, signal.shares, preHedge.reasoning, 'HEDGE');
+          } else if (hedgeAsk && hedgeAsk <= 0.55) {
+            // FORCE HEDGE: If preHedge logic skipped but ask is still reasonable, force it
+            const forceHedgePrice = Math.min(hedgeAsk + 0.01, 0.54); // Max 54¢ forced hedge
+            console.log(`⚡ FORCE HEDGE: ${hedgeSide} @ ${(forceHedgePrice * 100).toFixed(0)}¢ (ask: ${(hedgeAsk * 100).toFixed(0)}¢)`);
+            await executeTrade(ctx, hedgeSide, forceHedgePrice, signal.shares, `Force hedge - ask ${(hedgeAsk * 100).toFixed(0)}¢ reasonable`, 'HEDGE');
           } else {
-            console.log(`📊 Hedge skipped (too expensive) - will hedge later via ONE_SIDED logic`);
+            console.log(`📊 Hedge skipped (ask ${hedgeAsk ? (hedgeAsk * 100).toFixed(0) + '¢' : 'unknown'} too expensive) - will hedge later via ONE_SIDED logic`);
           }
         }
       }
