@@ -153,3 +153,33 @@ export async function updateOrder(
     return false;
   }
 }
+
+interface PositionData {
+  conditionId: string;
+  market: string;
+  outcome: string;
+  size: number;
+  avgPrice: number;
+  currentValue: number;
+  initialValue: number;
+  eventSlug?: string;
+}
+
+/**
+ * Sync positions with backend - reconciles pending orders with actual Polymarket positions
+ */
+export async function syncPositionsToBackend(
+  wallet: string,
+  positions: PositionData[]
+): Promise<{ success: boolean; updated?: number; cancelled?: number }> {
+  try {
+    const result = await callProxy<{ success: boolean; updated?: number; cancelled?: number }>('sync-positions', {
+      wallet,
+      positions,
+    });
+    return result;
+  } catch (error) {
+    console.error('❌ syncPositionsToBackend error:', error);
+    return { success: false };
+  }
+}

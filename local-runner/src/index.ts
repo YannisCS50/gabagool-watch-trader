@@ -5,8 +5,9 @@ import { config } from './config.js';
 import { placeOrder, testConnection, getBalance, getOrderbookDepth, invalidateBalanceCache, ensureValidCredentials } from './polymarket.js';
 import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, STRATEGY, STRATEGY_VERSION, STRATEGY_NAME } from './strategy.js';
 import { enforceVpnOrExit } from './vpn-check.js';
-import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder } from './backend.js';
+import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder, syncPositionsToBackend } from './backend.js';
 import { checkAndClaimWinnings, getClaimableValue } from './redeemer.js';
+import { syncPositions, printPositionsReport, filter15mPositions } from './positions-sync.js';
 
 // Ensure Node prefers IPv4 to avoid hangs on IPv6-only DNS results under some VPN setups.
 try {
@@ -637,6 +638,45 @@ async function main(): Promise<void> {
       claimInFlight = false;
     }
   }, 30000);
+
+  // Sync positions from Polymarket API every 60 seconds
+  // This reconciles pending orders with actual fills
+  let lastSyncAt = 0;
+  setInterval(async () => {
+    const nowMs = Date.now();
+    if (nowMs - lastSyncAt < 60000) return;
+    lastSyncAt = nowMs;
+
+    try {
+      console.log('\n🔄 Syncing positions from Polymarket API...');
+      const syncResult = await syncPositions(config.polymarket.address);
+      
+      // Print report for visibility
+      if (syncResult.positions.length > 0) {
+        printPositionsReport(syncResult);
+      }
+
+      // Sync to backend (reconcile pending orders)
+      const positions15m = filter15mPositions(syncResult.positions);
+      const positionsData = positions15m.map(p => ({
+        conditionId: p.conditionId,
+        market: p.market,
+        outcome: p.outcome,
+        size: p.size,
+        avgPrice: p.avgPrice,
+        currentValue: p.currentValue,
+        initialValue: p.initialValue,
+        eventSlug: p.eventSlug,
+      }));
+
+      const backendResult = await syncPositionsToBackend(config.polymarket.address, positionsData);
+      if (backendResult.success) {
+        console.log(`✅ Backend sync: ${backendResult.updated || 0} fills confirmed, ${backendResult.cancelled || 0} cancelled`);
+      }
+    } catch (error) {
+      console.error('❌ Position sync error:', error);
+    }
+  }, 60000);
 
   // Status logging every minute
   setInterval(async () => {
