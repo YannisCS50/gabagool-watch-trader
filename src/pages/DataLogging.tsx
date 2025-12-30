@@ -177,8 +177,40 @@ export default function DataLogging() {
     }
   };
 
+  // Load prices separately with faster refresh
+  const loadPrices = async () => {
+    try {
+      const { data: strikePrices } = await supabase
+        .from("strike_prices")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(50);
+
+      if (strikePrices) {
+        const priceLogs: PriceLog[] = strikePrices.map((p) => ({
+          ts: new Date(p.created_at || "").getTime(),
+          asset: p.asset,
+          strikePrice: Number(p.strike_price),
+          openPrice: p.open_price ? Number(p.open_price) : null,
+          closePrice: p.close_price ? Number(p.close_price) : null,
+          quality: p.quality || "unknown",
+          marketSlug: p.market_slug,
+        }));
+        setPrices(priceLogs);
+      }
+    } catch (error) {
+      console.error("Error loading prices:", error);
+    }
+  };
+
   useEffect(() => {
     loadData();
+  }, []);
+
+  // Auto-refresh prices every 2 seconds
+  useEffect(() => {
+    const interval = setInterval(loadPrices, 2000);
+    return () => clearInterval(interval);
   }, []);
 
   const formatTime = (ts: number) => {
