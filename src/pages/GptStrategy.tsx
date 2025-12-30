@@ -1,170 +1,291 @@
-import { ArrowLeft, Copy, Check, TrendingUp, Shield, Layers, Clock, AlertTriangle, FileDown, Loader2, Zap, Target, BarChart3 } from 'lucide-react';
+import { ArrowLeft, Copy, Check, TrendingUp, Shield, Layers, Clock, AlertTriangle, FileDown, Loader2, Zap, Target, BarChart3, Activity, Gauge } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 import { useState } from 'react';
 import { toast } from 'sonner';
 import jsPDF from 'jspdf';
 
-const STRATEGY_CONFIG = `// v3.2.1: Big Hedger Configuration
+const STRATEGY_CONFIG = `// v4.2: Gabagool Inspired Adaptive Edition
 export const DEFAULT_CONFIG: StrategyConfig = {
-  // Opening 50 shares, accumulate max 50, max position 300
-  tradeSizeUsd: { base: 25, min: 20, max: 50 }, // ~50 shares at 50¢
+  // Trade sizing
+  tradeSizeUsd: { base: 25, min: 20, max: 50 },
 
   edge: {
-    baseBuffer: 0.012,           // 1.2¢ minimum edge
-    strongEdge: 0.04,            // 4¢ is strong edge
-    allowOverpay: 0.01,          // Only allow 1¢ overpay
-    feesBuffer: 0.002,           // 0.2¢ for fees
-    slippageBuffer: 0.004,       // 0.4¢ for slippage
-    deepDislocationThreshold: 0.96, // 96¢ triggers DEEP regime
+    baseBuffer: 0.012,
+    strongEdge: 0.04,
+    allowOverpay: 0.01,
+    feesBuffer: 0.002,
+    slippageBuffer: 0.004,
+    deepDislocationThreshold: 0.96,
+  },
+
+  // Delta regime configuration (v4.2)
+  delta: {
+    maxSkewLow: 0.70,      // LOW: 70/30 skew allowed
+    maxSkewMid: 0.60,      // MID: 60/40 skew
+    maxSkewHigh: 0.55,     // HIGH: 55/45 skew (tight)
+    hedgeTimeoutLowSec: 35,   // LOW: delayed hedge OK
+    hedgeTimeoutMidSec: 22,   // MID: moderate hedge
+    hedgeTimeoutHighSec: 12,  // HIGH: fast hedge
+    bufferAddLow: 0.000,      // No extra buffer in LOW
+    bufferAddMid: 0.004,      // +0.4¢ buffer in MID
+    bufferAddHigh: 0.008,     // +0.8¢ buffer in HIGH
+    allowDeepMaxPct: 0.0040,  // DEEP only when delta < 0.40%
   },
 
   timing: {
-    stopNewTradesSec: 30,        // Stop new trades 30s before end
-    hedgeTimeoutSec: 12,         // Force hedge after 12s
-    hedgeMustBySec: 60,          // Must hedge by 60s remaining
-    unwindStartSec: 45,          // Start unwinding at 45s
+    stopNewTradesSec: 60,     // v4.2: Hard stop 60s before settlement
+    hedgeMustBySec: 60,
+    unwindStartSec: 45,
   },
 
   skew: {
-    target: 0.50,                // 50% target allocation
-    rebalanceThreshold: 0.20,    // Rebalance if 20% off
-    hardCap: 0.70,               // Max 70% one side
-    deepAllowedSkew: 0.70,       // Allowed in DEEP regime
+    target: 0.50,
+    rebalanceThreshold: 0.20,
+    hardCap: 0.70,
+    deepAllowedSkew: 0.70,
   },
 
   limits: {
-    maxTotalUsd: 500,            // Max $500 total position
-    maxPerSideUsd: 300,          // 300 shares max per side
-    minTopDepthShares: 50,       // Min liquidity required
-    maxPendingOrders: 3,         // Max orders in queue
-    sideCooldownMs: 0,           // NO cooldown for hedge
+    maxTotalUsd: 500,
+    maxPerSideUsd: 300,
+    minTopDepthShares: 50,
+    maxPendingOrders: 3,
+    sideCooldownMs: 0,
   },
 
   execution: {
     tickFallback: 0.01,
     tickNiceSet: [0.01, 0.005, 0.002, 0.001],
-    hedgeCushionTicks: 2,        // 2 ticks above ask
-    riskHedgeCushionTicks: 3,    // Risk/Unwind: aggressive
+    hedgeCushionTicks: 2,
+    riskHedgeCushionTicks: 3,
     entryImproveTicks: 0,
   },
 
   profit: {
-    lockPairCost: 0.99,          // Stop if pair cost < 99¢
+    lockPairCost: 0.99,
   },
 
   sizing: {
-    edgeMultiplierHigh: 2.0,     // >= 5¢ edge -> 2x size
-    edgeMultiplierMedium: 1.5,   // 2-5¢ edge -> 1.5x
-    edgeMultiplierLow: 1.0,      // < 2¢ edge -> 1x
+    edgeMultiplierHigh: 2.0,
+    edgeMultiplierMedium: 1.5,
+    edgeMultiplierLow: 1.0,
     lowLiquidityMultiplier: 0.5,
     nearExpiryMultiplier: 0.5,
-    deepDislocMultiplier: 2.5,   // DEEP regime boost
+    deepDislocMultiplier: 2.5,
   },
 };`;
 
-const EDGE_CALCULATION = `// v3.1: Execution-aware edge calculation
-// expectedExecutedPairCost = cheapestSide.ask + otherSide.mid
-// Entry allowed if: expectedExecutedPairCost <= 1 - dynamicEdgeBuffer
-
-function executionAwareEdgeOk(
-  snap: MarketSnapshot, 
-  buffer: number
-): { ok: boolean; entrySide: Side; expectedExecutedPairCost: number } {
-  const entrySide = cheapestSideByAsk(snap);
-  const cheapestAsk = entrySide === "UP" ? snap.upTop.ask : snap.downTop.ask;
-  const otherMid = entrySide === "UP" ? snap.downTop.mid : snap.upTop.mid;
-  
-  // Use mid price for other side (more realistic execution estimate)
-  const expectedExecutedPairCost = cheapestAsk + otherMid;
-  const ok = expectedExecutedPairCost <= (1 - buffer);
-  
-  return { ok, entrySide, expectedExecutedPairCost };
+const DELTA_REGIME = `// v4.2: Delta Regime Calculation with Time-Decay
+export interface MarketSnapshot {
+  marketId: string;
+  ts: number;
+  secondsRemaining: number;   // Time until settlement
+  spotPrice: number;          // Current BTC price (Chainlink)
+  strikePrice: number;        // Market strike price
+  upTop: BookTop;
+  downTop: BookTop;
 }
 
-// Dynamic edge buffer with penalties for execution issues
-function dynamicEdgeBuffer(
-  cfg: StrategyConfig, 
-  noLiquidityStreak: number, 
-  adverseStreak: number
+// Compute delta percentage from strike
+export function computeDeltaPct(
+  spotPrice: number, 
+  strikePrice: number
 ): number {
-  const liquidityPenalty = Math.min(0.01, noLiquidityStreak * 0.001);
-  const adversePenalty = Math.min(0.01, adverseStreak * 0.0015);
-  return cfg.edge.baseBuffer + cfg.edge.feesBuffer + 
-         cfg.edge.slippageBuffer + liquidityPenalty + adversePenalty;
-}`;
+  if (!Number.isFinite(spotPrice) || 
+      !Number.isFinite(strikePrice) || 
+      strikePrice <= 0) return 0;
+  return Math.abs(spotPrice - strikePrice) / strikePrice;
+}
 
-const STATE_MACHINE = `// Bot State Machine
-export type BotState = 
-  | "FLAT"           // No position
-  | "ONE_SIDED"      // Only UP or DOWN, needs hedge
-  | "HEDGED"         // Both sides filled, profitable
-  | "SKEWED"         // Unbalanced position
-  | "UNWIND"         // Closing out position
-  | "DEEP_DISLOCATION"; // Extreme edge opportunity
+// Time-adaptive regime: thresholds tighten as time runs out
+export function getAdaptiveRegime(
+  deltaPct: number, 
+  secondsRemaining: number
+): "LOW" | "MID" | "HIGH" {
+  // timeFactor: 1.0 at start (900s), 0.07 at 60s remaining
+  const timeFactor = Math.max(secondsRemaining, 60) / 900;
+  
+  if (deltaPct < 0.0030 * timeFactor) return "LOW";  // < 0.30% × timeFactor
+  if (deltaPct < 0.0070 * timeFactor) return "MID";  // < 0.70% × timeFactor
+  return "HIGH";
+}
 
-// State transitions:
-// FLAT -> ONE_SIDED (on first fill)
-// ONE_SIDED -> HEDGED (on hedge fill)
-// ONE_SIDED -> UNWIND (on timeout without hedge)
-// HEDGED -> SKEWED (if imbalanced)
-// SKEWED -> HEDGED (on rebalance)
-// ANY -> FLAT (on position close)
+// Example at different times:
+// t=900s (start): LOW < 0.30%, MID < 0.70%
+// t=450s (half):  LOW < 0.15%, MID < 0.35%
+// t=60s (end):    LOW < 0.02%, MID < 0.05%`;
 
-function determineState(inv: Inventory, snap: MarketSnapshot): BotState {
-  const hasUp = inv.upShares > 0;
-  const hasDown = inv.downShares > 0;
-  
-  if (!hasUp && !hasDown) return "FLAT";
-  
-  if (hasUp && !hasDown) return "ONE_SIDED";
-  if (!hasUp && hasDown) return "ONE_SIDED";
-  
-  // Check if DEEP_DISLOCATION
-  if (isDeepDislocation(snap, 0.96)) return "DEEP_DISLOCATION";
-  
-  // Check skew
-  const frac = upFraction(inv);
-  if (Math.abs(frac - 0.5) > 0.20) return "SKEWED";
-  
-  return "HEDGED";
-}`;
+const REGIME_BEHAVIOR = `// v4.2: Regime-Aware Trading Behavior
 
-const ENTRY_LOGIC = `// Entry Logic: When to open a new position
-async function evaluateEntry(snap: MarketSnapshot): Promise<OrderIntent | null> {
-  // 1. Check if already have position
-  if (this.state !== "FLAT") return null;
+// LOW Delta Regime (delta < 0.30% × timeFactor)
+// ├── Price is close to strike, low directional risk
+// ├── Gabagool mode: asymmetric inventory buildup allowed
+// ├── Skew up to 70/30 permitted
+// ├── Hedge timeout: 35 seconds (relaxed)
+// ├── DEEP mode: allowed if delta < 0.40%
+// └── Entry buffer: +0.0% (aggressive)
+
+// MID Delta Regime (0.30% - 0.70% × timeFactor)
+// ├── Moderate directional uncertainty
+// ├── Conservative arbitrage only
+// ├── Skew max 60/40
+// ├── Hedge timeout: 22 seconds
+// ├── DEEP mode: disabled
+// └── Entry buffer: +0.4% (cautious)
+
+// HIGH Delta Regime (delta > 0.70% × timeFactor)
+// ├── Price far from strike, high directional risk
+// ├── NO new accumulation allowed
+// ├── Skew max 55/45 (tight)
+// ├── Hedge timeout: 12 seconds (urgent)
+// ├── Focus on hedging existing positions
+// └── Entry buffer: +0.8% (very strict)`;
+
+const TICK_LOGIC = `// v4.2: Tick() Implementation with Adaptive Regimes
+
+async tick(): Promise<void> {
+  // 1. Fetch market snapshot
+  const snap = await this.fetchSnapshot();
   
-  // 2. Check timing - don't enter too close to expiry
-  if (snap.secondsRemaining < this.cfg.timing.stopNewTradesSec) {
-    return null; // Too late
+  // 2. Compute delta and adaptive regime
+  const deltaPct = computeDeltaPct(snap.spotPrice, snap.strikePrice);
+  const deltaRegime = getAdaptiveRegime(deltaPct, snap.secondsRemaining);
+  
+  this.log(\`📊 Delta: \${(deltaPct * 100).toFixed(3)}% | Regime: \${deltaRegime} | T-\${snap.secondsRemaining}s\`);
+  
+  // 3. Compute dynamic entry buffer with regime adjustment
+  const baseBuffer = dynamicEdgeBuffer(this.cfg);
+  const regimeBuffer = deltaRegime === "LOW" 
+    ? this.cfg.delta.bufferAddLow
+    : deltaRegime === "MID"
+      ? this.cfg.delta.bufferAddMid
+      : this.cfg.delta.bufferAddHigh;
+  const buffer = baseBuffer + regimeBuffer;
+  
+  // 4. Risk gating
+  const allowDeep = deltaPct < this.cfg.delta.allowDeepMaxPct && deltaRegime === "LOW";
+  const allowNewRisk = deltaRegime !== "HIGH" && snap.secondsRemaining > 60;
+  
+  // 5. Determine hedge timeout based on regime
+  const hedgeTimeout = deltaRegime === "LOW"
+    ? this.cfg.delta.hedgeTimeoutLowSec
+    : deltaRegime === "MID"
+      ? this.cfg.delta.hedgeTimeoutMidSec
+      : this.cfg.delta.hedgeTimeoutHighSec;
+  
+  // 6. Determine max skew based on regime
+  const maxSkew = deltaRegime === "LOW"
+    ? this.cfg.delta.maxSkewLow
+    : deltaRegime === "MID"
+      ? this.cfg.delta.maxSkewMid
+      : this.cfg.delta.maxSkewHigh;
+  
+  // 7. Build order intents
+  const intents: OrderIntent[] = [];
+  
+  // Entry: only if allowNewRisk and edge OK
+  if (allowNewRisk && this.state === "FLAT") {
+    const entryIntent = await this.buildEntryIntent(snap, buffer);
+    if (entryIntent) intents.push(entryIntent);
   }
   
-  // 3. Calculate dynamic edge buffer
-  const buffer = dynamicEdgeBuffer(
-    this.cfg, 
-    this.noLiquidityStreak, 
-    this.adverseStreak
-  );
+  // Hedge: always allowed, with regime-specific timeout
+  if (this.state === "ONE_SIDED") {
+    const hedgeIntent = await this.buildHedgeIntent(snap, hedgeTimeout);
+    if (hedgeIntent) intents.push(hedgeIntent);
+  }
   
-  // 4. Check execution-aware edge
+  // Accumulate: only in LOW/MID and within skew limits
+  if (allowNewRisk && this.state === "HEDGED") {
+    const skew = upFraction(this.inventory);
+    if (Math.abs(skew - 0.5) < (maxSkew - 0.5)) {
+      const accumIntent = await this.buildAccumulateIntent(snap, buffer);
+      if (accumIntent) intents.push(accumIntent);
+    }
+  }
+  
+  // Execute intents
+  for (const intent of intents) {
+    await this.executeIntent(snap, intent);
+  }
+}`;
+
+const CORE_INVARIANT = `// v4.2: Core Settlement Invariant
+
+// ┌──────────────────────────────────────────────────────────────────┐
+// │  INVARIANT: Bij settlement moet min(UP, DOWN) > 0               │
+// │             en avgUpCost + avgDownCost ≤ 0.99 - 1.00             │
+// └──────────────────────────────────────────────────────────────────┘
+
+// Strategie: Trades zijn inventory-aanpassingen om de gezamenlijke
+// kosten te verbeteren. NIET om elke markt "flat" te maken.
+
+// Settlement scenario's:
+//   - UP wint: payout = min(UP, DOWN) × $1 → profit als pairCost < $1
+//   - DOWN wint: payout = min(UP, DOWN) × $1 → same profit
+
+// Voorbeeld hedged positie:
+//   - 50 UP @ 48¢ = $24.00
+//   - 50 DOWN @ 47¢ = $23.50
+//   - Total: $47.50
+//   - Pair cost: 95¢
+//   - Payout (either outcome): $50.00
+//   - Profit: $2.50 (5.3%)
+
+function checkSettlementReady(inventory: Inventory): {
+  ready: boolean;
+  pairCost: number;
+  minShares: number;
+  projectedProfit: number;
+} {
+  const minShares = Math.min(inventory.upShares, inventory.downShares);
+  const avgUp = avgCost(inventory, "UP");
+  const avgDown = avgCost(inventory, "DOWN");
+  const pairCost = avgUp + avgDown;
+  
+  const projectedPayout = minShares * 1.00;
+  const projectedCost = minShares * pairCost;
+  const projectedProfit = projectedPayout - projectedCost;
+  
+  return {
+    ready: minShares > 0 && pairCost <= 0.995,
+    pairCost,
+    minShares,
+    projectedProfit,
+  };
+}`;
+
+const ENTRY_LOGIC = `// v4.2: Entry Logic with Regime Awareness
+
+async function buildEntryIntent(
+  snap: MarketSnapshot, 
+  buffer: number
+): Promise<OrderIntent | null> {
+  // 1. Timing gate - hard stop 60s before settlement
+  if (snap.secondsRemaining < this.cfg.timing.stopNewTradesSec) {
+    return null;
+  }
+  
+  // 2. Execution-aware edge check
   const { ok, entrySide, expectedExecutedPairCost } = 
     executionAwareEdgeOk(snap, buffer);
   
   if (!ok) {
-    return null; // Not enough edge
+    return null; // Not enough edge after regime buffer
   }
   
-  // 5. Check liquidity
+  // 3. Liquidity check
   const sideTop = entrySide === "UP" ? snap.upTop : snap.downTop;
   if (sideTop.askSize < this.cfg.limits.minTopDepthShares) {
-    return null; // Not enough liquidity
+    return null;
   }
   
-  // 6. Calculate order size with edge-based scaling
+  // 4. Size calculation with edge scaling
   const edge = 1 - expectedExecutedPairCost;
-  let sizeMultiplier = 1.0;
+  let sizeMultiplier = this.cfg.sizing.edgeMultiplierLow;
   if (edge >= 0.05) sizeMultiplier = this.cfg.sizing.edgeMultiplierHigh;
   else if (edge >= 0.02) sizeMultiplier = this.cfg.sizing.edgeMultiplierMedium;
   
@@ -173,28 +294,32 @@ async function evaluateEntry(snap: MarketSnapshot): Promise<OrderIntent | null> 
   
   return {
     side: entrySide,
-    qty: Math.min(qty, 50), // v3.2.1: max 50 shares per trade
+    qty: Math.min(qty, 50),
     limitPrice: sideTop.ask,
     tag: "ENTRY",
-    reason: \`ENTRY \${entrySide} @ \${sideTop.ask}¢, edge=\${(edge*100).toFixed(1)}%\`
+    reason: \`ENTRY \${entrySide} @ \${(sideTop.ask*100).toFixed(0)}¢, edge=\${(edge*100).toFixed(1)}%\`
   };
 }`;
 
-const HEDGE_LOGIC = `// Hedge Logic: Cover the other side
-async function evaluateHedge(snap: MarketSnapshot): Promise<OrderIntent | null> {
+const HEDGE_LOGIC = `// v4.2: Hedge Logic with Regime-Adaptive Timeout
+
+async function buildHedgeIntent(
+  snap: MarketSnapshot,
+  hedgeTimeoutSec: number  // From delta regime
+): Promise<OrderIntent | null> {
   if (this.state !== "ONE_SIDED") return null;
   
-  // Determine which side needs hedging
+  // Determine hedge side
   const needsUp = this.inventory.upShares === 0 && this.inventory.downShares > 0;
   const hedgeSide: Side = needsUp ? "UP" : "DOWN";
   const hedgeTop = hedgeSide === "UP" ? snap.upTop : snap.downTop;
   
-  // Calculate hedge timing
+  // Timing checks with regime-specific timeout
   const timeSinceOpen = Date.now() - (this.oneSidedStartTs || Date.now());
-  const isTimeout = timeSinceOpen > this.cfg.timing.hedgeTimeoutSec * 1000;
+  const isTimeout = timeSinceOpen > hedgeTimeoutSec * 1000;
   const isMustHedge = snap.secondsRemaining < this.cfg.timing.hedgeMustBySec;
   
-  // Determine hedge type
+  // Determine hedge urgency
   let cushionTicks = this.cfg.execution.hedgeCushionTicks;
   let hedgeType = "NORMAL_HEDGE";
   
@@ -203,12 +328,12 @@ async function evaluateHedge(snap: MarketSnapshot): Promise<OrderIntent | null> 
     hedgeType = "RISK_HEDGE";
   }
   
-  // Calculate hedge price with cushion for fill guarantee
+  // Calculate hedge price with cushion
   const tick = this.tickInferer.getTick(this.marketId, hedgeSide, 
     hedgeSide === "UP" ? snap.upBook : snap.downBook, snap.ts);
   const hedgePrice = addTicks(hedgeTop.ask, tick, cushionTicks);
   
-  // Check if hedge is still profitable
+  // Profitability check
   const existingAvgCost = avgCost(this.inventory, 
     hedgeSide === "UP" ? "DOWN" : "UP");
   const projectedPairCost = existingAvgCost + hedgePrice;
@@ -227,42 +352,39 @@ async function evaluateHedge(snap: MarketSnapshot): Promise<OrderIntent | null> 
     qty: existingShares,
     limitPrice: hedgePrice,
     tag: "HEDGE",
-    reason: \`\${hedgeType}: \${hedgeSide} @ \${hedgePrice}¢\`
+    reason: \`\${hedgeType}: \${hedgeSide} @ \${(hedgePrice*100).toFixed(0)}¢ (timeout=\${hedgeTimeoutSec}s)\`
   };
 }`;
 
-const ACCUMULATE_LOGIC = `// Accumulate Logic: Add to hedged position when edge is good
-async function evaluateAccumulate(snap: MarketSnapshot): Promise<OrderIntent | null> {
-  // v3.2.1: Only accumulate when properly hedged
+const ACCUMULATE_LOGIC = `// v4.2: Accumulate Logic with Skew Limits
+
+async function buildAccumulateIntent(
+  snap: MarketSnapshot,
+  buffer: number
+): Promise<OrderIntent | null> {
   if (this.state !== "HEDGED") return null;
-  
-  // Check skew - must be balanced
-  const frac = upFraction(this.inventory);
-  if (Math.abs(frac - 0.5) > 0.10) {
-    return null; // Too skewed, don't add more
-  }
   
   // Check position limits
   if (this.inventory.upShares >= 300 || this.inventory.downShares >= 300) {
-    return null; // v3.2.1: max 300 shares per side
+    return null;
   }
   
-  // Check total position limit
   if (totalNotional(this.inventory) >= this.cfg.limits.maxTotalUsd) {
-    return null; // Position full
+    return null;
   }
   
-  // Check edge - must be strong for accumulate
+  // Edge check - must be strong for accumulate
   const combined = snap.upTop.ask + snap.downTop.ask;
-  if (combined >= 0.97) {
-    return null; // Not enough edge
+  const edgeOk = combined <= (1 - buffer);
+  
+  if (!edgeOk) {
+    return null;
   }
   
   // Buy cheaper side
   const buySide = cheapestSideByAsk(snap);
   const buyTop = buySide === "UP" ? snap.upTop : snap.downTop;
   
-  // v3.2.1: max 50 shares per accumulate trade
   const qty = Math.min(50, sharesFromUsd(25, buyTop.ask));
   
   return {
@@ -270,38 +392,9 @@ async function evaluateAccumulate(snap: MarketSnapshot): Promise<OrderIntent | n
     qty,
     limitPrice: buyTop.ask,
     tag: "REBAL",
-    reason: \`ACCUMULATE: \${buySide} @ \${buyTop.ask}¢, combined=\${combined}\`
+    reason: \`ACCUMULATE: \${buySide} @ \${(buyTop.ask*100).toFixed(0)}¢, combined=\${(combined*100).toFixed(0)}¢\`
   };
 }`;
-
-const PROFIT_CALCULATION = `// PROFIT CALCULATION
-// 
-// At market expiry, shares resolve to $1 (winner) or $0 (loser)
-//
-// Example hedged position:
-//   - 50 UP shares @ 48¢ = $24.00
-//   - 50 DOWN shares @ 47¢ = $23.50
-//   - Total invested: $47.50
-//   - Pair cost: 48¢ + 47¢ = 95¢
-//
-// If UP wins:
-//   - UP shares: 50 × $1 = $50.00
-//   - DOWN shares: 50 × $0 = $0
-//   - Payout: $50.00
-//   - Profit: $50.00 - $47.50 = $2.50 (5.3%)
-//
-// If DOWN wins:
-//   - UP shares: 50 × $0 = $0
-//   - DOWN shares: 50 × $1 = $50.00
-//   - Payout: $50.00
-//   - Profit: $50.00 - $47.50 = $2.50 (5.3%)
-//
-// GUARANTEED 5.3% profit when pair cost < $1.00!
-//
-// The bot targets:
-//   - Entry when combined < 98¢ (2% minimum edge)
-//   - Accumulate when combined < 97¢ (3% edge)
-//   - Lock profit at pair cost < 99¢`;
 
 export default function GptStrategy() {
   const navigate = useNavigate();
@@ -388,7 +481,7 @@ export default function GptStrategy() {
       };
       
       // Header
-      addTitle('GPT Strategy v3.2.1 - Big Hedger', 22);
+      addTitle('GPT Strategy v4.2 - Adaptive Edition', 22);
       pdf.setFontSize(10);
       pdf.setFont('helvetica', 'normal');
       pdf.setTextColor(120, 120, 120);
@@ -398,16 +491,17 @@ export default function GptStrategy() {
       y += 10;
       
       addTitle('Strategie Overzicht', 14);
-      addParagraph('Polymarket 15m Hedge/Arbitrage Bot die automatisch UP en DOWN koopt om gegarandeerde winst te maken wanneer de gecombineerde prijs onder $1.00 is.');
+      addParagraph('Gabagool Inspired Inventory Arbitrage Strategy met adaptive delta regimes en time-decay. De bot past zijn gedrag aan op basis van de afstand tot strike price en resterende tijd.');
       y += 5;
       
       addCodeBlock(STRATEGY_CONFIG, 'Configuration');
-      addCodeBlock(EDGE_CALCULATION, 'Edge Calculation');
-      addCodeBlock(STATE_MACHINE, 'State Machine');
+      addCodeBlock(DELTA_REGIME, 'Delta Regime Calculation');
+      addCodeBlock(REGIME_BEHAVIOR, 'Regime Behavior');
+      addCodeBlock(TICK_LOGIC, 'Tick Implementation');
+      addCodeBlock(CORE_INVARIANT, 'Core Invariant');
       addCodeBlock(ENTRY_LOGIC, 'Entry Logic');
       addCodeBlock(HEDGE_LOGIC, 'Hedge Logic');
       addCodeBlock(ACCUMULATE_LOGIC, 'Accumulate Logic');
-      addCodeBlock(PROFIT_CALCULATION, 'Profit Calculation');
       
       // Footer
       const totalPages = pdf.getNumberOfPages();
@@ -419,7 +513,7 @@ export default function GptStrategy() {
         pdf.text(`Pagina ${i} van ${totalPages}`, pageWidth / 2, pageHeight - 8, { align: 'center' });
       }
       
-      pdf.save('gpt-strategy-v3.2.1.pdf');
+      pdf.save('gpt-strategy-v4.2.pdf');
       toast.success('PDF geëxporteerd!');
     } catch (error) {
       console.error('PDF export error:', error);
@@ -469,8 +563,8 @@ export default function GptStrategy() {
               <ArrowLeft className="h-5 w-5" />
             </Button>
             <div>
-              <h1 className="text-2xl font-bold">GPT Strategy v3.2.1</h1>
-              <p className="text-muted-foreground">Big Hedger - Polymarket 15m Arbitrage Bot</p>
+              <h1 className="text-2xl font-bold">GPT Strategy v4.2</h1>
+              <p className="text-muted-foreground">Gabagool Inspired Adaptive Edition</p>
             </div>
           </div>
           <Button 
@@ -487,27 +581,106 @@ export default function GptStrategy() {
           </Button>
         </div>
 
+        {/* Core Concept */}
+        <Card className="border-primary/30 bg-primary/5">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Target className="h-5 w-5 text-primary" />
+              Core Invariant
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="bg-muted/50 p-4 rounded-lg font-mono text-sm">
+              <p className="text-green-500">
+                min(UP, DOWN) &gt; 0 &amp;&amp; avgUpCost + avgDownCost ≤ 0.99
+              </p>
+            </div>
+            <p className="mt-3 text-sm text-muted-foreground">
+              Trades zijn inventory-aanpassingen om de gezamenlijke kosten te verbeteren.
+              NIET om elke markt &ldquo;flat&rdquo; te maken.
+            </p>
+          </CardContent>
+        </Card>
+
+        {/* Delta Regimes */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Activity className="h-5 w-5 text-primary" />
+              Delta Regimes (Time-Adaptive)
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid md:grid-cols-3 gap-4">
+              {/* LOW */}
+              <div className="p-4 rounded-lg bg-green-500/10 border border-green-500/30">
+                <div className="flex items-center gap-2 mb-2">
+                  <Badge className="bg-green-500">LOW</Badge>
+                  <span className="text-sm text-muted-foreground">&lt; 0.30% × timeFactor</span>
+                </div>
+                <ul className="text-sm space-y-1">
+                  <li>✓ DEEP mode toegestaan</li>
+                  <li>✓ Skew tot 70/30</li>
+                  <li>✓ Hedge timeout: 35s</li>
+                  <li>✓ Buffer: +0.0%</li>
+                </ul>
+              </div>
+              
+              {/* MID */}
+              <div className="p-4 rounded-lg bg-amber-500/10 border border-amber-500/30">
+                <div className="flex items-center gap-2 mb-2">
+                  <Badge className="bg-amber-500">MID</Badge>
+                  <span className="text-sm text-muted-foreground">0.30% - 0.70% × timeFactor</span>
+                </div>
+                <ul className="text-sm space-y-1">
+                  <li>⚠️ Geen DEEP mode</li>
+                  <li>✓ Skew tot 60/40</li>
+                  <li>✓ Hedge timeout: 22s</li>
+                  <li>⚠️ Buffer: +0.4%</li>
+                </ul>
+              </div>
+              
+              {/* HIGH */}
+              <div className="p-4 rounded-lg bg-red-500/10 border border-red-500/30">
+                <div className="flex items-center gap-2 mb-2">
+                  <Badge className="bg-red-500">HIGH</Badge>
+                  <span className="text-sm text-muted-foreground">&gt; 0.70% × timeFactor</span>
+                </div>
+                <ul className="text-sm space-y-1">
+                  <li>❌ Geen nieuwe risico</li>
+                  <li>⚠️ Skew max 55/45</li>
+                  <li>✓ Hedge timeout: 12s</li>
+                  <li>⚠️ Buffer: +0.8%</li>
+                </ul>
+              </div>
+            </div>
+            
+            <div className="bg-muted/30 p-4 rounded-lg">
+              <h4 className="font-semibold mb-2 flex items-center gap-2">
+                <Clock className="h-4 w-4" />
+                Time-Decay Factor
+              </h4>
+              <p className="text-sm text-muted-foreground">
+                <code className="text-primary">timeFactor = max(secondsRemaining, 60) / 900</code>
+              </p>
+              <p className="text-sm text-muted-foreground mt-2">
+                Drempelwaarden worden strenger naarmate tijd verstrijkt. Bij t=450s (half) zijn de thresholds 50% lager.
+                Bij t=60s zijn ze ~93% lager.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+
         {/* Strategy Overview Cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card className="bg-blue-500/10 border-blue-500/20">
-            <CardContent className="pt-4">
-              <div className="flex items-center gap-2 mb-2">
-                <TrendingUp className="h-5 w-5 text-blue-500" />
-                <span className="font-semibold">Opening</span>
-              </div>
-              <p className="text-2xl font-bold">50</p>
-              <p className="text-sm text-muted-foreground">shares per entry</p>
-            </CardContent>
-          </Card>
-
           <Card className="bg-green-500/10 border-green-500/20">
             <CardContent className="pt-4">
               <div className="flex items-center gap-2 mb-2">
-                <Shield className="h-5 w-5 text-green-500" />
-                <span className="font-semibold">Max Position</span>
+                <Gauge className="h-5 w-5 text-green-500" />
+                <span className="font-semibold">LOW Skew</span>
               </div>
-              <p className="text-2xl font-bold">300</p>
-              <p className="text-sm text-muted-foreground">shares per side</p>
+              <p className="text-2xl font-bold">70/30</p>
+              <p className="text-sm text-muted-foreground">max asymmetry</p>
             </CardContent>
           </Card>
 
@@ -515,10 +688,21 @@ export default function GptStrategy() {
             <CardContent className="pt-4">
               <div className="flex items-center gap-2 mb-2">
                 <Clock className="h-5 w-5 text-amber-500" />
-                <span className="font-semibold">Hedge Timeout</span>
+                <span className="font-semibold">LOW Hedge</span>
               </div>
-              <p className="text-2xl font-bold">12s</p>
-              <p className="text-sm text-muted-foreground">force hedge</p>
+              <p className="text-2xl font-bold">35s</p>
+              <p className="text-sm text-muted-foreground">hedge timeout</p>
+            </CardContent>
+          </Card>
+
+          <Card className="bg-red-500/10 border-red-500/20">
+            <CardContent className="pt-4">
+              <div className="flex items-center gap-2 mb-2">
+                <AlertTriangle className="h-5 w-5 text-red-500" />
+                <span className="font-semibold">Hard Stop</span>
+              </div>
+              <p className="text-2xl font-bold">60s</p>
+              <p className="text-sm text-muted-foreground">voor settlement</p>
             </CardContent>
           </Card>
 
@@ -526,10 +710,10 @@ export default function GptStrategy() {
             <CardContent className="pt-4">
               <div className="flex items-center gap-2 mb-2">
                 <Target className="h-5 w-5 text-purple-500" />
-                <span className="font-semibold">Edge Buffer</span>
+                <span className="font-semibold">DEEP Max</span>
               </div>
-              <p className="text-2xl font-bold">1.2¢</p>
-              <p className="text-sm text-muted-foreground">minimum edge</p>
+              <p className="text-2xl font-bold">0.40%</p>
+              <p className="text-sm text-muted-foreground">delta threshold</p>
             </CardContent>
           </Card>
         </div>
@@ -539,30 +723,34 @@ export default function GptStrategy() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Zap className="h-5 w-5 text-primary" />
-              v3.2.1 Changes (Big Hedger)
+              v4.2 Changes (Adaptive Edition)
             </CardTitle>
           </CardHeader>
           <CardContent>
             <ul className="space-y-2 text-sm">
               <li className="flex items-center gap-2">
                 <Check className="h-4 w-4 text-green-500" />
-                Opening trade: <strong>50 shares</strong> (was 25)
+                <strong>Delta regimes:</strong> LOW, MID, HIGH met time-decay
               </li>
               <li className="flex items-center gap-2">
                 <Check className="h-4 w-4 text-green-500" />
-                Max position: <strong>300 shares</strong> per side (was 150)
+                <strong>Time-adaptive thresholds:</strong> Strenger naarmate tijd verstrijkt
               </li>
               <li className="flex items-center gap-2">
                 <Check className="h-4 w-4 text-green-500" />
-                Accumulate: max <strong>50 shares</strong> per trade
+                <strong>Regime-aware hedge timeout:</strong> 35s (LOW) → 12s (HIGH)
               </li>
               <li className="flex items-center gap-2">
                 <Check className="h-4 w-4 text-green-500" />
-                Accumulate only when hedged (skew &lt; 10%)
+                <strong>Dynamic skew limits:</strong> 70/30 (LOW) → 55/45 (HIGH)
               </li>
               <li className="flex items-center gap-2">
                 <Check className="h-4 w-4 text-green-500" />
-                Exposure protection: no accumulate when one-sided
+                <strong>Hard stop:</strong> 60s voor settlement, geen nieuwe risico
+              </li>
+              <li className="flex items-center gap-2">
+                <Check className="h-4 w-4 text-green-500" />
+                <strong>Entry buffer uplift:</strong> +0.4% (MID), +0.8% (HIGH)
               </li>
             </ul>
           </CardContent>
@@ -597,22 +785,22 @@ export default function GptStrategy() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-amber-500">
               <AlertTriangle className="h-5 w-5" />
-              Risico's
+              Risico&apos;s
             </CardTitle>
           </CardHeader>
           <CardContent>
             <ul className="space-y-2 text-sm">
               <li className="flex items-start gap-2">
                 <AlertTriangle className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
-                <span><strong>One-sided exposure:</strong> Als hedge niet lukt binnen timeout, blijft positie ongedekt</span>
+                <span><strong>HIGH delta regime:</strong> Als prijs ver van strike afwijkt, stopt de bot met accumuleren</span>
               </li>
               <li className="flex items-start gap-2">
                 <AlertTriangle className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
-                <span><strong>Snelle markten:</strong> Bij hele korte markten kan prijs te snel bewegen</span>
+                <span><strong>Time-decay:</strong> Bij lange tijd in MID/HIGH regime kan de bot te conservatief worden</span>
               </li>
               <li className="flex items-start gap-2">
                 <AlertTriangle className="h-4 w-4 text-amber-500 mt-0.5 flex-shrink-0" />
-                <span><strong>Liquidity gaps:</strong> Bij lage liquiditeit kunnen orders niet gevuld worden</span>
+                <span><strong>Snelle marktbewegingen:</strong> Delta regime kan snel wisselen bij volatiliteit</span>
               </li>
             </ul>
           </CardContent>
@@ -625,19 +813,31 @@ export default function GptStrategy() {
           <CodeBlock 
             code={STRATEGY_CONFIG} 
             section="config" 
-            title="Strategy Configuration" 
+            title="Strategy Configuration (v4.2)" 
           />
           
           <CodeBlock 
-            code={EDGE_CALCULATION} 
-            section="edge" 
-            title="Edge Calculation (v3.1)" 
+            code={DELTA_REGIME} 
+            section="delta" 
+            title="Delta Regime Calculation" 
           />
           
           <CodeBlock 
-            code={STATE_MACHINE} 
-            section="state" 
-            title="State Machine" 
+            code={REGIME_BEHAVIOR} 
+            section="behavior" 
+            title="Regime Behavior Summary" 
+          />
+          
+          <CodeBlock 
+            code={TICK_LOGIC} 
+            section="tick" 
+            title="Tick() Implementation" 
+          />
+          
+          <CodeBlock 
+            code={CORE_INVARIANT} 
+            section="invariant" 
+            title="Core Settlement Invariant" 
           />
           
           <CodeBlock 
@@ -655,20 +855,14 @@ export default function GptStrategy() {
           <CodeBlock 
             code={ACCUMULATE_LOGIC} 
             section="accumulate" 
-            title="Accumulate Logic (v3.2.1)" 
-          />
-          
-          <CodeBlock 
-            code={PROFIT_CALCULATION} 
-            section="profit" 
-            title="Profit Calculation" 
+            title="Accumulate Logic" 
           />
         </div>
 
         {/* Footer */}
         <div className="text-center py-8 text-sm text-muted-foreground">
-          <p>GPT Strategy v3.2.1 - Big Hedger</p>
-          <p>Polymarket 15m Hedge/Arbitrage Bot</p>
+          <p>GPT Strategy v4.2 - Gabagool Inspired Adaptive Edition</p>
+          <p>Polymarket 15m Hedge/Arbitrage Bot with Delta Regimes</p>
         </div>
       </div>
     </div>
