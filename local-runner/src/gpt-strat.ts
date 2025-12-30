@@ -1001,14 +1001,70 @@ export class Polymarket15mArbBot {
     const hasBoth = (this.inventory.upShares > 0 && this.inventory.downShares > 0);
     const delta = upFraction(this.inventory) - this.cfg.skew.target;
 
-    // skew-aware accumulation: buy underweight if drift > half threshold
+    // v4.2.2: ATOMIC PAIR ACCUMULATE - buy both sides together for better balance
+    // Only do single-side buys in DEEP mode or for rebalancing
+    const shouldBuyPair = hasBoth && !isDeep && Math.abs(delta) <= (this.cfg.skew.rebalanceThreshold / 2);
+
+    if (shouldBuyPair) {
+      // ATOMIC PAIR: Buy both UP and DOWN at the same time
+      const upTop = snap.upTop;
+      const downTop = snap.downTop;
+
+      // Check liquidity on both sides
+      if (upTop.askSize < this.cfg.limits.minTopDepthShares || downTop.askSize < this.cfg.limits.minTopDepthShares) {
+        this.noLiquidityStreak = Math.min(this.cfg.adapt.maxNoLiquidityStreak, this.noLiquidityStreak + 1);
+        return intents;
+      }
+
+      // Check position limits for both sides
+      if (sideNotional(this.inventory, "UP") >= this.cfg.limits.maxPerSideUsd ||
+          sideNotional(this.inventory, "DOWN") >= this.cfg.limits.maxPerSideUsd) {
+        return intents;
+      }
+
+      const upTick = this.tickInferer.getTick(snap.marketId, "UP", snap.upBook, snap.ts);
+      const downTick = this.tickInferer.getTick(snap.marketId, "DOWN", snap.downBook, snap.ts);
+
+      const upRawPx = this.cfg.execution.entryImproveTicks > 0
+        ? addTicks(upTop.ask, upTick, -this.cfg.execution.entryImproveTicks)
+        : upTop.ask;
+      const downRawPx = this.cfg.execution.entryImproveTicks > 0
+        ? addTicks(downTop.ask, downTick, -this.cfg.execution.entryImproveTicks)
+        : downTop.ask;
+
+      const upPx = roundDownToTick(upRawPx, upTick);
+      const downPx = roundDownToTick(downRawPx, downTick);
+
+      // Combined cost check - pair must still be profitable
+      const combinedCost = upPx + downPx;
+      if (combinedCost > 0.98) {
+        this.log("PAIR_SKIP_EXPENSIVE", { combinedCost, upPx, downPx });
+        return intents;
+      }
+
+      const usd = this.computeClipUsd(snap);
+      // Split USD between both sides
+      const halfUsd = usd / 2;
+      const upQty = sharesFromUsd(halfUsd, Math.max(upPx, upTick));
+      const downQty = sharesFromUsd(halfUsd, Math.max(downPx, downTick));
+
+      this.log("PAIR_ACCUMULATE", { upPx, downPx, combinedCost, upQty, downQty });
+
+      intents.push({ side: "UP", qty: upQty, limitPrice: upPx, tag: "ENTRY", reason: "PAIR_ACCUM_UP" });
+      intents.push({ side: "DOWN", qty: downQty, limitPrice: downPx, tag: "ENTRY", reason: "PAIR_ACCUM_DOWN" });
+      return intents;
+    }
+
+    // SINGLE-SIDE: For DEEP mode, opening, or rebalancing
     let sideToBuy: Side;
     if (isDeep) {
       // DEEP: Always buy cheapest side
       sideToBuy = cheapestSideByAsk(snap);
     } else if (hasBoth && Math.abs(delta) > (this.cfg.skew.rebalanceThreshold / 2)) {
+      // Rebalance: buy underweight side
       sideToBuy = delta > 0 ? "DOWN" : "UP";
     } else {
+      // Opening: buy cheapest side first
       sideToBuy = cheapestSideByAsk(snap);
     }
 
@@ -1033,7 +1089,7 @@ export class Polymarket15mArbBot {
 
     const reason = isDeep 
       ? `DEEP_ENTRY ${sideToBuy}` 
-      : (hasBoth ? "ACCUMULATE" : "OPENING");
+      : (hasBoth ? "REBALANCE" : "OPENING");
     
     intents.push({ side: sideToBuy, qty, limitPrice: px, tag: "ENTRY", reason });
     return intents;
