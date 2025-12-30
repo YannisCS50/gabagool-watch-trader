@@ -75,10 +75,11 @@ export function useLiveTrades(): UseLiveTradesResult {
     try {
       setError(null);
 
-      // Build query - filter by wallet if available
+      // Build query - ONLY include filled trades (not pending/cancelled)
       let tradesQuery = supabase
         .from('live_trades')
         .select('*')
+        .eq('status', 'filled')
         .order('created_at', { ascending: false });
       
       let resultsQuery = supabase
@@ -144,7 +145,10 @@ export function useLiveTrades(): UseLiveTradesResult {
         { event: 'INSERT', schema: 'public', table: 'live_trades' },
         (payload) => {
           const newTrade = payload.new as LiveTrade;
-          setTrades(prev => [newTrade, ...prev]);
+          // Only add if filled
+          if (newTrade.status === 'filled') {
+            setTrades(prev => [newTrade, ...prev]);
+          }
         }
       )
       .on(
@@ -152,7 +156,20 @@ export function useLiveTrades(): UseLiveTradesResult {
         { event: 'UPDATE', schema: 'public', table: 'live_trades' },
         (payload) => {
           const updated = payload.new as LiveTrade;
-          setTrades(prev => prev.map(t => t.id === updated.id ? updated : t));
+          // Handle status changes: add if became filled, remove if no longer filled
+          setTrades(prev => {
+            const exists = prev.some(t => t.id === updated.id);
+            if (updated.status === 'filled') {
+              if (exists) {
+                return prev.map(t => t.id === updated.id ? updated : t);
+              } else {
+                return [updated, ...prev];
+              }
+            } else {
+              // Remove if status changed away from filled
+              return prev.filter(t => t.id !== updated.id);
+            }
+          });
         }
       )
       .subscribe();
