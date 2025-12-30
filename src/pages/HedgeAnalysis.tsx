@@ -1,6 +1,8 @@
 import { NavLink } from '@/components/NavLink';
 import { HedgeTimingAnalysis } from '@/components/HedgeTimingAnalysis';
+import { HedgeBreakAnalysis } from '@/components/HedgeBreakAnalysis';
 import { ArrowLeft } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 export default function HedgeAnalysis() {
   return (
@@ -20,7 +22,18 @@ export default function HedgeAnalysis() {
           </p>
         </div>
 
-        <HedgeTimingAnalysis />
+        <Tabs defaultValue="break-analysis" className="w-full">
+          <TabsList className="grid w-full grid-cols-2 max-w-md">
+            <TabsTrigger value="break-analysis">Hedge Break Analyse</TabsTrigger>
+            <TabsTrigger value="timing">Timing Analyse</TabsTrigger>
+          </TabsList>
+          <TabsContent value="break-analysis" className="mt-6">
+            <HedgeBreakAnalysis />
+          </TabsContent>
+          <TabsContent value="timing" className="mt-6">
+            <HedgeTimingAnalysis />
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   );
