@@ -9,7 +9,7 @@ const RUNNER_SECRET = Deno.env.get('RUNNER_SHARED_SECRET');
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
-type Action = 'get-markets' | 'get-trades' | 'save-trade' | 'heartbeat' | 'offline' | 'get-pending-orders' | 'update-order';
+type Action = 'get-markets' | 'get-trades' | 'save-trade' | 'heartbeat' | 'offline' | 'get-pending-orders' | 'update-order' | 'sync-positions';
 
 interface RequestBody {
   action: Action;
@@ -251,6 +251,104 @@ Deno.serve(async (req) => {
 
         console.log(`[runner-proxy] ✅ Order ${orderId} updated to ${status}`);
         return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      case 'sync-positions': {
+        // Sync positions from Polymarket API and reconcile with our database
+        // Receives positions data from runner, updates live_trades status
+        const positions = data?.positions as Array<{
+          conditionId: string;
+          market: string;
+          outcome: string;
+          size: number;
+          avgPrice: number;
+          currentValue: number;
+          initialValue: number;
+          eventSlug?: string;
+        }> | undefined;
+
+        const wallet = data?.wallet as string | undefined;
+
+        if (!positions || !wallet) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing positions or wallet' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] 🔄 Syncing ${positions.length} positions for wallet ${wallet.slice(0, 10)}...`);
+
+        // Get recent live_trades that are pending/unknown
+        const { data: pendingTrades, error: fetchError } = await supabase
+          .from('live_trades')
+          .select('id, market_slug, outcome, shares, status, order_id, created_at')
+          .eq('wallet_address', wallet)
+          .in('status', ['pending', 'unknown', 'placed'])
+          .gte('created_at', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
+
+        if (fetchError) {
+          console.error('[runner-proxy] sync-positions fetch error:', fetchError);
+          return new Response(JSON.stringify({ success: false, error: fetchError.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        // Create a map of actual positions from Polymarket
+        const positionMap = new Map<string, { shares: number; outcome: string }>();
+        for (const p of positions) {
+          const slug = p.eventSlug || p.market;
+          const key = `${slug}-${p.outcome.toUpperCase()}`;
+          positionMap.set(key, { shares: p.size, outcome: p.outcome });
+        }
+
+        let updated = 0;
+        let cancelled = 0;
+
+        // For each pending trade, check if it exists in actual positions
+        for (const trade of (pendingTrades || [])) {
+          const key = `${trade.market_slug}-${trade.outcome}`;
+          const actualPosition = positionMap.get(key);
+
+          if (actualPosition && actualPosition.shares >= trade.shares * 0.9) {
+            // Position exists with enough shares - mark as filled
+            const { error: updateError } = await supabase
+              .from('live_trades')
+              .update({ status: 'filled' })
+              .eq('id', trade.id);
+            
+            if (!updateError) {
+              updated++;
+              console.log(`[runner-proxy] ✅ Confirmed fill: ${trade.outcome} ${trade.shares} on ${trade.market_slug}`);
+            }
+          } else {
+            // No position found - likely cancelled or failed
+            // Only mark as cancelled if the order is old enough (>5 min)
+            const tradeAge = Date.now() - new Date(trade.created_at || 0).getTime();
+            if (tradeAge > 5 * 60 * 1000) {
+              const { error: updateError } = await supabase
+                .from('live_trades')
+                .update({ status: 'cancelled' })
+                .eq('id', trade.id);
+              
+              if (!updateError) {
+                cancelled++;
+                console.log(`[runner-proxy] ❌ Marked cancelled: ${trade.outcome} ${trade.shares} on ${trade.market_slug}`);
+              }
+            }
+          }
+        }
+
+        console.log(`[runner-proxy] 🔄 Sync complete: ${updated} filled, ${cancelled} cancelled`);
+
+        return new Response(JSON.stringify({ 
+          success: true, 
+          updated,
+          cancelled,
+          totalPositions: positions.length 
+        }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
