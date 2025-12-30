@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { RefreshCw, Activity, TrendingUp, Clock, BarChart3, AlertTriangle, CheckCircle, XCircle } from "lucide-react";
+import { RefreshCw, Activity, TrendingUp, Clock, BarChart3, AlertTriangle, CheckCircle, XCircle, DollarSign } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useNavigate } from "react-router-dom";
 
@@ -55,12 +55,23 @@ interface TelemetryData {
   lastDelta: number;
 }
 
+interface PriceLog {
+  ts: number;
+  asset: string;
+  strikePrice: number;
+  openPrice: number | null;
+  closePrice: number | null;
+  quality: string;
+  marketSlug: string;
+}
+
 export default function DataLogging() {
   const navigate = useNavigate();
   const [fills, setFills] = useState<FillLog[]>([]);
   const [snapshots, setSnapshots] = useState<SnapshotLog[]>([]);
   const [settlements, setSettlements] = useState<SettlementLog[]>([]);
   const [telemetry, setTelemetry] = useState<TelemetryData[]>([]);
+  const [prices, setPrices] = useState<PriceLog[]>([]);
   const [loading, setLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
@@ -136,6 +147,26 @@ export default function DataLogging() {
           };
         });
         setTelemetry(telemetryData);
+      }
+
+      // Fetch strike prices for price logging
+      const { data: strikePrices } = await supabase
+        .from("strike_prices")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(50);
+
+      if (strikePrices) {
+        const priceLogs: PriceLog[] = strikePrices.map((p) => ({
+          ts: new Date(p.created_at || "").getTime(),
+          asset: p.asset,
+          strikePrice: Number(p.strike_price),
+          openPrice: p.open_price ? Number(p.open_price) : null,
+          closePrice: p.close_price ? Number(p.close_price) : null,
+          quality: p.quality || "unknown",
+          marketSlug: p.market_slug,
+        }));
+        setPrices(priceLogs);
       }
 
       setLastUpdate(new Date());
@@ -283,6 +314,10 @@ export default function DataLogging() {
             <TabsTrigger value="settlements" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               <CheckCircle className="h-4 w-4 mr-2" />
               Settlements
+            </TabsTrigger>
+            <TabsTrigger value="prices" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+              <DollarSign className="h-4 w-4 mr-2" />
+              Prices
             </TabsTrigger>
           </TabsList>
 
@@ -468,6 +503,86 @@ export default function DataLogging() {
                         <TableRow>
                           <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
                             No settlement events recorded yet
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </ScrollArea>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Prices Tab */}
+          <TabsContent value="prices" className="mt-4">
+            <Card className="bg-card border-border">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <DollarSign className="h-5 w-5 text-orange-400" />
+                  Chainlink Price Logs
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ScrollArea className="h-[500px]">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="border-border hover:bg-transparent">
+                        <TableHead className="text-muted-foreground">Time</TableHead>
+                        <TableHead className="text-muted-foreground">Asset</TableHead>
+                        <TableHead className="text-muted-foreground text-right">Strike Price</TableHead>
+                        <TableHead className="text-muted-foreground text-right">Open Price</TableHead>
+                        <TableHead className="text-muted-foreground text-right">Close Price</TableHead>
+                        <TableHead className="text-muted-foreground">Quality</TableHead>
+                        <TableHead className="text-muted-foreground">Market</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {prices.map((p, i) => (
+                        <TableRow key={i} className="border-border">
+                          <TableCell className="font-mono text-sm">
+                            <div>{formatTime(p.ts)}</div>
+                            <div className="text-xs text-muted-foreground">{formatDate(p.ts)}</div>
+                          </TableCell>
+                          <TableCell>
+                            <Badge
+                              variant="outline"
+                              className={p.asset === "BTC" ? "bg-orange-500/20 text-orange-400 border-orange-500/30" : "bg-blue-500/20 text-blue-400 border-blue-500/30"}
+                            >
+                              {p.asset}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-right font-mono font-bold">
+                            ${p.strikePrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </TableCell>
+                          <TableCell className="text-right font-mono">
+                            {p.openPrice ? `$${p.openPrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "-"}
+                          </TableCell>
+                          <TableCell className="text-right font-mono">
+                            {p.closePrice ? `$${p.closePrice.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "-"}
+                          </TableCell>
+                          <TableCell>
+                            <Badge
+                              variant="outline"
+                              className={
+                                p.quality === "exact"
+                                  ? "bg-green-500/20 text-green-400 border-green-500/30"
+                                  : p.quality === "late"
+                                  ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30"
+                                  : "bg-muted text-muted-foreground"
+                              }
+                            >
+                              {p.quality}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="font-mono text-xs text-muted-foreground">
+                            {p.marketSlug.split("-").slice(-2).join("-")}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                      {prices.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
+                            No price data recorded yet
                           </TableCell>
                         </TableRow>
                       )}
