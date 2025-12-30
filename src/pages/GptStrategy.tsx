@@ -7,7 +7,7 @@ import { useState } from 'react';
 import { toast } from 'sonner';
 import jsPDF from 'jspdf';
 
-const STRATEGY_CONFIG = `// v4.2: Gabagool Inspired Adaptive Edition
+const STRATEGY_CONFIG = `// v4.2.1: Gabagool Inspired Adaptive Edition
 export const DEFAULT_CONFIG: StrategyConfig = {
   // Trade sizing
   tradeSizeUsd: { base: 25, min: 20, max: 50 },
@@ -21,22 +21,31 @@ export const DEFAULT_CONFIG: StrategyConfig = {
     deepDislocationThreshold: 0.96,
   },
 
-  // Delta regime configuration (v4.2)
+  // v4.2.1: Constant delta regime thresholds (NO time-shrinking)
   delta: {
-    maxSkewLow: 0.70,      // LOW: 70/30 skew allowed
-    maxSkewMid: 0.60,      // MID: 60/40 skew
-    maxSkewHigh: 0.55,     // HIGH: 55/45 skew (tight)
-    hedgeTimeoutLowSec: 35,   // LOW: delayed hedge OK
-    hedgeTimeoutMidSec: 22,   // MID: moderate hedge
-    hedgeTimeoutHighSec: 12,  // HIGH: fast hedge
-    bufferAddLow: 0.000,      // No extra buffer in LOW
-    bufferAddMid: 0.004,      // +0.4¢ buffer in MID
-    bufferAddHigh: 0.008,     // +0.8¢ buffer in HIGH
-    allowDeepMaxPct: 0.0040,  // DEEP only when delta < 0.40%
+    lowThreshold: 0.0030,     // LOW: delta < 0.30%
+    midThreshold: 0.0070,     // MID: 0.30% - 0.70%
+                              // HIGH: delta > 0.70%
+    deepMaxDelta: 0.0040,     // DEEP only if delta < 0.40%
+  },
+
+  // v4.2.1: Time-scaled parameters (timeFactor adjusts these)
+  timeScaled: {
+    hedgeTimeoutBaseSec: 35,  // Scaled down by timeFactor
+    maxSkewBase: 0.70,        // Scaled down by timeFactor
+    bufferAddBase: 0.008,     // Scaled UP by (1 - timeFactor)
+    deepMinTimeSec: 180,      // DEEP only if secondsRemaining > 180
+  },
+
+  // Deep mode conditions (v4.2.1)
+  deep: {
+    minTimeSec: 180,           // Only if > 180s remaining
+    maxCombinedAsk: 0.95,      // Only if cheapestAsk + otherMid < 0.95
+    maxDeltaPct: 0.0040,       // Only if delta < 0.40%
   },
 
   timing: {
-    stopNewTradesSec: 60,     // v4.2: Hard stop 60s before settlement
+    stopNewTradesSec: 60,
     hedgeMustBySec: 60,
     unwindStartSec: 45,
   },
@@ -45,7 +54,6 @@ export const DEFAULT_CONFIG: StrategyConfig = {
     target: 0.50,
     rebalanceThreshold: 0.20,
     hardCap: 0.70,
-    deepAllowedSkew: 0.70,
   },
 
   limits: {
@@ -78,7 +86,7 @@ export const DEFAULT_CONFIG: StrategyConfig = {
   },
 };`;
 
-const DELTA_REGIME = `// v4.2: Delta Regime Calculation with Time-Decay
+const DELTA_REGIME = `// v4.2.1: Delta Regime Calculation (CONSTANT thresholds)
 export interface MarketSnapshot {
   marketId: string;
   ts: number;
@@ -100,90 +108,99 @@ export function computeDeltaPct(
   return Math.abs(spotPrice - strikePrice) / strikePrice;
 }
 
-// Time-adaptive regime: thresholds tighten as time runs out
-export function getAdaptiveRegime(
-  deltaPct: number, 
-  secondsRemaining: number
-): "LOW" | "MID" | "HIGH" {
-  // timeFactor: 1.0 at start (900s), 0.07 at 60s remaining
-  const timeFactor = Math.max(secondsRemaining, 60) / 900;
-  
-  if (deltaPct < 0.0030 * timeFactor) return "LOW";  // < 0.30% × timeFactor
-  if (deltaPct < 0.0070 * timeFactor) return "MID";  // < 0.70% × timeFactor
-  return "HIGH";
+// v4.2.1: CONSTANT regime thresholds (no time-shrinking)
+export function getDeltaRegime(deltaPct: number): "LOW" | "MID" | "HIGH" {
+  if (deltaPct < 0.0030) return "LOW";   // < 0.30%
+  if (deltaPct < 0.0070) return "MID";   // 0.30% - 0.70%
+  return "HIGH";                          // > 0.70%
 }
 
-// Example at different times:
-// t=900s (start): LOW < 0.30%, MID < 0.70%
-// t=450s (half):  LOW < 0.15%, MID < 0.35%
-// t=60s (end):    LOW < 0.02%, MID < 0.05%`;
+// v4.2.1: timeFactor only scales PARAMETERS, not regime thresholds
+export function getTimeFactor(secondsRemaining: number): number {
+  return Math.max(secondsRemaining, 60) / 900;  // 1.0 at 900s, 0.07 at 60s
+}
 
-const REGIME_BEHAVIOR = `// v4.2: Regime-Aware Trading Behavior
+// Time-scaled parameter calculations
+export function getScaledHedgeTimeout(timeFactor: number, base: number): number {
+  return Math.max(8, Math.floor(base * timeFactor));  // Min 8s
+}
 
-// LOW Delta Regime (delta < 0.30% × timeFactor)
+export function getScaledMaxSkew(timeFactor: number, base: number): number {
+  return 0.50 + (base - 0.50) * timeFactor;  // Shrinks toward 50/50
+}
+
+export function getScaledBufferAdd(timeFactor: number, base: number): number {
+  return base * (1 - timeFactor);  // Increases as time decreases
+}`;
+
+const REGIME_BEHAVIOR = `// v4.2.1: Regime-Aware Trading Behavior
+// CONSTANT delta thresholds + TIME-SCALED parameters
+
+// LOW Delta Regime (delta < 0.30%)
 // ├── Price is close to strike, low directional risk
 // ├── Gabagool mode: asymmetric inventory buildup allowed
-// ├── Skew up to 70/30 permitted
-// ├── Hedge timeout: 35 seconds (relaxed)
-// ├── DEEP mode: allowed if delta < 0.40%
-// └── Entry buffer: +0.0% (aggressive)
+// ├── DEEP mode: allowed if conditions met (see below)
+// └── Most aggressive trading allowed
 
-// MID Delta Regime (0.30% - 0.70% × timeFactor)
+// MID Delta Regime (0.30% - 0.70%)
 // ├── Moderate directional uncertainty
 // ├── Conservative arbitrage only
-// ├── Skew max 60/40
-// ├── Hedge timeout: 22 seconds
 // ├── DEEP mode: disabled
-// └── Entry buffer: +0.4% (cautious)
+// └── Standard entry requirements
 
-// HIGH Delta Regime (delta > 0.70% × timeFactor)
+// HIGH Delta Regime (delta > 0.70%)
 // ├── Price far from strike, high directional risk
 // ├── NO new accumulation allowed
-// ├── Skew max 55/45 (tight)
-// ├── Hedge timeout: 12 seconds (urgent)
 // ├── Focus on hedging existing positions
-// └── Entry buffer: +0.8% (very strict)`;
+// └── Prepare for settlement
 
-const TICK_LOGIC = `// v4.2: Tick() Implementation with Adaptive Regimes
+// TIME-SCALED PARAMETERS (via timeFactor):
+// ├── hedgeTimeout ↓ (shorter as expiry approaches)
+// ├── maxSkew ↓ (tighter as expiry approaches)
+// ├── bufferAdd ↑ (stricter as expiry approaches)
+// └── deepAllowed: only if secondsRemaining > 180s
+
+// DEEP MODE CONDITIONS (v4.2.1):
+// ├── secondsRemaining > 180 (not too close to expiry)
+// ├── cheapestAsk + otherMid < 0.95 (strong dislocation)
+// └── delta < 0.40% (price near strike)`;
+
+const TICK_LOGIC = `// v4.2.1: Tick() Implementation with Time-Scaled Parameters
 
 async tick(): Promise<void> {
   // 1. Fetch market snapshot
   const snap = await this.fetchSnapshot();
   
-  // 2. Compute delta and adaptive regime
+  // 2. Compute delta and CONSTANT regime
   const deltaPct = computeDeltaPct(snap.spotPrice, snap.strikePrice);
-  const deltaRegime = getAdaptiveRegime(deltaPct, snap.secondsRemaining);
+  const deltaRegime = getDeltaRegime(deltaPct);  // No time-decay!
   
-  this.log(\`📊 Delta: \${(deltaPct * 100).toFixed(3)}% | Regime: \${deltaRegime} | T-\${snap.secondsRemaining}s\`);
+  // 3. Compute timeFactor for parameter scaling
+  const timeFactor = getTimeFactor(snap.secondsRemaining);
   
-  // 3. Compute dynamic entry buffer with regime adjustment
-  const baseBuffer = dynamicEdgeBuffer(this.cfg);
-  const regimeBuffer = deltaRegime === "LOW" 
-    ? this.cfg.delta.bufferAddLow
-    : deltaRegime === "MID"
-      ? this.cfg.delta.bufferAddMid
-      : this.cfg.delta.bufferAddHigh;
-  const buffer = baseBuffer + regimeBuffer;
+  this.log(\`📊 Delta: \${(deltaPct * 100).toFixed(3)}% | Regime: \${deltaRegime} | timeFactor: \${timeFactor.toFixed(2)} | T-\${snap.secondsRemaining}s\`);
   
-  // 4. Risk gating
-  const allowDeep = deltaPct < this.cfg.delta.allowDeepMaxPct && deltaRegime === "LOW";
+  // 4. Time-scaled parameters
+  const hedgeTimeout = getScaledHedgeTimeout(timeFactor, this.cfg.timeScaled.hedgeTimeoutBaseSec);
+  const maxSkew = getScaledMaxSkew(timeFactor, this.cfg.timeScaled.maxSkewBase);
+  const bufferAdd = getScaledBufferAdd(timeFactor, this.cfg.timeScaled.bufferAddBase);
+  
+  // 5. Entry buffer = base + time-scaled addition
+  const buffer = dynamicEdgeBuffer(this.cfg) + bufferAdd;
+  
+  // 6. DEEP mode gating (v4.2.1 stricter rules)
+  const deepAllowed = (
+    snap.secondsRemaining > this.cfg.deep.minTimeSec &&           // > 180s
+    deltaPct < this.cfg.deep.maxDeltaPct &&                       // < 0.40%
+    (snap.upTop.ask + snap.downTop.mid) < this.cfg.deep.maxCombinedAsk  // combined < 0.95
+  );
+  
+  // 7. Risk gating
   const allowNewRisk = deltaRegime !== "HIGH" && snap.secondsRemaining > 60;
   
-  // 5. Determine hedge timeout based on regime
-  const hedgeTimeout = deltaRegime === "LOW"
-    ? this.cfg.delta.hedgeTimeoutLowSec
-    : deltaRegime === "MID"
-      ? this.cfg.delta.hedgeTimeoutMidSec
-      : this.cfg.delta.hedgeTimeoutHighSec;
+  this.log(\`⚙️ hedgeTimeout: \${hedgeTimeout}s | maxSkew: \${(maxSkew*100).toFixed(0)}% | buffer: \${(buffer*100).toFixed(2)}% | DEEP: \${deepAllowed ? '✓' : '✗'}\`);
   
-  // 6. Determine max skew based on regime
-  const maxSkew = deltaRegime === "LOW"
-    ? this.cfg.delta.maxSkewLow
-    : deltaRegime === "MID"
-      ? this.cfg.delta.maxSkewMid
-      : this.cfg.delta.maxSkewHigh;
-  
-  // 7. Build order intents
+  // 8. Build order intents
   const intents: OrderIntent[] = [];
   
   // Entry: only if allowNewRisk and edge OK
@@ -192,7 +209,7 @@ async tick(): Promise<void> {
     if (entryIntent) intents.push(entryIntent);
   }
   
-  // Hedge: always allowed, with regime-specific timeout
+  // Hedge: always allowed, with time-scaled timeout
   if (this.state === "ONE_SIDED") {
     const hedgeIntent = await this.buildHedgeIntent(snap, hedgeTimeout);
     if (hedgeIntent) intents.push(hedgeIntent);
@@ -202,7 +219,7 @@ async tick(): Promise<void> {
   if (allowNewRisk && this.state === "HEDGED") {
     const skew = upFraction(this.inventory);
     if (Math.abs(skew - 0.5) < (maxSkew - 0.5)) {
-      const accumIntent = await this.buildAccumulateIntent(snap, buffer);
+      const accumIntent = await this.buildAccumulateIntent(snap, buffer, deepAllowed);
       if (accumIntent) intents.push(accumIntent);
     }
   }
@@ -481,7 +498,7 @@ export default function GptStrategy() {
       };
       
       // Header
-      addTitle('GPT Strategy v4.2 - Adaptive Edition', 22);
+      addTitle('GPT Strategy v4.2.1 - Adaptive Edition', 22);
       pdf.setFontSize(10);
       pdf.setFont('helvetica', 'normal');
       pdf.setTextColor(120, 120, 120);
@@ -491,7 +508,7 @@ export default function GptStrategy() {
       y += 10;
       
       addTitle('Strategie Overzicht', 14);
-      addParagraph('Gabagool Inspired Inventory Arbitrage Strategy met adaptive delta regimes en time-decay. De bot past zijn gedrag aan op basis van de afstand tot strike price en resterende tijd.');
+      addParagraph('Gabagool Inspired Inventory Arbitrage Strategy v4.2.1 met CONSTANTE delta regimes en time-scaled parameters. Regimes blijven vast, alleen parameters (hedge timeout, skew, buffer) worden aangepast op basis van tijd.');
       y += 5;
       
       addCodeBlock(STRATEGY_CONFIG, 'Configuration');
@@ -513,7 +530,7 @@ export default function GptStrategy() {
         pdf.text(`Pagina ${i} van ${totalPages}`, pageWidth / 2, pageHeight - 8, { align: 'center' });
       }
       
-      pdf.save('gpt-strategy-v4.2.pdf');
+      pdf.save('gpt-strategy-v4.2.1.pdf');
       toast.success('PDF geëxporteerd!');
     } catch (error) {
       console.error('PDF export error:', error);
@@ -563,8 +580,8 @@ export default function GptStrategy() {
               <ArrowLeft className="h-5 w-5" />
             </Button>
             <div>
-              <h1 className="text-2xl font-bold">GPT Strategy v4.2</h1>
-              <p className="text-muted-foreground">Gabagool Inspired Adaptive Edition</p>
+              <h1 className="text-2xl font-bold">GPT Strategy v4.2.1</h1>
+              <p className="text-muted-foreground">Gabagool Inspired - Constant Regimes + Time-Scaled Params</p>
             </div>
           </div>
           <Button 
@@ -607,7 +624,7 @@ export default function GptStrategy() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Activity className="h-5 w-5 text-primary" />
-              Delta Regimes (Time-Adaptive)
+              Delta Regimes (CONSTANT) + Time-Scaled Parameters
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -616,13 +633,12 @@ export default function GptStrategy() {
               <div className="p-4 rounded-lg bg-green-500/10 border border-green-500/30">
                 <div className="flex items-center gap-2 mb-2">
                   <Badge className="bg-green-500">LOW</Badge>
-                  <span className="text-sm text-muted-foreground">&lt; 0.30% × timeFactor</span>
+                  <span className="text-sm text-muted-foreground">&lt; 0.30% (vast)</span>
                 </div>
                 <ul className="text-sm space-y-1">
-                  <li>✓ DEEP mode toegestaan</li>
-                  <li>✓ Skew tot 70/30</li>
-                  <li>✓ Hedge timeout: 35s</li>
-                  <li>✓ Buffer: +0.0%</li>
+                  <li>✓ Gabagool mode toegestaan</li>
+                  <li>✓ DEEP mode (als conditions OK)</li>
+                  <li>✓ Meest agressieve trading</li>
                 </ul>
               </div>
               
@@ -630,13 +646,12 @@ export default function GptStrategy() {
               <div className="p-4 rounded-lg bg-amber-500/10 border border-amber-500/30">
                 <div className="flex items-center gap-2 mb-2">
                   <Badge className="bg-amber-500">MID</Badge>
-                  <span className="text-sm text-muted-foreground">0.30% - 0.70% × timeFactor</span>
+                  <span className="text-sm text-muted-foreground">0.30% - 0.70% (vast)</span>
                 </div>
                 <ul className="text-sm space-y-1">
                   <li>⚠️ Geen DEEP mode</li>
-                  <li>✓ Skew tot 60/40</li>
-                  <li>✓ Hedge timeout: 22s</li>
-                  <li>⚠️ Buffer: +0.4%</li>
+                  <li>✓ Conservatieve arbitrage</li>
+                  <li>✓ Standaard entries</li>
                 </ul>
               </div>
               
@@ -644,13 +659,12 @@ export default function GptStrategy() {
               <div className="p-4 rounded-lg bg-red-500/10 border border-red-500/30">
                 <div className="flex items-center gap-2 mb-2">
                   <Badge className="bg-red-500">HIGH</Badge>
-                  <span className="text-sm text-muted-foreground">&gt; 0.70% × timeFactor</span>
+                  <span className="text-sm text-muted-foreground">&gt; 0.70% (vast)</span>
                 </div>
                 <ul className="text-sm space-y-1">
                   <li>❌ Geen nieuwe risico</li>
-                  <li>⚠️ Skew max 55/45</li>
-                  <li>✓ Hedge timeout: 12s</li>
-                  <li>⚠️ Buffer: +0.8%</li>
+                  <li>✓ Alleen hedgen</li>
+                  <li>✓ Settlement prep</li>
                 </ul>
               </div>
             </div>
@@ -658,15 +672,28 @@ export default function GptStrategy() {
             <div className="bg-muted/30 p-4 rounded-lg">
               <h4 className="font-semibold mb-2 flex items-center gap-2">
                 <Clock className="h-4 w-4" />
-                Time-Decay Factor
+                Time-Scaled Parameters (v4.2.1)
               </h4>
-              <p className="text-sm text-muted-foreground">
+              <p className="text-sm text-muted-foreground mb-2">
                 <code className="text-primary">timeFactor = max(secondsRemaining, 60) / 900</code>
               </p>
-              <p className="text-sm text-muted-foreground mt-2">
-                Drempelwaarden worden strenger naarmate tijd verstrijkt. Bij t=450s (half) zijn de thresholds 50% lager.
-                Bij t=60s zijn ze ~93% lager.
-              </p>
+              <ul className="text-sm text-muted-foreground space-y-1">
+                <li>• <strong>hedgeTimeout</strong> ↓ korter naarmate expiry nadert</li>
+                <li>• <strong>maxSkew</strong> ↓ strakker naarmate expiry nadert</li>
+                <li>• <strong>bufferAdd</strong> ↑ strenger naarmate expiry nadert</li>
+              </ul>
+            </div>
+            
+            <div className="bg-purple-500/10 border border-purple-500/30 p-4 rounded-lg">
+              <h4 className="font-semibold mb-2 flex items-center gap-2 text-purple-400">
+                <Zap className="h-4 w-4" />
+                DEEP Mode Conditions (v4.2.1)
+              </h4>
+              <ul className="text-sm space-y-1">
+                <li>✓ secondsRemaining &gt; <strong>180s</strong></li>
+                <li>✓ cheapestAsk + otherMid &lt; <strong>0.95</strong></li>
+                <li>✓ delta &lt; <strong>0.40%</strong></li>
+              </ul>
             </div>
           </CardContent>
         </Card>
@@ -723,34 +750,30 @@ export default function GptStrategy() {
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
               <Zap className="h-5 w-5 text-primary" />
-              v4.2 Changes (Adaptive Edition)
+              v4.2.1 Changes
             </CardTitle>
           </CardHeader>
           <CardContent>
             <ul className="space-y-2 text-sm">
               <li className="flex items-center gap-2">
                 <Check className="h-4 w-4 text-green-500" />
-                <strong>Delta regimes:</strong> LOW, MID, HIGH met time-decay
+                <strong>Constant regimes:</strong> LOW &lt;0.30%, MID 0.30-0.70%, HIGH &gt;0.70% (geen time-shrinking)
               </li>
               <li className="flex items-center gap-2">
                 <Check className="h-4 w-4 text-green-500" />
-                <strong>Time-adaptive thresholds:</strong> Strenger naarmate tijd verstrijkt
+                <strong>Time-scaled hedgeTimeout:</strong> Korter naarmate expiry nadert
               </li>
               <li className="flex items-center gap-2">
                 <Check className="h-4 w-4 text-green-500" />
-                <strong>Regime-aware hedge timeout:</strong> 35s (LOW) → 12s (HIGH)
+                <strong>Time-scaled maxSkew:</strong> Strakker naarmate expiry nadert
               </li>
               <li className="flex items-center gap-2">
                 <Check className="h-4 w-4 text-green-500" />
-                <strong>Dynamic skew limits:</strong> 70/30 (LOW) → 55/45 (HIGH)
+                <strong>Time-scaled bufferAdd:</strong> Strenger naarmate expiry nadert
               </li>
               <li className="flex items-center gap-2">
                 <Check className="h-4 w-4 text-green-500" />
-                <strong>Hard stop:</strong> 60s voor settlement, geen nieuwe risico
-              </li>
-              <li className="flex items-center gap-2">
-                <Check className="h-4 w-4 text-green-500" />
-                <strong>Entry buffer uplift:</strong> +0.4% (MID), +0.8% (HIGH)
+                <strong>DEEP mode:</strong> Alleen als t&gt;180s, combined&lt;0.95, delta&lt;0.40%
               </li>
             </ul>
           </CardContent>
@@ -813,7 +836,7 @@ export default function GptStrategy() {
           <CodeBlock 
             code={STRATEGY_CONFIG} 
             section="config" 
-            title="Strategy Configuration (v4.2)" 
+            title="Strategy Configuration (v4.2.1)" 
           />
           
           <CodeBlock 
@@ -861,8 +884,8 @@ export default function GptStrategy() {
 
         {/* Footer */}
         <div className="text-center py-8 text-sm text-muted-foreground">
-          <p>GPT Strategy v4.2 - Gabagool Inspired Adaptive Edition</p>
-          <p>Polymarket 15m Hedge/Arbitrage Bot with Delta Regimes</p>
+          <p>GPT Strategy v4.2.1 - Gabagool Inspired Adaptive Edition</p>
+          <p>Constant Regimes + Time-Scaled Parameters</p>
         </div>
       </div>
     </div>
