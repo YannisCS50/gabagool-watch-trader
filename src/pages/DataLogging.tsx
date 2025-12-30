@@ -1,13 +1,22 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { RefreshCw, Activity, TrendingUp, Clock, BarChart3, AlertTriangle, CheckCircle, XCircle, DollarSign, Download } from "lucide-react";
+import { RefreshCw, Activity, TrendingUp, Clock, BarChart3, AlertTriangle, CheckCircle, XCircle, DollarSign, Download, Radio } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useNavigate } from "react-router-dom";
+import { useChainlinkRealtime } from "@/hooks/useChainlinkRealtime";
+
+interface LivePriceTick {
+  ts: number;
+  asset: string;
+  price: number;
+  delta: number;
+  deltaPercent: number;
+}
 
 interface FillLog {
   ts: number;
@@ -72,8 +81,42 @@ export default function DataLogging() {
   const [settlements, setSettlements] = useState<SettlementLog[]>([]);
   const [telemetry, setTelemetry] = useState<TelemetryData[]>([]);
   const [prices, setPrices] = useState<PriceLog[]>([]);
+  const [livePriceTicks, setLivePriceTicks] = useState<LivePriceTick[]>([]);
   const [loading, setLoading] = useState(false);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  
+  // Live Chainlink prices
+  const { btcPrice, ethPrice, isConnected, updateCount } = useChainlinkRealtime(true);
+  const prevBtcPrice = useRef<number | null>(null);
+  const prevEthPrice = useRef<number | null>(null);
+
+  // Log live price ticks every 2 seconds
+  useEffect(() => {
+    if (!btcPrice && !ethPrice) return;
+    
+    const now = Date.now();
+    const newTicks: LivePriceTick[] = [];
+    
+    if (btcPrice) {
+      const prevBtc = prevBtcPrice.current || btcPrice;
+      const delta = btcPrice - prevBtc;
+      const deltaPercent = prevBtc > 0 ? (delta / prevBtc) * 100 : 0;
+      newTicks.push({ ts: now, asset: "BTC", price: btcPrice, delta, deltaPercent });
+      prevBtcPrice.current = btcPrice;
+    }
+    
+    if (ethPrice) {
+      const prevEth = prevEthPrice.current || ethPrice;
+      const delta = ethPrice - prevEth;
+      const deltaPercent = prevEth > 0 ? (delta / prevEth) * 100 : 0;
+      newTicks.push({ ts: now, asset: "ETH", price: ethPrice, delta, deltaPercent });
+      prevEthPrice.current = ethPrice;
+    }
+    
+    if (newTicks.length > 0) {
+      setLivePriceTicks(prev => [...newTicks, ...prev].slice(0, 200)); // Keep last 200 ticks
+    }
+  }, [updateCount]); // Trigger on each price update
 
   // Load sample data from live_trades to show fill-like logs
   const loadData = async () => {
@@ -278,7 +321,8 @@ export default function DataLogging() {
       case "fills": exportToCSV(fills, "fills"); break;
       case "telemetry": exportToCSV(telemetry, "telemetry"); break;
       case "settlements": exportToCSV(settlements, "settlements"); break;
-      case "prices": exportToCSV(prices, "prices"); break;
+      case "live": exportToCSV(livePriceTicks, "live-prices"); break;
+      case "prices": exportToCSV(prices, "strike-prices"); break;
     }
   };
 
@@ -384,9 +428,14 @@ export default function DataLogging() {
               <CheckCircle className="h-4 w-4 mr-2" />
               Settlements
             </TabsTrigger>
+            <TabsTrigger value="live" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
+              <Radio className="h-4 w-4 mr-2" />
+              Live Prices
+              {isConnected && <span className="ml-2 w-2 h-2 rounded-full bg-green-500 animate-pulse" />}
+            </TabsTrigger>
             <TabsTrigger value="prices" className="data-[state=active]:bg-primary data-[state=active]:text-primary-foreground">
               <DollarSign className="h-4 w-4 mr-2" />
-              Prices
+              Strike Prices
             </TabsTrigger>
           </TabsList>
 
@@ -582,7 +631,82 @@ export default function DataLogging() {
             </Card>
           </TabsContent>
 
-          {/* Prices Tab */}
+          {/* Live Prices Tab */}
+          <TabsContent value="live" className="mt-4">
+            <Card className="bg-card border-border">
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-lg flex items-center gap-2">
+                    <Radio className="h-5 w-5 text-green-400" />
+                    Live Price Feed
+                    {isConnected && <Badge variant="outline" className="ml-2 bg-green-500/20 text-green-400 border-green-500/30">Connected</Badge>}
+                  </CardTitle>
+                  <div className="flex items-center gap-4 text-sm">
+                    <div className="flex items-center gap-2">
+                      <span className="text-muted-foreground">BTC:</span>
+                      <span className="font-mono font-bold text-foreground">${btcPrice?.toLocaleString() || "—"}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-muted-foreground">ETH:</span>
+                      <span className="font-mono font-bold text-foreground">${ethPrice?.toLocaleString() || "—"}</span>
+                    </div>
+                    <Badge variant="outline" className="font-mono">{livePriceTicks.length} ticks</Badge>
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <ScrollArea className="h-[500px]">
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="border-border hover:bg-transparent">
+                        <TableHead className="text-muted-foreground">Time</TableHead>
+                        <TableHead className="text-muted-foreground">Asset</TableHead>
+                        <TableHead className="text-muted-foreground text-right">Price</TableHead>
+                        <TableHead className="text-muted-foreground text-right">Delta ($)</TableHead>
+                        <TableHead className="text-muted-foreground text-right">Delta (%)</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {livePriceTicks.map((tick, i) => (
+                        <TableRow key={`${tick.ts}-${tick.asset}-${i}`} className="border-border">
+                          <TableCell className="font-mono text-sm">
+                            {new Date(tick.ts).toLocaleTimeString("nl-NL", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}.{String(tick.ts % 1000).padStart(3, "0")}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline" className={tick.asset === "BTC" ? "bg-orange-500/20 text-orange-400 border-orange-500/30" : "bg-blue-500/20 text-blue-400 border-blue-500/30"}>
+                              {tick.asset}
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-right font-mono font-medium">
+                            ${tick.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </TableCell>
+                          <TableCell className="text-right font-mono">
+                            <span className={tick.delta > 0 ? "text-green-400" : tick.delta < 0 ? "text-red-400" : "text-muted-foreground"}>
+                              {tick.delta >= 0 ? "+" : ""}{tick.delta.toFixed(2)}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-right font-mono">
+                            <span className={tick.deltaPercent > 0 ? "text-green-400" : tick.deltaPercent < 0 ? "text-red-400" : "text-muted-foreground"}>
+                              {tick.deltaPercent >= 0 ? "+" : ""}{tick.deltaPercent.toFixed(4)}%
+                            </span>
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                      {livePriceTicks.length === 0 && (
+                        <TableRow>
+                          <TableCell colSpan={5} className="text-center text-muted-foreground py-8">
+                            Waiting for live price data...
+                          </TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </ScrollArea>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Strike Prices Tab */}
           <TabsContent value="prices" className="mt-4">
             <Card className="bg-card border-border">
               <CardHeader className="pb-3">
