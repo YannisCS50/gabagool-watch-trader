@@ -22,6 +22,7 @@ import { PaperTradeDashboard } from '@/components/PaperTradeDashboard';
 import { RunnerStatus } from '@/components/RunnerStatus';
 import { OrderQueueStatus } from '@/components/OrderQueueStatus';
 import { RunnerInstructions } from '@/components/RunnerInstructions';
+import { BotPositionsCard } from '@/components/BotPositionsCard';
 import { supabase } from '@/integrations/supabase/client';
 
 interface WalletBalance {
@@ -190,6 +191,11 @@ export default function LiveTrading() {
         <div className="grid gap-4 md:grid-cols-2 mb-8">
           <RunnerStatus />
           <RunnerInstructions />
+        </div>
+
+        {/* Bot Positions from Polymarket Sync */}
+        <div className="mb-8">
+          <BotPositionsCard />
         </div>
 
         {/* Main Tabs */}

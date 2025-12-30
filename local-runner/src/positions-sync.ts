@@ -10,9 +10,15 @@
  */
 
 import { config } from './config.js';
+import { createClient } from '@supabase/supabase-js';
 
 const DATA_API_URL = 'https://data-api.polymarket.com';
 const CLOB_URL = 'https://clob.polymarket.com';
+
+// Initialize Supabase client for database writes
+const supabaseUrl = process.env.SUPABASE_URL || config.supabase?.url || '';
+const supabaseKey = process.env.SUPABASE_SERVICE_KEY || config.supabase?.serviceKey || '';
+const supabase = createClient(supabaseUrl, supabaseKey);
 
 // ============================================================
 // TYPES
@@ -501,4 +507,146 @@ export function printPositionsReport(result: SyncResult): void {
   console.log('\n' + '='.repeat(70));
   console.log(`TOTALS: ${result.summary.totalPositions} positions | $${result.summary.totalValue.toFixed(2)} value | $${result.summary.unrealizedPnl.toFixed(2)} unrealized P/L`);
   console.log('='.repeat(70) + '\n');
+}
+
+// ============================================================
+// SYNC POSITIONS TO DATABASE
+// ============================================================
+
+/**
+ * Extract market slug from position data
+ */
+function extractMarketSlug(position: PolymarketPosition): string {
+  // Try eventSlug first
+  if (position.eventSlug) {
+    return position.eventSlug;
+  }
+  
+  // Try to extract from market name
+  const market = position.market.toLowerCase();
+  
+  // Handle 15m format: "Bitcoin Up or Down - December 30, 2:00AM-2:15AM ET"
+  // Convert to slug format: btc-updown-15m-{timestamp}
+  if (market.includes('bitcoin') && market.includes('up or down')) {
+    // Try to extract time from market name
+    const timeMatch = market.match(/(\d{1,2}):(\d{2})(am|pm)/i);
+    if (timeMatch) {
+      return `btc-updown-15m-${Date.now()}`; // Fallback, will be updated
+    }
+  }
+  
+  if (market.includes('ethereum') && market.includes('up or down')) {
+    const timeMatch = market.match(/(\d{1,2}):(\d{2})(am|pm)/i);
+    if (timeMatch) {
+      return `eth-updown-15m-${Date.now()}`; // Fallback
+    }
+  }
+  
+  // Create a simple slug from market name
+  return position.market
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 100);
+}
+
+/**
+ * Write synced positions to the bot_positions table
+ */
+export async function writePositionsToDatabase(
+  positions: PolymarketPosition[],
+  walletAddress: string
+): Promise<{ success: boolean; upserted: number; deleted: number; error?: string }> {
+  console.log(`\n💾 Writing ${positions.length} positions to database...`);
+  
+  if (!supabaseUrl || !supabaseKey) {
+    console.log('   ⚠️ Supabase not configured, skipping database write');
+    return { success: false, upserted: 0, deleted: 0, error: 'Supabase not configured' };
+  }
+  
+  try {
+    // Prepare position records for upsert
+    const records = positions.map(p => ({
+      wallet_address: walletAddress,
+      market_slug: extractMarketSlug(p),
+      outcome: p.outcome,
+      shares: p.size,
+      avg_price: p.avgPrice,
+      current_price: p.curPrice,
+      value: p.currentValue,
+      cost: p.initialValue,
+      pnl: p.cashPnl,
+      pnl_percent: p.percentPnl,
+      token_id: p.asset,
+      synced_at: new Date().toISOString(),
+    }));
+    
+    // Upsert positions
+    const { error: upsertError } = await supabase
+      .from('bot_positions')
+      .upsert(records, {
+        onConflict: 'wallet_address,market_slug,outcome',
+        ignoreDuplicates: false,
+      });
+    
+    if (upsertError) {
+      console.error('   ❌ Upsert error:', upsertError);
+      return { success: false, upserted: 0, deleted: 0, error: upsertError.message };
+    }
+    
+    // Get current market slugs from synced positions
+    const currentSlugs = new Set(records.map(r => `${r.market_slug}:${r.outcome}`));
+    
+    // Fetch all positions for this wallet from database
+    const { data: existingPositions, error: fetchError } = await supabase
+      .from('bot_positions')
+      .select('id, market_slug, outcome')
+      .eq('wallet_address', walletAddress);
+    
+    if (fetchError) {
+      console.error('   ⚠️ Error fetching existing positions:', fetchError);
+    }
+    
+    // Delete positions that no longer exist on Polymarket
+    let deletedCount = 0;
+    if (existingPositions) {
+      const toDelete = existingPositions.filter(
+        ep => !currentSlugs.has(`${ep.market_slug}:${ep.outcome}`)
+      );
+      
+      if (toDelete.length > 0) {
+        const deleteIds = toDelete.map(d => d.id);
+        const { error: deleteError } = await supabase
+          .from('bot_positions')
+          .delete()
+          .in('id', deleteIds);
+        
+        if (deleteError) {
+          console.error('   ⚠️ Error deleting old positions:', deleteError);
+        } else {
+          deletedCount = toDelete.length;
+        }
+      }
+    }
+    
+    console.log(`   ✅ Upserted ${records.length} positions, deleted ${deletedCount} stale positions`);
+    return { success: true, upserted: records.length, deleted: deletedCount };
+    
+  } catch (e) {
+    console.error('   ❌ Database write error:', e);
+    return { success: false, upserted: 0, deleted: 0, error: String(e) };
+  }
+}
+
+/**
+ * Full sync with database write
+ */
+export async function syncPositionsToDatabase(walletAddress?: string): Promise<SyncResult & { dbResult?: { success: boolean; upserted: number; deleted: number } }> {
+  const result = await syncPositions(walletAddress);
+  
+  // Write to database
+  const wallet = walletAddress || config.polymarket.address;
+  const dbResult = await writePositionsToDatabase(result.positions, wallet);
+  
+  return { ...result, dbResult };
 }

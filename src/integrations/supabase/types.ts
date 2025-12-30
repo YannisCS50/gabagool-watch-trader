@@ -68,6 +68,57 @@ export type Database = {
         }
         Relationships: []
       }
+      bot_positions: {
+        Row: {
+          avg_price: number
+          cost: number | null
+          created_at: string
+          current_price: number | null
+          id: string
+          market_slug: string
+          outcome: string
+          pnl: number | null
+          pnl_percent: number | null
+          shares: number
+          synced_at: string
+          token_id: string | null
+          value: number | null
+          wallet_address: string
+        }
+        Insert: {
+          avg_price?: number
+          cost?: number | null
+          created_at?: string
+          current_price?: number | null
+          id?: string
+          market_slug: string
+          outcome: string
+          pnl?: number | null
+          pnl_percent?: number | null
+          shares?: number
+          synced_at?: string
+          token_id?: string | null
+          value?: number | null
+          wallet_address: string
+        }
+        Update: {
+          avg_price?: number
+          cost?: number | null
+          created_at?: string
+          current_price?: number | null
+          id?: string
+          market_slug?: string
+          outcome?: string
+          pnl?: number | null
+          pnl_percent?: number | null
+          shares?: number
+          synced_at?: string
+          token_id?: string | null
+          value?: number | null
+          wallet_address?: string
+        }
+        Relationships: []
+      }
       live_bot_settings: {
         Row: {
           id: string

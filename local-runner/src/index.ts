@@ -7,7 +7,7 @@ import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidity
 import { enforceVpnOrExit } from './vpn-check.js';
 import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder, syncPositionsToBackend } from './backend.js';
 import { checkAndClaimWinnings, getClaimableValue } from './redeemer.js';
-import { syncPositions, printPositionsReport, filter15mPositions } from './positions-sync.js';
+import { syncPositions, syncPositionsToDatabase, printPositionsReport, filter15mPositions } from './positions-sync.js';
 
 // Ensure Node prefers IPv4 to avoid hangs on IPv6-only DNS results under some VPN setups.
 try {
@@ -652,11 +652,15 @@ async function main(): Promise<void> {
     lastSyncAt = nowMs;
 
     try {
-      const syncResult = await syncPositions(config.polymarket.address);
+      // Sync positions from Polymarket AND write to database
+      const syncResult = await syncPositionsToDatabase(config.polymarket.address);
       
       // Only print report if we have positions (reduce noise)
       if (syncResult.positions.length > 0 && syncResult.summary.totalPositions > 0) {
         console.log(`🔄 Sync: ${syncResult.summary.totalPositions} positions, $${syncResult.summary.totalValue.toFixed(2)} value, $${syncResult.summary.unrealizedPnl.toFixed(2)} P/L`);
+        if (syncResult.dbResult) {
+          console.log(`   💾 DB: ${syncResult.dbResult.upserted} upserted, ${syncResult.dbResult.deleted} deleted`);
+        }
       }
 
       // Sync to backend (reconcile pending orders)
