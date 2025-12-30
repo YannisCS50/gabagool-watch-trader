@@ -23,6 +23,8 @@ import Wallet from "./pages/Wallet";
 import LiveTrading from "./pages/LiveTrading";
 import LiveBotStrategy from "./pages/LiveBotStrategy";
 import GptStrategy from "./pages/GptStrategy";
+import OrderFlowDocs from "./pages/OrderFlowDocs";
+import DataFlowDocs from "./pages/DataFlowDocs";
 import Settings from "./pages/Settings";
 import TradeAnalysis from "./pages/TradeAnalysis";
 import HedgeAnalysis from "./pages/HedgeAnalysis";
@@ -57,9 +59,12 @@ const App = () => (
           <Route path="/live-trading" element={<LiveTrading />} />
           <Route path="/live-bot-strategy" element={<LiveBotStrategy />} />
           <Route path="/gpt-strategy" element={<GptStrategy />} />
+          <Route path="/order-flow-docs" element={<OrderFlowDocs />} />
+          <Route path="/data-flow-docs" element={<DataFlowDocs />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/trade-analysis" element={<TradeAnalysis />} />
           <Route path="/hedge-analysis" element={<HedgeAnalysis />} />
+          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>
