@@ -204,7 +204,7 @@ export const DEFAULT_CONFIG: StrategyConfig = {
   edge: {
     baseBuffer: 0.012,
     strongEdge: 0.04,      // 4c is strong edge
-    allowOverpay: 0.01,    // Only allow 1c overpay (was 2c)
+    allowOverpay: 0.02,    // Allow 2c overpay for better hedge fills
     feesBuffer: 0.002,
     slippageBuffer: 0.004,
     deepDislocationThreshold: 0.96, // Stricter: 96¢ triggers DEEP (was 95¢)
@@ -219,7 +219,7 @@ export const DEFAULT_CONFIG: StrategyConfig = {
 
   // v4.2.1: Time-scaled parameter bases
   timeScaled: {
-    hedgeTimeoutBaseSec: 35,  // At t=900s: 35s, at t=60s: ~2.3s (min 8s)
+    hedgeTimeoutBaseSec: 20,  // At t=900s: 20s, at t=60s: ~1.3s (min 5s) - more aggressive hedging
     maxSkewBase: 0.70,        // At t=900s: 70/30, shrinks toward 50/50
     bufferAddBase: 0.008,     // At t=900s: +0%, at t=60s: +0.74%
   },
