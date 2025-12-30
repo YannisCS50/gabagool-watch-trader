@@ -24,6 +24,7 @@ import LiveTrading from "./pages/LiveTrading";
 import LiveBotStrategy from "./pages/LiveBotStrategy";
 import Settings from "./pages/Settings";
 import TradeAnalysis from "./pages/TradeAnalysis";
+import HedgeAnalysis from "./pages/HedgeAnalysis";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -56,6 +57,7 @@ const App = () => (
           <Route path="/live-bot-strategy" element={<LiveBotStrategy />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/trade-analysis" element={<TradeAnalysis />} />
+          <Route path="/hedge-analysis" element={<HedgeAnalysis />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>
