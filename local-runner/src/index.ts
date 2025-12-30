@@ -8,7 +8,8 @@ import { enforceVpnOrExit } from './vpn-check.js';
 import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder, syncPositionsToBackend } from './backend.js';
 import { checkAndClaimWinnings, getClaimableValue } from './redeemer.js';
 import { syncPositions, syncPositionsToDatabase, printPositionsReport, filter15mPositions } from './positions-sync.js';
-
+import { recordSnapshot, recordFill, recordSettlement, TradeIntent } from './telemetry.js';
+import { SNAPSHOT_INTERVAL_MS } from './logger.js';
 // Ensure Node prefers IPv4 to avoid hangs on IPv6-only DNS results under some VPN setups.
 try {
   dns.setDefaultResultOrder('ipv4first');
@@ -60,6 +61,9 @@ interface MarketContext {
   position: MarketPosition;
   lastTradeAtMs: number;
   inFlight: boolean;
+  lastSnapshotTs: number;  // For snapshot logging throttle
+  spotPrice: number | null;  // Cached spot price from external source
+  strikePrice: number | null;  // Cached strike price from market
 }
 
 const markets = new Map<string, MarketContext>();
@@ -109,6 +113,9 @@ async function fetchMarkets(): Promise<void> {
           position: { upShares: 0, downShares: 0, upInvested: 0, downInvested: 0 },
           lastTradeAtMs: 0,
           inFlight: false,
+          lastSnapshotTs: 0,
+          spotPrice: null,
+          strikePrice: null,
         });
       }
     }
@@ -163,7 +170,8 @@ async function executeTrade(
   outcome: Outcome,
   price: number,
   shares: number,
-  reasoning: string
+  reasoning: string,
+  intent: TradeIntent = 'ENTRY'
 ): Promise<boolean> {
   const tokenId = outcome === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
   const total = shares * price;
@@ -211,6 +219,24 @@ async function executeTrade(
       ctx.position.downShares += filledShares;
       ctx.position.downInvested += filledShares * price;
     }
+    
+    // Log fill for telemetry
+    const nowMs = Date.now();
+    const endTime = new Date(ctx.market.eventEndTime).getTime();
+    const remainingSeconds = Math.floor((endTime - nowMs) / 1000);
+    
+    recordFill({
+      marketId: ctx.slug,
+      asset: ctx.market.asset as 'BTC' | 'ETH',
+      side: outcome,
+      orderId: result.orderId || null,
+      fillQty: filledShares,
+      fillPrice: result.avgPrice || price,
+      intent,
+      secondsRemaining: remainingSeconds,
+      spotPrice: ctx.spotPrice,
+      strikePrice: ctx.strikePrice,
+    });
   }
 
   // Always save trade to database (with appropriate status)
@@ -243,6 +269,7 @@ async function executeTrade(
     
   return true;
 }
+
 
 async function evaluateMarket(slug: string): Promise<void> {
   const ctx = markets.get(slug);
@@ -308,9 +335,9 @@ async function evaluateMarket(slug: string): Promise<void> {
         console.log(`📊 Accumulate: projected combined cost = ${(projectedCombined * 100).toFixed(0)}¢ (target < 96¢)`);
         
         // Execute both sides atomically
-        const upSuccess = await executeTrade(ctx, 'UP', ctx.book.up.ask!, signal.shares, signal.reasoning);
+        const upSuccess = await executeTrade(ctx, 'UP', ctx.book.up.ask!, signal.shares, signal.reasoning, 'ACCUMULATE');
         if (upSuccess && ctx.book.down.ask) {
-          await executeTrade(ctx, 'DOWN', ctx.book.down.ask, signal.shares, signal.reasoning.replace('UP', 'DOWN'));
+          await executeTrade(ctx, 'DOWN', ctx.book.down.ask, signal.shares, signal.reasoning.replace('UP', 'DOWN'), 'ACCUMULATE');
         } else if (!upSuccess) {
           console.log(`⚠️ Accumulate aborted: UP side failed, skipping DOWN`);
         }
@@ -347,7 +374,8 @@ async function evaluateMarket(slug: string): Promise<void> {
           }
         }
         
-        const tradeSuccess = await executeTrade(ctx, signal.outcome, signal.price, signal.shares, signal.reasoning);
+        const tradeIntent: TradeIntent = signal.type === 'opening' ? 'ENTRY' : signal.type === 'hedge' ? 'HEDGE' : 'ENTRY';
+        const tradeSuccess = await executeTrade(ctx, signal.outcome, signal.price, signal.shares, signal.reasoning, tradeIntent);
         
         // PRE-HEDGE: Try to place hedge, but don't panic if too expensive
         if (tradeSuccess && signal.type === 'opening') {
@@ -363,7 +391,7 @@ async function evaluateMarket(slug: string): Promise<void> {
             console.log(`   Orderbook ask: ${hedgeAsk ? (hedgeAsk * 100).toFixed(0) + '¢' : 'unknown'}`);
             console.log(`   Target combined: ${((signal.price + preHedge.hedgePrice) * 100).toFixed(0)}¢`);
             
-            await executeTrade(ctx, preHedge.hedgeSide, preHedge.hedgePrice, signal.shares, preHedge.reasoning);
+            await executeTrade(ctx, preHedge.hedgeSide, preHedge.hedgePrice, signal.shares, preHedge.reasoning, 'HEDGE');
           } else {
             console.log(`📊 Hedge skipped (too expensive) - will hedge later via ONE_SIDED logic`);
           }

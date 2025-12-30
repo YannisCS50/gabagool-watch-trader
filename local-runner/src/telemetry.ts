@@ -1,0 +1,455 @@
+/**
+ * telemetry.ts
+ * --------------------------------------------------------------------------
+ * Per-market telemetry aggregation for regime time and dislocation counters.
+ * 
+ * Tracks:
+ * - Time spent in each delta regime (LOW, MID, HIGH)
+ * - Dislocation counts (combined ask < 0.95, < 0.97)
+ * - Max/min delta during market lifetime
+ * - Hedge lag tracking for pair completion
+ */
+
+import { 
+  logSnapshot, 
+  logFill, 
+  logSettlement, 
+  SnapshotLog, 
+  FillLog, 
+  SettlementLog,
+  calculateDelta,
+  calculateMid,
+  calculateSpread,
+  calculateSkew,
+  calculatePairCost,
+  calculateAvgCost,
+  SNAPSHOT_INTERVAL_MS
+} from './logger.js';
+
+export type DeltaRegime = 'LOW' | 'MID' | 'HIGH';
+export type BotState = 'FLAT' | 'ONE_SIDED' | 'HEDGED' | 'SKEWED' | 'UNWIND' | 'DEEP_DISLOCATION';
+export type TradeIntent = 'ENTRY' | 'ACCUMULATE' | 'HEDGE' | 'REBAL' | 'UNWIND';
+
+// Delta regime thresholds (v4.2.1)
+const DELTA_LOW_THRESHOLD = 0.0030;  // < 0.30%
+const DELTA_MID_THRESHOLD = 0.0070;  // 0.30% - 0.70%
+
+// Dislocation thresholds
+const DISLOCATION_95 = 0.95;
+const DISLOCATION_97 = 0.97;
+
+// ---------- Per-Market Telemetry State ----------
+
+export interface MarketTelemetry {
+  marketId: string;
+  asset: 'BTC' | 'ETH';
+  
+  // First and last fill timestamps
+  firstFillTs: number | null;
+  lastFillTs: number | null;
+  
+  // Regime time counters (in seconds)
+  timeInLow: number;
+  timeInMid: number;
+  timeInHigh: number;
+  
+  // Delta tracking
+  maxDelta: number | null;
+  minDelta: number | null;
+  lastDelta: number | null;
+  lastDeltaRegime: DeltaRegime | null;
+  
+  // Dislocation counters
+  countDislocation95: number;
+  countDislocation97: number;
+  last180sSnapshots: { ts: number; combined: number }[];  // Rolling buffer
+  
+  // Streak counters
+  noLiquidityStreak: number;
+  adverseStreak: number;
+  
+  // Hedge lag tracking
+  pendingHedges: Map<string, { entrySide: 'UP' | 'DOWN'; entryTs: number }>;
+  
+  // Last snapshot timestamp
+  lastSnapshotTs: number;
+}
+
+// Global telemetry store
+const telemetryStore = new Map<string, MarketTelemetry>();
+
+// ---------- Telemetry Management ----------
+
+export function getOrCreateTelemetry(marketId: string, asset: 'BTC' | 'ETH'): MarketTelemetry {
+  let telemetry = telemetryStore.get(marketId);
+  if (!telemetry) {
+    telemetry = {
+      marketId,
+      asset,
+      firstFillTs: null,
+      lastFillTs: null,
+      timeInLow: 0,
+      timeInMid: 0,
+      timeInHigh: 0,
+      maxDelta: null,
+      minDelta: null,
+      lastDelta: null,
+      lastDeltaRegime: null,
+      countDislocation95: 0,
+      countDislocation97: 0,
+      last180sSnapshots: [],
+      noLiquidityStreak: 0,
+      adverseStreak: 0,
+      pendingHedges: new Map(),
+      lastSnapshotTs: 0,
+    };
+    telemetryStore.set(marketId, telemetry);
+  }
+  return telemetry;
+}
+
+export function clearTelemetry(marketId: string): void {
+  telemetryStore.delete(marketId);
+}
+
+// ---------- Delta Regime Helpers ----------
+
+export function getDeltaRegime(delta: number | null): DeltaRegime {
+  if (delta === null) return 'LOW';
+  if (delta < DELTA_LOW_THRESHOLD) return 'LOW';
+  if (delta < DELTA_MID_THRESHOLD) return 'MID';
+  return 'HIGH';
+}
+
+// ---------- Bot State Determination ----------
+
+export function determineBotState(
+  upShares: number,
+  downShares: number,
+  secondsRemaining: number,
+  combinedAsk: number | null,
+  delta: number | null
+): BotState {
+  // Check for deep dislocation
+  if (combinedAsk !== null && combinedAsk < DISLOCATION_95 && 
+      delta !== null && delta < 0.004 && secondsRemaining > 180) {
+    return 'DEEP_DISLOCATION';
+  }
+  
+  // Check for unwind mode
+  if (secondsRemaining <= 45) {
+    return 'UNWIND';
+  }
+  
+  // Check position state
+  if (upShares === 0 && downShares === 0) {
+    return 'FLAT';
+  }
+  
+  const total = upShares + downShares;
+  const skew = total > 0 ? Math.abs(upShares - downShares) / total : 0;
+  
+  if (upShares === 0 || downShares === 0) {
+    return 'ONE_SIDED';
+  }
+  
+  if (skew > 0.20) {
+    return 'SKEWED';
+  }
+  
+  return 'HEDGED';
+}
+
+// ---------- Snapshot Recording ----------
+
+export interface SnapshotInput {
+  marketId: string;
+  asset: 'BTC' | 'ETH';
+  secondsRemaining: number;
+  spotPrice: number | null;
+  strikePrice: number | null;
+  upBid: number | null;
+  upAsk: number | null;
+  downBid: number | null;
+  downAsk: number | null;
+  upShares: number;
+  downShares: number;
+  upCost: number;
+  downCost: number;
+}
+
+export function recordSnapshot(input: SnapshotInput): void {
+  const now = Date.now();
+  const telemetry = getOrCreateTelemetry(input.marketId, input.asset);
+  
+  // Rate limit snapshots
+  if (now - telemetry.lastSnapshotTs < SNAPSHOT_INTERVAL_MS) {
+    return;
+  }
+  telemetry.lastSnapshotTs = now;
+  
+  // Calculate derived values
+  const delta = calculateDelta(input.spotPrice, input.strikePrice);
+  const upMid = calculateMid(input.upBid, input.upAsk);
+  const downMid = calculateMid(input.downBid, input.downAsk);
+  const spreadUp = calculateSpread(input.upBid, input.upAsk);
+  const spreadDown = calculateSpread(input.downBid, input.downAsk);
+  const combinedAsk = (input.upAsk !== null && input.downAsk !== null) 
+    ? input.upAsk + input.downAsk 
+    : null;
+  const combinedMid = (upMid !== null && downMid !== null) ? upMid + downMid : null;
+  
+  // Calculate cheapestAskPlusOtherMid
+  let cheapestAskPlusOtherMid: number | null = null;
+  if (input.upAsk !== null && input.downAsk !== null && upMid !== null && downMid !== null) {
+    if (input.upAsk <= input.downAsk) {
+      cheapestAskPlusOtherMid = input.upAsk + downMid;
+    } else {
+      cheapestAskPlusOtherMid = input.downAsk + upMid;
+    }
+  }
+  
+  const skew = calculateSkew(input.upShares, input.downShares);
+  const pairCost = calculatePairCost(input.upShares, input.downShares, input.upCost, input.downCost);
+  const avgUpCost = calculateAvgCost(input.upShares, input.upCost);
+  const avgDownCost = calculateAvgCost(input.downShares, input.downCost);
+  
+  const botState = determineBotState(
+    input.upShares, 
+    input.downShares, 
+    input.secondsRemaining, 
+    combinedAsk, 
+    delta
+  );
+  
+  // Update telemetry regime time
+  const regime = getDeltaRegime(delta);
+  if (telemetry.lastDeltaRegime !== null) {
+    const elapsedSec = SNAPSHOT_INTERVAL_MS / 1000;
+    switch (telemetry.lastDeltaRegime) {
+      case 'LOW': telemetry.timeInLow += elapsedSec; break;
+      case 'MID': telemetry.timeInMid += elapsedSec; break;
+      case 'HIGH': telemetry.timeInHigh += elapsedSec; break;
+    }
+  }
+  telemetry.lastDeltaRegime = regime;
+  
+  // Update delta tracking
+  if (delta !== null) {
+    telemetry.lastDelta = delta;
+    if (telemetry.maxDelta === null || delta > telemetry.maxDelta) {
+      telemetry.maxDelta = delta;
+    }
+    if (telemetry.minDelta === null || delta < telemetry.minDelta) {
+      telemetry.minDelta = delta;
+    }
+  }
+  
+  // Update dislocation counters
+  if (combinedAsk !== null) {
+    if (combinedAsk < DISLOCATION_95) {
+      telemetry.countDislocation95++;
+    }
+    if (combinedAsk < DISLOCATION_97) {
+      telemetry.countDislocation97++;
+    }
+    
+    // Track last 180s dislocations
+    telemetry.last180sSnapshots.push({ ts: now, combined: combinedAsk });
+    const cutoff = now - 180000;
+    telemetry.last180sSnapshots = telemetry.last180sSnapshots.filter(s => s.ts >= cutoff);
+  }
+  
+  // Build and log snapshot
+  const snapshotLog: SnapshotLog = {
+    ts: now,
+    iso: new Date(now).toISOString(),
+    marketId: input.marketId,
+    asset: input.asset,
+    secondsRemaining: input.secondsRemaining,
+    spotPrice: input.spotPrice,
+    strikePrice: input.strikePrice,
+    delta,
+    upBid: input.upBid,
+    upAsk: input.upAsk,
+    upMid,
+    downBid: input.downBid,
+    downAsk: input.downAsk,
+    downMid,
+    spreadUp,
+    spreadDown,
+    combinedAsk,
+    combinedMid,
+    cheapestAskPlusOtherMid,
+    botState,
+    upShares: input.upShares,
+    downShares: input.downShares,
+    avgUpCost,
+    avgDownCost,
+    pairCost,
+    skew,
+    noLiquidityStreak: telemetry.noLiquidityStreak,
+    adverseStreak: telemetry.adverseStreak,
+  };
+  
+  logSnapshot(snapshotLog);
+}
+
+// ---------- Fill Recording ----------
+
+export interface FillInput {
+  marketId: string;
+  asset: 'BTC' | 'ETH';
+  side: 'UP' | 'DOWN';
+  orderId: string | null;
+  fillQty: number;
+  fillPrice: number;
+  intent: TradeIntent;
+  secondsRemaining: number;
+  spotPrice: number | null;
+  strikePrice: number | null;
+}
+
+export function recordFill(input: FillInput): void {
+  const now = Date.now();
+  const telemetry = getOrCreateTelemetry(input.marketId, input.asset);
+  
+  // Track first/last fill
+  if (telemetry.firstFillTs === null) {
+    telemetry.firstFillTs = now;
+  }
+  telemetry.lastFillTs = now;
+  
+  // Calculate hedge lag
+  let hedgeLagMs: number | null = null;
+  
+  if (input.intent === 'ENTRY') {
+    // Store pending hedge for this entry
+    telemetry.pendingHedges.set(input.orderId || `entry_${now}`, {
+      entrySide: input.side,
+      entryTs: now,
+    });
+  } else if (input.intent === 'HEDGE') {
+    // Find matching entry and calculate lag
+    const oppositeSide = input.side === 'UP' ? 'DOWN' : 'UP';
+    for (const [key, entry] of telemetry.pendingHedges.entries()) {
+      if (entry.entrySide === oppositeSide) {
+        hedgeLagMs = now - entry.entryTs;
+        telemetry.pendingHedges.delete(key);
+        break;
+      }
+    }
+  }
+  
+  const delta = calculateDelta(input.spotPrice, input.strikePrice);
+  
+  const fillLog: FillLog = {
+    ts: now,
+    iso: new Date(now).toISOString(),
+    marketId: input.marketId,
+    asset: input.asset,
+    side: input.side,
+    orderId: input.orderId,
+    clientOrderId: null,
+    fillQty: input.fillQty,
+    fillPrice: input.fillPrice,
+    fillNotional: input.fillQty * input.fillPrice,
+    intent: input.intent,
+    secondsRemaining: input.secondsRemaining,
+    spotPrice: input.spotPrice,
+    strikePrice: input.strikePrice,
+    delta,
+    hedgeLagMs,
+  };
+  
+  logFill(fillLog);
+}
+
+// ---------- Settlement Recording ----------
+
+export interface SettlementInput {
+  marketId: string;
+  asset: 'BTC' | 'ETH';
+  finalUpShares: number;
+  finalDownShares: number;
+  upCost: number;
+  downCost: number;
+  realizedPnL: number | null;
+  winningSide: 'UP' | 'DOWN' | null;
+}
+
+export function recordSettlement(input: SettlementInput): void {
+  const now = Date.now();
+  const telemetry = getOrCreateTelemetry(input.marketId, input.asset);
+  
+  const avgUpCost = calculateAvgCost(input.finalUpShares, input.upCost);
+  const avgDownCost = calculateAvgCost(input.finalDownShares, input.downCost);
+  const pairCost = calculatePairCost(
+    input.finalUpShares, 
+    input.finalDownShares, 
+    input.upCost, 
+    input.downCost
+  );
+  
+  // Count dislocations in last 180s
+  const last180sDislocation95 = telemetry.last180sSnapshots.filter(
+    s => s.combined < DISLOCATION_95
+  ).length;
+  
+  const settlementLog: SettlementLog = {
+    ts: now,
+    iso: new Date(now).toISOString(),
+    marketId: input.marketId,
+    asset: input.asset,
+    openTs: telemetry.firstFillTs,
+    closeTs: now,
+    finalUpShares: input.finalUpShares,
+    finalDownShares: input.finalDownShares,
+    avgUpCost,
+    avgDownCost,
+    pairCost,
+    realizedPnL: input.realizedPnL,
+    winningSide: input.winningSide,
+    maxDelta: telemetry.maxDelta,
+    minDelta: telemetry.minDelta,
+    timeInLow: telemetry.timeInLow,
+    timeInMid: telemetry.timeInMid,
+    timeInHigh: telemetry.timeInHigh,
+    countDislocation95: telemetry.countDislocation95,
+    countDislocation97: telemetry.countDislocation97,
+    last180sDislocation95,
+  };
+  
+  logSettlement(settlementLog);
+  
+  // Clear telemetry for this market
+  clearTelemetry(input.marketId);
+}
+
+// ---------- Streak Management ----------
+
+export function incrementNoLiquidityStreak(marketId: string, asset: 'BTC' | 'ETH'): void {
+  const telemetry = getOrCreateTelemetry(marketId, asset);
+  telemetry.noLiquidityStreak++;
+}
+
+export function resetNoLiquidityStreak(marketId: string, asset: 'BTC' | 'ETH'): void {
+  const telemetry = getOrCreateTelemetry(marketId, asset);
+  telemetry.noLiquidityStreak = 0;
+}
+
+export function incrementAdverseStreak(marketId: string, asset: 'BTC' | 'ETH'): void {
+  const telemetry = getOrCreateTelemetry(marketId, asset);
+  telemetry.adverseStreak++;
+}
+
+export function resetAdverseStreak(marketId: string, asset: 'BTC' | 'ETH'): void {
+  const telemetry = getOrCreateTelemetry(marketId, asset);
+  telemetry.adverseStreak = 0;
+}
+
+// ---------- Export telemetry store for debugging ----------
+
+export function getTelemetryStore(): Map<string, MarketTelemetry> {
+  return telemetryStore;
+}
