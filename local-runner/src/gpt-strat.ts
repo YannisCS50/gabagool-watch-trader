@@ -1,7 +1,18 @@
 /**
  * polymarket_15m_bot.ts
  * --------------------------------------------------------------------------
- * Polymarket 15m Hedge/Arbitrage Bot v3.2.1 — Big Hedger
+ * Polymarket 15m Hedge/Arbitrage Bot v4.2.1 — Gabagool Inspired Adaptive Edition
+ *
+ * v4.2.1 Changes:
+ * - CONSTANT delta regimes: LOW <0.30%, MID 0.30-0.70%, HIGH >0.70%
+ * - Time-scaled parameters (NOT regime thresholds):
+ *   - hedgeTimeout ↓ as expiry approaches
+ *   - maxSkew ↓ as expiry approaches  
+ *   - bufferAdd ↑ as expiry approaches
+ * - DEEP mode stricter conditions:
+ *   - Only if secondsRemaining > 180s
+ *   - Only if cheapestAsk + otherMid < 0.95
+ *   - Only if delta < 0.40%
  *
  * v3.2.1 Changes (Big Hedger):
  * - Opening trade: 50 shares (was 25)
@@ -9,20 +20,12 @@
  * - Accumulate: max 50 shares per trade
  * - Accumulate only when hedged (skew < 10%)
  * - Exposure protection: no accumulate when one-sided
- *
- * v3.1 Changes:
- * - Execution-aware edge (expectedExecutedPairCost vs dynamicEdgeBuffer)
- * - DEEP_DISLOCATION regime for cheap < 0.95 combined
- * - Split hedge logic: NORMAL_HEDGE vs RISK_HEDGE
- * - Profit lock at avgPairCost <= 0.99
- * - Dynamic sizing based on edge %
- * - Timeout -> UNWIND state transition
- * - Enhanced logging with regime tags
  */
 
 export type Side = "UP" | "DOWN";
 export type BotState = "FLAT" | "ONE_SIDED" | "HEDGED" | "SKEWED" | "UNWIND" | "DEEP_DISLOCATION";
 export type RegimeTag = "NORMAL" | "DEEP" | "UNWIND";
+export type DeltaRegime = "LOW" | "MID" | "HIGH";
 
 export interface PriceLevel { price: number; size: number; }
 export interface OrderBook { bids: PriceLevel[]; asks: PriceLevel[]; }
@@ -37,6 +40,8 @@ export interface MarketSnapshot {
   marketId: string;
   ts: number;
   secondsRemaining: number;
+  spotPrice?: number;      // v4.2.1: Chainlink price for delta calculation
+  strikePrice?: number;    // v4.2.1: Market strike price
   upTop: BookTop;
   downTop: BookTop;
   upBook: OrderBook;
@@ -98,6 +103,10 @@ export interface BotMetrics {
   hedgeLagSeconds: number;
   maxSkewDuringTrade: number;
   regimeTag: RegimeTag;
+  // v4.2.1 additions
+  deltaRegime: DeltaRegime;
+  deltaPct: number;
+  timeFactor: number;
 }
 
 export interface StrategyConfig {
@@ -112,9 +121,29 @@ export interface StrategyConfig {
     deepDislocationThreshold: number; // 0.95 - triggers DEEP regime
   };
 
+  // v4.2.1: Constant delta regime thresholds
+  delta: {
+    lowThreshold: number;      // 0.0030 = 0.30%
+    midThreshold: number;      // 0.0070 = 0.70%
+    deepMaxDelta: number;      // 0.0040 = 0.40% - max delta for DEEP mode
+  };
+
+  // v4.2.1: Time-scaled parameter bases
+  timeScaled: {
+    hedgeTimeoutBaseSec: number;  // Base hedge timeout, scaled by timeFactor
+    maxSkewBase: number;          // Base max skew, scales toward 0.50
+    bufferAddBase: number;        // Base buffer addition, increases as time decreases
+  };
+
+  // v4.2.1: DEEP mode conditions
+  deep: {
+    minTimeSec: number;           // 180 - only allow DEEP if > this
+    maxCombinedAsk: number;       // 0.95 - only if combined < this
+    maxDeltaPct: number;          // 0.0040 - only if delta < this
+  };
+
   timing: {
     stopNewTradesSec: number;
-    hedgeTimeoutSec: number;
     hedgeMustBySec: number;
     unwindStartSec: number;
   };
@@ -123,7 +152,6 @@ export interface StrategyConfig {
     target: number;              // 0.50
     rebalanceThreshold: number;  // 0.20
     hardCap: number;             // 0.70
-    deepAllowedSkew: number;     // 0.70 - allowed in DEEP regime
   };
 
   limits: {
@@ -170,7 +198,7 @@ export interface StrategyConfig {
 }
 
 export const DEFAULT_CONFIG: StrategyConfig = {
-  // v3.2.1: Opening 50 shares, accumulate max 50, max position 300
+  // v4.2.1: Opening 50 shares, accumulate max 50, max position 300
   tradeSizeUsd: { base: 25, min: 20, max: 50 }, // ~50 shares at 50¢
 
   edge: {
@@ -182,10 +210,30 @@ export const DEFAULT_CONFIG: StrategyConfig = {
     deepDislocationThreshold: 0.96, // Stricter: 96¢ triggers DEEP (was 95¢)
   },
 
+  // v4.2.1: CONSTANT delta regime thresholds
+  delta: {
+    lowThreshold: 0.0030,     // LOW: delta < 0.30%
+    midThreshold: 0.0070,     // MID: 0.30% - 0.70%, HIGH: > 0.70%
+    deepMaxDelta: 0.0040,     // DEEP only if delta < 0.40%
+  },
+
+  // v4.2.1: Time-scaled parameter bases
+  timeScaled: {
+    hedgeTimeoutBaseSec: 35,  // At t=900s: 35s, at t=60s: ~2.3s (min 8s)
+    maxSkewBase: 0.70,        // At t=900s: 70/30, shrinks toward 50/50
+    bufferAddBase: 0.008,     // At t=900s: +0%, at t=60s: +0.74%
+  },
+
+  // v4.2.1: Stricter DEEP mode conditions
+  deep: {
+    minTimeSec: 180,          // Only if > 180s remaining
+    maxCombinedAsk: 0.95,     // Only if cheapestAsk + otherMid < 0.95
+    maxDeltaPct: 0.0040,      // Only if delta < 0.40%
+  },
+
   timing: {
     stopNewTradesSec: 30,
-    hedgeTimeoutSec: 12,    // Force hedge after 12s (was 20s)
-    hedgeMustBySec: 60,     // Must hedge by 60s remaining (was 75s)
+    hedgeMustBySec: 60,     // Must hedge by 60s remaining
     unwindStartSec: 45,
   },
 
@@ -193,7 +241,6 @@ export const DEFAULT_CONFIG: StrategyConfig = {
     target: 0.50,
     rebalanceThreshold: 0.20,
     hardCap: 0.70,
-    deepAllowedSkew: 0.70,
   },
 
   limits: {
@@ -201,13 +248,13 @@ export const DEFAULT_CONFIG: StrategyConfig = {
     maxPerSideUsd: 300,     // 300 shares max per side (was 150)
     minTopDepthShares: 50,
     maxPendingOrders: 3,
-    sideCooldownMs: 0,      // NO cooldown for hedge (was 2000ms)
+    sideCooldownMs: 0,      // NO cooldown for hedge
   },
 
   execution: {
     tickFallback: 0.01,
     tickNiceSet: [0.01, 0.005, 0.002, 0.001],
-    hedgeCushionTicks: 2,      // 2 ticks above ask (was 1)
+    hedgeCushionTicks: 2,      // 2 ticks above ask
     riskHedgeCushionTicks: 3,  // Risk/Unwind hedge: aggressive
     entryImproveTicks: 0,
   },
@@ -238,6 +285,76 @@ export const DEFAULT_CONFIG: StrategyConfig = {
     maxIntentsPerTick: 2,
   },
 };
+
+// ---------- v4.2.1: Delta regime helpers ----------
+
+/**
+ * Compute delta percentage from spot vs strike
+ */
+function computeDeltaPct(spotPrice: number | undefined, strikePrice: number | undefined): number {
+  if (!spotPrice || !strikePrice || strikePrice <= 0) return 0;
+  return Math.abs(spotPrice - strikePrice) / strikePrice;
+}
+
+/**
+ * v4.2.1: CONSTANT regime thresholds (no time-shrinking)
+ */
+function getDeltaRegime(deltaPct: number, cfg: StrategyConfig): DeltaRegime {
+  if (deltaPct < cfg.delta.lowThreshold) return "LOW";   // < 0.30%
+  if (deltaPct < cfg.delta.midThreshold) return "MID";   // 0.30% - 0.70%
+  return "HIGH";                                          // > 0.70%
+}
+
+/**
+ * v4.2.1: timeFactor for parameter scaling (NOT regime thresholds)
+ */
+function getTimeFactor(secondsRemaining: number): number {
+  return Math.max(secondsRemaining, 60) / 900;  // 1.0 at 900s, 0.07 at 60s
+}
+
+/**
+ * v4.2.1: Time-scaled hedge timeout
+ */
+function getScaledHedgeTimeout(timeFactor: number, baseSec: number): number {
+  return Math.max(8, Math.floor(baseSec * timeFactor));  // Min 8s
+}
+
+/**
+ * v4.2.1: Time-scaled max skew (shrinks toward 50/50)
+ */
+function getScaledMaxSkew(timeFactor: number, baseSkew: number): number {
+  return 0.50 + (baseSkew - 0.50) * timeFactor;
+}
+
+/**
+ * v4.2.1: Time-scaled buffer addition (increases as time decreases)
+ */
+function getScaledBufferAdd(timeFactor: number, baseBuffer: number): number {
+  return baseBuffer * (1 - timeFactor);
+}
+
+/**
+ * v4.2.1: Check if DEEP mode is allowed based on stricter conditions
+ */
+function isDeepModeAllowed(
+  snap: MarketSnapshot, 
+  deltaPct: number, 
+  cfg: StrategyConfig
+): boolean {
+  // Must have enough time
+  if (snap.secondsRemaining <= cfg.deep.minTimeSec) return false;
+  
+  // Delta must be low enough
+  if (deltaPct >= cfg.deep.maxDeltaPct) return false;
+  
+  // Combined price must show strong dislocation
+  const cheaperSide = cheapestSideByAsk(snap);
+  const cheapestAsk = cheaperSide === "UP" ? snap.upTop.ask : snap.downTop.ask;
+  const otherMid = cheaperSide === "UP" ? snap.downTop.mid : snap.upTop.mid;
+  if ((cheapestAsk + otherMid) >= cfg.deep.maxCombinedAsk) return false;
+  
+  return true;
+}
 
 // ---------- Tick inference & rounding ----------
 
@@ -447,10 +564,13 @@ export class Polymarket15mArbBot {
   private noLiquidityStreak = 0;
   private adverseStreak = 0;
 
-  // v3.1: Track hedge lag and max skew
+  // v4.2.1: Track delta regime and time factor
   private oneSidedStartTs: number | null = null;
   private maxSkewDuringTrade = 0.5;
   private currentRegime: RegimeTag = "NORMAL";
+  private currentDeltaRegime: DeltaRegime = "LOW";
+  private currentTimeFactor = 1.0;
+  private currentDeltaPct = 0;
 
   // metrics
   private metrics: BotMetrics = {
@@ -469,6 +589,10 @@ export class Polymarket15mArbBot {
     hedgeLagSeconds: 0,
     maxSkewDuringTrade: 0.5,
     regimeTag: "NORMAL",
+    // v4.2.1 additions
+    deltaRegime: "LOW",
+    deltaPct: 0,
+    timeFactor: 1.0,
   };
 
   constructor(
@@ -546,12 +670,24 @@ export class Polymarket15mArbBot {
       await this.reconcileOpenOrders();
     }
 
-    // v3.1: Determine regime first
+    // v4.2.1: Compute delta regime and time factor FIRST
+    this.currentDeltaPct = computeDeltaPct(snap.spotPrice, snap.strikePrice);
+    this.currentDeltaRegime = getDeltaRegime(this.currentDeltaPct, this.cfg);
+    this.currentTimeFactor = getTimeFactor(snap.secondsRemaining);
+    
+    this.metrics.deltaPct = this.currentDeltaPct;
+    this.metrics.deltaRegime = this.currentDeltaRegime;
+    this.metrics.timeFactor = this.currentTimeFactor;
+
+    // v4.2.1: Determine regime with new DEEP conditions
     this.currentRegime = this.determineRegime(snap);
     this.metrics.regimeTag = this.currentRegime;
 
-    // v3.1: Calculate expected executed pair cost for logging
-    const buffer = dynamicEdgeBuffer(this.cfg, this.noLiquidityStreak, this.adverseStreak);
+    // v4.2.1: Calculate time-scaled buffer
+    const baseBuffer = dynamicEdgeBuffer(this.cfg, this.noLiquidityStreak, this.adverseStreak);
+    const bufferAdd = getScaledBufferAdd(this.currentTimeFactor, this.cfg.timeScaled.bufferAddBase);
+    const buffer = baseBuffer + bufferAdd;
+    
     const edgeCheck = executionAwareEdgeOk(snap, buffer);
     this.metrics.expectedExecutedPairCost = edgeCheck.expectedExecutedPairCost;
 
@@ -589,7 +725,7 @@ export class Polymarket15mArbBot {
   }
 
   /**
-   * v3.1: Determine current trading regime
+   * v4.2.1: Determine current trading regime with stricter DEEP conditions
    */
   private determineRegime(snap: MarketSnapshot): RegimeTag {
     // Check UNWIND conditions first
@@ -597,24 +733,27 @@ export class Polymarket15mArbBot {
     if (this.noLiquidityStreak >= this.cfg.adapt.maxNoLiquidityStreak) return "UNWIND";
     if (this.adverseStreak >= this.cfg.adapt.maxAdverseStreak) return "UNWIND";
     
-    // Check hedge timeout -> UNWIND
+    // v4.2.1: Time-scaled hedge timeout
+    const hedgeTimeout = getScaledHedgeTimeout(this.currentTimeFactor, this.cfg.timeScaled.hedgeTimeoutBaseSec);
     if (this.oneSidedStartTs !== null) {
       const hedgeLagSec = (Date.now() - this.oneSidedStartTs) / 1000;
-      if (hedgeLagSec >= this.cfg.timing.hedgeTimeoutSec) return "UNWIND";
+      if (hedgeLagSec >= hedgeTimeout) return "UNWIND";
     }
 
-    // Check skew hard cap -> UNWIND
+    // v4.2.1: Time-scaled max skew
+    const maxSkew = getScaledMaxSkew(this.currentTimeFactor, this.cfg.timeScaled.maxSkewBase);
     const uf = upFraction(this.inventory);
     if ((this.inventory.upShares > 0 || this.inventory.downShares > 0) &&
-        (uf > this.cfg.skew.hardCap || (1 - uf) > this.cfg.skew.hardCap)) {
-      // Unless in DEEP regime where higher skew is allowed
-      if (!isDeepDislocation(snap, this.cfg.edge.deepDislocationThreshold)) {
+        (uf > maxSkew || (1 - uf) > maxSkew)) {
+      // Check if DEEP mode could save us
+      if (!isDeepModeAllowed(snap, this.currentDeltaPct, this.cfg)) {
         return "UNWIND";
       }
     }
 
-    // Check DEEP dislocation
-    if (isDeepDislocation(snap, this.cfg.edge.deepDislocationThreshold)) {
+    // v4.2.1: Stricter DEEP mode conditions
+    if (isDeepModeAllowed(snap, this.currentDeltaPct, this.cfg) &&
+        isDeepDislocation(snap, this.cfg.edge.deepDislocationThreshold)) {
       return "DEEP";
     }
 
@@ -733,29 +872,42 @@ export class Polymarket15mArbBot {
   }
 
   /**
-   * v3.1: Determine if we should hedge in DEEP regime
-   * Hedge when: price normalizes, timeout reached, or skew exceeds deep cap
+   * v4.2.1: Determine if we should hedge in DEEP regime
+   * Uses stricter conditions from v4.2.1
    */
   private shouldHedgeInDeepRegime(snap: MarketSnapshot): boolean {
+    // DEEP mode no longer allowed (time/delta/price conditions changed)
+    if (!isDeepModeAllowed(snap, this.currentDeltaPct, this.cfg)) {
+      this.log("DEEP_EXIT_CONDITIONS", { 
+        secondsRemaining: snap.secondsRemaining,
+        deltaPct: this.currentDeltaPct,
+        minTime: this.cfg.deep.minTimeSec,
+        maxDelta: this.cfg.deep.maxDeltaPct
+      });
+      return true;
+    }
+
     // Price normalized (no longer deep dislocation)
     if (!isDeepDislocation(snap, this.cfg.edge.deepDislocationThreshold)) {
       this.log("DEEP_EXIT_NORMALIZED", { reason: "price_normalized" });
       return true;
     }
 
-    // Hedge timeout reached
+    // v4.2.1: Time-scaled hedge timeout
+    const hedgeTimeout = getScaledHedgeTimeout(this.currentTimeFactor, this.cfg.timeScaled.hedgeTimeoutBaseSec);
     if (this.oneSidedStartTs !== null) {
       const lagSec = (Date.now() - this.oneSidedStartTs) / 1000;
-      if (lagSec >= this.cfg.timing.hedgeTimeoutSec) {
-        this.log("DEEP_EXIT_TIMEOUT", { lagSec });
+      if (lagSec >= hedgeTimeout) {
+        this.log("DEEP_EXIT_TIMEOUT", { lagSec, hedgeTimeout });
         return true;
       }
     }
 
-    // Skew exceeds even the deep allowed skew
+    // v4.2.1: Time-scaled max skew
+    const maxSkew = getScaledMaxSkew(this.currentTimeFactor, this.cfg.timeScaled.maxSkewBase);
     const uf = upFraction(this.inventory);
-    if (uf > this.cfg.skew.deepAllowedSkew || (1 - uf) > this.cfg.skew.deepAllowedSkew) {
-      this.log("DEEP_EXIT_SKEW_CAP", { skew: uf });
+    if (uf > maxSkew || (1 - uf) > maxSkew) {
+      this.log("DEEP_EXIT_SKEW_CAP", { skew: uf, maxSkew });
       return true;
     }
 
@@ -789,7 +941,11 @@ export class Polymarket15mArbBot {
       return intents;
     }
 
-    const buffer = dynamicEdgeBuffer(this.cfg, this.noLiquidityStreak, this.adverseStreak);
+    // v4.2.1: Time-scaled buffer
+    const baseBuffer = dynamicEdgeBuffer(this.cfg, this.noLiquidityStreak, this.adverseStreak);
+    const bufferAdd = getScaledBufferAdd(this.currentTimeFactor, this.cfg.timeScaled.bufferAddBase);
+    const buffer = baseBuffer + bufferAdd;
+    
     const ok = (this.state === "SKEWED") || pairedLockOk(snap, buffer);
     if (!ok) return intents;
 
@@ -809,6 +965,12 @@ export class Polymarket15mArbBot {
     if (this.state === "UNWIND") return intents;
     if (snap.secondsRemaining <= this.cfg.timing.stopNewTradesSec) return intents;
 
+    // v4.2.1: HIGH delta regime blocks new risk
+    if (this.currentDeltaRegime === "HIGH") {
+      this.log("ENTRY_BLOCKED_HIGH_DELTA", { deltaPct: this.currentDeltaPct, regime: this.currentDeltaRegime });
+      return intents;
+    }
+
     if (totalNotional(this.inventory) >= this.cfg.limits.maxTotalUsd) return intents;
 
     // v3.1: Profit lock - stop entry/accumulate if locked
@@ -817,22 +979,24 @@ export class Polymarket15mArbBot {
       return intents;
     }
 
-    // v3.1: Use execution-aware edge instead of static combined
-    const buffer = dynamicEdgeBuffer(this.cfg, this.noLiquidityStreak, this.adverseStreak);
+    // v4.2.1: Time-scaled buffer
+    const baseBuffer = dynamicEdgeBuffer(this.cfg, this.noLiquidityStreak, this.adverseStreak);
+    const bufferAdd = getScaledBufferAdd(this.currentTimeFactor, this.cfg.timeScaled.bufferAddBase);
+    const buffer = baseBuffer + bufferAdd;
+    
     const edgeCheck = executionAwareEdgeOk(snap, buffer);
     
     if (!edgeCheck.ok) {
-      // v3.1: Check if we should skip entirely for < 2c edge
       const edge = 1 - edgeCheck.expectedExecutedPairCost;
       if (edge < 0.02) {
-        this.log("ENTRY_SKIP_LOW_EDGE", { edge, expected: edgeCheck.expectedExecutedPairCost });
+        this.log("ENTRY_SKIP_LOW_EDGE", { edge, expected: edgeCheck.expectedExecutedPairCost, buffer });
         return intents;
       }
       return intents;
     }
 
-    // v3.1: In DEEP regime, buy only cheap side (no immediate hedge)
-    const isDeep = this.currentRegime === "DEEP";
+    // v4.2.1: DEEP mode with stricter conditions
+    const isDeep = this.currentRegime === "DEEP" && isDeepModeAllowed(snap, this.currentDeltaPct, this.cfg);
     
     const hasBoth = (this.inventory.upShares > 0 && this.inventory.downShares > 0);
     const delta = upFraction(this.inventory) - this.cfg.skew.target;
@@ -921,6 +1085,9 @@ export class Polymarket15mArbBot {
       t: snap.secondsRemaining,
       expectedPairCost: this.metrics.expectedExecutedPairCost,
       hedgeLagSec: this.metrics.hedgeLagSeconds,
+      deltaRegime: this.currentDeltaRegime,
+      deltaPct: (this.currentDeltaPct * 100).toFixed(3) + '%',
+      timeFactor: this.currentTimeFactor.toFixed(2),
     });
   }
 
