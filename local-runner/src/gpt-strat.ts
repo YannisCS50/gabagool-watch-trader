@@ -961,6 +961,7 @@ export class Polymarket15mArbBot {
 
   private buildEntryOrAccumulateIntents(snap: MarketSnapshot): OrderIntent[] {
     const intents: OrderIntent[] = [];
+    const maxEntryShares = 50; // cap ENTRY sizing to avoid extreme low-price share counts
 
     if (this.state === "UNWIND") return intents;
     if (snap.secondsRemaining <= this.cfg.timing.stopNewTradesSec) return intents;
@@ -1043,15 +1044,16 @@ export class Polymarket15mArbBot {
       }
 
       const usd = this.computeClipUsd(snap);
-      // Split USD between both sides
-      const halfUsd = usd / 2;
-      const upQty = sharesFromUsd(halfUsd, Math.max(upPx, upTick));
-      const downQty = sharesFromUsd(halfUsd, Math.max(downPx, downTick));
 
-      this.log("PAIR_ACCUMULATE", { upPx, downPx, combinedCost, upQty, downQty });
+      // v4.2.2 fix: balance by SHARES (not USD) and cap size.
+      // Splitting USD can create huge share imbalance when one side is very cheap.
+      const pairQtyRaw = combinedCost > 0 ? Math.floor(usd / combinedCost) : 0;
+      const pairQty = clamp(Math.max(1, pairQtyRaw), 1, maxEntryShares);
 
-      intents.push({ side: "UP", qty: upQty, limitPrice: upPx, tag: "ENTRY", reason: "PAIR_ACCUM_UP" });
-      intents.push({ side: "DOWN", qty: downQty, limitPrice: downPx, tag: "ENTRY", reason: "PAIR_ACCUM_DOWN" });
+      this.log("PAIR_ACCUMULATE", { upPx, downPx, combinedCost, pairQty });
+
+      intents.push({ side: "UP", qty: pairQty, limitPrice: upPx, tag: "ENTRY", reason: "PAIR_ACCUM_UP" });
+      intents.push({ side: "DOWN", qty: pairQty, limitPrice: downPx, tag: "ENTRY", reason: "PAIR_ACCUM_DOWN" });
       return intents;
     }
 
@@ -1085,7 +1087,7 @@ export class Polymarket15mArbBot {
     const px = roundDownToTick(rawPx, tick);
 
     const usd = this.computeClipUsd(snap);
-    const qty = sharesFromUsd(usd, Math.max(px, tick));
+    const qty = Math.min(sharesFromUsd(usd, Math.max(px, tick)), maxEntryShares);
 
     const reason = isDeep 
       ? `DEEP_ENTRY ${sideToBuy}` 
