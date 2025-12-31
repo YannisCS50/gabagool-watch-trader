@@ -339,7 +339,8 @@ export default function DataLogging() {
         { data: allLiveTrades },
         { data: allStrikePrices },
         { data: allOrderQueue },
-        { data: allLiveTradeResults }
+        { data: allLiveTradeResults },
+        { data: allPriceTicks }
       ] = await Promise.all([
         supabase.from("fill_logs").select("*").order("ts", { ascending: false }),
         supabase.from("snapshot_logs").select("*").order("ts", { ascending: false }),
@@ -347,7 +348,8 @@ export default function DataLogging() {
         supabase.from("live_trades").select("*").order("created_at", { ascending: false }),
         supabase.from("strike_prices").select("*").order("created_at", { ascending: false }),
         supabase.from("order_queue").select("*").order("created_at", { ascending: false }),
-        supabase.from("live_trade_results").select("*").order("created_at", { ascending: false })
+        supabase.from("live_trade_results").select("*").order("created_at", { ascending: false }),
+        supabase.from("price_ticks").select("*").order("created_at", { ascending: false })
       ]);
 
       const timestamp = new Date().toISOString().slice(0, 16).replace(":", "-");
@@ -360,6 +362,7 @@ export default function DataLogging() {
       if (allStrikePrices?.length) exportToCSV(allStrikePrices, `FULL_strike_prices_${timestamp}`);
       if (allOrderQueue?.length) exportToCSV(allOrderQueue, `FULL_order_queue_${timestamp}`);
       if (allLiveTradeResults?.length) exportToCSV(allLiveTradeResults, `FULL_live_trade_results_${timestamp}`);
+      if (allPriceTicks?.length) exportToCSV(allPriceTicks, `FULL_price_ticks_${timestamp}`);
 
       // Also create a combined JSON export
       const combinedData = {
@@ -371,6 +374,7 @@ export default function DataLogging() {
         strike_prices: allStrikePrices || [],
         order_queue: allOrderQueue || [],
         live_trade_results: allLiveTradeResults || [],
+        price_ticks: allPriceTicks || [],
         counts: {
           fill_logs: allFillLogs?.length || 0,
           snapshot_logs: allSnapshotLogs?.length || 0,
@@ -378,7 +382,8 @@ export default function DataLogging() {
           live_trades: allLiveTrades?.length || 0,
           strike_prices: allStrikePrices?.length || 0,
           order_queue: allOrderQueue?.length || 0,
-          live_trade_results: allLiveTradeResults?.length || 0
+          live_trade_results: allLiveTradeResults?.length || 0,
+          price_ticks: allPriceTicks?.length || 0
         }
       };
 
