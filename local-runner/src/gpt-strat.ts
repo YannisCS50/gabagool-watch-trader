@@ -1,7 +1,13 @@
 /**
  * polymarket_15m_bot.ts
  * --------------------------------------------------------------------------
- * Polymarket 15m Hedge/Arbitrage Bot v4.3 — PairCost Optimization Edition
+ * Polymarket 15m Hedge/Arbitrage Bot v4.4 — Settlement Safety Edition
+ *
+ * v4.4 Changes (GABAGOOL-PROOF):
+ * - PANIC HEDGE: If secondsRemaining < 90 AND min(UP,DOWN) == 0 → force hedge AT ANY PRICE
+ * - SETTLEMENT GUARD: Every tick checks upShares > 0 AND downShares > 0, else panic
+ * - SETTLEMENT FAILURE LOG: Track unredeemed positions as separate failure metric
+ * - Optimize on settlement_failures = 0, not on PnL
  *
  * v4.3 Changes:
  * - FORBID PAIRCOST-INCREASING HEDGES: Block normal hedges where
@@ -115,6 +121,23 @@ export interface BotMetrics {
   deltaRegime: DeltaRegime;
   deltaPct: number;
   timeFactor: number;
+  // v4.4 additions - Settlement safety
+  panicHedgeTriggered: boolean;
+  settlementFailure: boolean;
+  settlementFailureLoss: number;
+}
+
+// v4.4: Settlement failure event for logging
+export interface SettlementFailureEvent {
+  marketId: string;
+  upShares: number;
+  downShares: number;
+  upCost: number;
+  downCost: number;
+  lostSide: Side;
+  lostCost: number;
+  secondsRemaining: number;
+  reason: string;
 }
 
 export interface StrategyConfig {
@@ -154,6 +177,13 @@ export interface StrategyConfig {
     stopNewTradesSec: number;
     hedgeMustBySec: number;
     unwindStartSec: number;
+    panicHedgeSec: number;     // v4.4: Panic hedge threshold (90s)
+  };
+
+  // v4.4: Settlement safety
+  settlement: {
+    panicHedgeThresholdSec: number;  // 90s - force hedge at any price
+    maxPriceForPanicHedge: number;   // 0.99 - max price for panic hedge
   };
 
   skew: {
@@ -244,6 +274,13 @@ export const DEFAULT_CONFIG: StrategyConfig = {
     stopNewTradesSec: 30,
     hedgeMustBySec: 60,     // Must hedge by 60s remaining
     unwindStartSec: 45,
+    panicHedgeSec: 90,      // v4.4: Panic hedge threshold
+  },
+
+  // v4.4: Settlement safety - NEVER have unredeemed positions
+  settlement: {
+    panicHedgeThresholdSec: 90,  // Force hedge at any price if one-sided below this
+    maxPriceForPanicHedge: 0.99, // Max price willing to pay for panic hedge
   },
 
   skew: {
@@ -603,7 +640,14 @@ export class Polymarket15mArbBot {
     deltaRegime: "LOW",
     deltaPct: 0,
     timeFactor: 1.0,
+    // v4.4 additions
+    panicHedgeTriggered: false,
+    settlementFailure: false,
+    settlementFailureLoss: 0,
   };
+
+  // v4.4: Settlement failure callback
+  private onSettlementFailure?: (event: SettlementFailureEvent) => void;
 
   constructor(
     private api: PolymarketClobApi,
@@ -617,6 +661,55 @@ export class Polymarket15mArbBot {
   getMetrics(): BotMetrics { return { ...this.metrics }; }
   getState(): BotState { return this.state; }
   getInventory(): Inventory { return { ...this.inventory }; }
+  
+  // v4.4: Set settlement failure callback
+  setSettlementFailureCallback(cb: (event: SettlementFailureEvent) => void): void {
+    this.onSettlementFailure = cb;
+  }
+
+  /**
+   * v4.4: Check if we're in PANIC state - one-sided and running out of time
+   */
+  private isPanicState(snap: MarketSnapshot): boolean {
+    const inv = this.inventory;
+    const hasPosition = inv.upShares > 0 || inv.downShares > 0;
+    if (!hasPosition) return false;
+    
+    const isOneSided = inv.upShares === 0 || inv.downShares === 0;
+    const nearExpiry = snap.secondsRemaining <= this.cfg.settlement.panicHedgeThresholdSec;
+    
+    return isOneSided && nearExpiry;
+  }
+
+  /**
+   * v4.4: Log settlement failure - this is the CRITICAL metric to optimize on
+   */
+  private logSettlementFailure(snap: MarketSnapshot, reason: string): void {
+    const inv = this.inventory;
+    const lostSide: Side = inv.upShares === 0 ? "DOWN" : "UP";
+    const lostCost = lostSide === "UP" ? inv.upCost : inv.downCost;
+    
+    this.metrics.settlementFailure = true;
+    this.metrics.settlementFailureLoss = lostCost;
+    
+    const event: SettlementFailureEvent = {
+      marketId: this.marketId,
+      upShares: inv.upShares,
+      downShares: inv.downShares,
+      upCost: inv.upCost,
+      downCost: inv.downCost,
+      lostSide,
+      lostCost,
+      secondsRemaining: snap.secondsRemaining,
+      reason,
+    };
+    
+    this.log("🚨 SETTLEMENT_FAILURE", event);
+    
+    if (this.onSettlementFailure) {
+      this.onSettlementFailure(event);
+    }
+  }
 
   /**
    * Feed ALL fills here. Hedging correctness depends on this.
@@ -703,6 +796,18 @@ export class Polymarket15mArbBot {
 
     this.state = this.decideState(snap);
 
+    // v4.4: PANIC HEDGE CHECK - settlement safety is #1 priority
+    const isPanic = this.isPanicState(snap);
+    if (isPanic) {
+      this.metrics.panicHedgeTriggered = true;
+      this.log("🚨 PANIC_HEDGE_ACTIVE", { 
+        secondsRemaining: snap.secondsRemaining,
+        upShares: this.inventory.upShares,
+        downShares: this.inventory.downShares,
+        threshold: this.cfg.settlement.panicHedgeThresholdSec
+      });
+    }
+
     // v3.1: Track hedge lag
     if (this.state === "ONE_SIDED") {
       if (this.oneSidedStartTs === null) {
@@ -722,7 +827,14 @@ export class Polymarket15mArbBot {
     }
 
     const intents: OrderIntent[] = [];
-    intents.push(...this.buildHedgeIntents(snap));
+    
+    // v4.4: PANIC HEDGE takes priority - force hedge at any price if one-sided near expiry
+    if (isPanic) {
+      intents.push(...this.buildPanicHedgeIntents(snap));
+    } else {
+      intents.push(...this.buildHedgeIntents(snap));
+    }
+    
     intents.push(...this.buildRebalanceIntents(snap));
     intents.push(...this.buildEntryOrAccumulateIntents(snap));
 
@@ -730,8 +842,67 @@ export class Polymarket15mArbBot {
       await this.executeIntent(snap, intent);
     }
 
+    // v4.4: Check for impending settlement failure - log it!
+    if (snap.secondsRemaining <= 10 && this.isPanicState(snap)) {
+      this.logSettlementFailure(snap, "FAILED_TO_HEDGE_IN_TIME");
+    }
+
     this.metrics.noLiquidityStreakMax = Math.max(this.metrics.noLiquidityStreakMax, this.noLiquidityStreak);
     this.metrics.adverseStreakMax = Math.max(this.metrics.adverseStreakMax, this.adverseStreak);
+  }
+
+  /**
+   * v4.4: PANIC HEDGE - force hedge AT ANY PRICE when one-sided near expiry
+   * This is the most critical function to prevent unredeemed positions
+   */
+  private buildPanicHedgeIntents(snap: MarketSnapshot): OrderIntent[] {
+    const intents: OrderIntent[] = [];
+    const inv = this.inventory;
+    
+    // Determine which side needs hedging
+    let sideToBuy: Side;
+    let qty: number;
+    
+    if (inv.upShares > 0 && inv.downShares === 0) {
+      sideToBuy = "DOWN";
+      qty = inv.upShares;  // Match the existing UP shares
+    } else if (inv.downShares > 0 && inv.upShares === 0) {
+      sideToBuy = "UP";
+      qty = inv.downShares;  // Match the existing DOWN shares
+    } else {
+      return intents;  // Already hedged
+    }
+    
+    const top = sideToBuy === "UP" ? snap.upTop : snap.downTop;
+    const book = sideToBuy === "UP" ? snap.upBook : snap.downBook;
+    
+    // v4.4: PANIC - buy at ANY price up to max (0.99)
+    const tick = this.tickInferer.getTick(snap.marketId, sideToBuy, book, snap.ts);
+    const maxPx = this.cfg.settlement.maxPriceForPanicHedge;
+    
+    // Use the ask + generous cushion, capped at max price
+    const panicPx = Math.min(maxPx, addTicks(top.ask, tick, 5));  // 5 ticks above ask
+    const px = roundUpToTick(panicPx, tick);
+    
+    this.log("🚨 PANIC_HEDGE_ORDER", {
+      sideToBuy,
+      qty,
+      price: px,
+      ask: top.ask,
+      secondsRemaining: snap.secondsRemaining,
+      existingUp: inv.upShares,
+      existingDown: inv.downShares,
+    });
+    
+    intents.push({
+      side: sideToBuy,
+      qty,
+      limitPrice: px,
+      tag: "HEDGE",
+      reason: `🚨 PANIC_HEDGE @ ${(px * 100).toFixed(0)}¢ (${snap.secondsRemaining}s left)`
+    });
+    
+    return intents;
   }
 
   /**

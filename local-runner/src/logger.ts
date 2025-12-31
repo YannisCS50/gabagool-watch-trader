@@ -28,12 +28,12 @@ function getDateString(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 }
 
-function getLogFilePath(logType: 'snapshot' | 'fill' | 'settlement'): string {
+function getLogFilePath(logType: 'snapshot' | 'fill' | 'settlement' | 'settlement_failure'): string {
   const dateStr = getDateString();
   return path.join(LOGS_DIR, `${logType}_${dateStr}.jsonl`);
 }
 
-export function appendJsonl(logType: 'snapshot' | 'fill' | 'settlement', data: object): void {
+export function appendJsonl(logType: 'snapshot' | 'fill' | 'settlement' | 'settlement_failure', data: object): void {
   const filePath = getLogFilePath(logType);
   const line = JSON.stringify(data) + '\n';
   
@@ -149,6 +149,43 @@ export function logSettlement(data: SettlementLog): void {
   console.log(`   📈 Shares: ${skew}`);
   console.log(`   💰 PnL: ${data.realizedPnL?.toFixed(2) ?? 'unknown'} | Winner: ${data.winningSide ?? 'unknown'}`);
   console.log(`${'='.repeat(60)}\n`);
+}
+
+// ---------- v4.4: Settlement Failure Log Schema ----------
+
+export interface SettlementFailureLog {
+  ts: number;
+  iso: string;
+  marketId: string;
+  asset: string;
+  upShares: number;
+  downShares: number;
+  upCost: number;
+  downCost: number;
+  lostSide: 'UP' | 'DOWN';
+  lostCost: number;               // This is the 100% loss
+  secondsRemaining: number;
+  reason: string;
+  panicHedgeAttempted: boolean;
+}
+
+/**
+ * v4.4: Log settlement failure - THE CRITICAL METRIC
+ * Optimize for settlement_failures = 0, not PnL
+ */
+export function logSettlementFailure(data: SettlementFailureLog): void {
+  appendJsonl('settlement_failure', data);
+  
+  // LOUD console output - this should NEVER happen
+  console.log(`\n${'🚨'.repeat(30)}`);
+  console.log(`🚨🚨🚨 SETTLEMENT FAILURE - 100% LOSS DETECTED 🚨🚨🚨`);
+  console.log(`${'🚨'.repeat(30)}`);
+  console.log(`   Market: ${data.marketId}`);
+  console.log(`   Lost Side: ${data.lostSide} (${data.lostCost.toFixed(2)} USD LOST)`);
+  console.log(`   Shares: UP=${data.upShares} / DOWN=${data.downShares}`);
+  console.log(`   Reason: ${data.reason}`);
+  console.log(`   Seconds Left: ${data.secondsRemaining}`);
+  console.log(`${'🚨'.repeat(30)}\n`);
 }
 
 // ---------- Helper Functions ----------
