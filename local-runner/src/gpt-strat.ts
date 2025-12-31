@@ -1,7 +1,15 @@
 /**
  * polymarket_15m_bot.ts
  * --------------------------------------------------------------------------
- * Polymarket 15m Hedge/Arbitrage Bot v4.2.1 — Gabagool Inspired Adaptive Edition
+ * Polymarket 15m Hedge/Arbitrage Bot v4.3 — PairCost Optimization Edition
+ *
+ * v4.3 Changes:
+ * - FORBID PAIRCOST-INCREASING HEDGES: Block normal hedges where
+ *   hedge_price + avg_other_cost > current_pairCost (RISK mode exempt)
+ * - ASYMMETRIC SETTLEMENT: If pairCost ≤ 0.97, no more hedges needed,
+ *   settlement with skew is OK - profit is already locked
+ * - OPTIMIZE ON PAIRCOST: Focus on pairCost at settlement as THE key metric
+ *   Target: pairCost < 1.00 in >80-85% of markets = PnL follows
  *
  * v4.2.1 Changes:
  * - CONSTANT delta regimes: LOW <0.30%, MID 0.30-0.70%, HIGH >0.70%
@@ -180,6 +188,7 @@ export interface StrategyConfig {
 
   profit: {
     lockPairCost: number; // 0.99 - stop trading if locked
+    asymmetricSettlementThreshold: number; // 0.97 - allow asymmetric settlement below this
   };
 
   sizing: {
@@ -269,6 +278,7 @@ export const DEFAULT_CONFIG: StrategyConfig = {
 
   profit: {
     lockPairCost: 0.99,
+    asymmetricSettlementThreshold: 0.97, // v4.3: Allow asymmetric settlement if pairCost <= 0.97
   },
 
   sizing: {
@@ -786,10 +796,28 @@ export class Polymarket15mArbBot {
   }
 
   /**
-   * v3.1: Split hedge logic - NORMAL vs RISK hedge
+   * v4.3: Enhanced hedge logic with pairCost protection
+   * - Forbid hedges that would increase pairCost (unless RISK mode)
+   * - Allow asymmetric settlement if pairCost <= 0.97
    */
   private buildHedgeIntents(snap: MarketSnapshot): OrderIntent[] {
     const intents: OrderIntent[] = [];
+    const inv = this.inventory;
+    const currentPairCost = pairCost(inv);
+
+    // v4.3: ASYMMETRIC SETTLEMENT - if pairCost is locked below threshold, no more hedges needed
+    if (Number.isFinite(currentPairCost) && currentPairCost <= this.cfg.profit.asymmetricSettlementThreshold) {
+      this.log("HEDGE_SKIP_ASYMMETRIC_OK", { 
+        pairCost: currentPairCost, 
+        threshold: this.cfg.profit.asymmetricSettlementThreshold,
+        upShares: inv.upShares,
+        downShares: inv.downShares
+      });
+      // Clear pending hedges - we don't need symmetry
+      this.pendingHedge.up = 0;
+      this.pendingHedge.down = 0;
+      return intents;
+    }
 
     // In DEEP_DISLOCATION, only hedge when conditions normalize or timeout
     if (this.state === "DEEP_DISLOCATION") {
@@ -799,7 +827,6 @@ export class Polymarket15mArbBot {
         return intents;
       }
       // If we should hedge, calculate pending based on current imbalance
-      const inv = this.inventory;
       if (inv.upShares > 0 && inv.downShares === 0) {
         this.pendingHedge.down = inv.upShares;
       } else if (inv.downShares > 0 && inv.upShares === 0) {
@@ -811,7 +838,7 @@ export class Polymarket15mArbBot {
     const wantDown = Math.floor(this.pendingHedge.down);
     if (wantUp <= 0 && wantDown <= 0) return intents;
 
-    // v3.1: Determine hedge mode
+    // v4.3: Determine hedge mode - RISK allows overpay
     const isRiskHedge = (
       this.state === "SKEWED" || 
       this.state === "UNWIND" || 
@@ -819,7 +846,7 @@ export class Polymarket15mArbBot {
       this.currentRegime === "UNWIND"
     );
 
-    // v3.1: Different combined limits for normal vs risk hedge
+    // v4.3: Different combined limits for normal vs risk hedge
     const maxCombined = isRiskHedge 
       ? (1 + this.cfg.edge.allowOverpay) // 1.02 for risk
       : 1.00; // 1.00 for normal
@@ -833,7 +860,7 @@ export class Polymarket15mArbBot {
       return intents;
     }
 
-    // v3.1: Different cushion ticks for normal vs risk hedge
+    // v4.3: Different cushion ticks for normal vs risk hedge
     const cushionTicks = isRiskHedge 
       ? this.cfg.execution.riskHedgeCushionTicks  // 2-4 for risk
       : this.cfg.execution.hedgeCushionTicks;     // 0-1 for normal
@@ -852,6 +879,26 @@ export class Polymarket15mArbBot {
       const tick = this.tickInferer.getTick(snap.marketId, side, book, snap.ts);
       const base = addTicks(top.ask, tick, cushionTicks);
       const px = roundUpToTick(base, tick);
+
+      // v4.3: PAIRCOST PROTECTION - block hedges that would increase pairCost
+      // Only enforce in NORMAL mode, RISK mode can overpay to reduce risk
+      if (!isRiskHedge && Number.isFinite(currentPairCost)) {
+        const otherSide: Side = side === "UP" ? "DOWN" : "UP";
+        const avgOtherCost = avgCost(inv, otherSide);
+        const projectedPairCost = px + avgOtherCost;
+        
+        if (projectedPairCost > currentPairCost) {
+          this.log("HEDGE_SKIP_PAIRCOST_INCREASE", {
+            side,
+            hedgePrice: px,
+            avgOtherCost,
+            projectedPairCost,
+            currentPairCost,
+            delta: projectedPairCost - currentPairCost
+          });
+          return null;
+        }
+      }
 
       const hedgeType = isRiskHedge ? "RISK_HEDGE" : "NORMAL_HEDGE";
       return { 
@@ -923,9 +970,19 @@ export class Polymarket15mArbBot {
     const intents: OrderIntent[] = [];
     if (this.state !== "HEDGED" && this.state !== "SKEWED") return intents;
 
+    // v4.3: Asymmetric settlement - skip rebalance if pairCost is locked
+    const currentPairCost = pairCost(this.inventory);
+    if (Number.isFinite(currentPairCost) && currentPairCost <= this.cfg.profit.asymmetricSettlementThreshold) {
+      this.log("REBAL_SKIP_ASYMMETRIC_OK", { 
+        pairCost: currentPairCost, 
+        threshold: this.cfg.profit.asymmetricSettlementThreshold 
+      });
+      return intents;
+    }
+
     // v3.1: Profit lock - stop if locked
     if (isProfitLocked(this.inventory, this.cfg.profit.lockPairCost)) {
-      this.log("REBAL_BLOCKED_PROFIT_LOCK", { pairCost: pairCost(this.inventory) });
+      this.log("REBAL_BLOCKED_PROFIT_LOCK", { pairCost: currentPairCost });
       return intents;
     }
 
