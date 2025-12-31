@@ -134,7 +134,21 @@ export interface SettlementLog {
 
 export function logSettlement(data: SettlementLog): void {
   appendJsonl('settlement', data);
-  console.log(`📊 Settlement logged: ${data.marketId} - PnL: ${data.realizedPnL?.toFixed(2) ?? 'unknown'}`);
+  
+  // v4.3: Focus on pairCost as THE key metric
+  const pairCostStr = data.pairCost !== null ? data.pairCost.toFixed(4) : 'N/A';
+  const pairCostOk = data.pairCost !== null && data.pairCost < 1.00;
+  const pairCostIcon = pairCostOk ? '✅' : '❌';
+  const skew = data.finalUpShares > 0 && data.finalDownShares > 0 
+    ? `${data.finalUpShares.toFixed(0)}/${data.finalDownShares.toFixed(0)}` 
+    : `${data.finalUpShares.toFixed(0)}/${data.finalDownShares.toFixed(0)} (asymmetric)`;
+  
+  console.log(`\n${'='.repeat(60)}`);
+  console.log(`📊 SETTLEMENT: ${data.marketId.slice(0, 20)}...`);
+  console.log(`   ${pairCostIcon} PAIR_COST: ${pairCostStr} ${pairCostOk ? '(PROFIT LOCKED)' : '(LOSS)'}`);
+  console.log(`   📈 Shares: ${skew}`);
+  console.log(`   💰 PnL: ${data.realizedPnL?.toFixed(2) ?? 'unknown'} | Winner: ${data.winningSide ?? 'unknown'}`);
+  console.log(`${'='.repeat(60)}\n`);
 }
 
 // ---------- Helper Functions ----------
