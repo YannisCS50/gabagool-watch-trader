@@ -44,6 +44,35 @@ let clobClient: ClobClient | null = null;
 let lastOrderAttemptAtMs = 0;
 let blockedUntilMs = 0;
 
+// Exponential backoff state (to stop endless spam when API returns null/no orderId)
+let invalidPayloadStreak = 0;
+let noOrderIdStreak = 0;
+
+function computeBackoffMs(baseMs: number, streak: number, maxMs: number): number {
+  // base, 2x, 4x, 8x ... up to max
+  const s = Math.max(1, streak);
+  const pow = Math.min(6, s - 1); // cap exponent
+  return Math.min(maxMs, Math.floor(baseMs * Math.pow(2, pow)));
+}
+
+function applyBackoff(reason: 'invalid_payload' | 'no_order_id' | 'cloudflare', baseMs: number): number {
+  const maxMs = Math.max(5_000, config.trading.cloudflareBackoffMs || 60_000);
+
+  if (reason === 'invalid_payload' || reason === 'cloudflare') {
+    invalidPayloadStreak = Math.min(50, invalidPayloadStreak + 1);
+    noOrderIdStreak = 0;
+    const ms = computeBackoffMs(baseMs, invalidPayloadStreak, maxMs);
+    blockedUntilMs = Date.now() + ms;
+    return ms;
+  }
+
+  noOrderIdStreak = Math.min(50, noOrderIdStreak + 1);
+  invalidPayloadStreak = 0;
+  const ms = computeBackoffMs(baseMs, noOrderIdStreak, maxMs);
+  blockedUntilMs = Date.now() + ms;
+  return ms;
+}
+
 // Cache for orderbook existence checks
 const orderbookCache = new Map<string, boolean>();
 
@@ -666,55 +695,67 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
       response = await postOnce(freshClient);
     }
 
-    // Log EVERYTHING about the response
-    console.log(`\n📋 RAW RESPONSE TYPE: ${typeof response}`);
-    console.log(`📋 RAW RESPONSE (JSON):`);
-    console.log(JSON.stringify(response, null, 2));
-    
-    // Also check if response is wrapped in .data (Axios style)
+    // Capture response details; only print them verbosely when something looks wrong.
     const actualResponse = (response as any)?.data ?? response;
-    console.log(`\n📋 ACTUAL RESPONSE (after .data check):`);
-    console.log(JSON.stringify(actualResponse, null, 2));
-    
-    console.log(`\n📋 RESPONSE KEYS: ${response ? Object.keys(response).join(', ') : 'null/undefined'}`);
-    console.log(`📋 ACTUAL RESPONSE KEYS: ${actualResponse ? Object.keys(actualResponse).join(', ') : 'null/undefined'}`);
-    
-    // Check all possible locations for order ID and status
-    console.log(`\n📋 FIELD SEARCH:`);
-    console.log(`   - response.success: ${(response as any)?.success}`);
-    console.log(`   - response.orderID: ${(response as any)?.orderID}`);
-    console.log(`   - response.orderId: ${(response as any)?.orderId}`);
-    console.log(`   - response.status: ${(response as any)?.status}`);
-    console.log(`   - response.errorMsg: ${(response as any)?.errorMsg}`);
-    console.log(`   - actualResponse.success: ${actualResponse?.success}`);
-    console.log(`   - actualResponse.orderID: ${actualResponse?.orderID}`);
-    console.log(`   - actualResponse.orderId: ${actualResponse?.orderId}`);
-    console.log(`   - actualResponse.status: ${actualResponse?.status}`);
-    console.log(`   - actualResponse.errorMsg: ${actualResponse?.errorMsg}`);
-    console.log(`${'='.repeat(60)}\n`);
 
-    // Use actualResponse for all checks
-    const resp = actualResponse;
+    const responseType = typeof response;
+    const actualType = typeof actualResponse;
+    const responseKeys = response && responseType === 'object' ? Object.keys(response as any) : [];
+    const actualKeys = actualResponse && actualType === 'object' ? Object.keys(actualResponse as any) : [];
+
+    const debugDump = () => {
+      console.log(`\n📋 RAW RESPONSE TYPE: ${responseType}`);
+      console.log(`📋 RAW RESPONSE (JSON):`);
+      console.log(JSON.stringify(response, null, 2));
+      console.log(`\n📋 ACTUAL RESPONSE (after .data check):`);
+      console.log(JSON.stringify(actualResponse, null, 2));
+      console.log(`\n📋 RESPONSE KEYS: ${responseKeys.length ? responseKeys.join(', ') : 'none'}`);
+      console.log(`📋 ACTUAL RESPONSE KEYS: ${actualKeys.length ? actualKeys.join(', ') : 'none'}`);
+    };
+
+    // Normalize response: some SDK/network layers may return string or null
+    let resp: any = actualResponse;
+    if (typeof resp === 'string') {
+      const s = resp;
+      // If it's JSON in a string, parse it
+      try {
+        resp = JSON.parse(s);
+      } catch {
+        // keep as string
+        resp = s;
+      }
+    }
+
     const respType = typeof resp;
     const respKeys = resp && respType === 'object' ? Object.keys(resp as any) : [];
 
-    // Empty/invalid payload is usually transient WAF/network weirdness – cool down to avoid spam
-    if (!resp || (respType === 'object' && respKeys.length === 0) || (respType === 'string' && String(resp).length > 0)) {
-      const preview = respType === 'string' ? String(resp).slice(0, 160) : JSON.stringify(resp).slice(0, 160);
-      console.error('❌ Order returned empty/invalid payload (cooling down 10s)');
+    const respString = typeof resp === 'string' ? resp : '';
+    const looksHtmlOrWaf = typeof resp === 'string'
+      ? /<html|cloudflare|attention required|access denied/i.test(resp)
+      : false;
+
+    // Empty/invalid payload is usually transient WAF/network weirdness – apply backoff to avoid spam
+    if (resp == null || (respType === 'object' && respKeys.length === 0) || looksHtmlOrWaf) {
+      debugDump();
+      const preview = respType === 'string' ? String(resp).slice(0, 200) : JSON.stringify(resp).slice(0, 200);
+      const backoffMs = applyBackoff(looksHtmlOrWaf ? 'cloudflare' : 'invalid_payload', 10_000);
+
+      console.error(`❌ Order returned empty/invalid payload (cooldown ${Math.ceil(backoffMs / 1000)}s)`);
       console.error(`   payloadType=${respType} keys=${respKeys.join(', ') || 'none'} preview=${preview}`);
-      blockedUntilMs = Date.now() + 10_000;
+
       return {
         success: false,
-        error: 'Empty/invalid order response (cooldown 10s)',
-        failureReason: 'cloudflare',
+        error: `Empty/invalid order response (cooldown ${Math.ceil(backoffMs / 1000)}s)`,
+        failureReason: looksHtmlOrWaf ? 'cloudflare' : 'unknown',
       };
     }
 
-    // Check for explicit failure
-    if ((resp as any)?.success === false || (resp as any)?.errorMsg) {
-      console.error(`❌ Order failed: ${(resp as any)?.errorMsg || 'Unknown error'}`);
-      return { success: false, error: (resp as any)?.errorMsg || 'Order failed' };
+    // Explicit failure
+    if ((resp as any)?.success === false || (resp as any)?.errorMsg || (resp as any)?.error) {
+      debugDump();
+      const msg = String((resp as any)?.errorMsg || (resp as any)?.error || 'Order failed');
+      console.error(`❌ Order failed: ${msg}`);
+      return { success: false, error: msg };
     }
 
     // Extract order ID - check multiple variants
@@ -728,17 +769,33 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
       (response as any)?.orderId;
 
     if (!orderId || (typeof orderId === 'string' && orderId.trim() === '')) {
+      debugDump();
+      const backoffMs = applyBackoff('no_order_id', 5_000);
+
+      // Try to surface a useful reason if it looks like a WAF payload in string fields
+      const maybeText =
+        typeof (resp as any)?.message === 'string'
+          ? (resp as any).message
+          : typeof (resp as any)?.msg === 'string'
+            ? (resp as any).msg
+            : respString;
+      const looksWafObj = /cloudflare|attention required|access denied/i.test(String(maybeText || ''));
+
       console.error('❌ Order response had no order ID - order likely NOT placed');
       console.error(`   📊 Orderbook state: topAsk=${depth.topAsk?.toFixed(2) || 'none'}, askVol=${depth.askVolume.toFixed(0)}`);
       console.error(`   📋 Response keys: ${respKeys.join(', ') || 'none'}`);
-      // Soft cooldown to reduce repeated attempts
-      blockedUntilMs = Date.now() + 5_000;
+      console.error(`   ⏳ Cooling down ${Math.ceil(backoffMs / 1000)}s to avoid repeated failures`);
+
       return {
         success: false,
         error: `No order ID returned - order not placed (liquidity: ${depth.askVolume.toFixed(0)} shares)`,
-        failureReason: 'unknown',
+        failureReason: looksWafObj ? 'cloudflare' : 'unknown',
       };
     }
+
+    // Success: reset failure streaks
+    invalidPayloadStreak = 0;
+    noOrderIdStreak = 0;
 
     console.log(`✅ Order placed with ID: ${orderId}`);
     console.log(`   Status from response: ${resp?.status || 'unknown'}`);
