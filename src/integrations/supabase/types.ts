@@ -776,6 +776,57 @@ export type Database = {
         }
         Relationships: []
       }
+      settlement_failures: {
+        Row: {
+          asset: string
+          created_at: string
+          down_cost: number
+          down_shares: number
+          id: string
+          lost_cost: number
+          lost_side: string
+          market_slug: string
+          panic_hedge_attempted: boolean
+          reason: string
+          seconds_remaining: number
+          up_cost: number
+          up_shares: number
+          wallet_address: string | null
+        }
+        Insert: {
+          asset: string
+          created_at?: string
+          down_cost?: number
+          down_shares?: number
+          id?: string
+          lost_cost: number
+          lost_side: string
+          market_slug: string
+          panic_hedge_attempted?: boolean
+          reason: string
+          seconds_remaining: number
+          up_cost?: number
+          up_shares?: number
+          wallet_address?: string | null
+        }
+        Update: {
+          asset?: string
+          created_at?: string
+          down_cost?: number
+          down_shares?: number
+          id?: string
+          lost_cost?: number
+          lost_side?: string
+          market_slug?: string
+          panic_hedge_attempted?: boolean
+          reason?: string
+          seconds_remaining?: number
+          up_cost?: number
+          up_shares?: number
+          wallet_address?: string | null
+        }
+        Relationships: []
+      }
       settlement_logs: {
         Row: {
           asset: string

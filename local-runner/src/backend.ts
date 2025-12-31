@@ -207,3 +207,37 @@ export async function savePriceTicks(ticks: PriceTick[]): Promise<boolean> {
     return false;
   }
 }
+
+// ============================================
+// v4.4: SETTLEMENT FAILURE LOGGING
+// ============================================
+
+export interface SettlementFailure {
+  market_slug: string;
+  asset: string;
+  up_shares: number;
+  down_shares: number;
+  up_cost: number;
+  down_cost: number;
+  lost_side: 'UP' | 'DOWN';
+  lost_cost: number;
+  seconds_remaining: number;
+  reason: string;
+  panic_hedge_attempted: boolean;
+  wallet_address?: string;
+}
+
+/**
+ * v4.4: Log settlement failure to backend - THE critical metric
+ * Optimize for settlement_failures = 0, not PnL
+ */
+export async function saveSettlementFailure(failure: SettlementFailure): Promise<boolean> {
+  try {
+    console.log('🚨 SAVING SETTLEMENT FAILURE TO BACKEND:', failure);
+    const result = await callProxy<{ success: boolean }>('save-settlement-failure', { failure });
+    return result.success;
+  } catch (error) {
+    console.error('❌ saveSettlementFailure error:', error);
+    return false;
+  }
+}
