@@ -695,26 +695,46 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
 
     // Use actualResponse for all checks
     const resp = actualResponse;
+    const respType = typeof resp;
+    const respKeys = resp && respType === 'object' ? Object.keys(resp as any) : [];
 
-    // Check for explicit failure
-    if (resp?.success === false || resp?.errorMsg) {
-      console.error(`❌ Order failed: ${resp?.errorMsg || 'Unknown error'}`);
-      return { success: false, error: resp?.errorMsg || 'Order failed' };
+    // Empty/invalid payload is usually transient WAF/network weirdness – cool down to avoid spam
+    if (!resp || (respType === 'object' && respKeys.length === 0) || (respType === 'string' && String(resp).length > 0)) {
+      const preview = respType === 'string' ? String(resp).slice(0, 160) : JSON.stringify(resp).slice(0, 160);
+      console.error('❌ Order returned empty/invalid payload (cooling down 10s)');
+      console.error(`   payloadType=${respType} keys=${respKeys.join(', ') || 'none'} preview=${preview}`);
+      blockedUntilMs = Date.now() + 10_000;
+      return {
+        success: false,
+        error: 'Empty/invalid order response (cooldown 10s)',
+        failureReason: 'cloudflare',
+      };
     }
 
-    // Extract order ID - check both SDK (orderID) and REST (orderId) formats
-    const orderId = resp?.orderID || resp?.orderId || (response as any)?.orderID || (response as any)?.orderId;
+    // Check for explicit failure
+    if ((resp as any)?.success === false || (resp as any)?.errorMsg) {
+      console.error(`❌ Order failed: ${(resp as any)?.errorMsg || 'Unknown error'}`);
+      return { success: false, error: (resp as any)?.errorMsg || 'Order failed' };
+    }
+
+    // Extract order ID - check multiple variants
+    const orderId =
+      (resp as any)?.orderID ||
+      (resp as any)?.orderId ||
+      (resp as any)?.order_id ||
+      (resp as any)?.id ||
+      (resp as any)?.order?.id ||
+      (response as any)?.orderID ||
+      (response as any)?.orderId;
 
     if (!orderId || (typeof orderId === 'string' && orderId.trim() === '')) {
-      console.error('❌ Order response had no order ID - NOT treating as filled');
-      console.error('   This means the order was likely NOT placed successfully');
-      console.error(`   📊 Orderbook state at failure: topAsk=${depth.topAsk?.toFixed(2) || 'none'}, askVol=${depth.askVolume.toFixed(0)}`);
-      console.error(`   🔎 Possible reasons:`);
-      console.error(`      - Price ${order.price} may be too low for current market`);
-      console.error(`      - Order size ${order.size} may exceed available liquidity`);
-      console.error(`      - Market conditions changed during order submission`);
-      return { 
-        success: false, 
+      console.error('❌ Order response had no order ID - order likely NOT placed');
+      console.error(`   📊 Orderbook state: topAsk=${depth.topAsk?.toFixed(2) || 'none'}, askVol=${depth.askVolume.toFixed(0)}`);
+      console.error(`   📋 Response keys: ${respKeys.join(', ') || 'none'}`);
+      // Soft cooldown to reduce repeated attempts
+      blockedUntilMs = Date.now() + 5_000;
+      return {
+        success: false,
         error: `No order ID returned - order not placed (liquidity: ${depth.askVolume.toFixed(0)} shares)`,
         failureReason: 'unknown',
       };
