@@ -34,8 +34,8 @@ export {
 // ============================================================
 // STRATEGY VERSION
 // ============================================================
-export const STRATEGY_VERSION = '4.5.1-relaxed-entry';
-export const STRATEGY_NAME = 'Polymarket 15m Hedge/Arb (v4.5.1 - Relaxed Entry + Aggressive Hedge)';
+export const STRATEGY_VERSION = '4.6.0-atomic-pair';
+export const STRATEGY_NAME = 'Polymarket 15m Hedge/Arb (v4.6.0 - Atomic Paired Entry)';
 
 // ============================================================
 // BACKWARD COMPATIBILITY LAYER
@@ -117,11 +117,12 @@ export const STRATEGY = {
     unwindStartSec: DEFAULT_CONFIG.timing.unwindStartSec,
   },
   
-  // Opening parameters - v4.5.1: 50 SHARES, relaxed entry
+  // Opening parameters - v4.6.0: ATOMIC PAIRS - always do both sides
   opening: {
     shares: 50,          // Fixed 50 shares per opening
     notional: 25,        // ~$25 at 50¢ = 50 shares
-    maxPrice: 0.48,      // v4.5.1: Lowered to 48¢ for better edge
+    maxPrice: 0.52,      // v4.6.0: Up to 52¢ for entry side
+    maxCombined: 0.98,   // v4.6.0: Combined must be < 98¢ for edge
     skipEdgeCheck: true,
     maxDelayMs: 5000,
   },
@@ -171,8 +172,8 @@ export const STRATEGY = {
     staleBookMs: 5000,
   },
   
-  // Cooldown
-  cooldownMs: 5000, // 5s cooldown for opening trades (hedge has 0)
+  // Cooldown - v4.6.0: ZERO cooldown between UP/DOWN of same pair
+  cooldownMs: 0, // v4.6.0: No cooldown - we do atomic pairs
   
   // Probability Bias (GPT-strat doesn't have this, disable)
   probabilityBias: {
@@ -365,9 +366,15 @@ export interface LegacyTradeSignal {
   price: number;
   shares: number;
   reasoning: string;
-  type: 'opening' | 'hedge' | 'accumulate' | 'rebalance' | 'unwind';
+  type: 'opening' | 'hedge' | 'accumulate' | 'rebalance' | 'unwind' | 'paired';
   isMarketable?: boolean;
   cushionTicks?: number;
+  // v4.6.0: For paired trades - second leg info
+  pairedWith?: {
+    outcome: Outcome;
+    price: number;
+    shares: number;
+  };
 }
 
 function cheapestSideByAsk(upAsk: number, downAsk: number): Outcome {
@@ -492,45 +499,50 @@ export function evaluateOpportunity(
 
   // ========== STATE LOGIC (v4.2.1) ==========
 
-  // FLAT: No position - look for opening trade
+  // FLAT: No position - v4.6.0 ATOMIC PAIRED ENTRY
   if (!hasUp && !hasDown) {
-    const cheaperSide = cheapestSideByAsk(upAsk, downAsk);
-    const cheaperPrice = cheaperSide === 'UP' ? upAsk : downAsk;
+    const combined = upAsk + downAsk;
     
-    const isOpeningPrice = cheaperPrice <= STRATEGY.opening.maxPrice;
-    // v4.5.1: Use time-scaled buffer for edge check - edge alone is enough to enter
-    const hasEdge = pairedLockOk(upAsk, downAsk, scaledBuffer);
-    
-    // v4.5.1: RELAXED ENTRY - allow entry if:
-    // 1. Price is within opening range, OR
-    // 2. Combined price shows edge (profitable pair)
-    if (!isOpeningPrice && !hasEdge) {
+    // v4.6.0: Check combined price for edge (must be < 98¢ for profit)
+    const maxCombined = STRATEGY.opening.maxCombined || 0.98;
+    if (combined >= maxCombined) {
+      if (Math.random() < 0.01) {
+        console.log(`[v4.6.0] SKIP: combined ${(combined * 100).toFixed(1)}¢ >= ${(maxCombined * 100).toFixed(0)}¢ max`);
+      }
       return null;
     }
     
-    // Balance check
+    // v4.6.0: Both prices must be reasonable (not too extreme)
+    if (upAsk > STRATEGY.opening.maxPrice && downAsk > STRATEGY.opening.maxPrice) {
+      return null;
+    }
+    
+    // Balance check - need enough for BOTH sides
     if (availableBalance !== undefined) {
-      const check = checkBalanceForOpening(availableBalance, STRATEGY.opening.notional);
-      if (!check.canProceed) return null;
+      const totalNeeded = (upAsk + downAsk) * STRATEGY.opening.shares;
+      if (availableBalance < totalNeeded * 1.1) {
+        console.log(`[v4.6.0] SKIP: balance $${availableBalance.toFixed(2)} < $${(totalNeeded * 1.1).toFixed(2)} needed`);
+        return null;
+      }
     }
     
-    // v4.5.1: If we have edge, allow entry even if price is higher than maxPrice
-    // Only block if price is too high AND no edge exists
-    if (cheaperPrice > STRATEGY.opening.maxPrice && !hasEdge) {
-      return null;
-    }
+    const shares = STRATEGY.opening.shares; // Fixed 50 shares
+    const edge = ((1 - combined) * 100).toFixed(1);
     
-    const clipUsd = STRATEGY.sizing.baseClipUsd;
-    const shares = sharesFromUsd(clipUsd, cheaperPrice);
-    
-    if (shares < 1) return null;
+    // v4.6.0: Return PAIRED trade signal with both legs
+    console.log(`[v4.6.0] 🎯 ATOMIC PAIR: UP@${(upAsk*100).toFixed(0)}¢ + DOWN@${(downAsk*100).toFixed(0)}¢ = ${(combined*100).toFixed(0)}¢ (edge=${edge}%)`);
     
     return {
-      outcome: cheaperSide,
-      price: cheaperPrice,
+      outcome: 'UP',
+      price: upAsk,
       shares,
-      reasoning: `ENTRY ${cheaperSide} @ ${(cheaperPrice * 100).toFixed(1)}¢ (v4.5.1 tf=${timeFactor.toFixed(2)} edge=${hasEdge})`,
-      type: 'opening',
+      reasoning: `ATOMIC_PAIR ${shares}sh: UP@${(upAsk*100).toFixed(0)}¢ + DOWN@${(downAsk*100).toFixed(0)}¢ = ${(combined*100).toFixed(0)}¢ (edge=${edge}%)`,
+      type: 'paired',
+      pairedWith: {
+        outcome: 'DOWN',
+        price: downAsk,
+        shares,
+      },
     };
   }
 

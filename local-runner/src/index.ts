@@ -3,7 +3,7 @@ import os from 'os';
 import dns from 'node:dns';
 import { config } from './config.js';
 import { placeOrder, testConnection, getBalance, getOrderbookDepth, invalidateBalanceCache, ensureValidCredentials } from './polymarket.js';
-import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, checkHardSkewStop, STRATEGY, STRATEGY_VERSION, STRATEGY_NAME } from './strategy.js';
+import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, checkHardSkewStop, STRATEGY, STRATEGY_VERSION, STRATEGY_NAME, LegacyTradeSignal } from './strategy.js';
 import { enforceVpnOrExit } from './vpn-check.js';
 import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder, syncPositionsToBackend, savePriceTicks, PriceTick } from './backend.js';
 import { fetchChainlinkPrice } from './chain.js';
@@ -320,8 +320,46 @@ async function evaluateMarket(slug: string): Promise<void> {
     );
 
     if (signal) {
-      // For accumulate trades, check position is balanced AND both sides have liquidity
-      if (signal.type === 'accumulate') {
+      // v4.6.0: Handle PAIRED atomic trades - both sides at once
+      if (signal.type === 'paired' && signal.pairedWith) {
+        console.log(`\n🎯 [v4.6.0] ATOMIC PAIRED ENTRY for ${ctx.slug}`);
+        console.log(`   UP: ${signal.shares} shares @ ${(signal.price * 100).toFixed(0)}¢`);
+        console.log(`   DOWN: ${signal.pairedWith.shares} shares @ ${(signal.pairedWith.price * 100).toFixed(0)}¢`);
+        
+        // Check liquidity for both sides
+        const upDepth = await getOrderbookDepth(ctx.market.upTokenId);
+        const downDepth = await getOrderbookDepth(ctx.market.downTokenId);
+        
+        if (!upDepth.hasLiquidity || upDepth.askVolume < signal.shares) {
+          console.log(`⛔ Skip paired: UP liquidity ${upDepth.askVolume.toFixed(0)} < ${signal.shares} needed`);
+          ctx.inFlight = false;
+          return;
+        }
+        if (!downDepth.hasLiquidity || downDepth.askVolume < signal.pairedWith.shares) {
+          console.log(`⛔ Skip paired: DOWN liquidity ${downDepth.askVolume.toFixed(0)} < ${signal.pairedWith.shares} needed`);
+          ctx.inFlight = false;
+          return;
+        }
+        
+        // Execute both sides atomically - UP first, then DOWN immediately
+        const upSuccess = await executeTrade(ctx, 'UP', signal.price, signal.shares, signal.reasoning, 'ENTRY');
+        
+        if (upSuccess) {
+          // Immediately execute DOWN side - no waiting
+          const downSuccess = await executeTrade(ctx, 'DOWN', signal.pairedWith.price, signal.pairedWith.shares, 
+            `PAIR_DOWN ${signal.pairedWith.shares}sh @ ${(signal.pairedWith.price * 100).toFixed(0)}¢`, 'ENTRY');
+          
+          if (downSuccess) {
+            console.log(`✅ [v4.6.0] ATOMIC PAIR COMPLETE: ${signal.shares} UP + ${signal.pairedWith.shares} DOWN`);
+          } else {
+            console.log(`⚠️ [v4.6.0] PARTIAL PAIR: UP filled, DOWN failed - will hedge via ONE_SIDED`);
+          }
+        } else {
+          console.log(`⚠️ [v4.6.0] PAIR FAILED: UP side failed, skipping DOWN`);
+        }
+      }
+      // Handle accumulate trades
+      else if (signal.type === 'accumulate') {
         // Extra balance check (redundant with strategy, but safety net)
         if (ctx.position.upShares !== ctx.position.downShares) {
           console.log(`⚖️ Skip accumulate: position not balanced (${ctx.position.upShares} UP vs ${ctx.position.downShares} DOWN)`);
@@ -352,7 +390,7 @@ async function evaluateMarket(slug: string): Promise<void> {
           console.log(`⚠️ Accumulate aborted: UP side failed, skipping DOWN`);
         }
       } else {
-        // Single-side trade (opening or hedge)
+        // Single-side trade (opening, hedge, rebalance)
         const tokenId = signal.outcome === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
         const depth = await getOrderbookDepth(tokenId);
         
@@ -363,53 +401,14 @@ async function evaluateMarket(slug: string): Promise<void> {
           return;
         }
         
-        // ========== PRE-FLIGHT HEDGE CHECK (SOFT) ==========
-        // For opening trades: LOG if hedge would be expensive, but DON'T block
-        // Exposed positions are OK at market open - we hedge later when prices stabilize
-        if (signal.type === 'opening') {
-          const hedgeSide = signal.outcome === 'UP' ? 'DOWN' : 'UP';
-          const hedgeTokenId = hedgeSide === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
-          const hedgeDepth = await getOrderbookDepth(hedgeTokenId);
-          const hedgeAsk = hedgeDepth.topAsk;
-          
-          // Just log - don't block opening trades
-          const preHedgeCheck = calculatePreHedgePrice(signal.price, signal.outcome, hedgeAsk ?? undefined);
-          if (!preHedgeCheck) {
-            console.log(`⚠️ Opening with EXPENSIVE hedge warning:`);
-            console.log(`   Opening: ${signal.outcome} @ ${(signal.price * 100).toFixed(0)}¢`);
-            console.log(`   Hedge ask: ${hedgeAsk ? (hedgeAsk * 100).toFixed(0) + '¢' : 'unknown'}`);
-            console.log(`   📊 Will hedge later when prices stabilize (gabagool style)`);
-          } else {
-            console.log(`✅ Hedge available: ${hedgeSide} @ ${(preHedgeCheck.hedgePrice * 100).toFixed(0)}¢`);
-          }
-        }
-        
         const tradeIntent: TradeIntent = signal.type === 'opening' ? 'ENTRY' : signal.type === 'hedge' ? 'HEDGE' : 'ENTRY';
         const tradeSuccess = await executeTrade(ctx, signal.outcome, signal.price, signal.shares, signal.reasoning, tradeIntent);
         
-        // PRE-HEDGE: Try to place hedge, but don't panic if too expensive
+        // For ONE_SIDED hedge trades, no need to do pre-hedge - it IS the hedge
         if (tradeSuccess && signal.type === 'opening') {
-          const hedgeSide = signal.outcome === 'UP' ? 'DOWN' : 'UP';
-          const hedgeTokenId = hedgeSide === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
-          const hedgeDepth = await getOrderbookDepth(hedgeTokenId);
-          const hedgeAsk = hedgeDepth.topAsk;
-          
-          const preHedge = calculatePreHedgePrice(signal.price, signal.outcome, hedgeAsk ?? undefined);
-          if (preHedge) {
-            console.log(`\n🎯 PRE-HEDGE: Placing GTC limit order for ${preHedge.hedgeSide} @ ${(preHedge.hedgePrice * 100).toFixed(0)}¢`);
-            console.log(`   Opening: ${signal.outcome} @ ${(signal.price * 100).toFixed(0)}¢`);
-            console.log(`   Orderbook ask: ${hedgeAsk ? (hedgeAsk * 100).toFixed(0) + '¢' : 'unknown'}`);
-            console.log(`   Target combined: ${((signal.price + preHedge.hedgePrice) * 100).toFixed(0)}¢`);
-            
-            await executeTrade(ctx, preHedge.hedgeSide, preHedge.hedgePrice, signal.shares, preHedge.reasoning, 'HEDGE');
-          } else if (hedgeAsk && hedgeAsk <= 0.55) {
-            // FORCE HEDGE: If preHedge logic skipped but ask is still reasonable, force it
-            const forceHedgePrice = Math.min(hedgeAsk + 0.01, 0.54); // Max 54¢ forced hedge
-            console.log(`⚡ FORCE HEDGE: ${hedgeSide} @ ${(forceHedgePrice * 100).toFixed(0)}¢ (ask: ${(hedgeAsk * 100).toFixed(0)}¢)`);
-            await executeTrade(ctx, hedgeSide, forceHedgePrice, signal.shares, `Force hedge - ask ${(hedgeAsk * 100).toFixed(0)}¢ reasonable`, 'HEDGE');
-          } else {
-            console.log(`📊 Hedge skipped (ask ${hedgeAsk ? (hedgeAsk * 100).toFixed(0) + '¢' : 'unknown'} too expensive) - will hedge later via ONE_SIDED logic`);
-          }
+          // This should not happen in v4.6.0 since openings are now 'paired'
+          // But keep as fallback
+          console.log(`⚠️ [v4.6.0] Legacy opening detected - should be paired`);
         }
       }
     }
