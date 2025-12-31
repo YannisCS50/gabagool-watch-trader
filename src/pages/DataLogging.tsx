@@ -5,7 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { RefreshCw, Activity, TrendingUp, Clock, BarChart3, AlertTriangle, CheckCircle, XCircle, DollarSign, Download, Radio } from "lucide-react";
+import { RefreshCw, Activity, TrendingUp, Clock, BarChart3, AlertTriangle, CheckCircle, XCircle, DollarSign, Download, Radio, Database } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { useNavigate } from "react-router-dom";
 import { useChainlinkRealtime } from "@/hooks/useChainlinkRealtime";
@@ -315,6 +315,7 @@ export default function DataLogging() {
   };
 
   const [activeTab, setActiveTab] = useState("fills");
+  const [downloadingAll, setDownloadingAll] = useState(false);
 
   const handleExport = () => {
     switch (activeTab) {
@@ -323,6 +324,77 @@ export default function DataLogging() {
       case "settlements": exportToCSV(settlements, "settlements"); break;
       case "live": exportToCSV(livePriceTicks, "live-prices"); break;
       case "prices": exportToCSV(prices, "strike-prices"); break;
+    }
+  };
+
+  // Download ALL data from database (not just what's displayed)
+  const handleDownloadFullDatabase = async () => {
+    setDownloadingAll(true);
+    try {
+      // Fetch ALL data from each table (no limit)
+      const [
+        { data: allFillLogs },
+        { data: allSnapshotLogs },
+        { data: allSettlementLogs },
+        { data: allLiveTrades },
+        { data: allStrikePrices },
+        { data: allOrderQueue },
+        { data: allLiveTradeResults }
+      ] = await Promise.all([
+        supabase.from("fill_logs").select("*").order("ts", { ascending: false }),
+        supabase.from("snapshot_logs").select("*").order("ts", { ascending: false }),
+        supabase.from("settlement_logs").select("*").order("ts", { ascending: false }),
+        supabase.from("live_trades").select("*").order("created_at", { ascending: false }),
+        supabase.from("strike_prices").select("*").order("created_at", { ascending: false }),
+        supabase.from("order_queue").select("*").order("created_at", { ascending: false }),
+        supabase.from("live_trade_results").select("*").order("created_at", { ascending: false })
+      ]);
+
+      const timestamp = new Date().toISOString().slice(0, 16).replace(":", "-");
+      
+      // Export each table as separate CSV
+      if (allFillLogs?.length) exportToCSV(allFillLogs, `FULL_fill_logs_${timestamp}`);
+      if (allSnapshotLogs?.length) exportToCSV(allSnapshotLogs, `FULL_snapshot_logs_${timestamp}`);
+      if (allSettlementLogs?.length) exportToCSV(allSettlementLogs, `FULL_settlement_logs_${timestamp}`);
+      if (allLiveTrades?.length) exportToCSV(allLiveTrades, `FULL_live_trades_${timestamp}`);
+      if (allStrikePrices?.length) exportToCSV(allStrikePrices, `FULL_strike_prices_${timestamp}`);
+      if (allOrderQueue?.length) exportToCSV(allOrderQueue, `FULL_order_queue_${timestamp}`);
+      if (allLiveTradeResults?.length) exportToCSV(allLiveTradeResults, `FULL_live_trade_results_${timestamp}`);
+
+      // Also create a combined JSON export
+      const combinedData = {
+        exportedAt: new Date().toISOString(),
+        fill_logs: allFillLogs || [],
+        snapshot_logs: allSnapshotLogs || [],
+        settlement_logs: allSettlementLogs || [],
+        live_trades: allLiveTrades || [],
+        strike_prices: allStrikePrices || [],
+        order_queue: allOrderQueue || [],
+        live_trade_results: allLiveTradeResults || [],
+        counts: {
+          fill_logs: allFillLogs?.length || 0,
+          snapshot_logs: allSnapshotLogs?.length || 0,
+          settlement_logs: allSettlementLogs?.length || 0,
+          live_trades: allLiveTrades?.length || 0,
+          strike_prices: allStrikePrices?.length || 0,
+          order_queue: allOrderQueue?.length || 0,
+          live_trade_results: allLiveTradeResults?.length || 0
+        }
+      };
+
+      const jsonBlob = new Blob([JSON.stringify(combinedData, null, 2)], { type: "application/json" });
+      const jsonUrl = URL.createObjectURL(jsonBlob);
+      const jsonLink = document.createElement("a");
+      jsonLink.href = jsonUrl;
+      jsonLink.download = `FULL_DATABASE_EXPORT_${timestamp}.json`;
+      jsonLink.click();
+      URL.revokeObjectURL(jsonUrl);
+
+      console.log("✅ Full database export complete:", combinedData.counts);
+    } catch (error) {
+      console.error("❌ Error exporting full database:", error);
+    } finally {
+      setDownloadingAll(false);
     }
   };
 
@@ -341,9 +413,19 @@ export default function DataLogging() {
                 Last update: {lastUpdate.toLocaleTimeString("nl-NL")}
               </span>
             )}
+            <Button 
+              variant="default" 
+              size="sm" 
+              onClick={handleDownloadFullDatabase} 
+              disabled={downloadingAll}
+              className="bg-green-600 hover:bg-green-700"
+            >
+              <Database className={`h-4 w-4 mr-2 ${downloadingAll ? "animate-pulse" : ""}`} />
+              {downloadingAll ? "Downloading..." : "Download Full DB"}
+            </Button>
             <Button variant="outline" size="sm" onClick={handleExport}>
               <Download className="h-4 w-4 mr-2" />
-              Export
+              Export Tab
             </Button>
             <Button variant="outline" size="sm" onClick={loadData} disabled={loading}>
               <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
