@@ -34,8 +34,8 @@ export {
 // ============================================================
 // STRATEGY VERSION
 // ============================================================
-export const STRATEGY_VERSION = '4.2.2-gabagool-skew-guard';
-export const STRATEGY_NAME = 'Polymarket 15m Hedge/Arb (Gabagool v4.2.2 - Hard Skew Stop)';
+export const STRATEGY_VERSION = '4.2.3-gabagool-skew-guard-hotfix';
+export const STRATEGY_NAME = 'Polymarket 15m Hedge/Arb (Gabagool v4.2.3 - Skew Stop Allows Hedge)';
 
 // ============================================================
 // BACKWARD COMPATIBILITY LAYER
@@ -423,15 +423,20 @@ export function evaluateOpportunity(
   availableBalance?: number
 ): LegacyTradeSignal | null {
   // ========== v4.2.2 HARD SKEW STOP ==========
-  const skewCheck = checkHardSkewStop(position);
-  if (skewCheck.blocked) {
-    // Only log occasionally to avoid spam
-    if (Math.random() < 0.05) {
-      console.log(`🛑 ${skewCheck.reason}`);
+  // Only apply skew stop when we already have BOTH sides.
+  // When one-sided, we must allow HEDGE signals to restore balance.
+  const hasUpNow = position.upShares > 0;
+  const hasDownNow = position.downShares > 0;
+  if (hasUpNow && hasDownNow) {
+    const skewCheck = checkHardSkewStop(position);
+    if (skewCheck.blocked) {
+      // Only log occasionally to avoid spam
+      if (Math.random() < 0.05) {
+        console.log(`🛑 ${skewCheck.reason}`);
+      }
+      return null;
     }
-    return null;
   }
-  
   // ========== v4.2.1 TIME-SCALED PARAMETERS ==========
   const timeFactor = getTimeFactor(remainingSeconds);
   const scaledBuffer = STRATEGY.edge.buffer + getScaledBufferAdd(timeFactor);

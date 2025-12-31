@@ -173,13 +173,15 @@ async function executeTrade(
   reasoning: string,
   intent: TradeIntent = 'ENTRY'
 ): Promise<boolean> {
-  // v4.2.2: HARD SKEW STOP - block ALL trades if position too imbalanced
-  const skewCheck = checkHardSkewStop(ctx.position);
-  if (skewCheck.blocked) {
-    console.log(`🛑 TRADE BLOCKED: ${skewCheck.reason}`);
-    return false;
+  // v4.2.3: HARD SKEW STOP - block ONLY non-corrective trades.
+  // Important: we must allow HEDGE orders to restore balance, otherwise we can get stuck one-sided.
+  if (intent !== 'HEDGE') {
+    const skewCheck = checkHardSkewStop(ctx.position);
+    if (skewCheck.blocked) {
+      console.log(`🛑 TRADE BLOCKED: ${skewCheck.reason}`);
+      return false;
+    }
   }
-  
   const tokenId = outcome === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
   const total = shares * price;
 
