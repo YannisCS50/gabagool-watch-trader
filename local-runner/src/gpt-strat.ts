@@ -1,7 +1,16 @@
 /**
  * polymarket_15m_bot.ts
  * --------------------------------------------------------------------------
- * Polymarket 15m Hedge/Arbitrage Bot v4.4 — Settlement Safety Edition
+ * Polymarket 15m Hedge/Arbitrage Bot v4.5 — Mode-Switch Edition
+ *
+ * v4.5 Changes (CRITICAL MODE-SWITCH FIX):
+ * - HIGH_DELTA_CRITICAL MODE: IF delta > 0.8% AND secondsRemaining < 120:
+ *   → ignore edge, ignore pairCost, hedge immediately at best available price
+ *   → This is the #1 cause of unredeemed positions
+ * - SURVIVAL MODE: IF min(UP,DOWN) == 0 AND secondsRemaining < 60:
+ *   → place MARKETABLE hedge even if price > 0.95
+ *   → 5% edge loss ≪ 100% capital loss
+ * - Mode switch priority: SURVIVAL > HIGH_DELTA_CRITICAL > PANIC > NORMAL
  *
  * v4.4 Changes (GABAGOOL-PROOF):
  * - PANIC HEDGE: If secondsRemaining < 90 AND min(UP,DOWN) == 0 → force hedge AT ANY PRICE
@@ -125,6 +134,10 @@ export interface BotMetrics {
   panicHedgeTriggered: boolean;
   settlementFailure: boolean;
   settlementFailureLoss: number;
+  // v4.5 additions - Mode switch tracking
+  hedgeMode: "NORMAL" | "HIGH_DELTA_CRITICAL" | "SURVIVAL" | "PANIC";
+  highDeltaCriticalModeCount: number;
+  survivalModeCount: number;
 }
 
 // v4.4: Settlement failure event for logging
@@ -184,6 +197,15 @@ export interface StrategyConfig {
   settlement: {
     panicHedgeThresholdSec: number;  // 90s - force hedge at any price
     maxPriceForPanicHedge: number;   // 0.99 - max price for panic hedge
+  };
+
+  // v4.5: Mode-switch thresholds
+  modeSwitch: {
+    highDeltaCriticalThreshold: number;     // 0.008 = 0.8% - delta above this triggers critical mode
+    highDeltaCriticalTimeSec: number;       // 120s - only trigger if time remaining < this
+    survivalModeDeltaThreshold: number;     // 0.008 = 0.8% - delta for survival mode
+    survivalModeTimeSec: number;            // 60s - trigger survival mode below this time
+    survivalMaxPrice: number;               // 0.95 - max price for survival hedge
   };
 
   skew: {
@@ -281,6 +303,15 @@ export const DEFAULT_CONFIG: StrategyConfig = {
   settlement: {
     panicHedgeThresholdSec: 90,  // Force hedge at any price if one-sided below this
     maxPriceForPanicHedge: 0.99, // Max price willing to pay for panic hedge
+  },
+
+  // v4.5: Mode-switch thresholds - THE CRITICAL FIX
+  modeSwitch: {
+    highDeltaCriticalThreshold: 0.008,  // 0.8% delta - above this, ignore edge when time low
+    highDeltaCriticalTimeSec: 120,      // Below 120s + high delta = ignore edge
+    survivalModeDeltaThreshold: 0.008,  // 0.8% delta for survival mode
+    survivalModeTimeSec: 60,            // Below 60s + one-sided = survival mode
+    survivalMaxPrice: 0.95,             // Accept up to 5% loss to avoid 100% loss
   },
 
   skew: {
@@ -644,6 +675,10 @@ export class Polymarket15mArbBot {
     panicHedgeTriggered: false,
     settlementFailure: false,
     settlementFailureLoss: 0,
+    // v4.5 additions
+    hedgeMode: "NORMAL",
+    highDeltaCriticalModeCount: 0,
+    survivalModeCount: 0,
   };
 
   // v4.4: Settlement failure callback
@@ -796,17 +831,12 @@ export class Polymarket15mArbBot {
 
     this.state = this.decideState(snap);
 
-    // v4.4: PANIC HEDGE CHECK - settlement safety is #1 priority
-    const isPanic = this.isPanicState(snap);
-    if (isPanic) {
-      this.metrics.panicHedgeTriggered = true;
-      this.log("🚨 PANIC_HEDGE_ACTIVE", { 
-        secondsRemaining: snap.secondsRemaining,
-        upShares: this.inventory.upShares,
-        downShares: this.inventory.downShares,
-        threshold: this.cfg.settlement.panicHedgeThresholdSec
-      });
-    }
+    // ========================================================================
+    // v4.5: MODE-SWITCH DETECTION - Priority: SURVIVAL > HIGH_DELTA_CRITICAL > PANIC > NORMAL
+    // This is THE critical fix to prevent 100% losses from unredeemed positions
+    // ========================================================================
+    const hedgeMode = this.determineHedgeMode(snap);
+    this.metrics.hedgeMode = hedgeMode;
 
     // v3.1: Track hedge lag
     if (this.state === "ONE_SIDED") {
@@ -828,8 +858,13 @@ export class Polymarket15mArbBot {
 
     const intents: OrderIntent[] = [];
     
-    // v4.4: PANIC HEDGE takes priority - force hedge at any price if one-sided near expiry
-    if (isPanic) {
+    // v4.5: MODE-SWITCH HEDGE LOGIC - Priority order
+    // SURVIVAL and HIGH_DELTA_CRITICAL modes IGNORE edge and pairCost
+    if (hedgeMode === "SURVIVAL") {
+      intents.push(...this.buildSurvivalHedgeIntents(snap));
+    } else if (hedgeMode === "HIGH_DELTA_CRITICAL") {
+      intents.push(...this.buildHighDeltaCriticalHedgeIntents(snap));
+    } else if (hedgeMode === "PANIC") {
       intents.push(...this.buildPanicHedgeIntents(snap));
     } else {
       intents.push(...this.buildHedgeIntents(snap));
@@ -849,6 +884,180 @@ export class Polymarket15mArbBot {
 
     this.metrics.noLiquidityStreakMax = Math.max(this.metrics.noLiquidityStreakMax, this.noLiquidityStreak);
     this.metrics.adverseStreakMax = Math.max(this.metrics.adverseStreakMax, this.adverseStreak);
+  }
+
+  /**
+   * v4.5: Determine hedge mode - THE CRITICAL MODE-SWITCH
+   * Priority: SURVIVAL > HIGH_DELTA_CRITICAL > PANIC > NORMAL
+   */
+  private determineHedgeMode(snap: MarketSnapshot): "NORMAL" | "HIGH_DELTA_CRITICAL" | "SURVIVAL" | "PANIC" {
+    const inv = this.inventory;
+    const hasPosition = inv.upShares > 0 || inv.downShares > 0;
+    if (!hasPosition) return "NORMAL";
+    
+    const isOneSided = inv.upShares === 0 || inv.downShares === 0;
+    const deltaPct = this.currentDeltaPct;
+    
+    // SURVIVAL MODE: min(UP,DOWN) == 0 AND secondsRemaining < 60
+    // → MARKETABLE hedge even at price > 0.95
+    // This is the LAST LINE OF DEFENSE
+    if (isOneSided && snap.secondsRemaining < this.cfg.modeSwitch.survivalModeTimeSec) {
+      this.metrics.survivalModeCount++;
+      this.log("🚨 SURVIVAL_MODE_ACTIVE", {
+        secondsRemaining: snap.secondsRemaining,
+        deltaPct: (deltaPct * 100).toFixed(2) + '%',
+        upShares: inv.upShares,
+        downShares: inv.downShares,
+        reason: "ONE_SIDED_AND_RUNNING_OUT_OF_TIME"
+      });
+      return "SURVIVAL";
+    }
+    
+    // HIGH_DELTA_CRITICAL MODE: delta > 0.8% AND secondsRemaining < 120
+    // → ignore edge, ignore pairCost, hedge IMMEDIATELY
+    // This is the #1 cause of unredeemed positions
+    if (deltaPct > this.cfg.modeSwitch.highDeltaCriticalThreshold && 
+        snap.secondsRemaining < this.cfg.modeSwitch.highDeltaCriticalTimeSec &&
+        isOneSided) {
+      this.metrics.highDeltaCriticalModeCount++;
+      this.log("⚠️ HIGH_DELTA_CRITICAL_MODE_ACTIVE", {
+        secondsRemaining: snap.secondsRemaining,
+        deltaPct: (deltaPct * 100).toFixed(2) + '%',
+        threshold: (this.cfg.modeSwitch.highDeltaCriticalThreshold * 100).toFixed(1) + '%',
+        upShares: inv.upShares,
+        downShares: inv.downShares,
+        reason: "HIGH_DELTA_NEAR_EXPIRY"
+      });
+      return "HIGH_DELTA_CRITICAL";
+    }
+    
+    // PANIC MODE: one-sided AND < 90s (from v4.4)
+    if (isOneSided && snap.secondsRemaining <= this.cfg.settlement.panicHedgeThresholdSec) {
+      this.metrics.panicHedgeTriggered = true;
+      this.log("🚨 PANIC_MODE_ACTIVE", { 
+        secondsRemaining: snap.secondsRemaining,
+        upShares: inv.upShares,
+        downShares: inv.downShares,
+        threshold: this.cfg.settlement.panicHedgeThresholdSec
+      });
+      return "PANIC";
+    }
+    
+    return "NORMAL";
+  }
+
+  /**
+   * v4.5: SURVIVAL MODE HEDGE - buy at ANY price up to survivalMaxPrice (0.95)
+   * This is the absolute last line of defense against 100% loss
+   * 
+   * Rule: 5% edge loss ≪ 100% capital loss
+   */
+  private buildSurvivalHedgeIntents(snap: MarketSnapshot): OrderIntent[] {
+    const intents: OrderIntent[] = [];
+    const inv = this.inventory;
+    
+    // Determine which side needs hedging
+    let sideToBuy: Side;
+    let qty: number;
+    
+    if (inv.upShares > 0 && inv.downShares === 0) {
+      sideToBuy = "DOWN";
+      qty = inv.upShares;
+    } else if (inv.downShares > 0 && inv.upShares === 0) {
+      sideToBuy = "UP";
+      qty = inv.downShares;
+    } else {
+      return intents;
+    }
+    
+    const top = sideToBuy === "UP" ? snap.upTop : snap.downTop;
+    const book = sideToBuy === "UP" ? snap.upBook : snap.downBook;
+    const tick = this.tickInferer.getTick(snap.marketId, sideToBuy, book, snap.ts);
+    
+    // SURVIVAL: Accept ANY price up to survivalMaxPrice (0.95)
+    // This is a MARKETABLE order - we WILL get filled
+    const maxPx = this.cfg.modeSwitch.survivalMaxPrice;
+    const survivalPx = Math.min(maxPx, addTicks(top.ask, tick, 10));  // 10 ticks above ask
+    const px = roundUpToTick(survivalPx, tick);
+    
+    this.log("🆘 SURVIVAL_HEDGE_ORDER", {
+      sideToBuy,
+      qty,
+      price: px,
+      ask: top.ask,
+      secondsRemaining: snap.secondsRemaining,
+      deltaPct: (this.currentDeltaPct * 100).toFixed(2) + '%',
+      existingUp: inv.upShares,
+      existingDown: inv.downShares,
+      message: "ACCEPTING 5% LOSS TO AVOID 100% LOSS"
+    });
+    
+    intents.push({
+      side: sideToBuy,
+      qty,
+      limitPrice: px,
+      tag: "HEDGE",
+      reason: `🆘 SURVIVAL_HEDGE @ ${(px * 100).toFixed(0)}¢ (${snap.secondsRemaining}s left, delta=${(this.currentDeltaPct * 100).toFixed(1)}%)`
+    });
+    
+    return intents;
+  }
+
+  /**
+   * v4.5: HIGH_DELTA_CRITICAL MODE HEDGE - ignore edge, ignore pairCost
+   * 
+   * Rule: IF delta > 0.8% AND secondsRemaining < 120
+   *       → hedge immediately at best available price
+   */
+  private buildHighDeltaCriticalHedgeIntents(snap: MarketSnapshot): OrderIntent[] {
+    const intents: OrderIntent[] = [];
+    const inv = this.inventory;
+    
+    // Determine which side needs hedging
+    let sideToBuy: Side;
+    let qty: number;
+    
+    if (inv.upShares > 0 && inv.downShares === 0) {
+      sideToBuy = "DOWN";
+      qty = inv.upShares;
+    } else if (inv.downShares > 0 && inv.upShares === 0) {
+      sideToBuy = "UP";
+      qty = inv.downShares;
+    } else {
+      return intents;
+    }
+    
+    const top = sideToBuy === "UP" ? snap.upTop : snap.downTop;
+    const book = sideToBuy === "UP" ? snap.upBook : snap.downBook;
+    const tick = this.tickInferer.getTick(snap.marketId, sideToBuy, book, snap.ts);
+    
+    // HIGH_DELTA_CRITICAL: Ignore edge, use aggressive pricing
+    // Up to 3 ticks above ask, max price 0.90 (still some edge protection)
+    const criticalMaxPx = 0.90;  // More aggressive than SURVIVAL but still protective
+    const criticalPx = Math.min(criticalMaxPx, addTicks(top.ask, tick, 3));
+    const px = roundUpToTick(criticalPx, tick);
+    
+    this.log("⚡ HIGH_DELTA_CRITICAL_HEDGE_ORDER", {
+      sideToBuy,
+      qty,
+      price: px,
+      ask: top.ask,
+      secondsRemaining: snap.secondsRemaining,
+      deltaPct: (this.currentDeltaPct * 100).toFixed(2) + '%',
+      existingUp: inv.upShares,
+      existingDown: inv.downShares,
+      message: "IGNORING EDGE - HIGH DELTA NEAR EXPIRY"
+    });
+    
+    intents.push({
+      side: sideToBuy,
+      qty,
+      limitPrice: px,
+      tag: "HEDGE",
+      reason: `⚡ CRITICAL_HEDGE @ ${(px * 100).toFixed(0)}¢ (${snap.secondsRemaining}s, delta=${(this.currentDeltaPct * 100).toFixed(1)}%)`
+    });
+    
+    return intents;
   }
 
   /**
