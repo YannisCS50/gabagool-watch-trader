@@ -90,13 +90,88 @@ export default function DataLogging() {
   const prevBtcPrice = useRef<number | null>(null);
   const prevEthPrice = useRef<number | null>(null);
 
-  // Log live price ticks every 2 seconds
+  // Keep latest prices in refs so we can log them on a fixed 1s cadence
+  const btcPriceRef = useRef<number | null>(null);
+  const ethPriceRef = useRef<number | null>(null);
+  const prevLoggedBtcPriceRef = useRef<number | null>(null);
+  const prevLoggedEthPriceRef = useRef<number | null>(null);
+  const dbLogInFlightRef = useRef(false);
+
+  useEffect(() => {
+    btcPriceRef.current = btcPrice ?? null;
+    ethPriceRef.current = ethPrice ?? null;
+  }, [btcPrice, ethPrice]);
+
+  // Persist BTC/ETH price ticks to the database every 1s
+  useEffect(() => {
+    if (!isConnected) return;
+
+    const interval = setInterval(async () => {
+      const btc = btcPriceRef.current;
+      const eth = ethPriceRef.current;
+      if (!btc && !eth) return;
+
+      if (dbLogInFlightRef.current) return;
+      dbLogInFlightRef.current = true;
+
+      try {
+        const rows: Array<{
+          asset: string;
+          price: number;
+          delta: number;
+          delta_percent: number;
+          source: string;
+        }> = [];
+
+        if (btc) {
+          const prev = prevLoggedBtcPriceRef.current ?? btc;
+          const delta = btc - prev;
+          const deltaPercent = prev > 0 ? (delta / prev) * 100 : 0;
+          rows.push({
+            asset: "BTC",
+            price: btc,
+            delta,
+            delta_percent: deltaPercent,
+            source: "ui_realtime",
+          });
+          prevLoggedBtcPriceRef.current = btc;
+        }
+
+        if (eth) {
+          const prev = prevLoggedEthPriceRef.current ?? eth;
+          const delta = eth - prev;
+          const deltaPercent = prev > 0 ? (delta / prev) * 100 : 0;
+          rows.push({
+            asset: "ETH",
+            price: eth,
+            delta,
+            delta_percent: deltaPercent,
+            source: "ui_realtime",
+          });
+          prevLoggedEthPriceRef.current = eth;
+        }
+
+        const { error } = await supabase.from("price_ticks").insert(rows);
+        if (error) {
+          console.error("❌ Failed to insert price_ticks:", error);
+        }
+      } catch (e) {
+        console.error("❌ price_ticks logging crashed:", e);
+      } finally {
+        dbLogInFlightRef.current = false;
+      }
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [isConnected]);
+
+  // Log live price ticks in UI
   useEffect(() => {
     if (!btcPrice && !ethPrice) return;
-    
+
     const now = Date.now();
     const newTicks: LivePriceTick[] = [];
-    
+
     if (btcPrice) {
       const prevBtc = prevBtcPrice.current || btcPrice;
       const delta = btcPrice - prevBtc;
@@ -104,7 +179,7 @@ export default function DataLogging() {
       newTicks.push({ ts: now, asset: "BTC", price: btcPrice, delta, deltaPercent });
       prevBtcPrice.current = btcPrice;
     }
-    
+
     if (ethPrice) {
       const prevEth = prevEthPrice.current || ethPrice;
       const delta = ethPrice - prevEth;
@@ -112,12 +187,11 @@ export default function DataLogging() {
       newTicks.push({ ts: now, asset: "ETH", price: ethPrice, delta, deltaPercent });
       prevEthPrice.current = ethPrice;
     }
-    
+
     if (newTicks.length > 0) {
-      setLivePriceTicks(prev => [...newTicks, ...prev].slice(0, 200)); // Keep last 200 ticks
+      setLivePriceTicks((prev) => [...newTicks, ...prev].slice(0, 200)); // Keep last 200 ticks
     }
   }, [updateCount]); // Trigger on each price update
-
   // Load sample data from live_trades to show fill-like logs
   const loadData = async () => {
     setLoading(true);
@@ -363,6 +437,59 @@ export default function DataLogging() {
       if (allOrderQueue?.length) exportToCSV(allOrderQueue, `FULL_order_queue_${timestamp}`);
       if (allLiveTradeResults?.length) exportToCSV(allLiveTradeResults, `FULL_live_trade_results_${timestamp}`);
       if (allPriceTicks?.length) exportToCSV(allPriceTicks, `FULL_price_ticks_${timestamp}`);
+
+      // One combined timeline (BTC ticks + orders + trades), sorted by time
+      const timeline = [
+        ...(allPriceTicks || [])
+          .filter((t: any) => t.asset === "BTC")
+          .map((t: any) => ({
+            _sort: new Date(t.created_at).getTime(),
+            time: t.created_at,
+            type: "BTC_TICK",
+            asset: t.asset,
+            price: t.price,
+            delta: t.delta,
+            delta_percent: t.delta_percent,
+            source: t.source,
+          })),
+        ...(allOrderQueue || []).map((o: any) => ({
+          _sort: new Date(o.created_at).getTime(),
+          time: o.created_at,
+          type: "ORDER",
+          asset: o.asset,
+          market_slug: o.market_slug,
+          outcome: o.outcome,
+          status: o.status,
+          order_id: o.order_id,
+          token_id: o.token_id,
+          order_type: o.order_type,
+          shares: o.shares,
+          price: o.price,
+          avg_fill_price: o.avg_fill_price,
+          reasoning: o.reasoning,
+          error_message: o.error_message,
+        })),
+        ...(allLiveTrades || []).map((t: any) => ({
+          _sort: new Date(t.created_at).getTime(),
+          time: t.created_at,
+          type: "LIVE_TRADE",
+          asset: t.asset,
+          market_slug: t.market_slug,
+          outcome: t.outcome,
+          status: t.status,
+          order_id: t.order_id,
+          shares: t.shares,
+          price: t.price,
+          avg_fill_price: t.avg_fill_price,
+          total: t.total,
+          reasoning: t.reasoning,
+        })),
+      ]
+        .filter((r: any) => Number.isFinite(r._sort))
+        .sort((a: any, b: any) => a._sort - b._sort)
+        .map(({ _sort, ...rest }: any) => rest);
+
+      if (timeline.length) exportToCSV(timeline, `TIMELINE_BTC_${timestamp}`);
 
       // Also create a combined JSON export
       const combinedData = {
