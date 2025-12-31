@@ -34,8 +34,8 @@ export {
 // ============================================================
 // STRATEGY VERSION
 // ============================================================
-export const STRATEGY_VERSION = '4.5.0-mode-switch-edition';
-export const STRATEGY_NAME = 'Polymarket 15m Hedge/Arb (v4.5 - Mode-Switch: SURVIVAL + HIGH_DELTA_CRITICAL)';
+export const STRATEGY_VERSION = '4.5.1-relaxed-entry';
+export const STRATEGY_NAME = 'Polymarket 15m Hedge/Arb (v4.5.1 - Relaxed Entry + Aggressive Hedge)';
 
 // ============================================================
 // BACKWARD COMPATIBILITY LAYER
@@ -117,21 +117,21 @@ export const STRATEGY = {
     unwindStartSec: DEFAULT_CONFIG.timing.unwindStartSec,
   },
   
-  // Opening parameters - v4.2.1: 50 SHARES
+  // Opening parameters - v4.5.1: 50 SHARES, relaxed entry
   opening: {
     shares: 50,          // Fixed 50 shares per opening
     notional: 25,        // ~$25 at 50¢ = 50 shares
-    maxPrice: 0.52,
+    maxPrice: 0.48,      // v4.5.1: Lowered to 48¢ for better edge
     skipEdgeCheck: true,
     maxDelayMs: 5000,
   },
   
-  // Hedge parameters - v4.2.1: time-scaled timeout
+  // Hedge parameters - v4.5.1: more aggressive hedging
   hedge: {
     shares: 50,          // Fixed 50 shares per hedge
-    maxPrice: 0.55,      // Max 55¢ for hedge
-    cushionTicks: 2,     // 2 ticks above ask
-    forceTimeoutSec: 35, // Base timeout, scaled by timeFactor
+    maxPrice: 0.75,      // v4.5.1: Allow expensive hedges up to 75¢
+    cushionTicks: 3,     // v4.5.1: 3 ticks above ask for faster fills
+    forceTimeoutSec: 25, // v4.5.1: Faster hedge timeout
     cooldownMs: 0,       // NO COOLDOWN for hedge!
   },
   
@@ -163,11 +163,11 @@ export const STRATEGY = {
     maxDeltaPct: 0.0040,      // Only if delta < 0.40%
   },
   
-  // Entry conditions
+  // Entry conditions - v4.5.1: Relaxed for better entry
   entry: {
     minSecondsRemaining: DEFAULT_CONFIG.timing.unwindStartSec,
-    minPrice: 0.03,
-    maxPrice: 0.92,
+    minPrice: 0.05,      // v4.5.1: Min 5¢ (avoid dust)
+    maxPrice: 0.95,      // v4.5.1: Max 95¢ (allow more range)
     staleBookMs: 5000,
   },
   
@@ -498,9 +498,12 @@ export function evaluateOpportunity(
     const cheaperPrice = cheaperSide === 'UP' ? upAsk : downAsk;
     
     const isOpeningPrice = cheaperPrice <= STRATEGY.opening.maxPrice;
-    // v4.2.1: Use time-scaled buffer for edge check
+    // v4.5.1: Use time-scaled buffer for edge check - edge alone is enough to enter
     const hasEdge = pairedLockOk(upAsk, downAsk, scaledBuffer);
     
+    // v4.5.1: RELAXED ENTRY - allow entry if:
+    // 1. Price is within opening range, OR
+    // 2. Combined price shows edge (profitable pair)
     if (!isOpeningPrice && !hasEdge) {
       return null;
     }
@@ -511,7 +514,11 @@ export function evaluateOpportunity(
       if (!check.canProceed) return null;
     }
     
-    if (cheaperPrice > STRATEGY.opening.maxPrice) return null;
+    // v4.5.1: If we have edge, allow entry even if price is higher than maxPrice
+    // Only block if price is too high AND no edge exists
+    if (cheaperPrice > STRATEGY.opening.maxPrice && !hasEdge) {
+      return null;
+    }
     
     const clipUsd = STRATEGY.sizing.baseClipUsd;
     const shares = sharesFromUsd(clipUsd, cheaperPrice);
@@ -522,7 +529,7 @@ export function evaluateOpportunity(
       outcome: cheaperSide,
       price: cheaperPrice,
       shares,
-      reasoning: `ENTRY ${cheaperSide} @ ${(cheaperPrice * 100).toFixed(1)}¢ (v4.2.1 tf=${timeFactor.toFixed(2)})`,
+      reasoning: `ENTRY ${cheaperSide} @ ${(cheaperPrice * 100).toFixed(1)}¢ (v4.5.1 tf=${timeFactor.toFixed(2)} edge=${hasEdge})`,
       type: 'opening',
     };
   }
@@ -542,22 +549,28 @@ export function evaluateOpportunity(
     const existingAvg = existingShares > 0 ? existingCost / existingShares : 0;
     const projectedCombined = existingAvg + missingAsk;
     
-    // v4.2.1: Allow overpay for hedging
-    const allowOverpay = DEFAULT_CONFIG.edge.allowOverpay;
+    // v4.5.1: RELAXED HEDGE - allow more overpay, prioritize getting hedged
+    // Being one-sided near expiry is worse than losing some edge
+    const allowOverpay = 0.05; // v4.5.1: Allow up to 5% overpay (was 2%)
     if (projectedCombined > 1 + allowOverpay) {
-      console.log(`[v4.2.1] HEDGE_SKIPPED: combined ${(projectedCombined * 100).toFixed(0)}¢ > ${((1 + allowOverpay) * 100).toFixed(0)}¢ max`);
-      return null;
+      // v4.5.1: Only skip if we have plenty of time left
+      if (remainingSeconds > 180) {
+        console.log(`[v4.5.1] HEDGE_SKIPPED: combined ${(projectedCombined * 100).toFixed(0)}¢ > ${((1 + allowOverpay) * 100).toFixed(0)}¢ max (time=${remainingSeconds}s)`);
+        return null;
+      }
+      // Under 180s: ALWAYS hedge regardless of cost
+      console.log(`[v4.5.1] FORCE_HEDGE: time=${remainingSeconds}s, combined=${(projectedCombined * 100).toFixed(0)}¢`);
     }
     
-    // v4.2.1: Use time-scaled cushion ticks
-    const cushion = DEFAULT_CONFIG.execution.hedgeCushionTicks;
+    // v4.5.1: Use more aggressive cushion ticks for faster fills
+    const cushion = STRATEGY.hedge.cushionTicks;
     const limitPrice = roundUp(missingAsk + cushion * tick, tick);
     
     return {
       outcome: missingSide,
       price: limitPrice,
       shares: hedgeShares,
-      reasoning: `HEDGE ${missingSide} @ ${(limitPrice * 100).toFixed(0)}¢ (v4.2.1 timeout=${scaledHedgeTimeout}s)`,
+      reasoning: `HEDGE ${missingSide} @ ${(limitPrice * 100).toFixed(0)}¢ (v4.5.1 timeout=${scaledHedgeTimeout}s)`,
       type: 'hedge',
       isMarketable: true,
       cushionTicks: cushion,
