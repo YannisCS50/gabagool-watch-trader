@@ -9,7 +9,7 @@ const RUNNER_SECRET = Deno.env.get('RUNNER_SHARED_SECRET');
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
-type Action = 'get-markets' | 'get-trades' | 'save-trade' | 'heartbeat' | 'offline' | 'get-pending-orders' | 'update-order' | 'sync-positions';
+type Action = 'get-markets' | 'get-trades' | 'save-trade' | 'heartbeat' | 'offline' | 'get-pending-orders' | 'update-order' | 'sync-positions' | 'save-price-ticks';
 
 interface RequestBody {
   action: Action;
@@ -349,6 +349,38 @@ Deno.serve(async (req) => {
           cancelled,
           totalPositions: positions.length 
         }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      case 'save-price-ticks': {
+        // Insert BTC/ETH price ticks from runner (1-second cadence)
+        const ticks = data?.ticks as Array<{
+          asset: string;
+          price: number;
+          delta: number;
+          delta_percent: number;
+          source: string;
+        }> | undefined;
+
+        if (!ticks || ticks.length === 0) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing ticks' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const { error } = await supabase.from('price_ticks').insert(ticks);
+
+        if (error) {
+          console.error('[runner-proxy] save-price-ticks error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true, count: ticks.length }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }

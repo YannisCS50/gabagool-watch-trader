@@ -5,7 +5,8 @@ import { config } from './config.js';
 import { placeOrder, testConnection, getBalance, getOrderbookDepth, invalidateBalanceCache, ensureValidCredentials } from './polymarket.js';
 import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, checkHardSkewStop, STRATEGY, STRATEGY_VERSION, STRATEGY_NAME } from './strategy.js';
 import { enforceVpnOrExit } from './vpn-check.js';
-import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder, syncPositionsToBackend } from './backend.js';
+import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder, syncPositionsToBackend, savePriceTicks, PriceTick } from './backend.js';
+import { fetchChainlinkPrice } from './chain.js';
 import { checkAndClaimWinnings, getClaimableValue } from './redeemer.js';
 import { syncPositions, syncPositionsToDatabase, printPositionsReport, filter15mPositions } from './positions-sync.js';
 import { recordSnapshot, recordFill, recordSettlement, TradeIntent } from './telemetry.js';
@@ -728,6 +729,63 @@ async function main(): Promise<void> {
       syncInFlight = false;
     }
   }, 10000);
+
+  // ===================================================================
+  // PRICE TICK LOGGING: Save BTC/ETH Chainlink prices every 1 second
+  // ===================================================================
+  let lastBtcPrice: number | null = null;
+  let lastEthPrice: number | null = null;
+  let tickLogInFlight = false;
+
+  setInterval(async () => {
+    if (tickLogInFlight) return;
+    tickLogInFlight = true;
+
+    try {
+      const [btcResult, ethResult] = await Promise.all([
+        fetchChainlinkPrice('BTC'),
+        fetchChainlinkPrice('ETH'),
+      ]);
+
+      const ticks: PriceTick[] = [];
+
+      if (btcResult) {
+        const prev = lastBtcPrice ?? btcResult.price;
+        const delta = btcResult.price - prev;
+        const deltaPct = prev > 0 ? (delta / prev) * 100 : 0;
+        ticks.push({
+          asset: 'BTC',
+          price: btcResult.price,
+          delta,
+          delta_percent: deltaPct,
+          source: 'runner_chainlink',
+        });
+        lastBtcPrice = btcResult.price;
+      }
+
+      if (ethResult) {
+        const prev = lastEthPrice ?? ethResult.price;
+        const delta = ethResult.price - prev;
+        const deltaPct = prev > 0 ? (delta / prev) * 100 : 0;
+        ticks.push({
+          asset: 'ETH',
+          price: ethResult.price,
+          delta,
+          delta_percent: deltaPct,
+          source: 'runner_chainlink',
+        });
+        lastEthPrice = ethResult.price;
+      }
+
+      if (ticks.length > 0) {
+        await savePriceTicks(ticks);
+      }
+    } catch (e) {
+      // silent – non-critical
+    } finally {
+      tickLogInFlight = false;
+    }
+  }, 1000);
 
   // Status logging every minute
   setInterval(async () => {
