@@ -34,8 +34,8 @@ export {
 // ============================================================
 // STRATEGY VERSION
 // ============================================================
-export const STRATEGY_VERSION = '4.2.3-gabagool-skew-guard-hotfix';
-export const STRATEGY_NAME = 'Polymarket 15m Hedge/Arb (Gabagool v4.2.3 - Skew Stop Allows Hedge)';
+export const STRATEGY_VERSION = '4.5.0-mode-switch-edition';
+export const STRATEGY_NAME = 'Polymarket 15m Hedge/Arb (v4.5 - Mode-Switch: SURVIVAL + HIGH_DELTA_CRITICAL)';
 
 // ============================================================
 // BACKWARD COMPATIBILITY LAYER
