@@ -171,10 +171,11 @@ Deno.serve(async (req) => {
     // Only settle markets that ended at least 2 minutes ago
     const settleThreshold = new Date(now.getTime() - 2 * 60 * 1000);
 
-    // 1. Get all live trades where event has ended
+    // 1. Get all FILLED live trades where event has ended
     const { data: unsettledTrades, error: tradesError } = await supabase
       .from('live_trades')
       .select('*')
+      .eq('status', 'filled')
       .lt('event_end_time', settleThreshold.toISOString());
 
     if (tradesError) {
