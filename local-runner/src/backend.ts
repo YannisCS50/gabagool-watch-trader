@@ -183,3 +183,27 @@ export async function syncPositionsToBackend(
     return { success: false };
   }
 }
+
+// ============================================
+// PRICE TICK LOGGING
+// ============================================
+
+export interface PriceTick {
+  asset: string;
+  price: number;
+  delta: number;
+  delta_percent: number;
+  source: string;
+}
+
+export async function savePriceTicks(ticks: PriceTick[]): Promise<boolean> {
+  if (ticks.length === 0) return true;
+  try {
+    const result = await callProxy<{ success: boolean; count?: number }>('save-price-ticks', { ticks });
+    return result.success;
+  } catch (error) {
+    // Fail silently – price-tick logging is non-critical
+    console.error('❌ savePriceTicks error:', error);
+    return false;
+  }
+}

@@ -211,3 +211,47 @@ export async function getRecentPayoutRedemptions(
     return [];
   }
 }
+
+// ===========================================================
+// CHAINLINK PRICE FEEDS – Real-time BTC/ETH from Polygon
+// ===========================================================
+
+interface ChainlinkFeedInfo {
+  address: string;
+  decimals: number;
+}
+
+const CHAINLINK_FEEDS: Record<string, ChainlinkFeedInfo> = {
+  BTC: { address: '0xc907E116054Ad103354f2D350FD2514433D57F6f', decimals: 8 },
+  ETH: { address: '0xF9680D99D6C9589e2a93a78A04A279e509205945', decimals: 8 },
+};
+
+const AGGREGATOR_ABI = [
+  'function latestRoundData() view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)',
+];
+
+export interface ChainlinkPrice {
+  price: number;
+  timestamp: number;
+}
+
+/**
+ * Fetch the latest Chainlink price for an asset (BTC or ETH).
+ * Returns null if the feed is unavailable or stale.
+ */
+export async function fetchChainlinkPrice(asset: 'BTC' | 'ETH'): Promise<ChainlinkPrice | null> {
+  const feedInfo = CHAINLINK_FEEDS[asset];
+  if (!feedInfo) return null;
+
+  try {
+    const provider = getProvider();
+    const aggregator = new ethers.Contract(feedInfo.address, AGGREGATOR_ABI, provider);
+    const [, answer, , updatedAt] = await aggregator.latestRoundData();
+    const price = parseFloat(ethers.utils.formatUnits(answer, feedInfo.decimals));
+    const timestamp = (updatedAt as ethers.BigNumber).toNumber();
+    return { price, timestamp };
+  } catch (e) {
+    console.error(`❌ fetchChainlinkPrice(${asset}) error:`, e);
+    return null;
+  }
+}
