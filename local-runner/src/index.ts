@@ -3,7 +3,7 @@ import os from 'os';
 import dns from 'node:dns';
 import { config } from './config.js';
 import { placeOrder, testConnection, getBalance, getOrderbookDepth, invalidateBalanceCache, ensureValidCredentials } from './polymarket.js';
-import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, STRATEGY, STRATEGY_VERSION, STRATEGY_NAME } from './strategy.js';
+import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, checkHardSkewStop, STRATEGY, STRATEGY_VERSION, STRATEGY_NAME } from './strategy.js';
 import { enforceVpnOrExit } from './vpn-check.js';
 import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder, syncPositionsToBackend } from './backend.js';
 import { checkAndClaimWinnings, getClaimableValue } from './redeemer.js';
@@ -173,6 +173,13 @@ async function executeTrade(
   reasoning: string,
   intent: TradeIntent = 'ENTRY'
 ): Promise<boolean> {
+  // v4.2.2: HARD SKEW STOP - block ALL trades if position too imbalanced
+  const skewCheck = checkHardSkewStop(ctx.position);
+  if (skewCheck.blocked) {
+    console.log(`🛑 TRADE BLOCKED: ${skewCheck.reason}`);
+    return false;
+  }
+  
   const tokenId = outcome === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
   const total = shares * price;
 

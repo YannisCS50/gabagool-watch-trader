@@ -34,8 +34,8 @@ export {
 // ============================================================
 // STRATEGY VERSION
 // ============================================================
-export const STRATEGY_VERSION = '4.2.1-gabagool-adaptive';
-export const STRATEGY_NAME = 'Polymarket 15m Hedge/Arb (Gabagool v4.2.1 - Constant Regimes)';
+export const STRATEGY_VERSION = '4.2.2-gabagool-skew-guard';
+export const STRATEGY_NAME = 'Polymarket 15m Hedge/Arb (Gabagool v4.2.2 - Hard Skew Stop)';
 
 // ============================================================
 // BACKWARD COMPATIBILITY LAYER
@@ -383,6 +383,37 @@ function sharesFromUsd(usd: number, price: number): number {
   return Math.max(1, Math.floor(usd / price));
 }
 
+// ============================================================
+// v4.2.2 HARD SKEW STOP
+// ============================================================
+const HARD_SKEW_MIN = 0.35;  // Stop if UP/(UP+DOWN) < 35%
+const HARD_SKEW_MAX = 0.65;  // Stop if UP/(UP+DOWN) > 65%
+
+export function checkHardSkewStop(position: MarketPosition): { blocked: boolean; skew: number; reason?: string } {
+  const total = position.upShares + position.downShares;
+  if (total === 0) return { blocked: false, skew: 0.5 };
+  
+  const skew = position.upShares / total;
+  
+  if (skew < HARD_SKEW_MIN) {
+    return { 
+      blocked: true, 
+      skew,
+      reason: `HARD_SKEW_STOP: UP=${position.upShares} DOWN=${position.downShares} (${(skew*100).toFixed(0)}% < ${(HARD_SKEW_MIN*100).toFixed(0)}% min)`
+    };
+  }
+  
+  if (skew > HARD_SKEW_MAX) {
+    return {
+      blocked: true,
+      skew,
+      reason: `HARD_SKEW_STOP: UP=${position.upShares} DOWN=${position.downShares} (${(skew*100).toFixed(0)}% > ${(HARD_SKEW_MAX*100).toFixed(0)}% max)`
+    };
+  }
+  
+  return { blocked: false, skew };
+}
+
 export function evaluateOpportunity(
   book: TopOfBook,
   position: MarketPosition,
@@ -391,6 +422,16 @@ export function evaluateOpportunity(
   nowMs: number,
   availableBalance?: number
 ): LegacyTradeSignal | null {
+  // ========== v4.2.2 HARD SKEW STOP ==========
+  const skewCheck = checkHardSkewStop(position);
+  if (skewCheck.blocked) {
+    // Only log occasionally to avoid spam
+    if (Math.random() < 0.05) {
+      console.log(`🛑 ${skewCheck.reason}`);
+    }
+    return null;
+  }
+  
   // ========== v4.2.1 TIME-SCALED PARAMETERS ==========
   const timeFactor = getTimeFactor(remainingSeconds);
   const scaledBuffer = STRATEGY.edge.buffer + getScaledBufferAdd(timeFactor);
