@@ -9,7 +9,7 @@ const RUNNER_SECRET = Deno.env.get('RUNNER_SHARED_SECRET');
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
-type Action = 'get-markets' | 'get-trades' | 'save-trade' | 'heartbeat' | 'offline' | 'get-pending-orders' | 'update-order' | 'sync-positions' | 'save-price-ticks';
+type Action = 'get-markets' | 'get-trades' | 'save-trade' | 'heartbeat' | 'offline' | 'get-pending-orders' | 'update-order' | 'sync-positions' | 'save-price-ticks' | 'save-settlement-failure';
 
 interface RequestBody {
   action: Action;
@@ -381,6 +381,47 @@ Deno.serve(async (req) => {
         }
 
         return new Response(JSON.stringify({ success: true, count: ticks.length }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      case 'save-settlement-failure': {
+        // v4.4: Log settlement failure - THE critical metric
+        const failure = data?.failure as {
+          market_slug: string;
+          asset: string;
+          up_shares: number;
+          down_shares: number;
+          up_cost: number;
+          down_cost: number;
+          lost_side: string;
+          lost_cost: number;
+          seconds_remaining: number;
+          reason: string;
+          panic_hedge_attempted: boolean;
+          wallet_address?: string;
+        } | undefined;
+
+        if (!failure) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing failure data' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log('[runner-proxy] 🚨 SETTLEMENT FAILURE:', failure);
+
+        const { error } = await supabase.from('settlement_failures').insert(failure);
+
+        if (error) {
+          console.error('[runner-proxy] save-settlement-failure error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
