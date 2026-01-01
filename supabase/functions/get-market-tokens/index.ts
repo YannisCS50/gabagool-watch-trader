@@ -148,71 +148,107 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
 }
 
 /**
- * Search for active 1-hour crypto markets (v5.1.0 - Real Polymarket slugs)
- * Polymarket uses slugs like: bitcoin-up-or-down-january-1-2am-et
+ * Search for active 1-hour crypto markets (v5.2.0 - Multi-source search)
+ * Polymarket uses slugs like: bitcoin-up-or-down-december-31-9am-et
  */
 async function searchActive1hMarkets(): Promise<string[]> {
   const slugs: string[] = [];
   
   try {
-    // Search events for "up or down" patterns (hourly crypto markets)
-    const response = await fetch(
-      'https://gamma-api.polymarket.com/events?active=true&closed=false&limit=200',
-      {
-        headers: { 'Accept': 'application/json' }
-      }
-    );
+    // Method 1: Search events with tag_slug filter for crypto
+    const cryptoTags = ['bitcoin', 'ethereum', 'crypto'];
     
-    if (!response.ok) {
-      console.log('[Gamma] Failed to fetch events:', response.status);
-      return slugs;
-    }
-    
-    const events = await response.json();
-    console.log(`[Gamma] Fetched ${events.length} active events`);
-    
-    for (const event of events) {
-      const eventSlug = (event.slug || '').toLowerCase();
-      const title = (event.title || '').toLowerCase();
-      
-      // Real Polymarket 1-hour market patterns:
-      // "bitcoin-up-or-down-january-1-2am-et" 
-      // "ethereum-up-or-down-january-1-1pm-et"
-      const isUpDown = eventSlug.includes('up-or-down') || 
-                       title.includes('up or down');
-      
-      const isCrypto = eventSlug.includes('bitcoin') || 
-                      eventSlug.includes('ethereum') ||
-                      eventSlug.includes('btc') ||
-                      eventSlug.includes('eth') ||
-                      title.includes('bitcoin') ||
-                      title.includes('ethereum');
-      
-      if (isUpDown && isCrypto) {
-        console.log(`[Gamma] Found hourly crypto event: ${eventSlug}`);
+    for (const tag of cryptoTags) {
+      try {
+        const response = await fetch(
+          `https://gamma-api.polymarket.com/events?active=true&closed=false&limit=100&tag_slug=${tag}`,
+          { headers: { 'Accept': 'application/json' } }
+        );
         
-        // Get markets from the event
-        const markets = event.markets || [];
-        for (const market of markets) {
-          if (market.slug) {
-            slugs.push(market.slug);
-            console.log(`[Gamma] Added market slug: ${market.slug}`);
+        if (response.ok) {
+          const events = await response.json();
+          console.log(`[Gamma] Fetched ${events.length} events for tag: ${tag}`);
+          
+          for (const event of events) {
+            const eventSlug = (event.slug || '').toLowerCase();
+            const title = (event.title || '').toLowerCase();
+            
+            // Look for "up or down" hourly patterns
+            if (eventSlug.includes('up-or-down') || title.includes('up or down')) {
+              console.log(`[Gamma] Found hourly event: ${eventSlug}`);
+              
+              const markets = event.markets || [];
+              for (const market of markets) {
+                if (market.slug) {
+                  slugs.push(market.slug);
+                }
+              }
+              if (event.slug) {
+                slugs.push(event.slug);
+              }
+            }
           }
         }
-        
-        // Also add the event slug itself
-        if (event.slug && !slugs.includes(event.slug)) {
-          slugs.push(event.slug);
-        }
+      } catch (e) {
+        console.log(`[Gamma] Tag search failed for ${tag}:`, e);
       }
     }
     
-    // Also search markets directly for up-or-down patterns
+    // Method 2: Search all active events (broader search)
+    const response = await fetch(
+      'https://gamma-api.polymarket.com/events?active=true&closed=false&limit=200',
+      { headers: { 'Accept': 'application/json' } }
+    );
+    
+    if (response.ok) {
+      const events = await response.json();
+      console.log(`[Gamma] Fetched ${events.length} active events (broad search)`);
+      
+      let upDownCount = 0;
+      for (const event of events) {
+        const eventSlug = (event.slug || '').toLowerCase();
+        const title = (event.title || '').toLowerCase();
+        
+        // Debug: log first 5 events to see what patterns exist
+        if (events.indexOf(event) < 5) {
+          console.log(`[Gamma] Sample event: ${eventSlug.slice(0, 60)}`);
+        }
+        
+        const isUpDown = eventSlug.includes('up-or-down') || 
+                         eventSlug.includes('updown') ||
+                         title.includes('up or down') ||
+                         title.includes('up/down');
+        
+        const isCrypto = eventSlug.includes('bitcoin') || 
+                        eventSlug.includes('ethereum') ||
+                        eventSlug.includes('btc') ||
+                        eventSlug.includes('eth') ||
+                        title.includes('bitcoin') ||
+                        title.includes('ethereum');
+        
+        if (isUpDown) upDownCount++;
+        
+        if (isUpDown && isCrypto) {
+          console.log(`[Gamma] Matched hourly crypto: ${eventSlug}`);
+          
+          const markets = event.markets || [];
+          for (const market of markets) {
+            if (market.slug && !slugs.includes(market.slug)) {
+              slugs.push(market.slug);
+            }
+          }
+          if (event.slug && !slugs.includes(event.slug)) {
+            slugs.push(event.slug);
+          }
+        }
+      }
+      console.log(`[Gamma] Found ${upDownCount} up/down events in broad search`);
+    }
+    
+    // Method 3: Search markets directly
     const marketsResponse = await fetch(
       'https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=200',
-      {
-        headers: { 'Accept': 'application/json' }
-      }
+      { headers: { 'Accept': 'application/json' } }
     );
     
     if (marketsResponse.ok) {
@@ -224,6 +260,7 @@ async function searchActive1hMarkets(): Promise<string[]> {
         const question = (market.question || '').toLowerCase();
         
         const isUpDown = marketSlug.includes('up-or-down') ||
+                        marketSlug.includes('updown') ||
                         question.includes('up or down');
         
         const isCrypto = marketSlug.includes('bitcoin') ||
@@ -234,8 +271,34 @@ async function searchActive1hMarkets(): Promise<string[]> {
         if (isUpDown && isCrypto && market.slug) {
           if (!slugs.includes(market.slug)) {
             slugs.push(market.slug);
-            console.log(`[Gamma] Added market from direct search: ${market.slug}`);
+            console.log(`[Gamma] Added from markets: ${market.slug}`);
           }
+        }
+      }
+    }
+    
+    // Method 4: Try known current hourly slugs based on current time
+    const now = new Date();
+    const months = ['january', 'february', 'march', 'april', 'may', 'june', 
+                   'july', 'august', 'september', 'october', 'november', 'december'];
+    const month = months[now.getUTCMonth()];
+    const day = now.getUTCDate();
+    const hours = [
+      ...Array.from({length: 12}, (_, i) => `${i + 1}am`),
+      ...Array.from({length: 12}, (_, i) => `${i + 1}pm`)
+    ];
+    
+    // Try a few known patterns for current day
+    const patterns = [
+      `bitcoin-up-or-down-${month}-${day}`,
+      `ethereum-up-or-down-${month}-${day}`,
+    ];
+    
+    for (const pattern of patterns) {
+      for (const hour of hours.slice(0, 6)) { // Just check a few hours
+        const testSlug = `${pattern}-${hour}-et`;
+        if (!slugs.includes(testSlug)) {
+          slugs.push(testSlug);
         }
       }
     }
