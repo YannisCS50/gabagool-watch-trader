@@ -9,6 +9,7 @@ const RPC_ENDPOINTS = [
   'https://polygon-rpc.com',
   'https://1rpc.io/matic',
   'https://polygon.drpc.org',
+  'https://rpc.ankr.com/polygon',
 ];
 
 // Rate limiting state
@@ -50,6 +51,17 @@ export interface PayoutRedemptionEvent {
 let _provider: providers.JsonRpcProvider | null = null;
 let _currentRpcIndex = 0;
 
+const POLYGON_NETWORK: providers.Network = {
+  name: 'matic',
+  chainId: 137,
+};
+
+function makeProvider(url: string): providers.JsonRpcProvider {
+  // Static provider prevents "could not detect network" failures on flaky RPCs
+  // by skipping the initial network-detection roundtrip.
+  return new providers.StaticJsonRpcProvider(url, POLYGON_NETWORK);
+}
+
 /**
  * Check if we're in rate limit backoff
  */
@@ -63,20 +75,20 @@ function isInBackoff(): boolean {
 function setRateLimitBackoff(errorMsg: string): void {
   // Parse "retry in 10m0s" style messages
   let backoffMs = 30000; // Default 30s
-  
+
   const match = errorMsg.match(/retry in (\d+)m(\d+)s/);
   if (match) {
     const mins = parseInt(match[1], 10);
     const secs = parseInt(match[2], 10);
     backoffMs = (mins * 60 + secs) * 1000;
   }
-  
+
   // Cap at 10 minutes
   backoffMs = Math.min(backoffMs, 10 * 60 * 1000);
-  
+
   _rateLimitBackoffUntil = Date.now() + backoffMs;
   console.log(`⏳ RPC rate limit backoff for ${backoffMs / 1000}s`);
-  
+
   // Also rotate provider
   rotateProvider();
 }
@@ -91,7 +103,7 @@ async function throttleRpc(): Promise<void> {
     console.log(`⏳ Waiting ${Math.ceil(waitTime / 1000)}s for rate limit backoff...`);
     await new Promise(r => setTimeout(r, waitTime));
   }
-  
+
   // Ensure minimum interval between calls
   const now = Date.now();
   const elapsed = now - _lastRpcCall;
@@ -106,22 +118,22 @@ async function throttleRpc(): Promise<void> {
  */
 export function handleRpcError(error: unknown): boolean {
   const msg = error instanceof Error ? error.message : String(error);
-  
+
   // Check for rate limit errors
   if (msg.includes('rate limit') || msg.includes('-32090') || msg.includes('Too many requests')) {
     setRateLimitBackoff(msg);
     _consecutiveErrors++;
     return true; // Indicates rate limit, should retry
   }
-  
+
   _consecutiveErrors++;
-  
+
   // After 3 consecutive errors, rotate provider
   if (_consecutiveErrors >= 3) {
     rotateProvider();
     _consecutiveErrors = 0;
   }
-  
+
   return false;
 }
 
@@ -130,7 +142,7 @@ export function handleRpcError(error: unknown): boolean {
  */
 export function getProvider(): providers.JsonRpcProvider {
   if (_provider) return _provider;
-  _provider = new providers.JsonRpcProvider(RPC_ENDPOINTS[_currentRpcIndex]);
+  _provider = makeProvider(RPC_ENDPOINTS[_currentRpcIndex]);
   return _provider;
 }
 
@@ -139,7 +151,7 @@ export function getProvider(): providers.JsonRpcProvider {
  */
 export function rotateProvider(): providers.JsonRpcProvider {
   _currentRpcIndex = (_currentRpcIndex + 1) % RPC_ENDPOINTS.length;
-  _provider = new providers.JsonRpcProvider(RPC_ENDPOINTS[_currentRpcIndex]);
+  _provider = makeProvider(RPC_ENDPOINTS[_currentRpcIndex]);
   console.log(`🔄 Rotated to RPC: ${RPC_ENDPOINTS[_currentRpcIndex]}`);
   _consecutiveErrors = 0;
   return _provider;
