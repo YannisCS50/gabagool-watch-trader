@@ -796,17 +796,32 @@ Deno.serve(async (req) => {
             const openingSuccess = await executeTrade(market, ctx, cheaperSide, cheaperPrice, shares, 
               `Opening ${cheaperSide} @ ${(cheaperPrice*100).toFixed(0)}¢`);
             
-            // 2. ANTICIPATORY: Also place hedge order if other side is cheap enough
-            if (openingSuccess && otherPrice <= STRATEGY.hedge.maxPrice) {
+            // 2. ANTICIPATORY: Place hedge order at proper complementary price!
+            // BUG FIX: Calculate hedge price based on TARGET COMBINED, not current ask!
+            // If we opened DOWN at 33¢ and want 97¢ combined, hedge UP at 97-33=64¢
+            if (openingSuccess) {
+              const targetCombined = STRATEGY.hedge.triggerCombined; // 97¢
               const cushion = STRATEGY.hedge.cushionTicks * STRATEGY.hedge.tickSize;
-              const hedgePrice = Math.min(otherPrice + cushion, STRATEGY.hedge.maxPrice);
+              
+              // Calculate max hedge price: target_combined - opening_price
+              const maxHedgePrice = targetCombined - cheaperPrice;
+              
+              // Use current ask if cheaper, but cap at our max hedge price
+              // Add cushion for better fill but never exceed max
+              const hedgePrice = Math.min(otherPrice + cushion, maxHedgePrice);
               const hedgeShares = STRATEGY.hedge.shares; // Fixed 25 shares for hedge
               const projectedCombined = cheaperPrice + hedgePrice;
               
-              if (projectedCombined < 1.0) { // Only if profitable
-                log(`🎯 ANTICIPATORY HEDGE: ${otherSide} @ ${(hedgePrice*100).toFixed(0)}¢ (projected combined: ${(projectedCombined*100).toFixed(0)}¢)`);
+              // Only place hedge if:
+              // 1. Hedge price is reasonable (at least 10¢)
+              // 2. Projected combined is profitable (<100¢)
+              // 3. Current ask is at or below our max hedge price (otherwise wait for better price)
+              if (hedgePrice >= 0.10 && projectedCombined < 1.0 && otherPrice <= maxHedgePrice) {
+                log(`🎯 ANTICIPATORY HEDGE: ${otherSide} @ ${(hedgePrice*100).toFixed(0)}¢ (opened ${cheaperSide} @ ${(cheaperPrice*100).toFixed(0)}¢, target combined: ${(projectedCombined*100).toFixed(0)}¢)`);
                 await executeTrade(market, ctx, otherSide, hedgePrice, hedgeShares,
-                  `Anticipatory Hedge ${otherSide} @ ${(hedgePrice*100).toFixed(0)}¢`);
+                  `Anticipatory Hedge ${otherSide} @ ${(hedgePrice*100).toFixed(0)}¢ (target ${(maxHedgePrice*100).toFixed(0)}¢)`);
+              } else {
+                log(`⏸️ ANTICIPATORY SKIP: ${otherSide} ask ${(otherPrice*100).toFixed(0)}¢ > max ${(maxHedgePrice*100).toFixed(0)}¢ (need ${(maxHedgePrice*100).toFixed(0)}¢ for 97¢ combined)`);
               }
             }
           }
