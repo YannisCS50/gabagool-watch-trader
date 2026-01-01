@@ -94,8 +94,8 @@ function get15mWindowFromSlug(slug: string): { startMs: number; endMs: number } 
 }
 
 /**
- * Only allow trading markets that have actually started.
- * (Prevents entering the "next" 15m market early.)
+ * Only allow trading markets that are starting soon or already started.
+ * For 15m markets: allow entry up to 90 seconds before start (to place opening orders).
  */
 function isMarketStarted(marketType: MarketToken['marketType'], slug: string, eventStartTimeStr: string): boolean {
   const now = Date.now();
@@ -104,8 +104,9 @@ function isMarketStarted(marketType: MarketToken['marketType'], slug: string, ev
     const w = get15mWindowFromSlug(slug);
     if (!w) return true; // fallback to Gamma times if slug format is unexpected
 
-    // Allow a small clock/propagation skew, but prevent buying far in advance.
-    return now >= (w.startMs - 60_000);
+    // Allow entry 90s before market starts (enough to place opening orders)
+    const earlyEntryMs = 90_000;
+    return now >= (w.startMs - earlyEntryMs);
   }
 
   // Default: rely on the API start time (if provided)
