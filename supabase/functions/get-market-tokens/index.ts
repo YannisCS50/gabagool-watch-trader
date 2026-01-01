@@ -398,7 +398,7 @@ async function searchActive15mMarkets(): Promise<string[]> {
 
   // Cover a small window around "now" to catch current/next/previous markets
   const offsets = [-4, -3, -2, -1, 0, 1, 2, 3, 4];
-  const assets = ['btc', 'eth'];
+  const assets = ['btc', 'eth', 'sol', 'xrp'];
 
   for (const asset of assets) {
     for (const off of offsets) {
