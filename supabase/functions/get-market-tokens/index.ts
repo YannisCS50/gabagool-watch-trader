@@ -506,14 +506,14 @@ serve(async (req) => {
       const slugs15m = await searchActive15mMarkets();
       console.log(`[Gamma] Checking ${slugs15m.length} potential 15m slugs...`);
 
-      const slugsToFetch15m = slugs15m.slice(0, 20);
-      const fetch15m = await Promise.all(slugsToFetch15m.map((slug) => fetchMarketBySlug(slug)));
+      // IMPORTANT: Fetch ALL slugs (BTC, ETH, SOL, XRP) - don't limit to 20!
+      const fetch15m = await Promise.all(slugs15m.map((slug) => fetchMarketBySlug(slug)));
 
       for (const m of fetch15m) {
         if (m && m.marketType === '15min') markets.push(m);
       }
 
-      console.log(`[Gamma] Found ${markets.length} active 15m markets`);
+      console.log(`[Gamma] Found ${markets.length} active 15m markets: ${markets.map(m => m.asset).join(', ')}`);
 
       // Fallback to 1-hour markets if no 15m markets found
       if (markets.length === 0) {
