@@ -7,7 +7,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 // (Edge functions get blocked by Cloudflare, so we queue orders instead)
 // ============================================================================
 
-const BOT_VERSION = "3.6.0"; // v3.6: Dynamic hedge target based on opening price
+const BOT_VERSION = "3.7.0"; // v3.7: Race condition fix - hedge cooldown per market
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -39,6 +39,7 @@ interface MarketContext {
   inFlight?: boolean;
   strikePrice?: number | null;  // Cached strike price for endgame logic
   evidentSide?: Outcome | null; // Which side is likely to win
+  lastHedgeQueuedAtMs?: number; // Cooldown to prevent duplicate hedges
 }
 
 interface MarketToken {
@@ -85,9 +86,9 @@ const STRATEGY = {
     skipHedgeThresholdUsd: 120, // $120 distance from strike = evident
     maxPrice: 0.97,           // Allow buying up to 97¢ in endgame
   },
-  // COOLDOWNS: Opening uses standard cooldown, hedge has NO cooldown
+  // COOLDOWNS: Opening uses standard cooldown, hedge has short cooldown to prevent duplicates
   cooldownMs: 5000,        // 5s cooldown for opening trades (was 15s)
-  hedgeCooldownMs: 0,      // NO cooldown for hedge! Hedge immediately
+  hedgeCooldownMs: 3000,   // 3s cooldown for hedges to prevent duplicate race conditions
   dedupeWindowMs: 5000,    // 5s dedupe window (was 10s)
   globalCooldownMs: 2000,  // 2s global cooldown (was 5s)
 };
@@ -884,6 +885,8 @@ Deno.serve(async (req) => {
               // 3. Current ask is at or below our max hedge price (otherwise wait for better price)
               if (hedgePrice >= 0.10 && projectedCombined < 1.0 && otherPrice <= maxHedgePrice) {
                 log(`🎯 ANTICIPATORY HEDGE: ${otherSide} @ ${(hedgePrice*100).toFixed(0)}¢ (opened ${cheaperSide} @ ${(cheaperPrice*100).toFixed(0)}¢, target combined: ${(projectedCombined*100).toFixed(0)}¢)`);
+                // Set cooldown BEFORE execute to prevent race conditions
+                ctx.lastHedgeQueuedAtMs = nowMs;
                 await executeTrade(market, ctx, otherSide, hedgePrice, hedgeShares,
                   `Anticipatory Hedge ${otherSide} @ ${(hedgePrice*100).toFixed(0)}¢ (target ${(maxHedgePrice*100).toFixed(0)}¢)`);
               } else {
@@ -901,6 +904,19 @@ Deno.serve(async (req) => {
       // Use EFFECTIVE shares to check if we already have a pending hedge!
       // Delta-based: average down if losing, hedge aggressively if winning
       if (effectiveUpShares === 0 || effectiveDownShares === 0) {
+        // RACE CONDITION FIX: Check in-memory cooldown FIRST to prevent duplicate hedges
+        // This catches fast consecutive evaluations before DB/pending check can update
+        const hedgeCooldownActive = ctx.lastHedgeQueuedAtMs && 
+          (nowMs - ctx.lastHedgeQueuedAtMs < STRATEGY.hedgeCooldownMs);
+        
+        if (hedgeCooldownActive) {
+          if (evaluationCount % 10 === 0) {
+            const remainingMs = STRATEGY.hedgeCooldownMs - (nowMs - (ctx.lastHedgeQueuedAtMs || 0));
+            log(`⏸️ HEDGE COOLDOWN: ${(remainingMs/1000).toFixed(1)}s remaining`);
+          }
+          return;
+        }
+        
         // Check if we already have a pending hedge - if so, skip!
         const hasPendingHedge = (effectiveUpShares > 0 && pendingPos.upShares > 0 && pos.upShares === 0) ||
                                  (effectiveDownShares > 0 && pendingPos.downShares > 0 && pos.downShares === 0);
@@ -984,6 +1000,8 @@ Deno.serve(async (req) => {
         // FORCE HEDGE: If timeout exceeded AND combined still profitable, hedge
         if (isForceHedge) {
           log(`⚠️ FORCE HEDGE: ${timeSinceOpeningSec.toFixed(0)}s since opening > ${STRATEGY.hedge.forceTimeoutSec}s timeout (using ${hedgeShares} shares)`);
+          // Set cooldown BEFORE execute to prevent race conditions
+          ctx.lastHedgeQueuedAtMs = nowMs;
           await executeTrade(market, ctx, missingSide, marketablePrice, hedgeShares,
             `FORCE Hedge ${missingSide} @ ${(marketablePrice*100).toFixed(0)}¢ (timeout ${timeSinceOpeningSec.toFixed(0)}s, target was ${(dynamicMaxHedge*100).toFixed(0)}¢)`);
           return;
@@ -993,6 +1011,8 @@ Deno.serve(async (req) => {
         if (missingPrice <= dynamicMaxHedge) {
           const edgePct = ((1 - projectedCombined) * 100).toFixed(1);
           log(`✅ HEDGE NOW: ${missingSide} @ ${(marketablePrice*100).toFixed(0)}¢ ≤ target ${(dynamicMaxHedge*100).toFixed(0)}¢ | combined ${(projectedCombined*100).toFixed(0)}¢ | ${edgePct}% edge`);
+          // Set cooldown BEFORE execute to prevent race conditions
+          ctx.lastHedgeQueuedAtMs = nowMs;
           await executeTrade(market, ctx, missingSide, marketablePrice, hedgeShares,
             `Hedge ${missingSide} @ ${(marketablePrice*100).toFixed(0)}¢ (${edgePct}% edge, target ${(dynamicMaxHedge*100).toFixed(0)}¢)`);
         } else {
