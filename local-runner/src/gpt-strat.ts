@@ -263,12 +263,13 @@ export const DEFAULT_CONFIG: StrategyConfig = {
   tradeSizeUsd: { base: 25, min: 20, max: 50 }, // ~50 shares at 50¢
 
   edge: {
-    baseBuffer: 0.012,
-    strongEdge: 0.04,      // 4c is strong edge
-    allowOverpay: 0.02,    // Allow 2c overpay for better hedge fills
+    baseBuffer: 0.01,        // v5.1.0: 1% opening edge (was 1.2%)
+    strongEdge: 0.04,        // 4c is strong edge
+    allowOverpay: 0.02,      // Allow 2c overpay for better hedge fills
     feesBuffer: 0.002,
     slippageBuffer: 0.004,
-    deepDislocationThreshold: 0.96, // Stricter: 96¢ triggers DEEP (was 95¢)
+    deepDislocationThreshold: 0.96,
+    relaxedHedgeEdge: 0.045, // v5.1.0: Only hedge when combined < 95.5¢ (4.5% edge)
   },
 
   // v4.2.1: CONSTANT delta regime thresholds
@@ -296,21 +297,22 @@ export const DEFAULT_CONFIG: StrategyConfig = {
     stopNewTradesSec: 30,
     hedgeMustBySec: 60,     // Must hedge by 60s remaining
     unwindStartSec: 45,
-    panicHedgeSec: 90,      // v4.4: Panic hedge threshold
+    panicHedgeSec: 300,     // v5.1.0: Panic hedge at 5 min (was 90s) - more time exposed
   },
 
-  // v4.4: Settlement safety - NEVER have unredeemed positions
+  // v5.1.0: Settlement safety - allow exposed, but always hedge before expiry
   settlement: {
-    panicHedgeThresholdSec: 90,  // Force hedge at any price if one-sided below this
-    maxPriceForPanicHedge: 0.99, // Max price willing to pay for panic hedge
+    panicHedgeThresholdSec: 300, // v5.1.0: 5 min - force hedge at any price if one-sided
+    maxPriceForPanicHedge: 0.95, // v5.1.0: Accept 5% loss to avoid 100% loss
+    relaxedHedgeTimeSec: 600,    // v5.1.0: Before 10 min remaining, only hedge at 4.5% edge
   },
 
-  // v4.5: Mode-switch thresholds - THE CRITICAL FIX
+  // v5.1.0: Mode-switch thresholds - RELAXED for more exposed time
   modeSwitch: {
     highDeltaCriticalThreshold: 0.008,  // 0.8% delta - above this, ignore edge when time low
-    highDeltaCriticalTimeSec: 120,      // Below 120s + high delta = ignore edge
+    highDeltaCriticalTimeSec: 180,      // v5.1.0: Below 3 min + high delta = ignore edge
     survivalModeDeltaThreshold: 0.008,  // 0.8% delta for survival mode
-    survivalModeTimeSec: 60,            // Below 60s + one-sided = survival mode
+    survivalModeTimeSec: 120,           // v5.1.0: Below 2 min + one-sided = survival mode
     survivalMaxPrice: 0.95,             // Accept up to 5% loss to avoid 100% loss
   },
 
