@@ -7,7 +7,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 // (Edge functions get blocked by Cloudflare, so we queue orders instead)
 // ============================================================================
 
-const BOT_VERSION = "3.2.0";
+const BOT_VERSION = "3.3.0"; // v3.3: 15min markets, no accumulate, delta-based hedge
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -66,10 +66,8 @@ const STRATEGY = {
     forceTimeoutSec: 12,   // Force hedge after 12s if still one-sided (was 25s!)
     maxPrice: 0.55,        // Max price for hedge (was 75¢ - WAY too high!)
   },
-  accumulate: {
-    triggerCombined: 0.95, // Accumulate when combined < 95¢ (stricter)
-    shares: 10,            // 10 shares per accumulate
-  },
+  // DISABLED: No accumulate - just lock in profit when hedged
+  // accumulate: { triggerCombined: 0.95, shares: 10 },
   limits: {
     maxSharesPerSide: 100,  // Max 100 shares per side
     maxTotalInvested: 100,  // Max $100 total per market (increased for 25 shares)
@@ -257,8 +255,8 @@ Deno.serve(async (req) => {
         const activeSlugs = new Set<string>();
 
         for (const market of data.markets) {
-          // Trade 1-hour markets (v6.0: switched from 15min to 1hour)
-          if (market.marketType !== '1hour') continue;
+          // Trade 15-minute markets (v6.1: back to 15min)
+          if (market.marketType !== '15min') continue;
           if (market.asset !== 'BTC') continue;
 
           const startMs = new Date(market.eventStartTime).getTime();
@@ -808,14 +806,53 @@ Deno.serve(async (req) => {
         return;
       }
 
-      // PHASE 2: HEDGE - One side filled, buy other at MARKETABLE price
+      // PHASE 2: HEDGE - One side filled, buy other based on delta
+      // Delta-based: average down if losing, hedge aggressively if winning
       if (pos.upShares === 0 || pos.downShares === 0) {
         const missingSide: Outcome = pos.upShares === 0 ? "UP" : "DOWN";
+        const existingSide: Outcome = missingSide === "UP" ? "DOWN" : "UP";
         const missingPrice = missingSide === "UP" ? upAsk : downAsk;
+        const existingPrice = existingSide === "UP" ? upAsk : downAsk;
         const existingShares = missingSide === "UP" ? pos.downShares : pos.upShares;
         const existingInvested = missingSide === "UP" ? pos.downInvested : pos.upInvested;
         const existingAvg = existingShares > 0 ? existingInvested / existingShares : 0;
         
+        // Calculate time since opening trade for force-hedge timeout
+        const timeSinceOpeningMs = ctx.lastTradeAtMs > 0 ? nowMs - ctx.lastTradeAtMs : 0;
+        const timeSinceOpeningSec = timeSinceOpeningMs / 1000;
+        const isForceHedge = timeSinceOpeningSec >= STRATEGY.hedge.forceTimeoutSec;
+
+        // DELTA-BASED STRATEGY:
+        // - If current BTC price available, check which side is "winning"
+        // - If our existing side is losing (delta against us), try to average down
+        // - If our existing side is winning (delta for us), hedge immediately
+        
+        let shouldAverage = false;
+        let deltaInfo = "no-delta";
+        
+        if (ctx.strikePrice && chainlinkBtcPrice) {
+          const delta = chainlinkBtcPrice - ctx.strikePrice;
+          const deltaAbs = Math.abs(delta);
+          
+          // Determine if our existing position is winning or losing
+          // UP wins if BTC > strike, DOWN wins if BTC < strike
+          const winningNow: Outcome = delta > 0 ? "UP" : "DOWN";
+          const ourSideWinning = existingSide === winningNow;
+          
+          deltaInfo = `Δ${delta > 0 ? '+' : ''}${delta.toFixed(0)} (${winningNow} winning)`;
+          
+          // If we're losing and delta is significant, try to average down existing side
+          if (!ourSideWinning && deltaAbs > 30 && existingPrice <= STRATEGY.opening.maxPrice) {
+            shouldAverage = true;
+            log(`📉 AVERAGING: Our ${existingSide} is losing, ${deltaInfo} - averaging down`);
+            
+            const avgShares = Math.min(existingShares, STRATEGY.hedge.shares);
+            await executeTrade(market, ctx, existingSide, existingPrice, avgShares,
+              `Average ${existingSide} @ ${(existingPrice*100).toFixed(0)}¢ (${deltaInfo})`);
+            // Don't return - also try to hedge if possible
+          }
+        }
+
         // Use fixed hedge shares from strategy, or match existing if larger
         const hedgeShares = Math.max(existingShares, STRATEGY.hedge.shares);
         
@@ -827,13 +864,8 @@ Deno.serve(async (req) => {
         );
         const projectedCombined = existingAvg + marketablePrice;
 
-        // Calculate time since opening trade for force-hedge timeout
-        const timeSinceOpeningMs = ctx.lastTradeAtMs > 0 ? nowMs - ctx.lastTradeAtMs : 0;
-        const timeSinceOpeningSec = timeSinceOpeningMs / 1000;
-        const isForceHedge = timeSinceOpeningSec >= STRATEGY.hedge.forceTimeoutSec;
-
-        // Log hedge evaluation details (include hedgeShares to show minimum enforcement)
-        log(`🔍 HEDGE EVAL: ${missingSide} ask=${(missingPrice*100).toFixed(0)}¢ → marketable=${(marketablePrice*100).toFixed(0)}¢ | projected=${(projectedCombined*100).toFixed(0)}¢ | shares=${existingShares}→${hedgeShares} | timeSinceOpen=${timeSinceOpeningSec.toFixed(0)}s | force=${isForceHedge}`);
+        // Log hedge evaluation details
+        log(`🔍 HEDGE EVAL: ${missingSide} ask=${(missingPrice*100).toFixed(0)}¢ → marketable=${(marketablePrice*100).toFixed(0)}¢ | projected=${(projectedCombined*100).toFixed(0)}¢ | shares=${existingShares}→${hedgeShares} | ${deltaInfo} | t=${timeSinceOpeningSec.toFixed(0)}s`);
 
         // CRITICAL SAFETY CHECK: Never hedge if combined > 99¢ (guaranteed loss)
         if (projectedCombined >= 0.99) {
@@ -849,13 +881,12 @@ Deno.serve(async (req) => {
           return;
         }
 
-        // NORMAL HEDGE: Trigger earlier and allow higher hedge price if combined is still good
-        // Key change: missingPrice <= STRATEGY.hedge.maxPrice (55¢) instead of opening.maxPrice
+        // NORMAL HEDGE: If combined is profitable, lock it in!
         if (projectedCombined < STRATEGY.hedge.triggerCombined && missingPrice <= STRATEGY.hedge.maxPrice) {
           const edgePct = ((1 - projectedCombined) * 100).toFixed(1);
           log(`✅ HEDGE NOW: ${missingSide} @ ${(marketablePrice*100).toFixed(0)}¢ | combined ${(projectedCombined*100).toFixed(0)}¢ | ${edgePct}% edge`);
           await executeTrade(market, ctx, missingSide, marketablePrice, hedgeShares,
-            `Hedge ${missingSide} @ ${(marketablePrice*100).toFixed(0)}¢ (${edgePct}% edge, +${STRATEGY.hedge.cushionTicks} ticks)`);
+            `Hedge ${missingSide} @ ${(marketablePrice*100).toFixed(0)}¢ (${edgePct}% edge, ${deltaInfo})`);
         } else {
           // Log why hedge was skipped
           if (evaluationCount % 5 === 0) {
@@ -865,21 +896,11 @@ Deno.serve(async (req) => {
         return;
       }
 
-      // PHASE 3: ACCUMULATE - Both sides filled, add equal shares if good combined
-      if (combined < STRATEGY.accumulate.triggerCombined) {
-        const sharesToAdd = STRATEGY.accumulate.shares; // Fixed 10 shares for accumulate
-        
-        if (sharesToAdd >= 1 && 
-            pos.upShares + sharesToAdd <= STRATEGY.limits.maxSharesPerSide &&
-            pos.downShares + sharesToAdd <= STRATEGY.limits.maxSharesPerSide) {
-          const edgePct = ((1 - combined) * 100).toFixed(1);
-          
-          // Execute both sides
-          await executeTrade(market, ctx, "UP", upAsk, sharesToAdd,
-            `Accumulate UP @ ${(upAsk*100).toFixed(0)}¢ (${edgePct}% edge)`);
-          await executeTrade(market, ctx, "DOWN", downAsk, sharesToAdd,
-            `Accumulate DOWN @ ${(downAsk*100).toFixed(0)}¢ (${edgePct}% edge)`);
-        }
+      // PHASE 3: HEDGED - Both sides filled = profit locked in
+      // NO accumulate - just hold until expiry
+      const edgePct = ((1 - combined) * 100).toFixed(1);
+      if (evaluationCount % 20 === 0) {
+        log(`🔒 LOCKED: ${pos.upShares}UP/${pos.downShares}DOWN | combined ${(combined*100).toFixed(0)}¢ | ${edgePct}% edge - holding`);
       }
     } catch (err) {
       log(`❌ Evaluation error: ${err}`);
