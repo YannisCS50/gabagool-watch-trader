@@ -1,10 +1,10 @@
 /**
  * strategy.ts - Active Strategy Wrapper
  * =====================================
- * This file exports the GPT-strat (Polymarket15mArbBot) adapted for the local-runner.
+ * This file exports the GPT-strat (Polymarket1hArbBot) adapted for the local-runner.
  * The loveable-strat.ts is preserved as backup.
  * 
- * Strategy: gpt-strat (Polymarket 15m Hedge/Arbitrage Bot - Gabagool-Grade)
+ * Strategy: gpt-strat (Polymarket 1h Hedge/Arbitrage Bot - Gabagool-Grade)
  */
 
 import { config } from './config.js';
@@ -34,8 +34,8 @@ export {
 // ============================================================
 // STRATEGY VERSION
 // ============================================================
-export const STRATEGY_VERSION = '4.6.0-atomic-pair';
-export const STRATEGY_NAME = 'Polymarket 15m Hedge/Arb (v4.6.0 - Atomic Paired Entry)';
+export const STRATEGY_VERSION = '5.0.0-1hour';
+export const STRATEGY_NAME = 'Polymarket 1h Hedge/Arb (v5.0.0 - 1 Hour Markets)';
 
 // ============================================================
 // BACKWARD COMPATIBILITY LAYER
@@ -127,13 +127,13 @@ export const STRATEGY = {
     maxDelayMs: 5000,
   },
   
-  // Hedge parameters - v4.5.1: more aggressive hedging
+  // Hedge parameters - v5.0.0: adjusted for 1h markets
   hedge: {
-    shares: 50,          // Fixed 50 shares per hedge
-    maxPrice: 0.75,      // v4.5.1: Allow expensive hedges up to 75¢
-    cushionTicks: 3,     // v4.5.1: 3 ticks above ask for faster fills
-    forceTimeoutSec: 25, // v4.5.1: Faster hedge timeout
-    cooldownMs: 0,       // NO COOLDOWN for hedge!
+    shares: 50,           // Fixed 50 shares per hedge
+    maxPrice: 0.75,       // Allow expensive hedges up to 75¢
+    cushionTicks: 3,      // 3 ticks above ask for faster fills
+    forceTimeoutSec: 90,  // v5.0.0: 90s for 1h markets (more time to hedge)
+    cooldownMs: 0,        // NO COOLDOWN for hedge!
   },
   
   // Accumulate parameters - v4.2.1: max 50 shares, only when hedged
@@ -143,25 +143,25 @@ export const STRATEGY = {
     minEdge: 0.02,       // Min 2% edge to accumulate
   },
   
-  // v4.2.1: Delta regime configuration
+  // v5.0.0: Delta regime configuration
   delta: {
     lowThreshold: 0.0030,    // LOW: delta < 0.30%
     midThreshold: 0.0070,    // MID: 0.30% - 0.70%
     deepMaxDelta: 0.0040,    // DEEP only if delta < 0.40%
   },
   
-  // v4.2.1: Time-scaled parameters
+  // v5.0.0: Time-scaled parameters (adjusted for 1h = 3600s markets)
   timeScaled: {
-    hedgeTimeoutBaseSec: 35,  // Base: 35s, scaled by timeFactor
-    maxSkewBase: 0.70,        // Base: 70/30, shrinks toward 50/50
-    bufferAddBase: 0.008,     // Base: +0.8%, increases as time decreases
+    hedgeTimeoutBaseSec: 120,  // Base: 120s for 1h markets, scaled by timeFactor
+    maxSkewBase: 0.70,         // Base: 70/30, shrinks toward 50/50
+    bufferAddBase: 0.008,      // Base: +0.8%, increases as time decreases
   },
   
-  // v4.2.1: DEEP mode conditions
+  // v5.0.0: DEEP mode conditions (adjusted for 1h markets)
   deep: {
-    minTimeSec: 180,          // Only if > 180s remaining
-    maxCombinedAsk: 0.95,     // Only if combined < 95¢
-    maxDeltaPct: 0.0040,      // Only if delta < 0.40%
+    minTimeSec: 600,           // Only if > 600s (10 min) remaining for 1h markets
+    maxCombinedAsk: 0.95,      // Only if combined < 95¢
+    maxDeltaPct: 0.0040,       // Only if delta < 0.40%
   },
   
   // Entry conditions - v4.5.1: Relaxed for better entry
@@ -318,38 +318,39 @@ export function calculatePreHedgePrice(
 // ============================================================
 
 /**
- * v4.2.1: Compute timeFactor for parameter scaling
+ * v5.0.0: Compute timeFactor for parameter scaling (1h markets = 3600s)
  */
 function getTimeFactor(secondsRemaining: number): number {
-  return Math.max(secondsRemaining, 60) / 900;  // 1.0 at 900s, 0.07 at 60s
+  return Math.max(secondsRemaining, 120) / 3600;  // 1.0 at 3600s (1h), 0.03 at 120s
 }
 
 /**
- * v4.2.1: Time-scaled hedge timeout
+ * v5.0.0: Time-scaled hedge timeout (longer for 1h markets)
  */
 function getScaledHedgeTimeout(timeFactor: number): number {
-  return Math.max(8, Math.floor(STRATEGY.timeScaled.hedgeTimeoutBaseSec * timeFactor));
+  return Math.max(15, Math.floor(STRATEGY.timeScaled.hedgeTimeoutBaseSec * timeFactor));
 }
 
 /**
- * v4.2.1: Time-scaled max skew (shrinks toward 50/50)
+ * v5.0.0: Time-scaled max skew (shrinks toward 50/50)
  */
 function getScaledMaxSkew(timeFactor: number): number {
   return 0.50 + (STRATEGY.timeScaled.maxSkewBase - 0.50) * timeFactor;
 }
 
 /**
- * v4.2.1: Time-scaled buffer addition (increases as time decreases)
+ * v5.0.0: Time-scaled buffer addition (increases as time decreases)
  */
 function getScaledBufferAdd(timeFactor: number): number {
   return STRATEGY.timeScaled.bufferAddBase * (1 - timeFactor);
 }
 
 /**
- * v4.2.1: Check if DEEP mode is allowed
+ * v5.0.0: Check if DEEP mode is allowed (adjusted for 1h markets)
  */
 function isDeepModeAllowed(secondsRemaining: number, combined: number): boolean {
   // Note: We don't have delta/spotPrice in legacy API, so skip delta check
+  // For 1h markets: require at least 600s (10 min) remaining for DEEP
   if (secondsRemaining <= STRATEGY.deep.minTimeSec) return false;
   if (combined >= STRATEGY.deep.maxCombinedAsk) return false;
   return true;
@@ -561,17 +562,17 @@ export function evaluateOpportunity(
     const existingAvg = existingShares > 0 ? existingCost / existingShares : 0;
     const projectedCombined = existingAvg + missingAsk;
     
-    // v4.5.1: RELAXED HEDGE - allow more overpay, prioritize getting hedged
+    // v5.0.0: RELAXED HEDGE - allow more overpay, prioritize getting hedged
     // Being one-sided near expiry is worse than losing some edge
-    const allowOverpay = 0.05; // v4.5.1: Allow up to 5% overpay (was 2%)
+    const allowOverpay = 0.05; // Allow up to 5% overpay
     if (projectedCombined > 1 + allowOverpay) {
-      // v4.5.1: Only skip if we have plenty of time left
-      if (remainingSeconds > 180) {
-        console.log(`[v4.5.1] HEDGE_SKIPPED: combined ${(projectedCombined * 100).toFixed(0)}¢ > ${((1 + allowOverpay) * 100).toFixed(0)}¢ max (time=${remainingSeconds}s)`);
+      // v5.0.0: Only skip if we have plenty of time left (10+ minutes for 1h markets)
+      if (remainingSeconds > 600) {
+        console.log(`[v5.0.0] HEDGE_SKIPPED: combined ${(projectedCombined * 100).toFixed(0)}¢ > ${((1 + allowOverpay) * 100).toFixed(0)}¢ max (time=${remainingSeconds}s)`);
         return null;
       }
-      // Under 180s: ALWAYS hedge regardless of cost
-      console.log(`[v4.5.1] FORCE_HEDGE: time=${remainingSeconds}s, combined=${(projectedCombined * 100).toFixed(0)}¢`);
+      // Under 600s (10 min): ALWAYS hedge regardless of cost
+      console.log(`[v5.0.0] FORCE_HEDGE: time=${remainingSeconds}s, combined=${(projectedCombined * 100).toFixed(0)}¢`);
     }
     
     // v4.5.1: Use more aggressive cushion ticks for faster fills

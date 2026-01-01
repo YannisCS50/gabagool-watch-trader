@@ -88,8 +88,8 @@ async function fetchMarkets(): Promise<void> {
     const activeSlugs = new Set<string>();
 
     for (const market of data.markets) {
-      // Filter by configured assets and 15-min markets
-      if (market.marketType !== '15min') continue;
+      // Filter by configured assets and 1-hour markets (v5.0.0)
+      if (market.marketType !== '1hour') continue;
       if (!config.trading.assets.includes(market.asset)) continue;
 
       const startMs = new Date(market.eventStartTime).getTime();
