@@ -15,13 +15,13 @@ interface MarketToken {
   downTokenId: string;
   eventStartTime: string;
   eventEndTime: string;
-  marketType: 'price_above' | 'price_target' | '15min' | 'other';
+  marketType: 'price_above' | 'price_target' | '1hour' | '15min' | 'other';
   strikePrice?: number | null; // Legacy alias for openPrice
   openPrice?: number | null;   // The "Price to Beat"
   previousClosePrice?: number | null; // Previous bet's close price (= next bet's target)
 }
 
-// Parse timestamp from slug (e.g., btc-updown-15m-1766485800 -> 1766485800)
+// Parse timestamp from slug (e.g., btc-updown-1h-1766485800 -> 1766485800)
 function parseTimestampFromSlug(slug: string): number | null {
   const match = slug.match(/(\d{10})$/);
   return match ? parseInt(match[1], 10) : null;
@@ -100,9 +100,10 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
     else if (slugLower.includes('sol')) asset = 'SOL';
     else if (slugLower.includes('xrp')) asset = 'XRP';
     
-    // Determine market type
+    // Determine market type (prioritize 1h, fallback to 15min for legacy)
+    const is1Hour = slugLower.includes('1h') || slugLower.includes('1-hour') || slugLower.includes('1hour');
     const is15Min = slugLower.includes('15m') || slugLower.includes('updown');
-    const marketType = is15Min ? '15min' : 'price_above';
+    const marketType = is1Hour ? '1hour' : is15Min ? '15min' : 'price_above';
     
     // Determine which token is Up/Yes vs Down/No
     const outcome1 = (outcomes[0] || '').toLowerCase();
@@ -115,19 +116,23 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
       downTokenId = clobTokenIds[0];
     }
     
-    // Derive event times from slug for 15m markets (slug = truth)
+    // Derive event times from slug (slug = truth)
     const slugTimestamp = parseTimestampFromSlug(slug);
     let eventStartTime: string;
     let eventEndTime: string;
     
-    if (slugTimestamp && is15Min) {
-      // Slug is truth - derive times from it
+    if (slugTimestamp && is1Hour) {
+      // 1-hour market: slug is truth - derive times from it
+      eventStartTime = new Date(slugTimestamp * 1000).toISOString();
+      eventEndTime = new Date((slugTimestamp + 60 * 60) * 1000).toISOString();
+    } else if (slugTimestamp && is15Min) {
+      // 15-min market (legacy): slug is truth
       eventStartTime = new Date(slugTimestamp * 1000).toISOString();
       eventEndTime = new Date((slugTimestamp + 15 * 60) * 1000).toISOString();
     } else {
       // Fallback to Gamma API times
       eventStartTime = market.startDate || market.gameStartTime || new Date().toISOString();
-      eventEndTime = market.endDate || market.endDateIso || new Date(Date.now() + 15 * 60000).toISOString();
+      eventEndTime = market.endDate || market.endDateIso || new Date(Date.now() + 60 * 60000).toISOString();
     }
     
     return {
@@ -151,13 +156,13 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
 }
 
 /**
- * Search for active 15-minute crypto markets
+ * Search for active 1-hour crypto markets (v5.0.0)
  */
-async function searchActive15mMarkets(): Promise<string[]> {
+async function searchActive1hMarkets(): Promise<string[]> {
   const slugs: string[] = [];
   
   try {
-    // First, try to get active events with crypto/15m patterns
+    // First, try to get active events with crypto/1h patterns
     const response = await fetch(
       'https://gamma-api.polymarket.com/events?active=true&closed=false&limit=200',
       {
@@ -177,11 +182,13 @@ async function searchActive15mMarkets(): Promise<string[]> {
       const eventSlug = (event.slug || '').toLowerCase();
       const title = (event.title || '').toLowerCase();
       
-      // Look for 15-minute patterns
-      const is15MinEvent = eventSlug.includes('15m') || 
-                          eventSlug.includes('updown') ||
-                          title.includes('15 min') ||
-                          title.includes('15-min');
+      // Look for 1-hour patterns (priority) and 15-minute patterns (fallback)
+      const is1HourEvent = eventSlug.includes('1h') || 
+                          eventSlug.includes('1-hour') ||
+                          eventSlug.includes('1hour') ||
+                          title.includes('1 hour') ||
+                          title.includes('1-hour') ||
+                          title.includes('hourly');
       
       // Check if it's crypto related
       const isCrypto = eventSlug.includes('btc') || 
@@ -191,7 +198,7 @@ async function searchActive15mMarkets(): Promise<string[]> {
                       title.includes('bitcoin') ||
                       title.includes('ethereum');
       
-      if (is15MinEvent && isCrypto) {
+      if (is1HourEvent && isCrypto) {
         const markets = event.markets || [];
         for (const market of markets) {
           if (market.slug) {
@@ -220,16 +227,18 @@ async function searchActive15mMarkets(): Promise<string[]> {
         const marketSlug = (market.slug || '').toLowerCase();
         const question = (market.question || '').toLowerCase();
         
-        const is15MinMarket = marketSlug.includes('15m') ||
-                             marketSlug.includes('updown') ||
-                             question.includes('15 min');
+        const is1HourMarket = marketSlug.includes('1h') ||
+                             marketSlug.includes('1-hour') ||
+                             marketSlug.includes('1hour') ||
+                             question.includes('1 hour') ||
+                             question.includes('hourly');
         
         const isCrypto = marketSlug.includes('btc') ||
                         marketSlug.includes('eth') ||
                         question.includes('bitcoin') ||
                         question.includes('ethereum');
         
-        if (is15MinMarket && isCrypto && market.slug) {
+        if (is1HourMarket && isCrypto && market.slug) {
           if (!slugs.includes(market.slug)) {
             slugs.push(market.slug);
           }
@@ -241,20 +250,22 @@ async function searchActive15mMarkets(): Promise<string[]> {
     console.error('[Gamma] Error searching markets:', error);
   }
   
-  // Also try known slug patterns for current time
+  // Also try known slug patterns for current time (1-hour intervals)
   const now = Date.now();
   const intervals = [0, 1, 2, 3, 4];
   
   for (const offset of intervals) {
-    const intervalMs = 15 * 60 * 1000;
+    const intervalMs = 60 * 60 * 1000; // 1 hour
     const intervalTime = Math.floor((now + offset * intervalMs) / intervalMs) * intervalMs;
     const intervalSecs = Math.floor(intervalTime / 1000);
     
     const patterns = [
-      `btc-updown-15m-${intervalSecs}`,
-      `eth-updown-15m-${intervalSecs}`,
-      `btc-15m-${intervalSecs}`,
-      `eth-15m-${intervalSecs}`,
+      `btc-updown-1h-${intervalSecs}`,
+      `eth-updown-1h-${intervalSecs}`,
+      `btc-1h-${intervalSecs}`,
+      `eth-1h-${intervalSecs}`,
+      `btc-1hour-${intervalSecs}`,
+      `eth-1hour-${intervalSecs}`,
     ];
     
     for (const pattern of patterns) {
@@ -264,7 +275,7 @@ async function searchActive15mMarkets(): Promise<string[]> {
     }
   }
   
-  console.log(`[Gamma] Total slugs to check: ${slugs.length}`);
+  console.log(`[Gamma] Total 1h slugs to check: ${slugs.length}`);
   return [...new Set(slugs)];
 }
 
@@ -356,7 +367,8 @@ serve(async (req) => {
         markets.push(market);
       }
     } else {
-      const slugs = await searchActive15mMarkets();
+      // v5.0.0: Search for 1-hour markets first
+      const slugs = await searchActive1hMarkets();
       const slugsToFetch = slugs.slice(0, 10);
       const fetchPromises = slugsToFetch.map(slug => fetchMarketBySlug(slug));
       const fetchResults = await Promise.all(fetchPromises);
@@ -375,8 +387,10 @@ serve(async (req) => {
       }
     }
     
-    // Sort: 15min markets first, then by end time
+    // Sort: 1-hour markets first, then 15min, then by end time
     markets.sort((a, b) => {
+      if (a.marketType === '1hour' && b.marketType !== '1hour') return -1;
+      if (a.marketType !== '1hour' && b.marketType === '1hour') return 1;
       if (a.marketType === '15min' && b.marketType !== '15min') return -1;
       if (a.marketType !== '15min' && b.marketType === '15min') return 1;
       return new Date(a.eventEndTime).getTime() - new Date(b.eventEndTime).getTime();
@@ -409,14 +423,18 @@ serve(async (req) => {
       }
     }
     
-    // Also get previous interval close prices for fallback
+    // Also get previous interval close prices for fallback (1-hour intervals)
     const previousSlugs: string[] = [];
     for (const market of markets) {
       const slugTs = parseTimestampFromSlug(market.slug);
       if (slugTs) {
-        const prevTs = slugTs - 15 * 60;
+        // For 1-hour markets: previous interval is 1 hour ago
+        const prevTs1h = slugTs - 60 * 60;
+        // For 15-min markets: previous interval is 15 min ago
+        const prevTs15m = slugTs - 15 * 60;
         const slugParts = market.slug.replace(/\d{10}$/, '');
-        previousSlugs.push(`${slugParts}${prevTs}`);
+        previousSlugs.push(`${slugParts}${prevTs1h}`);
+        previousSlugs.push(`${slugParts}${prevTs15m}`);
       }
     }
     
@@ -441,14 +459,17 @@ serve(async (req) => {
       // Primary: current market's open_price from oracle
       let openPrice = oracleData?.open_price ?? oracleData?.strike_price ?? null;
       
-      // Get previous close price for context
+      // Get previous close price for context (try both 1h and 15m intervals)
       let previousClosePrice: number | null = null;
       const slugTs = parseTimestampFromSlug(m.slug);
       if (slugTs) {
-        const prevTs = slugTs - 15 * 60;
         const slugParts = m.slug.replace(/\d{10}$/, '');
-        const prevSlug = `${slugParts}${prevTs}`;
-        previousClosePrice = prevPriceMap.get(prevSlug) ?? null;
+        
+        // Try 1-hour previous first, then 15-min
+        const prevTs1h = slugTs - 60 * 60;
+        const prevTs15m = slugTs - 15 * 60;
+        previousClosePrice = prevPriceMap.get(`${slugParts}${prevTs1h}`) ?? 
+                            prevPriceMap.get(`${slugParts}${prevTs15m}`) ?? null;
         
         // Fallback: previous interval's close_price (price to beat = prev close)
         if (openPrice === null && previousClosePrice) {
