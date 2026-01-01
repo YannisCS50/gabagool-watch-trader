@@ -7,7 +7,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 // (Edge functions get blocked by Cloudflare, so we queue orders instead)
 // ============================================================================
 
-const BOT_VERSION = "3.3.0"; // v3.3: 15min markets, no accumulate, delta-based hedge
+const BOT_VERSION = "3.4.0"; // v3.4: Multi-asset support (BTC, ETH, SOL, XRP)
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -254,10 +254,13 @@ Deno.serve(async (req) => {
         tokenToMarket.clear();
         const activeSlugs = new Set<string>();
 
+        // Allowed assets for trading
+        const allowedAssets = ['BTC', 'ETH', 'SOL', 'XRP'];
+        
         for (const market of data.markets) {
-          // Trade 15-minute markets (v6.1: back to 15min)
+          // Trade 15-minute markets (v6.2: support BTC, ETH, SOL, XRP)
           if (market.marketType !== '15min') continue;
-          if (market.asset !== 'BTC') continue;
+          if (!allowedAssets.includes(market.asset)) continue;
 
           const startMs = new Date(market.eventStartTime).getTime();
           const endMs = new Date(market.eventEndTime).getTime();
@@ -299,11 +302,18 @@ Deno.serve(async (req) => {
         const tokensChanged = newTokenIds.size !== previousTokenIds.size || 
           [...newTokenIds].some(id => !previousTokenIds.has(id));
 
+        // Count markets per asset
+        const assetCounts = new Map<string, number>();
+        for (const m of markets.values()) {
+          assetCounts.set(m.asset, (assetCounts.get(m.asset) || 0) + 1);
+        }
+        const assetSummary = [...assetCounts.entries()].map(([a, c]) => `${c} ${a}`).join(', ') || 'none';
+
         if (tokensChanged) {
-          log(`📊 Markets changed: ${previousTokenCount} → ${tokenToMarket.size} tokens (${markets.size} BTC markets)`);
+          log(`📊 Markets changed: ${previousTokenCount} → ${tokenToMarket.size} tokens (${assetSummary})`);
           return true; // Signal to reconnect
         } else {
-          log(`📊 Markets unchanged: ${markets.size} BTC markets`);
+          log(`📊 Markets unchanged: ${assetSummary}`);
           return false;
         }
       }
