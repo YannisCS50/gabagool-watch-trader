@@ -437,28 +437,45 @@ Deno.serve(async (req) => {
           const { eventType, new: newRow, old: oldRow } = payload;
           
           if (eventType === 'INSERT' && newRow) {
-            // New order added - track it
+            // New order added - track it with outcome info
             const slug = newRow.market_slug;
             if (!pendingOrdersByMarket.has(slug)) {
               pendingOrdersByMarket.set(slug, new Set());
             }
-            if (newRow.status === 'pending' || newRow.status === 'processing') {
+            if (['pending', 'processing', 'placed'].includes(newRow.status)) {
               pendingOrdersByMarket.get(slug)!.add(newRow.id);
-              log(`📥 Order ${newRow.id.slice(0, 8)} added to ${slug.slice(-15)} (${newRow.outcome})`);
+              
+              // Also track with outcome info
+              if (!pendingOrdersWithInfo.has(slug)) {
+                pendingOrdersWithInfo.set(slug, []);
+              }
+              pendingOrdersWithInfo.get(slug)!.push({
+                id: newRow.id,
+                outcome: newRow.outcome as Outcome,
+                shares: newRow.shares,
+                price: newRow.price,
+              });
+              log(`📥 Order ${newRow.id.slice(0, 8)} added to ${slug.slice(-15)} (${newRow.outcome} x${newRow.shares})`);
             }
           } else if (eventType === 'UPDATE' && newRow) {
             // Order status changed
             const slug = newRow.market_slug;
             const orderId = newRow.id;
             
-            if (newRow.status === 'filled' || newRow.status === 'failed' || newRow.status === 'placed') {
-              // Order completed - remove from pending
+            if (newRow.status === 'filled' || newRow.status === 'failed') {
+              // Order completed - remove from pending tracking
               if (pendingOrdersByMarket.has(slug)) {
                 pendingOrdersByMarket.get(slug)!.delete(orderId);
-                log(`✅ Order ${orderId.slice(0, 8)} ${newRow.status} on ${slug.slice(-15)} (${newRow.outcome})`);
               }
-            } else if (newRow.status === 'processing') {
-              // Still pending
+              // Remove from outcome tracking
+              if (pendingOrdersWithInfo.has(slug)) {
+                const orders = pendingOrdersWithInfo.get(slug)!;
+                const idx = orders.findIndex(o => o.id === orderId);
+                if (idx >= 0) orders.splice(idx, 1);
+              }
+              log(`✅ Order ${orderId.slice(0, 8)} ${newRow.status} on ${slug.slice(-15)} (${newRow.outcome})`);
+            } else if (['pending', 'processing', 'placed'].includes(newRow.status)) {
+              // Still active - ensure tracked
               if (!pendingOrdersByMarket.has(slug)) {
                 pendingOrdersByMarket.set(slug, new Set());
               }
@@ -470,6 +487,11 @@ Deno.serve(async (req) => {
             if (pendingOrdersByMarket.has(slug)) {
               pendingOrdersByMarket.get(slug)!.delete(oldRow.id);
             }
+            if (pendingOrdersWithInfo.has(slug)) {
+              const orders = pendingOrdersWithInfo.get(slug)!;
+              const idx = orders.findIndex(o => o.id === oldRow.id);
+              if (idx >= 0) orders.splice(idx, 1);
+            }
           }
         }
       )
@@ -478,21 +500,43 @@ Deno.serve(async (req) => {
       });
   };
 
-  // Load initial pending orders
+  // Track pending orders with outcome info for position calculation
+  interface PendingOrderInfo {
+    id: string;
+    outcome: Outcome;
+    shares: number;
+    price: number;
+  }
+  let pendingOrdersWithInfo: Map<string, PendingOrderInfo[]> = new Map(); // market_slug -> orders
+
+  // Load initial pending orders with outcome info
   const loadPendingOrders = async () => {
     try {
       const { data } = await supabase
         .from('order_queue')
-        .select('id, market_slug')
-        .in('status', ['pending', 'processing']);
+        .select('id, market_slug, outcome, shares, price')
+        .in('status', ['pending', 'processing', 'placed']);
       
       pendingOrdersByMarket.clear();
+      pendingOrdersWithInfo.clear();
       if (data) {
         for (const order of data) {
+          // Track by ID for counting
           if (!pendingOrdersByMarket.has(order.market_slug)) {
             pendingOrdersByMarket.set(order.market_slug, new Set());
           }
           pendingOrdersByMarket.get(order.market_slug)!.add(order.id);
+          
+          // Track with outcome info for position calculation
+          if (!pendingOrdersWithInfo.has(order.market_slug)) {
+            pendingOrdersWithInfo.set(order.market_slug, []);
+          }
+          pendingOrdersWithInfo.get(order.market_slug)!.push({
+            id: order.id,
+            outcome: order.outcome as Outcome,
+            shares: order.shares,
+            price: order.price,
+          });
         }
         log(`📋 Loaded ${data.length} pending orders`);
       }
@@ -501,9 +545,20 @@ Deno.serve(async (req) => {
     }
   };
 
+  // Get pending shares for a market (to prevent duplicate hedges!)
+  const getPendingPosition = (slug: string): { upShares: number; downShares: number } => {
+    const orders = pendingOrdersWithInfo.get(slug) || [];
+    let upShares = 0, downShares = 0;
+    for (const order of orders) {
+      if (order.outcome === 'UP') upShares += order.shares;
+      else downShares += order.shares;
+    }
+    return { upShares, downShares };
+  };
+
   // Check if market has too many pending orders (instant - no DB query)
-  // Allow up to 3 pending orders per market for anticipatory ordering
-  const MAX_PENDING_PER_MARKET = 3;
+  // REDUCED to 2 to prevent over-ordering (1 opening + 1 hedge max)
+  const MAX_PENDING_PER_MARKET = 2;
   const hasTooManyPendingOrders = (slug: string): boolean => {
     const pending = pendingOrdersByMarket.get(slug);
     return pending ? pending.size >= MAX_PENDING_PER_MARKET : false;
@@ -678,13 +733,13 @@ Deno.serve(async (req) => {
       }
 
       // REFRESH ACTUAL POSITION FROM live_trades (confirmed fills only)
-      // order_queue is checked separately via hasTooManyPendingOrders() to prevent duplicate orders
+      // PLUS pending orders to prevent duplicate hedges!
       const { data: confirmedTrades } = await supabase
         .from('live_trades')
         .select('outcome, shares, total')
         .eq('market_slug', slug);
       
-      // Reset and recalculate from confirmed trades only
+      // Reset and recalculate from confirmed trades
       ctx.position = { upShares: 0, downShares: 0, upInvested: 0, downInvested: 0 };
       if (confirmedTrades) {
         for (const trade of confirmedTrades) {
@@ -696,6 +751,16 @@ Deno.serve(async (req) => {
             ctx.position.downInvested += trade.total;
           }
         }
+      }
+      
+      // CRITICAL: Also include pending orders to prevent duplicate hedges!
+      // If we have a pending hedge order, count those shares too
+      const pendingPos = getPendingPosition(slug);
+      const effectiveUpShares = ctx.position.upShares + pendingPos.upShares;
+      const effectiveDownShares = ctx.position.downShares + pendingPos.downShares;
+      
+      if (pendingPos.upShares > 0 || pendingPos.downShares > 0) {
+        log(`📊 Position: confirmed ${ctx.position.upShares}UP/${ctx.position.downShares}DOWN + pending ${pendingPos.upShares}UP/${pendingPos.downShares}DOWN = effective ${effectiveUpShares}UP/${effectiveDownShares}DOWN`);
       }
 
       // Time check
@@ -772,16 +837,17 @@ Deno.serve(async (req) => {
 
       const pos = ctx.position;
 
-      // Log every 10th evaluation with full info
+      // Log every 10th evaluation with full info (show effective position including pending)
       if (evaluationCount % 10 === 0) {
-        log(`📊 ${slug.slice(-15)}: ${(upAsk*100).toFixed(0)}¢+${(downAsk*100).toFixed(0)}¢=${(combined*100).toFixed(0)}¢ | pos: ${pos.upShares}UP/${pos.downShares}DOWN | eval #${evaluationCount}`);
+        log(`📊 ${slug.slice(-15)}: ${(upAsk*100).toFixed(0)}¢+${(downAsk*100).toFixed(0)}¢=${(combined*100).toFixed(0)}¢ | pos: ${effectiveUpShares}UP/${effectiveDownShares}DOWN | eval #${evaluationCount}`);
       }
 
       // ========== TRADING LOGIC ==========
+      // Use EFFECTIVE shares (confirmed + pending) for all decisions to prevent duplicate orders!
 
-      // PHASE 1: OPENING - No position yet
+      // PHASE 1: OPENING - No position yet (including no pending orders!)
       // ANTICIPATORY ORDERING: Place opening + hedge order simultaneously
-      if (pos.upShares === 0 && pos.downShares === 0) {
+      if (effectiveUpShares === 0 && effectiveDownShares === 0) {
         const cheaperSide: Outcome = upAsk <= downAsk ? "UP" : "DOWN";
         const cheaperPrice = cheaperSide === "UP" ? upAsk : downAsk;
         const otherSide: Outcome = cheaperSide === "UP" ? "DOWN" : "UP";
@@ -831,13 +897,25 @@ Deno.serve(async (req) => {
         return;
       }
 
-      // PHASE 2: HEDGE - One side filled, buy other based on delta
+      // PHASE 2: HEDGE - One side filled (or has pending), buy other based on delta
+      // Use EFFECTIVE shares to check if we already have a pending hedge!
       // Delta-based: average down if losing, hedge aggressively if winning
-      if (pos.upShares === 0 || pos.downShares === 0) {
-        const missingSide: Outcome = pos.upShares === 0 ? "UP" : "DOWN";
+      if (effectiveUpShares === 0 || effectiveDownShares === 0) {
+        // Check if we already have a pending hedge - if so, skip!
+        const hasPendingHedge = (effectiveUpShares > 0 && pendingPos.upShares > 0 && pos.upShares === 0) ||
+                                 (effectiveDownShares > 0 && pendingPos.downShares > 0 && pos.downShares === 0);
+        if (hasPendingHedge) {
+          if (evaluationCount % 10 === 0) {
+            log(`⏸️ HEDGE PENDING: Already have pending hedge order, waiting for fill`);
+          }
+          return;
+        }
+        
+        const missingSide: Outcome = effectiveUpShares === 0 ? "UP" : "DOWN";
         const existingSide: Outcome = missingSide === "UP" ? "DOWN" : "UP";
         const missingPrice = missingSide === "UP" ? upAsk : downAsk;
         const existingPrice = existingSide === "UP" ? upAsk : downAsk;
+        // Use confirmed position for price calculations (not pending!)
         const existingShares = missingSide === "UP" ? pos.downShares : pos.upShares;
         const existingInvested = missingSide === "UP" ? pos.downInvested : pos.upInvested;
         const existingAvg = existingShares > 0 ? existingInvested / existingShares : 0;
@@ -926,11 +1004,11 @@ Deno.serve(async (req) => {
         return;
       }
 
-      // PHASE 3: HEDGED - Both sides filled = profit locked in
+      // PHASE 3: HEDGED - Both sides have shares (confirmed or pending) = profit locked in
       // NO accumulate - just hold until expiry
       const edgePct = ((1 - combined) * 100).toFixed(1);
       if (evaluationCount % 20 === 0) {
-        log(`🔒 LOCKED: ${pos.upShares}UP/${pos.downShares}DOWN | combined ${(combined*100).toFixed(0)}¢ | ${edgePct}% edge - holding`);
+        log(`🔒 LOCKED: ${effectiveUpShares}UP/${effectiveDownShares}DOWN | combined ${(combined*100).toFixed(0)}¢ | ${edgePct}% edge - holding`);
       }
     } catch (err) {
       log(`❌ Evaluation error: ${err}`);
