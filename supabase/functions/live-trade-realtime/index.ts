@@ -257,8 +257,8 @@ Deno.serve(async (req) => {
         const activeSlugs = new Set<string>();
 
         for (const market of data.markets) {
-          // Only trade BTC 15-min markets for live
-          if (market.marketType !== '15min') continue;
+          // Trade 1-hour markets (v6.0: switched from 15min to 1hour)
+          if (market.marketType !== '1hour') continue;
           if (market.asset !== 'BTC') continue;
 
           const startMs = new Date(market.eventStartTime).getTime();
