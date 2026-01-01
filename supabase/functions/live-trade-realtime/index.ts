@@ -7,7 +7,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 // (Edge functions get blocked by Cloudflare, so we queue orders instead)
 // ============================================================================
 
-const BOT_VERSION = "3.4.0"; // v3.4: Multi-asset support (BTC, ETH, SOL, XRP)
+const BOT_VERSION = "3.5.0"; // v3.5: Lower edge target (3% instead of 4%)
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -59,12 +59,12 @@ const STRATEGY = {
     maxPrice: 0.52,        // Only enter if price <= 52¢ (strict!)
   },
   hedge: {
-    triggerCombined: 0.96, // Hedge when combined < 96¢ (was 98¢ - more strict)
+    triggerCombined: 0.97, // Hedge when combined < 97¢ (3% edge target)
     shares: 25,            // Fixed 25 shares per hedge (match opening)
-    cushionTicks: 2,       // Extra ticks above ask for guaranteed fill (was 3)
+    cushionTicks: 2,       // Extra ticks above ask for guaranteed fill
     tickSize: 0.01,        // 1¢ tick size
-    forceTimeoutSec: 12,   // Force hedge after 12s if still one-sided (was 25s!)
-    maxPrice: 0.55,        // Max price for hedge (was 75¢ - WAY too high!)
+    forceTimeoutSec: 12,   // Force hedge after 12s if still one-sided
+    maxPrice: 0.55,        // Max price for hedge
   },
   // DISABLED: No accumulate - just lock in profit when hedged
   // accumulate: { triggerCombined: 0.95, shares: 10 },
