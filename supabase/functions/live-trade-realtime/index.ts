@@ -7,7 +7,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 // (Edge functions get blocked by Cloudflare, so we queue orders instead)
 // ============================================================================
 
-const BOT_VERSION = "3.5.0"; // v3.5: Lower edge target (3% instead of 4%)
+const BOT_VERSION = "3.6.0"; // v3.6: Dynamic hedge target based on opening price
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -866,16 +866,21 @@ Deno.serve(async (req) => {
         // Use fixed hedge shares from strategy, or match existing if larger
         const hedgeShares = Math.max(existingShares, STRATEGY.hedge.shares);
         
+        // DYNAMIC HEDGE TARGET: Calculate max hedge price based on opening price
+        // If we opened at 48¢ and want 3% edge (97¢ combined), max hedge = 97¢ - 48¢ = 49¢
+        const targetCombined = STRATEGY.hedge.triggerCombined; // 97¢
+        const dynamicMaxHedge = targetCombined - existingAvg;
+        
         // MARKETABLE LIMIT: Add cushion ticks above ask for guaranteed fill
         const cushion = STRATEGY.hedge.cushionTicks * STRATEGY.hedge.tickSize;
         const marketablePrice = Math.min(
           missingPrice + cushion, 
-          STRATEGY.hedge.maxPrice
+          dynamicMaxHedge // Use dynamic max instead of fixed!
         );
         const projectedCombined = existingAvg + marketablePrice;
 
-        // Log hedge evaluation details
-        log(`🔍 HEDGE EVAL: ${missingSide} ask=${(missingPrice*100).toFixed(0)}¢ → marketable=${(marketablePrice*100).toFixed(0)}¢ | projected=${(projectedCombined*100).toFixed(0)}¢ | shares=${existingShares}→${hedgeShares} | ${deltaInfo} | t=${timeSinceOpeningSec.toFixed(0)}s`);
+        // Log hedge evaluation details with dynamic target
+        log(`🔍 HEDGE EVAL: opened=${(existingAvg*100).toFixed(0)}¢ → target hedge ≤${(dynamicMaxHedge*100).toFixed(0)}¢ | ask=${(missingPrice*100).toFixed(0)}¢ → ${(marketablePrice*100).toFixed(0)}¢ | projected=${(projectedCombined*100).toFixed(0)}¢ | ${deltaInfo}`);
 
         // CRITICAL SAFETY CHECK: Never hedge if combined > 99¢ (guaranteed loss)
         if (projectedCombined >= 0.99) {
@@ -887,20 +892,20 @@ Deno.serve(async (req) => {
         if (isForceHedge) {
           log(`⚠️ FORCE HEDGE: ${timeSinceOpeningSec.toFixed(0)}s since opening > ${STRATEGY.hedge.forceTimeoutSec}s timeout (using ${hedgeShares} shares)`);
           await executeTrade(market, ctx, missingSide, marketablePrice, hedgeShares,
-            `FORCE Hedge ${missingSide} @ ${(marketablePrice*100).toFixed(0)}¢ (timeout ${timeSinceOpeningSec.toFixed(0)}s)`);
+            `FORCE Hedge ${missingSide} @ ${(marketablePrice*100).toFixed(0)}¢ (timeout ${timeSinceOpeningSec.toFixed(0)}s, target was ${(dynamicMaxHedge*100).toFixed(0)}¢)`);
           return;
         }
 
-        // NORMAL HEDGE: If combined is profitable, lock it in!
-        if (projectedCombined < STRATEGY.hedge.triggerCombined && missingPrice <= STRATEGY.hedge.maxPrice) {
+        // NORMAL HEDGE: If ask price fits within our dynamic target, hedge immediately!
+        if (missingPrice <= dynamicMaxHedge) {
           const edgePct = ((1 - projectedCombined) * 100).toFixed(1);
-          log(`✅ HEDGE NOW: ${missingSide} @ ${(marketablePrice*100).toFixed(0)}¢ | combined ${(projectedCombined*100).toFixed(0)}¢ | ${edgePct}% edge`);
+          log(`✅ HEDGE NOW: ${missingSide} @ ${(marketablePrice*100).toFixed(0)}¢ ≤ target ${(dynamicMaxHedge*100).toFixed(0)}¢ | combined ${(projectedCombined*100).toFixed(0)}¢ | ${edgePct}% edge`);
           await executeTrade(market, ctx, missingSide, marketablePrice, hedgeShares,
-            `Hedge ${missingSide} @ ${(marketablePrice*100).toFixed(0)}¢ (${edgePct}% edge, ${deltaInfo})`);
+            `Hedge ${missingSide} @ ${(marketablePrice*100).toFixed(0)}¢ (${edgePct}% edge, target ${(dynamicMaxHedge*100).toFixed(0)}¢)`);
         } else {
           // Log why hedge was skipped
           if (evaluationCount % 5 === 0) {
-            log(`⏸️ HEDGE WAIT: combined=${(projectedCombined*100).toFixed(0)}¢ (need <${(STRATEGY.hedge.triggerCombined*100).toFixed(0)}¢) | price=${(missingPrice*100).toFixed(0)}¢ (max ${(STRATEGY.hedge.maxPrice*100).toFixed(0)}¢)`);
+            log(`⏸️ HEDGE WAIT: ask ${(missingPrice*100).toFixed(0)}¢ > target ${(dynamicMaxHedge*100).toFixed(0)}¢ (opened @ ${(existingAvg*100).toFixed(0)}¢)`);
           }
         }
         return;
