@@ -34,8 +34,8 @@ export {
 // ============================================================
 // STRATEGY VERSION
 // ============================================================
-export const STRATEGY_VERSION = '5.0.0-1hour';
-export const STRATEGY_NAME = 'Polymarket 1h Hedge/Arb (v5.0.0 - 1 Hour Markets)';
+export const STRATEGY_VERSION = '5.1.0-relaxed';
+export const STRATEGY_NAME = 'Polymarket 1h Hedge/Arb (v5.1.0 - Relaxed Hedge)';
 
 // ============================================================
 // BACKWARD COMPATIBILITY LAYER
@@ -127,20 +127,23 @@ export const STRATEGY = {
     maxDelayMs: 5000,
   },
   
-  // Hedge parameters - v5.0.0: adjusted for 1h markets
+  // Hedge parameters - v5.1.0: RELAXED HEDGE - allow exposed positions
   hedge: {
     shares: 50,           // Fixed 50 shares per hedge
     maxPrice: 0.75,       // Allow expensive hedges up to 75¢
     cushionTicks: 3,      // 3 ticks above ask for faster fills
-    forceTimeoutSec: 90,  // v5.0.0: 90s for 1h markets (more time to hedge)
+    forceTimeoutSec: 180, // v5.1.0: 180s for 1h markets - more time exposed
     cooldownMs: 0,        // NO COOLDOWN for hedge!
+    relaxedEdge: 0.045,   // v5.1.0: Only hedge at 4.5% edge (combined < 95.5¢)
+    panicHedgeSec: 300,   // v5.1.0: Force hedge at any price below 5 min remaining
+    panicMaxPrice: 0.95,  // v5.1.0: Accept up to 5% loss in panic mode
   },
   
-  // Accumulate parameters - v4.2.1: max 50 shares, only when hedged
+  // Accumulate parameters - v5.1.0: only when hedged, but no hurry
   accumulate: {
     maxShares: 50,       // Max 50 shares per accumulate
-    requireHedged: true, // Only accumulate when position is hedged
-    minEdge: 0.02,       // Min 2% edge to accumulate
+    requireHedged: false,// v5.1.0: Can accumulate even if one-sided (risky but more trades)
+    minEdge: 0.01,       // v5.1.0: Lowered to 1% edge to accumulate
   },
   
   // v5.0.0: Delta regime configuration
