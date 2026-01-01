@@ -331,6 +331,34 @@ async function searchActive1hMarkets(): Promise<string[]> {
 }
 
 /**
+ * Generate candidate slugs for active 15-minute crypto markets.
+ *
+ * Polymarket often uses epoch-based slugs like:
+ *   btc-updown-15m-<unix_seconds>
+ */
+async function searchActive15mMarkets(): Promise<string[]> {
+  const slugs: string[] = [];
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const intervalSec = 15 * 60;
+  const baseSec = Math.floor(nowSec / intervalSec) * intervalSec;
+
+  // Cover a small window around "now" to catch current/next/previous markets
+  const offsets = [-4, -3, -2, -1, 0, 1, 2, 3, 4];
+  const assets = ['btc', 'eth'];
+
+  for (const asset of assets) {
+    for (const off of offsets) {
+      const ts = baseSec + off * intervalSec;
+      slugs.push(`${asset}-updown-15m-${ts}`);
+    }
+  }
+
+  console.log(`[Gamma] Generated ${slugs.length} candidate 15m slugs (base=${baseSec})`);
+  return [...new Set(slugs)];
+}
+
+/**
  * Fetch crypto price markets ("Bitcoin above X on date Y")
  */
 async function fetchPriceMarkets(): Promise<MarketToken[]> {
@@ -421,23 +449,38 @@ serve(async (req) => {
         markets.push(market);
       }
     } else {
-      // Search for 1-hour markets first
-      const slugs = await searchActive1hMarkets();
-      console.log(`[Gamma] Checking ${slugs.length} potential 1h slugs...`);
-      
-      // Fetch first 15 slugs in parallel
-      const slugsToFetch = slugs.slice(0, 15);
-      const fetchPromises = slugsToFetch.map(slug => fetchMarketBySlug(slug));
-      const fetchResults = await Promise.all(fetchPromises);
-      
-      for (const result of fetchResults) {
-        if (result && result.marketType === '1hour') {
-          markets.push(result);
-        }
+      // Prefer 15-minute markets (user requested)
+      const slugs15m = await searchActive15mMarkets();
+      console.log(`[Gamma] Checking ${slugs15m.length} potential 15m slugs...`);
+
+      const slugsToFetch15m = slugs15m.slice(0, 20);
+      const fetch15m = await Promise.all(slugsToFetch15m.map((slug) => fetchMarketBySlug(slug)));
+
+      for (const m of fetch15m) {
+        if (m && m.marketType === '15min') markets.push(m);
       }
-      
-      console.log(`[Gamma] Found ${markets.length} active 1h markets`);
-      
+
+      console.log(`[Gamma] Found ${markets.length} active 15m markets`);
+
+      // Fallback to 1-hour markets if no 15m markets found
+      if (markets.length === 0) {
+        const slugs = await searchActive1hMarkets();
+        console.log(`[Gamma] Checking ${slugs.length} potential 1h slugs...`);
+
+        // Fetch first 15 slugs in parallel
+        const slugsToFetch = slugs.slice(0, 15);
+        const fetchPromises = slugsToFetch.map(slug => fetchMarketBySlug(slug));
+        const fetchResults = await Promise.all(fetchPromises);
+
+        for (const result of fetchResults) {
+          if (result && result.marketType === '1hour') {
+            markets.push(result);
+          }
+        }
+
+        console.log(`[Gamma] Found ${markets.length} active 1h markets`);
+      }
+
       // Also add price markets if needed
       if (markets.length < 5) {
         const priceMarkets = await fetchPriceMarkets();
@@ -448,11 +491,13 @@ serve(async (req) => {
         }
       }
     }
-    
-    // Sort: 1-hour markets first by end time (soonest first)
+
+    // Sort: 15m first, then 1h, then soonest end time
+    const priority = (t: MarketToken['marketType']) => (t === '15min' ? 0 : t === '1hour' ? 1 : 2);
     markets.sort((a, b) => {
-      if (a.marketType === '1hour' && b.marketType !== '1hour') return -1;
-      if (a.marketType !== '1hour' && b.marketType === '1hour') return 1;
+      const pa = priority(a.marketType);
+      const pb = priority(b.marketType);
+      if (pa !== pb) return pa - pb;
       return new Date(a.eventEndTime).getTime() - new Date(b.eventEndTime).getTime();
     });
     
