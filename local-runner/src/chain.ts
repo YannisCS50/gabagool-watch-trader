@@ -1,15 +1,13 @@
 import { ethers, providers } from 'ethers';
 
-// Polygon RPC endpoints (fallback list) - more endpoints for better rate limit handling
+// Polygon RPC endpoints - ordered by reliability (publicnode/ankr most stable)
 const RPC_ENDPOINTS = [
-  'https://polygon.llamarpc.com',
   'https://polygon-bor-rpc.publicnode.com',
-  'https://polygon-mainnet.public.blastapi.io',
-  'https://rpc-mainnet.matic.quiknode.pro',
+  'https://rpc.ankr.com/polygon',
   'https://polygon-rpc.com',
   'https://1rpc.io/matic',
   'https://polygon.drpc.org',
-  'https://rpc.ankr.com/polygon',
+  'https://polygon-mainnet.public.blastapi.io',
 ];
 
 // Rate limiting state
