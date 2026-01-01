@@ -582,6 +582,16 @@ async function getClient(): Promise<ClobClient> {
 export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
   const nowMs = Date.now();
 
+  // CRITICAL: Validate price before proceeding (NaN check)
+  if (!Number.isFinite(order.price) || order.price < 0.01 || order.price > 0.99) {
+    console.error(`❌ Order failed: invalid price (${order.price}), min: 0.01 - max: 0.99`);
+    return {
+      success: false,
+      error: `Invalid price (${order.price}), min: 0.01 - max: 0.99`,
+      failureReason: 'invalid_price',
+    };
+  }
+
   // Hard backoff after Cloudflare/WAF blocks
   if (blockedUntilMs && nowMs < blockedUntilMs) {
     const remainingMs = blockedUntilMs - nowMs;
