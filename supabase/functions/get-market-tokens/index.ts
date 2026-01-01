@@ -78,6 +78,43 @@ function isMarketActive(endTimeStr: string): boolean {
 }
 
 /**
+ * For epoch-slug 15m markets, derive the canonical start/end window from the slug.
+ * Example: btc-updown-15m-1767294000  -> start=1767294000s, end=start+900s
+ */
+function get15mWindowFromSlug(slug: string): { startMs: number; endMs: number } | null {
+  const m = slug.match(/-15m-(\d{9,})$/);
+  if (!m) return null;
+
+  const startSec = Number(m[1]);
+  if (!Number.isFinite(startSec)) return null;
+
+  const startMs = startSec * 1000;
+  const endMs = startMs + 15 * 60 * 1000;
+  return { startMs, endMs };
+}
+
+/**
+ * Only allow trading markets that have actually started.
+ * (Prevents entering the "next" 15m market early.)
+ */
+function isMarketStarted(marketType: MarketToken['marketType'], slug: string, eventStartTimeStr: string): boolean {
+  const now = Date.now();
+
+  if (marketType === '15min') {
+    const w = get15mWindowFromSlug(slug);
+    if (!w) return true; // fallback to Gamma times if slug format is unexpected
+
+    // Allow a small clock/propagation skew, but prevent buying far in advance.
+    return now >= (w.startMs - 60_000);
+  }
+
+  // Default: rely on the API start time (if provided)
+  const startMs = new Date(eventStartTimeStr).getTime();
+  if (!Number.isFinite(startMs)) return true;
+  return now >= (startMs - 60_000);
+}
+
+/**
  * Fetch a specific market by slug from Gamma API
  */
 async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
@@ -86,29 +123,29 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
       `https://gamma-api.polymarket.com/markets?slug=${encodeURIComponent(slug)}`,
       { headers: { 'Accept': 'application/json' } }
     );
-    
+
     if (!response.ok) {
       console.log(`[Gamma] Failed to fetch slug ${slug}: ${response.status}`);
       return null;
     }
-    
+
     const markets = await response.json();
-    
+
     if (!Array.isArray(markets) || markets.length === 0) {
       return null;
     }
-    
+
     const market = markets[0];
     const conditionId = market.conditionId || '';
     const clobTokenIds = parseClobTokenIds(market.clobTokenIds);
     const question = market.question || market.title || '';
     const outcomes = market.outcomes || ['Yes', 'No'];
-    
+
     if (clobTokenIds.length < 2) {
       console.log(`[Gamma] Not enough valid token IDs for slug: ${slug}`);
       return null;
     }
-    
+
     // Determine asset type
     const slugLower = slug.toLowerCase();
     const questionLower = question.toLowerCase();
@@ -120,32 +157,47 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
     } else if (slugLower.includes('xrp') || questionLower.includes('xrp')) {
       asset = 'XRP';
     }
-    
+
     // Get market type
     const marketType = getMarketType(slug);
-    
+
     // Determine which token is Up/Yes vs Down/No
     const outcome1 = (outcomes[0] || '').toLowerCase();
     let upTokenId = clobTokenIds[0];
     let downTokenId = clobTokenIds[1];
-    
+
     if (outcome1 === 'no' || outcome1 === 'down') {
       upTokenId = clobTokenIds[1];
       downTokenId = clobTokenIds[0];
     }
-    
-    // Get event times
-    const eventStartTime = market.startDate || market.gameStartTime || new Date().toISOString();
-    const eventEndTime = market.endDate || market.endDateIso || new Date(Date.now() + 60 * 60000).toISOString();
-    
+
+    // Get event times (Gamma can be inconsistent for epoch-slug 15m markets)
+    let eventStartTime = market.startDate || market.gameStartTime || new Date().toISOString();
+    let eventEndTime = market.endDate || market.endDateIso || new Date(Date.now() + 60 * 60000).toISOString();
+
+    // Canonical override for 15m epoch slugs
+    if (marketType === '15min') {
+      const w = get15mWindowFromSlug(slug);
+      if (w) {
+        eventStartTime = new Date(w.startMs).toISOString();
+        eventEndTime = new Date(w.endMs).toISOString();
+      }
+    }
+
+    // Filter: Don't trade markets that haven't started yet
+    if (!isMarketStarted(marketType, slug, eventStartTime)) {
+      console.log(`[Gamma] Skipping not-started market: ${asset} ${marketType} - ${slug} (starts ${eventStartTime})`);
+      return null;
+    }
+
     // Filter: Only return if market is still active
     if (!isMarketActive(eventEndTime)) {
       console.log(`[Gamma] Skipping expired market: ${slug} (ends ${eventEndTime})`);
       return null;
     }
-    
+
     console.log(`[Gamma] ✓ Active market: ${asset} ${marketType} - ${slug} (ends ${eventEndTime})`);
-    
+
     return {
       slug,
       question,
@@ -159,7 +211,7 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
       strikePrice: null,
       openPrice: null,
     };
-    
+
   } catch (error) {
     console.error(`[Gamma] Error fetching slug ${slug}:`, error);
     return null;
