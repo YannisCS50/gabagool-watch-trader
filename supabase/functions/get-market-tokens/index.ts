@@ -15,16 +15,10 @@ interface MarketToken {
   downTokenId: string;
   eventStartTime: string;
   eventEndTime: string;
-  marketType: 'price_above' | 'price_target' | '1hour' | '15min' | 'other';
-  strikePrice?: number | null; // Legacy alias for openPrice
-  openPrice?: number | null;   // The "Price to Beat"
-  previousClosePrice?: number | null; // Previous bet's close price (= next bet's target)
-}
-
-// Parse timestamp from slug (e.g., btc-updown-1h-1766485800 -> 1766485800)
-function parseTimestampFromSlug(slug: string): number | null {
-  const match = slug.match(/(\d{10})$/);
-  return match ? parseInt(match[1], 10) : null;
+  marketType: 'price_above' | 'price_target' | '1hour' | '15min' | '5min' | '4hour' | 'other';
+  strikePrice?: number | null;
+  openPrice?: number | null;
+  previousClosePrice?: number | null;
 }
 
 /**
@@ -33,12 +27,10 @@ function parseTimestampFromSlug(slug: string): number | null {
 function parseClobTokenIds(raw: any): string[] {
   if (!raw) return [];
   
-  // Already an array
   if (Array.isArray(raw)) {
     return raw.filter(id => typeof id === 'string' && id.length > 10);
   }
   
-  // JSON string - parse it
   if (typeof raw === 'string') {
     try {
       const parsed = JSON.parse(raw);
@@ -46,7 +38,6 @@ function parseClobTokenIds(raw: any): string[] {
         return parsed.filter(id => typeof id === 'string' && id.length > 10);
       }
     } catch {
-      // Not valid JSON, might be a single token ID
       if (raw.length > 10) return [raw];
     }
   }
@@ -54,15 +45,46 @@ function parseClobTokenIds(raw: any): string[] {
   return [];
 }
 
+/**
+ * Determine market type from slug
+ */
+function getMarketType(slug: string): MarketToken['marketType'] {
+  const slugLower = slug.toLowerCase();
+  
+  // Check for time-based patterns in slug
+  if (slugLower.includes('-5m-') || slugLower.includes('5min')) return '5min';
+  if (slugLower.includes('-15m-') || slugLower.includes('15min')) return '15min';
+  if (slugLower.includes('-4h-') || slugLower.includes('4hour')) return '4hour';
+  if (slugLower.includes('-1h-')) return '1hour';
+  
+  // Hourly human-readable slugs like "bitcoin-up-or-down-january-1-2am-et"
+  if (slugLower.includes('up-or-down') && (slugLower.includes('am-et') || slugLower.includes('pm-et'))) {
+    return '1hour';
+  }
+  
+  if (slugLower.includes('above')) return 'price_above';
+  
+  return 'other';
+}
+
+/**
+ * Check if a market is currently active (not expired)
+ */
+function isMarketActive(endTimeStr: string): boolean {
+  const endTime = new Date(endTimeStr).getTime();
+  const now = Date.now();
+  // Must end in the future (with 1min buffer for processing)
+  return endTime > (now - 60000);
+}
+
+/**
+ * Fetch a specific market by slug from Gamma API
+ */
 async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
   try {
-    console.log(`[Gamma] Fetching market by slug: ${slug}`);
-    
     const response = await fetch(
       `https://gamma-api.polymarket.com/markets?slug=${encodeURIComponent(slug)}`,
-      {
-        headers: { 'Accept': 'application/json' }
-      }
+      { headers: { 'Accept': 'application/json' } }
     );
     
     if (!response.ok) {
@@ -73,27 +95,21 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
     const markets = await response.json();
     
     if (!Array.isArray(markets) || markets.length === 0) {
-      console.log(`[Gamma] No market found for slug: ${slug}`);
       return null;
     }
     
     const market = markets[0];
     const conditionId = market.conditionId || '';
-    
-    // Parse clobTokenIds properly - can be string or array
     const clobTokenIds = parseClobTokenIds(market.clobTokenIds);
-    
     const question = market.question || market.title || '';
     const outcomes = market.outcomes || ['Yes', 'No'];
-    
-    console.log(`[Gamma] Found market: ${question.slice(0, 50)}...`);
     
     if (clobTokenIds.length < 2) {
       console.log(`[Gamma] Not enough valid token IDs for slug: ${slug}`);
       return null;
     }
     
-    // Determine asset type from slug or question
+    // Determine asset type
     const slugLower = slug.toLowerCase();
     const questionLower = question.toLowerCase();
     let asset: 'BTC' | 'ETH' | 'SOL' | 'XRP' = 'BTC';
@@ -105,27 +121,30 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
       asset = 'XRP';
     }
     
-    // Determine market type - "up-or-down" = hourly markets
-    const isUpDown = slugLower.includes('up-or-down') || questionLower.includes('up or down');
-    const is15Min = slugLower.includes('15m') || slugLower.includes('15min');
-    const marketType = isUpDown ? '1hour' : is15Min ? '15min' : 'price_above';
+    // Get market type
+    const marketType = getMarketType(slug);
     
     // Determine which token is Up/Yes vs Down/No
     const outcome1 = (outcomes[0] || '').toLowerCase();
     let upTokenId = clobTokenIds[0];
     let downTokenId = clobTokenIds[1];
     
-    // If first outcome is "no" or "down", swap
     if (outcome1 === 'no' || outcome1 === 'down') {
       upTokenId = clobTokenIds[1];
       downTokenId = clobTokenIds[0];
     }
     
-    // Get event times from the market API response
+    // Get event times
     const eventStartTime = market.startDate || market.gameStartTime || new Date().toISOString();
     const eventEndTime = market.endDate || market.endDateIso || new Date(Date.now() + 60 * 60000).toISOString();
     
-    console.log(`[Gamma] Parsed market: ${asset} ${marketType} - ends ${eventEndTime}`);
+    // Filter: Only return if market is still active
+    if (!isMarketActive(eventEndTime)) {
+      console.log(`[Gamma] Skipping expired market: ${slug} (ends ${eventEndTime})`);
+      return null;
+    }
+    
+    console.log(`[Gamma] ✓ Active market: ${asset} ${marketType} - ${slug} (ends ${eventEndTime})`);
     
     return {
       slug,
@@ -137,7 +156,7 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
       eventStartTime,
       eventEndTime,
       marketType,
-      strikePrice: null, // Will be populated from oracle data
+      strikePrice: null,
       openPrice: null,
     };
     
@@ -148,15 +167,15 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
 }
 
 /**
- * Search for active 1-hour crypto markets (v5.2.0 - Multi-source search)
- * Polymarket uses slugs like: bitcoin-up-or-down-december-31-9am-et
+ * Search for active 1-hour crypto markets (v6.0 - Fixed filtering)
  */
 async function searchActive1hMarkets(): Promise<string[]> {
   const slugs: string[] = [];
+  const now = Date.now();
   
   try {
     // Method 1: Search events with tag_slug filter for crypto
-    const cryptoTags = ['bitcoin', 'ethereum', 'crypto'];
+    const cryptoTags = ['bitcoin', 'ethereum'];
     
     for (const tag of cryptoTags) {
       try {
@@ -173,19 +192,39 @@ async function searchActive1hMarkets(): Promise<string[]> {
             const eventSlug = (event.slug || '').toLowerCase();
             const title = (event.title || '').toLowerCase();
             
-            // Look for "up or down" hourly patterns
-            if (eventSlug.includes('up-or-down') || title.includes('up or down')) {
-              console.log(`[Gamma] Found hourly event: ${eventSlug}`);
+            // Only consider "up or down" hourly patterns - NOT 5m/15m/4h
+            const isUpDown = eventSlug.includes('up-or-down') || title.includes('up or down');
+            const is5min = eventSlug.includes('-5m-') || eventSlug.includes('5min');
+            const is15min = eventSlug.includes('-15m-') || eventSlug.includes('15min');
+            const is4hour = eventSlug.includes('-4h-') || eventSlug.includes('4hour');
+            
+            // Skip non-1hour markets
+            if (!isUpDown || is5min || is15min || is4hour) continue;
+            
+            // Check if event is active (endDate > now)
+            const eventEndDate = event.endDate || event.endDateIso;
+            if (eventEndDate && new Date(eventEndDate).getTime() < now) {
+              continue; // Skip expired events
+            }
+            
+            console.log(`[Gamma] Found 1h event: ${eventSlug}`);
+            
+            // Add markets from this event
+            const markets = event.markets || [];
+            for (const market of markets) {
+              const marketSlug = market.slug || '';
+              const marketEnd = market.endDate || market.endDateIso;
               
-              const markets = event.markets || [];
-              for (const market of markets) {
-                if (market.slug) {
-                  slugs.push(market.slug);
-                }
+              // Double-check market is active
+              if (marketEnd && new Date(marketEnd).getTime() < now) continue;
+              
+              if (marketSlug && !slugs.includes(marketSlug)) {
+                slugs.push(marketSlug);
               }
-              if (event.slug) {
-                slugs.push(event.slug);
-              }
+            }
+            
+            if (event.slug && !slugs.includes(event.slug)) {
+              slugs.push(event.slug);
             }
           }
         }
@@ -204,15 +243,9 @@ async function searchActive1hMarkets(): Promise<string[]> {
       const events = await response.json();
       console.log(`[Gamma] Fetched ${events.length} active events (broad search)`);
       
-      let upDownCount = 0;
       for (const event of events) {
         const eventSlug = (event.slug || '').toLowerCase();
         const title = (event.title || '').toLowerCase();
-        
-        // Debug: log first 5 events to see what patterns exist
-        if (events.indexOf(event) < 5) {
-          console.log(`[Gamma] Sample event: ${eventSlug.slice(0, 60)}`);
-        }
         
         const isUpDown = eventSlug.includes('up-or-down') || 
                          eventSlug.includes('updown') ||
@@ -221,84 +254,70 @@ async function searchActive1hMarkets(): Promise<string[]> {
         
         const isCrypto = eventSlug.includes('bitcoin') || 
                         eventSlug.includes('ethereum') ||
-                        eventSlug.includes('btc') ||
-                        eventSlug.includes('eth') ||
+                        eventSlug.includes('btc-updown') ||
+                        eventSlug.includes('eth-updown') ||
                         title.includes('bitcoin') ||
                         title.includes('ethereum');
         
-        if (isUpDown) upDownCount++;
+        // Skip 5m/15m/4h markets - we only want 1h
+        const is5min = eventSlug.includes('-5m-') || eventSlug.includes('5min');
+        const is15min = eventSlug.includes('-15m-') || eventSlug.includes('15min');
+        const is4hour = eventSlug.includes('-4h-') || eventSlug.includes('4hour');
         
-        if (isUpDown && isCrypto) {
-          console.log(`[Gamma] Matched hourly crypto: ${eventSlug}`);
+        if (!isUpDown || !isCrypto || is5min || is15min || is4hour) continue;
+        
+        // Check if event is active
+        const eventEndDate = event.endDate || event.endDateIso;
+        if (eventEndDate && new Date(eventEndDate).getTime() < now) {
+          continue;
+        }
+        
+        console.log(`[Gamma] Matched hourly crypto: ${eventSlug}`);
+        
+        const markets = event.markets || [];
+        for (const market of markets) {
+          const marketSlug = market.slug || '';
+          const marketEnd = market.endDate || market.endDateIso;
           
-          const markets = event.markets || [];
-          for (const market of markets) {
-            if (market.slug && !slugs.includes(market.slug)) {
-              slugs.push(market.slug);
-            }
-          }
-          if (event.slug && !slugs.includes(event.slug)) {
-            slugs.push(event.slug);
+          if (marketEnd && new Date(marketEnd).getTime() < now) continue;
+          
+          if (marketSlug && !slugs.includes(marketSlug)) {
+            slugs.push(marketSlug);
           }
         }
-      }
-      console.log(`[Gamma] Found ${upDownCount} up/down events in broad search`);
-    }
-    
-    // Method 3: Search markets directly
-    const marketsResponse = await fetch(
-      'https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=200',
-      { headers: { 'Accept': 'application/json' } }
-    );
-    
-    if (marketsResponse.ok) {
-      const markets = await marketsResponse.json();
-      console.log(`[Gamma] Fetched ${markets.length} active markets`);
-      
-      for (const market of markets) {
-        const marketSlug = (market.slug || '').toLowerCase();
-        const question = (market.question || '').toLowerCase();
-        
-        const isUpDown = marketSlug.includes('up-or-down') ||
-                        marketSlug.includes('updown') ||
-                        question.includes('up or down');
-        
-        const isCrypto = marketSlug.includes('bitcoin') ||
-                        marketSlug.includes('ethereum') ||
-                        question.includes('bitcoin') ||
-                        question.includes('ethereum');
-        
-        if (isUpDown && isCrypto && market.slug) {
-          if (!slugs.includes(market.slug)) {
-            slugs.push(market.slug);
-            console.log(`[Gamma] Added from markets: ${market.slug}`);
-          }
+        if (event.slug && !slugs.includes(event.slug)) {
+          slugs.push(event.slug);
         }
       }
     }
     
-    // Method 4: Try known current hourly slugs based on current time
-    const now = new Date();
+    // Method 3: Generate known slug patterns for current time window
+    const currentDate = new Date();
     const months = ['january', 'february', 'march', 'april', 'may', 'june', 
                    'july', 'august', 'september', 'october', 'november', 'december'];
-    const month = months[now.getUTCMonth()];
-    const day = now.getUTCDate();
-    const hours = [
-      ...Array.from({length: 12}, (_, i) => `${i + 1}am`),
-      ...Array.from({length: 12}, (_, i) => `${i + 1}pm`)
-    ];
     
-    // Try a few known patterns for current day
-    const patterns = [
-      `bitcoin-up-or-down-${month}-${day}`,
-      `ethereum-up-or-down-${month}-${day}`,
-    ];
-    
-    for (const pattern of patterns) {
-      for (const hour of hours.slice(0, 6)) { // Just check a few hours
-        const testSlug = `${pattern}-${hour}-et`;
-        if (!slugs.includes(testSlug)) {
-          slugs.push(testSlug);
+    // Check current and next 3 hours in ET timezone
+    for (let hourOffset = -1; hourOffset <= 3; hourOffset++) {
+      const targetTime = new Date(now + hourOffset * 60 * 60 * 1000);
+      
+      // Convert to ET (rough approximation - EST is UTC-5, EDT is UTC-4)
+      const etOffset = -5; // EST
+      const etDate = new Date(targetTime.getTime() + etOffset * 60 * 60 * 1000);
+      
+      const month = months[etDate.getUTCMonth()];
+      const day = etDate.getUTCDate();
+      let hour = etDate.getUTCHours();
+      const ampm = hour >= 12 ? 'pm' : 'am';
+      hour = hour % 12 || 12;
+      
+      const patterns = [
+        `bitcoin-up-or-down-${month}-${day}-${hour}${ampm}-et`,
+        `ethereum-up-or-down-${month}-${day}-${hour}${ampm}-et`,
+      ];
+      
+      for (const pattern of patterns) {
+        if (!slugs.includes(pattern)) {
+          slugs.push(pattern);
         }
       }
     }
@@ -307,7 +326,7 @@ async function searchActive1hMarkets(): Promise<string[]> {
     console.error('[Gamma] Error searching markets:', error);
   }
   
-  console.log(`[Gamma] Total hourly crypto slugs found: ${slugs.length}`);
+  console.log(`[Gamma] Total hourly crypto slugs to check: ${slugs.length}`);
   return [...new Set(slugs)];
 }
 
@@ -316,13 +335,12 @@ async function searchActive1hMarkets(): Promise<string[]> {
  */
 async function fetchPriceMarkets(): Promise<MarketToken[]> {
   const results: MarketToken[] = [];
+  const now = Date.now();
   
   try {
     const response = await fetch(
       'https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=100',
-      {
-        headers: { 'Accept': 'application/json' }
-      }
+      { headers: { 'Accept': 'application/json' } }
     );
     
     if (!response.ok) return results;
@@ -337,6 +355,10 @@ async function fetchPriceMarkets(): Promise<MarketToken[]> {
       const isEthAbove = question.includes('ethereum') && question.includes('above');
       
       if (!isBtcAbove && !isEthAbove) continue;
+      
+      // Check if market is active
+      const endDate = market.endDate || market.endDateIso;
+      if (endDate && new Date(endDate).getTime() < now) continue;
       
       const clobTokenIds = parseClobTokenIds(market.clobTokenIds);
       if (clobTokenIds.length < 2) continue;
@@ -380,7 +402,7 @@ serve(async (req) => {
   }
 
   const startTime = Date.now();
-  console.log('=== Fetching market tokens ===');
+  console.log('=== Fetching market tokens (v6.0) ===');
 
   try {
     let requestedSlug: string | null = null;
@@ -399,32 +421,38 @@ serve(async (req) => {
         markets.push(market);
       }
     } else {
-      // v5.0.0: Search for 1-hour markets first
+      // Search for 1-hour markets first
       const slugs = await searchActive1hMarkets();
-      const slugsToFetch = slugs.slice(0, 10);
+      console.log(`[Gamma] Checking ${slugs.length} potential 1h slugs...`);
+      
+      // Fetch first 15 slugs in parallel
+      const slugsToFetch = slugs.slice(0, 15);
       const fetchPromises = slugsToFetch.map(slug => fetchMarketBySlug(slug));
       const fetchResults = await Promise.all(fetchPromises);
       
       for (const result of fetchResults) {
-        if (result) {
+        if (result && result.marketType === '1hour') {
           markets.push(result);
         }
       }
       
-      const priceMarkets = await fetchPriceMarkets();
-      for (const pm of priceMarkets) {
-        if (!markets.find(m => m.slug === pm.slug)) {
-          markets.push(pm);
+      console.log(`[Gamma] Found ${markets.length} active 1h markets`);
+      
+      // Also add price markets if needed
+      if (markets.length < 5) {
+        const priceMarkets = await fetchPriceMarkets();
+        for (const pm of priceMarkets) {
+          if (!markets.find(m => m.slug === pm.slug)) {
+            markets.push(pm);
+          }
         }
       }
     }
     
-    // Sort: 1-hour markets first, then 15min, then by end time
+    // Sort: 1-hour markets first by end time (soonest first)
     markets.sort((a, b) => {
       if (a.marketType === '1hour' && b.marketType !== '1hour') return -1;
       if (a.marketType !== '1hour' && b.marketType === '1hour') return 1;
-      if (a.marketType === '15min' && b.marketType !== '15min') return -1;
-      if (a.marketType !== '15min' && b.marketType === '15min') return 1;
       return new Date(a.eventEndTime).getTime() - new Date(b.eventEndTime).getTime();
     });
     
@@ -435,13 +463,12 @@ serve(async (req) => {
     
     const marketSlugs = markets.map(m => m.slug);
     
-    // Fetch oracle prices from strike_prices (the reliable source)
+    // Fetch oracle prices from strike_prices
     const { data: strikePrices } = await supabase
       .from('strike_prices')
       .select('market_slug, open_price, strike_price, close_price')
       .in('market_slug', marketSlugs);
     
-    // Map prices
     interface StrikePriceData {
       market_slug: string;
       open_price: number | null;
@@ -455,71 +482,21 @@ serve(async (req) => {
       }
     }
     
-    // Also get previous interval close prices for fallback (1-hour intervals)
-    const previousSlugs: string[] = [];
-    for (const market of markets) {
-      const slugTs = parseTimestampFromSlug(market.slug);
-      if (slugTs) {
-        // For 1-hour markets: previous interval is 1 hour ago
-        const prevTs1h = slugTs - 60 * 60;
-        // For 15-min markets: previous interval is 15 min ago
-        const prevTs15m = slugTs - 15 * 60;
-        const slugParts = market.slug.replace(/\d{10}$/, '');
-        previousSlugs.push(`${slugParts}${prevTs1h}`);
-        previousSlugs.push(`${slugParts}${prevTs15m}`);
-      }
-    }
-    
-    const { data: prevPrices } = await supabase
-      .from('strike_prices')
-      .select('market_slug, close_price')
-      .in('market_slug', previousSlugs);
-    
-    const prevPriceMap = new Map<string, number>();
-    if (prevPrices) {
-      for (const pp of prevPrices) {
-        if (pp.close_price) {
-          prevPriceMap.set(pp.market_slug, pp.close_price);
-        }
-      }
-    }
-    
-    // Add open_price to markets - priority: current oracle > previous close
+    // Add open_price to markets
     const marketsWithPrice = markets.map(m => {
       const oracleData = strikePriceMap.get(m.slug);
-      
-      // Primary: current market's open_price from oracle
-      let openPrice = oracleData?.open_price ?? oracleData?.strike_price ?? null;
-      
-      // Get previous close price for context (try both 1h and 15m intervals)
-      let previousClosePrice: number | null = null;
-      const slugTs = parseTimestampFromSlug(m.slug);
-      if (slugTs) {
-        const slugParts = m.slug.replace(/\d{10}$/, '');
-        
-        // Try 1-hour previous first, then 15-min
-        const prevTs1h = slugTs - 60 * 60;
-        const prevTs15m = slugTs - 15 * 60;
-        previousClosePrice = prevPriceMap.get(`${slugParts}${prevTs1h}`) ?? 
-                            prevPriceMap.get(`${slugParts}${prevTs15m}`) ?? null;
-        
-        // Fallback: previous interval's close_price (price to beat = prev close)
-        if (openPrice === null && previousClosePrice) {
-          openPrice = previousClosePrice;
-          console.log(`[Price] Using prev close for ${m.slug}: $${openPrice}`);
-        }
-      }
+      const openPrice = oracleData?.open_price ?? oracleData?.strike_price ?? null;
       
       return {
         ...m,
         openPrice,
-        strikePrice: openPrice, // Legacy alias
-        previousClosePrice, // Expose for UI context
+        strikePrice: openPrice,
+        previousClosePrice: null,
       };
     });
     
     const duration = Date.now() - startTime;
-    console.log(`=== Found ${markets.length} markets in ${duration}ms ===`);
+    console.log(`=== Found ${markets.length} active markets in ${duration}ms ===`);
 
     return new Response(JSON.stringify({
       success: true,
