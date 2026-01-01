@@ -93,17 +93,22 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
       return null;
     }
     
-    // Determine asset type from slug
+    // Determine asset type from slug or question
     const slugLower = slug.toLowerCase();
+    const questionLower = question.toLowerCase();
     let asset: 'BTC' | 'ETH' | 'SOL' | 'XRP' = 'BTC';
-    if (slugLower.includes('eth')) asset = 'ETH';
-    else if (slugLower.includes('sol')) asset = 'SOL';
-    else if (slugLower.includes('xrp')) asset = 'XRP';
+    if (slugLower.includes('eth') || slugLower.includes('ethereum') || questionLower.includes('ethereum')) {
+      asset = 'ETH';
+    } else if (slugLower.includes('sol') || questionLower.includes('solana')) {
+      asset = 'SOL';
+    } else if (slugLower.includes('xrp') || questionLower.includes('xrp')) {
+      asset = 'XRP';
+    }
     
-    // Determine market type (prioritize 1h, fallback to 15min for legacy)
-    const is1Hour = slugLower.includes('1h') || slugLower.includes('1-hour') || slugLower.includes('1hour');
-    const is15Min = slugLower.includes('15m') || slugLower.includes('updown');
-    const marketType = is1Hour ? '1hour' : is15Min ? '15min' : 'price_above';
+    // Determine market type - "up-or-down" = hourly markets
+    const isUpDown = slugLower.includes('up-or-down') || questionLower.includes('up or down');
+    const is15Min = slugLower.includes('15m') || slugLower.includes('15min');
+    const marketType = isUpDown ? '1hour' : is15Min ? '15min' : 'price_above';
     
     // Determine which token is Up/Yes vs Down/No
     const outcome1 = (outcomes[0] || '').toLowerCase();
@@ -116,24 +121,11 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
       downTokenId = clobTokenIds[0];
     }
     
-    // Derive event times from slug (slug = truth)
-    const slugTimestamp = parseTimestampFromSlug(slug);
-    let eventStartTime: string;
-    let eventEndTime: string;
+    // Get event times from the market API response
+    const eventStartTime = market.startDate || market.gameStartTime || new Date().toISOString();
+    const eventEndTime = market.endDate || market.endDateIso || new Date(Date.now() + 60 * 60000).toISOString();
     
-    if (slugTimestamp && is1Hour) {
-      // 1-hour market: slug is truth - derive times from it
-      eventStartTime = new Date(slugTimestamp * 1000).toISOString();
-      eventEndTime = new Date((slugTimestamp + 60 * 60) * 1000).toISOString();
-    } else if (slugTimestamp && is15Min) {
-      // 15-min market (legacy): slug is truth
-      eventStartTime = new Date(slugTimestamp * 1000).toISOString();
-      eventEndTime = new Date((slugTimestamp + 15 * 60) * 1000).toISOString();
-    } else {
-      // Fallback to Gamma API times
-      eventStartTime = market.startDate || market.gameStartTime || new Date().toISOString();
-      eventEndTime = market.endDate || market.endDateIso || new Date(Date.now() + 60 * 60000).toISOString();
-    }
+    console.log(`[Gamma] Parsed market: ${asset} ${marketType} - ends ${eventEndTime}`);
     
     return {
       slug,
@@ -156,13 +148,14 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
 }
 
 /**
- * Search for active 1-hour crypto markets (v5.0.0)
+ * Search for active 1-hour crypto markets (v5.1.0 - Real Polymarket slugs)
+ * Polymarket uses slugs like: bitcoin-up-or-down-january-1-2am-et
  */
 async function searchActive1hMarkets(): Promise<string[]> {
   const slugs: string[] = [];
   
   try {
-    // First, try to get active events with crypto/1h patterns
+    // Search events for "up or down" patterns (hourly crypto markets)
     const response = await fetch(
       'https://gamma-api.polymarket.com/events?active=true&closed=false&limit=200',
       {
@@ -182,36 +175,39 @@ async function searchActive1hMarkets(): Promise<string[]> {
       const eventSlug = (event.slug || '').toLowerCase();
       const title = (event.title || '').toLowerCase();
       
-      // Look for 1-hour patterns (priority) and 15-minute patterns (fallback)
-      const is1HourEvent = eventSlug.includes('1h') || 
-                          eventSlug.includes('1-hour') ||
-                          eventSlug.includes('1hour') ||
-                          title.includes('1 hour') ||
-                          title.includes('1-hour') ||
-                          title.includes('hourly');
+      // Real Polymarket 1-hour market patterns:
+      // "bitcoin-up-or-down-january-1-2am-et" 
+      // "ethereum-up-or-down-january-1-1pm-et"
+      const isUpDown = eventSlug.includes('up-or-down') || 
+                       title.includes('up or down');
       
-      // Check if it's crypto related
-      const isCrypto = eventSlug.includes('btc') || 
-                      eventSlug.includes('eth') ||
-                      eventSlug.includes('bitcoin') ||
+      const isCrypto = eventSlug.includes('bitcoin') || 
                       eventSlug.includes('ethereum') ||
+                      eventSlug.includes('btc') ||
+                      eventSlug.includes('eth') ||
                       title.includes('bitcoin') ||
                       title.includes('ethereum');
       
-      if (is1HourEvent && isCrypto) {
+      if (isUpDown && isCrypto) {
+        console.log(`[Gamma] Found hourly crypto event: ${eventSlug}`);
+        
+        // Get markets from the event
         const markets = event.markets || [];
         for (const market of markets) {
           if (market.slug) {
             slugs.push(market.slug);
+            console.log(`[Gamma] Added market slug: ${market.slug}`);
           }
         }
-        if (event.slug) {
+        
+        // Also add the event slug itself
+        if (event.slug && !slugs.includes(event.slug)) {
           slugs.push(event.slug);
         }
       }
     }
     
-    // Also search markets directly
+    // Also search markets directly for up-or-down patterns
     const marketsResponse = await fetch(
       'https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=200',
       {
@@ -227,20 +223,18 @@ async function searchActive1hMarkets(): Promise<string[]> {
         const marketSlug = (market.slug || '').toLowerCase();
         const question = (market.question || '').toLowerCase();
         
-        const is1HourMarket = marketSlug.includes('1h') ||
-                             marketSlug.includes('1-hour') ||
-                             marketSlug.includes('1hour') ||
-                             question.includes('1 hour') ||
-                             question.includes('hourly');
+        const isUpDown = marketSlug.includes('up-or-down') ||
+                        question.includes('up or down');
         
-        const isCrypto = marketSlug.includes('btc') ||
-                        marketSlug.includes('eth') ||
+        const isCrypto = marketSlug.includes('bitcoin') ||
+                        marketSlug.includes('ethereum') ||
                         question.includes('bitcoin') ||
                         question.includes('ethereum');
         
-        if (is1HourMarket && isCrypto && market.slug) {
+        if (isUpDown && isCrypto && market.slug) {
           if (!slugs.includes(market.slug)) {
             slugs.push(market.slug);
+            console.log(`[Gamma] Added market from direct search: ${market.slug}`);
           }
         }
       }
@@ -250,32 +244,7 @@ async function searchActive1hMarkets(): Promise<string[]> {
     console.error('[Gamma] Error searching markets:', error);
   }
   
-  // Also try known slug patterns for current time (1-hour intervals)
-  const now = Date.now();
-  const intervals = [0, 1, 2, 3, 4];
-  
-  for (const offset of intervals) {
-    const intervalMs = 60 * 60 * 1000; // 1 hour
-    const intervalTime = Math.floor((now + offset * intervalMs) / intervalMs) * intervalMs;
-    const intervalSecs = Math.floor(intervalTime / 1000);
-    
-    const patterns = [
-      `btc-updown-1h-${intervalSecs}`,
-      `eth-updown-1h-${intervalSecs}`,
-      `btc-1h-${intervalSecs}`,
-      `eth-1h-${intervalSecs}`,
-      `btc-1hour-${intervalSecs}`,
-      `eth-1hour-${intervalSecs}`,
-    ];
-    
-    for (const pattern of patterns) {
-      if (!slugs.includes(pattern)) {
-        slugs.push(pattern);
-      }
-    }
-  }
-  
-  console.log(`[Gamma] Total 1h slugs to check: ${slugs.length}`);
+  console.log(`[Gamma] Total hourly crypto slugs found: ${slugs.length}`);
   return [...new Set(slugs)];
 }
 
