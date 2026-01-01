@@ -185,62 +185,18 @@ export async function fetchPositions(walletAddress: string): Promise<PolymarketP
 
 /**
  * Fetch open and recent orders from CLOB API
+ * Note: This endpoint requires authentication which we don't have in this module.
+ * Order tracking is done via our local database instead.
+ * This function is kept for compatibility but returns empty results.
  */
 export async function fetchOrders(walletAddress: string): Promise<{
   open: PolymarketOrder[];
   filled: PolymarketOrder[];
 }> {
-  const open: PolymarketOrder[] = [];
-  const filled: PolymarketOrder[] = [];
-
-  console.log(`\n📋 Fetching orders for ${walletAddress.slice(0, 10)}...`);
-
-  try {
-    // Note: The CLOB orders endpoint requires authentication
-    // For now, we'll try the public endpoint
-    const response = await fetch(`${CLOB_URL}/orders?maker=${walletAddress}`, {
-      method: 'GET',
-      headers: { 'Accept': 'application/json' },
-    });
-
-    if (!response.ok) {
-      // This might require auth - log and continue without order data
-      console.log(`   ⚠️ Orders API requires auth (HTTP ${response.status}), skipping order sync`);
-      return { open, filled };
-    }
-
-    const data = await response.json();
-    const orders: any[] = Array.isArray(data) ? data : (data.orders || []);
-
-    for (const o of orders) {
-      const order: PolymarketOrder = {
-        id: o.id || o.order_id || '',
-        status: o.status || 'OPEN',
-        market: o.market || '',
-        asset_id: o.asset_id || o.token_id || '',
-        side: o.side || 'BUY',
-        original_size: o.original_size || o.size || '0',
-        size_matched: o.size_matched || '0',
-        price: o.price || '0',
-        outcome: o.outcome || '',
-        created_at: o.created_at || Date.now(),
-        expiration: o.expiration,
-        associate_trades: o.associate_trades || [],
-      };
-
-      if (order.status === 'OPEN') {
-        open.push(order);
-      } else if (order.status === 'FILLED' || order.status === 'MATCHED') {
-        filled.push(order);
-      }
-    }
-
-    console.log(`   ✅ Fetched ${open.length} open orders, ${filled.length} filled orders`);
-  } catch (e) {
-    console.error(`❌ Error fetching orders:`, e);
-  }
-
-  return { open, filled };
+  // The CLOB /orders endpoint requires signed authentication (HMAC headers).
+  // We track orders via our own database (live_trades table) instead.
+  // This avoids spamming 405 errors in logs.
+  return { open: [], filled: [] };
 }
 
 // ============================================================
