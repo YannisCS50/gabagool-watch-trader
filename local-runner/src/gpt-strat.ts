@@ -297,22 +297,22 @@ export const DEFAULT_CONFIG: StrategyConfig = {
     stopNewTradesSec: 30,
     hedgeMustBySec: 60,     // Must hedge by 60s remaining
     unwindStartSec: 45,
-    panicHedgeSec: 300,     // v5.1.0: Panic hedge at 5 min (was 90s) - more time exposed
+    panicHedgeSec: 90,      // v5.1.1: Panic hedge at 90s for 15-min markets
   },
 
-  // v5.1.0: Settlement safety - allow exposed, but always hedge before expiry
+  // v5.1.1: Settlement safety for 15-min markets
   settlement: {
-    panicHedgeThresholdSec: 300, // v5.1.0: 5 min - force hedge at any price if one-sided
-    maxPriceForPanicHedge: 0.95, // v5.1.0: Accept 5% loss to avoid 100% loss
-    relaxedHedgeTimeSec: 600,    // v5.1.0: Before 10 min remaining, only hedge at 4.5% edge
+    panicHedgeThresholdSec: 90,  // v5.1.1: 90s - force hedge at any price if one-sided
+    maxPriceForPanicHedge: 0.95, // v5.1.1: Accept 5% loss to avoid 100% loss
+    relaxedHedgeTimeSec: 180,    // v5.1.1: Before 3 min remaining, only hedge at 4.5% edge
   },
 
-  // v5.1.0: Mode-switch thresholds - RELAXED for more exposed time
+  // v5.1.1: Mode-switch thresholds for 15-min markets
   modeSwitch: {
     highDeltaCriticalThreshold: 0.008,  // 0.8% delta - above this, ignore edge when time low
-    highDeltaCriticalTimeSec: 180,      // v5.1.0: Below 3 min + high delta = ignore edge
+    highDeltaCriticalTimeSec: 60,       // v5.1.1: Below 1 min + high delta = ignore edge
     survivalModeDeltaThreshold: 0.008,  // 0.8% delta for survival mode
-    survivalModeTimeSec: 120,           // v5.1.0: Below 2 min + one-sided = survival mode
+    survivalModeTimeSec: 45,            // v5.1.1: Below 45s + one-sided = survival mode
     survivalMaxPrice: 0.95,             // Accept up to 5% loss to avoid 100% loss
   },
 

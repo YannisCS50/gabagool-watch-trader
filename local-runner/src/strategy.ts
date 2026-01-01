@@ -34,8 +34,8 @@ export {
 // ============================================================
 // STRATEGY VERSION
 // ============================================================
-export const STRATEGY_VERSION = '5.1.0-relaxed';
-export const STRATEGY_NAME = 'Polymarket 1h Hedge/Arb (v5.1.0 - Relaxed Hedge)';
+export const STRATEGY_VERSION = '5.1.1-15min';
+export const STRATEGY_NAME = 'Polymarket 15min Hedge/Arb (v5.1.1 - Relaxed Hedge)';
 
 // ============================================================
 // BACKWARD COMPATIBILITY LAYER
@@ -127,23 +127,23 @@ export const STRATEGY = {
     maxDelayMs: 5000,
   },
   
-  // Hedge parameters - v5.1.0: RELAXED HEDGE - allow exposed positions
+  // Hedge parameters - v5.1.1: RELAXED HEDGE for 15-min markets
   hedge: {
     shares: 50,           // Fixed 50 shares per hedge
     maxPrice: 0.75,       // Allow expensive hedges up to 75¢
     cushionTicks: 3,      // 3 ticks above ask for faster fills
-    forceTimeoutSec: 180, // v5.1.0: 180s for 1h markets - more time exposed
+    forceTimeoutSec: 45,  // v5.1.1: 45s for 15-min markets - stay exposed longer
     cooldownMs: 0,        // NO COOLDOWN for hedge!
-    relaxedEdge: 0.045,   // v5.1.0: Only hedge at 4.5% edge (combined < 95.5¢)
-    panicHedgeSec: 300,   // v5.1.0: Force hedge at any price below 5 min remaining
-    panicMaxPrice: 0.95,  // v5.1.0: Accept up to 5% loss in panic mode
+    relaxedEdge: 0.045,   // v5.1.1: Only hedge at 4.5% edge (combined < 95.5¢)
+    panicHedgeSec: 90,    // v5.1.1: Force hedge at any price below 90s remaining
+    panicMaxPrice: 0.95,  // v5.1.1: Accept up to 5% loss in panic mode
   },
   
-  // Accumulate parameters - v5.1.0: only when hedged, but no hurry
+  // Accumulate parameters - v5.1.1: relaxed for 15-min markets
   accumulate: {
     maxShares: 50,       // Max 50 shares per accumulate
-    requireHedged: false,// v5.1.0: Can accumulate even if one-sided (risky but more trades)
-    minEdge: 0.01,       // v5.1.0: Lowered to 1% edge to accumulate
+    requireHedged: false,// v5.1.1: Can accumulate even if one-sided
+    minEdge: 0.01,       // v5.1.1: Lowered to 1% edge to accumulate
   },
   
   // v5.0.0: Delta regime configuration
@@ -153,16 +153,16 @@ export const STRATEGY = {
     deepMaxDelta: 0.0040,    // DEEP only if delta < 0.40%
   },
   
-  // v5.0.0: Time-scaled parameters (adjusted for 1h = 3600s markets)
+  // v5.1.1: Time-scaled parameters for 15-min markets (900s)
   timeScaled: {
-    hedgeTimeoutBaseSec: 120,  // Base: 120s for 1h markets, scaled by timeFactor
+    hedgeTimeoutBaseSec: 20,   // Base: 20s, scaled by timeFactor
     maxSkewBase: 0.70,         // Base: 70/30, shrinks toward 50/50
     bufferAddBase: 0.008,      // Base: +0.8%, increases as time decreases
   },
   
-  // v5.0.0: DEEP mode conditions (adjusted for 1h markets)
+  // v5.1.1: DEEP mode conditions for 15-min markets
   deep: {
-    minTimeSec: 600,           // Only if > 600s (10 min) remaining for 1h markets
+    minTimeSec: 180,           // Only if > 180s (3 min) remaining
     maxCombinedAsk: 0.95,      // Only if combined < 95¢
     maxDeltaPct: 0.0040,       // Only if delta < 0.40%
   },
