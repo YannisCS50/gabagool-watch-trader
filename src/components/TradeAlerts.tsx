@@ -39,21 +39,23 @@ export function TradeAlerts() {
     }, {} as Record<string, { up: number; down: number; upCost: number; downCost: number; asset: string }>);
 
     // Analyze each market for bad hedges (only open positions)
+    // Bad hedge = pair cost > $1.00 per share (losing money on the hedge)
     Object.entries(tradesByMarket).forEach(([slug, data]) => {
-      const total = data.up + data.down;
-      if (total === 0) return;
+      if (data.up === 0 || data.down === 0) return; // Need both sides for a hedge
 
       // Check if this market is already settled
       const isSettled = results.some(r => r.market_slug === slug && r.settled_at);
       if (isSettled) return;
 
-      const upPct = (data.up / total) * 100;
-      const hedgeRatio = Math.abs(50 - upPct);
+      // Calculate pair cost: cost per hedged share pair
+      const minShares = Math.min(data.up, data.down);
+      const upAvgPrice = data.upCost / data.up;
+      const downAvgPrice = data.downCost / data.down;
+      const pairCost = upAvgPrice + downAvgPrice;
 
-      // Bad hedge: more than 25% deviation from 50/50 (so 75/25 or worse)
-      if (hedgeRatio > 25 && total > 10) {
-        const dominant = data.up > data.down ? 'UP' : 'DOWN';
-        const dominantPct = Math.max(upPct, 100 - upPct).toFixed(0);
+      // Bad hedge: pair cost > $1.00 means we're losing money on the hedge
+      if (pairCost > 1.0 && minShares >= 10) {
+        const lockedLoss = (pairCost - 1.0) * minShares;
         
         alertList.push({
           type: 'bad_hedge',
@@ -61,9 +63,9 @@ export function TradeAlerts() {
           asset: data.asset,
           upShares: data.up,
           downShares: data.down,
-          hedgeRatio: Number(dominantPct),
-          message: `${dominantPct}/${(100 - Number(dominantPct)).toFixed(0)} hedge (${dominant} heavy)`,
-          severity: hedgeRatio > 35 ? 'danger' : 'warning',
+          hedgeRatio: pairCost,
+          message: `Pair cost $${pairCost.toFixed(3)} (-$${lockedLoss.toFixed(2)} verlies)`,
+          severity: pairCost > 1.05 ? 'danger' : 'warning',
         });
       }
     });
