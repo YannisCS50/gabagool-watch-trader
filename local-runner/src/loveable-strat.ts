@@ -4,7 +4,7 @@ import type { OrderbookDepth } from './polymarket.js';
 // ============================================================
 // STRATEGY VERSION - Log this on startup to verify deployment
 // ============================================================
-export const STRATEGY_VERSION = '2.0.0-pdf-state-machine';
+export const STRATEGY_VERSION = '2.1.0-strict-balance';
 export const STRATEGY_NAME = 'Polymarket 15m Hedge & Arbitrage (PDF Spec)';
 
 // ============================================================
@@ -644,6 +644,14 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
   switch (state) {
     case 'FLAT': {
       // FLAT: Buy cheapest side if edge exists OR opening conditions met
+      // ========== STRICT SINGLE OPENING ==========
+      // Only allow ONE opening trade per market, then wait for hedge
+      const totalShares = inv.upShares + inv.downShares;
+      if (totalShares > 0) {
+        console.log(`[Strategy] BLOCK opening: already have ${totalShares} shares, waiting for hedge`);
+        return null; // Already have shares, must hedge first
+      }
+      
       const cheaperSide: Outcome = upAsk <= downAsk ? 'UP' : 'DOWN';
       const cheaperPrice = cheaperSide === 'UP' ? upAsk : downAsk;
       
@@ -826,9 +834,14 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
         return null;
       }
       
-      // Only accumulate if balanced (skew near 0)
-      const currentSkew = Math.abs(calculateSkew(inv));
-      if (currentSkew > 0.1) return null; // Must be within 10% of balanced
+      // ========== STRICT 1:1 BALANCE REQUIREMENT ==========
+      // ONLY accumulate if shares are EXACTLY balanced
+      // This prevents the ratio from getting out of sync
+      const shareDiff = Math.abs(inv.upShares - inv.downShares);
+      if (shareDiff > 5) {
+        console.log(`[Strategy] BLOCK accumulate: shares not balanced (UP=${inv.upShares}, DOWN=${inv.downShares}, diff=${shareDiff})`);
+        return null; // Must be within 5 shares of balanced
+      }
       
       const edgePct = (1 - combined) * 100;
       const clipSize = getClipSize(remainingSeconds, edgePct);
