@@ -203,12 +203,19 @@ export const LivePnLDashboard = () => {
 
   const formatMarketSlug = (slug: string) => {
     // Parse market slug like "btc-updown-15m-1766870100"
+    if (!slug) return 'Unknown';
     const parts = slug.split('-');
     if (parts.length >= 4) {
       const asset = parts[0].toUpperCase();
-      const timestamp = parseInt(parts[parts.length - 1]);
-      const date = new Date(timestamp * 1000);
-      return `${asset} ${format(date, 'HH:mm')}`;
+      const timestamp = parseInt(parts[parts.length - 1], 10);
+      // Validate timestamp is a valid number
+      if (!isNaN(timestamp) && timestamp > 0) {
+        const date = new Date(timestamp * 1000);
+        // Check if date is valid
+        if (!isNaN(date.getTime())) {
+          return `${asset} ${format(date, 'HH:mm')}`;
+        }
+      }
     }
     return slug;
   };
