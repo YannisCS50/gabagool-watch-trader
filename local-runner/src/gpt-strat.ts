@@ -45,6 +45,7 @@
  * - Exposure protection: no accumulate when one-sided
  */
 
+// v5.2.1: STRICT BALANCE VERSION - Fixed one-sided accumulation bug
 export type Side = "UP" | "DOWN";
 export type BotState = "FLAT" | "ONE_SIDED" | "HEDGED" | "SKEWED" | "UNWIND" | "DEEP_DISLOCATION";
 export type RegimeTag = "NORMAL" | "DEEP" | "UNWIND";
@@ -1405,6 +1406,21 @@ export class Polymarket15mArbBot {
     if (this.state === "UNWIND") return intents;
     if (snap.secondsRemaining <= this.cfg.timing.stopNewTradesSec) return intents;
 
+    // ========== v5.2.1: STRICT 1:1 BALANCE ENFORCEMENT ==========
+    // CRITICAL FIX: Block ALL new entries when ONE_SIDED
+    // The bot MUST hedge first before doing ANY new entry trades
+    // This prevents the share imbalance that causes losses
+    if (this.state === "ONE_SIDED" || this.state === "DEEP_DISLOCATION") {
+      const inv = this.inventory;
+      this.log("ENTRY_BLOCKED_ONE_SIDED", { 
+        state: this.state,
+        upShares: inv.upShares, 
+        downShares: inv.downShares,
+        reason: "MUST HEDGE FIRST - no new entries until balanced"
+      });
+      return intents;
+    }
+
     // v4.2.1: HIGH delta regime blocks new risk
     if (this.currentDeltaRegime === "HIGH") {
       this.log("ENTRY_BLOCKED_HIGH_DELTA", { deltaPct: this.currentDeltaPct, regime: this.currentDeltaRegime });
@@ -1440,6 +1456,19 @@ export class Polymarket15mArbBot {
     
     const hasBoth = (this.inventory.upShares > 0 && this.inventory.downShares > 0);
     const delta = upFraction(this.inventory) - this.cfg.skew.target;
+
+    // v5.2.1: STRICT SHARE BALANCE CHECK
+    // Only allow accumulation if shares are within 5 of each other
+    const shareDiff = Math.abs(this.inventory.upShares - this.inventory.downShares);
+    if (hasBoth && shareDiff > 5) {
+      this.log("ACCUM_BLOCKED_SHARE_IMBALANCE", { 
+        upShares: this.inventory.upShares, 
+        downShares: this.inventory.downShares,
+        shareDiff,
+        reason: "Shares not balanced - must hedge first"
+      });
+      return intents;
+    }
 
     // v4.2.2: ATOMIC PAIR ACCUMULATE - buy both sides together for better balance
     // Only do single-side buys in DEEP mode or for rebalancing

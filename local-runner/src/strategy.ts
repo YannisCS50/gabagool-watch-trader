@@ -34,8 +34,8 @@ export {
 // ============================================================
 // STRATEGY VERSION
 // ============================================================
-export const STRATEGY_VERSION = '5.1.1-15min';
-export const STRATEGY_NAME = 'Polymarket 15min Hedge/Arb (v5.1.1 - Relaxed Hedge)';
+export const STRATEGY_VERSION = '5.2.1-strict-balance';
+export const STRATEGY_NAME = 'Polymarket 15min Hedge/Arb (v5.2.1 - Strict 1:1 Balance)';
 
 // ============================================================
 // BACKWARD COMPATIBILITY LAYER
