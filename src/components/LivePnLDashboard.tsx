@@ -142,17 +142,24 @@ export const LivePnLDashboard = () => {
     );
   }, [trades, results]);
 
+  // Helper to check if a bet is actually running (market not yet ended)
+  const isBetRunning = (bet: BetStats) => {
+    if (!bet.eventEndTime) return !bet.isSettled;
+    return new Date(bet.eventEndTime) > new Date();
+  };
+
   // Summary statistics
   const summaryStats = useMemo(() => {
     const settledBets = betStats.filter((b) => b.isSettled);
-    const openBets = betStats.filter((b) => !b.isSettled);
+    const runningBets = betStats.filter((b) => isBetRunning(b));
+    const pendingSettlement = betStats.filter((b) => !b.isSettled && !isBetRunning(b));
 
     const wins = settledBets.filter((b) => (b.profitLoss || 0) > 0);
     const losses = settledBets.filter((b) => (b.profitLoss || 0) < 0);
     const breakEven = settledBets.filter((b) => (b.profitLoss || 0) === 0);
 
     const totalRealizedPL = settledBets.reduce((sum, b) => sum + (b.profitLoss || 0), 0);
-    const totalOpenInvested = openBets.reduce((sum, b) => sum + b.totalInvested, 0);
+    const totalOpenInvested = runningBets.reduce((sum, b) => sum + b.totalInvested, 0);
     const totalSettledInvested = settledBets.reduce((sum, b) => sum + b.totalInvested, 0);
 
     const avgWin = wins.length > 0 ? wins.reduce((sum, b) => sum + (b.profitLoss || 0), 0) / wins.length : 0;
@@ -170,7 +177,8 @@ export const LivePnLDashboard = () => {
     return {
       totalBets: betStats.length,
       settledBets: settledBets.length,
-      openBets: openBets.length,
+      runningBets: runningBets.length,
+      pendingSettlement: pendingSettlement.length,
       wins: wins.length,
       losses: losses.length,
       breakEven: breakEven.length,
@@ -198,7 +206,7 @@ export const LivePnLDashboard = () => {
   const filteredBets = useMemo(() => {
     switch (activeFilter) {
       case 'running':
-        return betStats.filter((b) => !b.isSettled);
+        return betStats.filter((b) => isBetRunning(b));
       case 'closed':
         return betStats.filter((b) => b.isSettled);
       case 'wins':
@@ -306,9 +314,9 @@ export const LivePnLDashboard = () => {
           <CardContent className="p-4">
             <div className="flex items-center gap-2 text-sm text-muted-foreground mb-2">
               <Clock className="w-4 h-4" />
-              Open Bets
+              Running Bets
             </div>
-            <div className="text-2xl font-bold">{summaryStats.openBets}</div>
+            <div className="text-2xl font-bold">{summaryStats.runningBets}</div>
             <div className="text-xs text-muted-foreground mt-1">
               ${summaryStats.totalOpenInvested.toFixed(2)} invested
             </div>
@@ -411,7 +419,7 @@ export const LivePnLDashboard = () => {
             <Tabs value={activeFilter} onValueChange={(v) => setActiveFilter(v as BetFilter)} className="w-auto">
               <TabsList className="h-8">
                 <TabsTrigger value="all" className="text-xs px-3 h-6">All ({betStats.length})</TabsTrigger>
-                <TabsTrigger value="running" className="text-xs px-3 h-6">Running ({summaryStats.openBets})</TabsTrigger>
+                <TabsTrigger value="running" className="text-xs px-3 h-6">Running ({summaryStats.runningBets})</TabsTrigger>
                 <TabsTrigger value="closed" className="text-xs px-3 h-6">Closed ({summaryStats.settledBets})</TabsTrigger>
                 <TabsTrigger value="wins" className="text-xs px-3 h-6 text-emerald-500">Wins ({summaryStats.wins})</TabsTrigger>
                 <TabsTrigger value="losses" className="text-xs px-3 h-6 text-red-500">Losses ({summaryStats.losses})</TabsTrigger>
