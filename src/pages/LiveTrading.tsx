@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
   ArrowLeft,
   Zap,
@@ -13,6 +14,7 @@ import {
   AlertTriangle,
   BarChart3,
   Activity,
+  ChevronDown,
 } from 'lucide-react';
 import { LiveTradeDashboard } from '@/components/LiveTradeDashboard';
 import { LivePnLDashboard } from '@/components/LivePnLDashboard';
@@ -134,64 +136,24 @@ export default function LiveTrading() {
           </div>
         </div>
 
-        {/* Portfolio Cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-8">
-          <Card className="border-emerald-500/20 bg-gradient-to-br from-emerald-500/5 to-transparent">
-            <CardContent className="p-4">
-              <div className="text-sm text-muted-foreground mb-1">Portfolio Value</div>
-              <div className="text-2xl font-bold font-mono text-emerald-500">
-                ${portfolio ? portfolio.totalValue.toFixed(2) : '...'}
-              </div>
-              <div className="text-xs text-muted-foreground">Cash + Positions</div>
-            </CardContent>
-          </Card>
-
-          <Card className="border-amber-500/20">
-            <CardContent className="p-4">
-              <div className="text-sm text-muted-foreground mb-1">Cash Balance</div>
-              <div className="text-2xl font-bold font-mono">
-                ${portfolio ? portfolio.cashBalance.toFixed(2) : '...'}
-              </div>
-              <div className="text-xs text-muted-foreground">Available USDC</div>
-            </CardContent>
-          </Card>
-          
-          <Card>
-            <CardContent className="p-4">
-              <div className="text-sm text-muted-foreground mb-1">Positions Value</div>
-              <div className="text-2xl font-bold font-mono">
-                ${portfolio ? portfolio.positionsValue.toFixed(2) : '...'}
-              </div>
-              <div className="text-xs text-muted-foreground">{positions.length} open positions</div>
-            </CardContent>
-          </Card>
-          
-          <Card className={portfolio && portfolio.totalPnl >= 0 ? "border-emerald-500/20" : "border-red-500/20"}>
-            <CardContent className="p-4">
-              <div className="text-sm text-muted-foreground mb-1">Total P/L</div>
-              <div className={`text-2xl font-bold font-mono ${portfolio && portfolio.totalPnl >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                {portfolio ? `${portfolio.totalPnl >= 0 ? '+' : ''}$${portfolio.totalPnl.toFixed(2)}` : '...'}
-              </div>
-              <div className="text-xs text-muted-foreground">Unrealized + Realized</div>
-            </CardContent>
-          </Card>
-          
-          <Card>
-            <CardContent className="p-4">
-              <div className="text-sm text-muted-foreground mb-1">Wallet USDC</div>
-              <div className="text-2xl font-bold font-mono">
-                ${walletBalance ? parseFloat(walletBalance.usdc).toFixed(2) : '...'}
-              </div>
-              <div className="text-xs text-muted-foreground">Ready to deposit</div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Runner Status & Instructions */}
-        <div className="grid gap-4 md:grid-cols-2 mb-8">
-          <RunnerStatus />
-          <RunnerInstructions />
-        </div>
+        {/* Runner Status & Instructions - Collapsible */}
+        <Collapsible className="mb-8">
+          <CollapsibleTrigger asChild>
+            <Button variant="outline" className="w-full flex items-center justify-between mb-2">
+              <span className="flex items-center gap-2">
+                <Bot className="w-4 h-4" />
+                Runner Status & Instructions
+              </span>
+              <ChevronDown className="w-4 h-4" />
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <div className="grid gap-4 md:grid-cols-2">
+              <RunnerStatus />
+              <RunnerInstructions />
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
 
         {/* Bot Positions from Polymarket Sync */}
         <div className="mb-8">
