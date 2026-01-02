@@ -57,7 +57,7 @@ type BetFilter = 'all' | 'running' | 'closed' | 'wins' | 'losses';
 export const LivePnLDashboard = () => {
   const { trades, results, stats, isLoading } = useLiveTrades();
   const [expandedBets, setExpandedBets] = useState<Set<string>>(new Set());
-  const [activeFilter, setActiveFilter] = useState<BetFilter>('all');
+  const [activeFilter, setActiveFilter] = useState<BetFilter>('running');
 
   // Calculate detailed stats per bet
   const betStats = useMemo(() => {
@@ -173,6 +173,8 @@ export const LivePnLDashboard = () => {
 
     const btcBets = betStats.filter((b) => b.asset === 'BTC');
     const ethBets = betStats.filter((b) => b.asset === 'ETH');
+    const solBets = betStats.filter((b) => b.asset === 'SOL');
+    const xrpBets = betStats.filter((b) => b.asset === 'XRP');
 
     return {
       totalBets: betStats.length,
@@ -197,8 +199,12 @@ export const LivePnLDashboard = () => {
       totalLockedProfit,
       btcBets: btcBets.length,
       ethBets: ethBets.length,
+      solBets: solBets.length,
+      xrpBets: xrpBets.length,
       btcPL: btcBets.filter(b => b.isSettled).reduce((sum, b) => sum + (b.profitLoss || 0), 0),
       ethPL: ethBets.filter(b => b.isSettled).reduce((sum, b) => sum + (b.profitLoss || 0), 0),
+      solPL: solBets.filter(b => b.isSettled).reduce((sum, b) => sum + (b.profitLoss || 0), 0),
+      xrpPL: xrpBets.filter(b => b.isSettled).reduce((sum, b) => sum + (b.profitLoss || 0), 0),
     };
   }, [betStats]);
 
@@ -385,7 +391,7 @@ export const LivePnLDashboard = () => {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="flex items-center justify-between p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
               <div className="flex items-center gap-2">
                 <Badge variant="outline" className="bg-amber-500/20 text-amber-500 border-amber-500/30">BTC</Badge>
@@ -402,6 +408,24 @@ export const LivePnLDashboard = () => {
               </div>
               <span className={`font-mono font-bold ${summaryStats.ethPL >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
                 {summaryStats.ethPL >= 0 ? '+' : ''}${summaryStats.ethPL.toFixed(2)}
+              </span>
+            </div>
+            <div className="flex items-center justify-between p-3 rounded-lg bg-purple-500/10 border border-purple-500/20">
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className="bg-purple-500/20 text-purple-500 border-purple-500/30">SOL</Badge>
+                <span className="text-sm">{summaryStats.solBets} bets</span>
+              </div>
+              <span className={`font-mono font-bold ${summaryStats.solPL >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                {summaryStats.solPL >= 0 ? '+' : ''}${summaryStats.solPL.toFixed(2)}
+              </span>
+            </div>
+            <div className="flex items-center justify-between p-3 rounded-lg bg-slate-500/10 border border-slate-500/20">
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className="bg-slate-500/20 text-slate-400 border-slate-500/30">XRP</Badge>
+                <span className="text-sm">{summaryStats.xrpBets} bets</span>
+              </div>
+              <span className={`font-mono font-bold ${summaryStats.xrpPL >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                {summaryStats.xrpPL >= 0 ? '+' : ''}${summaryStats.xrpPL.toFixed(2)}
               </span>
             </div>
           </div>
@@ -470,7 +494,11 @@ export const LivePnLDashboard = () => {
                               className={`text-xs ${
                                 bet.asset === 'BTC'
                                   ? 'bg-amber-500/10 text-amber-500 border-amber-500/30'
-                                  : 'bg-blue-500/10 text-blue-500 border-blue-500/30'
+                                  : bet.asset === 'ETH'
+                                  ? 'bg-blue-500/10 text-blue-500 border-blue-500/30'
+                                  : bet.asset === 'SOL'
+                                  ? 'bg-purple-500/10 text-purple-500 border-purple-500/30'
+                                  : 'bg-slate-500/10 text-slate-400 border-slate-500/30'
                               }`}
                             >
                               {bet.asset}
