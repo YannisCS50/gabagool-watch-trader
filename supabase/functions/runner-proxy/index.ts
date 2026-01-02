@@ -9,7 +9,20 @@ const RUNNER_SECRET = Deno.env.get('RUNNER_SHARED_SECRET');
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
-type Action = 'get-markets' | 'get-trades' | 'save-trade' | 'heartbeat' | 'offline' | 'get-pending-orders' | 'update-order' | 'sync-positions' | 'save-price-ticks' | 'save-settlement-failure';
+type Action =
+  | 'get-markets'
+  | 'get-trades'
+  | 'save-trade'
+  | 'heartbeat'
+  | 'offline'
+  | 'get-pending-orders'
+  | 'update-order'
+  | 'sync-positions'
+  | 'save-price-ticks'
+  | 'save-snapshot-logs'
+  | 'save-fill-logs'
+  | 'save-settlement-logs'
+  | 'save-settlement-failure';
 
 interface RequestBody {
   action: Action;
@@ -381,6 +394,149 @@ Deno.serve(async (req) => {
         }
 
         return new Response(JSON.stringify({ success: true, count: ticks.length }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      case 'save-snapshot-logs': {
+        const logs = data?.logs as Array<Record<string, unknown>> | undefined;
+        if (!logs || logs.length === 0) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing logs' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const rows = logs.map((l) => ({
+          ts: l.ts,
+          iso: l.iso,
+          market_id: l.marketId,
+          asset: l.asset,
+          seconds_remaining: l.secondsRemaining,
+          spot_price: l.spotPrice,
+          strike_price: l.strikePrice,
+          delta: l.delta,
+          up_bid: l.upBid,
+          up_ask: l.upAsk,
+          up_mid: l.upMid,
+          down_bid: l.downBid,
+          down_ask: l.downAsk,
+          down_mid: l.downMid,
+          spread_up: l.spreadUp,
+          spread_down: l.spreadDown,
+          combined_ask: l.combinedAsk,
+          combined_mid: l.combinedMid,
+          cheapest_ask_plus_other_mid: l.cheapestAskPlusOtherMid,
+          bot_state: l.botState,
+          up_shares: l.upShares,
+          down_shares: l.downShares,
+          avg_up_cost: l.avgUpCost,
+          avg_down_cost: l.avgDownCost,
+          pair_cost: l.pairCost,
+          skew: l.skew,
+          no_liquidity_streak: l.noLiquidityStreak,
+          adverse_streak: l.adverseStreak,
+        }));
+
+        const { error } = await supabase.from('snapshot_logs').insert(rows);
+        if (error) {
+          console.error('[runner-proxy] save-snapshot-logs error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true, count: rows.length }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      case 'save-fill-logs': {
+        const logs = data?.logs as Array<Record<string, unknown>> | undefined;
+        if (!logs || logs.length === 0) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing logs' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const rows = logs.map((l) => ({
+          ts: l.ts,
+          iso: l.iso,
+          market_id: l.marketId,
+          asset: l.asset,
+          side: l.side,
+          order_id: l.orderId,
+          client_order_id: l.clientOrderId,
+          fill_qty: l.fillQty,
+          fill_price: l.fillPrice,
+          fill_notional: l.fillNotional,
+          intent: l.intent,
+          seconds_remaining: l.secondsRemaining,
+          spot_price: l.spotPrice,
+          strike_price: l.strikePrice,
+          delta: l.delta,
+          hedge_lag_ms: l.hedgeLagMs,
+        }));
+
+        const { error } = await supabase.from('fill_logs').insert(rows);
+        if (error) {
+          console.error('[runner-proxy] save-fill-logs error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true, count: rows.length }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      case 'save-settlement-logs': {
+        const logs = data?.logs as Array<Record<string, unknown>> | undefined;
+        if (!logs || logs.length === 0) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing logs' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const rows = logs.map((l) => ({
+          ts: l.ts,
+          iso: l.iso,
+          market_id: l.marketId,
+          asset: l.asset,
+          open_ts: l.openTs,
+          close_ts: l.closeTs,
+          final_up_shares: l.finalUpShares,
+          final_down_shares: l.finalDownShares,
+          avg_up_cost: l.avgUpCost,
+          avg_down_cost: l.avgDownCost,
+          pair_cost: l.pairCost,
+          realized_pnl: l.realizedPnL,
+          winning_side: l.winningSide,
+          max_delta: l.maxDelta,
+          min_delta: l.minDelta,
+          time_in_low: l.timeInLow,
+          time_in_mid: l.timeInMid,
+          time_in_high: l.timeInHigh,
+          count_dislocation_95: l.countDislocation95,
+          count_dislocation_97: l.countDislocation97,
+          last_180s_dislocation_95: l.last180sDislocation95,
+        }));
+
+        const { error } = await supabase.from('settlement_logs').insert(rows);
+        if (error) {
+          console.error('[runner-proxy] save-settlement-logs error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true, count: rows.length }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }

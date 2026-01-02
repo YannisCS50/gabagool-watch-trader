@@ -10,12 +10,12 @@
  * - Hedge lag tracking for pair completion
  */
 
-import { 
-  logSnapshot, 
-  logFill, 
-  logSettlement, 
-  SnapshotLog, 
-  FillLog, 
+import {
+  logSnapshot,
+  logFill,
+  logSettlement,
+  SnapshotLog,
+  FillLog,
   SettlementLog,
   calculateDelta,
   calculateMid,
@@ -25,6 +25,44 @@ import {
   calculateAvgCost,
   SNAPSHOT_INTERVAL_MS
 } from './logger.js';
+import { saveFillLogs, saveSettlementLogs, saveSnapshotLogs } from './backend.js';
+
+const FLUSH_INTERVAL_MS = 5000;
+const MAX_BATCH = 250;
+
+const snapshotQueue: SnapshotLog[] = [];
+const fillQueue: FillLog[] = [];
+const settlementQueue: SettlementLog[] = [];
+let flushTimerStarted = false;
+
+function startFlushLoop() {
+  if (flushTimerStarted) return;
+  flushTimerStarted = true;
+
+  setInterval(() => {
+    void flushQueues();
+  }, FLUSH_INTERVAL_MS).unref?.();
+}
+
+async function flushQueues() {
+  // Snapshot logs
+  if (snapshotQueue.length > 0) {
+    const batch = snapshotQueue.splice(0, MAX_BATCH);
+    await saveSnapshotLogs(batch);
+  }
+
+  // Fill logs
+  if (fillQueue.length > 0) {
+    const batch = fillQueue.splice(0, MAX_BATCH);
+    await saveFillLogs(batch);
+  }
+
+  // Settlement logs (rare)
+  if (settlementQueue.length > 0) {
+    const batch = settlementQueue.splice(0, MAX_BATCH);
+    await saveSettlementLogs(batch);
+  }
+}
 
 export type DeltaRegime = 'LOW' | 'MID' | 'HIGH';
 export type BotState = 'FLAT' | 'ONE_SIDED' | 'HEDGED' | 'SKEWED' | 'UNWIND' | 'DEEP_DISLOCATION';
@@ -291,8 +329,17 @@ export function recordSnapshot(input: SnapshotInput): void {
     noLiquidityStreak: telemetry.noLiquidityStreak,
     adverseStreak: telemetry.adverseStreak,
   };
-  
+
   logSnapshot(snapshotLog);
+
+  // Also send to backend (buffered)
+  startFlushLoop();
+  snapshotQueue.push(snapshotLog);
+  if (snapshotQueue.length >= MAX_BATCH) {
+    void flushQueues().catch(() => {
+      // Ignore - logging is non-critical
+    });
+  }
 }
 
 // ---------- Fill Recording ----------
@@ -361,8 +408,17 @@ export function recordFill(input: FillInput): void {
     delta,
     hedgeLagMs,
   };
-  
+
   logFill(fillLog);
+
+  // Also send to backend (buffered)
+  startFlushLoop();
+  fillQueue.push(fillLog);
+  if (fillQueue.length >= MAX_BATCH) {
+    void flushQueues().catch(() => {
+      // Ignore - logging is non-critical
+    });
+  }
 }
 
 // ---------- Settlement Recording ----------
@@ -421,7 +477,14 @@ export function recordSettlement(input: SettlementInput): void {
   };
   
   logSettlement(settlementLog);
-  
+
+  // Also send to backend (buffered)
+  startFlushLoop();
+  settlementQueue.push(settlementLog);
+  void flushQueues().catch(() => {
+    // Ignore - logging is non-critical
+  });
+
   // Clear telemetry for this market
   clearTelemetry(input.marketId);
 }

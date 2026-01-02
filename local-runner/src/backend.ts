@@ -1,4 +1,5 @@
 import { config } from './config.js';
+import type { FillLog, SettlementLog, SnapshotLog } from './logger.js';
 
 interface MarketToken {
   slug: string;
@@ -209,6 +210,43 @@ export async function savePriceTicks(ticks: PriceTick[]): Promise<boolean> {
 }
 
 // ============================================
+// TELEMETRY LOGGING (SNAPSHOT/FILL/SETTLEMENT)
+// ============================================
+
+export async function saveSnapshotLogs(logs: SnapshotLog[]): Promise<boolean> {
+  if (logs.length === 0) return true;
+  try {
+    const result = await callProxy<{ success: boolean; count?: number }>('save-snapshot-logs', { logs });
+    return result.success;
+  } catch (error) {
+    console.error('❌ saveSnapshotLogs error:', error);
+    return false;
+  }
+}
+
+export async function saveFillLogs(logs: FillLog[]): Promise<boolean> {
+  if (logs.length === 0) return true;
+  try {
+    const result = await callProxy<{ success: boolean; count?: number }>('save-fill-logs', { logs });
+    return result.success;
+  } catch (error) {
+    console.error('❌ saveFillLogs error:', error);
+    return false;
+  }
+}
+
+export async function saveSettlementLogs(logs: SettlementLog[]): Promise<boolean> {
+  if (logs.length === 0) return true;
+  try {
+    const result = await callProxy<{ success: boolean; count?: number }>('save-settlement-logs', { logs });
+    return result.success;
+  } catch (error) {
+    console.error('❌ saveSettlementLogs error:', error);
+    return false;
+  }
+}
+
+// ============================================
 // v4.4: SETTLEMENT FAILURE LOGGING
 // ============================================
 
@@ -241,3 +279,4 @@ export async function saveSettlementFailure(failure: SettlementFailure): Promise
     return false;
   }
 }
+

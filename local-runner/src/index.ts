@@ -502,13 +502,30 @@ async function evaluateMarket(slug: string): Promise<void> {
         
         if (upSuccess) {
           // Immediately execute DOWN side - no waiting
-          const downSuccess = await executeTrade(ctx, 'DOWN', signal.pairedWith.price, signal.pairedWith.shares, 
-            `PAIR_DOWN ${signal.pairedWith.shares}sh @ ${(signal.pairedWith.price * 100).toFixed(0)}¢`, 'ENTRY');
-          
+          const downSuccess = await executeTrade(
+            ctx,
+            'DOWN',
+            signal.pairedWith.price,
+            signal.pairedWith.shares,
+            `PAIR_DOWN ${signal.pairedWith.shares}sh @ ${(signal.pairedWith.price * 100).toFixed(0)}¢`,
+            'ENTRY'
+          );
+
           if (downSuccess) {
             console.log(`✅ [v4.6.0] ATOMIC PAIR COMPLETE: ${signal.shares} UP + ${signal.pairedWith.shares} DOWN`);
           } else {
-            console.log(`⚠️ [v4.6.0] PARTIAL PAIR: UP filled, DOWN failed - will hedge via ONE_SIDED`);
+            console.log(`⚠️ [v4.6.0] PARTIAL PAIR: UP filled, DOWN failed - EMERGENCY hedge now`);
+
+            const fallbackAsk = ctx.book.down.ask ?? signal.pairedWith.price;
+            const emergencyPrice = Math.min(0.95, fallbackAsk + 0.03);
+            await executeTrade(
+              ctx,
+              'DOWN',
+              emergencyPrice,
+              signal.pairedWith.shares,
+              `EMERGENCY_HEDGE DOWN ${signal.pairedWith.shares}sh @ ${(emergencyPrice * 100).toFixed(0)}¢`,
+              'HEDGE'
+            );
           }
         } else {
           console.log(`⚠️ [v4.6.0] PAIR FAILED: UP side failed, skipping DOWN`);
@@ -541,7 +558,27 @@ async function evaluateMarket(slug: string): Promise<void> {
         // Execute both sides atomically
         const upSuccess = await executeTrade(ctx, 'UP', ctx.book.up.ask!, signal.shares, signal.reasoning, 'ACCUMULATE');
         if (upSuccess && ctx.book.down.ask) {
-          await executeTrade(ctx, 'DOWN', ctx.book.down.ask, signal.shares, signal.reasoning.replace('UP', 'DOWN'), 'ACCUMULATE');
+          const downSuccess = await executeTrade(
+            ctx,
+            'DOWN',
+            ctx.book.down.ask,
+            signal.shares,
+            signal.reasoning.replace('UP', 'DOWN'),
+            'ACCUMULATE'
+          );
+
+          if (!downSuccess) {
+            console.log(`⚠️ Accumulate PARTIAL: UP ok, DOWN failed - EMERGENCY hedge now`);
+            const emergencyPrice = Math.min(0.95, ctx.book.down.ask + 0.03);
+            await executeTrade(
+              ctx,
+              'DOWN',
+              emergencyPrice,
+              signal.shares,
+              `EMERGENCY_HEDGE DOWN ${signal.shares}sh @ ${(emergencyPrice * 100).toFixed(0)}¢`,
+              'HEDGE'
+            );
+          }
         } else if (!upSuccess) {
           console.log(`⚠️ Accumulate aborted: UP side failed, skipping DOWN`);
         }

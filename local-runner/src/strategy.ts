@@ -501,13 +501,26 @@ export function evaluateOpportunity(
     console.log(`[v4.2.1] timeFactor=${timeFactor.toFixed(2)} buffer=${(scaledBuffer*100).toFixed(2)}¢ maxSkew=${(scaledMaxSkew*100).toFixed(0)}% hedgeTimeout=${scaledHedgeTimeout}s DEEP=${deepAllowed}`);
   }
 
-  // ========== STATE LOGIC (v4.2.1) ==========
+  // ========== STATE LOGIC (STRICT TARGETS: 50 or 75) ==========
+  // Goal: never allow persistent imbalances like 25/75.
+  // We only aim for symmetric totals of 50/50 or 75/75 (with an intermediate recovery to 50 if partials occur).
+
+  const upSh = position.upShares;
+  const downSh = position.downShares;
+  const isBalanced = upSh === downSh;
+
+  const toTarget = (maxSide: number): 50 | 75 | null => {
+    if (maxSide <= 50) return 50;
+    if (maxSide <= 75) return 75;
+    return null;
+  };
+
+  const cushion = STRATEGY.hedge.cushionTicks;
 
   // FLAT: No position - v4.6.0 ATOMIC PAIRED ENTRY
   if (!hasUp && !hasDown) {
     const combined = upAsk + downAsk;
-    
-    // v4.6.0: Check combined price for edge (must be < 98¢ for profit)
+
     const maxCombined = STRATEGY.opening.maxCombined || 0.98;
     if (combined >= maxCombined) {
       if (Math.random() < 0.01) {
@@ -515,12 +528,11 @@ export function evaluateOpportunity(
       }
       return null;
     }
-    
-    // v4.6.0: Both prices must be reasonable (not too extreme)
+
     if (upAsk > STRATEGY.opening.maxPrice && downAsk > STRATEGY.opening.maxPrice) {
       return null;
     }
-    
+
     // Balance check - need enough for BOTH sides
     if (availableBalance !== undefined) {
       const totalNeeded = (upAsk + downAsk) * STRATEGY.opening.shares;
@@ -529,18 +541,17 @@ export function evaluateOpportunity(
         return null;
       }
     }
-    
-    const shares = STRATEGY.opening.shares; // Fixed 50 shares
+
+    const shares = STRATEGY.opening.shares; // default 50
     const edge = ((1 - combined) * 100).toFixed(1);
-    
-    // v4.6.0: Return PAIRED trade signal with both legs
-    console.log(`[v4.6.0] 🎯 ATOMIC PAIR: UP@${(upAsk*100).toFixed(0)}¢ + DOWN@${(downAsk*100).toFixed(0)}¢ = ${(combined*100).toFixed(0)}¢ (edge=${edge}%)`);
-    
+
+    console.log(`[v4.6.0] 🎯 ATOMIC PAIR: UP@${(upAsk * 100).toFixed(0)}¢ + DOWN@${(downAsk * 100).toFixed(0)}¢ = ${(combined * 100).toFixed(0)}¢ (edge=${edge}%)`);
+
     return {
       outcome: 'UP',
       price: upAsk,
       shares,
-      reasoning: `ATOMIC_PAIR ${shares}sh: UP@${(upAsk*100).toFixed(0)}¢ + DOWN@${(downAsk*100).toFixed(0)}¢ = ${(combined*100).toFixed(0)}¢ (edge=${edge}%)`,
+      reasoning: `ATOMIC_PAIR ${shares}sh: UP@${(upAsk * 100).toFixed(0)}¢ + DOWN@${(downAsk * 100).toFixed(0)}¢ = ${(combined * 100).toFixed(0)}¢ (edge=${edge}%)`,
       type: 'paired',
       pairedWith: {
         outcome: 'DOWN',
@@ -550,134 +561,110 @@ export function evaluateOpportunity(
     };
   }
 
-  // ONE_SIDED: Must hedge
-  if ((hasUp && !hasDown) || (!hasUp && hasDown)) {
-    const missingSide: Outcome = !hasUp ? 'UP' : 'DOWN';
-    const missingAsk = missingSide === 'UP' ? upAsk : downAsk;
-    const existingShares = missingSide === 'UP' ? position.downShares : position.upShares;
-    
-    const hedgeShares = Math.max(existingShares, 5); // Min 5 shares for order validity
-    
-    // Check if hedge would lock profit or is acceptable
-    const existingCost = missingSide === 'UP' 
-      ? (position.downInvested || position.downCost || 0) 
-      : (position.upInvested || position.upCost || 0);
-    const existingAvg = existingShares > 0 ? existingCost / existingShares : 0;
-    const projectedCombined = existingAvg + missingAsk;
-    
-    // v5.0.0: RELAXED HEDGE - allow more overpay, prioritize getting hedged
-    // Being one-sided near expiry is worse than losing some edge
-    const allowOverpay = 0.05; // Allow up to 5% overpay
-    if (projectedCombined > 1 + allowOverpay) {
-      // v5.0.0: Only skip if we have plenty of time left (10+ minutes for 1h markets)
-      if (remainingSeconds > 600) {
-        console.log(`[v5.0.0] HEDGE_SKIPPED: combined ${(projectedCombined * 100).toFixed(0)}¢ > ${((1 + allowOverpay) * 100).toFixed(0)}¢ max (time=${remainingSeconds}s)`);
-        return null;
-      }
-      // Under 600s (10 min): ALWAYS hedge regardless of cost
-      console.log(`[v5.0.0] FORCE_HEDGE: time=${remainingSeconds}s, combined=${(projectedCombined * 100).toFixed(0)}¢`);
+  // CORRECTIVE HEDGE: If we have BOTH sides but not equal, always buy the smaller side to match.
+  if (hasUp && hasDown && !isBalanced) {
+    const larger = Math.max(upSh, downSh);
+    const target = toTarget(larger);
+
+    // If we're already above the supported targets, stop trading (better than digging deeper).
+    if (!target) {
+      console.log(`[strict-target] BLOCK: position too large for strict targets (UP=${upSh}, DOWN=${downSh})`);
+      return null;
     }
-    
-    // v4.5.1: Use more aggressive cushion ticks for faster fills
-    const cushion = STRATEGY.hedge.cushionTicks;
+
+    const missingSide: Outcome = upSh < downSh ? 'UP' : 'DOWN';
+    const missingAsk = missingSide === 'UP' ? upAsk : downAsk;
+    const sharesNeeded = Math.max(5, target - Math.min(upSh, downSh));
+
     const limitPrice = roundUp(missingAsk + cushion * tick, tick);
-    
+
     return {
       outcome: missingSide,
       price: limitPrice,
-      shares: hedgeShares,
-      reasoning: `HEDGE ${missingSide} @ ${(limitPrice * 100).toFixed(0)}¢ (v4.5.1 timeout=${scaledHedgeTimeout}s)`,
+      shares: sharesNeeded,
+      reasoning: `HEDGE_BALANCE ${missingSide} +${sharesNeeded} (target=${target}/${target}) @ ${(limitPrice * 100).toFixed(0)}¢`,
       type: 'hedge',
       isMarketable: true,
       cushionTicks: cushion,
     };
   }
 
-  // HEDGED: Both sides have positions - look for accumulate
-  const uf = position.upShares / (position.upShares + position.downShares);
-  
-  // v4.2.1: Use time-scaled max skew
-  const isSkewed = uf > scaledMaxSkew || uf < (1 - scaledMaxSkew);
-  
-  // SKEWED: Need to rebalance first
-  if (isSkewed) {
-    const delta = uf - DEFAULT_CONFIG.skew.target;
-    const sideToBuy: Outcome = delta > 0 ? 'DOWN' : 'UP';
-    const sideAsk = sideToBuy === 'UP' ? upAsk : downAsk;
-    
-    // v4.2.1: Use time-scaled buffer for rebalance
-    if (!pairedLockOk(upAsk, downAsk, scaledBuffer)) {
-      return null;
+  // ONE_SIDED: Must hedge to match the current exposure (then we can recover to 50/75 in balanced steps)
+  if ((hasUp && !hasDown) || (!hasUp && hasDown)) {
+    const missingSide: Outcome = !hasUp ? 'UP' : 'DOWN';
+    const missingAsk = missingSide === 'UP' ? upAsk : downAsk;
+    const existingShares = missingSide === 'UP' ? position.downShares : position.upShares;
+
+    const hedgeShares = Math.max(existingShares, 5);
+
+    // If hedge is very expensive, we still prioritize getting balanced when time is running.
+    const existingCost = missingSide === 'UP'
+      ? (position.downInvested || position.downCost || 0)
+      : (position.upInvested || position.upCost || 0);
+    const existingAvg = existingShares > 0 ? existingCost / existingShares : 0;
+    const projectedCombined = existingAvg + missingAsk;
+
+    const allowOverpay = 0.05;
+    if (projectedCombined > 1 + allowOverpay) {
+      if (remainingSeconds > 600) {
+        console.log(`[v5.0.0] HEDGE_SKIPPED: combined ${(projectedCombined * 100).toFixed(0)}¢ > ${((1 + allowOverpay) * 100).toFixed(0)}¢ max (time=${remainingSeconds}s)`);
+        return null;
+      }
+      console.log(`[v5.0.0] FORCE_HEDGE: time=${remainingSeconds}s, combined=${(projectedCombined * 100).toFixed(0)}¢`);
     }
-    
-    const currentShares = sideToBuy === 'UP' ? position.upShares : position.downShares;
-    const otherShares = sideToBuy === 'UP' ? position.downShares : position.upShares;
-    const sharesToBalance = Math.floor((otherShares - currentShares) / 2);
-    
-    if (sharesToBalance < 5) return null;
-    
+
+    const limitPrice = roundUp(missingAsk + cushion * tick, tick);
+
     return {
-      outcome: sideToBuy,
-      price: roundDown(sideAsk, tick),
-      shares: sharesToBalance,
-      reasoning: `REBALANCE ${sideToBuy} @ ${(sideAsk * 100).toFixed(1)}¢ (v4.2.1 maxSkew=${(scaledMaxSkew*100).toFixed(0)}%)`,
-      type: 'rebalance',
+      outcome: missingSide,
+      price: limitPrice,
+      shares: hedgeShares,
+      reasoning: `HEDGE ${missingSide} +${hedgeShares} @ ${(limitPrice * 100).toFixed(0)}¢`,
+      type: 'hedge',
+      isMarketable: true,
+      cushionTicks: cushion,
     };
   }
 
-  // HEDGED & BALANCED: Can accumulate if good edge
-  // v4.2.1: Use time-scaled buffer for accumulate
-  if (!pairedLockOk(upAsk, downAsk, scaledBuffer)) {
-    return null;
+  // From here: position is balanced.
+  // Only allow symmetric step-ups to the supported targets.
+
+  // If we got a partial earlier and are balanced but under 50, recover back to 50/50 (add the missing amount on BOTH sides).
+  if (isBalanced && upSh < 50) {
+    // We only do this when there is edge (avoid buying bad pairs just to normalize)
+    if (!pairedLockOk(upAsk, downAsk, scaledBuffer)) return null;
+
+    const sharesToAdd = 50 - upSh;
+    if (sharesToAdd < 5) return null;
+
+    return {
+      outcome: 'UP',
+      price: roundDown(upAsk, tick),
+      shares: sharesToAdd,
+      reasoning: `RECOVER_TO_50 +${sharesToAdd}/${sharesToAdd} @ ${(combined * 100).toFixed(1)}¢ combined`,
+      type: 'accumulate',
+    };
   }
-  
-  // Check per-side share limits (300 max)
-  if (position.upShares >= STRATEGY.limits.maxPerSideShares || 
-      position.downShares >= STRATEGY.limits.maxPerSideShares) {
-    return null;
+
+  // If we're at 50/50, optionally step to 75/75 by adding 25/25 when edge exists.
+  if (isBalanced && upSh === 50) {
+    if (!pairedLockOk(upAsk, downAsk, scaledBuffer)) return null;
+
+    const sharesToAdd = 25;
+
+    // Respect per-side share limits
+    if (position.upShares + sharesToAdd > STRATEGY.limits.maxPerSideShares) return null;
+    if (position.downShares + sharesToAdd > STRATEGY.limits.maxPerSideShares) return null;
+
+    return {
+      outcome: 'UP',
+      price: roundDown(upAsk, tick),
+      shares: sharesToAdd,
+      reasoning: `STEP_TO_75 +25/+25 @ ${(combined * 100).toFixed(1)}¢ combined (edge=${((1 - combined) * 100).toFixed(1)}%)`,
+      type: 'accumulate',
+    };
   }
-  
-  // Must be balanced to accumulate (exposure check)
-  const currentSkew = Math.abs(uf - 0.5);
-  if (currentSkew > 0.1) {
-    // Position is exposed, don't accumulate
-    return null;
-  }
-  
-  const edgePct = (1 - combined) * 100;
-  
-  // v4.2.1: Max 50 shares per accumulate, calculate based on edge
-  let sharesToAdd: number;
-  if (edgePct > 5) {
-    // Strong edge: use max
-    sharesToAdd = STRATEGY.accumulate.maxShares; // 50
-  } else if (edgePct > 2) {
-    // Medium edge: base clip
-    sharesToAdd = Math.min(
-      Math.floor(STRATEGY.sizing.baseClipUsd / combined),
-      STRATEGY.accumulate.maxShares
-    );
-  } else {
-    // Weak edge: smaller accumulate
-    sharesToAdd = Math.min(
-      Math.floor(STRATEGY.sizing.minClipUsd / combined),
-      25 // Smaller for weak edge
-    );
-  }
-  
-  // Respect max position limit
-  const maxAddUp = STRATEGY.limits.maxPerSideShares - position.upShares;
-  const maxAddDown = STRATEGY.limits.maxPerSideShares - position.downShares;
-  sharesToAdd = Math.min(sharesToAdd, maxAddUp, maxAddDown);
-  
-  if (sharesToAdd < 5) return null;
-  
-  // Return UP first (caller should also do DOWN)
-  return {
-    outcome: 'UP',
-    price: roundDown(upAsk, tick),
-    shares: sharesToAdd,
-    reasoning: `ACCUMULATE ${sharesToAdd} @ ${(combined * 100).toFixed(1)}¢ (v4.2.1 edge=${edgePct.toFixed(1)}% buffer=${(scaledBuffer*100).toFixed(2)}¢)`,
-    type: 'accumulate',
-  };
+
+  // If we're already at 75/75 (or 50/50), do nothing else.
+  return null;
 }
