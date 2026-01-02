@@ -40,7 +40,7 @@ console.log('╚═════════════════════�
 console.log('');
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '1.3.0';
+const RUNNER_VERSION = '5.2.0';  // v5.2.0: Aggressive Hedge Retry + One-Sided Monitor
 let currentBalance = 0;
 let lastClaimCheck = 0;
 let claimInFlight = false;
@@ -167,6 +167,22 @@ async function fetchExistingTrades(): Promise<void> {
   console.log(`📋 Loaded ${trades.length} existing trades`);
 }
 
+// ============================================================
+// v5.2.0: HEDGE RETRY CONFIGURATION
+// ============================================================
+const HEDGE_RETRY_CONFIG = {
+  maxRetries: 3,              // Max retries per hedge attempt
+  retryDelayMs: 500,          // Delay between retries
+  sizeReductionFactor: 0.7,   // Reduce size by 30% on each retry
+  priceIncreasePerRetry: 0.02, // Add 2¢ per retry (more aggressive)
+  minSharesForRetry: 5,       // Don't retry if shares drop below 5
+  panicModeThresholdSec: 120, // Under 2 min, be very aggressive
+  survivalModeThresholdSec: 60, // Under 1 min, accept any price
+};
+
+// Track failed hedge attempts per market to avoid spamming
+const failedHedgeAttempts = new Map<string, { lastAttemptMs: number; failures: number }>();
+
 async function executeTrade(
   ctx: MarketContext,
   outcome: Outcome,
@@ -199,6 +215,19 @@ async function executeTrade(
 
   if (!result.success) {
     console.error(`❌ Order failed: ${result.error}`);
+    
+    // v5.2.0: HEDGE RETRY LOGIC - if this is a hedge and it failed, try aggressive retries
+    if (intent === 'HEDGE' && result.error) {
+      const isBalanceError = result.error.includes('balance') || result.error.includes('allowance');
+      const isLiquidityError = result.error.includes('liquidity');
+      
+      if (isBalanceError || isLiquidityError) {
+        console.log(`\n🔄 [v5.2.0] HEDGE RETRY: ${result.error}`);
+        const retryResult = await executeHedgeWithRetry(ctx, outcome, price, shares, reasoning);
+        return retryResult;
+      }
+    }
+    
     return false;
   }
 
@@ -279,6 +308,132 @@ async function executeTrade(
   }
     
   return true;
+}
+
+// ============================================================
+// v5.2.0: AGGRESSIVE HEDGE RETRY
+// ============================================================
+async function executeHedgeWithRetry(
+  ctx: MarketContext,
+  outcome: Outcome,
+  originalPrice: number,
+  originalShares: number,
+  reasoning: string
+): Promise<boolean> {
+  const tokenId = outcome === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
+  const nowMs = Date.now();
+  const endTime = new Date(ctx.market.eventEndTime).getTime();
+  const remainingSeconds = Math.floor((endTime - nowMs) / 1000);
+  
+  // Track failure state
+  const failKey = `${ctx.slug}:${outcome}`;
+  const failState = failedHedgeAttempts.get(failKey) || { lastAttemptMs: 0, failures: 0 };
+  
+  // Determine mode based on time remaining
+  const isPanicMode = remainingSeconds < HEDGE_RETRY_CONFIG.panicModeThresholdSec;
+  const isSurvivalMode = remainingSeconds < HEDGE_RETRY_CONFIG.survivalModeThresholdSec;
+  
+  if (isSurvivalMode) {
+    console.log(`🆘 [v5.2.0] SURVIVAL MODE HEDGE - ${remainingSeconds}s remaining, accepting any price up to 95¢`);
+  } else if (isPanicMode) {
+    console.log(`⚠️ [v5.2.0] PANIC MODE HEDGE - ${remainingSeconds}s remaining, being very aggressive`);
+  }
+  
+  let currentShares = originalShares;
+  let currentPrice = originalPrice;
+  
+  for (let retry = 1; retry <= HEDGE_RETRY_CONFIG.maxRetries; retry++) {
+    // Calculate retry parameters
+    if (!isSurvivalMode) {
+      // Normal/Panic: reduce size and increase price gradually
+      currentShares = Math.floor(currentShares * HEDGE_RETRY_CONFIG.sizeReductionFactor);
+      currentPrice = Math.min(
+        isSurvivalMode ? 0.95 : 0.85,
+        currentPrice + HEDGE_RETRY_CONFIG.priceIncreasePerRetry
+      );
+    } else {
+      // Survival: keep size but go to max price
+      currentPrice = 0.95; // Accept 5% loss to avoid 100% loss
+    }
+    
+    // Check minimum size
+    if (currentShares < HEDGE_RETRY_CONFIG.minSharesForRetry) {
+      console.log(`🛑 [v5.2.0] Hedge retry aborted: shares ${currentShares} < ${HEDGE_RETRY_CONFIG.minSharesForRetry} min`);
+      break;
+    }
+    
+    console.log(`\n🔄 [v5.2.0] HEDGE RETRY #${retry}: ${outcome} ${currentShares}@${(currentPrice * 100).toFixed(0)}¢ (time: ${remainingSeconds}s)`);
+    
+    // Wait before retry
+    await new Promise(r => setTimeout(r, HEDGE_RETRY_CONFIG.retryDelayMs));
+    
+    const result = await placeOrder({
+      tokenId,
+      side: 'BUY',
+      price: currentPrice,
+      size: currentShares,
+      orderType: 'GTC',
+    });
+    
+    if (result.success) {
+      const filledShares = result.status === 'filled' ? currentShares : (result.filledSize ?? 0);
+      
+      if (filledShares > 0) {
+        // Update position
+        if (outcome === 'UP') {
+          ctx.position.upShares += filledShares;
+          ctx.position.upInvested += filledShares * currentPrice;
+        } else {
+          ctx.position.downShares += filledShares;
+          ctx.position.downInvested += filledShares * currentPrice;
+        }
+        
+        // Record success
+        await saveTrade({
+          market_slug: ctx.slug,
+          asset: ctx.market.asset,
+          outcome,
+          shares: filledShares,
+          price: currentPrice,
+          total: filledShares * currentPrice,
+          order_id: result.orderId,
+          status: result.status === 'filled' ? 'filled' : 'partial',
+          reasoning: `${reasoning} [RETRY #${retry}]`,
+          event_start_time: ctx.market.eventStartTime,
+          event_end_time: ctx.market.eventEndTime,
+          avg_fill_price: result.avgPrice || currentPrice,
+        });
+        
+        console.log(`✅ [v5.2.0] HEDGE RETRY SUCCESS: ${outcome} ${filledShares}@${(currentPrice * 100).toFixed(0)}¢`);
+        console.log(`   Position now: UP=${ctx.position.upShares} DOWN=${ctx.position.downShares}`);
+        
+        // Clear failure state
+        failedHedgeAttempts.delete(failKey);
+        
+        // If only partial fill and we need more, continue retrying for the rest
+        if (filledShares < currentShares && filledShares < originalShares) {
+          currentShares = originalShares - filledShares;
+          continue; // Try to fill the rest
+        }
+        
+        return true;
+      } else {
+        // Order placed but not filled yet - it's in the book
+        console.log(`📝 [v5.2.0] HEDGE ORDER PLACED: ${outcome} ${currentShares}@${(currentPrice * 100).toFixed(0)}¢ (pending)`);
+        return true; // Consider this success - order is in the book
+      }
+    } else {
+      console.error(`❌ [v5.2.0] HEDGE RETRY #${retry} FAILED: ${result.error}`);
+      
+      // Track failure
+      failState.failures++;
+      failState.lastAttemptMs = nowMs;
+      failedHedgeAttempts.set(failKey, failState);
+    }
+  }
+  
+  console.error(`🚨 [v5.2.0] ALL HEDGE RETRIES FAILED for ${ctx.slug} ${outcome}`);
+  return false;
 }
 
 
@@ -787,17 +942,124 @@ async function main(): Promise<void> {
     }
   }, 1000);
 
+  // ===================================================================
+  // v5.2.0: ONE-SIDED POSITION MONITOR - AGGRESSIVE HEDGE ENFORCEMENT
+  // Runs every 3 seconds to find and fix one-sided positions
+  // ===================================================================
+  let hedgeMonitorInFlight = false;
+
+  setInterval(async () => {
+    if (hedgeMonitorInFlight) return;
+    hedgeMonitorInFlight = true;
+
+    try {
+      const nowMs = Date.now();
+      
+      for (const ctx of markets.values()) {
+        const hasUp = ctx.position.upShares > 0;
+        const hasDown = ctx.position.downShares > 0;
+        
+        // Only act on ONE-SIDED positions
+        if ((hasUp && !hasDown) || (!hasUp && hasDown)) {
+          const endTime = new Date(ctx.market.eventEndTime).getTime();
+          const remainingSeconds = Math.floor((endTime - nowMs) / 1000);
+          
+          // Skip if market already expired
+          if (remainingSeconds <= 0) continue;
+          
+          // Check cooldown - don't spam same market
+          const timeSinceLastTrade = nowMs - ctx.lastTradeAtMs;
+          if (timeSinceLastTrade < 2000) continue; // 2s cooldown
+          
+          // Determine severity based on time remaining
+          const missingSide: Outcome = !hasUp ? 'UP' : 'DOWN';
+          const existingShares = missingSide === 'UP' ? ctx.position.downShares : ctx.position.upShares;
+          const missingAsk = missingSide === 'UP' ? ctx.book.up.ask : ctx.book.down.ask;
+          
+          // Skip if no book data
+          if (!missingAsk || missingAsk <= 0) continue;
+          
+          // Calculate urgency
+          const isSurvival = remainingSeconds < 60;  // Under 1 min
+          const isPanic = remainingSeconds < 120;     // Under 2 min
+          const isUrgent = remainingSeconds < 300;    // Under 5 min
+          
+          if (isSurvival) {
+            console.log(`\n🆘 [v5.2.0] SURVIVAL MONITOR: ${ctx.slug} is ONE-SIDED (${missingSide} missing, ${remainingSeconds}s left)`);
+            console.log(`   Position: UP=${ctx.position.upShares} DOWN=${ctx.position.downShares}`);
+            console.log(`   ${missingSide} ask: ${(missingAsk * 100).toFixed(0)}¢`);
+            
+            // SURVIVAL: Accept high prices, just get hedged
+            const survivalPrice = Math.min(0.95, missingAsk + 0.10); // Up to 95¢ or ask + 10¢
+            await executeTrade(
+              ctx, 
+              missingSide, 
+              survivalPrice, 
+              existingShares, 
+              `🆘 SURVIVAL_MONITOR: ${remainingSeconds}s left, MUST HEDGE`,
+              'HEDGE'
+            );
+            
+          } else if (isPanic) {
+            console.log(`\n⚠️ [v5.2.0] PANIC MONITOR: ${ctx.slug} is ONE-SIDED (${missingSide} missing, ${remainingSeconds}s left)`);
+            
+            // PANIC: Be aggressive but still reasonable
+            const panicPrice = Math.min(0.85, missingAsk + 0.05); // Up to 85¢ or ask + 5¢
+            await executeTrade(
+              ctx, 
+              missingSide, 
+              panicPrice, 
+              existingShares, 
+              `⚠️ PANIC_MONITOR: ${remainingSeconds}s left`,
+              'HEDGE'
+            );
+            
+          } else if (isUrgent) {
+            // URGENT: Normal hedge logic but enforce it
+            const urgentPrice = Math.min(0.75, missingAsk + 0.03); // Up to 75¢ or ask + 3¢
+            
+            // Only log every 30s to reduce noise
+            if (Math.random() < 0.1) {
+              console.log(`⏰ [v5.2.0] URGENT: ${ctx.slug} needs ${missingSide} hedge (${remainingSeconds}s left)`);
+            }
+            
+            await executeTrade(
+              ctx, 
+              missingSide, 
+              urgentPrice, 
+              existingShares, 
+              `⏰ URGENT_MONITOR: ${remainingSeconds}s left`,
+              'HEDGE'
+            );
+          }
+        }
+      }
+    } catch (error) {
+      console.error('❌ Hedge monitor error:', error);
+    } finally {
+      hedgeMonitorInFlight = false;
+    }
+  }, 3000); // Every 3 seconds
+
   // Status logging every minute
   setInterval(async () => {
     const positions = [...markets.values()].filter(
       c => c.position.upShares > 0 || c.position.downShares > 0
     ).length;
     
+    // Count one-sided positions (CRITICAL METRIC)
+    const oneSided = [...markets.values()].filter(c => {
+      const hasUp = c.position.upShares > 0;
+      const hasDown = c.position.downShares > 0;
+      return (hasUp && !hasDown) || (!hasUp && hasDown);
+    }).length;
+    
     // Also show claimable value
     const claimableValue = await getClaimableValue();
     const claimableStr = claimableValue > 0 ? ` | $${claimableValue.toFixed(2)} claimable` : '';
+    const oneSidedStr = oneSided > 0 ? ` | ⚠️ ${oneSided} ONE-SIDED` : '';
     
-    console.log(`\n📊 Status: ${markets.size} markets | ${positions} positions | ${tradeCount} trades | $${currentBalance.toFixed(2)} balance${claimableStr}`);
+    console.log(`\n📊 Status: ${markets.size} markets | ${positions} positions${oneSidedStr} | ${tradeCount} trades | $${currentBalance.toFixed(2)} balance${claimableStr}`);
   }, 60000);
 
   console.log('\n✅ Live trader running with auto-claim! Press Ctrl+C to stop.\n');
