@@ -40,7 +40,7 @@ console.log('╚═════════════════════�
 console.log('');
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '5.2.0';  // v5.2.0: Aggressive Hedge Retry + One-Sided Monitor
+const RUNNER_VERSION = '5.2.1';  // v5.2.1: STRICT 1:1 Balance - Block entries when ONE_SIDED
 let currentBalance = 0;
 let lastClaimCheck = 0;
 let claimInFlight = false;
