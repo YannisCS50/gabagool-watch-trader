@@ -52,9 +52,12 @@ interface BetStats {
   outcome: string | null;
 }
 
+type BetFilter = 'all' | 'running' | 'closed' | 'wins' | 'losses';
+
 export const LivePnLDashboard = () => {
   const { trades, results, stats, isLoading } = useLiveTrades();
   const [expandedBets, setExpandedBets] = useState<Set<string>>(new Set());
+  const [activeFilter, setActiveFilter] = useState<BetFilter>('all');
 
   // Calculate detailed stats per bet
   const betStats = useMemo(() => {
@@ -190,6 +193,22 @@ export const LivePnLDashboard = () => {
       ethPL: ethBets.filter(b => b.isSettled).reduce((sum, b) => sum + (b.profitLoss || 0), 0),
     };
   }, [betStats]);
+
+  // Filter bets based on active filter
+  const filteredBets = useMemo(() => {
+    switch (activeFilter) {
+      case 'running':
+        return betStats.filter((b) => !b.isSettled);
+      case 'closed':
+        return betStats.filter((b) => b.isSettled);
+      case 'wins':
+        return betStats.filter((b) => b.isSettled && (b.profitLoss || 0) > 0);
+      case 'losses':
+        return betStats.filter((b) => b.isSettled && (b.profitLoss || 0) <= 0);
+      default:
+        return betStats;
+    }
+  }, [betStats, activeFilter]);
 
   const toggleExpanded = (slug: string) => {
     const newExpanded = new Set(expandedBets);
@@ -387,13 +406,15 @@ export const LivePnLDashboard = () => {
           <CardTitle className="text-sm flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Calendar className="w-4 h-4" />
-              All Bets ({betStats.length})
+              Bets ({filteredBets.length})
             </div>
-            <Tabs defaultValue="all" className="w-auto">
+            <Tabs value={activeFilter} onValueChange={(v) => setActiveFilter(v as BetFilter)} className="w-auto">
               <TabsList className="h-8">
-                <TabsTrigger value="all" className="text-xs px-3 h-6">All</TabsTrigger>
-                <TabsTrigger value="open" className="text-xs px-3 h-6">Open ({summaryStats.openBets})</TabsTrigger>
-                <TabsTrigger value="settled" className="text-xs px-3 h-6">Settled ({summaryStats.settledBets})</TabsTrigger>
+                <TabsTrigger value="all" className="text-xs px-3 h-6">All ({betStats.length})</TabsTrigger>
+                <TabsTrigger value="running" className="text-xs px-3 h-6">Running ({summaryStats.openBets})</TabsTrigger>
+                <TabsTrigger value="closed" className="text-xs px-3 h-6">Closed ({summaryStats.settledBets})</TabsTrigger>
+                <TabsTrigger value="wins" className="text-xs px-3 h-6 text-emerald-500">Wins ({summaryStats.wins})</TabsTrigger>
+                <TabsTrigger value="losses" className="text-xs px-3 h-6 text-red-500">Losses ({summaryStats.losses})</TabsTrigger>
               </TabsList>
             </Tabs>
           </CardTitle>
@@ -401,7 +422,7 @@ export const LivePnLDashboard = () => {
         <CardContent>
           <ScrollArea className="h-[500px]">
             <div className="space-y-2">
-              {betStats.map((bet) => (
+              {filteredBets.map((bet) => (
                 <div
                   key={bet.market_slug}
                   className={`rounded-lg border transition-colors ${
