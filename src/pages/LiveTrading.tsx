@@ -25,6 +25,7 @@ import { RunnerStatus } from '@/components/RunnerStatus';
 import { OrderQueueStatus } from '@/components/OrderQueueStatus';
 import { RunnerInstructions } from '@/components/RunnerInstructions';
 import { BotPositionsCard } from '@/components/BotPositionsCard';
+import { TradeAlerts } from '@/components/TradeAlerts';
 import { supabase } from '@/integrations/supabase/client';
 
 interface WalletBalance {
@@ -154,6 +155,11 @@ export default function LiveTrading() {
             </div>
           </CollapsibleContent>
         </Collapsible>
+
+        {/* Trade Alerts - Bad Hedges & Notable Results */}
+        <div className="mb-6">
+          <TradeAlerts />
+        </div>
 
         {/* Bot Positions from Polymarket Sync */}
         <div className="mb-8">
