@@ -50,8 +50,8 @@ export function TradeAlerts() {
       const upPct = (data.up / total) * 100;
       const hedgeRatio = Math.abs(50 - upPct);
 
-      // Bad hedge: more than 15% deviation from 50/50
-      if (hedgeRatio > 15 && total > 10) {
+      // Bad hedge: more than 25% deviation from 50/50 (so 75/25 or worse)
+      if (hedgeRatio > 25 && total > 10) {
         const dominant = data.up > data.down ? 'UP' : 'DOWN';
         const dominantPct = Math.max(upPct, 100 - upPct).toFixed(0);
         
@@ -63,7 +63,7 @@ export function TradeAlerts() {
           downShares: data.down,
           hedgeRatio: Number(dominantPct),
           message: `${dominantPct}/${(100 - Number(dominantPct)).toFixed(0)} hedge (${dominant} heavy)`,
-          severity: hedgeRatio > 30 ? 'danger' : 'warning',
+          severity: hedgeRatio > 35 ? 'danger' : 'warning',
         });
       }
     });
