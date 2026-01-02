@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { LiveTradeDashboard } from '@/components/LiveTradeDashboard';
 import { LivePnLDashboard } from '@/components/LivePnLDashboard';
+import { LiveHourlyPnL } from '@/components/LiveHourlyPnL';
 import { RunnerActivityLog } from '@/components/RunnerActivityLog';
 import { MarketTradesLog } from '@/components/MarketTradesLog';
 import { PaperTradeDashboard } from '@/components/PaperTradeDashboard';
@@ -180,6 +181,9 @@ export default function LiveTrading() {
           </TabsList>
 
           <TabsContent value="pnl" className="space-y-6">
+            {/* Hourly P/L Chart */}
+            <LiveHourlyPnL hoursToShow={24} />
+
             {/* P/L Dashboard */}
             <LivePnLDashboard />
           </TabsContent>

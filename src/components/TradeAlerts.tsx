@@ -53,8 +53,8 @@ export function TradeAlerts() {
       const downAvgPrice = data.downCost / data.down;
       const pairCost = upAvgPrice + downAvgPrice;
 
-      // Bad hedge: pair cost > $1.00 means we're losing money on the hedge
-      if (pairCost > 1.0 && minShares >= 10) {
+      // Bad hedge: pair cost > $1.03 means we're losing 3%+ on the hedge
+      if (pairCost > 1.03 && minShares >= 10) {
         const lockedLoss = (pairCost - 1.0) * minShares;
         
         alertList.push({
@@ -65,7 +65,7 @@ export function TradeAlerts() {
           downShares: data.down,
           hedgeRatio: pairCost,
           message: `Pair cost $${pairCost.toFixed(3)} (-$${lockedLoss.toFixed(2)} verlies)`,
-          severity: pairCost > 1.05 ? 'danger' : 'warning',
+          severity: pairCost > 1.08 ? 'danger' : 'warning',
         });
       }
     });
