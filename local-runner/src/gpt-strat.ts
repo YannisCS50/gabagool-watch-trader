@@ -1,7 +1,7 @@
 /**
  * polymarket_15m_bot.ts
  * --------------------------------------------------------------------------
- * Polymarket 15m Hedge/Arbitrage Bot v4.5 — Mode-Switch Edition
+ * Polymarket 15m Hedge/Arbitrage Bot v5.2.2 — Strict 50/50 Edition
  *
  * v4.5 Changes (CRITICAL MODE-SWITCH FIX):
  * - HIGH_DELTA_CRITICAL MODE: IF delta > 0.8% AND secondsRemaining < 120:
@@ -45,7 +45,7 @@
  * - Exposure protection: no accumulate when one-sided
  */
 
-// v5.2.1: STRICT BALANCE VERSION - Fixed one-sided accumulation bug
+// v5.2.2: STRICT 50/50 VERSION - Max 50 shares per side, no step to 75
 export type Side = "UP" | "DOWN";
 export type BotState = "FLAT" | "ONE_SIDED" | "HEDGED" | "SKEWED" | "UNWIND" | "DEEP_DISLOCATION";
 export type RegimeTag = "NORMAL" | "DEEP" | "UNWIND";
@@ -260,8 +260,8 @@ export interface StrategyConfig {
 }
 
 export const DEFAULT_CONFIG: StrategyConfig = {
-  // v4.2.1: Opening 50 shares, accumulate max 50, max position 300
-  tradeSizeUsd: { base: 25, min: 20, max: 50 }, // ~50 shares at 50¢
+  // v5.2.2: Strict 50/50 - max 50 shares per side, 25 shares per trade
+  tradeSizeUsd: { base: 12.5, min: 10, max: 25 }, // ~25 shares at 50¢ (for 50/50 max)
 
   edge: {
     baseBuffer: 0.01,        // v5.1.0: 1% opening edge (was 1.2%)
@@ -324,8 +324,8 @@ export const DEFAULT_CONFIG: StrategyConfig = {
   },
 
   limits: {
-    maxTotalUsd: 500,       // Increased for 300 shares (was 250)
-    maxPerSideUsd: 300,     // 300 shares max per side (was 150)
+    maxTotalUsd: 50,        // v5.2.2: 50/50 = $50 max (50 shares per side at ~50¢)
+    maxPerSideUsd: 25,      // v5.2.2: 50 shares per side max (~$25 at 50¢)
     minTopDepthShares: 50,
     maxPendingOrders: 3,
     sideCooldownMs: 0,      // NO cooldown for hedge
@@ -1401,7 +1401,8 @@ export class Polymarket15mArbBot {
 
   private buildEntryOrAccumulateIntents(snap: MarketSnapshot): OrderIntent[] {
     const intents: OrderIntent[] = [];
-    const maxEntryShares = 50; // cap ENTRY sizing to avoid extreme low-price share counts
+    const maxEntryShares = 25; // v5.2.2: cap at 25 shares for 50/50 target
+    const maxPerSideShares = 50; // v5.2.2: strict 50 shares max per side
 
     if (this.state === "UNWIND") return intents;
     if (snap.secondsRemaining <= this.cfg.timing.stopNewTradesSec) return intents;
@@ -1424,6 +1425,17 @@ export class Polymarket15mArbBot {
     // v4.2.1: HIGH delta regime blocks new risk
     if (this.currentDeltaRegime === "HIGH") {
       this.log("ENTRY_BLOCKED_HIGH_DELTA", { deltaPct: this.currentDeltaPct, regime: this.currentDeltaRegime });
+      return intents;
+    }
+
+    // v5.2.2: STRICT 50/50 - Block if either side already has 50 shares
+    if (this.inventory.upShares >= maxPerSideShares || this.inventory.downShares >= maxPerSideShares) {
+      this.log("ENTRY_BLOCKED_50_50_LIMIT", { 
+        upShares: this.inventory.upShares, 
+        downShares: this.inventory.downShares,
+        maxPerSide: maxPerSideShares,
+        reason: "Already at 50/50 max"
+      });
       return intents;
     }
 
@@ -1513,12 +1525,19 @@ export class Polymarket15mArbBot {
 
       const usd = this.computeClipUsd(snap);
 
-      // v4.2.2 fix: balance by SHARES (not USD) and cap size.
-      // Splitting USD can create huge share imbalance when one side is very cheap.
+      // v5.2.2: Strict 50/50 - cap to not exceed 50 shares per side
       const pairQtyRaw = combinedCost > 0 ? Math.floor(usd / combinedCost) : 0;
-      const pairQty = clamp(Math.max(1, pairQtyRaw), 1, maxEntryShares);
+      const roomUp = maxPerSideShares - this.inventory.upShares;
+      const roomDown = maxPerSideShares - this.inventory.downShares;
+      const roomBoth = Math.min(roomUp, roomDown);
+      const pairQty = clamp(Math.max(1, pairQtyRaw), 1, Math.min(maxEntryShares, roomBoth));
 
-      this.log("PAIR_ACCUMULATE", { upPx, downPx, combinedCost, pairQty });
+      if (pairQty <= 0) {
+        this.log("PAIR_BLOCKED_50_50_FULL", { upShares: this.inventory.upShares, downShares: this.inventory.downShares });
+        return intents;
+      }
+
+      this.log("PAIR_ACCUMULATE", { upPx, downPx, combinedCost, pairQty, roomBoth });
 
       intents.push({ side: "UP", qty: pairQty, limitPrice: upPx, tag: "ENTRY", reason: "PAIR_ACCUM_UP" });
       intents.push({ side: "DOWN", qty: pairQty, limitPrice: downPx, tag: "ENTRY", reason: "PAIR_ACCUM_DOWN" });
@@ -1555,10 +1574,18 @@ export class Polymarket15mArbBot {
     const px = roundDownToTick(rawPx, tick);
 
     const usd = this.computeClipUsd(snap);
-    const qty = Math.min(sharesFromUsd(usd, Math.max(px, tick)), maxEntryShares);
+    // v5.2.2: Cap to not exceed 50 shares per side
+    const currentShares = sideToBuy === "UP" ? this.inventory.upShares : this.inventory.downShares;
+    const roomForSide = maxPerSideShares - currentShares;
+    const qty = Math.min(sharesFromUsd(usd, Math.max(px, tick)), maxEntryShares, roomForSide);
+
+    if (qty <= 0) {
+      this.log("ENTRY_BLOCKED_SIDE_FULL", { sideToBuy, currentShares, maxPerSide: maxPerSideShares });
+      return intents;
+    }
 
     const reason = isDeep 
-      ? `DEEP_ENTRY ${sideToBuy}` 
+      ? `DEEP_ENTRY ${sideToBuy}`
       : (hasBoth ? "REBALANCE" : "OPENING");
     
     intents.push({ side: sideToBuy, qty, limitPrice: px, tag: "ENTRY", reason });
