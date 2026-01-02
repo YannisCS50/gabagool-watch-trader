@@ -34,8 +34,8 @@ export {
 // ============================================================
 // STRATEGY VERSION
 // ============================================================
-export const STRATEGY_VERSION = '5.2.1-strict-balance';
-export const STRATEGY_NAME = 'Polymarket 15min Hedge/Arb (v5.2.1 - Strict 1:1 Balance)';
+export const STRATEGY_VERSION = '5.2.2-50-50-only';
+export const STRATEGY_NAME = 'Polymarket 15min Hedge/Arb (v5.2.2 - Strict 50/50 Only)';
 
 // ============================================================
 // BACKWARD COMPATIBILITY LAYER
@@ -509,10 +509,10 @@ export function evaluateOpportunity(
   const downSh = position.downShares;
   const isBalanced = upSh === downSh;
 
-  const toTarget = (maxSide: number): 50 | 75 | null => {
+  // v5.2.2: Only target 50/50
+  const toTarget = (maxSide: number): 50 | null => {
     if (maxSide <= 50) return 50;
-    if (maxSide <= 75) return 75;
-    return null;
+    return null; // Block if either side > 50
   };
 
   const cushion = STRATEGY.hedge.cushionTicks;
@@ -646,25 +646,7 @@ export function evaluateOpportunity(
     };
   }
 
-  // If we're at 50/50, optionally step to 75/75 by adding 25/25 when edge exists.
-  if (isBalanced && upSh === 50) {
-    if (!pairedLockOk(upAsk, downAsk, scaledBuffer)) return null;
-
-    const sharesToAdd = 25;
-
-    // Respect per-side share limits
-    if (position.upShares + sharesToAdd > STRATEGY.limits.maxPerSideShares) return null;
-    if (position.downShares + sharesToAdd > STRATEGY.limits.maxPerSideShares) return null;
-
-    return {
-      outcome: 'UP',
-      price: roundDown(upAsk, tick),
-      shares: sharesToAdd,
-      reasoning: `STEP_TO_75 +25/+25 @ ${(combined * 100).toFixed(1)}¢ combined (edge=${((1 - combined) * 100).toFixed(1)}%)`,
-      type: 'accumulate',
-    };
-  }
-
-  // If we're already at 75/75 (or 50/50), do nothing else.
+  // v5.2.2: 50/50 is our target, NO step to 75.
+  // If we're at 50/50 (or any balanced), we're done.
   return null;
 }
