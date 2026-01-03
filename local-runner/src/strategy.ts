@@ -34,8 +34,8 @@ export {
 // ============================================================
 // STRATEGY VERSION
 // ============================================================
-export const STRATEGY_VERSION = '5.2.3-50-50-hardcap';
-export const STRATEGY_NAME = 'Polymarket 15min Hedge/Arb (v5.2.3 - 50/50 Hard Cap)';
+export const STRATEGY_VERSION = '5.2.4-always-hedge';
+export const STRATEGY_NAME = 'Polymarket 15min Hedge/Arb (v5.2.4 - Always Hedge)';
 
 // ============================================================
 // BACKWARD COMPATIBILITY LAYER
@@ -614,13 +614,14 @@ export function evaluateOpportunity(
     const existingAvg = existingShares > 0 ? existingCost / existingShares : 0;
     const projectedCombined = existingAvg + missingAsk;
 
-    const allowOverpay = 0.05;
+    // v5.2.4: ALWAYS HEDGE - never leave position unhedged
+    // A 5-10% loss from high combined is ALWAYS better than 100% loss from being unhedged
+    const allowOverpay = 0.10; // Accept up to 10% combined overpay to ensure hedge
     if (projectedCombined > 1 + allowOverpay) {
-      if (remainingSeconds > 600) {
-        console.log(`[v5.2.2] HEDGE_SKIPPED: combined ${(projectedCombined * 100).toFixed(0)}¢ > ${((1 + allowOverpay) * 100).toFixed(0)}¢ max (time=${remainingSeconds}s)`);
-        return null;
-      }
-      console.log(`[v5.2.2] FORCE_HEDGE: time=${remainingSeconds}s, combined=${(projectedCombined * 100).toFixed(0)}¢`);
+      // Even if combined is > 110%, STILL hedge - just log a warning
+      console.log(`[v5.2.4] ⚠️ FORCE_HEDGE: combined ${(projectedCombined * 100).toFixed(0)}¢ > ${((1 + allowOverpay) * 100).toFixed(0)}¢ but MUST hedge!`);
+    } else if (projectedCombined > 1.0) {
+      console.log(`[v5.2.4] HEDGE_WITH_LOSS: combined ${(projectedCombined * 100).toFixed(0)}¢ > 100¢ (accepting loss to avoid total exposure)`);
     }
 
     const limitPrice = roundUp(missingAsk + cushion * tick, tick);
