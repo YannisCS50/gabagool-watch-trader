@@ -8,6 +8,7 @@ import { ActivityChart } from '@/components/ActivityChart';
 import { PnLChart } from '@/components/PnLChart';
 import { TraderHeader } from '@/components/TraderHeader';
 import { LiveRunnerStatus } from '@/components/LiveRunnerStatus';
+import { DownloadAllLogsButton } from '@/components/DownloadAllLogsButton';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useTrades } from '@/hooks/useTrades';
@@ -160,6 +161,7 @@ const Index = () => {
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
+              <DownloadAllLogsButton />
               <Button
                 variant="outline"
                 size="sm"
