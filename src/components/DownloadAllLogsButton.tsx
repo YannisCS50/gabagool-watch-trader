@@ -27,6 +27,7 @@ export function DownloadAllLogsButton() {
         settlementLogsRes,
         settlementFailuresRes,
         strikePricesRes,
+        snapshotLogsRes,
       ] = await Promise.all([
         // Live trades - THE main trading data
         supabase.from('live_trades')
@@ -66,6 +67,12 @@ export function DownloadAllLogsButton() {
           .select('*')
           .gte('created_at', thirtyDaysAgoISO)
           .order('created_at', { ascending: false }),
+        
+        // Snapshot logs - market state snapshots with orderbook data
+        supabase.from('snapshot_logs')
+          .select('*')
+          .gte('created_at', thirtyDaysAgoISO)
+          .order('ts', { ascending: false }),
       ]);
 
       // Build CSV rows
@@ -95,6 +102,23 @@ export function DownloadAllLogsButton() {
         'pair_cost',
         'pnl',
         'error',
+        // Snapshot-specific columns
+        'seconds_remaining',
+        'spot_price',
+        'up_bid',
+        'up_ask',
+        'up_mid',
+        'down_bid',
+        'down_ask',
+        'down_mid',
+        'spread_up',
+        'spread_down',
+        'combined_ask',
+        'combined_mid',
+        'cheapest_ask_plus_other_mid',
+        'skew',
+        'adverse_streak',
+        'no_liquidity_streak',
       ].join(','));
 
       // Live trades (5000+ records)
@@ -293,6 +317,51 @@ export function DownloadAllLogsButton() {
         ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
       });
 
+      // Snapshot logs - market state with orderbook data
+      (snapshotLogsRes.data || []).forEach((row) => {
+        allRows.push([
+          'SNAPSHOT',
+          row.iso || '',
+          row.market_id || '',
+          row.asset || '',
+          row.bot_state || '',
+          '', // side
+          `${row.up_shares || 0}/${row.down_shares || 0}`,
+          '', // price
+          '', // total
+          '', // status
+          '', // order_id
+          '', // intent
+          '', // reasoning
+          '', // event_start
+          '', // event_end
+          row.strike_price || '',
+          '', // open
+          '', // close
+          row.delta || '',
+          row.pair_cost || '',
+          '', // pnl
+          '', // error
+          // New fields - appended
+          row.seconds_remaining || '',
+          row.spot_price || '',
+          row.up_bid || '',
+          row.up_ask || '',
+          row.up_mid || '',
+          row.down_bid || '',
+          row.down_ask || '',
+          row.down_mid || '',
+          row.spread_up || '',
+          row.spread_down || '',
+          row.combined_ask || '',
+          row.combined_mid || '',
+          row.cheapest_ask_plus_other_mid || '',
+          row.skew || '',
+          row.adverse_streak || '',
+          row.no_liquidity_streak || '',
+        ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
+      });
+
       // Create and download CSV
       const csvContent = allRows.join('\n');
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -313,13 +382,14 @@ export function DownloadAllLogsButton() {
         settlements: settlementLogsRes.data?.length || 0,
         failures: settlementFailuresRes.data?.length || 0,
         strikes: strikePricesRes.data?.length || 0,
+        snapshots: snapshotLogsRes.data?.length || 0,
       };
 
       const totalRows = allRows.length - 1;
       const sizeEstimate = (csvContent.length / 1024 / 1024).toFixed(1);
 
       toast.success(`Downloaded ${totalRows.toLocaleString()} rows (~${sizeEstimate}MB)`, {
-        description: `Trades: ${counts.trades}, Orders: ${counts.orders}, Ticks: ${counts.ticks.toLocaleString()}`,
+        description: `Trades: ${counts.trades}, Snapshots: ${counts.snapshots.toLocaleString()}, Ticks: ${counts.ticks.toLocaleString()}`,
       });
     } catch (error) {
       console.error('Download error:', error);
