@@ -46,6 +46,10 @@ let currentBalance = 0;
 let lastClaimCheck = 0;
 let claimInFlight = false;
 
+// Latest Chainlink spot cache (used for filling snapshot/fill context)
+let lastBtcPrice: number | null = null;
+let lastEthPrice: number | null = null;
+
 interface MarketToken {
   slug: string;
   asset: string;
@@ -449,6 +453,18 @@ async function evaluateMarket(slug: string): Promise<void> {
     const endTime = new Date(ctx.market.eventEndTime).getTime();
     const remainingSeconds = Math.floor((endTime - nowMs) / 1000);
 
+    // Keep spot/strike cached even if a trade happens before the next 1s tick
+    const latestSpot = ctx.market.asset === 'BTC' ? lastBtcPrice : ctx.market.asset === 'ETH' ? lastEthPrice : null;
+    if (latestSpot !== null) {
+      ctx.spotPrice = latestSpot;
+      if (ctx.strikePrice === null) {
+        const startMs = new Date(ctx.market.eventStartTime).getTime();
+        if (Number.isFinite(startMs) && nowMs >= startMs) {
+          ctx.strikePrice = latestSpot;
+        }
+      }
+    }
+
     // Check if this is a potential opening trade - if so, do balance check first
     const isOpeningCandidate = ctx.position.upShares === 0 && ctx.position.downShares === 0;
     let balanceForCheck: number | undefined = undefined;
@@ -650,6 +666,16 @@ function connectToClob(): void {
 async function processMarketEvent(data: any): Promise<void> {
   const eventType = data.event_type;
 
+  const parseTopPrice = (levels: any[]): number | null => {
+    if (!Array.isArray(levels) || levels.length === 0) return null;
+    const first = levels[0];
+    const raw = Array.isArray(first)
+      ? first[0]
+      : (first?.price ?? first?.p ?? first?.[0]);
+    const num = typeof raw === 'number' ? raw : typeof raw === 'string' ? parseFloat(raw) : NaN;
+    return Number.isFinite(num) ? num : null;
+  };
+
   if (eventType === 'book') {
     const assetId = data.asset_id;
     const marketInfo = tokenToMarket.get(assetId);
@@ -657,11 +683,11 @@ async function processMarketEvent(data: any): Promise<void> {
     if (marketInfo) {
       const ctx = markets.get(marketInfo.slug);
       if (ctx) {
-        const asks = (data.asks || []) as [string, string][];
-        const bids = (data.bids || []) as [string, string][];
+        const asksRaw = (data.asks || []) as any[];
+        const bidsRaw = (data.bids || []) as any[];
 
-        const topAsk = asks.length > 0 ? parseFloat(asks[0][0]) : null;
-        const topBid = bids.length > 0 ? parseFloat(bids[0][0]) : null;
+        const topAsk = parseTopPrice(asksRaw);
+        const topBid = parseTopPrice(bidsRaw);
 
         if (marketInfo.side === 'up') {
           ctx.book.up.ask = topAsk;
@@ -683,12 +709,12 @@ async function processMarketEvent(data: any): Promise<void> {
       if (marketInfo) {
         const ctx = markets.get(marketInfo.slug);
         if (ctx) {
-          const price = parseFloat(change.price);
-          if (!isNaN(price)) {
+          const num = typeof change.price === 'number' ? change.price : parseFloat(change.price);
+          if (Number.isFinite(num)) {
             if (marketInfo.side === 'up') {
-              if (ctx.book.up.ask === null) ctx.book.up.ask = price;
+              if (ctx.book.up.ask === null) ctx.book.up.ask = num;
             } else {
-              if (ctx.book.down.ask === null) ctx.book.down.ask = price;
+              if (ctx.book.down.ask === null) ctx.book.down.ask = num;
             }
             ctx.book.updatedAtMs = Date.now();
             await evaluateMarket(marketInfo.slug);
@@ -926,8 +952,6 @@ async function main(): Promise<void> {
   // ===================================================================
   // PRICE TICK LOGGING: Save BTC/ETH Chainlink prices every 1 second
   // ===================================================================
-  let lastBtcPrice: number | null = null;
-  let lastEthPrice: number | null = null;
   let tickLogInFlight = false;
 
   setInterval(async () => {
@@ -968,6 +992,23 @@ async function main(): Promise<void> {
           source: 'runner_chainlink',
         });
         lastEthPrice = ethResult.price;
+      }
+
+      // Keep per-market cached spot/strike up to date so SNAPSHOT/FILL logs include context
+      const nowMs = Date.now();
+      for (const ctx of markets.values()) {
+        const spot = ctx.market.asset === 'BTC' ? lastBtcPrice : ctx.market.asset === 'ETH' ? lastEthPrice : null;
+        if (spot !== null) {
+          ctx.spotPrice = spot;
+
+          // Strike price = spot at (or right after) market start, set once
+          if (ctx.strikePrice === null) {
+            const startMs = new Date(ctx.market.eventStartTime).getTime();
+            if (Number.isFinite(startMs) && nowMs >= startMs) {
+              ctx.strikePrice = spot;
+            }
+          }
+        }
       }
 
       if (ticks.length > 0) {
@@ -1039,8 +1080,8 @@ async function main(): Promise<void> {
         downAsk: ctx.book.down.ask,
         upShares: ctx.position.upShares,
         downShares: ctx.position.downShares,
-        upCost: ctx.position.upCost,
-        downCost: ctx.position.downCost,
+        upCost: (ctx.position as any).upCost ?? (ctx.position as any).upInvested ?? 0,
+        downCost: (ctx.position as any).downCost ?? (ctx.position as any).downInvested ?? 0,
       });
     }
   }, SNAPSHOT_INTERVAL_MS);
