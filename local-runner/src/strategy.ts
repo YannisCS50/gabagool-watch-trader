@@ -1,19 +1,26 @@
 /**
  * strategy.ts - Active Strategy Wrapper
  * =====================================
- * v5.3.0 - Always Hedge Edition (Overpay Strategy)
+ * GPT Strategy v6.0 – Adaptive Hedger
  * 
- * Key features:
- * - allowOverpay: 0.02 → hedge allowed up to 1.02 combined (2% overpay)
- * - No probability bias skip - ALWAYS hedge
- * - Time-critical mode: hedge up to 1.05 combined if <2 min left
- * - High certainty mode: hedge if market ≥85% confident
- * - Fallback: hedge after 20s stuck one-sided
+ * Core Principle:
+ * Buy YES + NO asymmetrically when combined < $1.00
+ * Guaranteed profit = min(QtyYES, QtyNO) - (CostYES + CostNO)
+ * 
+ * Key Features:
+ * - Dynamic edge buffer adapts to liquidity/adverse conditions
+ * - Execution-aware edge calculation (ask + mid, not mid + mid)
+ * - Force hedge after 12s timeout (never stay one-sided)
+ * - Deep Dislocation mode for extreme mispricings (≤96¢)
+ * - Skew management targets 50/50, max 70/30
+ * - Base trade $25, scale to $50 on strong edges (≥4¢)
+ * 
+ * States: FLAT → ONE_SIDED → HEDGED / SKEWED / DEEP_DISLOCATION
  */
 
-// Re-export everything from loveable-strat (v5.3.0)
+// Re-export everything from loveable-strat (v6.0)
 export * from './loveable-strat.js';
 
 // Override version identifiers
-export const STRATEGY_VERSION = '5.3.0-overpay';
-export const STRATEGY_NAME = 'Polymarket 15m Hedge & Arbitrage (v5.3.0 - Always Hedge)';
+export const STRATEGY_VERSION = '6.0.0';
+export const STRATEGY_NAME = 'GPT Strategy v6.0 – Adaptive Hedger (Polymarket 15m Bot)';
