@@ -27,8 +27,8 @@ import {
 } from './logger.js';
 import { saveFillLogs, saveSettlementLogs, saveSnapshotLogs } from './backend.js';
 
-const FLUSH_INTERVAL_MS = 5000;
-const MAX_BATCH = 250;
+const FLUSH_INTERVAL_MS = 2000; // Flush to DB every 2 seconds (was 5s)
+const MAX_BATCH = 500; // Increased batch size for higher volume
 
 const snapshotQueue: SnapshotLog[] = [];
 const fillQueue: FillLog[] = [];

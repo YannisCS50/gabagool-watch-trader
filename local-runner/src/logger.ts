@@ -14,7 +14,7 @@ import fs from 'fs';
 import path from 'path';
 
 // Configuration
-export const SNAPSHOT_INTERVAL_MS = 2000; // 2 seconds
+export const SNAPSHOT_INTERVAL_MS = 1000; // 1 second - capture every tick
 const LOGS_DIR = path.join(process.cwd(), 'logs');
 
 // Ensure logs directory exists
