@@ -533,7 +533,10 @@ export function evaluateOpportunity(
   remainingSeconds: number,
   lastTradeAtMs: number,
   nowMs: number,
-  availableBalance?: number
+  availableBalance?: number,
+  // FIX: Added optional price bias parameters
+  currentPrice?: number,
+  strikePrice?: number
 ): TradeSignal | null {
   // Convert MarketPosition to Inventory for compatibility
   const inventory: Inventory = {
@@ -557,6 +560,9 @@ export function evaluateOpportunity(
     availableBalance,
     noLiquidityStreak: 0,
     tick: STRATEGY.tick.fallback,
+    // FIX: Pass through price bias context
+    currentPrice,
+    strikePrice,
   });
 }
 
@@ -749,7 +755,17 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
       }
       
       // Cheap side (<50¢): always hedge if it's profitable or break-even
-      if (projectedCombined < 1.0) {
+      // FIX: Include exact break-even (≤1.0) instead of just <1.0
+      if (projectedCombined <= 1.0) {
+        return buildHedge(missingSide, missingAsk, tick, hedgeShares);
+      }
+      
+      // FIX: Fallback hedge when waiting too long (prevents stuck ONE_SIDED)
+      // If >30 seconds stuck one-sided and combined < 1.05, just hedge
+      const firstFillMs = inv.firstFillTs ?? nowMs;
+      const timeSinceFirstFill = (nowMs - firstFillMs) / 1000;
+      if (timeSinceFirstFill > 30 && projectedCombined < 1.05) {
+        console.log(`[Strategy] FALLBACK hedge ${missingSide} @ ${(missingAsk * 100).toFixed(0)}¢ - stuck one-sided for ${timeSinceFirstFill.toFixed(0)}s`);
         return buildHedge(missingSide, missingAsk, tick, hedgeShares);
       }
       
@@ -849,12 +865,16 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
       
       if (sharesToAdd < 1) return null;
       
-      // Return UP first (caller should also do DOWN atomically)
+      // FIX: Return the CHEAPER side first for atomic accumulate
+      // Caller should handle both sides atomically, so we return whichever is cheaper
+      const accumulateSide: Outcome = upAsk <= downAsk ? 'UP' : 'DOWN';
+      const accumulatePrice = accumulateSide === 'UP' ? upAsk : downAsk;
+      
       return {
-        outcome: 'UP',
-        price: roundDown(upAsk, tick),
+        outcome: accumulateSide,
+        price: roundDown(accumulatePrice, tick),
         shares: sharesToAdd,
-        reasoning: `Accumulate @ ${(combined * 100).toFixed(1)}¢ combined (${edgePct.toFixed(1)}% edge)`,
+        reasoning: `Accumulate ${accumulateSide} @ ${(combined * 100).toFixed(1)}¢ combined (${edgePct.toFixed(1)}% edge) - caller must also buy ${accumulateSide === 'UP' ? 'DOWN' : 'UP'}`,
         type: 'accumulate',
       };
     }
@@ -914,9 +934,9 @@ export function checkLiquidityForAccumulate(
 // This prevents buying at crazy prices like 95¢
 const MAX_HEDGE_PRICE = 0.75; // Never pay more than 75¢ for a hedge
 
-// Maximum combined cost we accept (loss limit)
-// At 105¢ combined, we lose max 5¢ per share
-const MAX_COMBINED_COST = 1.05;
+// FIX: Maximum combined cost aligned with ONE_SIDED check (was 1.05, now 1.0)
+// Combined ≤1.0 = break-even or profit, >1.0 = guaranteed loss
+const MAX_COMBINED_COST = 1.0;
 
 export function calculatePreHedgePrice(
   openingPrice: number,
