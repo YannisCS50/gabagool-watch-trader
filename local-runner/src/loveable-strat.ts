@@ -1000,3 +1000,38 @@ export function calculatePreHedgePrice(
     reasoning,
   };
 }
+
+// ============================================================
+// HARD SKEW STOP - Blocks trades when position is too imbalanced
+// ============================================================
+
+export function checkHardSkewStop(position: MarketPosition): { blocked: boolean; reason?: string } {
+  const upShares = position.upShares || 0;
+  const downShares = position.downShares || 0;
+  const total = upShares + downShares;
+  
+  // No position = no skew issue
+  if (total === 0) {
+    return { blocked: false };
+  }
+  
+  const upRatio = upShares / total;
+  const downRatio = downShares / total;
+  
+  // Check if either side exceeds hard cap
+  if (upRatio > STRATEGY.skew.hardCap) {
+    return { 
+      blocked: true, 
+      reason: `UP ratio ${(upRatio * 100).toFixed(0)}% exceeds hard cap ${(STRATEGY.skew.hardCap * 100).toFixed(0)}%` 
+    };
+  }
+  
+  if (downRatio > STRATEGY.skew.hardCap) {
+    return { 
+      blocked: true, 
+      reason: `DOWN ratio ${(downRatio * 100).toFixed(0)}% exceeds hard cap ${(STRATEGY.skew.hardCap * 100).toFixed(0)}%` 
+    };
+  }
+  
+  return { blocked: false };
+}
