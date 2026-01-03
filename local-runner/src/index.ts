@@ -11,6 +11,7 @@ import { checkAndClaimWinnings, getClaimableValue } from './redeemer.js';
 import { syncPositions, syncPositionsToDatabase, printPositionsReport, filter15mPositions } from './positions-sync.js';
 import { recordSnapshot, recordFill, recordSettlement, TradeIntent } from './telemetry.js';
 import { SNAPSHOT_INTERVAL_MS } from './logger.js';
+import { startBenchmarkPolling, stopBenchmarkPolling, updateBenchmarkSnapshot, getBenchmarkTradeCount } from './benchmark-gabagool.js';
 // Ensure Node prefers IPv4 to avoid hangs on IPv6-only DNS results under some VPN setups.
 try {
   dns.setDefaultResultOrder('ipv4first');
@@ -980,7 +981,8 @@ async function main(): Promise<void> {
   }, 1000);
 
   // ===================================================================
-  // SNAPSHOT LOGGING: Record market state every 2 seconds for telemetry
+  // SNAPSHOT LOGGING: Record market state every 1 second for telemetry
+  // Also updates benchmark context for gabagool22 trade enrichment
   // ===================================================================
   setInterval(() => {
     const nowMs = Date.now();
@@ -992,16 +994,49 @@ async function main(): Promise<void> {
       // Only snapshot active markets (not expired)
       if (secondsRemaining <= 0) continue;
       
+      // Calculate delta for benchmark context
+      const delta = (ctx.spotPrice !== null && ctx.strikePrice !== null && ctx.strikePrice > 0)
+        ? Math.abs(ctx.spotPrice - ctx.strikePrice) / ctx.strikePrice
+        : null;
+      
+      // Calculate cheapestAskPlusOtherMid for benchmark context
+      const upMid = (ctx.book.up.bid !== null && ctx.book.up.ask !== null) 
+        ? (ctx.book.up.bid + ctx.book.up.ask) / 2 
+        : null;
+      const downMid = (ctx.book.down.bid !== null && ctx.book.down.ask !== null) 
+        ? (ctx.book.down.bid + ctx.book.down.ask) / 2 
+        : null;
+      
+      let cheapestAskPlusOtherMid: number | null = null;
+      if (ctx.book.up.ask !== null && ctx.book.down.ask !== null && upMid !== null && downMid !== null) {
+        if (ctx.book.up.ask <= ctx.book.down.ask) {
+          cheapestAskPlusOtherMid = ctx.book.up.ask + downMid;
+        } else {
+          cheapestAskPlusOtherMid = ctx.book.down.ask + upMid;
+        }
+      }
+      
+      // Update benchmark context for gabagool22 trade enrichment (READ-ONLY)
+      updateBenchmarkSnapshot(ctx.slug, {
+        secondsRemaining,
+        spotPrice: ctx.spotPrice,
+        strikePrice: ctx.strikePrice,
+        delta,
+        upBestAsk: ctx.book.up.ask,
+        downBestAsk: ctx.book.down.ask,
+        cheapestAskPlusOtherMid,
+      });
+      
       recordSnapshot({
         marketId: ctx.slug,
         asset: ctx.market.asset as 'BTC' | 'ETH',
         secondsRemaining,
         spotPrice: ctx.spotPrice,
         strikePrice: ctx.strikePrice,
-        upBid: ctx.book.up.bestBid,
-        upAsk: ctx.book.up.bestAsk,
-        downBid: ctx.book.down.bestBid,
-        downAsk: ctx.book.down.bestAsk,
+        upBid: ctx.book.up.bid,
+        upAsk: ctx.book.up.ask,
+        downBid: ctx.book.down.bid,
+        downAsk: ctx.book.down.ask,
         upShares: ctx.position.upShares,
         downShares: ctx.position.downShares,
         upCost: ctx.position.upCost,
@@ -1128,7 +1163,18 @@ async function main(): Promise<void> {
     const oneSidedStr = oneSided > 0 ? ` | ⚠️ ${oneSided} ONE-SIDED` : '';
     
     console.log(`\n📊 Status: ${markets.size} markets | ${positions} positions${oneSidedStr} | ${tradeCount} trades | $${currentBalance.toFixed(2)} balance${claimableStr}`);
+    
+    // Log benchmark stats (gabagool22 tracking)
+    const benchmarkCount = getBenchmarkTradeCount();
+    if (benchmarkCount > 0) {
+      console.log(`   📊 Benchmark: ${benchmarkCount} gabagool22 trades tracked`);
+    }
   }, 60000);
+
+  // ===================================================================
+  // BENCHMARK: Start gabagool22 trade tracking (READ-ONLY)
+  // ===================================================================
+  startBenchmarkPolling();
 
   console.log('\n✅ Live trader running with auto-claim! Press Ctrl+C to stop.\n');
 }
@@ -1137,6 +1183,9 @@ async function main(): Promise<void> {
 process.on('SIGINT', async () => {
   console.log('\n\n👋 Shutting down...');
   isRunning = false;
+  
+  // Stop benchmark polling
+  stopBenchmarkPolling();
   
   // Send offline heartbeat via backend
   await sendOffline(RUNNER_ID);
