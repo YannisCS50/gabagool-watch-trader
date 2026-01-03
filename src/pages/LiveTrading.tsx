@@ -15,6 +15,7 @@ import {
   BarChart3,
   Activity,
   ChevronDown,
+  Target,
 } from 'lucide-react';
 import { LiveTradeDashboard } from '@/components/LiveTradeDashboard';
 import { LivePnLDashboard } from '@/components/LivePnLDashboard';
@@ -27,6 +28,7 @@ import { OrderQueueStatus } from '@/components/OrderQueueStatus';
 import { RunnerInstructions } from '@/components/RunnerInstructions';
 import { BotPositionsCard } from '@/components/BotPositionsCard';
 import { TradeAlerts } from '@/components/TradeAlerts';
+import { HedgeFeasibilityDashboard } from '@/components/HedgeFeasibilityDashboard';
 import { supabase } from '@/integrations/supabase/client';
 
 interface WalletBalance {
@@ -178,6 +180,10 @@ export default function LiveTrading() {
               <Activity className="w-4 h-4" />
               Activity & Orders
             </TabsTrigger>
+            <TabsTrigger value="feasibility" className="flex items-center gap-2">
+              <Target className="w-4 h-4" />
+              Hedge Analyse
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="pnl" className="space-y-6">
@@ -200,6 +206,10 @@ export default function LiveTrading() {
 
             {/* Live Trading Dashboard */}
             <LiveTradeDashboard />
+          </TabsContent>
+
+          <TabsContent value="feasibility" className="space-y-6">
+            <HedgeFeasibilityDashboard />
           </TabsContent>
         </Tabs>
 
