@@ -121,6 +121,8 @@ export function DownloadAllLogsButton() {
         'no_liquidity_streak',
       ].join(','));
 
+      const PAD_16 = new Array(16).fill('');
+
       // Live trades (5000+ records)
       (liveTradesRes.data || []).forEach((row) => {
         allRows.push([
@@ -146,6 +148,7 @@ export function DownloadAllLogsButton() {
           '', // pair_cost
           '', // pnl
           '', // error
+          ...PAD_16,
         ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
       });
 
@@ -174,6 +177,7 @@ export function DownloadAllLogsButton() {
           '', // pair_cost
           '', // pnl
           row.error_message || '',
+          ...PAD_16,
         ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
       });
 
@@ -202,6 +206,7 @@ export function DownloadAllLogsButton() {
           '', // pair_cost
           '', // pnl
           '', // error
+          ...PAD_16,
         ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
       });
 
@@ -230,6 +235,10 @@ export function DownloadAllLogsButton() {
           '', // pair_cost
           '', // pnl
           '', // error
+          // snapshot-specific columns (we can populate the ones that exist on fill_logs)
+          row.seconds_remaining || '',
+          row.spot_price || '',
+          ...new Array(14).fill(''),
         ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
       });
 
@@ -258,6 +267,7 @@ export function DownloadAllLogsButton() {
           row.pair_cost || '',
           row.realized_pnl || '',
           '', // error
+          ...PAD_16,
         ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
       });
 
@@ -286,6 +296,7 @@ export function DownloadAllLogsButton() {
           '', // pair_cost
           '', // pnl
           '', // error
+          ...PAD_16,
         ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
       });
 
@@ -314,6 +325,7 @@ export function DownloadAllLogsButton() {
           '', // pair_cost
           '', // pnl
           '', // error
+          ...PAD_16,
         ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
       });
 
