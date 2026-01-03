@@ -34,8 +34,8 @@ export {
 // ============================================================
 // STRATEGY VERSION
 // ============================================================
-export const STRATEGY_VERSION = '5.2.2-50-50-only';
-export const STRATEGY_NAME = 'Polymarket 15min Hedge/Arb (v5.2.2 - Strict 50/50 Only)';
+export const STRATEGY_VERSION = '5.2.3-50-50-hardcap';
+export const STRATEGY_NAME = 'Polymarket 15min Hedge/Arb (v5.2.3 - 50/50 Hard Cap)';
 
 // ============================================================
 // BACKWARD COMPATIBILITY LAYER
@@ -562,6 +562,7 @@ export function evaluateOpportunity(
   }
 
   // CORRECTIVE HEDGE: If we have BOTH sides but not equal, always buy the smaller side to match.
+  // v5.2.2: Hard cap at 50 shares per side
   if (hasUp && hasDown && !isBalanced) {
     const larger = Math.max(upSh, downSh);
     const target = toTarget(larger);
@@ -574,7 +575,11 @@ export function evaluateOpportunity(
 
     const missingSide: Outcome = upSh < downSh ? 'UP' : 'DOWN';
     const missingAsk = missingSide === 'UP' ? upAsk : downAsk;
-    const sharesNeeded = Math.max(5, target - Math.min(upSh, downSh));
+    
+    // v5.2.2: Cap shares needed to never exceed 50
+    const smallerSide = Math.min(upSh, downSh);
+    const targetCapped = Math.min(target, 50); // Hard cap
+    const sharesNeeded = Math.max(5, targetCapped - smallerSide);
 
     const limitPrice = roundUp(missingAsk + cushion * tick, tick);
 
@@ -582,20 +587,25 @@ export function evaluateOpportunity(
       outcome: missingSide,
       price: limitPrice,
       shares: sharesNeeded,
-      reasoning: `HEDGE_BALANCE ${missingSide} +${sharesNeeded} (target=${target}/${target}) @ ${(limitPrice * 100).toFixed(0)}¢`,
+      reasoning: `HEDGE_BALANCE ${missingSide} +${sharesNeeded} (target=${targetCapped}/${targetCapped}) @ ${(limitPrice * 100).toFixed(0)}¢`,
       type: 'hedge',
       isMarketable: true,
       cushionTicks: cushion,
     };
   }
 
-  // ONE_SIDED: Must hedge to match the current exposure (then we can recover to 50/75 in balanced steps)
+  // ONE_SIDED: Must hedge to match the current exposure
+  // v5.2.2: Hard cap at 50 shares per side
+  const MAX_SHARES_PER_SIDE = 50;
+  
   if ((hasUp && !hasDown) || (!hasUp && hasDown)) {
     const missingSide: Outcome = !hasUp ? 'UP' : 'DOWN';
     const missingAsk = missingSide === 'UP' ? upAsk : downAsk;
     const existingShares = missingSide === 'UP' ? position.downShares : position.upShares;
 
-    const hedgeShares = Math.max(existingShares, 5);
+    // v5.2.2: Cap hedge to 50 shares max
+    const targetShares = Math.min(existingShares, MAX_SHARES_PER_SIDE);
+    const hedgeShares = Math.max(targetShares, 5);
 
     // If hedge is very expensive, we still prioritize getting balanced when time is running.
     const existingCost = missingSide === 'UP'
@@ -607,10 +617,10 @@ export function evaluateOpportunity(
     const allowOverpay = 0.05;
     if (projectedCombined > 1 + allowOverpay) {
       if (remainingSeconds > 600) {
-        console.log(`[v5.0.0] HEDGE_SKIPPED: combined ${(projectedCombined * 100).toFixed(0)}¢ > ${((1 + allowOverpay) * 100).toFixed(0)}¢ max (time=${remainingSeconds}s)`);
+        console.log(`[v5.2.2] HEDGE_SKIPPED: combined ${(projectedCombined * 100).toFixed(0)}¢ > ${((1 + allowOverpay) * 100).toFixed(0)}¢ max (time=${remainingSeconds}s)`);
         return null;
       }
-      console.log(`[v5.0.0] FORCE_HEDGE: time=${remainingSeconds}s, combined=${(projectedCombined * 100).toFixed(0)}¢`);
+      console.log(`[v5.2.2] FORCE_HEDGE: time=${remainingSeconds}s, combined=${(projectedCombined * 100).toFixed(0)}¢`);
     }
 
     const limitPrice = roundUp(missingAsk + cushion * tick, tick);
@@ -619,7 +629,7 @@ export function evaluateOpportunity(
       outcome: missingSide,
       price: limitPrice,
       shares: hedgeShares,
-      reasoning: `HEDGE ${missingSide} +${hedgeShares} @ ${(limitPrice * 100).toFixed(0)}¢`,
+      reasoning: `HEDGE ${missingSide} +${hedgeShares} @ ${(limitPrice * 100).toFixed(0)}¢ (capped at ${MAX_SHARES_PER_SIDE})`,
       type: 'hedge',
       isMarketable: true,
       cushionTicks: cushion,

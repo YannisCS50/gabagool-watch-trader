@@ -45,7 +45,7 @@
  * - Exposure protection: no accumulate when one-sided
  */
 
-// v5.2.2: STRICT 50/50 VERSION - Max 50 shares per side, no step to 75
+// v5.2.3: STRICT 50/50 HARD CAP - All hedge operations capped at 50 shares per side
 export type Side = "UP" | "DOWN";
 export type BotState = "FLAT" | "ONE_SIDED" | "HEDGED" | "SKEWED" | "UNWIND" | "DEEP_DISLOCATION";
 export type RegimeTag = "NORMAL" | "DEEP" | "UNWIND";
@@ -751,9 +751,12 @@ export class Polymarket15mArbBot {
 
   /**
    * Feed ALL fills here. Hedging correctness depends on this.
+   * v5.2.2: Pending hedge capped at 50 shares per side
    */
   onFill(fill: FillEvent) {
     if (fill.marketId !== this.marketId) return;
+
+    const MAX_SHARES_PER_SIDE = 50; // v5.2.2: HARD CAP
 
     this.metrics.fills += 1;
     this.metrics.fillQty += fill.fillQty;
@@ -765,14 +768,20 @@ export class Polymarket15mArbBot {
       this.inventory.upShares += fill.fillQty;
       this.inventory.upCost += fill.fillQty * fill.fillPrice;
       // v3.1: Only queue hedge if NOT in DEEP regime (delayed hedge)
+      // v5.2.2: Cap pending hedge so total never exceeds 50
       if (this.currentRegime !== "DEEP") {
-        this.pendingHedge.down += fill.fillQty;
+        const targetDown = Math.min(this.inventory.upShares, MAX_SHARES_PER_SIDE);
+        const neededDown = Math.max(0, targetDown - this.inventory.downShares);
+        this.pendingHedge.down = neededDown;
       }
     } else {
       this.inventory.downShares += fill.fillQty;
       this.inventory.downCost += fill.fillQty * fill.fillPrice;
       if (this.currentRegime !== "DEEP") {
-        this.pendingHedge.up += fill.fillQty;
+        // v5.2.2: Cap pending hedge so total never exceeds 50
+        const targetUp = Math.min(this.inventory.downShares, MAX_SHARES_PER_SIDE);
+        const neededUp = Math.max(0, targetUp - this.inventory.upShares);
+        this.pendingHedge.up = neededUp;
       }
     }
 
@@ -954,24 +963,32 @@ export class Polymarket15mArbBot {
    * This is the absolute last line of defense against 100% loss
    * 
    * Rule: 5% edge loss ≪ 100% capital loss
+   * v5.2.2: Hard cap at 50 shares per side
    */
   private buildSurvivalHedgeIntents(snap: MarketSnapshot): OrderIntent[] {
     const intents: OrderIntent[] = [];
     const inv = this.inventory;
+    const MAX_SHARES_PER_SIDE = 50; // v5.2.2: HARD CAP
     
     // Determine which side needs hedging
     let sideToBuy: Side;
-    let qty: number;
+    let targetShares: number;
     
     if (inv.upShares > 0 && inv.downShares === 0) {
       sideToBuy = "DOWN";
-      qty = inv.upShares;
+      // v5.2.2: Match up to 50, never more
+      targetShares = Math.min(inv.upShares, MAX_SHARES_PER_SIDE);
     } else if (inv.downShares > 0 && inv.upShares === 0) {
       sideToBuy = "UP";
-      qty = inv.downShares;
+      // v5.2.2: Match up to 50, never more
+      targetShares = Math.min(inv.downShares, MAX_SHARES_PER_SIDE);
     } else {
       return intents;
     }
+    
+    // v5.2.2: Calculate how many we still need (may already have some)
+    const currentShares = sideToBuy === "UP" ? inv.upShares : inv.downShares;
+    const qty = Math.max(0, targetShares - currentShares);
     
     const top = sideToBuy === "UP" ? snap.upTop : snap.downTop;
     const book = sideToBuy === "UP" ? snap.upBook : snap.downBook;
@@ -1011,24 +1028,32 @@ export class Polymarket15mArbBot {
    * 
    * Rule: IF delta > 0.8% AND secondsRemaining < 120
    *       → hedge immediately at best available price
+   * v5.2.2: Hard cap at 50 shares per side
    */
   private buildHighDeltaCriticalHedgeIntents(snap: MarketSnapshot): OrderIntent[] {
     const intents: OrderIntent[] = [];
     const inv = this.inventory;
+    const MAX_SHARES_PER_SIDE = 50; // v5.2.2: HARD CAP
     
     // Determine which side needs hedging
     let sideToBuy: Side;
-    let qty: number;
+    let targetShares: number;
     
     if (inv.upShares > 0 && inv.downShares === 0) {
       sideToBuy = "DOWN";
-      qty = inv.upShares;
+      // v5.2.2: Match up to 50, never more
+      targetShares = Math.min(inv.upShares, MAX_SHARES_PER_SIDE);
     } else if (inv.downShares > 0 && inv.upShares === 0) {
       sideToBuy = "UP";
-      qty = inv.downShares;
+      // v5.2.2: Match up to 50, never more
+      targetShares = Math.min(inv.downShares, MAX_SHARES_PER_SIDE);
     } else {
       return intents;
     }
+    
+    // v5.2.2: Calculate how many we still need
+    const currentShares = sideToBuy === "UP" ? inv.upShares : inv.downShares;
+    const qty = Math.max(0, targetShares - currentShares);
     
     const top = sideToBuy === "UP" ? snap.upTop : snap.downTop;
     const book = sideToBuy === "UP" ? snap.upBook : snap.downBook;
@@ -1066,24 +1091,32 @@ export class Polymarket15mArbBot {
   /**
    * v4.4: PANIC HEDGE - force hedge AT ANY PRICE when one-sided near expiry
    * This is the most critical function to prevent unredeemed positions
+   * v5.2.2: Hard cap at 50 shares per side
    */
   private buildPanicHedgeIntents(snap: MarketSnapshot): OrderIntent[] {
     const intents: OrderIntent[] = [];
     const inv = this.inventory;
+    const MAX_SHARES_PER_SIDE = 50; // v5.2.2: HARD CAP
     
     // Determine which side needs hedging
     let sideToBuy: Side;
-    let qty: number;
+    let targetShares: number;
     
     if (inv.upShares > 0 && inv.downShares === 0) {
       sideToBuy = "DOWN";
-      qty = inv.upShares;  // Match the existing UP shares
+      // v5.2.2: Match up to 50, never more
+      targetShares = Math.min(inv.upShares, MAX_SHARES_PER_SIDE);
     } else if (inv.downShares > 0 && inv.upShares === 0) {
       sideToBuy = "UP";
-      qty = inv.downShares;  // Match the existing DOWN shares
+      // v5.2.2: Match up to 50, never more
+      targetShares = Math.min(inv.downShares, MAX_SHARES_PER_SIDE);
     } else {
       return intents;  // Already hedged
     }
+    
+    // v5.2.2: Calculate how many we still need
+    const currentShares = sideToBuy === "UP" ? inv.upShares : inv.downShares;
+    const qty = Math.max(0, targetShares - currentShares);
     
     const top = sideToBuy === "UP" ? snap.upTop : snap.downTop;
     const book = sideToBuy === "UP" ? snap.upBook : snap.downBook;
@@ -1203,6 +1236,7 @@ export class Polymarket15mArbBot {
     }
 
     // In DEEP_DISLOCATION, only hedge when conditions normalize or timeout
+    const MAX_SHARES_PER_SIDE = 50; // v5.2.2: HARD CAP
     if (this.state === "DEEP_DISLOCATION") {
       const shouldHedgeInDeep = this.shouldHedgeInDeepRegime(snap);
       if (!shouldHedgeInDeep) {
@@ -1210,15 +1244,19 @@ export class Polymarket15mArbBot {
         return intents;
       }
       // If we should hedge, calculate pending based on current imbalance
+      // v5.2.2: Cap at 50 shares per side
       if (inv.upShares > 0 && inv.downShares === 0) {
-        this.pendingHedge.down = inv.upShares;
+        const targetDown = Math.min(inv.upShares, MAX_SHARES_PER_SIDE);
+        this.pendingHedge.down = targetDown;
       } else if (inv.downShares > 0 && inv.upShares === 0) {
-        this.pendingHedge.up = inv.downShares;
+        const targetUp = Math.min(inv.downShares, MAX_SHARES_PER_SIDE);
+        this.pendingHedge.up = targetUp;
       }
     }
 
-    const wantUp = Math.floor(this.pendingHedge.up);
-    const wantDown = Math.floor(this.pendingHedge.down);
+    // v5.2.2: Cap pending hedges to never exceed 50 per side
+    const wantUp = Math.min(Math.floor(this.pendingHedge.up), MAX_SHARES_PER_SIDE - inv.upShares);
+    const wantDown = Math.min(Math.floor(this.pendingHedge.down), MAX_SHARES_PER_SIDE - inv.downShares);
     if (wantUp <= 0 && wantDown <= 0) return intents;
 
     // v4.3: Determine hedge mode - RISK allows overpay
