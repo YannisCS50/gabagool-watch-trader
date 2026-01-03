@@ -59,11 +59,31 @@ interface EnrichedFill {
   fill_notional: number;
   intent: string;
   seconds_remaining: number;
+
+  // --- Convenience columns (what you want to see in the CSV) ---
+  // "spot_price" = best available spot proxy for the row
+  spot_price: number | null;
+  // Explicit asset columns (helps when combining BTC+ETH in one file)
+  btc_price: number | null;
+  eth_price: number | null;
+  // Common naming seen in trading exports
+  index_price: number | null; // alias of spot_price
+  mark_price: number | null;  // alias of mid_price
+
+  // Orderbook / best price context (aliases)
+  up_best_ask: number | null;
+  down_best_ask: number | null;
+  best_ask: number | null;
+  ask_price: number | null;
+  bid_price: number | null;
+  mid_price: number | null;
+
   // From fill (may be null)
   fill_spot_price: number | null;
   fill_strike_price: number | null;
   fill_delta: number | null;
   hedge_lag_ms: number | null;
+
   // From nearest snapshot
   snap_ts: number | null;
   snap_lag_ms: number | null;
@@ -79,6 +99,7 @@ interface EnrichedFill {
   snap_combined_mid: number | null;
   snap_cheapest_ask_plus_other_mid: number | null;
   snap_delta: number | null;
+
   // From nearest price tick
   tick_price: number | null;
   tick_lag_ms: number | null;
@@ -198,6 +219,15 @@ export function DownloadEnrichedFillsButton() {
         const snap = findNearestSnapshot(fill.market_id, fill.ts);
         const tick = findNearestTick(fill.asset, fill.ts);
 
+        const spotPrice = fill.spot_price ?? snap?.spot_price ?? tick?.price ?? null;
+        const upBestAsk = snap?.up_ask ?? null;
+        const downBestAsk = snap?.down_ask ?? null;
+        const askPrice = fill.side === 'UP' ? upBestAsk : fill.side === 'DOWN' ? downBestAsk : null;
+        const bidPrice =
+          fill.side === 'UP' ? snap?.up_bid ?? null : fill.side === 'DOWN' ? snap?.down_bid ?? null : null;
+        const midPrice =
+          fill.side === 'UP' ? snap?.up_mid ?? null : fill.side === 'DOWN' ? snap?.down_mid ?? null : null;
+
         enrichedFills.push({
           fill_ts: fill.ts,
           fill_iso: fill.iso,
@@ -209,6 +239,20 @@ export function DownloadEnrichedFillsButton() {
           fill_notional: fill.fill_notional,
           intent: fill.intent,
           seconds_remaining: fill.seconds_remaining,
+
+          spot_price: spotPrice,
+          btc_price     : fill.asset === 'BTC' ? tick?.price ?? null : null,
+          eth_price     : fill.asset === 'ETH' ? tick?.price ?? null : null,
+          index_price   : spotPrice,
+          mark_price    : midPrice,
+
+          up_best_ask   : upBestAsk,
+          down_best_ask : downBestAsk,
+          best_ask      : askPrice,
+          ask_price     : askPrice,
+          bid_price     : bidPrice,
+          mid_price     : midPrice,
+
           fill_spot_price: fill.spot_price,
           fill_strike_price: fill.strike_price,
           fill_delta: fill.delta,
@@ -241,17 +285,41 @@ export function DownloadEnrichedFillsButton() {
         const snap = findNearestSnapshot(marketId, tradeTs);
         const tick = findNearestTick(asset, tradeTs);
 
+        const tradeSide = trade.outcome as string;
+        const spotPrice = snap?.spot_price ?? tick?.price ?? null;
+        const upBestAsk = snap?.up_ask ?? null;
+        const downBestAsk = snap?.down_ask ?? null;
+        const askPrice = tradeSide === 'UP' ? upBestAsk : tradeSide === 'DOWN' ? downBestAsk : null;
+        const bidPrice =
+          tradeSide === 'UP' ? snap?.up_bid ?? null : tradeSide === 'DOWN' ? snap?.down_bid ?? null : null;
+        const midPrice =
+          tradeSide === 'UP' ? snap?.up_mid ?? null : tradeSide === 'DOWN' ? snap?.down_mid ?? null : null;
+
         enrichedFills.push({
           fill_ts: tradeTs,
           fill_iso: trade.created_at,
           market_id: marketId,
           asset: asset,
-          side: trade.outcome,
+          side: tradeSide,
           fill_qty: trade.shares,
           fill_price: trade.price,
           fill_notional: trade.total,
           intent: 'TRADE',
           seconds_remaining: 0,
+
+          spot_price: spotPrice,
+          btc_price     : asset === 'BTC' ? tick?.price ?? null : null,
+          eth_price     : asset === 'ETH' ? tick?.price ?? null : null,
+          index_price   : spotPrice,
+          mark_price    : midPrice,
+
+          up_best_ask   : upBestAsk,
+          down_best_ask : downBestAsk,
+          best_ask      : askPrice,
+          ask_price     : askPrice,
+          bid_price     : bidPrice,
+          mid_price     : midPrice,
+
           fill_spot_price: null,
           fill_strike_price: null,
           fill_delta: null,
@@ -289,6 +357,21 @@ export function DownloadEnrichedFillsButton() {
         'fill_price',
         'fill_notional',
         'seconds_remaining',
+
+        // Requested / convenience columns
+        'spot_price',
+        'btc_price',
+        'eth_price',
+        'index_price',
+        'mark_price',
+        'up_best_ask',
+        'down_best_ask',
+        'best_ask',
+        'ask_price',
+        'bid_price',
+        'mid_price',
+
+        // Raw sources (still useful to debug)
         'fill_spot_price',
         'fill_strike_price',
         'fill_delta',
@@ -321,6 +404,19 @@ export function DownloadEnrichedFillsButton() {
           row.fill_price,
           row.fill_notional,
           row.seconds_remaining,
+
+          row.spot_price ?? '',
+          row.btc_price ?? '',
+          row.eth_price ?? '',
+          row.index_price ?? '',
+          row.mark_price ?? '',
+          row.up_best_ask ?? '',
+          row.down_best_ask ?? '',
+          row.best_ask ?? '',
+          row.ask_price ?? '',
+          row.bid_price ?? '',
+          row.mid_price ?? '',
+
           row.fill_spot_price ?? '',
           row.fill_strike_price ?? '',
           row.fill_delta ?? '',
