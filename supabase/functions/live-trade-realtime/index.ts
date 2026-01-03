@@ -7,7 +7,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 // (Edge functions get blocked by Cloudflare, so we queue orders instead)
 // ============================================================================
 
-const BOT_VERSION = "3.7.0"; // v3.7: Race condition fix - hedge cooldown per market
+const BOT_VERSION = "3.8.0"; // v3.8: ALWAYS hedge - never leave position unhedged
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -863,34 +863,39 @@ Deno.serve(async (req) => {
             const openingSuccess = await executeTrade(market, ctx, cheaperSide, cheaperPrice, shares, 
               `Opening ${cheaperSide} @ ${(cheaperPrice*100).toFixed(0)}¢`);
             
-            // 2. ANTICIPATORY: Place hedge order at proper complementary price!
-            // BUG FIX: Calculate hedge price based on TARGET COMBINED, not current ask!
-            // If we opened DOWN at 33¢ and want 97¢ combined, hedge UP at 97-33=64¢
+            // 2. ALWAYS PLACE HEDGE - v3.8 FIX: Never leave position unhedged!
+            // The hedge MUST be placed immediately after opening to avoid 100% loss
+            // Use current market ask + cushion to ensure fill
             if (openingSuccess) {
-              const targetCombined = STRATEGY.hedge.triggerCombined; // 97¢
               const cushion = STRATEGY.hedge.cushionTicks * STRATEGY.hedge.tickSize;
               
-              // Calculate max hedge price: target_combined - opening_price
-              const maxHedgePrice = targetCombined - cheaperPrice;
-              
-              // Use current ask if cheaper, but cap at our max hedge price
-              // Add cushion for better fill but never exceed max
+              // v3.8: ALWAYS hedge at market price + cushion, accept up to 5% loss to avoid 100% loss
+              // Cap at 75¢ to avoid overpaying for hedge
+              const maxHedgePrice = 0.75;
               const hedgePrice = Math.min(otherPrice + cushion, maxHedgePrice);
               const hedgeShares = STRATEGY.hedge.shares; // Fixed 25 shares for hedge
               const projectedCombined = cheaperPrice + hedgePrice;
               
-              // Only place hedge if:
-              // 1. Hedge price is reasonable (at least 10¢)
-              // 2. Projected combined is profitable (<100¢)
-              // 3. Current ask is at or below our max hedge price (otherwise wait for better price)
-              if (hedgePrice >= 0.10 && projectedCombined < 1.0 && otherPrice <= maxHedgePrice) {
-                log(`🎯 ANTICIPATORY HEDGE: ${otherSide} @ ${(hedgePrice*100).toFixed(0)}¢ (opened ${cheaperSide} @ ${(cheaperPrice*100).toFixed(0)}¢, target combined: ${(projectedCombined*100).toFixed(0)}¢)`);
+              // v3.8: ALWAYS place hedge if price is at all reasonable
+              // We accept losses up to 5% (combined up to 1.05) to avoid 100% exposure
+              if (hedgePrice >= 0.10 && projectedCombined < 1.05) {
+                log(`🎯 ATOMIC HEDGE: ${otherSide} @ ${(hedgePrice*100).toFixed(0)}¢ (opened ${cheaperSide} @ ${(cheaperPrice*100).toFixed(0)}¢, combined: ${(projectedCombined*100).toFixed(0)}¢)`);
                 // Set cooldown BEFORE execute to prevent race conditions
                 ctx.lastHedgeQueuedAtMs = nowMs;
                 await executeTrade(market, ctx, otherSide, hedgePrice, hedgeShares,
-                  `Anticipatory Hedge ${otherSide} @ ${(hedgePrice*100).toFixed(0)}¢ (target ${(maxHedgePrice*100).toFixed(0)}¢)`);
+                  `ATOMIC Hedge ${otherSide} @ ${(hedgePrice*100).toFixed(0)}¢`);
+              } else if (hedgePrice >= 0.10 && projectedCombined < 1.10) {
+                // Accept up to 10% combined if close to expiry or price is volatile
+                log(`⚠️ EMERGENCY HEDGE: ${otherSide} @ ${(hedgePrice*100).toFixed(0)}¢ (combined ${(projectedCombined*100).toFixed(0)}¢ > 105¢ but MUST hedge)`);
+                ctx.lastHedgeQueuedAtMs = nowMs;
+                await executeTrade(market, ctx, otherSide, hedgePrice, hedgeShares,
+                  `EMERGENCY Hedge ${otherSide} @ ${(hedgePrice*100).toFixed(0)}¢ (must-hedge)`);
               } else {
-                log(`⏸️ ANTICIPATORY SKIP: ${otherSide} ask ${(otherPrice*100).toFixed(0)}¢ > max ${(maxHedgePrice*100).toFixed(0)}¢ (need ${(maxHedgePrice*100).toFixed(0)}¢ for 97¢ combined)`);
+                // Even here, we should still try - better to overpay than lose 100%
+                log(`🚨 FORCED HEDGE: ${otherSide} @ ${(hedgePrice*100).toFixed(0)}¢ despite high combined - MUST NOT leave unhedged!`);
+                ctx.lastHedgeQueuedAtMs = nowMs;
+                await executeTrade(market, ctx, otherSide, Math.min(otherPrice + 0.05, 0.80), hedgeShares,
+                  `FORCED Hedge ${otherSide} @ ${(Math.min(otherPrice + 0.05, 0.80)*100).toFixed(0)}¢ (must-not-leave-unhedged)`);
               }
             }
           }
@@ -991,19 +996,23 @@ Deno.serve(async (req) => {
         // Log hedge evaluation details with dynamic target
         log(`🔍 HEDGE EVAL: opened=${(existingAvg*100).toFixed(0)}¢ → target hedge ≤${(dynamicMaxHedge*100).toFixed(0)}¢ | ask=${(missingPrice*100).toFixed(0)}¢ → ${(marketablePrice*100).toFixed(0)}¢ | projected=${(projectedCombined*100).toFixed(0)}¢ | ${deltaInfo}`);
 
-        // CRITICAL SAFETY CHECK: Never hedge if combined > 99¢ (guaranteed loss)
-        if (projectedCombined >= 0.99) {
-          log(`🚫 HEDGE BLOCKED: Combined ${(projectedCombined*100).toFixed(0)}¢ >= 99¢ - would guarantee loss!`);
-          return;
+        // v3.8: FORCE HEDGE ALWAYS - don't block hedge even at loss
+        // A 5-10% loss is better than 100% loss from being unhedged
+        if (projectedCombined >= 1.10) {
+          log(`⚠️ HIGH COMBINED ${(projectedCombined*100).toFixed(0)}¢ >= 110¢ - but MUST hedge to avoid total loss!`);
+          // Still hedge but log the warning
         }
 
-        // FORCE HEDGE: If timeout exceeded AND combined still profitable, hedge
+        // v3.8: FORCE HEDGE on timeout - ALWAYS hedge, never stay exposed
         if (isForceHedge) {
           log(`⚠️ FORCE HEDGE: ${timeSinceOpeningSec.toFixed(0)}s since opening > ${STRATEGY.hedge.forceTimeoutSec}s timeout (using ${hedgeShares} shares)`);
           // Set cooldown BEFORE execute to prevent race conditions
           ctx.lastHedgeQueuedAtMs = nowMs;
-          await executeTrade(market, ctx, missingSide, marketablePrice, hedgeShares,
-            `FORCE Hedge ${missingSide} @ ${(marketablePrice*100).toFixed(0)}¢ (timeout ${timeSinceOpeningSec.toFixed(0)}s, target was ${(dynamicMaxHedge*100).toFixed(0)}¢)`);
+          
+          // Use market price + cushion, cap at 75¢ 
+          const forceHedgePrice = Math.min(missingPrice + cushion, 0.75);
+          await executeTrade(market, ctx, missingSide, forceHedgePrice, hedgeShares,
+            `FORCE Hedge ${missingSide} @ ${(forceHedgePrice*100).toFixed(0)}¢ (timeout ${timeSinceOpeningSec.toFixed(0)}s, target was ${(dynamicMaxHedge*100).toFixed(0)}¢)`);
           return;
         }
 

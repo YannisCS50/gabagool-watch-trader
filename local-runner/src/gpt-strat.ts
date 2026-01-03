@@ -1,7 +1,7 @@
 /**
  * polymarket_15m_bot.ts
  * --------------------------------------------------------------------------
- * Polymarket 15m Hedge/Arbitrage Bot v5.2.2 — Strict 50/50 Edition
+ * Polymarket 15m Hedge/Arbitrage Bot v5.2.4 — Always Hedge Edition
  *
  * v4.5 Changes (CRITICAL MODE-SWITCH FIX):
  * - HIGH_DELTA_CRITICAL MODE: IF delta > 0.8% AND secondsRemaining < 120:
@@ -1267,18 +1267,19 @@ export class Polymarket15mArbBot {
       this.currentRegime === "UNWIND"
     );
 
-    // v4.3: Different combined limits for normal vs risk hedge
+    // v5.2.4: ALWAYS HEDGE - never block hedges due to high combined
+    // A 5-10% loss is ALWAYS better than 100% exposure loss
     const maxCombined = isRiskHedge 
-      ? (1 + this.cfg.edge.allowOverpay) // 1.02 for risk
-      : 1.00; // 1.00 for normal
+      ? 1.10  // v5.2.4: Accept up to 10% overpay for risk hedge
+      : 1.05; // v5.2.4: Accept up to 5% overpay for normal hedge
 
     const combinedAsk = snap.upTop.ask + snap.downTop.ask;
     const canHedge = combinedAsk <= maxCombined;
 
-    if (!canHedge && !isRiskHedge) {
-      this.adverseStreak = Math.min(this.cfg.adapt.maxAdverseStreak, this.adverseStreak + 1);
-      this.log("HEDGE_SKIPPED_OVERPAY", { combinedAsk, maxCombined, hedgeMode: "NORMAL" });
-      return intents;
+    if (!canHedge) {
+      // v5.2.4: Log warning but DON'T skip - still try to hedge
+      this.log("HEDGE_EXPENSIVE_BUT_PROCEEDING", { combinedAsk, maxCombined, hedgeMode: isRiskHedge ? "RISK" : "NORMAL" });
+      // Don't return - continue to hedge anyway
     }
 
     // v4.3: Different cushion ticks for normal vs risk hedge
@@ -1301,23 +1302,24 @@ export class Polymarket15mArbBot {
       const base = addTicks(top.ask, tick, cushionTicks);
       const px = roundUpToTick(base, tick);
 
-      // v4.3: PAIRCOST PROTECTION - block hedges that would increase pairCost
-      // Only enforce in NORMAL mode, RISK mode can overpay to reduce risk
+      // v5.2.4: Removed PAIRCOST PROTECTION - always hedge to avoid total exposure
+      // A slightly higher pairCost is always better than being unhedged
       if (!isRiskHedge && Number.isFinite(currentPairCost)) {
         const otherSide: Side = side === "UP" ? "DOWN" : "UP";
         const avgOtherCost = avgCost(inv, otherSide);
         const projectedPairCost = px + avgOtherCost;
         
         if (projectedPairCost > currentPairCost) {
-          this.log("HEDGE_SKIP_PAIRCOST_INCREASE", {
+          // v5.2.4: Log but DON'T skip - proceed anyway
+          this.log("HEDGE_PAIRCOST_INCREASE_BUT_PROCEEDING", {
             side,
             hedgePrice: px,
             avgOtherCost,
             projectedPairCost,
             currentPairCost,
-            delta: projectedPairCost - currentPairCost
+            delta: projectedPairCost - currentPairCost,
+            reason: "Better to hedge with higher pairCost than stay exposed"
           });
-          return null;
         }
       }
 
