@@ -980,6 +980,37 @@ async function main(): Promise<void> {
   }, 1000);
 
   // ===================================================================
+  // SNAPSHOT LOGGING: Record market state every 2 seconds for telemetry
+  // ===================================================================
+  setInterval(() => {
+    const nowMs = Date.now();
+    
+    for (const ctx of markets.values()) {
+      const endMs = new Date(ctx.market.eventEndTime).getTime();
+      const secondsRemaining = Math.max(0, Math.floor((endMs - nowMs) / 1000));
+      
+      // Only snapshot active markets (not expired)
+      if (secondsRemaining <= 0) continue;
+      
+      recordSnapshot({
+        marketId: ctx.slug,
+        asset: ctx.market.asset as 'BTC' | 'ETH',
+        secondsRemaining,
+        spotPrice: ctx.spotPrice,
+        strikePrice: ctx.strikePrice,
+        upBid: ctx.book.up.bestBid,
+        upAsk: ctx.book.up.bestAsk,
+        downBid: ctx.book.down.bestBid,
+        downAsk: ctx.book.down.bestAsk,
+        upShares: ctx.position.upShares,
+        downShares: ctx.position.downShares,
+        upCost: ctx.position.upCost,
+        downCost: ctx.position.downCost,
+      });
+    }
+  }, SNAPSHOT_INTERVAL_MS);
+
+  // ===================================================================
   // v5.2.0: ONE-SIDED POSITION MONITOR - AGGRESSIVE HEDGE ENFORCEMENT
   // Runs every 3 seconds to find and fix one-sided positions
   // ===================================================================
