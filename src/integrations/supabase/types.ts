@@ -182,6 +182,72 @@ export type Database = {
         }
         Relationships: []
       }
+      hedge_feasibility: {
+        Row: {
+          actual_hedge_at: string | null
+          actual_hedge_price: number | null
+          asset: string
+          created_at: string
+          event_end_time: string | null
+          hedge_side: string
+          hedge_was_possible: boolean
+          hedge_was_profitable: boolean
+          hedge_window_seconds: number | null
+          id: string
+          market_id: string
+          max_hedge_price: number
+          min_hedge_ask_at: string | null
+          min_hedge_ask_seen: number | null
+          opening_at: string
+          opening_price: number
+          opening_shares: number
+          opening_side: string
+          was_hedged: boolean
+        }
+        Insert: {
+          actual_hedge_at?: string | null
+          actual_hedge_price?: number | null
+          asset: string
+          created_at?: string
+          event_end_time?: string | null
+          hedge_side: string
+          hedge_was_possible?: boolean
+          hedge_was_profitable?: boolean
+          hedge_window_seconds?: number | null
+          id?: string
+          market_id: string
+          max_hedge_price: number
+          min_hedge_ask_at?: string | null
+          min_hedge_ask_seen?: number | null
+          opening_at: string
+          opening_price: number
+          opening_shares: number
+          opening_side: string
+          was_hedged?: boolean
+        }
+        Update: {
+          actual_hedge_at?: string | null
+          actual_hedge_price?: number | null
+          asset?: string
+          created_at?: string
+          event_end_time?: string | null
+          hedge_side?: string
+          hedge_was_possible?: boolean
+          hedge_was_profitable?: boolean
+          hedge_window_seconds?: number | null
+          id?: string
+          market_id?: string
+          max_hedge_price?: number
+          min_hedge_ask_at?: string | null
+          min_hedge_ask_seen?: number | null
+          opening_at?: string
+          opening_price?: number
+          opening_shares?: number
+          opening_side?: string
+          was_hedged?: boolean
+        }
+        Relationships: []
+      }
       live_bot_settings: {
         Row: {
           id: string

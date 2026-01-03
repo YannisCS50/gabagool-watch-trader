@@ -7,7 +7,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 // (Edge functions get blocked by Cloudflare, so we queue orders instead)
 // ============================================================================
 
-const BOT_VERSION = "3.9.0"; // v3.9: FIX SPREAD - hedge at market price, not target price
+const BOT_VERSION = "3.10.0"; // v3.10: Track hedge feasibility for each bet
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -40,6 +40,13 @@ interface MarketContext {
   strikePrice?: number | null;  // Cached strike price for endgame logic
   evidentSide?: Outcome | null; // Which side is likely to win
   lastHedgeQueuedAtMs?: number; // Cooldown to prevent duplicate hedges
+  // Hedge feasibility tracking
+  feasibilityTracked?: boolean;    // Whether we've started tracking this bet
+  openingPrice?: number | null;    // Price of the opening trade
+  openingSide?: Outcome | null;    // Side of the opening trade
+  openingAtMs?: number | null;     // Timestamp of opening trade
+  minHedgeAskSeen?: number | null; // Lowest hedge ask we've seen
+  minHedgeAskAtMs?: number | null; // When we saw the lowest ask
 }
 
 interface MarketToken {
@@ -863,6 +870,38 @@ Deno.serve(async (req) => {
             const openingSuccess = await executeTrade(market, ctx, cheaperSide, cheaperPrice, shares, 
               `Opening ${cheaperSide} @ ${(cheaperPrice*100).toFixed(0)}¢`);
             
+            // v3.10: Start feasibility tracking for this bet
+            if (openingSuccess) {
+              ctx.feasibilityTracked = true;
+              ctx.openingPrice = cheaperPrice;
+              ctx.openingSide = cheaperSide;
+              ctx.openingAtMs = nowMs;
+              ctx.minHedgeAskSeen = otherPrice;  // First hedge ask we see
+              ctx.minHedgeAskAtMs = nowMs;
+              
+              // Record opening in hedge_feasibility table
+              const maxHedgeForBreakeven = 1.00 - cheaperPrice; // Max hedge price to break even
+              const { error: feasError } = await supabase.from('hedge_feasibility').upsert({
+                market_id: slug,
+                asset: market.asset,
+                opening_side: cheaperSide,
+                opening_price: cheaperPrice,
+                opening_shares: shares,
+                opening_at: new Date(nowMs).toISOString(),
+                hedge_side: otherSide,
+                max_hedge_price: maxHedgeForBreakeven,
+                min_hedge_ask_seen: otherPrice,
+                min_hedge_ask_at: new Date(nowMs).toISOString(),
+                hedge_was_possible: otherPrice <= maxHedgeForBreakeven,
+                hedge_was_profitable: otherPrice <= (0.97 - cheaperPrice), // 3% edge
+                was_hedged: false,
+                event_end_time: market.eventEndTime,
+              }, { onConflict: 'market_id' });
+              
+              if (feasError) log(`⚠️ Feasibility track error: ${feasError.message}`);
+              else log(`📊 FEASIBILITY: Started tracking ${slug.slice(-15)}, max hedge ≤${(maxHedgeForBreakeven*100).toFixed(0)}¢, current ask ${(otherPrice*100).toFixed(0)}¢`);
+            }
+            
             // 2. ALWAYS PLACE HEDGE - v3.8 FIX: Never leave position unhedged!
             // The hedge MUST be placed immediately after opening to avoid 100% loss
             // Use current market ask + cushion to ensure fill
@@ -882,20 +921,46 @@ Deno.serve(async (req) => {
                 log(`🎯 ATOMIC HEDGE: ${otherSide} @ ${(hedgePrice*100).toFixed(0)}¢ (opened ${cheaperSide} @ ${(cheaperPrice*100).toFixed(0)}¢, combined: ${(projectedCombined*100).toFixed(0)}¢)`);
                 // Set cooldown BEFORE execute to prevent race conditions
                 ctx.lastHedgeQueuedAtMs = nowMs;
-                await executeTrade(market, ctx, otherSide, hedgePrice, hedgeShares,
+                const hedgeSuccess = await executeTrade(market, ctx, otherSide, hedgePrice, hedgeShares,
                   `ATOMIC Hedge ${otherSide} @ ${(hedgePrice*100).toFixed(0)}¢`);
+                
+                // v3.10: Update feasibility with hedge info
+                if (hedgeSuccess) {
+                  await supabase.from('hedge_feasibility').update({
+                    was_hedged: true,
+                    actual_hedge_price: hedgePrice,
+                    actual_hedge_at: new Date(nowMs).toISOString(),
+                  }).eq('market_id', slug);
+                }
               } else if (hedgePrice >= 0.10 && projectedCombined < 1.10) {
                 // Accept up to 10% combined if close to expiry or price is volatile
                 log(`⚠️ EMERGENCY HEDGE: ${otherSide} @ ${(hedgePrice*100).toFixed(0)}¢ (combined ${(projectedCombined*100).toFixed(0)}¢ > 105¢ but MUST hedge)`);
                 ctx.lastHedgeQueuedAtMs = nowMs;
-                await executeTrade(market, ctx, otherSide, hedgePrice, hedgeShares,
+                const hedgeSuccess = await executeTrade(market, ctx, otherSide, hedgePrice, hedgeShares,
                   `EMERGENCY Hedge ${otherSide} @ ${(hedgePrice*100).toFixed(0)}¢ (must-hedge)`);
+                
+                if (hedgeSuccess) {
+                  await supabase.from('hedge_feasibility').update({
+                    was_hedged: true,
+                    actual_hedge_price: hedgePrice,
+                    actual_hedge_at: new Date(nowMs).toISOString(),
+                  }).eq('market_id', slug);
+                }
               } else {
                 // Even here, we should still try - better to overpay than lose 100%
-                log(`🚨 FORCED HEDGE: ${otherSide} @ ${(hedgePrice*100).toFixed(0)}¢ despite high combined - MUST NOT leave unhedged!`);
+                const forcedPrice = Math.min(otherPrice + 0.05, 0.80);
+                log(`🚨 FORCED HEDGE: ${otherSide} @ ${(forcedPrice*100).toFixed(0)}¢ despite high combined - MUST NOT leave unhedged!`);
                 ctx.lastHedgeQueuedAtMs = nowMs;
-                await executeTrade(market, ctx, otherSide, Math.min(otherPrice + 0.05, 0.80), hedgeShares,
-                  `FORCED Hedge ${otherSide} @ ${(Math.min(otherPrice + 0.05, 0.80)*100).toFixed(0)}¢ (must-not-leave-unhedged)`);
+                const hedgeSuccess = await executeTrade(market, ctx, otherSide, forcedPrice, hedgeShares,
+                  `FORCED Hedge ${otherSide} @ ${(forcedPrice*100).toFixed(0)}¢ (must-not-leave-unhedged)`);
+                
+                if (hedgeSuccess) {
+                  await supabase.from('hedge_feasibility').update({
+                    was_hedged: true,
+                    actual_hedge_price: forcedPrice,
+                    actual_hedge_at: new Date(nowMs).toISOString(),
+                  }).eq('market_id', slug);
+                }
               }
             }
           }
@@ -940,6 +1005,26 @@ Deno.serve(async (req) => {
         const existingShares = missingSide === "UP" ? pos.downShares : pos.upShares;
         const existingInvested = missingSide === "UP" ? pos.downInvested : pos.upInvested;
         const existingAvg = existingShares > 0 ? existingInvested / existingShares : 0;
+        
+        // v3.10: Update min hedge ask seen for feasibility tracking
+        if (ctx.feasibilityTracked && ctx.openingPrice) {
+          const maxHedgeForBreakeven = 1.00 - ctx.openingPrice;
+          if (!ctx.minHedgeAskSeen || missingPrice < ctx.minHedgeAskSeen) {
+            ctx.minHedgeAskSeen = missingPrice;
+            ctx.minHedgeAskAtMs = nowMs;
+            
+            // Update feasibility record with new minimum
+            const wasPossible = missingPrice <= maxHedgeForBreakeven;
+            const wasProfitable = missingPrice <= (0.97 - ctx.openingPrice);
+            
+            await supabase.from('hedge_feasibility').update({
+              min_hedge_ask_seen: missingPrice,
+              min_hedge_ask_at: new Date(nowMs).toISOString(),
+              hedge_was_possible: wasPossible || (ctx.minHedgeAskSeen <= maxHedgeForBreakeven), // Keep true if was ever possible
+              hedge_was_profitable: wasProfitable || (ctx.minHedgeAskSeen <= (0.97 - ctx.openingPrice)),
+            }).eq('market_id', slug);
+          }
+        }
         
         // Calculate time since opening trade for force-hedge timeout
         const timeSinceOpeningMs = ctx.lastTradeAtMs > 0 ? nowMs - ctx.lastTradeAtMs : 0;
@@ -1012,8 +1097,17 @@ Deno.serve(async (req) => {
           
           // Use market price + cushion, cap at 75¢ 
           const forceHedgePrice = Math.min(marketablePrice, 0.75);
-          await executeTrade(market, ctx, missingSide, forceHedgePrice, hedgeShares,
+          const hedgeSuccess = await executeTrade(market, ctx, missingSide, forceHedgePrice, hedgeShares,
             `FORCE Hedge ${missingSide} @ ${(forceHedgePrice*100).toFixed(0)}¢ (timeout ${timeSinceOpeningSec.toFixed(0)}s)`);
+          
+          // v3.10: Update feasibility record
+          if (hedgeSuccess && ctx.feasibilityTracked) {
+            await supabase.from('hedge_feasibility').update({
+              was_hedged: true,
+              actual_hedge_price: forceHedgePrice,
+              actual_hedge_at: new Date(nowMs).toISOString(),
+            }).eq('market_id', slug);
+          }
           return;
         }
 
@@ -1027,15 +1121,33 @@ Deno.serve(async (req) => {
           const hedgePrice = Math.min(marketablePrice, 0.75); // Cap at 75¢
           log(`✅ HEDGE NOW: ${missingSide} @ ${(hedgePrice*100).toFixed(0)}¢ | combined ${(projectedCombined*100).toFixed(0)}¢ | ${edgePct}% edge`);
           ctx.lastHedgeQueuedAtMs = nowMs;
-          await executeTrade(market, ctx, missingSide, hedgePrice, hedgeShares,
+          const hedgeSuccess = await executeTrade(market, ctx, missingSide, hedgePrice, hedgeShares,
             `Hedge ${missingSide} @ ${(hedgePrice*100).toFixed(0)}¢ (${edgePct}% edge)`);
+          
+          // v3.10: Update feasibility record with actual hedge
+          if (hedgeSuccess && ctx.feasibilityTracked) {
+            await supabase.from('hedge_feasibility').update({
+              was_hedged: true,
+              actual_hedge_price: hedgePrice,
+              actual_hedge_at: new Date(nowMs).toISOString(),
+            }).eq('market_id', slug);
+          }
         } else {
           // Combined is too high (> 105¢) - log but STILL hedge to avoid 100% loss
           log(`⚠️ HEDGE DESPITE LOSS: combined ${(projectedCombined*100).toFixed(0)}¢ > 105¢ but MUST hedge!`);
           const hedgePrice = Math.min(marketablePrice, 0.80); // Cap at 80¢ in emergency
           ctx.lastHedgeQueuedAtMs = nowMs;
-          await executeTrade(market, ctx, missingSide, hedgePrice, hedgeShares,
+          const hedgeSuccess = await executeTrade(market, ctx, missingSide, hedgePrice, hedgeShares,
             `EMERGENCY Hedge ${missingSide} @ ${(hedgePrice*100).toFixed(0)}¢ (accepting loss to avoid exposure)`);
+          
+          // v3.10: Update feasibility record with actual hedge
+          if (hedgeSuccess && ctx.feasibilityTracked) {
+            await supabase.from('hedge_feasibility').update({
+              was_hedged: true,
+              actual_hedge_price: hedgePrice,
+              actual_hedge_at: new Date(nowMs).toISOString(),
+            }).eq('market_id', slug);
+          }
         }
         return;
       }
