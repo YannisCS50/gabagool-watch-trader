@@ -12,7 +12,7 @@ export function useCurrentWallet() {
           .from('bot_config')
           .select('polymarket_address')
           .limit(1)
-          .single();
+          .maybeSingle();
 
         if (error) throw error;
         setWalletAddress(data?.polymarket_address || null);
