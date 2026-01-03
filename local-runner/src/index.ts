@@ -666,16 +666,6 @@ function connectToClob(): void {
 async function processMarketEvent(data: any): Promise<void> {
   const eventType = data.event_type;
 
-  const parseTopPrice = (levels: any[]): number | null => {
-    if (!Array.isArray(levels) || levels.length === 0) return null;
-    const first = levels[0];
-    const raw = Array.isArray(first)
-      ? first[0]
-      : (first?.price ?? first?.p ?? first?.[0]);
-    const num = typeof raw === 'number' ? raw : typeof raw === 'string' ? parseFloat(raw) : NaN;
-    return Number.isFinite(num) ? num : null;
-  };
-
   if (eventType === 'book') {
     const assetId = data.asset_id;
     const marketInfo = tokenToMarket.get(assetId);
@@ -683,11 +673,11 @@ async function processMarketEvent(data: any): Promise<void> {
     if (marketInfo) {
       const ctx = markets.get(marketInfo.slug);
       if (ctx) {
-        const asksRaw = (data.asks || []) as any[];
-        const bidsRaw = (data.bids || []) as any[];
+        const asks = (data.asks || []) as [string, string][];
+        const bids = (data.bids || []) as [string, string][];
 
-        const topAsk = parseTopPrice(asksRaw);
-        const topBid = parseTopPrice(bidsRaw);
+        const topAsk = asks.length > 0 ? parseFloat(asks[0][0]) : null;
+        const topBid = bids.length > 0 ? parseFloat(bids[0][0]) : null;
 
         if (marketInfo.side === 'up') {
           ctx.book.up.ask = topAsk;
@@ -709,12 +699,12 @@ async function processMarketEvent(data: any): Promise<void> {
       if (marketInfo) {
         const ctx = markets.get(marketInfo.slug);
         if (ctx) {
-          const num = typeof change.price === 'number' ? change.price : parseFloat(change.price);
-          if (Number.isFinite(num)) {
+          const price = parseFloat(change.price);
+          if (!isNaN(price)) {
             if (marketInfo.side === 'up') {
-              if (ctx.book.up.ask === null) ctx.book.up.ask = num;
+              if (ctx.book.up.ask === null) ctx.book.up.ask = price;
             } else {
-              if (ctx.book.down.ask === null) ctx.book.down.ask = num;
+              if (ctx.book.down.ask === null) ctx.book.down.ask = price;
             }
             ctx.book.updatedAtMs = Date.now();
             await evaluateMarket(marketInfo.slug);
@@ -724,6 +714,7 @@ async function processMarketEvent(data: any): Promise<void> {
     }
   }
 }
+
 
 async function doHeartbeat(): Promise<void> {
   try {
