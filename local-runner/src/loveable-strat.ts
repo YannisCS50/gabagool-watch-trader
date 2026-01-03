@@ -105,6 +105,16 @@ export const STRATEGY = {
     maxPrice: 0.52,           // Markt start altijd rond 48-52¢
     skipEdgeCheck: true,      // Bij opening: trade direct, skip edge buffer
     maxDelayMs: 5000,         // Max 5s wachten na market open
+    shares: 50,               // Default opening shares
+  },
+  
+  // Hedge parameters
+  hedge: {
+    maxPrice: 0.55,           // Max hedge price
+    forceTimeoutSec: 20,      // Force hedge after X seconds
+    cooldownMs: 5000,         // Cooldown between hedge attempts
+    cushionTicks: 2,          // Extra ticks for guaranteed fill
+    shares: 50,               // Default hedge shares
   },
   
   // Entry conditions
