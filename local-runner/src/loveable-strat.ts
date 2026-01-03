@@ -4,8 +4,8 @@ import type { OrderbookDepth } from './polymarket.js';
 // ============================================================
 // STRATEGY VERSION - Log this on startup to verify deployment
 // ============================================================
-export const STRATEGY_VERSION = '2.1.0-strict-balance';
-export const STRATEGY_NAME = 'Polymarket 15m Hedge & Arbitrage (PDF Spec)';
+export const STRATEGY_VERSION = '5.3.0-overpay';
+export const STRATEGY_NAME = 'Polymarket 15m Hedge & Arbitrage (v5.3.0 - Always Hedge)';
 
 // ============================================================
 // TYPES & STATE MACHINE (PDF Section 3 & 12.1)
@@ -67,6 +67,7 @@ export const STRATEGY = {
   edge: {
     buffer: 0.008,         // 0.8¢ edge buffer (was 1.2¢, range 0.6–2.0¢)
     minExecutableEdge: 0.006, // Minimum edge after fees (was 0.008)
+    allowOverpay: 0.02,    // v5.x: Allow hedge up to 1.02 combined (2% overpay)
   },
   
   // Tick & Rounding (PDF Section 5)
@@ -709,76 +710,50 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
       const minSharesForOrder = 5;
       const hedgeShares = Math.max(existingShares, minSharesForOrder);
       
-      // ========== PROBABILITY BIAS CHECK ==========
-      // Als prijs ver van strike is, kunnen we hedge skippen
-      if (currentPrice !== undefined && strikePrice !== undefined) {
-        const biasCheck = shouldSkipLosingHedge(
-          { currentPrice, strikePrice, remainingSeconds },
-          missingSide
-        );
-        
-        if (biasCheck.skip) {
-          console.log(`[Strategy] ${biasCheck.reason} - holding ${inv.upShares > 0 ? 'UP' : 'DOWN'} position only`);
-          return null; // Skip hedge, we're betting the winning side holds
-        }
-      }
+      // v5.x: ALWAYS HEDGE - no probability bias skip
+      // Rationale: unredeemed positions (100% loss) are worse than small overpay losses
       
       // Check if hedge would lock in profit
       const projectedCombined = existingAvg + missingAsk;
       
-      // ========== CONSERVATIVE EXPENSIVE SIDE BUYING ==========
-      // If the missing (hedge) side is EXPENSIVE (>50¢), only buy if:
-      // 1. Combined still locks profit (safe hedge)
-      // 2. OR price is ≥85¢ (market is 85%+ confident = high certainty)
-      // 3. OR time is running out (<2 min)
-      // Otherwise we take too much risk on the expensive side
+      // ========== v5.x OVERPAY STRATEGY ==========
+      // Allow hedging even if combined > 1.00, up to allowOverpay limit
+      // Rationale: 2% loss is MUCH better than 100% loss if we stay one-sided
       
+      const maxAllowedCombined = 1 + STRATEGY.edge.allowOverpay; // 1.02
       const isExpensiveSide = missingAsk > 0.50;
-      const isHighCertainty = missingAsk >= 0.85; // Market is 85%+ confident
       const isTimeCritical = remainingSeconds < 120; // Less than 2 minutes
-      const locksProfit = projectedCombined < 1 - STRATEGY.edge.minExecutableEdge;
       
-      console.log(`[Strategy] Hedge eval: ${missingSide} @ ${(missingAsk * 100).toFixed(0)}¢, shares ${existingShares}→${hedgeShares}, combined=${(projectedCombined * 100).toFixed(0)}¢`);
+      console.log(`[Strategy] Hedge eval: ${missingSide} @ ${(missingAsk * 100).toFixed(0)}¢, shares ${existingShares}→${hedgeShares}, combined=${(projectedCombined * 100).toFixed(0)}¢, max=${(maxAllowedCombined * 100).toFixed(0)}¢`);
       
-      if (isExpensiveSide) {
-        // Expensive side: only proceed if one of the safe conditions is met
-        if (locksProfit) {
-          // Safe: we still lock in profit even with expensive hedge
-          return buildHedge(missingSide, missingAsk, tick, hedgeShares);
-        }
-        
-        if (isHighCertainty) {
-          // High certainty: market is 85%+ confident, likely to win
-          console.log(`[Strategy] Buying expensive ${missingSide} @ ${(missingAsk * 100).toFixed(0)}¢ (high certainty ≥85%)`);
-          return buildHedge(missingSide, missingAsk, tick, hedgeShares);
-        }
-        
-        if (isTimeCritical && projectedCombined < 1.02) {
-          // Time critical: must hedge, but only if not a huge loss
-          console.log(`[Strategy] Time-critical hedge ${missingSide} @ ${(missingAsk * 100).toFixed(0)}¢ (${remainingSeconds}s left)`);
-          return buildHedge(missingSide, missingAsk, tick, hedgeShares);
-        }
-        
-        // Otherwise skip: too risky to buy expensive side without certainty
-        console.log(`[Strategy] SKIP expensive ${missingSide} @ ${(missingAsk * 100).toFixed(0)}¢ - waiting for certainty or cheaper price`);
-        return null;
-      }
-      
-      // Cheap side (<50¢): always hedge if it's profitable or break-even
-      // FIX: Include exact break-even (≤1.0) instead of just <1.0
-      if (projectedCombined <= 1.0) {
+      // ALWAYS hedge if combined is within overpay limit
+      if (projectedCombined <= maxAllowedCombined) {
         return buildHedge(missingSide, missingAsk, tick, hedgeShares);
       }
       
-      // FIX: Fallback hedge when waiting too long (prevents stuck ONE_SIDED)
-      // If >30 seconds stuck one-sided and combined < 1.05, just hedge
+      // Time critical: hedge even with higher overpay (up to 1.05)
+      if (isTimeCritical && projectedCombined < 1.05) {
+        console.log(`[Strategy] Time-critical hedge ${missingSide} @ ${(missingAsk * 100).toFixed(0)}¢ (${remainingSeconds}s left, overpay allowed)`);
+        return buildHedge(missingSide, missingAsk, tick, hedgeShares);
+      }
+      
+      // High certainty side (≥85¢): market is confident, hedge anyway
+      const isHighCertainty = missingAsk >= 0.85;
+      if (isHighCertainty) {
+        console.log(`[Strategy] High certainty hedge ${missingSide} @ ${(missingAsk * 100).toFixed(0)}¢ (market ≥85% confident)`);
+        return buildHedge(missingSide, missingAsk, tick, hedgeShares);
+      }
+      
+      // Fallback: if stuck one-sided >20s, hedge up to 1.05
       const firstFillMs = inv.firstFillTs ?? nowMs;
       const timeSinceFirstFill = (nowMs - firstFillMs) / 1000;
-      if (timeSinceFirstFill > 30 && projectedCombined < 1.05) {
+      if (timeSinceFirstFill > 20 && projectedCombined < 1.05) {
         console.log(`[Strategy] FALLBACK hedge ${missingSide} @ ${(missingAsk * 100).toFixed(0)}¢ - stuck one-sided for ${timeSinceFirstFill.toFixed(0)}s`);
         return buildHedge(missingSide, missingAsk, tick, hedgeShares);
       }
       
+      // Skip hedge only if combined > 1.05 AND not time critical
+      console.log(`[Strategy] SKIP hedge ${missingSide} @ ${(missingAsk * 100).toFixed(0)}¢ - combined ${(projectedCombined * 100).toFixed(0)}¢ > ${(maxAllowedCombined * 100).toFixed(0)}¢ max`);
       return null;
     }
     
