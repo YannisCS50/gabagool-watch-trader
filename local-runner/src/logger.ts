@@ -45,6 +45,7 @@ export function appendJsonl(logType: 'snapshot' | 'fill' | 'settlement' | 'settl
 }
 
 // ---------- Snapshot Log Schema ----------
+// v6.0.0: Extended with additional price context for enrichment
 
 export interface SnapshotLog {
   ts: number;                    // epoch ms
@@ -52,9 +53,17 @@ export interface SnapshotLog {
   marketId: string;
   asset: 'BTC' | 'ETH';
   secondsRemaining: number;
-  spotPrice: number | null;
-  strikePrice: number | null;
+  
+  // Price context (v6.0.0 - ensure these are ALWAYS populated)
+  spotPrice: number | null;      // Current spot price from Chainlink
+  strikePrice: number | null;    // Strike price for this market
   delta: number | null;          // abs(spot - strike) / strike
+  
+  // External prices (for enrichment)
+  btcPrice: number | null;       // v6.0.0: BTC Chainlink price
+  ethPrice: number | null;       // v6.0.0: ETH Chainlink price
+  
+  // Order book
   upBid: number | null;
   upAsk: number | null;
   upMid: number | null;
@@ -66,6 +75,12 @@ export interface SnapshotLog {
   combinedAsk: number | null;    // upAsk + downAsk
   combinedMid: number | null;    // upMid + downMid
   cheapestAskPlusOtherMid: number | null;
+  
+  // Best asks for enrichment (v6.0.0)
+  upBestAsk: number | null;      // Alias for upAsk (for enrichment clarity)
+  downBestAsk: number | null;    // Alias for downAsk (for enrichment clarity)
+  
+  // Bot state
   botState: string;              // FLAT | ONE_SIDED | HEDGED | etc
   upShares: number;
   downShares: number;
@@ -83,6 +98,7 @@ export function logSnapshot(data: SnapshotLog): void {
 
 // ---------- Fill Log Schema ----------
 
+// v6.0.0: Extended FillLog with additional context for enrichment
 export interface FillLog {
   ts: number;
   iso: string;
@@ -96,9 +112,22 @@ export interface FillLog {
   fillNotional: number;
   intent: 'ENTRY' | 'ACCUMULATE' | 'HEDGE' | 'REBAL' | 'UNWIND';
   secondsRemaining: number;
+  
+  // Price context (v6.0.0 - MUST be populated for enrichment)
   spotPrice: number | null;
   strikePrice: number | null;
   delta: number | null;
+  
+  // External prices (v6.0.0)
+  btcPrice: number | null;
+  ethPrice: number | null;
+  
+  // Order book context at fill time (v6.0.0)
+  upBestAsk: number | null;
+  downBestAsk: number | null;
+  upBestBid: number | null;
+  downBestBid: number | null;
+  
   hedgeLagMs: number | null;     // Time from opening fill to hedge fill
 }
 
