@@ -1073,12 +1073,12 @@ export function DownloadAuditCodeButton() {
         AUDIT_SECTIONS.cancelReplaceLogic,
       ].join('\n\n');
 
-      // Create and download file
-      const blob = new Blob([fullDocument], { type: 'text/typescript;charset=utf-8;' });
+      // Create and download file as .txt for mobile compatibility
+      const blob = new Blob([fullDocument], { type: 'text/plain;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `execution_audit_v6.0.0_${new Date().toISOString().slice(0, 10)}.ts`;
+      link.download = `execution_audit_v6.0.0_${new Date().toISOString().slice(0, 10)}.txt`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
