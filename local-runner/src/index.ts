@@ -262,13 +262,32 @@ async function executeTrade(
         const endTime = new Date(ctx.market.eventEndTime).getTime();
         const remainingSeconds = Math.floor((endTime - nowMs) / 1000);
         
+        // v6.0.1: D) Hedge sizing on unpaired shares
+        const unpairedShares = Math.abs(ctx.position.upShares - ctx.position.downShares);
+        const hedgeShares = Math.max(unpairedShares, shares);  // At least the intent shares
+        
+        // v6.0.1: Calculate avgOtherSideCost for pair-cost gate
+        const otherSide = outcome === 'UP' ? 'DOWN' : 'UP';
+        const otherSideShares = outcome === 'UP' ? ctx.position.downShares : ctx.position.upShares;
+        const otherSideCost = outcome === 'UP' ? ctx.position.downInvested : ctx.position.upInvested;
+        const avgOtherSideCost = otherSideShares > 0 ? otherSideCost / otherSideShares : undefined;
+        
+        // Calculate current pair cost
+        const upAvg = ctx.position.upShares > 0 ? ctx.position.upInvested / ctx.position.upShares : 0;
+        const downAvg = ctx.position.downShares > 0 ? ctx.position.downInvested / ctx.position.downShares : 0;
+        const currentPairCost = upAvg + downAvg;
+        
+        console.log(`🔄 [v6.0.1] Hedge sizing: unpairedShares=${unpairedShares}, hedgeShares=${hedgeShares}`);
+        
         const escalationResult = await executeHedgeWithEscalation({
           marketId: ctx.slug,
           tokenId,
           side: outcome,
-          targetShares: shares,
+          targetShares: hedgeShares,
           initialPrice: price,
           secondsRemaining: remainingSeconds,
+          avgOtherSideCost,
+          currentPairCost: currentPairCost > 0 ? currentPairCost : undefined,
         });
         
         if (escalationResult.ok) {

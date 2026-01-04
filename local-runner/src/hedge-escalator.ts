@@ -29,6 +29,8 @@ export const HEDGE_ESCALATOR_CONFIG = {
   minSharesForRetry: 5,             // Don't retry below 5 shares
   sizeReductionFactor: 0.8,         // Reduce size by 20% per retry
   logEvents: true,
+  // v6.0.1: Pair-cost gate
+  allowOverpay: 0.01,               // Max 1¢ overpay allowed
 };
 
 // ============================================================
@@ -40,7 +42,7 @@ export interface HedgeAttemptResult {
   orderId?: string;
   filledShares?: number;
   avgPrice?: number;
-  errorCode?: 'NO_LIQUIDITY' | 'INSUFFICIENT_FUNDS' | 'RATE_LIMITED' | 'API_ERROR' | 'MAX_RETRIES' | 'ABORTED';
+  errorCode?: 'NO_LIQUIDITY' | 'INSUFFICIENT_FUNDS' | 'RATE_LIMITED' | 'API_ERROR' | 'MAX_RETRIES' | 'ABORTED' | 'PAIR_COST_WORSENING';
   error?: string;
   attempts: number;
 }
@@ -52,6 +54,9 @@ export interface HedgeEscalatorInput {
   targetShares: number;
   initialPrice: number;
   secondsRemaining: number;
+  // v6.0.1: For pair-cost gate
+  avgOtherSideCost?: number;  // Average cost of the other side
+  currentPairCost?: number;   // Current total pair cost
 }
 
 export interface HedgeEvent {
@@ -90,7 +95,7 @@ function logHedgeEvent(event: HedgeEvent): void {
 }
 
 export async function executeHedgeWithEscalation(input: HedgeEscalatorInput): Promise<HedgeAttemptResult> {
-  const { marketId, tokenId, side, targetShares, initialPrice, secondsRemaining } = input;
+  const { marketId, tokenId, side, targetShares, initialPrice, secondsRemaining, avgOtherSideCost, currentPairCost } = input;
   
   // Determine mode
   const isPanicMode = secondsRemaining < HEDGE_ESCALATOR_CONFIG.panicModeThresholdSec;
@@ -103,7 +108,42 @@ export async function executeHedgeWithEscalation(input: HedgeEscalatorInput): Pr
   let currentShares = targetShares;
   let currentPrice = Math.min(initialPrice, maxPrice);
   
+  // v6.0.1: Extra logging
+  console.log(`🔄 [HEDGE_ESCALATOR] Starting for ${side} on ${marketId}`);
+  console.log(`   targetShares=${targetShares}, initialPrice=${(initialPrice * 100).toFixed(0)}¢`);
+  console.log(`   avgOtherSideCost=${avgOtherSideCost ? (avgOtherSideCost * 100).toFixed(0) + '¢' : 'N/A'}`);
+  console.log(`   currentPairCost=${currentPairCost ? (currentPairCost * 100).toFixed(0) + '¢' : 'N/A'}`);
+  console.log(`   mode: ${isSurvivalMode ? 'SURVIVAL' : isPanicMode ? 'PANIC' : 'NORMAL'}`);
+  
   for (let step = 1; step <= HEDGE_ESCALATOR_CONFIG.maxRetries; step++) {
+    // v6.0.1: B) Pair-cost gate - check projected pair cost before each retry
+    if (avgOtherSideCost !== undefined && !isSurvivalMode) {
+      const projectedPairCost = avgOtherSideCost + currentPrice;
+      const maxAllowed = 1 + HEDGE_ESCALATOR_CONFIG.allowOverpay;
+      
+      console.log(`   [Step ${step}] projectedPairCost=${(projectedPairCost * 100).toFixed(0)}¢ vs max=${(maxAllowed * 100).toFixed(0)}¢`);
+      
+      if (projectedPairCost > maxAllowed) {
+        logHedgeEvent({
+          type: 'HEDGE_ABORTED',
+          ts: Date.now(),
+          marketId,
+          side,
+          step,
+          price: currentPrice,
+          shares: currentShares,
+          reason: `PAIR_COST_WORSENING: projected ${(projectedPairCost * 100).toFixed(0)}¢ > ${(maxAllowed * 100).toFixed(0)}¢ max`,
+        });
+        
+        return {
+          ok: false,
+          errorCode: 'PAIR_COST_WORSENING',
+          error: `Projected pair cost ${(projectedPairCost * 100).toFixed(0)}¢ exceeds max ${(maxAllowed * 100).toFixed(0)}¢`,
+          attempts: step,
+        };
+      }
+    }
+    
     // Log attempt
     logHedgeEvent({
       type: 'HEDGE_ATTEMPT',
@@ -142,7 +182,7 @@ export async function executeHedgeWithEscalation(input: HedgeEscalatorInput): Pr
         attempts: step,
       };
     }
-    
+
     // 2) Check balance/funds
     const notional = currentShares * currentPrice;
     const fundsCheck = await canPlaceOrder(marketId, side, notional);
@@ -243,9 +283,12 @@ export async function executeHedgeWithEscalation(input: HedgeEscalatorInput): Pr
     const tempOrderId = `hedge_${marketId}_${side}_${Date.now()}`;
     ReserveManager.reserve(tempOrderId, marketId, notional, side);
     
-    // 5) Place order
+    // 5) Place order with v6.0.1 context-aware price improvement
     try {
       OrderRateLimiter.recordEvent(marketId, 'order');
+      
+      // Determine intent for price improvement
+      const orderIntent = isSurvivalMode ? 'SURVIVAL' : 'HEDGE';
       
       const result = await placeOrder({
         tokenId,
@@ -253,6 +296,7 @@ export async function executeHedgeWithEscalation(input: HedgeEscalatorInput): Pr
         price: currentPrice,
         size: currentShares,
         orderType: 'GTC',
+        intent: orderIntent,
       });
       
       if (result.success) {

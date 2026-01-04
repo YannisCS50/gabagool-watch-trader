@@ -26,6 +26,9 @@ export const FUNDING_CONFIG = {
   minBalanceForTrading: 50,     // Minimum $50 to start trading
   staleBalanceMs: 10_000,       // Balance cache TTL 10 seconds
   logEvents: true,              // Log funding events
+  // v6.0.1: Per-market limits
+  maxReservedPerMarket: 150,    // Max $150 reserved per market
+  maxTotalReserved: 400,        // Max $400 total reserved across all markets
 };
 
 // ============================================================
@@ -244,6 +247,7 @@ export async function canPlaceOrder(
 ): Promise<BalanceCheckResult> {
   const availableBalance = await getAvailableBalance(forceRefresh);
   const reservedNotional = ReserveManager.getTotalReserved();
+  const marketReserved = ReserveManager.getMarketReserved(marketId);
   const freeBalance = availableBalance - reservedNotional - FUNDING_CONFIG.safetyBufferUsd;
   
   // Check minimum balance for trading
@@ -268,6 +272,56 @@ export async function canPlaceOrder(
       requiredNotional,
       reasonCode: 'BELOW_MIN_BALANCE',
       reason: `Balance $${availableBalance.toFixed(2)} < minimum $${FUNDING_CONFIG.minBalanceForTrading}`,
+    };
+  }
+  
+  // v6.0.1: Check per-market limit
+  if (marketReserved + requiredNotional > FUNDING_CONFIG.maxReservedPerMarket) {
+    const event: OrderBlockedEvent = {
+      type: 'ORDER_BLOCKED_INSUFFICIENT_FUNDS',
+      ts: Date.now(),
+      marketId,
+      side,
+      requiredNotional,
+      availableBalance,
+      reservedNotional,
+      freeBalance,
+    };
+    logBlockedOrder(event);
+    
+    return {
+      canProceed: false,
+      availableBalance,
+      reservedNotional,
+      freeBalance,
+      requiredNotional,
+      reasonCode: 'INSUFFICIENT_BALANCE',
+      reason: `Market reserved $${marketReserved.toFixed(2)} + $${requiredNotional.toFixed(2)} > max $${FUNDING_CONFIG.maxReservedPerMarket} per market`,
+    };
+  }
+  
+  // v6.0.1: Check total reserved limit
+  if (reservedNotional + requiredNotional > FUNDING_CONFIG.maxTotalReserved) {
+    const event: OrderBlockedEvent = {
+      type: 'ORDER_BLOCKED_INSUFFICIENT_FUNDS',
+      ts: Date.now(),
+      marketId,
+      side,
+      requiredNotional,
+      availableBalance,
+      reservedNotional,
+      freeBalance,
+    };
+    logBlockedOrder(event);
+    
+    return {
+      canProceed: false,
+      availableBalance,
+      reservedNotional,
+      freeBalance,
+      requiredNotional,
+      reasonCode: 'INSUFFICIENT_BALANCE',
+      reason: `Total reserved $${reservedNotional.toFixed(2)} + $${requiredNotional.toFixed(2)} > max $${FUNDING_CONFIG.maxTotalReserved}`,
     };
   }
   
