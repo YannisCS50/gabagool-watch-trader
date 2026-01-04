@@ -1,6 +1,5 @@
 import { useMemo } from 'react';
-import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, Brain, AlertCircle, Calculator, ChevronDown, Book, Cpu, Radio, Wallet } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, AlertCircle } from 'lucide-react';
 import { StatCard } from '@/components/StatCard';
 import { TradesTable } from '@/components/TradesTable';
 import { LiveOpenPositions } from '@/components/StrategyAnalysis';
@@ -8,20 +7,13 @@ import { ActivityChart } from '@/components/ActivityChart';
 import { PnLChart } from '@/components/PnLChart';
 import { TraderHeader } from '@/components/TraderHeader';
 import { LiveRunnerStatus } from '@/components/LiveRunnerStatus';
+import { MainNav } from '@/components/MainNav';
 import { DownloadAllLogsButton } from '@/components/DownloadAllLogsButton';
 import { DownloadEnrichedFillsButton } from '@/components/DownloadEnrichedFillsButton';
 import { DownloadAuditCodeButton } from '@/components/DownloadAuditCodeButton';
 import { Button } from '@/components/ui/button';
-import { Badge } from '@/components/ui/badge';
 import { useTrades } from '@/hooks/useTrades';
 import { format } from 'date-fns';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-  DropdownMenuSeparator,
-} from '@/components/ui/dropdown-menu';
 
 const Index = () => {
   const { trades, stats, positions, isLoading, scrape, isScraping } = useTrades('gabagool22');
@@ -84,85 +76,25 @@ const Index = () => {
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Header */}
+      {/* Header with Main Nav */}
       <header className="border-b border-border/50 bg-card/50 backdrop-blur-xl sticky top-0 z-50">
-        <div className="container mx-auto px-4 py-4">
-          <div className="flex items-center justify-between">
+        <div className="container mx-auto px-4 py-3">
+          <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-emerald-400 flex items-center justify-center">
                 <BarChart3 className="w-4 h-4 text-primary-foreground" />
               </div>
-              <span className="font-semibold text-lg">PolyTracker</span>
+              <span className="font-semibold text-lg hidden sm:block">PolyTracker</span>
               {hasData && (
                 <span className="text-xs px-2 py-0.5 rounded-full bg-success/20 text-success font-mono">
                   LIVE
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-4">
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="secondary" size="sm" className="font-mono text-xs">
-                    <Brain className="w-3 h-3 mr-2" />
-                    Analysis
-                    <ChevronDown className="w-3 h-3 ml-2" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem asChild>
-                    <Link to="/strategy" className="flex items-center gap-2">
-                      <Brain className="w-4 h-4" />
-                      Strategy Analysis
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link to="/arbitrage" className="flex items-center gap-2">
-                      <Target className="w-4 h-4" />
-                      Arbitrage Analysis
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link to="/entry-analysis" className="flex items-center gap-2">
-                      <Calculator className="w-4 h-4" />
-                      Entry Price Analysis
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link to="/dev-guide" className="flex items-center gap-2">
-                      <Book className="w-4 h-4" />
-                      Developer Guide
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link to="/rust-strategy" className="flex items-center gap-2">
-                      <Cpu className="w-4 h-4" />
-                      Rust Implementation
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link to="/strategy-deep-dive" className="flex items-center gap-2">
-                      <TrendingUp className="w-4 h-4" />
-                      Strategy Deep Dive
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem asChild>
-                    <Link to="/real-time-signals" className="flex items-center gap-2">
-                      <Radio className="w-4 h-4" />
-                      Real-Time Signals
-                      <Badge className="ml-auto bg-emerald-500/20 text-emerald-400 border-emerald-500/30 text-[10px] px-1.5">
-                        LIVE
-                      </Badge>
-                    </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link to="/wallet" className="flex items-center gap-2">
-                      <Wallet className="w-4 h-4" />
-                      Wallet
-                    </Link>
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+            <div className="flex-1 overflow-x-auto">
+              <MainNav />
+            </div>
+            <div className="flex items-center gap-2">
               <DownloadAllLogsButton />
               <DownloadEnrichedFillsButton />
               <DownloadAuditCodeButton />
@@ -174,10 +106,10 @@ const Index = () => {
                 className="font-mono text-xs"
               >
                 <RefreshCw className={`w-3 h-3 mr-2 ${isScraping ? 'animate-spin' : ''}`} />
-                {isScraping ? 'Scraping...' : 'Refresh Data'}
+                {isScraping ? 'Scraping...' : 'Refresh'}
               </Button>
-              <div className="text-xs font-mono text-muted-foreground">
-                {format(new Date(), 'MMM dd, yyyy HH:mm')} UTC
+              <div className="text-xs font-mono text-muted-foreground hidden lg:block">
+                {format(new Date(), 'MMM dd, HH:mm')}
               </div>
             </div>
           </div>
