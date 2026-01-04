@@ -5,7 +5,7 @@ import { config } from './config.js';
 import { placeOrder, testConnection, getBalance, getOrderbookDepth, invalidateBalanceCache, ensureValidCredentials } from './polymarket.js';
 import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, checkHardSkewStop, STRATEGY, STRATEGY_VERSION, STRATEGY_NAME, LegacyTradeSignal } from './strategy.js';
 import { enforceVpnOrExit } from './vpn-check.js';
-import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder, syncPositionsToBackend, savePriceTicks, PriceTick } from './backend.js';
+import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder, syncPositionsToBackend, savePriceTicks, PriceTick, saveBotEvent, saveOrderLifecycle, saveInventorySnapshot, saveFundingSnapshot, BotEvent, OrderLifecycle, InventorySnapshot, FundingSnapshot } from './backend.js';
 import { fetchChainlinkPrice } from './chain.js';
 import { checkAndClaimWinnings, getClaimableValue } from './redeemer.js';
 import { syncPositions, syncPositionsToDatabase, printPositionsReport, filter15mPositions } from './positions-sync.js';
@@ -46,7 +46,8 @@ console.log('╚═════════════════════�
 console.log('');
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '6.0.0';  // v6.0.0: Reliability & Observability Patch
+const RUNNER_VERSION = '6.1.0';  // v6.1.0: Observability V1 Patch
+const RUN_ID = crypto.randomUUID();  // v6.1.0: Unique run ID for correlation
 let currentBalance = 0;
 let lastClaimCheck = 0;
 let claimInFlight = false;
@@ -54,6 +55,21 @@ let claimInFlight = false;
 // Latest Chainlink spot cache (used for filling snapshot/fill context)
 let lastBtcPrice: number | null = null;
 let lastEthPrice: number | null = null;
+
+// v6.1.0: Observability - log startup event
+saveBotEvent({
+  event_type: 'RUNNER_START',
+  asset: 'ALL',
+  run_id: RUN_ID,
+  data: {
+    runner_id: RUNNER_ID,
+    version: RUNNER_VERSION,
+    strategy: STRATEGY_NAME,
+    strategy_version: STRATEGY_VERSION,
+    hostname: os.hostname(),
+  },
+  ts: Date.now(),
+}).catch(() => { /* non-critical */ });
 
 interface MarketToken {
   slug: string;
@@ -250,6 +266,26 @@ async function executeTrade(
     
     console.error(`❌ Order failed: ${result.error}`);
     
+    // v6.1.0: Log failed order event
+    saveBotEvent({
+      event_type: 'ORDER_FAILED',
+      asset: ctx.market.asset,
+      market_id: ctx.slug,
+      run_id: RUN_ID,
+      reason_code: result.error?.includes('balance') ? 'INSUFFICIENT_BALANCE' 
+        : result.error?.includes('liquidity') ? 'NO_LIQUIDITY'
+        : result.error?.includes('429') ? 'RATE_LIMITED'
+        : 'UNKNOWN',
+      data: {
+        side: outcome,
+        intent,
+        price,
+        shares,
+        error: result.error,
+      },
+      ts: Date.now(),
+    }).catch(() => { /* non-critical */ });
+    
     // v6.0.0: Use new hedge escalator for hedge failures
     if (intent === 'HEDGE' && result.error) {
       const isBalanceError = result.error.includes('balance') || result.error.includes('allowance');
@@ -441,6 +477,54 @@ async function executeTrade(
     event_end_time: ctx.market.eventEndTime,
     avg_fill_price: result.avgPrice || price,
   });
+
+  // v6.1.0: Log order lifecycle
+  const nowMs = Date.now();
+  const clientOrderId = result.orderId || tempOrderId;
+  saveOrderLifecycle({
+    client_order_id: clientOrderId,
+    market_id: ctx.slug,
+    asset: ctx.market.asset,
+    side: outcome,
+    intent_type: intent,
+    price,
+    qty: shares,
+    status: logStatus.toUpperCase(),
+    exchange_order_id: result.orderId,
+    avg_fill_price: result.avgPrice || (filledShares > 0 ? price : undefined),
+    filled_qty: filledShares,
+    reserved_notional: total,
+    released_notional: filledShares > 0 ? filledShares * price : 0,
+    correlation_id: undefined,  // TODO: add correlation tracking
+    created_ts: nowMs,
+    last_update_ts: nowMs,
+  }).catch(() => { /* non-critical */ });
+
+  // v6.1.0: Log inventory snapshot after position change
+  if (filledShares > 0) {
+    const upAvg = ctx.position.upShares > 0 ? ctx.position.upInvested / ctx.position.upShares : 0;
+    const downAvg = ctx.position.downShares > 0 ? ctx.position.downInvested / ctx.position.downShares : 0;
+    const pairCost = upAvg + downAvg;
+    const unpaired = Math.abs(ctx.position.upShares - ctx.position.downShares);
+    const state = ctx.position.upShares === 0 && ctx.position.downShares === 0 ? 'FLAT'
+      : ctx.position.upShares === 0 || ctx.position.downShares === 0 ? 'ONE_SIDED'
+      : unpaired / (ctx.position.upShares + ctx.position.downShares) > 0.2 ? 'SKEWED'
+      : 'HEDGED';
+    
+    saveInventorySnapshot({
+      market_id: ctx.slug,
+      asset: ctx.market.asset,
+      up_shares: ctx.position.upShares,
+      down_shares: ctx.position.downShares,
+      avg_up_cost: upAvg > 0 ? upAvg : undefined,
+      avg_down_cost: downAvg > 0 ? downAvg : undefined,
+      pair_cost: pairCost > 0 ? pairCost : undefined,
+      unpaired_shares: unpaired,
+      state,
+      trigger_type: `FILL_${intent}`,
+      ts: nowMs,
+    }).catch(() => { /* non-critical */ });
+  }
 
   tradeCount++;
   

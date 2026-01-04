@@ -25,8 +25,10 @@ type Action =
   | 'save-settlement-failure'
   // NEW: Observability v1 actions
   | 'save-bot-event'
+  | 'save-bot-events'
   | 'save-order-lifecycle'
   | 'save-inventory-snapshot'
+  | 'save-inventory-snapshots'
   | 'save-funding-snapshot';
 
 interface RequestBody {
@@ -587,8 +589,43 @@ Deno.serve(async (req) => {
         });
       }
 
-      // NEW: Observability v1 - Save bot event (canonical event log)
+      // NEW: Observability v1 - Save single bot event
       case 'save-bot-event': {
+        const event = data?.event as {
+          ts: number;
+          run_id?: string;
+          market_id?: string;
+          asset: string;
+          event_type: string;
+          correlation_id?: string;
+          reason_code?: string;
+          data?: Record<string, unknown>;
+        } | undefined;
+
+        if (!event) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing event' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const { error } = await supabase.from('bot_events').insert(event);
+        if (error) {
+          console.error('[runner-proxy] save-bot-event error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] ✅ Bot event saved: ${event.event_type}`);
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // NEW: Observability v1 - Save batch bot events
+      case 'save-bot-events': {
         const events = data?.events as Array<{
           ts: number;
           run_id?: string;
@@ -609,7 +646,7 @@ Deno.serve(async (req) => {
 
         const { error } = await supabase.from('bot_events').insert(events);
         if (error) {
-          console.error('[runner-proxy] save-bot-event error:', error);
+          console.error('[runner-proxy] save-bot-events error:', error);
           return new Response(JSON.stringify({ success: false, error: error.message }), {
             status: 500,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -680,6 +717,7 @@ Deno.serve(async (req) => {
           avg_up_cost?: number;
           avg_down_cost?: number;
           pair_cost?: number;
+          unpaired_shares?: number;
           state: string;
           state_age_ms?: number;
           hedge_lag_ms?: number;
@@ -703,6 +741,45 @@ Deno.serve(async (req) => {
         }
 
         return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // NEW: Observability v1 - Save batch inventory snapshots
+      case 'save-inventory-snapshots': {
+        const snapshots = data?.snapshots as Array<{
+          ts: number;
+          market_id: string;
+          asset: string;
+          up_shares: number;
+          down_shares: number;
+          avg_up_cost?: number;
+          avg_down_cost?: number;
+          pair_cost?: number;
+          unpaired_shares?: number;
+          state: string;
+          state_age_ms?: number;
+          hedge_lag_ms?: number;
+          trigger_type?: string;
+        }> | undefined;
+
+        if (!snapshots || snapshots.length === 0) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing snapshots' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const { error } = await supabase.from('inventory_snapshots').insert(snapshots);
+        if (error) {
+          console.error('[runner-proxy] save-inventory-snapshots error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true, count: snapshots.length }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
