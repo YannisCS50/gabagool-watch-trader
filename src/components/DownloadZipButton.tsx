@@ -6,67 +6,109 @@ import { toast } from "sonner";
 import { format } from "date-fns";
 import JSZip from "jszip";
 
+// Helper to fetch ALL records with pagination (Supabase default limit is 1000)
+async function fetchAllRecords(
+  tableName: "live_trades" | "order_queue" | "bot_events" | "orders" | "fill_logs" | 
+    "snapshot_logs" | "settlement_logs" | "funding_snapshots" | "hedge_intents" | 
+    "inventory_snapshots" | "price_ticks" | "runner_heartbeats" | "bot_positions" | 
+    "strike_prices" | "hedge_feasibility" | "settlement_failures" | "live_trade_results",
+  orderBy: string,
+  cutoffDate?: string,
+  maxRecords: number = 100000
+): Promise<Record<string, unknown>[]> {
+  const allRecords: Record<string, unknown>[] = [];
+  const pageSize = 1000;
+  let offset = 0;
+  
+  while (allRecords.length < maxRecords) {
+    let query = supabase
+      .from(tableName)
+      .select("*")
+      .order(orderBy, { ascending: false })
+      .range(offset, offset + pageSize - 1);
+    
+    if (cutoffDate) {
+      query = query.gte("created_at", cutoffDate);
+    }
+    
+    const { data, error } = await query;
+    
+    if (error) {
+      console.error(`Error fetching ${tableName}:`, error);
+      break;
+    }
+    
+    if (!data || data.length === 0) break;
+    
+    allRecords.push(...data);
+    
+    if (data.length < pageSize) break; // Last page
+    offset += pageSize;
+  }
+  
+  return allRecords;
+}
+
 export function DownloadZipButton() {
   const [isDownloading, setIsDownloading] = useState(false);
+  const [progress, setProgress] = useState("");
+
+  type TableName = "live_trades" | "order_queue" | "bot_events" | "orders" | "fill_logs" | 
+    "snapshot_logs" | "settlement_logs" | "funding_snapshots" | "hedge_intents" | 
+    "inventory_snapshots" | "price_ticks" | "runner_heartbeats" | "bot_positions" | 
+    "strike_prices" | "hedge_feasibility" | "settlement_failures" | "live_trade_results";
 
   const downloadAllAsZip = async () => {
     setIsDownloading(true);
-    toast.info("Preparing ZIP download...");
+    setProgress("Starting...");
 
     try {
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
       const cutoff = thirtyDaysAgo.toISOString();
 
-      // Fetch all data in parallel
-      const [
-        liveTradesRes,
-        orderQueueRes,
-        botEventsRes,
-        ordersRes,
-        inventoryRes,
-        fillsRes,
-        snapshotsRes,
-        settlementsRes,
-        fundingRes,
-        hedgeIntentsRes,
-        priceTicksRes,
-        runnerHeartbeatsRes,
-        botPositionsRes,
-        strikesPricesRes,
-      ] = await Promise.all([
-        supabase.from("live_trades").select("*").gte("created_at", cutoff).order("created_at", { ascending: false }),
-        supabase.from("order_queue").select("*").gte("created_at", cutoff).order("created_at", { ascending: false }),
-        supabase.from("bot_events").select("*").gte("created_at", cutoff).order("ts", { ascending: false }),
-        supabase.from("orders").select("*").gte("created_at", cutoff).order("created_ts", { ascending: false }),
-        supabase.from("inventory_snapshots").select("*").gte("created_at", cutoff).order("ts", { ascending: false }),
-        supabase.from("fill_logs").select("*").gte("created_at", cutoff).order("ts", { ascending: false }),
-        supabase.from("snapshot_logs").select("*").gte("created_at", cutoff).order("ts", { ascending: false }).limit(10000),
-        supabase.from("settlement_logs").select("*").gte("created_at", cutoff).order("ts", { ascending: false }),
-        supabase.from("funding_snapshots").select("*").gte("created_at", cutoff).order("ts", { ascending: false }),
-        supabase.from("hedge_intents").select("*").gte("created_at", cutoff).order("ts", { ascending: false }),
-        supabase.from("price_ticks").select("*").gte("created_at", cutoff).order("created_at", { ascending: false }).limit(5000),
-        supabase.from("runner_heartbeats").select("*").order("last_heartbeat", { ascending: false }).limit(100),
-        supabase.from("bot_positions").select("*").order("synced_at", { ascending: false }),
-        supabase.from("strike_prices").select("*").order("created_at", { ascending: false }),
-      ]);
+      const tables: Record<string, Record<string, unknown>[]> = {};
 
-      const tables = {
-        live_trades: liveTradesRes.data || [],
-        order_queue: orderQueueRes.data || [],
-        bot_events: botEventsRes.data || [],
-        orders: ordersRes.data || [],
-        inventory_snapshots: inventoryRes.data || [],
-        fill_logs: fillsRes.data || [],
-        snapshot_logs: snapshotsRes.data || [],
-        settlement_logs: settlementsRes.data || [],
-        funding_snapshots: fundingRes.data || [],
-        hedge_intents: hedgeIntentsRes.data || [],
-        price_ticks: priceTicksRes.data || [],
-        runner_heartbeats: runnerHeartbeatsRes.data || [],
-        bot_positions: botPositionsRes.data || [],
-        strike_prices: strikesPricesRes.data || [],
-      };
+      // Fetch tables one by one with progress updates
+      const tableConfigs: { name: TableName; orderBy: string; cutoff: boolean; maxRecords?: number }[] = [
+        { name: "live_trades", orderBy: "created_at", cutoff: true },
+        { name: "order_queue", orderBy: "created_at", cutoff: true },
+        { name: "bot_events", orderBy: "created_at", cutoff: true },
+        { name: "orders", orderBy: "created_at", cutoff: true },
+        { name: "fill_logs", orderBy: "created_at", cutoff: true },
+        { name: "snapshot_logs", orderBy: "created_at", cutoff: true, maxRecords: 50000 },
+        { name: "settlement_logs", orderBy: "created_at", cutoff: true },
+        { name: "funding_snapshots", orderBy: "created_at", cutoff: true },
+        { name: "hedge_intents", orderBy: "created_at", cutoff: true },
+        { name: "inventory_snapshots", orderBy: "created_at", cutoff: true },
+        { name: "price_ticks", orderBy: "created_at", cutoff: true, maxRecords: 10000 },
+        { name: "runner_heartbeats", orderBy: "last_heartbeat", cutoff: false, maxRecords: 500 },
+        { name: "bot_positions", orderBy: "synced_at", cutoff: false },
+        { name: "strike_prices", orderBy: "created_at", cutoff: false },
+        { name: "hedge_feasibility", orderBy: "created_at", cutoff: true },
+        { name: "settlement_failures", orderBy: "created_at", cutoff: true },
+        { name: "live_trade_results", orderBy: "created_at", cutoff: true },
+      ];
+
+      for (let i = 0; i < tableConfigs.length; i++) {
+        const config = tableConfigs[i];
+        setProgress(`Fetching ${config.name}... (${i + 1}/${tableConfigs.length})`);
+        
+        try {
+          const data = await fetchAllRecords(
+            config.name,
+            config.orderBy,
+            config.cutoff ? cutoff : undefined,
+            config.maxRecords
+          );
+          tables[config.name] = data;
+        } catch (err) {
+          console.error(`Failed to fetch ${config.name}:`, err);
+          tables[config.name] = [];
+        }
+      }
+
+      setProgress("Creating ZIP...");
 
       // Create ZIP
       const zip = new JSZip();
@@ -85,16 +127,24 @@ export function DownloadZipButton() {
       const manifest = {
         exported_at: new Date().toISOString(),
         cutoff_date: cutoff,
-        tables: Object.entries(tables).map(([name, data]) => ({
-          name,
-          records: data.length,
-        })),
+        tables: Object.entries(tables)
+          .map(([name, data]) => ({
+            name,
+            records: data.length,
+          }))
+          .sort((a, b) => b.records - a.records),
         total_records: totalRecords,
       };
       zip.file("_manifest.json", JSON.stringify(manifest, null, 2));
 
+      setProgress("Compressing...");
+
       // Generate and download
-      const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
+      const blob = await zip.generateAsync({ 
+        type: "blob", 
+        compression: "DEFLATE",
+        compressionOptions: { level: 6 }
+      });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -110,6 +160,7 @@ export function DownloadZipButton() {
       toast.error("Failed to create ZIP file");
     } finally {
       setIsDownloading(false);
+      setProgress("");
     }
   };
 
@@ -125,7 +176,7 @@ export function DownloadZipButton() {
       ) : (
         <Archive className="h-4 w-4" />
       )}
-      {isDownloading ? "Creating ZIP..." : "Download ZIP"}
+      {isDownloading ? progress || "Creating ZIP..." : "Download ZIP"}
     </Button>
   );
 }
