@@ -3,7 +3,7 @@ import os from 'os';
 import dns from 'node:dns';
 import { config } from './config.js';
 import { placeOrder, testConnection, getBalance, getOrderbookDepth, invalidateBalanceCache, ensureValidCredentials } from './polymarket.js';
-import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, checkHardSkewStop, STRATEGY, STRATEGY_VERSION, STRATEGY_NAME, LegacyTradeSignal, getStrategy } from './strategy.js';
+import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, checkHardSkewStop, STRATEGY, STRATEGY_VERSION, STRATEGY_NAME, LegacyTradeSignal, getStrategy, buildMicroHedge, logMicroHedgeIntent, logMicroHedgeResult, checkV611Guardrails, MicroHedgeState, MicroHedgeIntent, MicroHedgeResult, unpairedShares as stratUnpairedShares } from './strategy.js';
 import { enforceVpnOrExit } from './vpn-check.js';
 import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder, syncPositionsToBackend, savePriceTicks, PriceTick, saveBotEvent, saveOrderLifecycle, saveInventorySnapshot, saveFundingSnapshot, BotEvent, OrderLifecycle, InventorySnapshot, FundingSnapshot } from './backend.js';
 import { fetchChainlinkPrice } from './chain.js';
@@ -30,7 +30,7 @@ try {
 }
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '6.3.3';  // v6.3.3: v6.1.2 Micro-Hedge Execution
+const RUNNER_VERSION = '6.3.4';  // v6.3.4: v6.1.2 Micro-Hedge Full Integration
 const RUN_ID = crypto.randomUUID();
 
 // v6.3.1: Track when runner started - only trade on markets that start AFTER this
@@ -120,6 +120,9 @@ interface MarketContext {
   lastSnapshotTs: number;  // For snapshot logging throttle
   spotPrice: number | null;  // Cached spot price from external source
   strikePrice: number | null;  // Cached strike price from market
+  // v6.1.2: Micro-hedge state tracking
+  microHedgeState: MicroHedgeState;
+  previousUnpaired: number;  // Track unpaired shares before last fill
 }
 
 const markets = new Map<string, MarketContext>();
@@ -173,6 +176,13 @@ async function fetchMarkets(): Promise<void> {
           lastSnapshotTs: 0,
           spotPrice: null,
           strikePrice: null,
+          // v6.1.2: Initialize micro-hedge state
+          microHedgeState: {
+            lastMicroHedgeTs: 0,
+            retryCount: 0,
+            pairedMinReachedTs: undefined,
+          },
+          previousUnpaired: 0,
         });
       }
     }
@@ -553,6 +563,173 @@ async function executeTrade(
       trigger_type: `FILL_${intent}`,
       ts: nowMs,
     }).catch(() => { /* non-critical */ });
+    
+    // ============================================================
+    // v6.1.2: MICRO-HEDGE AFTER FILL (Gabagool-style pairing)
+    // Trigger micro-hedge after ADD/ACCUMULATE fills, not after HEDGE
+    // ============================================================
+    if (intent !== 'HEDGE' && ctx.position.upShares > 0 && ctx.position.downShares > 0) {
+      const endTime = new Date(ctx.market.eventEndTime).getTime();
+      const remainingSeconds = Math.floor((endTime - nowMs) / 1000);
+      
+      // Convert MarketPosition to Inventory for strategy functions
+      const inv = {
+        upShares: ctx.position.upShares,
+        downShares: ctx.position.downShares,
+        upCost: ctx.position.upInvested,
+        downCost: ctx.position.downInvested,
+        firstFillTs: ctx.microHedgeState.pairedMinReachedTs ? undefined : nowMs - 30000, // Estimate
+        lastFillTs: nowMs,
+      };
+      
+      // Get guardrails for micro-hedge gating
+      const cheaperSide: Outcome = (ctx.book.up.ask ?? 1) <= (ctx.book.down.ask ?? 1) ? 'UP' : 'DOWN';
+      const guardrails = checkV611Guardrails(inv, remainingSeconds, nowMs, undefined, cheaperSide);
+      
+      // Try to build micro-hedge
+      const microResult = buildMicroHedge(
+        inv,
+        ctx.book,
+        remainingSeconds,
+        ctx.previousUnpaired,
+        ctx.microHedgeState.lastMicroHedgeTs,
+        nowMs,
+        guardrails
+      );
+      
+      // Update previousUnpaired for next iteration
+      ctx.previousUnpaired = stratUnpairedShares(inv);
+      
+      // Track paired_min reached
+      const paired = Math.min(ctx.position.upShares, ctx.position.downShares);
+      if (paired >= STRATEGY.pairedControl.minShares && !ctx.microHedgeState.pairedMinReachedTs) {
+        ctx.microHedgeState.pairedMinReachedTs = nowMs;
+        console.log(`[v6.1.2] ✅ PAIRED_MIN reached: ${paired} >= ${STRATEGY.pairedControl.minShares} shares`);
+      }
+      
+      if (microResult.signal && microResult.intent) {
+        // Log intent
+        logMicroHedgeIntent(microResult.intent, ctx.slug);
+        
+        // Execute micro-hedge (async, don't await - fire and forget for speed)
+        const microTokenId = microResult.signal.outcome === 'UP' 
+          ? ctx.market.upTokenId 
+          : ctx.market.downTokenId;
+        
+        const microStartMs = Date.now();
+        
+        placeOrder({
+          tokenId: microTokenId,
+          side: 'BUY',
+          price: microResult.signal.price,
+          size: microResult.signal.shares,
+          orderType: 'GTC',
+        }).then(microOrderResult => {
+          const microEndMs = Date.now();
+          const fillLatencyMs = microEndMs - microStartMs;
+          
+          if (microOrderResult.success) {
+            const microFilledShares = microOrderResult.status === 'filled' 
+              ? microResult.signal!.shares 
+              : (microOrderResult.filledSize ?? 0);
+            
+            // Update position
+            if (microResult.signal!.outcome === 'UP') {
+              ctx.position.upShares += microFilledShares;
+              ctx.position.upInvested += microFilledShares * microResult.signal!.price;
+            } else {
+              ctx.position.downShares += microFilledShares;
+              ctx.position.downInvested += microFilledShares * microResult.signal!.price;
+            }
+            
+            // Update micro-hedge state
+            ctx.microHedgeState.lastMicroHedgeTs = microEndMs;
+            ctx.microHedgeState.retryCount = 0;
+            
+            // Log result
+            logMicroHedgeResult({
+              status: microFilledShares >= microResult.signal!.shares ? 'FILLED' : 
+                      microFilledShares > 0 ? 'PARTIAL' : 'PLACED',
+              fillLatencyMs,
+              priceUsed: microResult.signal!.price,
+              filledQty: microFilledShares,
+            }, ctx.slug, microResult.intent!.correlationId);
+            
+            // Save trade
+            saveTrade({
+              market_slug: ctx.slug,
+              asset: ctx.market.asset,
+              outcome: microResult.signal!.outcome,
+              shares: microFilledShares,
+              price: microResult.signal!.price,
+              total: microFilledShares * microResult.signal!.price,
+              order_id: microOrderResult.orderId,
+              status: microFilledShares > 0 ? 'filled' : 'pending',
+              reasoning: microResult.signal!.reasoning,
+              event_start_time: ctx.market.eventStartTime,
+              event_end_time: ctx.market.eventEndTime,
+              avg_fill_price: microOrderResult.avgPrice || microResult.signal!.price,
+            }).catch(() => { /* non-critical */ });
+            
+            // Log bot event
+            saveBotEvent({
+              event_type: 'MICRO_HEDGE_RESULT',
+              asset: ctx.market.asset,
+              market_id: ctx.slug,
+              run_id: RUN_ID,
+              correlation_id: microResult.intent!.correlationId,
+              data: {
+                status: 'FILLED',
+                side: microResult.signal!.outcome,
+                shares: microFilledShares,
+                price: microResult.signal!.price,
+                fill_latency_ms: fillLatencyMs,
+                mode: microResult.intent!.mode,
+              },
+              ts: microEndMs,
+            }).catch(() => { /* non-critical */ });
+            
+            console.log(`[v6.1.2] ✅ MICRO-HEDGE FILLED: ${microResult.signal!.outcome} ${microFilledShares}@${(microResult.signal!.price * 100).toFixed(1)}¢`);
+          } else {
+            // Micro-hedge failed
+            ctx.microHedgeState.retryCount++;
+            
+            logMicroHedgeResult({
+              status: 'ABORTED',
+              abortReason: 'NO_DEPTH',
+              fillLatencyMs,
+            }, ctx.slug, microResult.intent!.correlationId);
+            
+            console.log(`[v6.1.2] ❌ MICRO-HEDGE FAILED: ${microOrderResult.error}`);
+          }
+        }).catch(err => {
+          console.error(`[v6.1.2] ❌ MICRO-HEDGE ERROR:`, err);
+        });
+        
+        // Log intent event
+        saveBotEvent({
+          event_type: 'MICRO_HEDGE_INTENT',
+          asset: ctx.market.asset,
+          market_id: ctx.slug,
+          run_id: RUN_ID,
+          correlation_id: microResult.intent.correlationId,
+          data: {
+            side: microResult.intent.side,
+            microQty: microResult.intent.microQty,
+            unpaired_before: microResult.intent.unpairedBefore,
+            unpaired_after_target: microResult.intent.unpairedAfterTarget,
+            mode: microResult.intent.mode,
+            projected_pair_cost: microResult.intent.projectedPairCost,
+          },
+          ts: nowMs,
+        }).catch(() => { /* non-critical */ });
+      } else if (microResult.abortReason) {
+        // Log abort reason (only for non-trivial aborts)
+        if (microResult.abortReason !== 'COOLDOWN' && microResult.abortReason !== 'SURVIVAL_MODE') {
+          console.log(`[v6.1.2] ⏭️ MICRO-HEDGE SKIP: ${microResult.abortReason}`);
+        }
+      }
+    }
   }
 
   tradeCount++;
