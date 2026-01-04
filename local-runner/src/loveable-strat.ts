@@ -12,8 +12,8 @@ import type { OrderbookDepth } from './polymarket.js';
 // States: FLAT → ONE_SIDED → HEDGED (winst) / SKEWED / DEEP_DISLOCATION
 // ============================================================
 
-export const STRATEGY_VERSION = '6.0.0';
-export const STRATEGY_NAME = 'GPT Strategy v6.0 – Adaptive Hedger (Polymarket 15m Bot)';
+export const STRATEGY_VERSION = '6.1.0';
+export const STRATEGY_NAME = 'GPT Strategy v6.1 – Gabagool Alignment Patch (Polymarket 15m Bot)';
 
 // ============================================================
 // TYPES & STATE MACHINE (PDF Section: Implementatie & Logica)
@@ -35,6 +35,10 @@ export interface Inventory {
   downCost: number;
   firstFillTs?: number;
   lastFillTs?: number;
+  // v6.1: Track trades per market for micro-sizing metrics
+  tradesCount?: number;
+  // v6.1: Track market open time for entry window discipline
+  marketOpenTs?: number;
 }
 
 export interface MarketPosition extends Inventory {
@@ -71,29 +75,38 @@ export interface MarketState {
 // ============================================================
 
 export const STRATEGY = {
-  // Trade size settings (in USDC) - PDF Section
+  // Trade size settings (in USDC) - v6.1: Micro-sizing (Gabagool-style)
   tradeSizeUsd: {
-    base: 25,    // Base trade size
-    min: 20,     // Minimum trade size
-    max: 50,     // Maximum trade size (for strong edges)
+    base: 10,    // v6.1: Reduced from 25 to 10 for micro-sizing
+    min: 5,      // v6.1: Reduced from 20 to 5 for micro-sizing
+    max: 25,     // v6.1: Reduced from 50 to 25 (larger only for extreme edge)
   },
   
   // Edge thresholds - PDF Section
   edge: {
     baseBuffer: 0.015,        // 1.5¢ minimum mispricing required
     strongEdge: 0.04,         // 4¢+ = strong signal, scale up
+    strongEdgeBuffer: 0.03,   // v6.1: For late entry, require combined ≤ 97¢
     allowOverpay: 0.01,       // Max 1¢ overpay allowed for fill
     feesBuffer: 0.002,        // 0.2¢ for Polymarket 2% fee
     slippageBuffer: 0.004,    // 0.4¢ for execution slippage
     deepDislocationThreshold: 0.96, // Combined ≤ $0.96 = DEEP mode
   },
   
-  // Timing and lifecycle - PDF Section
+  // Timing and lifecycle - v6.1: Gabagool-style entry window
   timing: {
     stopNewTradesSec: 30,     // No new positions < 30s remaining
     hedgeTimeoutSec: 12,      // Force hedge after 12s if one-sided
     hedgeMustBySec: 60,       // Must be hedged by 60s remaining
     unwindStartSec: 45,       // Optional: start unwind at 45s
+    // v6.1: Entry Window Discipline (Gabagool-style)
+    entryWindowStartSec: 10,  // Primary entry window start (after market open)
+    entryWindowEndSec: 40,    // Primary entry window end
+    // v6.1: Initial Hedge Discipline
+    initHedgeTimeoutSec: 3,   // Place initial hedge within 3s of first fill
+    initHedgeSizePercent: 0.15, // Initial hedge = 15% of opening shares (10-20%)
+    // v6.1: Paired Quantity Target
+    pairedTargetDeadlineSec: 60, // Must reach paired minimum within 60s
   },
   
   // Position skew management - PDF Section
@@ -108,6 +121,13 @@ export const STRATEGY = {
     maxTotalNotional: 500,    // Max total investment
     maxPerSide: 300,          // Max per side
     maxSharesPerSide: 500,    // Max shares per side
+  },
+  
+  // v6.1: Paired Quantity & Cost-Per-Paired Controls
+  pairedControl: {
+    minShares: 20,            // v6.1: PAIRED_MIN_SHARES - must reach this paired quantity
+    costPerPairedStop: 1.05,  // v6.1: Stop accumulation if cost_per_paired > 1.05
+    costPerPairedEmergency: 1.10, // v6.1: Emergency unwind if > 1.10
   },
   
   // Tick & Rounding
@@ -138,8 +158,8 @@ export const STRATEGY = {
     staleBookMs: 5000,
   },
   
-  // Cooldown between trades
-  cooldownMs: 5000,           // 5s cooldown
+  // Cooldown between trades - v6.1: Reduced for micro-sizing
+  cooldownMs: 3000,           // v6.1: Reduced from 5s to 3s for more micro-trades
 };
 
 // ============================================================
@@ -377,6 +397,218 @@ export function calculateProfitPercent(inv: Inventory): number {
 }
 
 // ============================================================
+// V6.1: GABAGOOL ALIGNMENT METRICS
+// ============================================================
+
+/**
+ * v6.1: Calculate paired quantity = min(UP, DOWN) shares
+ */
+export function pairedShares(inv: Inventory): number {
+  return Math.min(inv.upShares, inv.downShares);
+}
+
+/**
+ * v6.1: Calculate paired_ratio = min(up,down) / max(up,down)
+ * Returns 1.0 for perfectly balanced, 0 for one-sided
+ */
+export function pairedRatio(inv: Inventory): number {
+  const maxShares = Math.max(inv.upShares, inv.downShares);
+  if (maxShares === 0) return 1.0;
+  return pairedShares(inv) / maxShares;
+}
+
+/**
+ * v6.1: Calculate cost_per_paired - CRITICAL for risk control
+ * cost_per_paired = (total_cost_up + total_cost_down) / min(up_shares, down_shares)
+ */
+export function costPerPaired(inv: Inventory): number {
+  const paired = pairedShares(inv);
+  if (paired === 0) return Infinity;
+  return (inv.upCost + inv.downCost) / paired;
+}
+
+/**
+ * v6.1: Check if paired minimum is reached
+ */
+export function isPairedMinReached(inv: Inventory): boolean {
+  return pairedShares(inv) >= STRATEGY.pairedControl.minShares;
+}
+
+/**
+ * v6.1: Check if we're within the primary entry window (Gabagool-style)
+ * Entry window: 10s - 40s after market open
+ */
+export function isInEntryWindow(marketOpenTs: number | undefined, nowMs: number): boolean {
+  if (!marketOpenTs) return true; // If unknown, allow entry
+  
+  const elapsedSec = (nowMs - marketOpenTs) / 1000;
+  return elapsedSec >= STRATEGY.timing.entryWindowStartSec && 
+         elapsedSec <= STRATEGY.timing.entryWindowEndSec;
+}
+
+/**
+ * v6.1: Calculate entry age in seconds (since market open)
+ */
+export function entryAgeSec(marketOpenTs: number | undefined, nowMs: number): number {
+  if (!marketOpenTs) return 0;
+  return (nowMs - marketOpenTs) / 1000;
+}
+
+/**
+ * v6.1: Calculate hedge lag in seconds (since first fill)
+ */
+export function hedgeLagSecFromInventory(inv: Inventory, nowMs: number): number {
+  if (!inv.firstFillTs) return 0;
+  return (nowMs - inv.firstFillTs) / 1000;
+}
+
+/**
+ * v6.1: Check if cost_per_paired exceeds stop threshold
+ * Returns action to take
+ */
+export function checkCostPerPairedGuardrail(inv: Inventory): {
+  action: 'NORMAL' | 'STOP_ACCUMULATE' | 'EMERGENCY_UNWIND';
+  costPerPaired: number;
+  reason: string;
+} {
+  const cpp = costPerPaired(inv);
+  
+  if (cpp >= STRATEGY.pairedControl.costPerPairedEmergency) {
+    return {
+      action: 'EMERGENCY_UNWIND',
+      costPerPaired: cpp,
+      reason: `cost_per_paired ${cpp.toFixed(2)} >= ${STRATEGY.pairedControl.costPerPairedEmergency} emergency threshold`,
+    };
+  }
+  
+  if (cpp >= STRATEGY.pairedControl.costPerPairedStop) {
+    return {
+      action: 'STOP_ACCUMULATE',
+      costPerPaired: cpp,
+      reason: `cost_per_paired ${cpp.toFixed(2)} >= ${STRATEGY.pairedControl.costPerPairedStop} stop threshold`,
+    };
+  }
+  
+  return {
+    action: 'NORMAL',
+    costPerPaired: cpp,
+    reason: 'cost_per_paired within limits',
+  };
+}
+
+/**
+ * v6.1: Check if dominant side should be blocked (paired target not met)
+ */
+export function shouldBlockDominantSide(
+  inv: Inventory,
+  proposedSide: Outcome,
+  deadlineSec: number,
+  elapsedSec: number
+): { blocked: boolean; reason: string } {
+  // Only applies after deadline
+  if (elapsedSec < deadlineSec) {
+    return { blocked: false, reason: 'Before paired deadline' };
+  }
+  
+  // Check if paired minimum reached
+  if (isPairedMinReached(inv)) {
+    return { blocked: false, reason: 'Paired minimum reached' };
+  }
+  
+  // Determine dominant side
+  const dominantSide: Outcome = inv.upShares > inv.downShares ? 'UP' : 'DOWN';
+  
+  // Block if trying to add to dominant side
+  if (proposedSide === dominantSide) {
+    return {
+      blocked: true,
+      reason: `v6.1 BLOCK: Adding to dominant side ${dominantSide} while paired=${pairedShares(inv)} < ${STRATEGY.pairedControl.minShares} minimum`,
+    };
+  }
+  
+  return { blocked: false, reason: 'Adding to minority side allowed' };
+}
+
+/**
+ * v6.1: Calculate initial hedge size (10-20% of opening shares)
+ */
+export function getInitHedgeSize(openingShares: number): number {
+  const percent = STRATEGY.timing.initHedgeSizePercent;
+  const size = Math.ceil(openingShares * percent);
+  return Math.max(size, 2); // At least 2 shares
+}
+
+/**
+ * v6.1: Check if initial hedge is needed (within 3s of first fill)
+ */
+export function needsInitHedge(inv: Inventory, nowMs: number): {
+  needed: boolean;
+  hedgeSide: Outcome | null;
+  hedgeShares: number;
+  reason: string;
+} {
+  // Only in ONE_SIDED state
+  const hasUp = inv.upShares > 0;
+  const hasDown = inv.downShares > 0;
+  
+  if (!hasUp && !hasDown) {
+    return { needed: false, hedgeSide: null, hedgeShares: 0, reason: 'FLAT state' };
+  }
+  
+  if (hasUp && hasDown) {
+    return { needed: false, hedgeSide: null, hedgeShares: 0, reason: 'Already hedged' };
+  }
+  
+  // One-sided - check timing
+  const elapsedMs = inv.firstFillTs ? nowMs - inv.firstFillTs : 0;
+  const elapsedSec = elapsedMs / 1000;
+  const timeout = STRATEGY.timing.initHedgeTimeoutSec;
+  
+  if (elapsedSec > timeout) {
+    // Past initial hedge window - use normal hedge logic
+    return { needed: false, hedgeSide: null, hedgeShares: 0, reason: `Past init hedge window (${elapsedSec.toFixed(1)}s > ${timeout}s)` };
+  }
+  
+  // Within initial hedge window - trigger small hedge
+  const hedgeSide: Outcome = hasUp ? 'DOWN' : 'UP';
+  const existingShares = hasUp ? inv.upShares : inv.downShares;
+  const hedgeShares = getInitHedgeSize(existingShares);
+  
+  return {
+    needed: true,
+    hedgeSide,
+    hedgeShares,
+    reason: `v6.1 INIT HEDGE: ${hedgeSide} ${hedgeShares} shares within ${timeout}s window`,
+  };
+}
+
+/**
+ * v6.1: Log metrics for validation
+ */
+export interface V61Metrics {
+  entry_age_sec: number;
+  hedge_lag_sec: number;
+  paired_ratio: number;
+  cost_per_paired: number;
+  paired_min_reached: boolean;
+  trades_per_market: number;
+  paired_shares: number;
+  in_entry_window: boolean;
+}
+
+export function calculateV61Metrics(inv: Inventory, nowMs: number): V61Metrics {
+  return {
+    entry_age_sec: entryAgeSec(inv.marketOpenTs, nowMs),
+    hedge_lag_sec: hedgeLagSecFromInventory(inv, nowMs),
+    paired_ratio: pairedRatio(inv),
+    cost_per_paired: costPerPaired(inv),
+    paired_min_reached: isPairedMinReached(inv),
+    trades_per_market: inv.tradesCount ?? 0,
+    paired_shares: pairedShares(inv),
+    in_entry_window: isInEntryWindow(inv.marketOpenTs, nowMs),
+  };
+}
+
 // STATE MACHINE (PDF: Bot States)
 // FLAT → ONE_SIDED → HEDGED / SKEWED / DEEP_DISLOCATION → UNWIND
 // ============================================================
@@ -610,6 +842,8 @@ export interface EvaluationContext {
   tick?: number;
   currentPrice?: number;
   strikePrice?: number;
+  // v6.1: Market open time for entry window discipline
+  marketOpenTs?: number;
 }
 
 export function evaluateOpportunity(
@@ -661,8 +895,17 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
     noLiquidityStreak = 0,
     adverseStreak = 0,
     tick = STRATEGY.tick.fallback,
+    marketOpenTs,
   } = ctx;
 
+  // v6.1: Set market open time in inventory if provided
+  if (marketOpenTs && !inv.marketOpenTs) {
+    inv.marketOpenTs = marketOpenTs;
+  }
+
+  // v6.1: Calculate metrics for logging
+  const v61metrics = calculateV61Metrics(inv, nowMs);
+  
   // ========== PRE-CHECKS ==========
   
   // Cooldown check
@@ -696,11 +939,25 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
   // Calculate dynamic buffer
   const buffer = dynamicEdgeBuffer(noLiquidityStreak, adverseStreak);
   
+  // ========== v6.1: COST-PER-PAIRED GUARDRAIL ==========
+  
+  const cppCheck = checkCostPerPairedGuardrail(inv);
+  if (cppCheck.action === 'EMERGENCY_UNWIND') {
+    console.log(`[Strategy v6.1] 🚨 ${cppCheck.reason} - emergency mode`);
+    // Allow only hedge/rebalance, block accumulation
+  }
+  
   // ========== DETERMINE STATE ==========
   
   const state = determineState(inv, pendingHedge, upAsk, downAsk);
   const edgePct = calculateEdge(upAsk, downAsk);
   const isDeep = state === 'DEEP_DISLOCATION';
+  
+  // ========== v6.1: LOG METRICS ==========
+  
+  if (state !== 'FLAT') {
+    console.log(`[Strategy v6.1] 📊 Metrics: paired_ratio=${v61metrics.paired_ratio.toFixed(2)}, cost_per_paired=${v61metrics.cost_per_paired.toFixed(3)}, paired_min=${v61metrics.paired_min_reached}, entry_age=${v61metrics.entry_age_sec.toFixed(1)}s`);
+  }
   
   // ========== UNWIND CHECK ==========
   
@@ -739,13 +996,24 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
 
   switch (state) {
     case 'FLAT': {
-      // PDF: Opening Trade - buy cheapest side if edge exists
+      // v6.1: Entry Window Discipline (Gabagool-style)
+      const inEntryWindow = isInEntryWindow(inv.marketOpenTs, nowMs);
       const edgeCheck = executionAwareEdgeOk(upAsk, downAsk, upMid, downMid, buffer);
       
       // Opening trade can skip edge check if price near fair value (48-52¢)
       const cheaperSide: Outcome = upAsk <= downAsk ? 'UP' : 'DOWN';
       const cheaperPrice = cheaperSide === 'UP' ? upAsk : downAsk;
       const isOpeningPrice = cheaperPrice <= STRATEGY.opening.maxPrice;
+      
+      // v6.1: Outside entry window, require strong edge
+      if (!inEntryWindow) {
+        const strongEdgeRequired = 1.0 - STRATEGY.edge.strongEdgeBuffer;
+        if (combined > strongEdgeRequired) {
+          console.log(`[Strategy v6.1] 🚫 BLOCK entry: outside window, combined=${(combined * 100).toFixed(0)}¢ > ${(strongEdgeRequired * 100).toFixed(0)}¢ threshold`);
+          return null;
+        }
+        console.log(`[Strategy v6.1] ✅ Late entry allowed: strong edge combined=${(combined * 100).toFixed(0)}¢`);
+      }
       
       if (!edgeCheck.ok && !(STRATEGY.opening.skipEdgeCheck && isOpeningPrice)) {
         return null;
@@ -757,30 +1025,48 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
         if (!check.canProceed) return null;
       }
       
+      // v6.1: Micro-sizing - use smaller trade size
       const tradeSize = getTradeSize(remainingSeconds, edgePct, false);
-      return buildEntry(upAsk, downAsk, tradeSize);
+      const signal = buildEntry(upAsk, downAsk, tradeSize);
+      if (signal) {
+        console.log(`[Strategy v6.1] 🎯 Opening: ${signal.outcome} ${signal.shares} shares @ ${(signal.price * 100).toFixed(1)}¢ (entry_age=${v61metrics.entry_age_sec.toFixed(1)}s)`);
+      }
+      return signal;
     }
     
     case 'ONE_SIDED': {
-      // PDF: Hedge Trade - MUST hedge to secure position
+      // v6.1: Initial Hedge Discipline (faster, smaller)
+      const initHedgeCheck = needsInitHedge(inv, nowMs);
       const missingSide: Outcome = inv.upShares === 0 ? 'UP' : 'DOWN';
       const missingAsk = missingSide === 'UP' ? upAsk : downAsk;
       const existingShares = missingSide === 'UP' ? inv.downShares : inv.upShares;
       const existingCost = missingSide === 'UP' ? inv.downCost : inv.upCost;
       const existingAvg = existingShares > 0 ? existingCost / existingShares : 0;
       
-      const hedgeShares = Math.max(existingShares, 5);
       const projectedCombined = existingAvg + missingAsk;
       const maxAllowed = 1 + STRATEGY.edge.allowOverpay;
       
-      console.log(`[Strategy v6.0] Hedge eval: ${missingSide} @ ${(missingAsk * 100).toFixed(0)}¢, existingAvg=${(existingAvg * 100).toFixed(0)}¢, combined=${(projectedCombined * 100).toFixed(0)}¢`);
+      console.log(`[Strategy v6.1] Hedge eval: ${missingSide} @ ${(missingAsk * 100).toFixed(0)}¢, existingAvg=${(existingAvg * 100).toFixed(0)}¢, combined=${(projectedCombined * 100).toFixed(0)}¢`);
       
-      // Check hedge timeout - force hedge after 12s
+      // v6.1: Check for initial hedge (within 3s, small size)
+      if (initHedgeCheck.needed && initHedgeCheck.hedgeSide) {
+        console.log(`[Strategy v6.1] ⚡ ${initHedgeCheck.reason}`);
+        // Initial hedge uses smaller size
+        const initHedgeShares = initHedgeCheck.hedgeShares;
+        if (projectedCombined <= maxAllowed) {
+          return buildHedge(initHedgeCheck.hedgeSide, missingAsk, tick, initHedgeShares);
+        }
+        // Even for init hedge, accept slight overpay
+        return buildForceHedge(initHedgeCheck.hedgeSide, missingAsk, tick, initHedgeShares, existingAvg);
+      }
+      
+      // Normal hedge logic (after init hedge window)
+      const hedgeShares = Math.max(existingShares, 5);
       const timeSinceFirstFill = inv.firstFillTs ? (nowMs - inv.firstFillTs) / 1000 : 0;
       const forceHedge = timeSinceFirstFill >= STRATEGY.timing.hedgeTimeoutSec;
       
       if (forceHedge) {
-        console.log(`[Strategy v6.0] FORCE hedge after ${timeSinceFirstFill.toFixed(0)}s timeout`);
+        console.log(`[Strategy v6.1] 🔴 FORCE hedge after ${timeSinceFirstFill.toFixed(0)}s timeout`);
         return buildForceHedge(missingSide, missingAsk, tick, hedgeShares, existingAvg);
       }
       
@@ -791,8 +1077,13 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
       
       // Must be hedged by hedgeMustBySec
       if (remainingSeconds <= STRATEGY.timing.hedgeMustBySec) {
-        console.log(`[Strategy v6.0] MUST hedge by ${STRATEGY.timing.hedgeMustBySec}s - forcing`);
+        console.log(`[Strategy v6.1] 🔴 MUST hedge by ${STRATEGY.timing.hedgeMustBySec}s - forcing`);
         return buildForceHedge(missingSide, missingAsk, tick, hedgeShares, existingAvg);
+      }
+      
+      console.log(`[Strategy v6.1] ⏳ Waiting for better hedge price...`);
+      return null;
+    }
       }
       
       console.log(`[Strategy v6.0] Waiting for better hedge price...`);
@@ -878,6 +1169,12 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
     }
     
     case 'HEDGED': {
+      // v6.1: Cost-per-paired guardrail - stop accumulation if too high
+      if (cppCheck.action !== 'NORMAL') {
+        console.log(`[Strategy v6.1] 🛑 BLOCK accumulate: ${cppCheck.reason}`);
+        return null;
+      }
+      
       // PDF: Accumulation - expand position if good combined price
       if (!pairedLockOk(upAsk, downAsk, buffer)) {
         return null;
@@ -889,11 +1186,39 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
         return null;
       }
       
+      // v6.1: Paired quantity target - block dominant side if paired min not reached
+      const elapsedSec = inv.firstFillTs ? (nowMs - inv.firstFillTs) / 1000 : 0;
+      const cheaperSide: Outcome = upAsk <= downAsk ? 'UP' : 'DOWN';
+      
+      const dominantBlock = shouldBlockDominantSide(
+        inv, 
+        cheaperSide, 
+        STRATEGY.timing.pairedTargetDeadlineSec, 
+        elapsedSec
+      );
+      if (dominantBlock.blocked) {
+        console.log(`[Strategy v6.1] 🛑 ${dominantBlock.reason}`);
+        // Force rebalance instead
+        const minoritySide: Outcome = cheaperSide === 'UP' ? 'DOWN' : 'UP';
+        const minorityAsk = minoritySide === 'UP' ? upAsk : downAsk;
+        const minorityShares = Math.floor(STRATEGY.tradeSizeUsd.base / minorityAsk);
+        if (minorityShares >= 2) {
+          return {
+            outcome: minoritySide,
+            price: roundDown(minorityAsk, tick),
+            shares: minorityShares,
+            reasoning: `v6.1 Paired Target: force ${minoritySide} to reach min paired (${pairedShares(inv)}/${STRATEGY.pairedControl.minShares})`,
+            type: 'rebalance',
+          };
+        }
+        return null;
+      }
+      
       // Only accumulate if shares are balanced (within 10%)
       const shareDiff = Math.abs(inv.upShares - inv.downShares);
       const avgShares = (inv.upShares + inv.downShares) / 2;
       if (avgShares > 0 && shareDiff / avgShares > 0.1) {
-        console.log(`[Strategy v6.0] BLOCK accumulate: shares not balanced (diff=${shareDiff})`);
+        console.log(`[Strategy v6.1] BLOCK accumulate: shares not balanced (diff=${shareDiff})`);
         return null;
       }
       
@@ -903,10 +1228,12 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
         return null; // Only accumulate if new price is better
       }
       
+      // v6.1: Micro-sizing for accumulation
       const tradeSize = getTradeSize(remainingSeconds, edgePct, false);
       const sharesToAdd = Math.floor(tradeSize / combined);
       
-      if (sharesToAdd < 5) return null;
+      // v6.1: Minimum shares reduced for micro-sizing
+      if (sharesToAdd < 2) return null;
       
       // Buy the cheaper side
       const accumulateSide: Outcome = upAsk <= downAsk ? 'UP' : 'DOWN';
@@ -916,7 +1243,7 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
         outcome: accumulateSide,
         price: roundDown(accumulatePrice, tick),
         shares: sharesToAdd,
-        reasoning: `Accumulate ${accumulateSide} @ ${(combined * 100).toFixed(0)}¢ combined (${edgePct.toFixed(1)}% edge) - also buy ${accumulateSide === 'UP' ? 'DOWN' : 'UP'}`,
+        reasoning: `v6.1 Accumulate ${accumulateSide} @ ${(combined * 100).toFixed(0)}¢ combined (${edgePct.toFixed(1)}% edge, cpp=${v61metrics.cost_per_paired.toFixed(3)})`,
         type: 'accumulate',
       };
     }
