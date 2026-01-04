@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Download, RefreshCw, Filter, Activity, Package, Database } from "lucide-react";
+import { DownloadAllLogsButton } from "@/components/DownloadAllLogsButton";
 import { format } from "date-fns";
 import { toast } from "sonner";
 import { NavLink } from "@/components/NavLink";
@@ -270,10 +271,7 @@ export default function Observability() {
               <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
               Refresh
             </Button>
-            <Button onClick={downloadAllLogs} disabled={isDownloading}>
-              <Download className="h-4 w-4 mr-2" />
-              {isDownloading ? "Downloading..." : "Download All Logs"}
-            </Button>
+            <DownloadAllLogsButton />
           </div>
         </div>
 
