@@ -12,6 +12,7 @@ import { MobileNav } from '@/components/MobileNav';
 import { DownloadAllLogsButton } from '@/components/DownloadAllLogsButton';
 import { DownloadEnrichedFillsButton } from '@/components/DownloadEnrichedFillsButton';
 import { DownloadAuditCodeButton } from '@/components/DownloadAuditCodeButton';
+import { DownloadZipButton } from '@/components/DownloadZipButton';
 import { Button } from '@/components/ui/button';
 import { useTrades } from '@/hooks/useTrades';
 import { format } from 'date-fns';
@@ -97,6 +98,7 @@ const Index = () => {
               <MainNav />
             </div>
             <div className="flex items-center gap-2">
+              <DownloadZipButton />
               <DownloadAllLogsButton />
               <DownloadEnrichedFillsButton />
               <DownloadAuditCodeButton />
