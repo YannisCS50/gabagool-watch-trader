@@ -12,8 +12,8 @@ import type { OrderbookDepth } from './polymarket.js';
 // States: FLAT → ONE_SIDED → HEDGED (winst) / SKEWED / DEEP_DISLOCATION
 // ============================================================
 
-export const STRATEGY_VERSION = '6.1.1';
-export const STRATEGY_NAME = 'GPT Strategy v6.1.1 – Paired Discipline & EV Lock (Polymarket 15m Bot)';
+export const STRATEGY_VERSION = '6.1.2';
+export const STRATEGY_NAME = 'GPT Strategy v6.1.2 – Micro-Hedge Execution (Polymarket 15m Bot)';
 
 // ============================================================
 // TYPES & STATE MACHINE (PDF Section: Implementatie & Logica)
@@ -129,6 +129,20 @@ export const STRATEGY = {
     costPerPairedStop: 1.05,  // v6.1.1: Stop ALL adds if cost_per_paired > 1.05
     costPerPairedEmergency: 1.10, // v6.1.1: Emergency unwind if > 1.10
     survivalWindowSec: 20,    // v6.1.1: Only exception to guardrails - near settlement
+  },
+  
+  // v6.1.2: Micro-Hedge Execution (Gabagool-style pairing)
+  microHedge: {
+    fraction: 0.20,           // Hedge 20% of unpaired gap each time
+    minShares: 5,             // Minimum micro-hedge size
+    maxShares: 15,            // Maximum micro-hedge size per cycle
+    triggerDelta: 8,          // Trigger micro-hedge if unpaired increases by >= 8 shares
+    cooldownMs: 1500,         // Rate limit: 1 micro-hedge per 1.5s per market
+    waitMs: 1200,             // Wait for maker fill before retry
+    retryMax: 2,              // Max retry attempts before urgent mode
+    urgentWindowSec: 20,      // Seconds before deadline = urgent mode (taker allowed)
+    edgeLockBuffer: 0.005,    // 0.5¢ buffer - abort if would burn edge in normal mode
+    urgentOverpayCap: 0.01,   // 1¢ max overpay in urgent mode
   },
   
   // Tick & Rounding
@@ -787,6 +801,362 @@ export function calculateV61Metrics(inv: Inventory, nowMs: number): V61Metrics {
     trades_per_market: inv.tradesCount ?? 0,
     paired_shares: pairedShares(inv),
     in_entry_window: isInEntryWindow(inv.marketOpenTs, nowMs),
+  };
+}
+
+// ============================================================
+// V6.1.2: MICRO-HEDGE EXECUTION SYSTEM
+// After each fill on dominant side, place small hedges to build pairing
+// ============================================================
+
+export type MicroHedgeMode = 'MAKER' | 'URGENT_TAKER';
+export type MicroHedgeStatus = 'PLACED' | 'FILLED' | 'PARTIAL' | 'ABORTED';
+export type MicroHedgeAbortReason = 
+  | 'NO_DEPTH' 
+  | 'FUNDS' 
+  | 'PAIR_COST' 
+  | 'COOLDOWN' 
+  | 'RATE_LIMIT'
+  | 'SURVIVAL_MODE'
+  | 'GUARDRAIL_BLOCK';
+
+export interface MicroHedgeIntent {
+  marketId: string;
+  side: Outcome;
+  microQty: number;
+  unpairedBefore: number;
+  unpairedAfterTarget: number;
+  mode: MicroHedgeMode;
+  projectedPairCost: number;
+  correlationId: string;
+  timestamp: number;
+}
+
+export interface MicroHedgeResult {
+  status: MicroHedgeStatus;
+  abortReason?: MicroHedgeAbortReason;
+  fillLatencyMs?: number;
+  priceUsed?: number;
+  filledQty?: number;
+}
+
+export interface MicroHedgeState {
+  lastMicroHedgeTs: number;
+  retryCount: number;
+  pairedMinReachedTs?: number;
+}
+
+/**
+ * v6.1.2: Calculate unpaired quantity = abs(up_shares - down_shares)
+ */
+export function unpairedShares(inv: Inventory): number {
+  return Math.abs(inv.upShares - inv.downShares);
+}
+
+/**
+ * v6.1.2: Determine which side is underweight (needs micro-hedge)
+ */
+export function getUnderweightSide(inv: Inventory): Outcome | null {
+  if (inv.upShares === inv.downShares) return null;
+  return inv.upShares < inv.downShares ? 'UP' : 'DOWN';
+}
+
+/**
+ * v6.1.2: Calculate micro-hedge quantity
+ * microQty = clamp(ceil(unpaired * MICRO_HEDGE_FRACTION), MIN, MAX)
+ */
+export function calculateMicroHedgeQty(inv: Inventory): number {
+  const unpaired = unpairedShares(inv);
+  if (unpaired === 0) return 0;
+  
+  const cfg = STRATEGY.microHedge;
+  const rawQty = Math.ceil(unpaired * cfg.fraction);
+  return Math.max(cfg.minShares, Math.min(cfg.maxShares, rawQty));
+}
+
+/**
+ * v6.1.2: Check if micro-hedge should be triggered
+ * Returns true if:
+ * - After a fill that increased unpaired
+ * - OR unpaired increased by >= MICRO_HEDGE_TRIGGER_DELTA
+ */
+export function shouldTriggerMicroHedge(
+  inv: Inventory,
+  previousUnpaired: number,
+  remainingSeconds: number,
+  lastMicroHedgeTs: number,
+  nowMs: number,
+  guardrails: V611GuardrailResult
+): { trigger: boolean; reason: string; mode: MicroHedgeMode } {
+  const cfg = STRATEGY.microHedge;
+  const survivalWindow = STRATEGY.pairedControl.survivalWindowSec ?? 20;
+  
+  // Gate 1: Survival mode - let v6.1.1 survival logic handle
+  if (remainingSeconds < survivalWindow) {
+    return { trigger: false, reason: 'SURVIVAL_MODE', mode: 'MAKER' };
+  }
+  
+  // Gate 2: Cooldown check
+  if (nowMs - lastMicroHedgeTs < cfg.cooldownMs) {
+    return { trigger: false, reason: 'COOLDOWN', mode: 'MAKER' };
+  }
+  
+  // Gate 3: Cost-per-paired guardrail active
+  if (guardrails.guardrailTriggered === 'COST_PER_PAIRED_STOP' || 
+      guardrails.guardrailTriggered === 'COST_PER_PAIRED_EMERGENCY') {
+    return { trigger: false, reason: 'GUARDRAIL_BLOCK', mode: 'MAKER' };
+  }
+  
+  const currentUnpaired = unpairedShares(inv);
+  
+  // Already balanced
+  if (currentUnpaired === 0) {
+    return { trigger: false, reason: 'BALANCED', mode: 'MAKER' };
+  }
+  
+  // Trigger conditions
+  const deltaIncrease = currentUnpaired - previousUnpaired;
+  const triggerByDelta = deltaIncrease >= cfg.triggerDelta;
+  const triggerByFill = deltaIncrease > 0; // Any increase after fill
+  
+  if (!triggerByDelta && !triggerByFill) {
+    return { trigger: false, reason: 'NO_TRIGGER', mode: 'MAKER' };
+  }
+  
+  // Determine mode: urgent if near deadline
+  const deadlineSec = STRATEGY.timing.pairedTargetDeadlineSec;
+  const elapsedSec = inv.firstFillTs ? (nowMs - inv.firstFillTs) / 1000 : 0;
+  const urgentWindow = cfg.urgentWindowSec;
+  const isUrgent = (deadlineSec - elapsedSec) <= urgentWindow;
+  
+  return { 
+    trigger: true, 
+    reason: triggerByDelta ? 'DELTA_INCREASE' : 'FILL_INCREASE',
+    mode: isUrgent ? 'URGENT_TAKER' : 'MAKER'
+  };
+}
+
+/**
+ * v6.1.2: Pair-cost gate for micro-hedges (DO NOT BURN EDGE)
+ * Returns whether the micro-hedge should proceed based on projected pair cost
+ */
+export function checkMicroHedgePairCostGate(
+  inv: Inventory,
+  hedgeSide: Outcome,
+  hedgePrice: number,
+  mode: MicroHedgeMode
+): { proceed: boolean; projectedPairCost: number; reason: string } {
+  const cfg = STRATEGY.microHedge;
+  
+  // Get avg cost of OTHER side (the existing position)
+  const otherSide: Outcome = hedgeSide === 'UP' ? 'DOWN' : 'UP';
+  const otherShares = otherSide === 'UP' ? inv.upShares : inv.downShares;
+  const otherCost = otherSide === 'UP' ? inv.upCost : inv.downCost;
+  const avgCostOther = otherShares > 0 ? otherCost / otherShares : 0;
+  
+  // Projected pair cost = avg_cost_other_side + proposed_price
+  const projectedPairCost = avgCostOther + hedgePrice;
+  
+  if (mode === 'MAKER') {
+    // Normal mode: must lock profit (pair cost < 1.00 - buffer)
+    const maxAllowed = 1.0 - cfg.edgeLockBuffer;
+    if (projectedPairCost > maxAllowed) {
+      return {
+        proceed: false,
+        projectedPairCost,
+        reason: `PAIR_COST_BLOCK: ${projectedPairCost.toFixed(3)} > ${maxAllowed.toFixed(3)} (edge lock)`,
+      };
+    }
+  } else {
+    // Urgent mode: allow slight overpay
+    const maxAllowed = 1.0 + cfg.urgentOverpayCap;
+    if (projectedPairCost > maxAllowed) {
+      return {
+        proceed: false,
+        projectedPairCost,
+        reason: `URGENT_PAIR_COST_BLOCK: ${projectedPairCost.toFixed(3)} > ${maxAllowed.toFixed(3)} (urgent cap)`,
+      };
+    }
+  }
+  
+  return {
+    proceed: true,
+    projectedPairCost,
+    reason: `OK: projected pair cost ${projectedPairCost.toFixed(3)}`,
+  };
+}
+
+/**
+ * v6.1.2: Build micro-hedge trade signal
+ * Returns null if micro-hedge should be aborted
+ */
+export function buildMicroHedge(
+  inv: Inventory,
+  book: TopOfBook,
+  remainingSeconds: number,
+  previousUnpaired: number,
+  lastMicroHedgeTs: number,
+  nowMs: number,
+  guardrails: V611GuardrailResult,
+  tick: number = STRATEGY.tick.fallback
+): { signal: TradeSignal | null; intent: MicroHedgeIntent | null; abortReason?: MicroHedgeAbortReason } {
+  const cfg = STRATEGY.microHedge;
+  
+  // Check trigger conditions
+  const triggerCheck = shouldTriggerMicroHedge(
+    inv, previousUnpaired, remainingSeconds, lastMicroHedgeTs, nowMs, guardrails
+  );
+  
+  if (!triggerCheck.trigger) {
+    return { 
+      signal: null, 
+      intent: null, 
+      abortReason: triggerCheck.reason as MicroHedgeAbortReason 
+    };
+  }
+  
+  // Determine underweight side
+  const hedgeSide = getUnderweightSide(inv);
+  if (!hedgeSide) {
+    return { signal: null, intent: null };
+  }
+  
+  // Get ask price for hedge side
+  const hedgeAsk = hedgeSide === 'UP' ? book.up.ask : book.down.ask;
+  if (!hedgeAsk || !Number.isFinite(hedgeAsk)) {
+    return { signal: null, intent: null, abortReason: 'NO_DEPTH' };
+  }
+  
+  // Calculate micro-hedge quantity
+  const microQty = calculateMicroHedgeQty(inv);
+  if (microQty < cfg.minShares) {
+    return { signal: null, intent: null };
+  }
+  
+  // Determine price based on mode
+  let hedgePrice: number;
+  if (triggerCheck.mode === 'MAKER') {
+    // Maker: post at ask (resting order)
+    hedgePrice = roundDown(hedgeAsk, tick);
+  } else {
+    // Urgent taker: add cushion for immediate fill
+    const cushion = STRATEGY.tick.hedgeCushion;
+    hedgePrice = Math.min(
+      roundUp(hedgeAsk + cushion * tick, tick),
+      STRATEGY.hedge.maxPrice
+    );
+  }
+  
+  // Pair-cost gate check
+  const pairCostCheck = checkMicroHedgePairCostGate(inv, hedgeSide, hedgePrice, triggerCheck.mode);
+  if (!pairCostCheck.proceed) {
+    console.log(`[v6.1.2] 🛑 MICRO-HEDGE ABORT: ${pairCostCheck.reason}`);
+    return { signal: null, intent: null, abortReason: 'PAIR_COST' };
+  }
+  
+  const currentUnpaired = unpairedShares(inv);
+  const targetUnpaired = Math.max(0, currentUnpaired - microQty);
+  
+  // Build intent for logging
+  const intent: MicroHedgeIntent = {
+    marketId: '', // Will be set by caller
+    side: hedgeSide,
+    microQty,
+    unpairedBefore: currentUnpaired,
+    unpairedAfterTarget: targetUnpaired,
+    mode: triggerCheck.mode,
+    projectedPairCost: pairCostCheck.projectedPairCost,
+    correlationId: crypto.randomUUID(),
+    timestamp: nowMs,
+  };
+  
+  // Build trade signal
+  const signal: TradeSignal = {
+    outcome: hedgeSide,
+    price: hedgePrice,
+    shares: microQty,
+    reasoning: `v6.1.2 MICRO-HEDGE ${hedgeSide} ${microQty}sh @ ${(hedgePrice * 100).toFixed(1)}¢ (${triggerCheck.mode}, unpaired: ${currentUnpaired}→${targetUnpaired}, cpp: ${pairCostCheck.projectedPairCost.toFixed(3)})`,
+    type: 'hedge',
+    isMarketable: triggerCheck.mode === 'URGENT_TAKER',
+    cushionTicks: triggerCheck.mode === 'URGENT_TAKER' ? STRATEGY.tick.hedgeCushion : 0,
+  };
+  
+  console.log(`[v6.1.2] 🔄 MICRO-HEDGE INTENT: ${hedgeSide} ${microQty}sh @ ${(hedgePrice * 100).toFixed(1)}¢`);
+  console.log(`   mode=${triggerCheck.mode}, unpaired=${currentUnpaired}→${targetUnpaired}, cpp=${pairCostCheck.projectedPairCost.toFixed(3)}`);
+  
+  return { signal, intent };
+}
+
+/**
+ * v6.1.2: Log micro-hedge intent for telemetry
+ */
+export function logMicroHedgeIntent(intent: MicroHedgeIntent, marketId: string): void {
+  console.log(`[v6.1.2] 📊 MICRO_HEDGE_INTENT`);
+  console.log(`   market_id: ${marketId}`);
+  console.log(`   side: ${intent.side}`);
+  console.log(`   microQty: ${intent.microQty}`);
+  console.log(`   unpaired: ${intent.unpairedBefore} → ${intent.unpairedAfterTarget}`);
+  console.log(`   mode: ${intent.mode}`);
+  console.log(`   projected_pair_cost: ${intent.projectedPairCost.toFixed(3)}`);
+  console.log(`   correlation_id: ${intent.correlationId}`);
+}
+
+/**
+ * v6.1.2: Log micro-hedge result for telemetry
+ */
+export function logMicroHedgeResult(
+  result: MicroHedgeResult,
+  marketId: string,
+  correlationId: string
+): void {
+  const emoji = result.status === 'FILLED' ? '✅' : 
+                result.status === 'PARTIAL' ? '⚠️' :
+                result.status === 'ABORTED' ? '🛑' : '📤';
+  
+  console.log(`[v6.1.2] ${emoji} MICRO_HEDGE_RESULT`);
+  console.log(`   market_id: ${marketId}`);
+  console.log(`   status: ${result.status}`);
+  if (result.abortReason) console.log(`   abort_reason: ${result.abortReason}`);
+  if (result.fillLatencyMs) console.log(`   fill_latency_ms: ${result.fillLatencyMs}`);
+  if (result.priceUsed) console.log(`   price_used: ${(result.priceUsed * 100).toFixed(1)}¢`);
+  if (result.filledQty) console.log(`   filled_qty: ${result.filledQty}`);
+  console.log(`   correlation_id: ${correlationId}`);
+}
+
+/**
+ * v6.1.2: Calculate paired delay (time from first fill to paired_min reached)
+ * Target: < 20s (gabagool-like)
+ */
+export function calculatePairedDelaySec(
+  firstFillTs: number | undefined,
+  pairedMinReachedTs: number | undefined
+): number | null {
+  if (!firstFillTs || !pairedMinReachedTs) return null;
+  return (pairedMinReachedTs - firstFillTs) / 1000;
+}
+
+/**
+ * v6.1.2: Enhanced metrics including micro-hedge data
+ */
+export interface V612Metrics extends V61Metrics {
+  unpaired_shares: number;
+  underweight_side: Outcome | null;
+  micro_hedge_eligible: boolean;
+  paired_delay_sec: number | null;
+}
+
+export function calculateV612Metrics(
+  inv: Inventory, 
+  nowMs: number,
+  pairedMinReachedTs?: number
+): V612Metrics {
+  const base = calculateV61Metrics(inv, nowMs);
+  return {
+    ...base,
+    unpaired_shares: unpairedShares(inv),
+    underweight_side: getUnderweightSide(inv),
+    micro_hedge_eligible: unpairedShares(inv) >= STRATEGY.microHedge.triggerDelta,
+    paired_delay_sec: calculatePairedDelaySec(inv.firstFillTs, pairedMinReachedTs),
   };
 }
 
