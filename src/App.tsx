@@ -30,6 +30,7 @@ import Settings from "./pages/Settings";
 import TradeAnalysis from "./pages/TradeAnalysis";
 import HedgeAnalysis from "./pages/HedgeAnalysis";
 import DataLogging from "./pages/DataLogging";
+import Observability from "./pages/Observability";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -74,6 +75,7 @@ const App = () => (
           <Route path="/trade-analysis" element={<TradeAnalysis />} />
           <Route path="/hedge-analysis" element={<HedgeAnalysis />} />
           <Route path="/data-logging" element={<DataLogging />} />
+          <Route path="/observability" element={<Observability />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
