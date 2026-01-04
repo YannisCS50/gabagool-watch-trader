@@ -30,8 +30,19 @@ try {
 }
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '6.3.0';  // v6.3.0: Config Unification
+const RUNNER_VERSION = '6.3.1';  // v6.3.1: Startup grace period
 const RUN_ID = crypto.randomUUID();
+
+// v6.3.1: Track when runner started - only trade on markets that start AFTER this
+const RUNNER_START_TIME_MS = Date.now();
+const STARTUP_GRACE_CONFIG = {
+  // Only trade markets that started AFTER runner boot, with a small grace window
+  requireFreshMarkets: true,
+  // Allow markets that started within this window before boot (for quick restarts)
+  graceWindowBeforeBootMs: 60_000, // 1 minute
+  // Log blocked trades for debugging
+  logBlockedTrades: true,
+};
 
 // Startup banner will be printed AFTER config is built
 async function printStartupBanner(): Promise<void> {
@@ -68,6 +79,14 @@ async function printStartupBanner(): Promise<void> {
     console.log(`║     Edge buffer: ${(strategy.edge.buffer * 100).toFixed(1)}¢`.padEnd(66) + '║');
     console.log(`║     Assets: ${config.trading.assets.join(', ')}`.padEnd(66) + '║');
   }
+  
+  // v6.3.1: Startup grace period info
+  console.log('╠════════════════════════════════════════════════════════════════╣');
+  console.log('║  🛡️  STARTUP GRACE PERIOD:                                      ║');
+  console.log(`║     Enabled: ${STARTUP_GRACE_CONFIG.requireFreshMarkets ? 'YES' : 'NO'}`.padEnd(66) + '║');
+  console.log(`║     Grace window: ${STARTUP_GRACE_CONFIG.graceWindowBeforeBootMs / 1000}s before boot`.padEnd(66) + '║');
+  console.log(`║     Boot time: ${new Date(RUNNER_START_TIME_MS).toISOString().slice(11, 19)} UTC`.padEnd(66) + '║');
+  console.log('║     → Only trades on markets starting after boot time          ║');
   
   console.log('╚════════════════════════════════════════════════════════════════╝');
   console.log('');
@@ -687,8 +706,39 @@ async function evaluateMarket(slug: string): Promise<void> {
 
   try {
     const nowMs = Date.now();
+    const startTime = new Date(ctx.market.eventStartTime).getTime();
     const endTime = new Date(ctx.market.eventEndTime).getTime();
     const remainingSeconds = Math.floor((endTime - nowMs) / 1000);
+
+    // v6.3.1: STARTUP GRACE PERIOD - Don't trade on markets that were already running before we started
+    // This prevents the bot from jumping into mid-market positions on deploy
+    if (STARTUP_GRACE_CONFIG.requireFreshMarkets) {
+      const hasExistingPosition = ctx.position.upShares > 0 || ctx.position.downShares > 0;
+      
+      // Only apply grace period to NEW positions, not to managing existing ones (hedge, accumulate)
+      if (!hasExistingPosition) {
+        const marketStartedBeforeBoot = startTime < RUNNER_START_TIME_MS - STARTUP_GRACE_CONFIG.graceWindowBeforeBootMs;
+        
+        if (marketStartedBeforeBoot) {
+          const marketAgeAtBoot = Math.floor((RUNNER_START_TIME_MS - startTime) / 1000);
+          
+          if (STARTUP_GRACE_CONFIG.logBlockedTrades) {
+            // Only log once per market to avoid spam
+            const logKey = `startup_grace_${slug}`;
+            if (!(global as any)[logKey]) {
+              (global as any)[logKey] = true;
+              console.log(`⏳ [v6.3.1] STARTUP GRACE: Skipping ${ctx.market.asset} market (started ${marketAgeAtBoot}s before boot)`);
+              console.log(`   Market: ${slug}`);
+              console.log(`   Started: ${ctx.market.eventStartTime} | Boot: ${new Date(RUNNER_START_TIME_MS).toISOString()}`);
+              console.log(`   Will trade on next fresh market for this asset.`);
+            }
+          }
+          
+          ctx.inFlight = false;
+          return;
+        }
+      }
+    }
 
     // Keep spot/strike cached even if a trade happens before the next 1s tick
     const latestSpot = ctx.market.asset === 'BTC' ? lastBtcPrice : ctx.market.asset === 'ETH' ? lastEthPrice : null;
