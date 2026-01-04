@@ -156,6 +156,41 @@ export const LivePnLDashboard = () => {
       }
     });
 
+    // Also include results that don't have matching trades in our list
+    // This ensures settled bets are shown even if the trades aren't in our current trades array
+    results.forEach((result) => {
+      if (!betsMap.has(result.market_slug)) {
+        betsMap.set(result.market_slug, {
+          market_slug: result.market_slug,
+          asset: result.asset,
+          trades: [],
+          upShares: result.up_shares || 0,
+          upCost: result.up_cost || 0,
+          upAvgPrice: result.up_avg_price || 0,
+          downShares: result.down_shares || 0,
+          downCost: result.down_cost || 0,
+          downAvgPrice: result.down_avg_price || 0,
+          totalInvested: result.total_invested || 0,
+          isHedged: (result.up_shares || 0) > 0 && (result.down_shares || 0) > 0,
+          lockedProfit: 0,
+          payout: result.payout,
+          profitLoss: result.profit_loss,
+          profitLossPercent: result.profit_loss_percent,
+          isSettled: !!result.settled_at,
+          eventEndTime: result.event_end_time,
+          firstTradeTime: result.created_at,
+          lastTradeTime: result.created_at,
+          tradeCount: 0,
+          outcome: result.result,
+          result: result,
+          pairedShares: Math.min(result.up_shares || 0, result.down_shares || 0),
+          unpairedShares: Math.abs((result.up_shares || 0) - (result.down_shares || 0)),
+          unpairedNotional: 0,
+          unpairedSide: null,
+        });
+      }
+    });
+
     // Sort by most recent first
     return Array.from(betsMap.values()).sort(
       (a, b) => new Date(b.lastTradeTime).getTime() - new Date(a.lastTradeTime).getTime()
