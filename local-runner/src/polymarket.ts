@@ -614,6 +614,20 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
   }
   lastOrderAttemptAtMs = Date.now();
 
+  // PATCH: Block order placement unless orderbook depth is initialized (non-empty).
+  // Also re-validates depth AFTER any throttle delay by fetching it here.
+  const depth = await getOrderbookDepth(order.tokenId);
+  const depthInitialized = depth.levels.length > 0 && depth.topAsk != null;
+  if (!depthInitialized) {
+    console.log(`⛔ Skip: orderbook depth not initialized for tokenId ${order.tokenId.slice(0, 30)}...`);
+    console.log(`   📊 Depth state: topAsk=${depth.topAsk?.toFixed(2) || 'none'}, askVol=${depth.askVolume.toFixed(0)}, levels=${depth.levels.length}`);
+    return {
+      success: false,
+      error: 'Orderbook depth not initialized yet',
+      failureReason: 'no_orderbook',
+    };
+  }
+
   // v6.0.1: Context-aware price improvement
   // A) ENTRY: alleen improve als topSize < desiredShares * 1.2 of spread > 0.03
   // B) HEDGE: improvement toegestaan (need fills)
@@ -621,7 +635,7 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
   let priceImprovement = 0;
   const intent = order.intent || 'ENTRY';
   const spread = order.spread ?? 0;
-  
+
   if (intent === 'ENTRY') {
     // Only improve for entry if:
     // - Book is thin (askVolume < desiredShares * 1.2)
@@ -636,22 +650,24 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
     // HEDGE / FORCE / SURVIVAL: always improve to ensure fill
     priceImprovement = order.price > 0.50 ? 0.02 : 0.01;
     if (intent === 'SURVIVAL') {
-      priceImprovement = 0.03;  // More aggressive in survival mode
+      priceImprovement = 0.03; // More aggressive in survival mode
     }
   }
-  
-  const adjustedPrice = Math.min(order.price + priceImprovement, 0.99);
-  
-  console.log(`📤 Placing order: ${order.side} ${order.size} @ ${(order.price * 100).toFixed(0)}¢ → ${(adjustedPrice * 100).toFixed(0)}¢ (+${(priceImprovement * 100).toFixed(0)}¢ ${intent})`);
 
+  const adjustedPrice = Math.min(order.price + priceImprovement, 0.99);
+
+  console.log(
+    `📤 Placing order: ${order.side} ${order.size} @ ${(order.price * 100).toFixed(0)}¢ → ${(adjustedPrice * 100).toFixed(0)}¢ (+${(priceImprovement * 100).toFixed(0)}¢ ${intent})`
+  );
 
   // Check if orderbook exists and has liquidity before placing order
-  const depth = await getOrderbookDepth(order.tokenId);
   if (!depth.hasLiquidity) {
     console.log(`⛔ Skip: insufficient liquidity for tokenId ${order.tokenId.slice(0, 30)}...`);
-    console.log(`   📊 Orderbook state: topAsk=${depth.topAsk?.toFixed(2) || 'none'}, askVol=${depth.askVolume.toFixed(0)}, levels=${depth.levels.length}`);
-    return { 
-      success: false, 
+    console.log(
+      `   📊 Orderbook state: topAsk=${depth.topAsk?.toFixed(2) || 'none'}, askVol=${depth.askVolume.toFixed(0)}, levels=${depth.levels.length}`
+    );
+    return {
+      success: false,
       error: `Insufficient liquidity (only ${depth.askVolume.toFixed(0)} shares available, need 10+)`,
       failureReason: 'no_liquidity',
     };
