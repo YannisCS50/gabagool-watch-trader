@@ -351,6 +351,15 @@ export async function saveOrderLifecycle(order: OrderLifecycle): Promise<boolean
 }
 
 // --- Inventory Snapshots ---
+// v6.3.0: Skew Allowed Reason enum
+export type SkewAllowedReason = 
+  | 'PAIR_COST_IMPROVING'
+  | 'DELTA_LOW'
+  | 'TIME_SUFFICIENT'
+  | 'SURVIVAL_MODE'
+  | 'EXECUTION_FAILURE'
+  | 'UNKNOWN';
+
 export interface InventorySnapshot {
   market_id: string;
   asset: string;
@@ -364,6 +373,7 @@ export interface InventorySnapshot {
   state_age_ms?: number;
   hedge_lag_ms?: number;
   trigger_type?: string;
+  skew_allowed_reason?: SkewAllowedReason;  // v6.3.0
   ts: number;
 }
 
@@ -407,6 +417,69 @@ export async function saveFundingSnapshot(snapshot: FundingSnapshot): Promise<bo
     return result.success;
   } catch (error) {
     console.error('❌ saveFundingSnapshot error:', error);
+    return false;
+  }
+}
+
+// ============================================
+// v6.3.0: HEDGE INTENT TRACKING (Skew Explainability)
+// ============================================
+
+// Hedge Intent Status enum
+export type HedgeIntentStatus = 
+  | 'PENDING'
+  | 'FILLED'
+  | 'ABORTED_NO_EDGE'
+  | 'ABORTED_FUNDS'
+  | 'ABORTED_NO_DEPTH'
+  | 'ABORTED_TIMEOUT'
+  | 'ABORTED_RATE_LIMIT'
+  | 'ABORTED_PAIR_COST_WORSENING';
+
+// Hedge Intent Type enum
+export type HedgeIntentType = 'ENTRY_HEDGE' | 'REBAL_HEDGE' | 'PANIC_HEDGE';
+
+export interface HedgeIntent {
+  ts: number;
+  correlation_id?: string;
+  run_id?: string;
+  market_id: string;
+  asset: string;
+  side: 'UP' | 'DOWN';
+  intent_type: HedgeIntentType;
+  intended_qty: number;
+  filled_qty?: number;
+  status: HedgeIntentStatus;
+  abort_reason?: string;
+  price_at_intent?: number;
+  price_at_resolution?: number;
+  resolution_ts?: number;
+}
+
+export async function saveHedgeIntent(intent: HedgeIntent): Promise<boolean> {
+  try {
+    const result = await callProxy<{ success: boolean }>('save-hedge-intent', { intent });
+    return result.success;
+  } catch (error) {
+    console.error('❌ saveHedgeIntent error:', error);
+    return false;
+  }
+}
+
+export async function updateHedgeIntent(
+  correlationId: string,
+  marketId: string,
+  update: Partial<Pick<HedgeIntent, 'status' | 'filled_qty' | 'abort_reason' | 'price_at_resolution' | 'resolution_ts'>>
+): Promise<boolean> {
+  try {
+    const result = await callProxy<{ success: boolean }>('update-hedge-intent', { 
+      correlation_id: correlationId,
+      market_id: marketId,
+      update 
+    });
+    return result.success;
+  } catch (error) {
+    console.error('❌ updateHedgeIntent error:', error);
     return false;
   }
 }

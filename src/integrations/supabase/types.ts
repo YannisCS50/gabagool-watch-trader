@@ -335,6 +335,63 @@ export type Database = {
         }
         Relationships: []
       }
+      hedge_intents: {
+        Row: {
+          abort_reason: string | null
+          asset: string
+          correlation_id: string | null
+          created_at: string
+          filled_qty: number | null
+          id: string
+          intended_qty: number
+          intent_type: string
+          market_id: string
+          price_at_intent: number | null
+          price_at_resolution: number | null
+          resolution_ts: number | null
+          run_id: string | null
+          side: string
+          status: string
+          ts: number
+        }
+        Insert: {
+          abort_reason?: string | null
+          asset: string
+          correlation_id?: string | null
+          created_at?: string
+          filled_qty?: number | null
+          id?: string
+          intended_qty: number
+          intent_type: string
+          market_id: string
+          price_at_intent?: number | null
+          price_at_resolution?: number | null
+          resolution_ts?: number | null
+          run_id?: string | null
+          side: string
+          status?: string
+          ts: number
+        }
+        Update: {
+          abort_reason?: string | null
+          asset?: string
+          correlation_id?: string | null
+          created_at?: string
+          filled_qty?: number | null
+          id?: string
+          intended_qty?: number
+          intent_type?: string
+          market_id?: string
+          price_at_intent?: number | null
+          price_at_resolution?: number | null
+          resolution_ts?: number | null
+          run_id?: string | null
+          side?: string
+          status?: string
+          ts?: number
+        }
+        Relationships: []
+      }
       inventory_snapshots: {
         Row: {
           asset: string
@@ -346,6 +403,7 @@ export type Database = {
           id: string
           market_id: string
           pair_cost: number | null
+          skew_allowed_reason: string | null
           state: string
           state_age_ms: number | null
           trigger_type: string | null
@@ -363,6 +421,7 @@ export type Database = {
           id?: string
           market_id: string
           pair_cost?: number | null
+          skew_allowed_reason?: string | null
           state: string
           state_age_ms?: number | null
           trigger_type?: string | null
@@ -380,6 +439,7 @@ export type Database = {
           id?: string
           market_id?: string
           pair_cost?: number | null
+          skew_allowed_reason?: string | null
           state?: string
           state_age_ms?: number | null
           trigger_type?: string | null
