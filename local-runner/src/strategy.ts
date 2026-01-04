@@ -62,7 +62,7 @@ export {
   tickInferer,
   roundDown,
   roundUp,
-  // v6.1: Gabagool Alignment exports
+  // v6.1.1: Paired Discipline & EV Lock exports
   pairedShares,
   pairedRatio,
   costPerPaired,
@@ -76,6 +76,11 @@ export {
   needsInitHedge,
   calculateV61Metrics,
   type V61Metrics,
+  // v6.1.1: New guardrail system
+  checkV611Guardrails,
+  logV611Guardrail,
+  type GuardrailTrigger,
+  type V611GuardrailResult,
 } from './loveable-strat.js';
 
 // Import everything we need to wrap
@@ -120,8 +125,8 @@ export interface LegacyTradeSignal {
 // VERSION & NAME
 // ============================================================
 
-export const STRATEGY_VERSION = '6.3.1';  // Updated for v6.1 Gabagool Alignment
-export const STRATEGY_NAME = 'GPT Strategy v6.3.1 – Adaptive Hedger + Gabagool Alignment';
+export const STRATEGY_VERSION = '6.3.2';  // Updated for v6.1.1 Paired Discipline & EV Lock
+export const STRATEGY_NAME = 'GPT Strategy v6.3.2 – Paired Discipline & EV Lock';
 
 // ============================================================
 // DYNAMIC STRATEGY OBJECT

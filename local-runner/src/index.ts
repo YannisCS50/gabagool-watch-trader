@@ -30,7 +30,7 @@ try {
 }
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '6.3.1';  // v6.3.1: Startup grace period
+const RUNNER_VERSION = '6.3.2';  // v6.3.2: v6.1.1 Paired Discipline & EV Lock
 const RUN_ID = crypto.randomUUID();
 
 // v6.3.1: Track when runner started - only trade on markets that start AFTER this
