@@ -10,6 +10,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Download, RefreshCw, Filter, Activity, Package, Database } from "lucide-react";
 import { DownloadAllLogsButton } from "@/components/DownloadAllLogsButton";
+import { DownloadEnrichedFillsButton } from "@/components/DownloadEnrichedFillsButton";
+import { DownloadAuditCodeButton } from "@/components/DownloadAuditCodeButton";
 import { format } from "date-fns";
 import { toast } from "sonner";
 import { NavLink } from "@/components/NavLink";
@@ -272,6 +274,8 @@ export default function Observability() {
               Refresh
             </Button>
             <DownloadAllLogsButton />
+            <DownloadEnrichedFillsButton />
+            <DownloadAuditCodeButton />
           </div>
         </div>
 
