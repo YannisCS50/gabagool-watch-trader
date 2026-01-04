@@ -217,6 +217,8 @@ export interface SnapshotInput {
   // v6.0.0: Additional context for enrichment
   btcPrice?: number | null;
   ethPrice?: number | null;
+  // v6.2.0: Orderbook readiness flag
+  orderbookReady?: boolean;
 }
 
 export function recordSnapshot(input: SnapshotInput): void {
@@ -301,6 +303,12 @@ export function recordSnapshot(input: SnapshotInput): void {
     telemetry.last180sSnapshots = telemetry.last180sSnapshots.filter(s => s.ts >= cutoff);
   }
   
+  // v6.2.0: Determine orderbook readiness
+  const orderbookReady = input.orderbookReady ?? (
+    input.upBid !== null && input.upAsk !== null &&
+    input.downBid !== null && input.downAsk !== null
+  );
+
   // Build and log snapshot with v6.0.0 extended fields
   const snapshotLog: SnapshotLog = {
     ts: now,
@@ -326,6 +334,7 @@ export function recordSnapshot(input: SnapshotInput): void {
     cheapestAskPlusOtherMid,
     upBestAsk: input.upAsk,    // Alias for enrichment clarity
     downBestAsk: input.downAsk, // Alias for enrichment clarity
+    orderbookReady,            // v6.2.0
     botState,
     upShares: input.upShares,
     downShares: input.downShares,
@@ -474,6 +483,9 @@ export function recordSettlement(input: SettlementInput): void {
     s => s.combined < DISLOCATION_95
   ).length;
   
+  // v6.2.0: Calculate theoretical PnL = 1.0 - pair_cost
+  const theoreticalPnL = pairCost !== null ? 1.0 - pairCost : null;
+
   const settlementLog: SettlementLog = {
     ts: now,
     iso: new Date(now).toISOString(),
@@ -496,6 +508,7 @@ export function recordSettlement(input: SettlementInput): void {
     countDislocation95: telemetry.countDislocation95,
     countDislocation97: telemetry.countDislocation97,
     last180sDislocation95,
+    theoreticalPnL,              // v6.2.0
   };
   
   logSettlement(settlementLog);

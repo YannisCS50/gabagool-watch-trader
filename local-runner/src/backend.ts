@@ -292,6 +292,9 @@ export interface BotEvent {
   correlation_id?: string;
   run_id?: string;
   reason_code?: string;
+  // v6.2.0: Extended fields for ORDER_INTENT and ORDER_FAIL
+  expected_notional?: number;    // For ORDER_INTENT: expected USD to reserve
+  api_error_code?: string;       // For ORDER_FAIL: structured error code
   data?: Record<string, unknown>;
   ts: number;
 }

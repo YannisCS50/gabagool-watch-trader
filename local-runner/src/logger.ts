@@ -80,6 +80,9 @@ export interface SnapshotLog {
   upBestAsk: number | null;      // Alias for upAsk (for enrichment clarity)
   downBestAsk: number | null;    // Alias for downAsk (for enrichment clarity)
   
+  // v6.2.0: Orderbook readiness
+  orderbookReady: boolean;       // true = bids & asks present + depth initialized
+  
   // Bot state
   botState: string;              // FLAT | ONE_SIDED | HEDGED | etc
   upShares: number;
@@ -159,6 +162,8 @@ export interface SettlementLog {
   countDislocation95: number;    // Count of snapshots with combined < 0.95
   countDislocation97: number;    // Count of snapshots with combined < 0.97
   last180sDislocation95: number; // Dislocation count in final 180s
+  // v6.2.0: Theoretical PnL for comparing edge vs execution
+  theoreticalPnL: number | null; // 1.0 - pair_cost
 }
 
 export function logSettlement(data: SettlementLog): void {
