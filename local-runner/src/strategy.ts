@@ -62,6 +62,20 @@ export {
   tickInferer,
   roundDown,
   roundUp,
+  // v6.1: Gabagool Alignment exports
+  pairedShares,
+  pairedRatio,
+  costPerPaired,
+  isPairedMinReached,
+  isInEntryWindow,
+  entryAgeSec,
+  hedgeLagSecFromInventory,
+  checkCostPerPairedGuardrail,
+  shouldBlockDominantSide,
+  getInitHedgeSize,
+  needsInitHedge,
+  calculateV61Metrics,
+  type V61Metrics,
 } from './loveable-strat.js';
 
 // Import everything we need to wrap
@@ -106,8 +120,8 @@ export interface LegacyTradeSignal {
 // VERSION & NAME
 // ============================================================
 
-export const STRATEGY_VERSION = '6.3.0';  // Updated for config unification
-export const STRATEGY_NAME = 'GPT Strategy v6.3 – Adaptive Hedger (Config Unified)';
+export const STRATEGY_VERSION = '6.3.1';  // Updated for v6.1 Gabagool Alignment
+export const STRATEGY_NAME = 'GPT Strategy v6.3.1 – Adaptive Hedger + Gabagool Alignment';
 
 // ============================================================
 // DYNAMIC STRATEGY OBJECT
