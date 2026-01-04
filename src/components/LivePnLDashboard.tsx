@@ -50,9 +50,14 @@ interface BetStats {
   lastTradeTime: string;
   tradeCount: number;
   outcome: string | null;
+  // NEW: Paired/Unpaired exposure metrics (essential for paired-arbitrage evaluation)
+  pairedShares: number;
+  unpairedShares: number;
+  unpairedNotional: number;
+  unpairedSide: 'UP' | 'DOWN' | null;
 }
 
-type BetFilter = 'all' | 'running' | 'closed' | 'wins' | 'losses';
+type BetFilter = 'all' | 'running' | 'closed' | 'wins' | 'losses' | 'unpaired';
 
 export const LivePnLDashboard = () => {
   const { trades, results, stats, isLoading } = useLiveTrades();
@@ -88,6 +93,11 @@ export const LivePnLDashboard = () => {
           lastTradeTime: trade.created_at,
           tradeCount: 0,
           outcome: null,
+          // NEW: Paired/Unpaired exposure
+          pairedShares: 0,
+          unpairedShares: 0,
+          unpairedNotional: 0,
+          unpairedSide: null,
         });
       }
 
@@ -117,6 +127,16 @@ export const LivePnLDashboard = () => {
       bet.upAvgPrice = bet.upShares > 0 ? bet.upCost / bet.upShares : 0;
       bet.downAvgPrice = bet.downShares > 0 ? bet.downCost / bet.downShares : 0;
       bet.isHedged = bet.upShares > 0 && bet.downShares > 0;
+
+      // NEW: Calculate paired/unpaired exposure (PRIMARY RISK METRIC)
+      bet.pairedShares = Math.min(bet.upShares, bet.downShares);
+      bet.unpairedShares = Math.abs(bet.upShares - bet.downShares);
+      if (bet.unpairedShares > 0) {
+        bet.unpairedSide = bet.upShares > bet.downShares ? 'UP' : 'DOWN';
+        // Unpaired notional = unpaired shares * avg cost of the excess side
+        const unpairedAvgCost = bet.unpairedSide === 'UP' ? bet.upAvgPrice : bet.downAvgPrice;
+        bet.unpairedNotional = bet.unpairedShares * unpairedAvgCost;
+      }
 
       // Calculate locked profit for hedged bets
       if (bet.isHedged) {
@@ -197,6 +217,11 @@ export const LivePnLDashboard = () => {
       hedgedBets: hedgedBets.length,
       unhedgedBets: unhedgedBets.length,
       totalLockedProfit,
+      // NEW: Unpaired exposure metrics (PRIMARY RISK MEASURE)
+      totalUnpairedNotional: runningBets.reduce((sum, b) => sum + b.unpairedNotional, 0),
+      totalPairedShares: runningBets.reduce((sum, b) => sum + b.pairedShares, 0),
+      totalUnpairedShares: runningBets.reduce((sum, b) => sum + b.unpairedShares, 0),
+      betsWithUnpairedRisk: runningBets.filter(b => b.unpairedShares > 0).length,
       btcBets: btcBets.length,
       ethBets: ethBets.length,
       solBets: solBets.length,
@@ -219,6 +244,8 @@ export const LivePnLDashboard = () => {
         return betStats.filter((b) => b.isSettled && (b.profitLoss || 0) > 0);
       case 'losses':
         return betStats.filter((b) => b.isSettled && (b.profitLoss || 0) <= 0);
+      case 'unpaired':
+        return betStats.filter((b) => b.unpairedShares > 0);
       default:
         return betStats;
     }
@@ -346,6 +373,36 @@ export const LivePnLDashboard = () => {
         </Card>
       </div>
 
+      {/* NEW: Unpaired Risk Card - PRIMARY RISK METRIC */}
+      {summaryStats.totalUnpairedNotional > 0 && (
+        <Card className="border-red-500/30 bg-gradient-to-br from-red-500/10 to-transparent">
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="flex items-center gap-2 text-sm text-muted-foreground mb-2">
+                  <AlertTriangle className="w-4 h-4 text-red-500" />
+                  Unpaired Risk (Running Bets)
+                </div>
+                <div className="text-2xl font-bold text-red-500">
+                  ${summaryStats.totalUnpairedNotional.toFixed(2)}
+                </div>
+                <div className="text-xs text-muted-foreground mt-1">
+                  {summaryStats.betsWithUnpairedRisk} bets with unpaired exposure
+                </div>
+              </div>
+              <div className="text-right">
+                <div className="text-sm text-muted-foreground">Paired vs Unpaired</div>
+                <div className="font-mono">
+                  <span className="text-emerald-500">{summaryStats.totalPairedShares.toFixed(1)}</span>
+                  {' / '}
+                  <span className="text-red-500">{summaryStats.totalUnpairedShares.toFixed(1)}</span>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Detailed Stats Grid */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <Card>
@@ -447,6 +504,11 @@ export const LivePnLDashboard = () => {
                 <TabsTrigger value="closed" className="text-xs px-3 h-6">Closed ({summaryStats.settledBets})</TabsTrigger>
                 <TabsTrigger value="wins" className="text-xs px-3 h-6 text-emerald-500">Wins ({summaryStats.wins})</TabsTrigger>
                 <TabsTrigger value="losses" className="text-xs px-3 h-6 text-red-500">Losses ({summaryStats.losses})</TabsTrigger>
+                {summaryStats.betsWithUnpairedRisk > 0 && (
+                  <TabsTrigger value="unpaired" className="text-xs px-3 h-6 text-red-500">
+                    ⚠ Unpaired ({summaryStats.betsWithUnpairedRisk})
+                  </TabsTrigger>
+                )}
               </TabsList>
             </Tabs>
           </CardTitle>
@@ -510,10 +572,15 @@ export const LivePnLDashboard = () => {
                               </Badge>
                             )}
                           </div>
-                          <div className="text-xs text-muted-foreground mt-0.5">
-                            {bet.tradeCount} trades • ${bet.totalInvested.toFixed(2)} invested
+                          <div className="text-xs text-muted-foreground mt-0.5 flex flex-wrap items-center gap-1">
+                            <span>{bet.tradeCount} trades • ${bet.totalInvested.toFixed(2)} invested</span>
+                            {bet.unpairedShares > 0 && (
+                              <Badge variant="outline" className="text-[10px] px-1 py-0 bg-red-500/10 text-red-500 border-red-500/30">
+                                ⚠ {bet.unpairedShares.toFixed(1)} unpaired {bet.unpairedSide}
+                              </Badge>
+                            )}
                             {bet.eventEndTime && (
-                              <span> • Ends {format(parseISO(bet.eventEndTime), 'HH:mm')}</span>
+                              <span>• Ends {format(parseISO(bet.eventEndTime), 'HH:mm')}</span>
                             )}
                           </div>
                         </div>

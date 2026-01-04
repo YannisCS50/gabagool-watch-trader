@@ -116,7 +116,7 @@ export function DownloadAllLogsButton() {
       // Build CSV rows
       const allRows: string[] = [];
       
-      // CSV Header - comprehensive with Observability v1 columns
+      // CSV Header - comprehensive with Observability v1 columns + paired/unpaired metrics
       allRows.push([
         'type',
         'timestamp',
@@ -160,10 +160,12 @@ export function DownloadAllLogsButton() {
         // NEW: Observability v1 columns
         'correlation_id',
         'run_id',
-        // Extra inventory/funding columns
-        'extra_1',
-        'extra_2',
-        'extra_3',
+        // NEW: Paired/Unpaired exposure metrics (PRIMARY for paired-arbitrage analysis)
+        'up_shares',
+        'down_shares',
+        'paired_shares',
+        'unpaired_shares',
+        'unpaired_notional',
         // v6.2.0/6.3.0: New columns
         'orderbook_ready',
         'theoretical_pnl',
@@ -293,8 +295,18 @@ export function DownloadAllLogsButton() {
         ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
       });
 
-      // Settlement logs
-      (settlementLogsRes.data || []).forEach((row) => {
+      // Settlement logs - WITH PAIRED/UNPAIRED METRICS (PRIMARY FOR ANALYSIS)
+      (settlementLogsRes.data || []).forEach((row: any) => {
+        const upShares = row.final_up_shares || 0;
+        const downShares = row.final_down_shares || 0;
+        const pairedShares = Math.min(upShares, downShares);
+        const unpairedShares = Math.abs(upShares - downShares);
+        const avgUpCost = row.avg_up_cost || 0;
+        const avgDownCost = row.avg_down_cost || 0;
+        const unpairedNotional = unpairedShares > 0 
+          ? unpairedShares * (upShares > downShares ? avgUpCost : avgDownCost)
+          : 0;
+
         allRows.push([
           'SETTLEMENT',
           row.iso || '',
@@ -302,10 +314,10 @@ export function DownloadAllLogsButton() {
           row.asset || '',
           row.winning_side || '',
           '', // side
-          `${row.final_up_shares || 0}/${row.final_down_shares || 0}`,
+          '', // shares (use dedicated columns)
           '', // price
           '', // total
-          '', // status
+          row.failure_flag || '', // status
           '', // order_id
           '', // intent
           '', // reasoning
@@ -318,7 +330,16 @@ export function DownloadAllLogsButton() {
           row.pair_cost || '',
           row.realized_pnl || '',
           '', // error
-          ...PAD_16,
+          ...new Array(16).fill(''),
+          // NEW: Paired/Unpaired columns
+          upShares,
+          downShares,
+          pairedShares,
+          unpairedShares,
+          unpairedNotional.toFixed(4),
+          // Extra settlement columns
+          '', // orderbook_ready
+          row.theoretical_pnl || '',
         ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
       });
 
@@ -490,8 +511,18 @@ export function DownloadAllLogsButton() {
         ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
       });
 
-      // NEW: Inventory snapshots
+      // NEW: Inventory snapshots - WITH PAIRED/UNPAIRED METRICS
       (inventorySnapshotsRes.data || []).forEach((row: any) => {
+        const upShares = row.up_shares || 0;
+        const downShares = row.down_shares || 0;
+        const pairedShares = Math.min(upShares, downShares);
+        const unpairedShares = row.unpaired_shares ?? Math.abs(upShares - downShares);
+        const avgUpCost = row.avg_up_cost || 0;
+        const avgDownCost = row.avg_down_cost || 0;
+        const unpairedNotional = unpairedShares > 0 
+          ? unpairedShares * (upShares > downShares ? avgUpCost : avgDownCost)
+          : 0;
+
         allRows.push([
           'INVENTORY',
           row.created_at || '',
@@ -499,7 +530,7 @@ export function DownloadAllLogsButton() {
           row.asset || '',
           row.state || '',
           '', // side
-          `${row.up_shares || 0}/${row.down_shares || 0}`,
+          '', // shares (use dedicated columns)
           '', // price
           '', // total
           '', // status
@@ -515,28 +546,18 @@ export function DownloadAllLogsButton() {
           row.pair_cost || '',
           '', // pnl
           '', // error
-          '', // seconds_remaining
-          '', // spot_price
-          '', // up_bid
-          '', // up_ask
-          '', // up_mid
-          '', // down_bid
-          '', // down_ask
-          '', // down_mid
-          '', // spread_up
-          '', // spread_down
-          '', // combined_ask
-          '', // combined_mid
-          '', // cheapest
-          '', // skew
-          '', // adverse_streak
-          '', // no_liquidity_streak
-          '', // correlation_id
-          '', // run_id
-          // Extra inventory fields
-          row.unpaired_shares || '',
+          ...new Array(16).fill(''),
+          // NEW: Paired/Unpaired columns
+          upShares,
+          downShares,
+          pairedShares,
+          unpairedShares,
+          unpairedNotional.toFixed(4),
+          // Extra inventory columns
+          '', // orderbook_ready
+          '', // theoretical_pnl
+          row.skew_allowed_reason || '',
           row.state_age_ms || '',
-          row.hedge_lag_ms || '',
         ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
       });
 
