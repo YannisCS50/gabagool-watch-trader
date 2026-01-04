@@ -8,6 +8,7 @@ import { PnLChart } from '@/components/PnLChart';
 import { TraderHeader } from '@/components/TraderHeader';
 import { LiveRunnerStatus } from '@/components/LiveRunnerStatus';
 import { MainNav } from '@/components/MainNav';
+import { MobileNav } from '@/components/MobileNav';
 import { DownloadAllLogsButton } from '@/components/DownloadAllLogsButton';
 import { DownloadEnrichedFillsButton } from '@/components/DownloadEnrichedFillsButton';
 import { DownloadAuditCodeButton } from '@/components/DownloadAuditCodeButton';
@@ -81,6 +82,7 @@ const Index = () => {
         <div className="container mx-auto px-4 py-3">
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-3">
+              <MobileNav />
               <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-emerald-400 flex items-center justify-center">
                 <BarChart3 className="w-4 h-4 text-primary-foreground" />
               </div>
@@ -91,7 +93,7 @@ const Index = () => {
                 </span>
               )}
             </div>
-            <div className="flex-1 overflow-x-auto">
+            <div className="flex-1 overflow-x-auto hidden md:block">
               <MainNav />
             </div>
             <div className="flex items-center gap-2">
