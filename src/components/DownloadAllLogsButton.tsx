@@ -34,6 +34,8 @@ export function DownloadAllLogsButton() {
         ordersRes,
         inventorySnapshotsRes,
         fundingSnapshotsRes,
+        // v6.3.0: Hedge intents for skew explainability
+        hedgeIntentsRes,
       ] = await Promise.all([
         // Live trades - THE main trading data
         supabase.from('live_trades')
@@ -103,6 +105,12 @@ export function DownloadAllLogsButton() {
           .select('*')
           .gte('created_at', thirtyDaysAgoISO)
           .order('ts', { ascending: false }),
+        
+        // v6.3.0: Hedge intents - skew explainability
+        supabase.from('hedge_intents')
+          .select('*')
+          .gte('created_at', thirtyDaysAgoISO)
+          .order('ts', { ascending: false }),
       ]);
 
       // Build CSV rows
@@ -156,6 +164,11 @@ export function DownloadAllLogsButton() {
         'extra_1',
         'extra_2',
         'extra_3',
+        // v6.2.0/6.3.0: New columns
+        'orderbook_ready',
+        'theoretical_pnl',
+        'skew_allowed_reason',
+        'hedge_intent_status',
       ].join(','));
 
       const PAD_16 = new Array(16).fill('');
@@ -577,6 +590,46 @@ export function DownloadAllLogsButton() {
         ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
       });
 
+      // v6.3.0: Hedge intents - skew explainability
+      (hedgeIntentsRes.data || []).forEach((row: any) => {
+        allRows.push([
+          'HEDGE_INTENT',
+          row.created_at || '',
+          row.market_id || '',
+          row.asset || '',
+          row.intent_type || '',
+          row.side || '',
+          row.intended_qty || '',
+          row.price_at_intent || '',
+          row.filled_qty || '',
+          row.status || '',
+          '', // order_id
+          '', // intent
+          row.abort_reason || '',
+          '', // event_start
+          '', // event_end
+          '', // strike
+          '', // open
+          '', // close
+          '', // delta
+          '', // pair_cost
+          '', // pnl
+          '', // error
+          '', // seconds_remaining
+          '', // spot_price
+          ...new Array(14).fill(''),
+          row.correlation_id || '',
+          row.run_id || '',
+          '', // extra_1
+          '', // extra_2
+          '', // extra_3
+          '', // orderbook_ready
+          '', // theoretical_pnl
+          '', // skew_allowed_reason
+          row.status || '', // hedge_intent_status
+        ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
+      });
+
       // Create and download CSV
       const csvContent = allRows.join('\n');
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -603,13 +656,14 @@ export function DownloadAllLogsButton() {
         ordersLifecycle: ordersRes.data?.length || 0,
         inventory: inventorySnapshotsRes.data?.length || 0,
         funding: fundingSnapshotsRes.data?.length || 0,
+        hedgeIntents: hedgeIntentsRes.data?.length || 0,
       };
 
       const totalRows = allRows.length - 1;
       const sizeEstimate = (csvContent.length / 1024 / 1024).toFixed(1);
 
       toast.success(`Downloaded ${totalRows.toLocaleString()} rows (~${sizeEstimate}MB)`, {
-        description: `Trades: ${counts.trades}, Snapshots: ${counts.snapshots.toLocaleString()}, Events: ${counts.botEvents}, Funding: ${counts.funding}`,
+        description: `Trades: ${counts.trades}, Snapshots: ${counts.snapshots.toLocaleString()}, Events: ${counts.botEvents}, Hedge Intents: ${counts.hedgeIntents}`,
       });
     } catch (error) {
       console.error('Download error:', error);
