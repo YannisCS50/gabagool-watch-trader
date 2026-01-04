@@ -158,6 +158,69 @@ export type Database = {
         }
         Relationships: []
       }
+      claim_logs: {
+        Row: {
+          block_number: number | null
+          condition_id: string
+          confirmed_at: string | null
+          created_at: string
+          error_message: string | null
+          gas_price_gwei: number | null
+          gas_used: number | null
+          id: string
+          market_id: string | null
+          market_title: string | null
+          outcome: string | null
+          retry_count: number | null
+          shares_redeemed: number
+          status: string
+          tx_hash: string | null
+          usdc_received: number
+          wallet_address: string
+          wallet_type: string | null
+        }
+        Insert: {
+          block_number?: number | null
+          condition_id: string
+          confirmed_at?: string | null
+          created_at?: string
+          error_message?: string | null
+          gas_price_gwei?: number | null
+          gas_used?: number | null
+          id?: string
+          market_id?: string | null
+          market_title?: string | null
+          outcome?: string | null
+          retry_count?: number | null
+          shares_redeemed?: number
+          status?: string
+          tx_hash?: string | null
+          usdc_received?: number
+          wallet_address: string
+          wallet_type?: string | null
+        }
+        Update: {
+          block_number?: number | null
+          condition_id?: string
+          confirmed_at?: string | null
+          created_at?: string
+          error_message?: string | null
+          gas_price_gwei?: number | null
+          gas_used?: number | null
+          id?: string
+          market_id?: string | null
+          market_title?: string | null
+          outcome?: string | null
+          retry_count?: number | null
+          shares_redeemed?: number
+          status?: string
+          tx_hash?: string | null
+          usdc_received?: number
+          wallet_address?: string
+          wallet_type?: string | null
+        }
+        Relationships: []
+      }
       fill_logs: {
         Row: {
           asset: string
@@ -470,6 +533,10 @@ export type Database = {
       live_trade_results: {
         Row: {
           asset: string
+          claim_status: string | null
+          claim_tx_hash: string | null
+          claim_usdc: number | null
+          claimed_at: string | null
           created_at: string | null
           down_avg_price: number | null
           down_cost: number | null
@@ -490,6 +557,10 @@ export type Database = {
         }
         Insert: {
           asset: string
+          claim_status?: string | null
+          claim_tx_hash?: string | null
+          claim_usdc?: number | null
+          claimed_at?: string | null
           created_at?: string | null
           down_avg_price?: number | null
           down_cost?: number | null
@@ -510,6 +581,10 @@ export type Database = {
         }
         Update: {
           asset?: string
+          claim_status?: string | null
+          claim_tx_hash?: string | null
+          claim_usdc?: number | null
+          claimed_at?: string | null
           created_at?: string | null
           down_avg_price?: number | null
           down_cost?: number | null

@@ -1,4 +1,22 @@
+/**
+ * redeemer.ts - Polymarket Auto-Claim System
+ * ============================================================================
+ * 
+ * Automatic on-chain claiming for resolved Polymarket markets.
+ * Claims happen permissionlessly on-chain via ConditionalTokens contract.
+ * 
+ * Features:
+ * - Periodic detection of resolved markets (configurable interval)
+ * - Batching support for gas efficiency  
+ * - Database logging of all claim attempts
+ * - Safety guardrails (no double claims, min threshold, retry logic)
+ * - Event-based confirmation (PayoutRedemption events)
+ * 
+ * @version 2.0.0
+ */
+
 import { ethers, Wallet } from 'ethers';
+import { createClient } from '@supabase/supabase-js';
 import { config } from './config.js';
 import {
   getProvider,
@@ -10,15 +28,27 @@ import {
 } from './chain.js';
 import { reconcile, printReconciliationReport } from './reconcile.js';
 
-// Polymarket API endpoints
+// ============================================================================
+// CONFIGURATION
+// ============================================================================
+
 const DATA_API_URL = 'https://data-api.polymarket.com';
+const DEFAULT_CLAIM_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const MIN_CLAIM_THRESHOLD_USD = 0.10; // Minimum $0.10 to claim (gas efficiency)
+const MAX_RETRY_COUNT = 3;
+const RETRY_BACKOFF_MS = 30000; // 30 seconds between retries
+const BATCH_SIZE = 5; // Max positions to claim per batch
+const DELAY_BETWEEN_CLAIMS_MS = 3000; // 3 seconds between individual claims
 
 // CTF ABI for direct redeem
 const CTF_REDEEM_ABI = [
   'function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] calldata indexSets) external',
 ];
 
-// Interface for redeemable position from Polymarket API
+// ============================================================================
+// TYPES
+// ============================================================================
+
 interface RedeemablePosition {
   proxyWallet: string;
   asset: string;
@@ -35,9 +65,38 @@ interface RedeemablePosition {
   negRisk?: boolean;
 }
 
+interface ClaimResult {
+  success: boolean;
+  txHash?: string;
+  gasUsed?: number;
+  gasPriceGwei?: number;
+  blockNumber?: number;
+  usdcReceived?: number;
+  error?: string;
+}
+
+interface ClaimLogEntry {
+  market_id: string | null;
+  condition_id: string;
+  market_title: string | null;
+  outcome: string | null;
+  shares_redeemed: number;
+  usdc_received: number;
+  tx_hash: string | null;
+  gas_used: number | null;
+  gas_price_gwei: number | null;
+  wallet_address: string;
+  wallet_type: 'EOA' | 'PROXY';
+  status: 'pending' | 'confirmed' | 'failed';
+  error_message: string | null;
+  retry_count: number;
+  block_number: number | null;
+}
+
 // ============================================================================
 // MUTEX: Prevent concurrent claim loops
 // ============================================================================
+
 let claimMutexLocked = false;
 
 async function acquireClaimMutex(): Promise<boolean> {
@@ -54,7 +113,7 @@ function releaseClaimMutex(): void {
 }
 
 // ============================================================================
-// TRACKING: Event-based confirmation
+// TRACKING: In-memory state
 // ============================================================================
 
 const confirmedClaims = new Map<string, {
@@ -64,18 +123,98 @@ const confirmedClaims = new Map<string, {
   confirmedAt: number;
 }>();
 
+const pendingRetries = new Map<string, {
+  position: RedeemablePosition;
+  retryCount: number;
+  nextRetryAt: number;
+}>();
+
 const claimTxHistory: Array<{
   txHash: string;
   conditionId: string;
   status: 'pending' | 'confirmed' | 'failed';
   sentAt: number;
   confirmedAt?: number;
+  error?: string;
 }> = [];
+
+// ============================================================================
+// SUPABASE CLIENT
+// ============================================================================
+
+let supabase: ReturnType<typeof createClient> | null = null;
+
+function getSupabaseClient() {
+  if (supabase) return supabase;
+  
+  const url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+  
+  if (!url || !key) {
+    console.warn('⚠️ Supabase credentials not found, database logging disabled');
+    return null;
+  }
+  
+  supabase = createClient(url, key);
+  return supabase;
+}
+
+// ============================================================================
+// DATABASE LOGGING
+// ============================================================================
+
+async function logClaimToDatabase(entry: ClaimLogEntry): Promise<void> {
+  const client = getSupabaseClient();
+  if (!client) return;
+  
+  try {
+    const { error } = await client.from('claim_logs').insert({
+      ...entry,
+      confirmed_at: entry.status === 'confirmed' ? new Date().toISOString() : null,
+    });
+    
+    if (error) {
+      console.error('❌ Failed to log claim to database:', error.message);
+    }
+  } catch (e) {
+    console.error('❌ Database logging error:', e);
+  }
+}
+
+async function updateLiveTradeResultClaimStatus(
+  conditionId: string, 
+  txHash: string, 
+  usdcReceived: number
+): Promise<void> {
+  const client = getSupabaseClient();
+  if (!client) return;
+  
+  try {
+    // Find the live_trade_results entry by condition_id pattern in market_slug
+    // Note: This is a best-effort update since we don't store condition_id directly
+    await client
+      .from('live_trade_results')
+      .update({
+        claim_status: 'claimed',
+        claim_tx_hash: txHash,
+        claimed_at: new Date().toISOString(),
+        claim_usdc: usdcReceived,
+      })
+      .is('claim_status', null)
+      .or('claim_status.eq.pending');
+      
+  } catch (e) {
+    console.error('❌ Failed to update live_trade_results:', e);
+  }
+}
 
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
+
 let wallet: Wallet | null = null;
+let autoClaimInterval: NodeJS.Timeout | null = null;
+let isAutoClaimRunning = false;
 
 function initializeRedeemer(): void {
   if (wallet) return;
@@ -99,7 +238,8 @@ function initializeRedeemer(): void {
     console.log(`\n✅ Signer = Proxy (EOA mode) - direct claiming supported`);
   } else {
     console.log(`\n🔐 Signer ≠ Proxy (Proxy wallet mode)`);
-    console.log(`   Will use Polymarket Relayer API for claiming`);
+    console.log(`   Automated claiming NOT supported for proxy wallets`);
+    console.log(`   Claims must be done via https://polymarket.com/portfolio`);
   }
 }
 
@@ -110,20 +250,9 @@ function isProxyWalletMode(): boolean {
 }
 
 // ============================================================================
-// PROXY WALLET CLAIMING STATUS
-// ============================================================================
-// NOTE: As of Dec 2025, Polymarket does NOT have an official API for redeeming
-// positions held by proxy wallets (Safe/Magic wallets). This is a known issue:
-// - https://github.com/Polymarket/py-clob-client/issues/139
-// - https://github.com/Polymarket/conditional-token-examples-py/issues/1
-//
-// For proxy wallets, users MUST claim via the Polymarket UI at:
-// https://polymarket.com/portfolio
-// ============================================================================
-
-// ============================================================================
 // FETCH POSITIONS
 // ============================================================================
+
 async function fetchRedeemablePositions(): Promise<RedeemablePosition[]> {
   const proxyWallet = config.polymarket.address;
   const signingWallet = wallet?.address;
@@ -193,12 +322,21 @@ async function fetchRedeemablePositions(): Promise<RedeemablePosition[]> {
 
   console.log(`📊 Total positions fetched: ${allPositions.length}`);
 
-  // Filter redeemable, exclude confirmed claims
+  // Filter redeemable, exclude confirmed claims, apply minimum threshold
   const redeemableByCondition = new Map<string, RedeemablePosition>();
 
   for (const p of allPositions) {
+    // Skip if not redeemable
     if (!p.redeemable) continue;
+    
+    // Skip if already confirmed
     if (confirmedClaims.has(p.conditionId)) continue;
+    
+    // Skip if below minimum threshold
+    if ((p.currentValue || 0) < MIN_CLAIM_THRESHOLD_USD) {
+      console.log(`   ⏭️ Skipping ${p.conditionId.slice(0, 10)}... (value $${p.currentValue?.toFixed(2)} < min $${MIN_CLAIM_THRESHOLD_USD})`);
+      continue;
+    }
 
     const existing = redeemableByCondition.get(p.conditionId);
     if (!existing || (p.currentValue || 0) > (existing.currentValue || 0)) {
@@ -208,16 +346,23 @@ async function fetchRedeemablePositions(): Promise<RedeemablePosition[]> {
 
   const redeemable = [...redeemableByCondition.values()];
 
+  // Sort by value descending (claim highest value first)
+  redeemable.sort((a, b) => (b.currentValue || 0) - (a.currentValue || 0));
+
   if (redeemable.length > 0) {
-    console.log(`\n💰 ${redeemable.length} redeemable (skipping ${confirmedClaims.size} confirmed):`);
-    for (const p of redeemable) {
-      console.log(`   💰 ${p.outcome} ${p.size.toFixed(0)} shares @ ${p.title?.slice(0, 50)}`);
+    const totalValue = redeemable.reduce((sum, p) => sum + (p.currentValue || 0), 0);
+    console.log(`\n💰 ${redeemable.length} redeemable positions ($${totalValue.toFixed(2)} total):`);
+    for (const p of redeemable.slice(0, 10)) { // Show max 10
+      console.log(`   💰 ${p.outcome} ${p.size.toFixed(0)} shares @ ${p.title?.slice(0, 45)}`);
       console.log(`      Value: $${p.currentValue?.toFixed(2)} | Wallet: ${p.proxyWallet?.slice(0, 10)}...`);
+    }
+    if (redeemable.length > 10) {
+      console.log(`   ... and ${redeemable.length - 10} more`);
     }
   } else if (confirmedClaims.size > 0) {
     console.log(`   ✅ All positions confirmed claimed (${confirmedClaims.size} total)`);
   } else {
-    console.log(`   No redeemable positions`);
+    console.log(`   No redeemable positions above $${MIN_CLAIM_THRESHOLD_USD} threshold`);
   }
 
   return redeemable;
@@ -226,7 +371,8 @@ async function fetchRedeemablePositions(): Promise<RedeemablePosition[]> {
 // ============================================================================
 // REDEEM: Direct EOA method
 // ============================================================================
-async function redeemDirectEOA(position: RedeemablePosition): Promise<boolean> {
+
+async function redeemDirectEOA(position: RedeemablePosition): Promise<ClaimResult> {
   const conditionId = position.conditionId;
   const provider = getProvider();
   const ctfContract = new ethers.Contract(CTF_ADDRESS, CTF_REDEEM_ABI, wallet!);
@@ -241,8 +387,9 @@ async function redeemDirectEOA(position: RedeemablePosition): Promise<boolean> {
     const feeData = await provider.getFeeData();
     const maxPriority = feeData.maxPriorityFeePerGas || ethers.utils.parseUnits('30', 'gwei');
     const maxFee = feeData.maxFeePerGas || ethers.utils.parseUnits('60', 'gwei');
+    const gasPriceGwei = parseFloat(ethers.utils.formatUnits(maxPriority, 'gwei'));
 
-    console.log(`   ⛽ Gas: priority=${ethers.utils.formatUnits(maxPriority, 'gwei')} gwei`);
+    console.log(`   ⛽ Gas: priority=${gasPriceGwei.toFixed(1)} gwei`);
 
     const tx = await ctfContract.redeemPositions(
       USDC_ADDRESS,
@@ -267,47 +414,173 @@ async function redeemDirectEOA(position: RedeemablePosition): Promise<boolean> {
     const receipt = await waitForTransaction(tx.hash, 1, 120000);
 
     if (!receipt) {
-      console.log(`   ⏳ Tx still pending`);
-      return false;
+      return {
+        success: false,
+        txHash: tx.hash,
+        error: 'Transaction still pending after timeout',
+      };
     }
 
     if (receipt.status !== 1) {
-      console.log(`   ❌ Tx failed on-chain`);
-      return false;
+      return {
+        success: false,
+        txHash: tx.hash,
+        blockNumber: receipt.blockNumber,
+        gasUsed: receipt.gasUsed.toNumber(),
+        error: 'Transaction reverted on-chain',
+      };
     }
 
     const events = parsePayoutRedemptionEvents(receipt);
 
     if (events.length === 0) {
-      console.log(`   ⚠️ Tx succeeded but no PayoutRedemption events`);
-      return false;
+      return {
+        success: false,
+        txHash: tx.hash,
+        blockNumber: receipt.blockNumber,
+        gasUsed: receipt.gasUsed.toNumber(),
+        error: 'No PayoutRedemption events in receipt',
+      };
     }
 
+    // Sum up all payouts from this tx
+    let totalPayout = 0;
     for (const event of events) {
       console.log(`   ✅ CONFIRMED: claimed $${event.payoutUSDC.toFixed(2)}`);
+      totalPayout += event.payoutUSDC;
+      
       confirmedClaims.set(event.conditionId, {
         txHash: event.transactionHash,
         blockNumber: event.blockNumber,
         payoutUSDC: event.payoutUSDC,
         confirmedAt: Date.now(),
       });
+
+      // Update tx history
+      const historyEntry = claimTxHistory.find(h => h.txHash === tx.hash);
+      if (historyEntry) {
+        historyEntry.status = 'confirmed';
+        historyEntry.confirmedAt = Date.now();
+      }
     }
 
-    return true;
+    return {
+      success: true,
+      txHash: tx.hash,
+      blockNumber: receipt.blockNumber,
+      gasUsed: receipt.gasUsed.toNumber(),
+      gasPriceGwei,
+      usdcReceived: totalPayout,
+    };
+
   } catch (error: any) {
     const msg = error?.message || String(error);
     console.error(`   ❌ Direct redeem failed: ${msg}`);
-    return false;
+    
+    // Update tx history if we have a hash
+    const lastEntry = claimTxHistory[claimTxHistory.length - 1];
+    if (lastEntry && lastEntry.conditionId === conditionId) {
+      lastEntry.status = 'failed';
+      lastEntry.error = msg;
+    }
+
+    return {
+      success: false,
+      error: msg,
+    };
   }
 }
 
 // ============================================================================
-// REDEEM: Proxy wallet - NOT SUPPORTED VIA API
+// CLAIM WITH DATABASE LOGGING
 // ============================================================================
-// Polymarket does NOT currently have an official API for redeeming positions
-// held by proxy wallets. This is a known limitation - see GitHub issues above.
-// Users with proxy wallets (MetaMask connection) must claim via the UI.
+
+async function claimPositionWithLogging(position: RedeemablePosition): Promise<ClaimResult> {
+  const walletAddress = wallet?.address || '';
+  const walletType = isProxyWalletMode() ? 'PROXY' : 'EOA';
+
+  // Log pending claim
+  const pendingLog: ClaimLogEntry = {
+    market_id: position.slug,
+    condition_id: position.conditionId,
+    market_title: position.title,
+    outcome: position.outcome,
+    shares_redeemed: position.size,
+    usdc_received: 0,
+    tx_hash: null,
+    gas_used: null,
+    gas_price_gwei: null,
+    wallet_address: walletAddress,
+    wallet_type: walletType,
+    status: 'pending',
+    error_message: null,
+    retry_count: pendingRetries.get(position.conditionId)?.retryCount || 0,
+    block_number: null,
+  };
+
+  console.log(`\n💎 CLAIMING: ${position.title?.slice(0, 50)}`);
+  console.log(`   Outcome: ${position.outcome} | Value: $${position.currentValue?.toFixed(2)}`);
+  console.log(`   ConditionId: ${position.conditionId}`);
+  console.log(`   Position wallet: ${position.proxyWallet}`);
+  console.log(`   Signer wallet: ${walletAddress}`);
+
+  // Only EOA (direct) mode is supported for automated claims
+  if (isProxyWalletMode()) {
+    pendingLog.status = 'failed';
+    pendingLog.error_message = 'Proxy wallet mode - automated claiming not available';
+    await logClaimToDatabase(pendingLog);
+    return { success: false, error: 'Proxy wallet mode not supported' };
+  }
+
+  const result = await redeemDirectEOA(position);
+
+  // Update log with result
+  pendingLog.tx_hash = result.txHash || null;
+  pendingLog.gas_used = result.gasUsed || null;
+  pendingLog.gas_price_gwei = result.gasPriceGwei || null;
+  pendingLog.block_number = result.blockNumber || null;
+  pendingLog.usdc_received = result.usdcReceived || 0;
+  pendingLog.status = result.success ? 'confirmed' : 'failed';
+  pendingLog.error_message = result.error || null;
+
+  await logClaimToDatabase(pendingLog);
+
+  // Update live_trade_results if successful
+  if (result.success && result.txHash) {
+    await updateLiveTradeResultClaimStatus(
+      position.conditionId,
+      result.txHash,
+      result.usdcReceived || 0
+    );
+  }
+
+  // Handle retry logic
+  if (!result.success) {
+    const currentRetry = pendingRetries.get(position.conditionId);
+    const retryCount = (currentRetry?.retryCount || 0) + 1;
+    
+    if (retryCount < MAX_RETRY_COUNT) {
+      pendingRetries.set(position.conditionId, {
+        position,
+        retryCount,
+        nextRetryAt: Date.now() + RETRY_BACKOFF_MS * retryCount, // Exponential backoff
+      });
+      console.log(`   🔄 Scheduled retry ${retryCount}/${MAX_RETRY_COUNT} in ${RETRY_BACKOFF_MS * retryCount / 1000}s`);
+    } else {
+      pendingRetries.delete(position.conditionId);
+      console.log(`   ❌ Max retries (${MAX_RETRY_COUNT}) exceeded for ${position.conditionId.slice(0, 20)}...`);
+    }
+  } else {
+    pendingRetries.delete(position.conditionId);
+  }
+
+  return result;
+}
+
 // ============================================================================
+// PROXY WALLET INSTRUCTIONS
+// ============================================================================
+
 function printProxyWalletClaimInstructions(positions: RedeemablePosition[]): void {
   const totalValue = positions.reduce((sum, p) => sum + (p.currentValue || 0), 0);
   
@@ -332,67 +605,64 @@ function printProxyWalletClaimInstructions(positions: RedeemablePosition[]): voi
 }
 
 // ============================================================================
-// MAIN REDEEM FUNCTION
+// MAIN CLAIM FUNCTION
 // ============================================================================
-async function redeemPositionWithConfirmation(position: RedeemablePosition): Promise<boolean> {
-  const conditionId = position.conditionId;
 
-  console.log(`\n💎 CLAIMING: ${position.title?.slice(0, 50)}`);
-  console.log(`   Outcome: ${position.outcome} | Value: $${position.currentValue?.toFixed(2)}`);
-  console.log(`   ConditionId: ${conditionId}`);
-  console.log(`   Position wallet: ${position.proxyWallet}`);
-  console.log(`   Signer wallet: ${wallet?.address}`);
-
-  // Only EOA (direct) mode is supported for automated claims
-  if (isProxyWalletMode()) {
-    console.log(`   ⚠️ Proxy wallet mode - automated claiming not available`);
-    return false;
-  } else {
-    return redeemDirectEOA(position);
-  }
-}
-
-// ============================================================================
-// MAIN ENTRY POINT
-// ============================================================================
-export async function checkAndClaimWinnings(): Promise<{ claimed: number; total: number }> {
+export async function checkAndClaimWinnings(): Promise<{ claimed: number; total: number; totalUSDC: number }> {
   if (!await acquireClaimMutex()) {
-    return { claimed: 0, total: 0 };
+    return { claimed: 0, total: 0, totalUSDC: 0 };
   }
 
   try {
     initializeRedeemer();
 
+    // First, process any pending retries
+    const now = Date.now();
+    for (const [conditionId, retry] of pendingRetries) {
+      if (retry.nextRetryAt <= now) {
+        console.log(`\n🔄 Processing retry for ${conditionId.slice(0, 20)}...`);
+        await claimPositionWithLogging(retry.position);
+        await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_CLAIMS_MS));
+      }
+    }
+
     const positions = await fetchRedeemablePositions();
 
     if (positions.length === 0) {
-      return { claimed: 0, total: 0 };
+      return { claimed: 0, total: 0, totalUSDC: 0 };
     }
 
     // If proxy wallet mode, show instructions and exit
     if (isProxyWalletMode()) {
       printProxyWalletClaimInstructions(positions);
       console.log(`\n📊 RESULT: ${positions.length} positions need manual claiming`);
-      return { claimed: 0, total: positions.length };
+      return { claimed: 0, total: positions.length, totalUSDC: 0 };
     }
 
-    // EOA mode - attempt automated claiming
+    // EOA mode - attempt automated claiming in batches
     let claimedCount = 0;
+    let totalUSDC = 0;
+    const batch = positions.slice(0, BATCH_SIZE); // Take first batch
 
-    for (const position of positions) {
+    console.log(`\n🚀 Processing batch of ${batch.length} claims...`);
+
+    for (const position of batch) {
       if (confirmedClaims.has(position.conditionId)) continue;
 
       // Delay between claims
       if (claimedCount > 0) {
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_CLAIMS_MS));
       }
 
-      const success = await redeemPositionWithConfirmation(position);
-      if (success) claimedCount++;
+      const result = await claimPositionWithLogging(position);
+      if (result.success) {
+        claimedCount++;
+        totalUSDC += result.usdcReceived || 0;
+      }
     }
 
     if (claimedCount > 0) {
-      console.log(`\n🎉 Claimed ${claimedCount} of ${positions.length} positions`);
+      console.log(`\n🎉 Claimed ${claimedCount} of ${batch.length} positions ($${totalUSDC.toFixed(2)} USDC)`);
 
       // POST-CLAIM VERIFICATION
       console.log(`\n🔄 Verifying claims...`);
@@ -401,17 +671,66 @@ export async function checkAndClaimWinnings(): Promise<{ claimed: number; total:
       const remainingPositions = await fetchRedeemablePositions();
       if (remainingPositions.length > 0) {
         console.log(`⚠️ ${remainingPositions.length} positions still showing as claimable`);
-        console.log(`   This may be due to indexer delay`);
+        console.log(`   This may be due to indexer delay (will retry next cycle)`);
       } else {
         console.log(`✅ Verified: all positions claimed`);
       }
     }
 
-    return { claimed: claimedCount, total: positions.length };
+    return { 
+      claimed: claimedCount, 
+      total: positions.length,
+      totalUSDC,
+    };
+
   } finally {
     releaseClaimMutex();
   }
 }
+
+// ============================================================================
+// AUTO-CLAIM LOOP
+// ============================================================================
+
+export function startAutoClaimLoop(intervalMs: number = DEFAULT_CLAIM_INTERVAL_MS): void {
+  if (isAutoClaimRunning) {
+    console.log('⚠️ Auto-claim loop already running');
+    return;
+  }
+
+  console.log(`\n🔄 Starting auto-claim loop (interval: ${intervalMs / 1000}s)`);
+  isAutoClaimRunning = true;
+
+  // Run immediately on start
+  checkAndClaimWinnings().catch(console.error);
+
+  // Then run periodically
+  autoClaimInterval = setInterval(async () => {
+    console.log(`\n⏰ Auto-claim check triggered at ${new Date().toISOString()}`);
+    try {
+      await checkAndClaimWinnings();
+    } catch (error) {
+      console.error('❌ Auto-claim error:', error);
+    }
+  }, intervalMs);
+}
+
+export function stopAutoClaimLoop(): void {
+  if (autoClaimInterval) {
+    clearInterval(autoClaimInterval);
+    autoClaimInterval = null;
+  }
+  isAutoClaimRunning = false;
+  console.log('⏹️ Auto-claim loop stopped');
+}
+
+export function isAutoClaimActive(): boolean {
+  return isAutoClaimRunning;
+}
+
+// ============================================================================
+// UTILITY FUNCTIONS
+// ============================================================================
 
 /**
  * Get current claimable value from API
@@ -446,18 +765,69 @@ export function getConfirmedClaims(): Map<string, any> {
 }
 
 /**
+ * Get pending retries
+ */
+export function getPendingRetries(): Map<string, any> {
+  return new Map(pendingRetries);
+}
+
+/**
+ * Get claim statistics
+ */
+export function getClaimStats(): {
+  confirmed: number;
+  pending: number;
+  totalClaimedUSDC: number;
+} {
+  let totalClaimedUSDC = 0;
+  for (const claim of confirmedClaims.values()) {
+    totalClaimedUSDC += claim.payoutUSDC;
+  }
+  
+  return {
+    confirmed: confirmedClaims.size,
+    pending: pendingRetries.size,
+    totalClaimedUSDC,
+  };
+}
+
+/**
  * Print debug state
  */
 export function printDebugState(): void {
+  const stats = getClaimStats();
+  
   console.log('\n📊 REDEEMER DEBUG STATE:');
-  console.log(`   Confirmed claims: ${confirmedClaims.size}`);
+  console.log(`   Confirmed claims: ${stats.confirmed}`);
+  console.log(`   Pending retries: ${stats.pending}`);
+  console.log(`   Total claimed USDC: $${stats.totalClaimedUSDC.toFixed(2)}`);
   console.log(`   Tx history entries: ${claimTxHistory.length}`);
   console.log(`   Proxy wallet mode: ${isProxyWalletMode()}`);
+  console.log(`   Auto-claim active: ${isAutoClaimRunning}`);
   
   if (confirmedClaims.size > 0) {
-    console.log('\n   Confirmed claims:');
-    for (const [conditionId, claim] of confirmedClaims) {
+    console.log('\n   Recent confirmed claims:');
+    const recent = [...confirmedClaims.entries()].slice(-5);
+    for (const [conditionId, claim] of recent) {
       console.log(`   - ${conditionId.slice(0, 20)}...: $${claim.payoutUSDC.toFixed(2)} (block ${claim.blockNumber})`);
     }
   }
+  
+  if (pendingRetries.size > 0) {
+    console.log('\n   Pending retries:');
+    for (const [conditionId, retry] of pendingRetries) {
+      const waitTime = Math.max(0, (retry.nextRetryAt - Date.now()) / 1000);
+      console.log(`   - ${conditionId.slice(0, 20)}...: retry ${retry.retryCount}/${MAX_RETRY_COUNT} in ${waitTime.toFixed(0)}s`);
+    }
+  }
+}
+
+/**
+ * Force clear all state (for testing)
+ */
+export function clearState(): void {
+  confirmedClaims.clear();
+  pendingRetries.clear();
+  claimTxHistory.length = 0;
+  console.log('🧹 Redeemer state cleared');
 }

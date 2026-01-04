@@ -7,7 +7,7 @@ import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidity
 import { enforceVpnOrExit } from './vpn-check.js';
 import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder, syncPositionsToBackend, savePriceTicks, PriceTick, saveBotEvent, saveOrderLifecycle, saveInventorySnapshot, saveFundingSnapshot, BotEvent, OrderLifecycle, InventorySnapshot, FundingSnapshot } from './backend.js';
 import { fetchChainlinkPrice } from './chain.js';
-import { checkAndClaimWinnings, getClaimableValue } from './redeemer.js';
+import { checkAndClaimWinnings, getClaimableValue, startAutoClaimLoop, stopAutoClaimLoop, isAutoClaimActive, getClaimStats } from './redeemer.js';
 import { syncPositions, syncPositionsToDatabase, printPositionsReport, filter15mPositions } from './positions-sync.js';
 import { recordSnapshot, recordFill, recordSettlement, TradeIntent } from './telemetry.js';
 import { SNAPSHOT_INTERVAL_MS } from './logger.js';
@@ -1713,6 +1713,12 @@ async function main(): Promise<void> {
   // ===================================================================
   startBenchmarkPolling();
 
+  // ===================================================================
+  // AUTO-CLAIM: Start automatic claiming loop (every 5 minutes)
+  // ===================================================================
+  startAutoClaimLoop(5 * 60 * 1000); // 5 minute interval
+  console.log('💰 Auto-claim loop started (5 min interval)');
+
   console.log('\n✅ Live trader running with auto-claim! Press Ctrl+C to stop.\n');
 }
 
@@ -1720,6 +1726,15 @@ async function main(): Promise<void> {
 process.on('SIGINT', async () => {
   console.log('\n\n👋 Shutting down...');
   isRunning = false;
+  
+  // Stop auto-claim loop
+  stopAutoClaimLoop();
+  
+  // Print claim stats
+  const claimStats = getClaimStats();
+  console.log(`\n📊 CLAIM SESSION STATS:`);
+  console.log(`   Confirmed claims: ${claimStats.confirmed}`);
+  console.log(`   Total claimed: $${claimStats.totalClaimedUSDC.toFixed(2)}`);
   
   // Stop benchmark polling
   stopBenchmarkPolling();
