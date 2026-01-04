@@ -66,10 +66,50 @@ interface InventorySnapshot {
   created_at: string;
 }
 
+interface FillLog {
+  id: string;
+  ts: number;
+  asset: string;
+  market_id: string;
+  side: string;
+  intent: string;
+  fill_qty: number;
+  fill_price: number;
+  fill_notional: number;
+  delta: number | null;
+  spot_price: number | null;
+  strike_price: number | null;
+  seconds_remaining: number;
+  hedge_lag_ms: number | null;
+  correlation_id: string | null;
+  created_at: string;
+}
+
+interface SnapshotLog {
+  id: string;
+  ts: number;
+  asset: string;
+  market_id: string;
+  bot_state: string;
+  up_shares: number;
+  down_shares: number;
+  up_ask: number | null;
+  down_ask: number | null;
+  combined_ask: number | null;
+  delta: number | null;
+  spot_price: number | null;
+  strike_price: number | null;
+  seconds_remaining: number;
+  reason_code: string | null;
+  created_at: string;
+}
+
 export default function Observability() {
   const [botEvents, setBotEvents] = useState<BotEvent[]>([]);
   const [orders, setOrders] = useState<Order[]>([]);
   const [inventorySnapshots, setInventorySnapshots] = useState<InventorySnapshot[]>([]);
+  const [fillLogs, setFillLogs] = useState<FillLog[]>([]);
+  const [snapshotLogs, setSnapshotLogs] = useState<SnapshotLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [isDownloading, setIsDownloading] = useState(false);
 
@@ -81,15 +121,19 @@ export default function Observability() {
   const loadData = async () => {
     setLoading(true);
     try {
-      const [eventsRes, ordersRes, inventoryRes] = await Promise.all([
+      const [eventsRes, ordersRes, inventoryRes, fillsRes, snapshotsRes] = await Promise.all([
         supabase.from("bot_events").select("*").order("ts", { ascending: false }).limit(500),
         supabase.from("orders").select("*").order("created_ts", { ascending: false }).limit(500),
         supabase.from("inventory_snapshots").select("*").order("ts", { ascending: false }).limit(500),
+        supabase.from("fill_logs").select("*").order("ts", { ascending: false }).limit(500),
+        supabase.from("snapshot_logs").select("*").order("ts", { ascending: false }).limit(500),
       ]);
 
       if (eventsRes.data) setBotEvents(eventsRes.data);
       if (ordersRes.data) setOrders(ordersRes.data);
       if (inventoryRes.data) setInventorySnapshots(inventoryRes.data);
+      if (fillsRes.data) setFillLogs(fillsRes.data);
+      if (snapshotsRes.data) setSnapshotLogs(snapshotsRes.data);
     } catch (error) {
       console.error("Error loading data:", error);
       toast.error("Failed to load observability data");
@@ -116,8 +160,10 @@ export default function Observability() {
     botEvents.forEach(e => assets.add(e.asset));
     orders.forEach(o => assets.add(o.asset));
     inventorySnapshots.forEach(i => assets.add(i.asset));
+    fillLogs.forEach(f => assets.add(f.asset));
+    snapshotLogs.forEach(s => assets.add(s.asset));
     return Array.from(assets);
-  }, [botEvents, orders, inventorySnapshots]);
+  }, [botEvents, orders, inventorySnapshots, fillLogs, snapshotLogs]);
 
   // Filtered data
   const filteredEvents = useMemo(() => {
@@ -143,6 +189,21 @@ export default function Observability() {
       return true;
     });
   }, [inventorySnapshots, assetFilter]);
+
+  const filteredFills = useMemo(() => {
+    return fillLogs.filter(f => {
+      if (correlationIdFilter && f.correlation_id !== correlationIdFilter) return false;
+      if (assetFilter !== "all" && f.asset !== assetFilter) return false;
+      return true;
+    });
+  }, [fillLogs, correlationIdFilter, assetFilter]);
+
+  const filteredSnapshots = useMemo(() => {
+    return snapshotLogs.filter(s => {
+      if (assetFilter !== "all" && s.asset !== assetFilter) return false;
+      return true;
+    });
+  }, [snapshotLogs, assetFilter]);
 
   const formatTs = (ts: number) => {
     try {
@@ -180,6 +241,18 @@ export default function Observability() {
       case "OPENING": return "bg-blue-500/20 text-blue-400";
       case "HEDGING": return "bg-yellow-500/20 text-yellow-400";
       case "UNHEDGED": return "bg-red-500/20 text-red-400";
+      case "IDLE": return "bg-muted text-muted-foreground";
+      case "ACCUMULATING": return "bg-purple-500/20 text-purple-400";
+      default: return "bg-muted text-muted-foreground";
+    }
+  };
+
+  const getIntentColor = (intent: string) => {
+    switch (intent) {
+      case "OPENING": return "bg-blue-500/20 text-blue-400";
+      case "HEDGE": return "bg-yellow-500/20 text-yellow-400";
+      case "ACCUMULATE": return "bg-purple-500/20 text-purple-400";
+      case "FORCE_HEDGE": return "bg-red-500/20 text-red-400";
       default: return "bg-muted text-muted-foreground";
     }
   };
@@ -280,7 +353,7 @@ export default function Observability() {
         </div>
 
         {/* Stats Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium flex items-center gap-2">
@@ -290,7 +363,7 @@ export default function Observability() {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">{filteredEvents.length}</div>
-              <p className="text-xs text-muted-foreground">of {botEvents.length} total</p>
+              <p className="text-xs text-muted-foreground">of {botEvents.length}</p>
             </CardContent>
           </Card>
           <Card>
@@ -302,19 +375,43 @@ export default function Observability() {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">{filteredOrders.length}</div>
-              <p className="text-xs text-muted-foreground">of {orders.length} total</p>
+              <p className="text-xs text-muted-foreground">of {orders.length}</p>
+            </CardContent>
+          </Card>
+          <Card className="bg-green-500/10 border-green-500/30">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium flex items-center gap-2 text-green-400">
+                <Activity className="h-4 w-4" />
+                Fills
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-green-400">{filteredFills.length}</div>
+              <p className="text-xs text-muted-foreground">of {fillLogs.length}</p>
+            </CardContent>
+          </Card>
+          <Card className="bg-blue-500/10 border-blue-500/30">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-medium flex items-center gap-2 text-blue-400">
+                <Database className="h-4 w-4" />
+                Snapshots
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="text-2xl font-bold text-blue-400">{filteredSnapshots.length}</div>
+              <p className="text-xs text-muted-foreground">of {snapshotLogs.length}</p>
             </CardContent>
           </Card>
           <Card>
             <CardHeader className="pb-2">
               <CardTitle className="text-sm font-medium flex items-center gap-2">
                 <Database className="h-4 w-4" />
-                Inventory Snapshots
+                Inventory
               </CardTitle>
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">{filteredInventory.length}</div>
-              <p className="text-xs text-muted-foreground">of {inventorySnapshots.length} total</p>
+              <p className="text-xs text-muted-foreground">of {inventorySnapshots.length}</p>
             </CardContent>
           </Card>
         </div>
@@ -371,12 +468,130 @@ export default function Observability() {
         </Card>
 
         {/* Data Tables */}
-        <Tabs defaultValue="events" className="space-y-4">
-          <TabsList>
+        <Tabs defaultValue="fills" className="space-y-4">
+          <TabsList className="flex-wrap h-auto">
+            <TabsTrigger value="fills">Fills ({filteredFills.length})</TabsTrigger>
+            <TabsTrigger value="snapshots">Snapshots ({filteredSnapshots.length})</TabsTrigger>
             <TabsTrigger value="events">Bot Events ({filteredEvents.length})</TabsTrigger>
             <TabsTrigger value="orders">Orders ({filteredOrders.length})</TabsTrigger>
             <TabsTrigger value="inventory">Inventory ({filteredInventory.length})</TabsTrigger>
           </TabsList>
+
+          {/* Fills Tab */}
+          <TabsContent value="fills">
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between">
+                <CardTitle>Fill Logs</CardTitle>
+                <Button variant="outline" size="sm" onClick={() => downloadTable(filteredFills, "fill_logs")}>
+                  <Download className="h-4 w-4 mr-2" />
+                  Export
+                </Button>
+              </CardHeader>
+              <CardContent>
+                <ScrollArea className="h-[500px]">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Time</TableHead>
+                        <TableHead>Asset</TableHead>
+                        <TableHead>Side</TableHead>
+                        <TableHead>Intent</TableHead>
+                        <TableHead>Qty</TableHead>
+                        <TableHead>Price</TableHead>
+                        <TableHead>Notional</TableHead>
+                        <TableHead>Delta</TableHead>
+                        <TableHead>Secs Left</TableHead>
+                        <TableHead>Hedge Lag</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredFills.map((fill) => (
+                        <TableRow key={fill.id}>
+                          <TableCell className="font-mono text-xs">{formatTs(fill.ts)}</TableCell>
+                          <TableCell>
+                            <Badge variant="outline">{fill.asset}</Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Badge className={fill.side === "UP" ? "bg-green-500/20 text-green-400" : "bg-red-500/20 text-red-400"}>
+                              {fill.side}
+                            </Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Badge className={getIntentColor(fill.intent)}>{fill.intent}</Badge>
+                          </TableCell>
+                          <TableCell className="font-mono">{fill.fill_qty.toFixed(2)}</TableCell>
+                          <TableCell className="font-mono">${fill.fill_price.toFixed(4)}</TableCell>
+                          <TableCell className="font-mono">${fill.fill_notional.toFixed(2)}</TableCell>
+                          <TableCell className="font-mono">
+                            {fill.delta != null ? `${(fill.delta * 100).toFixed(1)}%` : "-"}
+                          </TableCell>
+                          <TableCell className="font-mono">{fill.seconds_remaining}s</TableCell>
+                          <TableCell className="font-mono">
+                            {fill.hedge_lag_ms ? `${fill.hedge_lag_ms}ms` : "-"}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </ScrollArea>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Snapshots Tab */}
+          <TabsContent value="snapshots">
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between">
+                <CardTitle>Snapshot Logs</CardTitle>
+                <Button variant="outline" size="sm" onClick={() => downloadTable(filteredSnapshots, "snapshot_logs")}>
+                  <Download className="h-4 w-4 mr-2" />
+                  Export
+                </Button>
+              </CardHeader>
+              <CardContent>
+                <ScrollArea className="h-[500px]">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Time</TableHead>
+                        <TableHead>Asset</TableHead>
+                        <TableHead>State</TableHead>
+                        <TableHead>Up/Down</TableHead>
+                        <TableHead>Combined Ask</TableHead>
+                        <TableHead>Delta</TableHead>
+                        <TableHead>Secs Left</TableHead>
+                        <TableHead>Reason</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredSnapshots.map((snap) => (
+                        <TableRow key={snap.id}>
+                          <TableCell className="font-mono text-xs">{formatTs(snap.ts)}</TableCell>
+                          <TableCell>
+                            <Badge variant="outline">{snap.asset}</Badge>
+                          </TableCell>
+                          <TableCell>
+                            <Badge className={getStateColor(snap.bot_state)}>{snap.bot_state}</Badge>
+                          </TableCell>
+                          <TableCell className="font-mono text-xs">
+                            {snap.up_shares.toFixed(1)} / {snap.down_shares.toFixed(1)}
+                          </TableCell>
+                          <TableCell className="font-mono">
+                            {snap.combined_ask != null ? `$${snap.combined_ask.toFixed(4)}` : "-"}
+                          </TableCell>
+                          <TableCell className="font-mono">
+                            {snap.delta != null ? `${(snap.delta * 100).toFixed(1)}%` : "-"}
+                          </TableCell>
+                          <TableCell className="font-mono">{snap.seconds_remaining}s</TableCell>
+                          <TableCell className="text-xs max-w-[150px] truncate">{snap.reason_code || "-"}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </ScrollArea>
+              </CardContent>
+            </Card>
+          </TabsContent>
 
           <TabsContent value="events">
             <Card>
