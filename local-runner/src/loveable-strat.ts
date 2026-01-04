@@ -12,8 +12,8 @@ import type { OrderbookDepth } from './polymarket.js';
 // States: FLAT → ONE_SIDED → HEDGED (winst) / SKEWED / DEEP_DISLOCATION
 // ============================================================
 
-export const STRATEGY_VERSION = '6.1.0';
-export const STRATEGY_NAME = 'GPT Strategy v6.1 – Gabagool Alignment Patch (Polymarket 15m Bot)';
+export const STRATEGY_VERSION = '6.1.1';
+export const STRATEGY_NAME = 'GPT Strategy v6.1.1 – Paired Discipline & EV Lock (Polymarket 15m Bot)';
 
 // ============================================================
 // TYPES & STATE MACHINE (PDF Section: Implementatie & Logica)
@@ -123,11 +123,12 @@ export const STRATEGY = {
     maxSharesPerSide: 500,    // Max shares per side
   },
   
-  // v6.1: Paired Quantity & Cost-Per-Paired Controls
+  // v6.1.1: Paired Quantity & Cost-Per-Paired Controls (HARD INVARIANTS)
   pairedControl: {
-    minShares: 20,            // v6.1: PAIRED_MIN_SHARES - must reach this paired quantity
-    costPerPairedStop: 1.05,  // v6.1: Stop accumulation if cost_per_paired > 1.05
-    costPerPairedEmergency: 1.10, // v6.1: Emergency unwind if > 1.10
+    minShares: 20,            // v6.1.1: PAIRED_MIN_SHARES - HARD MINIMUM after deadline
+    costPerPairedStop: 1.05,  // v6.1.1: Stop ALL adds if cost_per_paired > 1.05
+    costPerPairedEmergency: 1.10, // v6.1.1: Emergency unwind if > 1.10
+    survivalWindowSec: 20,    // v6.1.1: Only exception to guardrails - near settlement
   },
   
   // Tick & Rounding
@@ -463,8 +464,8 @@ export function hedgeLagSecFromInventory(inv: Inventory, nowMs: number): number 
 }
 
 /**
- * v6.1: Check if cost_per_paired exceeds stop threshold
- * Returns action to take
+ * v6.1.1: Check if cost_per_paired exceeds thresholds
+ * Returns action to take based on guardrail hierarchy
  */
 export function checkCostPerPairedGuardrail(inv: Inventory): {
   action: 'NORMAL' | 'STOP_ACCUMULATE' | 'EMERGENCY_UNWIND';
@@ -477,7 +478,7 @@ export function checkCostPerPairedGuardrail(inv: Inventory): {
     return {
       action: 'EMERGENCY_UNWIND',
       costPerPaired: cpp,
-      reason: `cost_per_paired ${cpp.toFixed(2)} >= ${STRATEGY.pairedControl.costPerPairedEmergency} emergency threshold`,
+      reason: `cost_per_paired ${cpp.toFixed(3)} >= ${STRATEGY.pairedControl.costPerPairedEmergency} EMERGENCY`,
     };
   }
   
@@ -485,7 +486,7 @@ export function checkCostPerPairedGuardrail(inv: Inventory): {
     return {
       action: 'STOP_ACCUMULATE',
       costPerPaired: cpp,
-      reason: `cost_per_paired ${cpp.toFixed(2)} >= ${STRATEGY.pairedControl.costPerPairedStop} stop threshold`,
+      reason: `cost_per_paired ${cpp.toFixed(3)} >= ${STRATEGY.pairedControl.costPerPairedStop} STOP`,
     };
   }
   
@@ -494,6 +495,186 @@ export function checkCostPerPairedGuardrail(inv: Inventory): {
     costPerPaired: cpp,
     reason: 'cost_per_paired within limits',
   };
+}
+
+// ============================================================
+// V6.1.1: HARD GUARDRAIL SYSTEM WITH PRECEDENCE
+// Priority: 1=Survival > 2=CostPerPaired > 3=PairedMin > 4=Skew > 5=Accumulate
+// ============================================================
+
+export type GuardrailTrigger = 
+  | 'NONE'
+  | 'SURVIVAL_MODE'
+  | 'COST_PER_PAIRED_EMERGENCY'
+  | 'COST_PER_PAIRED_STOP'
+  | 'PAIRED_MIN_BLOCK';
+
+export interface V611GuardrailResult {
+  // What's blocked
+  blockEntry: boolean;
+  blockAccumulate: boolean;
+  blockDominantSideAdd: boolean;
+  allowHedge: boolean;
+  allowRebalance: boolean;
+  forceUnwind: boolean;
+  
+  // Telemetry
+  guardrailTriggered: GuardrailTrigger;
+  pairedMinReached: boolean;
+  costPerPaired: number;
+  blockedAction: string | null;
+  reason: string;
+  
+  // For logging
+  inSurvivalWindow: boolean;
+}
+
+/**
+ * v6.1.1: Master guardrail check with explicit precedence
+ * Call this BEFORE state-based trading logic
+ * 
+ * Priority hierarchy:
+ * 1. SURVIVAL (< 20s remaining) - allows all hedge/rebalance attempts
+ * 2. COST_PER_PAIRED_EMERGENCY (>1.10) - force unwind
+ * 3. COST_PER_PAIRED_STOP (>1.05) - block adds, allow hedge/rebalance
+ * 4. PAIRED_MIN_BLOCK (paired < 20 after 60s) - block dominant side adds
+ * 5. NORMAL - no restrictions
+ */
+export function checkV611Guardrails(
+  inv: Inventory,
+  remainingSeconds: number,
+  nowMs: number,
+  proposedAction?: 'opening' | 'hedge' | 'accumulate' | 'rebalance' | 'unwind',
+  proposedSide?: Outcome
+): V611GuardrailResult {
+  const paired = pairedShares(inv);
+  const pairedMinReached = paired >= STRATEGY.pairedControl.minShares;
+  const cpp = costPerPaired(inv);
+  const cppCheck = checkCostPerPairedGuardrail(inv);
+  
+  // Calculate elapsed since first fill
+  const elapsedSec = inv.firstFillTs ? (nowMs - inv.firstFillTs) / 1000 : 0;
+  const pastDeadline = elapsedSec >= STRATEGY.timing.pairedTargetDeadlineSec;
+  
+  // Priority 1: SURVIVAL MODE (near settlement)
+  const survivalWindow = STRATEGY.pairedControl.survivalWindowSec ?? 20;
+  const inSurvivalWindow = remainingSeconds < survivalWindow;
+  
+  if (inSurvivalWindow) {
+    return {
+      blockEntry: true, // No new entries in survival
+      blockAccumulate: true, // No accumulation in survival
+      blockDominantSideAdd: false, // Exception: allow any hedge/rebalance in survival
+      allowHedge: true,
+      allowRebalance: true,
+      forceUnwind: false,
+      guardrailTriggered: 'SURVIVAL_MODE',
+      pairedMinReached,
+      costPerPaired: cpp,
+      blockedAction: proposedAction === 'opening' || proposedAction === 'accumulate' ? proposedAction : null,
+      reason: `SURVIVAL MODE: ${remainingSeconds}s remaining < ${survivalWindow}s window`,
+      inSurvivalWindow: true,
+    };
+  }
+  
+  // Priority 2: COST_PER_PAIRED EMERGENCY (>1.10)
+  if (cppCheck.action === 'EMERGENCY_UNWIND') {
+    return {
+      blockEntry: true,
+      blockAccumulate: true,
+      blockDominantSideAdd: true,
+      allowHedge: true, // Still try to hedge
+      allowRebalance: true,
+      forceUnwind: true, // Signal emergency
+      guardrailTriggered: 'COST_PER_PAIRED_EMERGENCY',
+      pairedMinReached,
+      costPerPaired: cpp,
+      blockedAction: 'ALL_ADDS',
+      reason: cppCheck.reason,
+      inSurvivalWindow: false,
+    };
+  }
+  
+  // Priority 3: COST_PER_PAIRED STOP (>1.05)
+  if (cppCheck.action === 'STOP_ACCUMULATE') {
+    return {
+      blockEntry: true, // No new entries
+      blockAccumulate: true, // No accumulation
+      blockDominantSideAdd: true, // No dominant side adds
+      allowHedge: true,
+      allowRebalance: true,
+      forceUnwind: false,
+      guardrailTriggered: 'COST_PER_PAIRED_STOP',
+      pairedMinReached,
+      costPerPaired: cpp,
+      blockedAction: proposedAction === 'opening' || proposedAction === 'accumulate' ? proposedAction : null,
+      reason: cppCheck.reason,
+      inSurvivalWindow: false,
+    };
+  }
+  
+  // Priority 4: PAIRED_MIN_BLOCK (after deadline, paired < min)
+  // Only blocks dominant side ADDS, allows hedge/rebalance to minority side
+  if (pastDeadline && !pairedMinReached) {
+    // Determine dominant side
+    const dominantSide: Outcome = inv.upShares >= inv.downShares ? 'UP' : 'DOWN';
+    const tryingDominant = proposedSide === dominantSide;
+    const isAddAction = proposedAction === 'accumulate' || proposedAction === 'opening';
+    
+    return {
+      blockEntry: false, // Allow entry on minority side
+      blockAccumulate: tryingDominant && isAddAction, // Block accumulate on dominant only
+      blockDominantSideAdd: true,
+      allowHedge: true,
+      allowRebalance: true,
+      forceUnwind: false,
+      guardrailTriggered: 'PAIRED_MIN_BLOCK',
+      pairedMinReached,
+      costPerPaired: cpp,
+      blockedAction: tryingDominant && isAddAction ? `${proposedAction} on ${dominantSide}` : null,
+      reason: `PAIRED_MIN_BLOCK: paired=${paired} < ${STRATEGY.pairedControl.minShares} min after ${elapsedSec.toFixed(0)}s > ${STRATEGY.timing.pairedTargetDeadlineSec}s deadline`,
+      inSurvivalWindow: false,
+    };
+  }
+  
+  // Priority 5: NORMAL - no restrictions
+  return {
+    blockEntry: false,
+    blockAccumulate: false,
+    blockDominantSideAdd: false,
+    allowHedge: true,
+    allowRebalance: true,
+    forceUnwind: false,
+    guardrailTriggered: 'NONE',
+    pairedMinReached,
+    costPerPaired: cpp,
+    blockedAction: null,
+    reason: 'All guardrails passed',
+    inSurvivalWindow: false,
+  };
+}
+
+/**
+ * v6.1.1: Log guardrail decision for telemetry
+ */
+export function logV611Guardrail(
+  result: V611GuardrailResult,
+  marketId: string,
+  action: string
+): void {
+  if (result.guardrailTriggered === 'NONE') return;
+  
+  const emoji = result.forceUnwind ? '🚨' : 
+                result.guardrailTriggered === 'SURVIVAL_MODE' ? '⏰' :
+                result.blockedAction ? '🛑' : '⚠️';
+  
+  console.log(`[v6.1.1] ${emoji} GUARDRAIL: ${result.guardrailTriggered}`);
+  console.log(`   Market: ${marketId}`);
+  console.log(`   Action: ${action}`);
+  console.log(`   paired_min_reached: ${result.pairedMinReached}`);
+  console.log(`   cost_per_paired: ${result.costPerPaired.toFixed(3)}`);
+  console.log(`   blocked_action: ${result.blockedAction || 'none'}`);
+  console.log(`   reason: ${result.reason}`);
 }
 
 /**
@@ -903,7 +1084,7 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
     inv.marketOpenTs = marketOpenTs;
   }
 
-  // v6.1: Calculate metrics for logging
+  // v6.1.1: Calculate metrics for logging
   const v61metrics = calculateV61Metrics(inv, nowMs);
   
   // ========== PRE-CHECKS ==========
@@ -939,24 +1120,29 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
   // Calculate dynamic buffer
   const buffer = dynamicEdgeBuffer(noLiquidityStreak, adverseStreak);
   
-  // ========== v6.1: COST-PER-PAIRED GUARDRAIL ==========
-  
-  const cppCheck = checkCostPerPairedGuardrail(inv);
-  if (cppCheck.action === 'EMERGENCY_UNWIND') {
-    console.log(`[Strategy v6.1] 🚨 ${cppCheck.reason} - emergency mode`);
-    // Allow only hedge/rebalance, block accumulation
-  }
-  
   // ========== DETERMINE STATE ==========
   
   const state = determineState(inv, pendingHedge, upAsk, downAsk);
   const edgePct = calculateEdge(upAsk, downAsk);
   const isDeep = state === 'DEEP_DISLOCATION';
   
-  // ========== v6.1: LOG METRICS ==========
+  // ========== v6.1.1: GUARDRAIL CHECK WITH PRECEDENCE ==========
+  // Priority: 1=Survival > 2=CostPerPaired > 3=PairedMin > 4=Skew > 5=Accumulate
   
+  const cheaperSide: Outcome = upAsk <= downAsk ? 'UP' : 'DOWN';
+  const guardrails = checkV611Guardrails(inv, remainingSeconds, nowMs, undefined, cheaperSide);
+  
+  // Log guardrail status for telemetry (only when triggered)
+  if (guardrails.guardrailTriggered !== 'NONE') {
+    console.log(`[v6.1.1] 📊 GUARDRAIL CHECK: trigger=${guardrails.guardrailTriggered}, paired_min=${guardrails.pairedMinReached}, cpp=${guardrails.costPerPaired.toFixed(3)}`);
+    if (guardrails.blockedAction) {
+      console.log(`[v6.1.1] 🛑 BLOCKED: ${guardrails.blockedAction} | ${guardrails.reason}`);
+    }
+  }
+  
+  // v6.1.1: LOG METRICS (enhanced with guardrail info)
   if (state !== 'FLAT') {
-    console.log(`[Strategy v6.1] 📊 Metrics: paired_ratio=${v61metrics.paired_ratio.toFixed(2)}, cost_per_paired=${v61metrics.cost_per_paired.toFixed(3)}, paired_min=${v61metrics.paired_min_reached}, entry_age=${v61metrics.entry_age_sec.toFixed(1)}s`);
+    console.log(`[v6.1.1] 📊 Metrics: paired=${pairedShares(inv)}, cpp=${guardrails.costPerPaired.toFixed(3)}, paired_min_ok=${guardrails.pairedMinReached}, guardrail=${guardrails.guardrailTriggered}`);
   }
   
   // ========== UNWIND CHECK ==========
@@ -996,12 +1182,17 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
 
   switch (state) {
     case 'FLAT': {
+      // v6.1.1: Check guardrails FIRST
+      if (guardrails.blockEntry) {
+        console.log(`[v6.1.1] 🛑 BLOCK entry: ${guardrails.reason}`);
+        return null;
+      }
+      
       // v6.1: Entry Window Discipline (Gabagool-style)
       const inEntryWindow = isInEntryWindow(inv.marketOpenTs, nowMs);
       const edgeCheck = executionAwareEdgeOk(upAsk, downAsk, upMid, downMid, buffer);
       
       // Opening trade can skip edge check if price near fair value (48-52¢)
-      const cheaperSide: Outcome = upAsk <= downAsk ? 'UP' : 'DOWN';
       const cheaperPrice = cheaperSide === 'UP' ? upAsk : downAsk;
       const isOpeningPrice = cheaperPrice <= STRATEGY.opening.maxPrice;
       
@@ -1009,10 +1200,10 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
       if (!inEntryWindow) {
         const strongEdgeRequired = 1.0 - STRATEGY.edge.strongEdgeBuffer;
         if (combined > strongEdgeRequired) {
-          console.log(`[Strategy v6.1] 🚫 BLOCK entry: outside window, combined=${(combined * 100).toFixed(0)}¢ > ${(strongEdgeRequired * 100).toFixed(0)}¢ threshold`);
+          console.log(`[v6.1.1] 🚫 BLOCK entry: outside window, combined=${(combined * 100).toFixed(0)}¢ > ${(strongEdgeRequired * 100).toFixed(0)}¢ threshold`);
           return null;
         }
-        console.log(`[Strategy v6.1] ✅ Late entry allowed: strong edge combined=${(combined * 100).toFixed(0)}¢`);
+        console.log(`[v6.1.1] ✅ Late entry allowed: strong edge combined=${(combined * 100).toFixed(0)}¢`);
       }
       
       if (!edgeCheck.ok && !(STRATEGY.opening.skipEdgeCheck && isOpeningPrice)) {
@@ -1029,13 +1220,15 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
       const tradeSize = getTradeSize(remainingSeconds, edgePct, false);
       const signal = buildEntry(upAsk, downAsk, tradeSize);
       if (signal) {
-        console.log(`[Strategy v6.1] 🎯 Opening: ${signal.outcome} ${signal.shares} shares @ ${(signal.price * 100).toFixed(1)}¢ (entry_age=${v61metrics.entry_age_sec.toFixed(1)}s)`);
+        console.log(`[v6.1.1] 🎯 Opening: ${signal.outcome} ${signal.shares} shares @ ${(signal.price * 100).toFixed(1)}¢`);
       }
       return signal;
     }
     
     case 'ONE_SIDED': {
-      // v6.1: Initial Hedge Discipline (faster, smaller)
+      // v6.1.1: Hedging is ALWAYS allowed (guardrails.allowHedge = true for all triggers)
+      // This is by design - we must get hedged to protect capital
+      
       const initHedgeCheck = needsInitHedge(inv, nowMs);
       const missingSide: Outcome = inv.upShares === 0 ? 'UP' : 'DOWN';
       const missingAsk = missingSide === 'UP' ? upAsk : downAsk;
@@ -1046,17 +1239,15 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
       const projectedCombined = existingAvg + missingAsk;
       const maxAllowed = 1 + STRATEGY.edge.allowOverpay;
       
-      console.log(`[Strategy v6.1] Hedge eval: ${missingSide} @ ${(missingAsk * 100).toFixed(0)}¢, existingAvg=${(existingAvg * 100).toFixed(0)}¢, combined=${(projectedCombined * 100).toFixed(0)}¢`);
+      console.log(`[v6.1.1] Hedge eval: ${missingSide} @ ${(missingAsk * 100).toFixed(0)}¢, existingAvg=${(existingAvg * 100).toFixed(0)}¢, combined=${(projectedCombined * 100).toFixed(0)}¢`);
       
       // v6.1: Check for initial hedge (within 3s, small size)
       if (initHedgeCheck.needed && initHedgeCheck.hedgeSide) {
-        console.log(`[Strategy v6.1] ⚡ ${initHedgeCheck.reason}`);
-        // Initial hedge uses smaller size
+        console.log(`[v6.1.1] ⚡ ${initHedgeCheck.reason}`);
         const initHedgeShares = initHedgeCheck.hedgeShares;
         if (projectedCombined <= maxAllowed) {
           return buildHedge(initHedgeCheck.hedgeSide, missingAsk, tick, initHedgeShares);
         }
-        // Even for init hedge, accept slight overpay
         return buildForceHedge(initHedgeCheck.hedgeSide, missingAsk, tick, initHedgeShares, existingAvg);
       }
       
@@ -1066,7 +1257,7 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
       const forceHedge = timeSinceFirstFill >= STRATEGY.timing.hedgeTimeoutSec;
       
       if (forceHedge) {
-        console.log(`[Strategy v6.1] 🔴 FORCE hedge after ${timeSinceFirstFill.toFixed(0)}s timeout`);
+        console.log(`[v6.1.1] 🔴 FORCE hedge after ${timeSinceFirstFill.toFixed(0)}s timeout`);
         return buildForceHedge(missingSide, missingAsk, tick, hedgeShares, existingAvg);
       }
       
@@ -1077,19 +1268,40 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
       
       // Must be hedged by hedgeMustBySec
       if (remainingSeconds <= STRATEGY.timing.hedgeMustBySec) {
-        console.log(`[Strategy v6.1] 🔴 MUST hedge by ${STRATEGY.timing.hedgeMustBySec}s - forcing`);
+        console.log(`[v6.1.1] 🔴 MUST hedge by ${STRATEGY.timing.hedgeMustBySec}s - forcing`);
         return buildForceHedge(missingSide, missingAsk, tick, hedgeShares, existingAvg);
       }
       
-      console.log(`[Strategy v6.1] ⏳ Waiting for better hedge price...`);
+      console.log(`[v6.1.1] ⏳ Waiting for better hedge price...`);
       return null;
     }
     
     case 'DEEP_DISLOCATION': {
-      // PDF: Deep Dislocation Mode - aggressive accumulation
-      console.log(`[Strategy v6.0] DEEP DISLOCATION: combined=${(combined * 100).toFixed(0)}¢, edge=${edgePct.toFixed(1)}%`);
+      // v6.1.1: Even in DEEP mode, guardrails take precedence
+      // DEEP is still accumulation - check if blocked
+      if (guardrails.blockAccumulate) {
+        console.log(`[v6.1.1] 🛑 BLOCK DEEP accumulate: ${guardrails.reason}`);
+        // In DEEP with block, try rebalancing to minority side instead
+        if (guardrails.allowRebalance) {
+          const dominantSide: Outcome = inv.upShares >= inv.downShares ? 'UP' : 'DOWN';
+          const minoritySide: Outcome = dominantSide === 'UP' ? 'DOWN' : 'UP';
+          const minorityAsk = minoritySide === 'UP' ? upAsk : downAsk;
+          const minorityShares = Math.floor(STRATEGY.tradeSizeUsd.base / minorityAsk);
+          if (minorityShares >= 5) {
+            return {
+              outcome: minoritySide,
+              price: roundDown(minorityAsk, tick),
+              shares: minorityShares,
+              reasoning: `v6.1.1 DEEP Rebalance ${minoritySide} @ ${(minorityAsk * 100).toFixed(0)}¢ (guardrail: build paired qty)`,
+              type: 'rebalance',
+            };
+          }
+        }
+        return null;
+      }
       
-      const cheaperSide: Outcome = upAsk <= downAsk ? 'UP' : 'DOWN';
+      console.log(`[v6.1.1] DEEP DISLOCATION: combined=${(combined * 100).toFixed(0)}¢, edge=${edgePct.toFixed(1)}%`);
+      
       const cheaperPrice = cheaperSide === 'UP' ? upAsk : downAsk;
       
       // Max size for deep dislocation
@@ -1098,9 +1310,30 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
       
       if (shares < 5) return null;
       
+      // v6.1.1: Check if adding to dominant side while paired min not reached
+      if (guardrails.blockDominantSideAdd) {
+        const dominantSide: Outcome = inv.upShares >= inv.downShares ? 'UP' : 'DOWN';
+        if (cheaperSide === dominantSide) {
+          console.log(`[v6.1.1] 🛑 BLOCK DEEP on dominant ${dominantSide}: paired_min not reached`);
+          // Buy OTHER side instead
+          const otherSide: Outcome = cheaperSide === 'UP' ? 'DOWN' : 'UP';
+          const otherAsk = otherSide === 'UP' ? upAsk : downAsk;
+          const otherShares = Math.floor(maxTradeSize / otherAsk);
+          if (otherShares >= 5) {
+            return {
+              outcome: otherSide,
+              price: roundDown(otherAsk, tick),
+              shares: otherShares,
+              reasoning: `v6.1.1 DEEP Forced ${otherSide} @ ${(otherAsk * 100).toFixed(0)}¢ (paired_min guardrail)`,
+              type: 'rebalance',
+            };
+          }
+          return null;
+        }
+      }
+      
       // Check skew cap
       if (exceedsSkewCap(inv, cheaperSide, shares)) {
-        // Buy the OTHER side instead to balance
         const otherSide: Outcome = cheaperSide === 'UP' ? 'DOWN' : 'UP';
         const otherAsk = otherSide === 'UP' ? upAsk : downAsk;
         const otherShares = Math.floor(maxTradeSize / otherAsk);
@@ -1127,7 +1360,12 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
     }
     
     case 'SKEWED': {
-      // PDF: Skew management - rebalance towards 50/50
+      // v6.1.1: Rebalance is allowed in most guardrail states
+      if (!guardrails.allowRebalance) {
+        console.log(`[v6.1.1] 🛑 BLOCK rebalance: ${guardrails.reason}`);
+        return null;
+      }
+      
       const rebalanceSide = needsRebalance(inv);
       if (!rebalanceSide) return null;
       
@@ -1147,7 +1385,7 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
             outcome: rebalanceSide,
             price: roundDown(rebalanceAsk, tick),
             shares: smallerAmount,
-            reasoning: `Rebalance ${rebalanceSide} @ ${(rebalanceAsk * 100).toFixed(0)}¢ (partial skew correction)`,
+            reasoning: `v6.1.1 Rebalance ${rebalanceSide} @ ${(rebalanceAsk * 100).toFixed(0)}¢ (partial skew correction)`,
             type: 'rebalance',
           };
         }
@@ -1158,15 +1396,32 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
         outcome: rebalanceSide,
         price: roundDown(rebalanceAsk, tick),
         shares: sharesToBalance,
-        reasoning: `Rebalance ${rebalanceSide} @ ${(rebalanceAsk * 100).toFixed(0)}¢ (skew correction to 50/50)`,
+        reasoning: `v6.1.1 Rebalance ${rebalanceSide} @ ${(rebalanceAsk * 100).toFixed(0)}¢ (skew correction)`,
         type: 'rebalance',
       };
     }
     
     case 'HEDGED': {
-      // v6.1: Cost-per-paired guardrail - stop accumulation if too high
-      if (cppCheck.action !== 'NORMAL') {
-        console.log(`[Strategy v6.1] 🛑 BLOCK accumulate: ${cppCheck.reason}`);
+      // v6.1.1: Hard guardrail check - blockAccumulate means NO adds at all
+      if (guardrails.blockAccumulate) {
+        console.log(`[v6.1.1] 🛑 BLOCK accumulate: ${guardrails.reason}`);
+        
+        // If paired min not reached and allowed to rebalance, force to minority side
+        if (guardrails.allowRebalance && guardrails.blockDominantSideAdd && !guardrails.pairedMinReached) {
+          const dominantSide: Outcome = inv.upShares >= inv.downShares ? 'UP' : 'DOWN';
+          const minoritySide: Outcome = dominantSide === 'UP' ? 'DOWN' : 'UP';
+          const minorityAsk = minoritySide === 'UP' ? upAsk : downAsk;
+          const minorityShares = Math.floor(STRATEGY.tradeSizeUsd.base / minorityAsk);
+          if (minorityShares >= 2) {
+            return {
+              outcome: minoritySide,
+              price: roundDown(minorityAsk, tick),
+              shares: minorityShares,
+              reasoning: `v6.1.1 Paired Target: force ${minoritySide} (paired=${pairedShares(inv)}/${STRATEGY.pairedControl.minShares})`,
+              type: 'rebalance',
+            };
+          }
+        }
         return null;
       }
       
@@ -1181,39 +1436,33 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
         return null;
       }
       
-      // v6.1: Paired quantity target - block dominant side if paired min not reached
-      const elapsedSec = inv.firstFillTs ? (nowMs - inv.firstFillTs) / 1000 : 0;
-      const cheaperSide: Outcome = upAsk <= downAsk ? 'UP' : 'DOWN';
-      
-      const dominantBlock = shouldBlockDominantSide(
-        inv, 
-        cheaperSide, 
-        STRATEGY.timing.pairedTargetDeadlineSec, 
-        elapsedSec
-      );
-      if (dominantBlock.blocked) {
-        console.log(`[Strategy v6.1] 🛑 ${dominantBlock.reason}`);
-        // Force rebalance instead
-        const minoritySide: Outcome = cheaperSide === 'UP' ? 'DOWN' : 'UP';
-        const minorityAsk = minoritySide === 'UP' ? upAsk : downAsk;
-        const minorityShares = Math.floor(STRATEGY.tradeSizeUsd.base / minorityAsk);
-        if (minorityShares >= 2) {
-          return {
-            outcome: minoritySide,
-            price: roundDown(minorityAsk, tick),
-            shares: minorityShares,
-            reasoning: `v6.1 Paired Target: force ${minoritySide} to reach min paired (${pairedShares(inv)}/${STRATEGY.pairedControl.minShares})`,
-            type: 'rebalance',
-          };
+      // v6.1.1: Check if adding to dominant side while paired min not reached (after deadline)
+      if (guardrails.blockDominantSideAdd) {
+        const dominantSide: Outcome = inv.upShares >= inv.downShares ? 'UP' : 'DOWN';
+        if (cheaperSide === dominantSide) {
+          console.log(`[v6.1.1] 🛑 PAIRED_MIN_BLOCK: Cannot add to ${dominantSide} (paired=${pairedShares(inv)} < ${STRATEGY.pairedControl.minShares})`);
+          // Force rebalance to minority side
+          const minoritySide: Outcome = dominantSide === 'UP' ? 'DOWN' : 'UP';
+          const minorityAsk = minoritySide === 'UP' ? upAsk : downAsk;
+          const minorityShares = Math.floor(STRATEGY.tradeSizeUsd.base / minorityAsk);
+          if (minorityShares >= 2) {
+            return {
+              outcome: minoritySide,
+              price: roundDown(minorityAsk, tick),
+              shares: minorityShares,
+              reasoning: `v6.1.1 Paired Target: force ${minoritySide} (paired=${pairedShares(inv)}/${STRATEGY.pairedControl.minShares})`,
+              type: 'rebalance',
+            };
+          }
+          return null;
         }
-        return null;
       }
       
       // Only accumulate if shares are balanced (within 10%)
       const shareDiff = Math.abs(inv.upShares - inv.downShares);
       const avgShares = (inv.upShares + inv.downShares) / 2;
       if (avgShares > 0 && shareDiff / avgShares > 0.1) {
-        console.log(`[Strategy v6.1] BLOCK accumulate: shares not balanced (diff=${shareDiff})`);
+        console.log(`[v6.1.1] BLOCK accumulate: shares not balanced (diff=${shareDiff})`);
         return null;
       }
       
@@ -1227,18 +1476,16 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
       const tradeSize = getTradeSize(remainingSeconds, edgePct, false);
       const sharesToAdd = Math.floor(tradeSize / combined);
       
-      // v6.1: Minimum shares reduced for micro-sizing
       if (sharesToAdd < 2) return null;
       
       // Buy the cheaper side
-      const accumulateSide: Outcome = upAsk <= downAsk ? 'UP' : 'DOWN';
-      const accumulatePrice = accumulateSide === 'UP' ? upAsk : downAsk;
+      const accumulatePrice = cheaperSide === 'UP' ? upAsk : downAsk;
       
       return {
-        outcome: accumulateSide,
+        outcome: cheaperSide,
         price: roundDown(accumulatePrice, tick),
         shares: sharesToAdd,
-        reasoning: `v6.1 Accumulate ${accumulateSide} @ ${(combined * 100).toFixed(0)}¢ combined (${edgePct.toFixed(1)}% edge, cpp=${v61metrics.cost_per_paired.toFixed(3)})`,
+        reasoning: `v6.1.1 Accumulate ${cheaperSide} @ ${(combined * 100).toFixed(0)}¢ (edge=${edgePct.toFixed(1)}%, cpp=${guardrails.costPerPaired.toFixed(3)})`,
         type: 'accumulate',
       };
     }
