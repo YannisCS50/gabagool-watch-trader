@@ -15,6 +15,9 @@ interface OrderRequest {
   price: number;
   size: number;
   orderType?: 'GTC' | 'GTD' | 'FOK';
+  // v6.0.1: Context for price improvement logic
+  intent?: 'ENTRY' | 'HEDGE' | 'FORCE' | 'SURVIVAL';
+  spread?: number;  // Current spread in the book
 }
 
 interface OrderResponse {
@@ -611,12 +614,36 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
   }
   lastOrderAttemptAtMs = Date.now();
 
-  // Price improvement: add 1-2¢ to increase fill probability
-  // Higher prices (>50¢) are more volatile, use 2¢ improvement
-  const priceImprovement = order.price > 0.50 ? 0.02 : 0.01;
+  // v6.0.1: Context-aware price improvement
+  // A) ENTRY: alleen improve als topSize < desiredShares * 1.2 of spread > 0.03
+  // B) HEDGE: improvement toegestaan (need fills)
+  // C) FORCE/SURVIVAL: improvement toegestaan tot cap
+  let priceImprovement = 0;
+  const intent = order.intent || 'ENTRY';
+  const spread = order.spread ?? 0;
+  
+  if (intent === 'ENTRY') {
+    // Only improve for entry if:
+    // - Book is thin (askVolume < desiredShares * 1.2)
+    // - OR spread is wide (> 3¢)
+    const isThinBook = depth.askVolume < order.size * 1.2;
+    const isWideSpread = spread > 0.03;
+    if (isThinBook || isWideSpread) {
+      priceImprovement = order.price > 0.50 ? 0.02 : 0.01;
+    }
+    // else: no improvement - preserve edge on quiet books
+  } else {
+    // HEDGE / FORCE / SURVIVAL: always improve to ensure fill
+    priceImprovement = order.price > 0.50 ? 0.02 : 0.01;
+    if (intent === 'SURVIVAL') {
+      priceImprovement = 0.03;  // More aggressive in survival mode
+    }
+  }
+  
   const adjustedPrice = Math.min(order.price + priceImprovement, 0.99);
   
-  console.log(`📤 Placing order: ${order.side} ${order.size} @ ${(order.price * 100).toFixed(0)}¢ → ${(adjustedPrice * 100).toFixed(0)}¢ (+${(priceImprovement * 100).toFixed(0)}¢ improvement)`);
+  console.log(`📤 Placing order: ${order.side} ${order.size} @ ${(order.price * 100).toFixed(0)}¢ → ${(adjustedPrice * 100).toFixed(0)}¢ (+${(priceImprovement * 100).toFixed(0)}¢ ${intent})`);
+
 
   // Check if orderbook exists and has liquidity before placing order
   const depth = await getOrderbookDepth(order.tokenId);
