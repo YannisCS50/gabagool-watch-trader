@@ -12,6 +12,11 @@ import { syncPositions, syncPositionsToDatabase, printPositionsReport, filter15m
 import { recordSnapshot, recordFill, recordSettlement, TradeIntent } from './telemetry.js';
 import { SNAPSHOT_INTERVAL_MS } from './logger.js';
 import { startBenchmarkPolling, stopBenchmarkPolling, updateBenchmarkSnapshot, getBenchmarkTradeCount } from './benchmark-gabagool.js';
+
+// v6.0.0: New reliability modules
+import { canPlaceOrder, ReserveManager, getAvailableBalance, invalidateBalanceCacheNow, getBlockedOrderStats, FUNDING_CONFIG } from './funding.js';
+import { OrderRateLimiter, canPlaceOrderRateLimited, recordOrderPlaced, recordOrderFailure, RATE_LIMIT_CONFIG } from './order-rate-limiter.js';
+import { executeHedgeWithEscalation, getHedgeEscalatorStats, HEDGE_ESCALATOR_CONFIG } from './hedge-escalator.js';
 // Ensure Node prefers IPv4 to avoid hangs on IPv6-only DNS results under some VPN setups.
 try {
   dns.setDefaultResultOrder('ipv4first');
@@ -41,7 +46,7 @@ console.log('╚═════════════════════�
 console.log('');
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '5.2.1';  // v5.2.1: STRICT 1:1 Balance - Block entries when ONE_SIDED
+const RUNNER_VERSION = '6.0.0';  // v6.0.0: Reliability & Observability Patch
 let currentBalance = 0;
 let lastClaimCheck = 0;
 let claimInFlight = false;
@@ -208,7 +213,27 @@ async function executeTrade(
   const tokenId = outcome === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
   const total = shares * price;
 
+  // v6.0.0: Rate limit check
+  const rateLimitCheck = canPlaceOrderRateLimited(ctx.slug);
+  if (!rateLimitCheck.allowed) {
+    console.log(`⚡ [v6.0.0] Rate limited: ${rateLimitCheck.reason} (wait ${rateLimitCheck.waitMs}ms)`);
+    return false;
+  }
+
+  // v6.0.0: Funding gate check (skip for HEDGE - we use hedge escalator for those)
+  if (intent !== 'HEDGE') {
+    const fundsCheck = await canPlaceOrder(ctx.slug, outcome, total);
+    if (!fundsCheck.canProceed) {
+      console.log(`💰 [v6.0.0] Order blocked: ${fundsCheck.reason}`);
+      return false;
+    }
+  }
+
   console.log(`\n📊 EXECUTING: ${outcome} ${shares} @ ${(price * 100).toFixed(0)}¢ on ${ctx.slug}`);
+
+  // v6.0.0: Reserve notional before placing order
+  const tempOrderId = `temp_${ctx.slug}_${outcome}_${Date.now()}`;
+  ReserveManager.reserve(tempOrderId, ctx.slug, total, outcome);
 
   const result = await placeOrder({
     tokenId,
@@ -219,22 +244,98 @@ async function executeTrade(
   });
 
   if (!result.success) {
+    // v6.0.0: Release reservation on failure
+    ReserveManager.release(tempOrderId);
+    recordOrderFailure(ctx.slug);
+    
     console.error(`❌ Order failed: ${result.error}`);
     
-    // v5.2.0: HEDGE RETRY LOGIC - if this is a hedge and it failed, try aggressive retries
+    // v6.0.0: Use new hedge escalator for hedge failures
     if (intent === 'HEDGE' && result.error) {
       const isBalanceError = result.error.includes('balance') || result.error.includes('allowance');
       const isLiquidityError = result.error.includes('liquidity');
       
       if (isBalanceError || isLiquidityError) {
-        console.log(`\n🔄 [v5.2.0] HEDGE RETRY: ${result.error}`);
-        const retryResult = await executeHedgeWithRetry(ctx, outcome, price, shares, reasoning);
-        return retryResult;
+        console.log(`\n🔄 [v6.0.0] HEDGE ESCALATION: ${result.error}`);
+        
+        const nowMs = Date.now();
+        const endTime = new Date(ctx.market.eventEndTime).getTime();
+        const remainingSeconds = Math.floor((endTime - nowMs) / 1000);
+        
+        const escalationResult = await executeHedgeWithEscalation({
+          marketId: ctx.slug,
+          tokenId,
+          side: outcome,
+          targetShares: shares,
+          initialPrice: price,
+          secondsRemaining: remainingSeconds,
+        });
+        
+        if (escalationResult.ok) {
+          // Update position with escalation result
+          const filledShares = escalationResult.filledShares ?? shares;
+          const avgPrice = escalationResult.avgPrice ?? price;
+          
+          if (outcome === 'UP') {
+            ctx.position.upShares += filledShares;
+            ctx.position.upInvested += filledShares * avgPrice;
+          } else {
+            ctx.position.downShares += filledShares;
+            ctx.position.downInvested += filledShares * avgPrice;
+          }
+          
+          // Record fill with v6.0.0 extended context
+          recordFill({
+            marketId: ctx.slug,
+            asset: ctx.market.asset as 'BTC' | 'ETH',
+            side: outcome,
+            orderId: escalationResult.orderId || null,
+            fillQty: filledShares,
+            fillPrice: avgPrice,
+            intent,
+            secondsRemaining: remainingSeconds,
+            spotPrice: ctx.spotPrice,
+            strikePrice: ctx.strikePrice,
+            btcPrice: lastBtcPrice,
+            ethPrice: lastEthPrice,
+            upBestAsk: ctx.book.up.ask,
+            downBestAsk: ctx.book.down.ask,
+            upBestBid: ctx.book.up.bid,
+            downBestBid: ctx.book.down.bid,
+          });
+          
+          await saveTrade({
+            market_slug: ctx.slug,
+            asset: ctx.market.asset,
+            outcome,
+            shares: filledShares,
+            price: avgPrice,
+            total: filledShares * avgPrice,
+            order_id: escalationResult.orderId,
+            status: 'filled',
+            reasoning: `${reasoning} [ESCALATION x${escalationResult.attempts}]`,
+            event_start_time: ctx.market.eventStartTime,
+            event_end_time: ctx.market.eventEndTime,
+            avg_fill_price: avgPrice,
+          });
+          
+          tradeCount++;
+          console.log(`✅ [v6.0.0] HEDGE ESCALATION SUCCESS: ${outcome} ${filledShares}@${(avgPrice * 100).toFixed(0)}¢`);
+          invalidateBalanceCache();
+          invalidateBalanceCacheNow();
+          return true;
+        } else {
+          console.error(`🚨 [v6.0.0] HEDGE ESCALATION FAILED: ${escalationResult.errorCode} - ${escalationResult.error}`);
+          return false;
+        }
       }
     }
     
     return false;
   }
+
+  // v6.0.0: Record rate limit event on success
+  recordOrderPlaced(ctx.slug);
 
   // Always set a cooldown timestamp once we attempted an order (avoid spamming WAF)
   ctx.lastTradeAtMs = Date.now();
@@ -246,6 +347,22 @@ async function executeTrade(
       : status === 'partial'
         ? (result.filledSize ?? 0)
         : 0;
+
+  // v6.0.0: Update reserve based on fill
+  if (result.orderId) {
+    ReserveManager.release(tempOrderId);
+    if (filledShares < shares) {
+      // Partial fill - reserve remaining
+      const remainingNotional = (shares - filledShares) * price;
+      ReserveManager.reserve(result.orderId, ctx.slug, remainingNotional, outcome);
+    }
+    // If fully filled, reservation is released via onFill
+    if (filledShares > 0) {
+      ReserveManager.onFill(result.orderId, filledShares * price);
+    }
+  } else {
+    ReserveManager.release(tempOrderId);
+  }
 
   // CRITICAL FIX: Log ALL orders, not just filled ones
   // This ensures we track every order the bot places for accurate position tracking
@@ -265,7 +382,7 @@ async function executeTrade(
       ctx.position.downInvested += filledShares * price;
     }
     
-    // Log fill for telemetry
+    // Log fill for telemetry with v6.0.0 extended context
     const nowMs = Date.now();
     const endTime = new Date(ctx.market.eventEndTime).getTime();
     const remainingSeconds = Math.floor((endTime - nowMs) / 1000);
@@ -281,6 +398,12 @@ async function executeTrade(
       secondsRemaining: remainingSeconds,
       spotPrice: ctx.spotPrice,
       strikePrice: ctx.strikePrice,
+      btcPrice: lastBtcPrice,
+      ethPrice: lastEthPrice,
+      upBestAsk: ctx.book.up.ask,
+      downBestAsk: ctx.book.down.ask,
+      upBestBid: ctx.book.up.bid,
+      downBestBid: ctx.book.down.bid,
     });
   }
 
@@ -308,6 +431,7 @@ async function executeTrade(
     
     // Invalidate balance cache after trade
     invalidateBalanceCache();
+    invalidateBalanceCacheNow();
   } else {
     console.log(`📝 ORDER #${tradeCount}: ${outcome} ${shares}@${(price * 100).toFixed(0)}¢ (pending) - ${result.orderId}`);
   }
@@ -1059,6 +1183,7 @@ async function main(): Promise<void> {
         cheapestAskPlusOtherMid,
       });
       
+      // v6.0.0: Extended snapshot with btcPrice/ethPrice for enrichment
       recordSnapshot({
         marketId: ctx.slug,
         asset: ctx.market.asset as 'BTC' | 'ETH',
@@ -1073,6 +1198,8 @@ async function main(): Promise<void> {
         downShares: ctx.position.downShares,
         upCost: (ctx.position as any).upCost ?? (ctx.position as any).upInvested ?? 0,
         downCost: (ctx.position as any).downCost ?? (ctx.position as any).downInvested ?? 0,
+        btcPrice: lastBtcPrice,
+        ethPrice: lastEthPrice,
       });
     }
   }, SNAPSHOT_INTERVAL_MS);

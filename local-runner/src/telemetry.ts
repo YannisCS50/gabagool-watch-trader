@@ -214,6 +214,9 @@ export interface SnapshotInput {
   downShares: number;
   upCost: number;
   downCost: number;
+  // v6.0.0: Additional context for enrichment
+  btcPrice?: number | null;
+  ethPrice?: number | null;
 }
 
 export function recordSnapshot(input: SnapshotInput): void {
@@ -298,7 +301,7 @@ export function recordSnapshot(input: SnapshotInput): void {
     telemetry.last180sSnapshots = telemetry.last180sSnapshots.filter(s => s.ts >= cutoff);
   }
   
-  // Build and log snapshot
+  // Build and log snapshot with v6.0.0 extended fields
   const snapshotLog: SnapshotLog = {
     ts: now,
     iso: new Date(now).toISOString(),
@@ -308,6 +311,8 @@ export function recordSnapshot(input: SnapshotInput): void {
     spotPrice: input.spotPrice,
     strikePrice: input.strikePrice,
     delta,
+    btcPrice: input.btcPrice ?? null,
+    ethPrice: input.ethPrice ?? null,
     upBid: input.upBid,
     upAsk: input.upAsk,
     upMid,
@@ -319,6 +324,8 @@ export function recordSnapshot(input: SnapshotInput): void {
     combinedAsk,
     combinedMid,
     cheapestAskPlusOtherMid,
+    upBestAsk: input.upAsk,    // Alias for enrichment clarity
+    downBestAsk: input.downAsk, // Alias for enrichment clarity
     botState,
     upShares: input.upShares,
     downShares: input.downShares,
@@ -344,6 +351,7 @@ export function recordSnapshot(input: SnapshotInput): void {
 
 // ---------- Fill Recording ----------
 
+// v6.0.0: Extended FillInput with orderbook context
 export interface FillInput {
   marketId: string;
   asset: 'BTC' | 'ETH';
@@ -355,6 +363,13 @@ export interface FillInput {
   secondsRemaining: number;
   spotPrice: number | null;
   strikePrice: number | null;
+  // v6.0.0: Additional context for enrichment
+  btcPrice?: number | null;
+  ethPrice?: number | null;
+  upBestAsk?: number | null;
+  downBestAsk?: number | null;
+  upBestBid?: number | null;
+  downBestBid?: number | null;
 }
 
 export function recordFill(input: FillInput): void {
@@ -390,6 +405,7 @@ export function recordFill(input: FillInput): void {
   
   const delta = calculateDelta(input.spotPrice, input.strikePrice);
   
+  // Build fill log with v6.0.0 extended fields
   const fillLog: FillLog = {
     ts: now,
     iso: new Date(now).toISOString(),
@@ -406,6 +422,12 @@ export function recordFill(input: FillInput): void {
     spotPrice: input.spotPrice,
     strikePrice: input.strikePrice,
     delta,
+    btcPrice: input.btcPrice ?? null,
+    ethPrice: input.ethPrice ?? null,
+    upBestAsk: input.upBestAsk ?? null,
+    downBestAsk: input.downBestAsk ?? null,
+    upBestBid: input.upBestBid ?? null,
+    downBestBid: input.downBestBid ?? null,
     hedgeLagMs,
   };
 
