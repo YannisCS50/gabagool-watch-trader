@@ -29,7 +29,10 @@ type Action =
   | 'save-order-lifecycle'
   | 'save-inventory-snapshot'
   | 'save-inventory-snapshots'
-  | 'save-funding-snapshot';
+  | 'save-funding-snapshot'
+  // v6.3.0: Skew Explainability
+  | 'save-hedge-intent'
+  | 'update-hedge-intent';
 
 interface RequestBody {
   action: Action;
@@ -763,6 +766,7 @@ Deno.serve(async (req) => {
           state_age_ms?: number;
           hedge_lag_ms?: number;
           trigger_type?: string;
+          skew_allowed_reason?: string;  // v6.3.0
         }> | undefined;
 
         if (!snapshots || snapshots.length === 0) {
@@ -817,6 +821,86 @@ Deno.serve(async (req) => {
         }
 
         console.log(`[runner-proxy] 💰 Funding snapshot: bal=${snapshot.balance_available}/${snapshot.balance_total}, blocked=${snapshot.blocked_reason || 'NONE'}`);
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // v6.3.0: Skew Explainability - Save hedge intent
+      case 'save-hedge-intent': {
+        const intent = data?.intent as {
+          ts: number;
+          correlation_id?: string;
+          run_id?: string;
+          market_id: string;
+          asset: string;
+          side: string;
+          intent_type: string;
+          intended_qty: number;
+          filled_qty?: number;
+          status: string;
+          abort_reason?: string;
+          price_at_intent?: number;
+          price_at_resolution?: number;
+          resolution_ts?: number;
+        } | undefined;
+
+        if (!intent) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing intent data' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const { error } = await supabase.from('hedge_intents').insert(intent);
+        if (error) {
+          console.error('[runner-proxy] save-hedge-intent error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] 🎯 Hedge intent: ${intent.intent_type} ${intent.side} ${intent.intended_qty} status=${intent.status}`);
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // v6.3.0: Skew Explainability - Update hedge intent
+      case 'update-hedge-intent': {
+        const correlationId = data?.correlation_id as string | undefined;
+        const marketId = data?.market_id as string | undefined;
+        const update = data?.update as {
+          status?: string;
+          filled_qty?: number;
+          abort_reason?: string;
+          price_at_resolution?: number;
+          resolution_ts?: number;
+        } | undefined;
+
+        if (!correlationId || !marketId || !update) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing correlation_id, market_id or update data' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const { error } = await supabase
+          .from('hedge_intents')
+          .update(update)
+          .eq('correlation_id', correlationId)
+          .eq('market_id', marketId);
+
+        if (error) {
+          console.error('[runner-proxy] update-hedge-intent error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] 🔄 Hedge intent updated: ${correlationId} -> ${update.status}`);
         return new Response(JSON.stringify({ success: true }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
