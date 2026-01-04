@@ -1130,6 +1130,7 @@ export type Database = {
           pair_cost: number | null
           realized_pnl: number | null
           run_id: string | null
+          theoretical_pnl: number | null
           time_in_high: number
           time_in_low: number
           time_in_mid: number
@@ -1159,6 +1160,7 @@ export type Database = {
           pair_cost?: number | null
           realized_pnl?: number | null
           run_id?: string | null
+          theoretical_pnl?: number | null
           time_in_high?: number
           time_in_low?: number
           time_in_mid?: number
@@ -1188,6 +1190,7 @@ export type Database = {
           pair_cost?: number | null
           realized_pnl?: number | null
           run_id?: string | null
+          theoretical_pnl?: number | null
           time_in_high?: number
           time_in_low?: number
           time_in_mid?: number
@@ -1217,6 +1220,7 @@ export type Database = {
           iso: string
           market_id: string
           no_liquidity_streak: number
+          orderbook_ready: boolean | null
           pair_cost: number | null
           reason_code: string | null
           run_id: string | null
@@ -1252,6 +1256,7 @@ export type Database = {
           iso: string
           market_id: string
           no_liquidity_streak?: number
+          orderbook_ready?: boolean | null
           pair_cost?: number | null
           reason_code?: string | null
           run_id?: string | null
@@ -1287,6 +1292,7 @@ export type Database = {
           iso?: string
           market_id?: string
           no_liquidity_streak?: number
+          orderbook_ready?: boolean | null
           pair_cost?: number | null
           reason_code?: string | null
           run_id?: string | null

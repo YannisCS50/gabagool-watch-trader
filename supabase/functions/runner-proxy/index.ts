@@ -434,6 +434,7 @@ Deno.serve(async (req) => {
           combined_ask: l.combinedAsk,
           combined_mid: l.combinedMid,
           cheapest_ask_plus_other_mid: l.cheapestAskPlusOtherMid,
+          orderbook_ready: l.orderbookReady,  // v6.2.0
           bot_state: l.botState,
           up_shares: l.upShares,
           down_shares: l.downShares,
@@ -532,6 +533,7 @@ Deno.serve(async (req) => {
           count_dislocation_95: l.countDislocation95,
           count_dislocation_97: l.countDislocation97,
           last_180s_dislocation_95: l.last180sDislocation95,
+          theoretical_pnl: l.theoreticalPnL,  // v6.2.0
         }));
 
         const { error } = await supabase.from('settlement_logs').insert(rows);
