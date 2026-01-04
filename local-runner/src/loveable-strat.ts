@@ -1084,11 +1084,6 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
       console.log(`[Strategy v6.1] ⏳ Waiting for better hedge price...`);
       return null;
     }
-      }
-      
-      console.log(`[Strategy v6.0] Waiting for better hedge price...`);
-      return null;
-    }
     
     case 'DEEP_DISLOCATION': {
       // PDF: Deep Dislocation Mode - aggressive accumulation
