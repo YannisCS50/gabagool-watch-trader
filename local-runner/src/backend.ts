@@ -280,3 +280,131 @@ export async function saveSettlementFailure(failure: SettlementFailure): Promise
   }
 }
 
+// ============================================
+// v6.1.0: OBSERVABILITY V1 - NEW TABLES
+// ============================================
+
+// --- Bot Events (canonical event log) ---
+export interface BotEvent {
+  event_type: string;
+  asset: string;
+  market_id?: string;
+  correlation_id?: string;
+  run_id?: string;
+  reason_code?: string;
+  data?: Record<string, unknown>;
+  ts: number;
+}
+
+export async function saveBotEvent(event: BotEvent): Promise<boolean> {
+  try {
+    const result = await callProxy<{ success: boolean }>('save-bot-event', { event });
+    return result.success;
+  } catch (error) {
+    console.error('❌ saveBotEvent error:', error);
+    return false;
+  }
+}
+
+export async function saveBotEvents(events: BotEvent[]): Promise<boolean> {
+  if (events.length === 0) return true;
+  try {
+    const result = await callProxy<{ success: boolean; count?: number }>('save-bot-events', { events });
+    return result.success;
+  } catch (error) {
+    console.error('❌ saveBotEvents error:', error);
+    return false;
+  }
+}
+
+// --- Order Lifecycle ---
+export interface OrderLifecycle {
+  client_order_id: string;
+  market_id: string;
+  asset: string;
+  side: 'UP' | 'DOWN';
+  intent_type: string;
+  price: number;
+  qty: number;
+  status: string;
+  exchange_order_id?: string;
+  avg_fill_price?: number;
+  filled_qty?: number;
+  reserved_notional?: number;
+  released_notional?: number;
+  correlation_id?: string;
+  created_ts: number;
+  last_update_ts: number;
+}
+
+export async function saveOrderLifecycle(order: OrderLifecycle): Promise<boolean> {
+  try {
+    const result = await callProxy<{ success: boolean }>('save-order-lifecycle', { order });
+    return result.success;
+  } catch (error) {
+    console.error('❌ saveOrderLifecycle error:', error);
+    return false;
+  }
+}
+
+// --- Inventory Snapshots ---
+export interface InventorySnapshot {
+  market_id: string;
+  asset: string;
+  up_shares: number;
+  down_shares: number;
+  avg_up_cost?: number;
+  avg_down_cost?: number;
+  pair_cost?: number;
+  unpaired_shares?: number;
+  state: string;
+  state_age_ms?: number;
+  hedge_lag_ms?: number;
+  trigger_type?: string;
+  ts: number;
+}
+
+export async function saveInventorySnapshot(snapshot: InventorySnapshot): Promise<boolean> {
+  try {
+    const result = await callProxy<{ success: boolean }>('save-inventory-snapshot', { snapshot });
+    return result.success;
+  } catch (error) {
+    console.error('❌ saveInventorySnapshot error:', error);
+    return false;
+  }
+}
+
+export async function saveInventorySnapshots(snapshots: InventorySnapshot[]): Promise<boolean> {
+  if (snapshots.length === 0) return true;
+  try {
+    const result = await callProxy<{ success: boolean; count?: number }>('save-inventory-snapshots', { snapshots });
+    return result.success;
+  } catch (error) {
+    console.error('❌ saveInventorySnapshots error:', error);
+    return false;
+  }
+}
+
+// --- Funding Snapshots ---
+export interface FundingSnapshot {
+  balance_total: number;
+  balance_available: number;
+  reserved_total: number;
+  reserved_by_market?: Record<string, number>;
+  spendable?: number;
+  allowance_remaining?: number;
+  blocked_reason?: string;
+  trigger_type?: string;
+  ts: number;
+}
+
+export async function saveFundingSnapshot(snapshot: FundingSnapshot): Promise<boolean> {
+  try {
+    const result = await callProxy<{ success: boolean }>('save-funding-snapshot', { snapshot });
+    return result.success;
+  } catch (error) {
+    console.error('❌ saveFundingSnapshot error:', error);
+    return false;
+  }
+}
+
