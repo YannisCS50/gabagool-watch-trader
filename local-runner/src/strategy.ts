@@ -76,11 +76,29 @@ export {
   needsInitHedge,
   calculateV61Metrics,
   type V61Metrics,
-  // v6.1.1: New guardrail system
+  // v6.1.1: Guardrail system
   checkV611Guardrails,
   logV611Guardrail,
   type GuardrailTrigger,
   type V611GuardrailResult,
+  // v6.1.2: Micro-Hedge Execution exports
+  unpairedShares,
+  getUnderweightSide,
+  calculateMicroHedgeQty,
+  shouldTriggerMicroHedge,
+  checkMicroHedgePairCostGate,
+  buildMicroHedge,
+  logMicroHedgeIntent,
+  logMicroHedgeResult,
+  calculatePairedDelaySec,
+  calculateV612Metrics,
+  type MicroHedgeMode,
+  type MicroHedgeStatus,
+  type MicroHedgeAbortReason,
+  type MicroHedgeIntent,
+  type MicroHedgeResult,
+  type MicroHedgeState,
+  type V612Metrics,
 } from './loveable-strat.js';
 
 // Import everything we need to wrap
@@ -125,8 +143,8 @@ export interface LegacyTradeSignal {
 // VERSION & NAME
 // ============================================================
 
-export const STRATEGY_VERSION = '6.3.2';  // Updated for v6.1.1 Paired Discipline & EV Lock
-export const STRATEGY_NAME = 'GPT Strategy v6.3.2 – Paired Discipline & EV Lock';
+export const STRATEGY_VERSION = '6.3.3';  // Updated for v6.1.2 Micro-Hedge Execution
+export const STRATEGY_NAME = 'GPT Strategy v6.3.3 – Micro-Hedge Execution';
 
 // ============================================================
 // DYNAMIC STRATEGY OBJECT
