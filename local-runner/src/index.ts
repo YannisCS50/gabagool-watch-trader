@@ -3,7 +3,7 @@ import os from 'os';
 import dns from 'node:dns';
 import { config } from './config.js';
 import { placeOrder, testConnection, getBalance, getOrderbookDepth, invalidateBalanceCache, ensureValidCredentials } from './polymarket.js';
-import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, checkHardSkewStop, STRATEGY, STRATEGY_VERSION, STRATEGY_NAME, LegacyTradeSignal } from './strategy.js';
+import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, checkHardSkewStop, STRATEGY, STRATEGY_VERSION, STRATEGY_NAME, LegacyTradeSignal, getStrategy } from './strategy.js';
 import { enforceVpnOrExit } from './vpn-check.js';
 import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder, syncPositionsToBackend, savePriceTicks, PriceTick, saveBotEvent, saveOrderLifecycle, saveInventorySnapshot, saveFundingSnapshot, BotEvent, OrderLifecycle, InventorySnapshot, FundingSnapshot } from './backend.js';
 import { fetchChainlinkPrice } from './chain.js';
@@ -17,6 +17,10 @@ import { startBenchmarkPolling, stopBenchmarkPolling, updateBenchmarkSnapshot, g
 import { canPlaceOrder, ReserveManager, getAvailableBalance, invalidateBalanceCacheNow, getBlockedOrderStats, FUNDING_CONFIG } from './funding.js';
 import { OrderRateLimiter, canPlaceOrderRateLimited, recordOrderPlaced, recordOrderFailure, RATE_LIMIT_CONFIG } from './order-rate-limiter.js';
 import { executeHedgeWithEscalation, getHedgeEscalatorStats, HEDGE_ESCALATOR_CONFIG } from './hedge-escalator.js';
+
+// v6.3.0: Config Unification
+import { getResolvedConfig, getCurrentConfig, CONFIG_VERSION } from './resolved-config.js';
+
 // Ensure Node prefers IPv4 to avoid hangs on IPv6-only DNS results under some VPN setups.
 try {
   dns.setDefaultResultOrder('ipv4first');
@@ -25,29 +29,50 @@ try {
   // ignore
 }
 
-console.log('');
-console.log('╔════════════════════════════════════════════════════════════════╗');
-console.log('║        🚀 POLYMARKET LIVE TRADER - LOCAL RUNNER                ║');
-console.log('╠════════════════════════════════════════════════════════════════╣');
-console.log(`║  📋 Strategy:  ${STRATEGY_NAME.padEnd(47)}║`);
-console.log(`║  📋 Version:   ${STRATEGY_VERSION.padEnd(47)}║`);
-console.log('╠════════════════════════════════════════════════════════════════╣');
-console.log('║  ⚙️  STRATEGY CONFIG:                                          ║');
-console.log(`║     Opening: max ${(STRATEGY.opening.maxPrice * 100).toFixed(0)}¢, ${STRATEGY.opening.shares} shares`.padEnd(66) + '║');
-console.log(`║     Hedge: max ${(STRATEGY.hedge.maxPrice * 100).toFixed(0)}¢, force after ${STRATEGY.hedge.forceTimeoutSec}s, ${STRATEGY.hedge.cooldownMs}ms cooldown`.padEnd(66) + '║');
-console.log(`║     Edge buffer: ${(STRATEGY.edge.buffer * 100).toFixed(1)}¢, min executable: ${(STRATEGY.edge.minExecutableEdge * 100).toFixed(1)}¢`.padEnd(66) + '║');
-console.log(`║     Cooldown: ${STRATEGY.cooldownMs / 1000}s (opening only), hedge cushion: ${STRATEGY.hedge.cushionTicks} ticks`.padEnd(66) + '║');
-console.log(`║     Sizing: ${STRATEGY.opening.shares} shares opening, ${STRATEGY.hedge.shares} shares hedge`.padEnd(66) + '║');
-console.log(`║     Stop trades: last ${STRATEGY.limits.stopTradesSec}s, unwind: last ${STRATEGY.limits.unwindStartSec}s`.padEnd(66) + '║');
-console.log('╠════════════════════════════════════════════════════════════════╣');
-console.log(`║     Assets: ${config.trading.assets.join(', ')}`.padEnd(66) + '║');
-console.log(`║     Max notional/trade: $${config.trading.maxNotionalPerTrade}`.padEnd(66) + '║');
-console.log('╚════════════════════════════════════════════════════════════════╝');
-console.log('');
-
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '6.1.0';  // v6.1.0: Observability V1 Patch
-const RUN_ID = crypto.randomUUID();  // v6.1.0: Unique run ID for correlation
+const RUNNER_VERSION = '6.3.0';  // v6.3.0: Config Unification
+const RUN_ID = crypto.randomUUID();
+
+// Startup banner will be printed AFTER config is built
+async function printStartupBanner(): Promise<void> {
+  const cfg = getCurrentConfig();
+  const strategy = getStrategy();
+  
+  console.log('');
+  console.log('╔════════════════════════════════════════════════════════════════╗');
+  console.log('║        🚀 POLYMARKET LIVE TRADER - LOCAL RUNNER                ║');
+  console.log('╠════════════════════════════════════════════════════════════════╣');
+  console.log(`║  📋 Strategy:  ${STRATEGY_NAME.padEnd(47)}║`);
+  console.log(`║  📋 Version:   ${STRATEGY_VERSION.padEnd(47)}║`);
+  console.log(`║  🔧 Config:    ${CONFIG_VERSION.padEnd(47)}║`);
+  console.log('╠════════════════════════════════════════════════════════════════╣');
+  
+  if (cfg) {
+    console.log(`║  📦 Source:    ${cfg.source.padEnd(47)}║`);
+    console.log('╠════════════════════════════════════════════════════════════════╣');
+    console.log('║  ⚙️  EFFECTIVE CONFIG (from ResolvedConfig):                   ║');
+    console.log(`║     Trade Size: $${cfg.tradeSizing.base} (range $${cfg.tradeSizing.min}-$${cfg.tradeSizing.max})`.padEnd(66) + '║');
+    console.log(`║     Max Notional/Trade: $${cfg.limits.maxNotionalPerTrade}`.padEnd(66) + '║');
+    console.log(`║     Edge Buffer: ${(cfg.edge.baseBuffer * 100).toFixed(1)}% (min exec: ${(cfg.edge.minExecutableEdge * 100).toFixed(1)}%)`.padEnd(66) + '║');
+    console.log(`║     Opening: max ${(cfg.opening.maxPrice * 100).toFixed(0)}¢, ~${cfg.opening.shares} shares`.padEnd(66) + '║');
+    console.log(`║     Hedge: max ${(cfg.hedge.maxPrice * 100).toFixed(0)}¢, force ${cfg.hedge.forceTimeoutSec}s, ${cfg.hedge.cooldownMs}ms cd`.padEnd(66) + '║');
+    console.log(`║     Timing: stop ${cfg.timing.stopNewTradesSec}s, unwind ${cfg.timing.unwindStartSec}s`.padEnd(66) + '║');
+    console.log(`║     Assets: ${cfg.tradeAssets.join(', ')}`.padEnd(66) + '║');
+    if (cfg.conflicts.length > 0) {
+      console.log('╠════════════════════════════════════════════════════════════════╣');
+      console.log(`║  ⚠️  ${cfg.conflicts.length} CONFIG CONFLICT(S) DETECTED - check logs above`.padEnd(65) + '║');
+    }
+  } else {
+    console.log('║  ⚙️  STRATEGY CONFIG (hardcoded fallback):                     ║');
+    console.log(`║     Opening: max ${(strategy.opening.maxPrice * 100).toFixed(0)}¢, ${strategy.opening.shares} shares`.padEnd(66) + '║');
+    console.log(`║     Edge buffer: ${(strategy.edge.buffer * 100).toFixed(1)}¢`.padEnd(66) + '║');
+    console.log(`║     Assets: ${config.trading.assets.join(', ')}`.padEnd(66) + '║');
+  }
+  
+  console.log('╚════════════════════════════════════════════════════════════════╝');
+  console.log('');
+}
+
 let currentBalance = 0;
 let lastClaimCheck = 0;
 let claimInFlight = false;
@@ -55,21 +80,6 @@ let claimInFlight = false;
 // Latest Chainlink spot cache (used for filling snapshot/fill context)
 let lastBtcPrice: number | null = null;
 let lastEthPrice: number | null = null;
-
-// v6.1.0: Observability - log startup event
-saveBotEvent({
-  event_type: 'RUNNER_START',
-  asset: 'ALL',
-  run_id: RUN_ID,
-  data: {
-    runner_id: RUNNER_ID,
-    version: RUNNER_VERSION,
-    strategy: STRATEGY_NAME,
-    strategy_version: STRATEGY_VERSION,
-    hostname: os.hostname(),
-  },
-  ts: Date.now(),
-}).catch(() => { /* non-critical */ });
 
 interface MarketToken {
   slug: string;
@@ -966,6 +976,44 @@ async function doHeartbeat(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  // ===================================================================
+  // v6.3.0: BUILD RESOLVED CONFIG FIRST (DB-FIRST)
+  // ===================================================================
+  console.log('\n🔧 [v6.3.0] Building ResolvedConfig (DB-first)...');
+  
+  try {
+    await getResolvedConfig(RUN_ID);
+  } catch (error) {
+    console.warn('⚠️  Failed to build ResolvedConfig, using fallback:', error);
+  }
+  
+  // Print startup banner AFTER config is built
+  await printStartupBanner();
+  
+  // Log startup event with effective config
+  const cfg = getCurrentConfig();
+  saveBotEvent({
+    event_type: 'RUNNER_START',
+    asset: 'ALL',
+    run_id: RUN_ID,
+    data: {
+      runner_id: RUNNER_ID,
+      version: RUNNER_VERSION,
+      strategy: STRATEGY_NAME,
+      strategy_version: STRATEGY_VERSION,
+      config_version: CONFIG_VERSION,
+      config_source: cfg?.source ?? 'FALLBACK',
+      hostname: os.hostname(),
+      effective_config: cfg ? {
+        tradeSizing: cfg.tradeSizing,
+        limits: cfg.limits,
+        edge: cfg.edge,
+        tradeAssets: cfg.tradeAssets,
+      } : null,
+    },
+    ts: Date.now(),
+  }).catch(() => { /* non-critical */ });
+
   // CRITICAL: Verify VPN is active before ANY trading activity
   await enforceVpnOrExit();
 

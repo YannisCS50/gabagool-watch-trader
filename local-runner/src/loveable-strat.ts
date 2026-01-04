@@ -562,11 +562,11 @@ export function buildForceHedge(
 // HELPER FUNCTIONS
 // ============================================================
 
-function isNum(x: unknown): x is number {
+export function isNum(x: unknown): x is number {
   return typeof x === 'number' && Number.isFinite(x);
 }
 
-function getMid(bid: number | null, ask: number | null): number {
+export function getMid(bid: number | null, ask: number | null): number {
   if (bid !== null && ask !== null) return (bid + ask) / 2;
   if (bid !== null) return bid;
   if (ask !== null) return ask;
