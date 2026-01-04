@@ -19,6 +19,7 @@ export function DownloadAllLogsButton() {
       toast.info('Fetching all data (this may take a moment)...');
 
       // Fetch ALL relevant tables - the ones that actually have data
+      // Including new Observability v1 tables
       const [
         liveTradesRes, 
         orderQueueRes, 
@@ -28,6 +29,11 @@ export function DownloadAllLogsButton() {
         settlementFailuresRes,
         strikePricesRes,
         snapshotLogsRes,
+        // NEW: Observability v1 tables
+        botEventsRes,
+        ordersRes,
+        inventorySnapshotsRes,
+        fundingSnapshotsRes,
       ] = await Promise.all([
         // Live trades - THE main trading data
         supabase.from('live_trades')
@@ -73,12 +79,36 @@ export function DownloadAllLogsButton() {
           .select('*')
           .gte('created_at', thirtyDaysAgoISO)
           .order('ts', { ascending: false }),
+        
+        // NEW: Bot events - canonical event log with correlation tracking
+        supabase.from('bot_events')
+          .select('*')
+          .gte('created_at', thirtyDaysAgoISO)
+          .order('ts', { ascending: false }),
+        
+        // NEW: Orders - lifecycle tracking
+        supabase.from('orders')
+          .select('*')
+          .gte('created_at', thirtyDaysAgoISO)
+          .order('created_ts', { ascending: false }),
+        
+        // NEW: Inventory snapshots - per market state
+        supabase.from('inventory_snapshots')
+          .select('*')
+          .gte('created_at', thirtyDaysAgoISO)
+          .order('ts', { ascending: false }),
+        
+        // NEW: Funding snapshots - balance/reserve tracking
+        supabase.from('funding_snapshots')
+          .select('*')
+          .gte('created_at', thirtyDaysAgoISO)
+          .order('ts', { ascending: false }),
       ]);
 
       // Build CSV rows
       const allRows: string[] = [];
       
-      // CSV Header - comprehensive
+      // CSV Header - comprehensive with Observability v1 columns
       allRows.push([
         'type',
         'timestamp',
@@ -119,9 +149,17 @@ export function DownloadAllLogsButton() {
         'skew',
         'adverse_streak',
         'no_liquidity_streak',
+        // NEW: Observability v1 columns
+        'correlation_id',
+        'run_id',
+        // Extra inventory/funding columns
+        'extra_1',
+        'extra_2',
+        'extra_3',
       ].join(','));
 
       const PAD_16 = new Array(16).fill('');
+
 
       // Live trades (5000+ records)
       (liveTradesRes.data || []).forEach((row) => {
@@ -330,7 +368,7 @@ export function DownloadAllLogsButton() {
       });
 
       // Snapshot logs - market state with orderbook data
-      (snapshotLogsRes.data || []).forEach((row) => {
+      (snapshotLogsRes.data || []).forEach((row: any) => {
         allRows.push([
           'SNAPSHOT',
           row.iso || '',
@@ -344,7 +382,7 @@ export function DownloadAllLogsButton() {
           '', // status
           '', // order_id
           '', // intent
-          '', // reasoning
+          row.reason_code || '', // reasoning - now with reason_code
           '', // event_start
           '', // event_end
           row.strike_price || '',
@@ -371,6 +409,171 @@ export function DownloadAllLogsButton() {
           row.skew || '',
           row.adverse_streak || '',
           row.no_liquidity_streak || '',
+          // NEW: correlation tracking
+          row.correlation_id || '',
+          row.run_id || '',
+        ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
+      });
+
+      // NEW: Bot events - canonical event log
+      (botEventsRes.data || []).forEach((row: any) => {
+        allRows.push([
+          'EVENT',
+          row.created_at || '',
+          row.market_id || '',
+          row.asset || '',
+          row.event_type || '',
+          '', // side
+          '', // shares
+          '', // price
+          '', // total
+          '', // status
+          '', // order_id
+          '', // intent
+          row.reason_code || '',
+          '', // event_start
+          '', // event_end
+          '', // strike
+          '', // open
+          '', // close
+          '', // delta
+          '', // pair_cost
+          '', // pnl
+          '', // error
+          ...new Array(16).fill(''),
+          row.correlation_id || '',
+          row.run_id || '',
+        ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
+      });
+
+      // NEW: Orders - lifecycle tracking
+      (ordersRes.data || []).forEach((row: any) => {
+        allRows.push([
+          'ORDER_LIFECYCLE',
+          row.created_at || '',
+          row.market_id || '',
+          row.asset || '',
+          '', // outcome
+          row.side || '',
+          row.qty || '',
+          row.price || '',
+          '', // total
+          row.status || '',
+          row.exchange_order_id || '',
+          row.intent_type || '',
+          '', // reasoning
+          '', // event_start
+          '', // event_end
+          '', // strike
+          '', // open
+          '', // close
+          '', // delta
+          '', // pair_cost
+          '', // pnl
+          '', // error
+          ...new Array(16).fill(''),
+          row.correlation_id || '',
+          row.run_id || '',
+        ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
+      });
+
+      // NEW: Inventory snapshots
+      (inventorySnapshotsRes.data || []).forEach((row: any) => {
+        allRows.push([
+          'INVENTORY',
+          row.created_at || '',
+          row.market_id || '',
+          row.asset || '',
+          row.state || '',
+          '', // side
+          `${row.up_shares || 0}/${row.down_shares || 0}`,
+          '', // price
+          '', // total
+          '', // status
+          '', // order_id
+          '', // intent
+          row.trigger_type || '',
+          '', // event_start
+          '', // event_end
+          '', // strike
+          '', // open
+          '', // close
+          '', // delta
+          row.pair_cost || '',
+          '', // pnl
+          '', // error
+          '', // seconds_remaining
+          '', // spot_price
+          '', // up_bid
+          '', // up_ask
+          '', // up_mid
+          '', // down_bid
+          '', // down_ask
+          '', // down_mid
+          '', // spread_up
+          '', // spread_down
+          '', // combined_ask
+          '', // combined_mid
+          '', // cheapest
+          '', // skew
+          '', // adverse_streak
+          '', // no_liquidity_streak
+          '', // correlation_id
+          '', // run_id
+          // Extra inventory fields
+          row.unpaired_shares || '',
+          row.state_age_ms || '',
+          row.hedge_lag_ms || '',
+        ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
+      });
+
+      // NEW: Funding snapshots (CRITICAL)
+      (fundingSnapshotsRes.data || []).forEach((row: any) => {
+        allRows.push([
+          'FUNDING',
+          row.created_at || '',
+          '', // market_id
+          '', // asset
+          '', // outcome
+          '', // side
+          '', // shares
+          '', // price
+          row.balance_total || '',
+          row.blocked_reason || '',
+          '', // order_id
+          '', // intent
+          row.trigger_type || '',
+          '', // event_start
+          '', // event_end
+          '', // strike
+          '', // open
+          '', // close
+          '', // delta
+          '', // pair_cost
+          '', // pnl
+          '', // error
+          '', // seconds_remaining
+          '', // spot_price
+          '', // up_bid
+          '', // up_ask
+          '', // up_mid
+          '', // down_bid
+          '', // down_ask
+          '', // down_mid
+          '', // spread_up
+          '', // spread_down
+          '', // combined_ask
+          '', // combined_mid
+          '', // cheapest
+          '', // skew
+          '', // adverse_streak
+          '', // no_liquidity_streak
+          '', // correlation_id
+          '', // run_id
+          // Extra funding fields
+          row.balance_available || '',
+          row.reserved_total || '',
+          row.spendable || '',
         ].map(v => `"${String(v).replace(/"/g, '""')}"`).join(','));
       });
 
@@ -395,13 +598,18 @@ export function DownloadAllLogsButton() {
         failures: settlementFailuresRes.data?.length || 0,
         strikes: strikePricesRes.data?.length || 0,
         snapshots: snapshotLogsRes.data?.length || 0,
+        // NEW counts
+        botEvents: botEventsRes.data?.length || 0,
+        ordersLifecycle: ordersRes.data?.length || 0,
+        inventory: inventorySnapshotsRes.data?.length || 0,
+        funding: fundingSnapshotsRes.data?.length || 0,
       };
 
       const totalRows = allRows.length - 1;
       const sizeEstimate = (csvContent.length / 1024 / 1024).toFixed(1);
 
       toast.success(`Downloaded ${totalRows.toLocaleString()} rows (~${sizeEstimate}MB)`, {
-        description: `Trades: ${counts.trades}, Snapshots: ${counts.snapshots.toLocaleString()}, Ticks: ${counts.ticks.toLocaleString()}`,
+        description: `Trades: ${counts.trades}, Snapshots: ${counts.snapshots.toLocaleString()}, Events: ${counts.botEvents}, Funding: ${counts.funding}`,
       });
     } catch (error) {
       console.error('Download error:', error);

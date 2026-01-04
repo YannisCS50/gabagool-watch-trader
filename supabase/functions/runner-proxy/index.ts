@@ -22,7 +22,12 @@ type Action =
   | 'save-snapshot-logs'
   | 'save-fill-logs'
   | 'save-settlement-logs'
-  | 'save-settlement-failure';
+  | 'save-settlement-failure'
+  // NEW: Observability v1 actions
+  | 'save-bot-event'
+  | 'save-order-lifecycle'
+  | 'save-inventory-snapshot'
+  | 'save-funding-snapshot';
 
 interface RequestBody {
   action: Action;
@@ -577,6 +582,162 @@ Deno.serve(async (req) => {
           });
         }
 
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // NEW: Observability v1 - Save bot event (canonical event log)
+      case 'save-bot-event': {
+        const events = data?.events as Array<{
+          ts: number;
+          run_id?: string;
+          market_id?: string;
+          asset: string;
+          event_type: string;
+          correlation_id?: string;
+          reason_code?: string;
+          data?: Record<string, unknown>;
+        }> | undefined;
+
+        if (!events || events.length === 0) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing events' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const { error } = await supabase.from('bot_events').insert(events);
+        if (error) {
+          console.error('[runner-proxy] save-bot-event error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] ✅ Saved ${events.length} bot events`);
+        return new Response(JSON.stringify({ success: true, count: events.length }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // NEW: Observability v1 - Save order lifecycle
+      case 'save-order-lifecycle': {
+        const order = data?.order as {
+          client_order_id: string;
+          exchange_order_id?: string;
+          correlation_id?: string;
+          market_id: string;
+          asset: string;
+          side: string;
+          price: number;
+          qty: number;
+          status: string;
+          intent_type: string;
+          filled_qty?: number;
+          avg_fill_price?: number;
+          reserved_notional?: number;
+          released_notional?: number;
+          created_ts: number;
+          last_update_ts: number;
+        } | undefined;
+
+        if (!order) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing order data' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        // Upsert by client_order_id
+        const { error } = await supabase
+          .from('orders')
+          .upsert(order, { onConflict: 'client_order_id' });
+
+        if (error) {
+          console.error('[runner-proxy] save-order-lifecycle error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] ✅ Order lifecycle saved: ${order.client_order_id} -> ${order.status}`);
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // NEW: Observability v1 - Save inventory snapshot
+      case 'save-inventory-snapshot': {
+        const snapshot = data?.snapshot as {
+          ts: number;
+          market_id: string;
+          asset: string;
+          up_shares: number;
+          down_shares: number;
+          avg_up_cost?: number;
+          avg_down_cost?: number;
+          pair_cost?: number;
+          state: string;
+          state_age_ms?: number;
+          hedge_lag_ms?: number;
+          trigger_type?: string;
+        } | undefined;
+
+        if (!snapshot) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing snapshot data' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const { error } = await supabase.from('inventory_snapshots').insert(snapshot);
+        if (error) {
+          console.error('[runner-proxy] save-inventory-snapshot error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // NEW: Observability v1 - Save funding snapshot (CRITICAL)
+      case 'save-funding-snapshot': {
+        const snapshot = data?.snapshot as {
+          ts: number;
+          balance_total: number;
+          balance_available: number;
+          reserved_total?: number;
+          reserved_by_market?: Record<string, number>;
+          allowance_remaining?: number;
+          spendable?: number;
+          blocked_reason?: string;
+          trigger_type?: string;
+        } | undefined;
+
+        if (!snapshot) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing snapshot data' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const { error } = await supabase.from('funding_snapshots').insert(snapshot);
+        if (error) {
+          console.error('[runner-proxy] save-funding-snapshot error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] 💰 Funding snapshot: bal=${snapshot.balance_available}/${snapshot.balance_total}, blocked=${snapshot.blocked_reason || 'NONE'}`);
         return new Response(JSON.stringify({ success: true }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });

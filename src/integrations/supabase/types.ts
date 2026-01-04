@@ -68,6 +68,45 @@ export type Database = {
         }
         Relationships: []
       }
+      bot_events: {
+        Row: {
+          asset: string
+          correlation_id: string | null
+          created_at: string
+          data: Json | null
+          event_type: string
+          id: string
+          market_id: string | null
+          reason_code: string | null
+          run_id: string | null
+          ts: number
+        }
+        Insert: {
+          asset: string
+          correlation_id?: string | null
+          created_at?: string
+          data?: Json | null
+          event_type: string
+          id?: string
+          market_id?: string | null
+          reason_code?: string | null
+          run_id?: string | null
+          ts: number
+        }
+        Update: {
+          asset?: string
+          correlation_id?: string | null
+          created_at?: string
+          data?: Json | null
+          event_type?: string
+          id?: string
+          market_id?: string | null
+          reason_code?: string | null
+          run_id?: string | null
+          ts?: number
+        }
+        Relationships: []
+      }
       bot_positions: {
         Row: {
           avg_price: number
@@ -123,6 +162,7 @@ export type Database = {
         Row: {
           asset: string
           client_order_id: string | null
+          correlation_id: string | null
           created_at: string
           delta: number | null
           fill_notional: number
@@ -134,6 +174,7 @@ export type Database = {
           iso: string
           market_id: string
           order_id: string | null
+          run_id: string | null
           seconds_remaining: number
           side: string
           spot_price: number | null
@@ -143,6 +184,7 @@ export type Database = {
         Insert: {
           asset: string
           client_order_id?: string | null
+          correlation_id?: string | null
           created_at?: string
           delta?: number | null
           fill_notional: number
@@ -154,6 +196,7 @@ export type Database = {
           iso: string
           market_id: string
           order_id?: string | null
+          run_id?: string | null
           seconds_remaining: number
           side: string
           spot_price?: number | null
@@ -163,6 +206,7 @@ export type Database = {
         Update: {
           asset?: string
           client_order_id?: string | null
+          correlation_id?: string | null
           created_at?: string
           delta?: number | null
           fill_notional?: number
@@ -174,10 +218,53 @@ export type Database = {
           iso?: string
           market_id?: string
           order_id?: string | null
+          run_id?: string | null
           seconds_remaining?: number
           side?: string
           spot_price?: number | null
           strike_price?: number | null
+          ts?: number
+        }
+        Relationships: []
+      }
+      funding_snapshots: {
+        Row: {
+          allowance_remaining: number | null
+          balance_available: number
+          balance_total: number
+          blocked_reason: string | null
+          created_at: string
+          id: string
+          reserved_by_market: Json | null
+          reserved_total: number
+          spendable: number | null
+          trigger_type: string | null
+          ts: number
+        }
+        Insert: {
+          allowance_remaining?: number | null
+          balance_available: number
+          balance_total: number
+          blocked_reason?: string | null
+          created_at?: string
+          id?: string
+          reserved_by_market?: Json | null
+          reserved_total?: number
+          spendable?: number | null
+          trigger_type?: string | null
+          ts: number
+        }
+        Update: {
+          allowance_remaining?: number | null
+          balance_available?: number
+          balance_total?: number
+          blocked_reason?: string | null
+          created_at?: string
+          id?: string
+          reserved_by_market?: Json | null
+          reserved_total?: number
+          spendable?: number | null
+          trigger_type?: string | null
           ts?: number
         }
         Relationships: []
@@ -245,6 +332,60 @@ export type Database = {
           opening_shares?: number
           opening_side?: string
           was_hedged?: boolean
+        }
+        Relationships: []
+      }
+      inventory_snapshots: {
+        Row: {
+          asset: string
+          avg_down_cost: number | null
+          avg_up_cost: number | null
+          created_at: string
+          down_shares: number
+          hedge_lag_ms: number | null
+          id: string
+          market_id: string
+          pair_cost: number | null
+          state: string
+          state_age_ms: number | null
+          trigger_type: string | null
+          ts: number
+          unpaired_shares: number | null
+          up_shares: number
+        }
+        Insert: {
+          asset: string
+          avg_down_cost?: number | null
+          avg_up_cost?: number | null
+          created_at?: string
+          down_shares?: number
+          hedge_lag_ms?: number | null
+          id?: string
+          market_id: string
+          pair_cost?: number | null
+          state: string
+          state_age_ms?: number | null
+          trigger_type?: string | null
+          ts: number
+          unpaired_shares?: number | null
+          up_shares?: number
+        }
+        Update: {
+          asset?: string
+          avg_down_cost?: number | null
+          avg_up_cost?: number | null
+          created_at?: string
+          down_shares?: number
+          hedge_lag_ms?: number | null
+          id?: string
+          market_id?: string
+          pair_cost?: number | null
+          state?: string
+          state_age_ms?: number | null
+          trigger_type?: string | null
+          ts?: number
+          unpaired_shares?: number | null
+          up_shares?: number
         }
         Relationships: []
       }
@@ -456,18 +597,21 @@ export type Database = {
         Row: {
           asset: string
           avg_fill_price: number | null
+          correlation_id: string | null
           created_at: string
           error_message: string | null
           event_end_time: string | null
           event_start_time: string | null
           executed_at: string | null
           id: string
+          intent_type: string | null
           market_slug: string
           order_id: string | null
           order_type: string
           outcome: string
           price: number
           reasoning: string | null
+          run_id: string | null
           shares: number
           status: string
           token_id: string
@@ -475,18 +619,21 @@ export type Database = {
         Insert: {
           asset: string
           avg_fill_price?: number | null
+          correlation_id?: string | null
           created_at?: string
           error_message?: string | null
           event_end_time?: string | null
           event_start_time?: string | null
           executed_at?: string | null
           id?: string
+          intent_type?: string | null
           market_slug: string
           order_id?: string | null
           order_type?: string
           outcome: string
           price: number
           reasoning?: string | null
+          run_id?: string | null
           shares: number
           status?: string
           token_id: string
@@ -494,21 +641,87 @@ export type Database = {
         Update: {
           asset?: string
           avg_fill_price?: number | null
+          correlation_id?: string | null
           created_at?: string
           error_message?: string | null
           event_end_time?: string | null
           event_start_time?: string | null
           executed_at?: string | null
           id?: string
+          intent_type?: string | null
           market_slug?: string
           order_id?: string | null
           order_type?: string
           outcome?: string
           price?: number
           reasoning?: string | null
+          run_id?: string | null
           shares?: number
           status?: string
           token_id?: string
+        }
+        Relationships: []
+      }
+      orders: {
+        Row: {
+          asset: string
+          avg_fill_price: number | null
+          client_order_id: string
+          correlation_id: string | null
+          created_at: string
+          created_ts: number
+          exchange_order_id: string | null
+          filled_qty: number | null
+          id: string
+          intent_type: string
+          last_update_ts: number
+          market_id: string
+          price: number
+          qty: number
+          released_notional: number | null
+          reserved_notional: number | null
+          side: string
+          status: string
+        }
+        Insert: {
+          asset: string
+          avg_fill_price?: number | null
+          client_order_id: string
+          correlation_id?: string | null
+          created_at?: string
+          created_ts: number
+          exchange_order_id?: string | null
+          filled_qty?: number | null
+          id?: string
+          intent_type: string
+          last_update_ts: number
+          market_id: string
+          price: number
+          qty: number
+          released_notional?: number | null
+          reserved_notional?: number | null
+          side: string
+          status?: string
+        }
+        Update: {
+          asset?: string
+          avg_fill_price?: number | null
+          client_order_id?: string
+          correlation_id?: string | null
+          created_at?: string
+          created_ts?: number
+          exchange_order_id?: string | null
+          filled_qty?: number | null
+          id?: string
+          intent_type?: string
+          last_update_ts?: number
+          market_id?: string
+          price?: number
+          qty?: number
+          released_notional?: number | null
+          reserved_notional?: number | null
+          side?: string
+          status?: string
         }
         Relationships: []
       }
@@ -899,9 +1112,12 @@ export type Database = {
           avg_down_cost: number | null
           avg_up_cost: number | null
           close_ts: number
+          correlation_id: string | null
           count_dislocation_95: number
           count_dislocation_97: number
           created_at: string
+          failure_flag: string | null
+          fees: number | null
           final_down_shares: number
           final_up_shares: number
           id: string
@@ -913,6 +1129,7 @@ export type Database = {
           open_ts: number | null
           pair_cost: number | null
           realized_pnl: number | null
+          run_id: string | null
           time_in_high: number
           time_in_low: number
           time_in_mid: number
@@ -924,9 +1141,12 @@ export type Database = {
           avg_down_cost?: number | null
           avg_up_cost?: number | null
           close_ts: number
+          correlation_id?: string | null
           count_dislocation_95?: number
           count_dislocation_97?: number
           created_at?: string
+          failure_flag?: string | null
+          fees?: number | null
           final_down_shares?: number
           final_up_shares?: number
           id?: string
@@ -938,6 +1158,7 @@ export type Database = {
           open_ts?: number | null
           pair_cost?: number | null
           realized_pnl?: number | null
+          run_id?: string | null
           time_in_high?: number
           time_in_low?: number
           time_in_mid?: number
@@ -949,9 +1170,12 @@ export type Database = {
           avg_down_cost?: number | null
           avg_up_cost?: number | null
           close_ts?: number
+          correlation_id?: string | null
           count_dislocation_95?: number
           count_dislocation_97?: number
           created_at?: string
+          failure_flag?: string | null
+          fees?: number | null
           final_down_shares?: number
           final_up_shares?: number
           id?: string
@@ -963,6 +1187,7 @@ export type Database = {
           open_ts?: number | null
           pair_cost?: number | null
           realized_pnl?: number | null
+          run_id?: string | null
           time_in_high?: number
           time_in_low?: number
           time_in_mid?: number
@@ -981,6 +1206,7 @@ export type Database = {
           cheapest_ask_plus_other_mid: number | null
           combined_ask: number | null
           combined_mid: number | null
+          correlation_id: string | null
           created_at: string
           delta: number | null
           down_ask: number | null
@@ -992,6 +1218,8 @@ export type Database = {
           market_id: string
           no_liquidity_streak: number
           pair_cost: number | null
+          reason_code: string | null
+          run_id: string | null
           seconds_remaining: number
           skew: number | null
           spot_price: number | null
@@ -1013,6 +1241,7 @@ export type Database = {
           cheapest_ask_plus_other_mid?: number | null
           combined_ask?: number | null
           combined_mid?: number | null
+          correlation_id?: string | null
           created_at?: string
           delta?: number | null
           down_ask?: number | null
@@ -1024,6 +1253,8 @@ export type Database = {
           market_id: string
           no_liquidity_streak?: number
           pair_cost?: number | null
+          reason_code?: string | null
+          run_id?: string | null
           seconds_remaining: number
           skew?: number | null
           spot_price?: number | null
@@ -1045,6 +1276,7 @@ export type Database = {
           cheapest_ask_plus_other_mid?: number | null
           combined_ask?: number | null
           combined_mid?: number | null
+          correlation_id?: string | null
           created_at?: string
           delta?: number | null
           down_ask?: number | null
@@ -1056,6 +1288,8 @@ export type Database = {
           market_id?: string
           no_liquidity_streak?: number
           pair_cost?: number | null
+          reason_code?: string | null
+          run_id?: string | null
           seconds_remaining?: number
           skew?: number | null
           spot_price?: number | null
