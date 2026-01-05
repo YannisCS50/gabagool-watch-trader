@@ -1,0 +1,116 @@
+{
+  "extraction_timestamp": "2026-01-05T14:35:00Z",
+  "markets": [
+    {
+      "asset": "XRP",
+      "start_time": "2026-01-05T08:30:00-05:00",
+      "end_time": "2026-01-05T08:45:00-05:00",
+      "current_price": null,
+      "time_remaining_seconds": null,
+      "positions": [
+        {
+          "outcome": "Up",
+          "shares": 100,
+          "avg_price_cents": 33,
+          "total_cost_usd": 60.09,
+          "current_value_usd": 66.80,
+          "pnl_usd": -63.99,
+          "pnl_pct": -90.66
+        },
+        {
+          "outcome": "Down",
+          "shares": 67,
+          "avg_price_cents": 51,
+          "total_cost_usd": 34.04,
+          "current_value_usd": 58.39,
+          "pnl_usd": 8.35,
+          "pnl_pct": 77
+        }
+      ],
+      "open_orders": [
+        {
+          "side": "Buy",
+          "outcome": "Down",
+          "price_cents": 0,
+          "shares": 0,
+          "total_usd": 11.00,
+          "filled_shares": 0,
+          "expiration": "Until Cancelled"
+        },
+        {
+          "side": "Buy",
+          "outcome": "Down",
+          "price_cents": 0,
+          "shares": 0,
+          "total_usd": 11.00,
+          "filled_shares": 0,
+          "expiration": "Until Cancelled"
+        }
+      ],
+      "derived_metrics": {
+        "net_up_shares": 100,
+        "net_down_shares": 67,
+        "inventory_skew_pct": 19.76,
+        "implied_pair_cost": 84,
+        "is_fully_paired": false,
+        "is_one_sided": false
+      }
+    },
+    {
+      "asset": "ETH",
+      "start_time": "2026-01-05T08:30:00-05:00",
+      "end_time": "2026-01-05T08:45:00-05:00",
+      "current_price": 3155.37,
+      "time_remaining_seconds": 600,
+      "positions": [
+        {
+          "outcome": "Down",
+          "shares": 50,
+          "avg_price_cents": 50,
+          "total_cost_usd": 25.00,
+          "current_value_usd": 35.50,
+          "pnl_usd": 10.50,
+          "pnl_pct": 42
+        }
+      ],
+      "open_orders": [
+        {
+          "side": "Buy",
+          "outcome": "Up",
+          "price_cents": 11,
+          "shares": 25,
+          "total_usd": 2.75,
+          "filled_shares": 0,
+          "expiration": "Until Cancelled"
+        }
+      ],
+      "derived_metrics": {
+        "net_up_shares": 0,
+        "net_down_shares": 50,
+        "inventory_skew_pct": -100,
+        "implied_pair_cost": null,
+        "is_fully_paired": false,
+        "is_one_sided": true
+      },
+      "history": [
+        {
+          "action": "Bought",
+          "shares": 25,
+          "outcome": "Down",
+          "price_cents": 51,
+          "total_usd": 12.75,
+          "time_ago": "5m"
+        },
+        {
+          "action": "Bought",
+          "shares": 25,
+          "outcome": "Down",
+          "price_cents": 49,
+          "total_usd": 12.25,
+          "time_ago": "5m"
+        }
+      ]
+    }
+  ],
+  "extraction_notes": "Data extracted from two Polymarket screenshots. XRP market had partial OCR issues, ETH market was fully readable."
+}
