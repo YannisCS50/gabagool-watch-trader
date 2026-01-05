@@ -171,7 +171,7 @@ export const LiveTradeDashboard: React.FC<LiveTradeDashboardProps> = ({ compact 
       </div>
 
       {/* Main Stats Overview */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         {/* Portfolio Value */}
         <Card className="bg-gradient-to-br from-red-500/10 to-red-500/5 border-red-500/20">
           <CardContent className="p-5">
@@ -224,6 +224,24 @@ export const LiveTradeDashboard: React.FC<LiveTradeDashboardProps> = ({ compact 
             </div>
             <div className="text-sm text-muted-foreground">
               {stats.winCount}W / {stats.lossCount}L / {stats.pendingCount} pending
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Profit Per Hour */}
+        <Card className={stats.profitPerHour >= 0 ? 'border-emerald-500/20' : 'border-red-500/20'}>
+          <CardContent className="p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <div className={`p-2 rounded-lg ${stats.profitPerHour >= 0 ? 'bg-emerald-500/10' : 'bg-red-500/10'}`}>
+                <Clock className="w-4 h-4" />
+              </div>
+              <span className="text-sm text-muted-foreground">Profit/Uur</span>
+            </div>
+            <div className={`text-3xl font-bold mb-1 ${stats.profitPerHour >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+              {stats.profitPerHour >= 0 ? '+' : ''}${stats.profitPerHour.toFixed(2)}
+            </div>
+            <div className="text-sm text-muted-foreground">
+              {stats.tradingHours.toFixed(0)}u actief
             </div>
           </CardContent>
         </Card>

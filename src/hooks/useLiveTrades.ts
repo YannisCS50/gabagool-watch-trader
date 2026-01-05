@@ -51,6 +51,8 @@ export interface LiveTradeStats {
   lossCount: number;
   pendingCount: number;
   winRate: number;
+  profitPerHour: number;
+  tradingHours: number;
 }
 
 export interface UseLiveTradesResult {
@@ -116,16 +118,35 @@ export function useLiveTrades(): UseLiveTradesResult {
   }, 0);
   
   const settledInvested = results.reduce((sum, r) => sum + (r.total_invested || 0), 0);
+  const totalProfitLoss = results.reduce((sum, r) => sum + (r.profit_loss || 0), 0);
+  
+  // Calculate trading hours from first trade to last settled result
+  const settledResults = results.filter(r => r.settled_at);
+  const allDates = [
+    ...trades.map(t => new Date(t.created_at).getTime()),
+    ...settledResults.map(r => new Date(r.settled_at!).getTime())
+  ].filter(d => !isNaN(d));
+  
+  let tradingHours = 0;
+  if (allDates.length >= 2) {
+    const minDate = Math.min(...allDates);
+    const maxDate = Math.max(...allDates);
+    tradingHours = (maxDate - minDate) / (1000 * 60 * 60);
+  }
+  
+  const profitPerHour = tradingHours > 0 ? totalProfitLoss / tradingHours : 0;
   
   const stats: LiveTradeStats = {
     totalTrades: trades.length,
     totalInvested: openTradesInvested + settledInvested,
     totalPayout: results.reduce((sum, r) => sum + (r.payout || 0), 0),
-    totalProfitLoss: results.reduce((sum, r) => sum + (r.profit_loss || 0), 0),
+    totalProfitLoss,
     winCount: results.filter(r => (r.profit_loss || 0) > 0 && r.settled_at).length,
     lossCount: results.filter(r => r.settled_at && (r.profit_loss || 0) <= 0).length,
     pendingCount: results.filter(r => !r.settled_at).length,
     winRate: 0,
+    profitPerHour,
+    tradingHours,
   };
 
   const settledCount = stats.winCount + stats.lossCount;
