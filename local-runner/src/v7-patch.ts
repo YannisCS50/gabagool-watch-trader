@@ -42,6 +42,7 @@ export interface MarketBook {
 export interface ReadinessState {
   marketId: string;
   marketOpenTs: number;
+  firstSeenAtMs: number;
   upReady: boolean;
   downReady: boolean;
   disabled: boolean;
@@ -115,6 +116,7 @@ export function checkReadinessGate(
     state = {
       marketId,
       marketOpenTs,
+      firstSeenAtMs: nowMs,
       upReady: false,
       downReady: false,
       disabled: false,
@@ -139,17 +141,23 @@ export function checkReadinessGate(
   }
   
   // Not ready - check if we should disable
-  const secSinceOpen = (nowMs - marketOpenTs) / 1000;
-  
-  if (secSinceOpen > V7_READINESS_CONFIG.disableTimeoutSec) {
+  const secSinceFirstSeen = (nowMs - state.firstSeenAtMs) / 1000;
+
+  // NOTE: We intentionally gate by "time since runner first saw this market".
+  // The runner can start mid-interval; using marketOpenTs would instantly disable.
+  if (secSinceFirstSeen > V7_READINESS_CONFIG.disableTimeoutSec) {
     // DISABLE this market until next round
     state.disabled = true;
     state.disabledReason = `MARKET_DISABLED_NO_ORDERBOOK: not ready after ${V7_READINESS_CONFIG.disableTimeoutSec}s`;
-    
+
+    const secSinceOpen = (nowMs - marketOpenTs) / 1000;
+
     console.log(`🚫 [v7.0.1] MARKET DISABLED: ${marketId}`);
     console.log(`   Reason: ${readiness.reason}`);
-    console.log(`   Time since open: ${secSinceOpen.toFixed(1)}s > ${V7_READINESS_CONFIG.disableTimeoutSec}s threshold`);
-    
+    console.log(
+      `   Time since first seen: ${secSinceFirstSeen.toFixed(1)}s > ${V7_READINESS_CONFIG.disableTimeoutSec}s threshold (market open age: ${secSinceOpen.toFixed(1)}s)`
+    );
+
     // Log event
     saveBotEvent({
       event_type: 'MARKET_DISABLED_NO_ORDERBOOK',
@@ -158,6 +166,7 @@ export function checkReadinessGate(
       run_id: runId,
       reason_code: readiness.reason,
       data: {
+        secSinceFirstSeen,
         secSinceOpen,
         upReady: readiness.upReady,
         downReady: readiness.downReady,
@@ -165,10 +174,10 @@ export function checkReadinessGate(
       },
       ts: nowMs,
     }).catch(() => {});
-    
+
     return { allowed: false, disabled: true, reason: state.disabledReason };
   }
-  
+
   // Not ready but not timed out yet - block but don't disable
   return { allowed: false, disabled: false, reason: readiness.reason };
 }

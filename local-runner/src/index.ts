@@ -1392,14 +1392,15 @@ function connectToClob(): void {
     // This ensures we have data before WebSocket starts streaming updates
     console.log('📡 [v7.1.1] Fetching initial orderbooks via HTTP...');
     let fetchedCount = 0;
-    
+    const updatedSlugs: string[] = [];
+
     for (const ctx of markets.values()) {
       try {
         const [upDepth, downDepth] = await Promise.all([
           getOrderbookDepth(ctx.market.upTokenId),
           getOrderbookDepth(ctx.market.downTokenId),
         ]);
-        
+
         if (upDepth.topAsk !== null || upDepth.topBid !== null) {
           ctx.book.up.ask = upDepth.topAsk;
           ctx.book.up.bid = upDepth.topBid;
@@ -1408,17 +1409,23 @@ function connectToClob(): void {
           ctx.book.down.ask = downDepth.topAsk;
           ctx.book.down.bid = downDepth.topBid;
         }
-        
-        if ((upDepth.topAsk !== null || downDepth.topAsk !== null)) {
+
+        if (upDepth.topAsk !== null || upDepth.topBid !== null || downDepth.topAsk !== null || downDepth.topBid !== null) {
           ctx.book.updatedAtMs = Date.now();
           fetchedCount++;
+          updatedSlugs.push(ctx.slug);
         }
-      } catch (err) {
+      } catch {
         // Non-critical, WebSocket will provide updates
       }
     }
-    
+
     console.log(`📡 [v7.1.1] Initial orderbooks loaded: ${fetchedCount}/${markets.size} markets`);
+
+    // Kick off evaluation immediately (don’t wait for the next WS tick)
+    if (updatedSlugs.length > 0) {
+      await Promise.allSettled(updatedSlugs.map((slug) => evaluateMarket(slug)));
+    }
   });
 
   clobSocket.on('message', async (data: WebSocket.Data) => {
@@ -1807,8 +1814,10 @@ async function main(): Promise<void> {
             ctx.book.down.bid = downDepth.topBid;
           }
           
-          if ((upDepth.topAsk !== null || downDepth.topAsk !== null)) {
+          if (upDepth.topAsk !== null || upDepth.topBid !== null || downDepth.topAsk !== null || downDepth.topBid !== null) {
             ctx.book.updatedAtMs = nowMs;
+            // Evaluate immediately on refreshed data (keeps trading on fresh info even if WS is quiet)
+            void evaluateMarket(ctx.slug);
           }
         } catch (err) {
           // Non-critical
