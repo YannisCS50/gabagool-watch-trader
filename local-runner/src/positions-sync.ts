@@ -17,6 +17,7 @@ const CLOB_URL = 'https://clob.polymarket.com';
 
 // Initialize Supabase client for database writes (lazy - only when needed)
 let supabaseClient: ReturnType<typeof createClient> | null = null;
+let supabaseWarningShown = false;
 
 function getSupabaseClient() {
   if (!supabaseClient) {
@@ -24,7 +25,11 @@ function getSupabaseClient() {
     const supabaseKey = process.env.SUPABASE_SERVICE_KEY || '';
     
     if (!supabaseUrl || !supabaseKey) {
-      console.warn('⚠️ SUPABASE_URL or SUPABASE_SERVICE_KEY not configured - position sync to DB disabled');
+      // Only show warning once at startup
+      if (!supabaseWarningShown) {
+        console.log('ℹ️  [positions-sync] Direct DB sync disabled (no SUPABASE_URL/SERVICE_KEY) - using runner-proxy');
+        supabaseWarningShown = true;
+      }
       return null;
     }
     

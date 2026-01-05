@@ -2146,6 +2146,7 @@ export {
   isMarketReady as v7IsMarketReady,
   checkReadinessGate as v7CheckReadinessGate,
   clearReadinessState as v7ClearReadinessState,
+  getReadinessState,
   // Intent Slots
   getIntentSlots,
   setPendingEntry,

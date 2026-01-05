@@ -180,6 +180,13 @@ export function clearReadinessState(marketId: string): void {
   readinessStore.delete(marketId);
 }
 
+/**
+ * Get readiness state for a market (for checking if disabled)
+ */
+export function getReadinessState(marketId: string): ReadinessState | undefined {
+  return readinessStore.get(marketId);
+}
+
 // ============================================================
 // 2. BOUNDED PER-MARKET INTENT SLOTS
 // ============================================================
