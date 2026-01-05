@@ -16,6 +16,7 @@ import { DownloadZipButton } from '@/components/DownloadZipButton';
 import { DownloadStrategyButton } from '@/components/DownloadStrategyButton';
 import { BotAnalysisDownload } from '@/components/BotAnalysisDownload';
 import { DownloadRangeLogsButton } from '@/components/DownloadRangeLogsButton';
+import { PolymarketScreenshotExtractor } from '@/components/PolymarketScreenshotExtractor';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -148,6 +149,9 @@ const Index = () => {
       <main className="container mx-auto px-4 py-6 space-y-6">
         {/* Live Runner Status Widget */}
         <LiveRunnerStatus />
+
+        {/* Screenshot Extractor */}
+        <PolymarketScreenshotExtractor />
 
         {/* Trader Header */}
         <TraderHeader username="gabagool22" stats={displayStats} />
