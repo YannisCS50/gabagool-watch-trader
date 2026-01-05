@@ -1629,7 +1629,8 @@ async function evaluateMarket(slug: string): Promise<void> {
       nowMs,
       balanceForCheck, // Pass balance for opening trade validation
       ctx.spotPrice ?? undefined,
-      ctx.strikePrice ?? undefined
+      ctx.strikePrice ?? undefined,
+      slug
     );
 
     if (signal) {
