@@ -12,8 +12,8 @@ import type { OrderbookDepth } from './polymarket.js';
 // States: FLAT → ONE_SIDED → HEDGED (winst) / SKEWED / DEEP_DISLOCATION
 // ============================================================
 
-export const STRATEGY_VERSION = '6.1.2';
-export const STRATEGY_NAME = 'GPT Strategy v6.1.2 – Micro-Hedge Execution (Polymarket 15m Bot)';
+export const STRATEGY_VERSION = '7.1.0';
+export const STRATEGY_NAME = 'GPT Strategy v7.1.0 – Low-Risk Test Mode (Polymarket 15m Bot)';
 
 // ============================================================
 // TYPES & STATE MACHINE (PDF Section: Implementatie & Logica)
