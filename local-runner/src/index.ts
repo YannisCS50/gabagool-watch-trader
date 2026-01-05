@@ -81,6 +81,11 @@ const STARTUP_GRACE_CONFIG = {
   graceWindowBeforeBootMs: 60_000, // 1 minute
   // Log blocked trades for debugging
   logBlockedTrades: true,
+  // v6.3.2: Block entry if delta is already too large (market already moved significantly)
+  // This prevents opening cheap bets that are unlikely to recover
+  maxDeltaForEntry: 0.025, // 2.5% delta = block entry
+  // Also block if combined mid is too extreme (price already dislocated)
+  minCombinedMidForEntry: 0.92, // Below 92¢ combined = dislocation, block entry
 };
 
 // Startup banner will be printed AFTER config is built
@@ -1048,6 +1053,47 @@ async function evaluateMarket(slug: string): Promise<void> {
             }
           }
           
+          ctx.inFlight = false;
+          return;
+        }
+        
+        // v6.3.2: Even for fresh markets, block entry if delta/dislocation is already too large
+        // This prevents opening cheap bets on markets that have already moved significantly
+        const upAsk = ctx.book?.UP?.ask;
+        const downAsk = ctx.book?.DOWN?.ask;
+        const combinedMid = (typeof upAsk === 'number' && typeof downAsk === 'number') 
+          ? upAsk + downAsk 
+          : null;
+        
+        // Calculate current delta if we have spot and strike
+        const currentDelta = (ctx.spotPrice !== null && ctx.strikePrice !== null && ctx.strikePrice > 0)
+          ? Math.abs(ctx.spotPrice - ctx.strikePrice) / ctx.strikePrice
+          : null;
+        
+        // Block if delta already too large (market already moved)
+        if (currentDelta !== null && currentDelta > STARTUP_GRACE_CONFIG.maxDeltaForEntry) {
+          const logKey = `startup_delta_${slug}`;
+          if (!(global as any)[logKey]) {
+            (global as any)[logKey] = true;
+            console.log(`🛡️ [v6.3.2] STARTUP DELTA GUARD: Blocking entry on ${ctx.market.asset}`);
+            console.log(`   Delta: ${(currentDelta * 100).toFixed(2)}% > max ${(STARTUP_GRACE_CONFIG.maxDeltaForEntry * 100).toFixed(1)}%`);
+            console.log(`   Spot: $${ctx.spotPrice?.toFixed(2)} | Strike: $${ctx.strikePrice?.toFixed(2)}`);
+            console.log(`   → Market already moved too much, waiting for next fresh market.`);
+          }
+          ctx.inFlight = false;
+          return;
+        }
+        
+        // Block if combined mid too low (prices already dislocated)
+        if (combinedMid !== null && combinedMid < STARTUP_GRACE_CONFIG.minCombinedMidForEntry) {
+          const logKey = `startup_disloc_${slug}`;
+          if (!(global as any)[logKey]) {
+            (global as any)[logKey] = true;
+            console.log(`🛡️ [v6.3.2] STARTUP DISLOCATION GUARD: Blocking entry on ${ctx.market.asset}`);
+            console.log(`   Combined Mid: ${(combinedMid * 100).toFixed(0)}¢ < min ${(STARTUP_GRACE_CONFIG.minCombinedMidForEntry * 100).toFixed(0)}¢`);
+            console.log(`   UP ask: ${(upAsk! * 100).toFixed(0)}¢ | DOWN ask: ${(downAsk! * 100).toFixed(0)}¢`);
+            console.log(`   → Prices already dislocated, waiting for next fresh market.`);
+          }
           ctx.inFlight = false;
           return;
         }
