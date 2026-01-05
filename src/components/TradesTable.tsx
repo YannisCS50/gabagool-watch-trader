@@ -1,12 +1,90 @@
 import { useState, useMemo } from 'react';
 import { Trade } from '@/types/trade';
-import { TradeRow } from './TradeRow';
 import { Button } from './ui/button';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { format } from 'date-fns';
+import { cn } from '@/lib/utils';
 
 interface TradesTableProps {
   trades: Trade[];
   pageSize?: number;
+}
+
+function TradeRow({ trade, index }: { trade: Trade; index: number }) {
+  const formatTime = (date: Date) => {
+    return format(date, 'HH:mm:ss');
+  };
+
+  const formatCurrency = (amount: number) => {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(amount);
+  };
+
+  const formatShares = (shares: number) => {
+    return new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 2,
+    }).format(shares);
+  };
+
+  const formatPrice = (price: number) => {
+    return `${(price * 100).toFixed(1)}¢`;
+  };
+
+  return (
+    <tr
+      className={cn(
+        'border-b border-border/30 hover:bg-muted/20 transition-colors',
+        index % 2 === 0 ? 'bg-transparent' : 'bg-muted/5'
+      )}
+    >
+      <td className="py-2.5 px-4 text-xs font-mono text-muted-foreground">
+        {formatTime(trade.timestamp)}
+      </td>
+      <td className="py-2.5 px-4 text-sm">
+        <span className="truncate max-w-[200px] block" title={trade.market}>
+          {trade.market.length > 35 ? `${trade.market.slice(0, 35)}...` : trade.market}
+        </span>
+      </td>
+      <td className="py-2.5 px-4">
+        <span
+          className={cn(
+            'inline-flex items-center px-2 py-0.5 rounded text-xs font-medium',
+            trade.outcome === 'Yes'
+              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+              : 'bg-red-500/20 text-red-400 border border-red-500/30'
+          )}
+        >
+          {trade.outcome}
+        </span>
+      </td>
+      <td className="py-2.5 px-4">
+        <span
+          className={cn(
+            'inline-flex items-center px-2 py-0.5 rounded text-xs font-medium',
+            trade.side === 'buy'
+              ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+              : 'bg-orange-500/20 text-orange-400 border border-orange-500/30'
+          )}
+        >
+          {trade.side.toUpperCase()}
+        </span>
+      </td>
+      <td className="py-2.5 px-4 text-right text-sm font-mono">
+        {formatShares(trade.shares)}
+      </td>
+      <td className="py-2.5 px-4 text-right text-sm font-mono">
+        {formatPrice(trade.price)}
+      </td>
+      <td className="py-2.5 px-4 text-right text-sm font-mono font-medium">
+        {formatCurrency(trade.total)}
+      </td>
+    </tr>
+  );
 }
 
 export function TradesTable({ trades, pageSize = 50 }: TradesTableProps) {

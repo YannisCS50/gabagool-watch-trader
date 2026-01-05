@@ -13,55 +13,20 @@ import {
   LayoutDashboard,
   TrendingUp,
   BarChart3,
-  Code2,
-  BookOpen,
   Activity,
   Settings,
-  Wallet,
-  Bot,
-  LineChart,
-  FileCode,
-  Zap,
   Database,
   Eye,
   Shield,
 } from 'lucide-react';
 
-const tradingItems = [
-  { title: 'Live Trading', href: '/live-trading', icon: TrendingUp, description: 'Real-time trading dashboard' },
-  { title: 'Paper Trading', href: '/paper-trading', icon: Bot, description: 'Simulated trading environment' },
-  { title: 'Wallet', href: '/wallet', icon: Wallet, description: 'Wallet balances & positions' },
-];
-
 const analysisItems = [
   { title: 'Trade Analysis', href: '/trade-analysis', icon: BarChart3, description: 'Analyze trade performance' },
-  { title: 'Edge Analysis', href: '/edge-analysis', icon: Zap, description: 'Edge detection metrics' },
-  { title: 'Entry Analysis', href: '/entry-analysis', icon: LineChart, description: 'Entry point analysis' },
   { title: 'Hedge Analysis', href: '/hedge-analysis', icon: Shield, description: 'Hedge effectiveness' },
   { title: 'Gabagool Analysis', href: '/gabagool-analysis', icon: Activity, description: 'Gabagool strategy stats' },
-  { title: 'Arbitrage', href: '/arbitrage', icon: TrendingUp, description: 'Arbitrage opportunities' },
-];
-
-const strategyItems = [
-  { title: 'Strategy Overview', href: '/strategy', icon: Code2, description: 'Strategy configuration' },
-  { title: 'Strategy Deep Dive', href: '/strategy-deep-dive', icon: BookOpen, description: 'Detailed strategy docs' },
-  { title: 'Strategy Code', href: '/strategy-code', icon: FileCode, description: 'View strategy source' },
-  { title: 'Live Bot Strategy', href: '/live-bot-strategy', icon: Bot, description: 'Live bot config' },
-  { title: 'Paper Bot Strategy', href: '/paper-bot-strategy', icon: Bot, description: 'Paper bot config' },
-  { title: 'GPT Strategy', href: '/gpt-strategy', icon: Zap, description: 'AI-assisted strategy' },
-  { title: 'Rust Strategy', href: '/rust-strategy', icon: Code2, description: 'High-perf Rust impl' },
-  { title: 'Trading Strategies', href: '/trading-strategies', icon: TrendingUp, description: 'Strategy library' },
-];
-
-const docsItems = [
-  { title: 'Dev Guide', href: '/dev-guide', icon: BookOpen, description: 'Developer documentation' },
-  { title: 'HFT Build Guide', href: '/hft-build-guide', icon: Zap, description: 'HFT implementation guide' },
-  { title: 'Order Flow Docs', href: '/order-flow-docs', icon: Database, description: 'Order flow architecture' },
-  { title: 'Data Flow Docs', href: '/data-flow-docs', icon: Database, description: 'Data pipeline docs' },
 ];
 
 const monitoringItems = [
-  { title: 'Real-Time Signals', href: '/real-time-signals', icon: Activity, description: 'Live trading signals' },
   { title: 'Observability', href: '/observability', icon: Eye, description: 'System monitoring' },
   { title: 'Data Logging', href: '/data-logging', icon: Database, description: 'Log viewer' },
 ];
@@ -121,19 +86,19 @@ export function MainNav() {
           </Link>
         </NavigationMenuItem>
 
-        {/* Trading */}
+        {/* Live Trading */}
         <NavigationMenuItem>
-          <NavigationMenuTrigger>
-            <TrendingUp className="mr-2 h-4 w-4" />
-            Trading
-          </NavigationMenuTrigger>
-          <NavigationMenuContent>
-            <ul className="grid w-[300px] gap-1 p-2">
-              {tradingItems.map((item) => (
-                <ListItem key={item.href} {...item} />
-              ))}
-            </ul>
-          </NavigationMenuContent>
+          <Link to="/live-trading">
+            <NavigationMenuLink
+              className={cn(
+                navigationMenuTriggerStyle(),
+                location.pathname === '/live-trading' && 'bg-accent text-accent-foreground'
+              )}
+            >
+              <TrendingUp className="mr-2 h-4 w-4" />
+              Live Trading
+            </NavigationMenuLink>
+          </Link>
         </NavigationMenuItem>
 
         {/* Analysis */}
@@ -143,38 +108,8 @@ export function MainNav() {
             Analysis
           </NavigationMenuTrigger>
           <NavigationMenuContent>
-            <ul className="grid w-[400px] gap-1 p-2 md:grid-cols-2">
-              {analysisItems.map((item) => (
-                <ListItem key={item.href} {...item} />
-              ))}
-            </ul>
-          </NavigationMenuContent>
-        </NavigationMenuItem>
-
-        {/* Strategy */}
-        <NavigationMenuItem>
-          <NavigationMenuTrigger>
-            <Code2 className="mr-2 h-4 w-4" />
-            Strategy
-          </NavigationMenuTrigger>
-          <NavigationMenuContent>
-            <ul className="grid w-[400px] gap-1 p-2 md:grid-cols-2">
-              {strategyItems.map((item) => (
-                <ListItem key={item.href} {...item} />
-              ))}
-            </ul>
-          </NavigationMenuContent>
-        </NavigationMenuItem>
-
-        {/* Documentation */}
-        <NavigationMenuItem>
-          <NavigationMenuTrigger>
-            <BookOpen className="mr-2 h-4 w-4" />
-            Docs
-          </NavigationMenuTrigger>
-          <NavigationMenuContent>
             <ul className="grid w-[300px] gap-1 p-2">
-              {docsItems.map((item) => (
+              {analysisItems.map((item) => (
                 <ListItem key={item.href} {...item} />
               ))}
             </ul>

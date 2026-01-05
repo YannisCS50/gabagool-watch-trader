@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useLiveBotPersistence } from './useLiveBotPersistence';
+import { useLiveBotSettings } from './useLiveBotSettings';
 
 interface RealtimeLiveTrade {
   market: string;
@@ -39,7 +39,7 @@ function getFunctionsWsUrl(path: string): string {
 }
 
 export function useRealtimeLiveBot() {
-  const { isEnabled, setEnabled } = useLiveBotPersistence();
+  const { isEnabled, setEnabled } = useLiveBotSettings();
 
   const wsUrl = useMemo(() => getFunctionsWsUrl('live-trade-realtime'), []);
 

@@ -4,6 +4,7 @@ import { supabase } from '@/integrations/supabase/client';
 export interface LiveBotStatus {
   isReady: boolean;
   isLoading: boolean;
+  isEnabled: boolean;
   balance: number | null;
   walletAddress: string | null;
   limits: {
@@ -19,6 +20,7 @@ export function useLiveBotSettings() {
   const [status, setStatus] = useState<LiveBotStatus>({
     isReady: false,
     isLoading: true,
+    isEnabled: false,
     balance: null,
     walletAddress: null,
     limits: null,
@@ -29,6 +31,12 @@ export function useLiveBotSettings() {
     setStatus(prev => ({ ...prev, isLoading: true, error: null }));
     
     try {
+      // Get bot settings from database
+      const { data: settingsData } = await supabase
+        .from('live_bot_settings')
+        .select('is_enabled')
+        .single();
+      
       // Get bot status
       const statusRes = await supabase.functions.invoke('live-trade-bot', {
         body: { action: 'status' },
@@ -48,6 +56,7 @@ export function useLiveBotSettings() {
       setStatus({
         isReady: statusData?.status === 'READY',
         isLoading: false,
+        isEnabled: settingsData?.is_enabled ?? false,
         balance: balanceData?.success ? balanceData.balance : null,
         walletAddress: statusData?.walletAddress || balanceData?.walletAddress || null,
         limits: statusData?.limits || null,
@@ -66,6 +75,24 @@ export function useLiveBotSettings() {
   useEffect(() => {
     fetchStatus();
   }, [fetchStatus]);
+
+  const setEnabled = useCallback(async (enabled: boolean) => {
+    try {
+      const { error } = await supabase
+        .from('live_bot_settings')
+        .upsert({ 
+          id: '00000000-0000-0000-0000-000000000001',
+          is_enabled: enabled,
+          updated_at: new Date().toISOString()
+        });
+      
+      if (error) throw error;
+      
+      setStatus(prev => ({ ...prev, isEnabled: enabled }));
+    } catch (err) {
+      console.error('Error setting enabled state:', err);
+    }
+  }, []);
 
   const placeOrder = useCallback(async (params: {
     tokenId: string;
@@ -104,6 +131,7 @@ export function useLiveBotSettings() {
   return {
     ...status,
     refetch: fetchStatus,
+    setEnabled,
     placeOrder,
     killSwitch,
   };
