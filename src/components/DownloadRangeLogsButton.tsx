@@ -6,6 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
+import JSZip from 'jszip';
 
 // Table names as type for type safety
 type TableName = 'bot_events' | 'snapshot_logs' | 'fill_logs' | 'inventory_snapshots' | 
@@ -147,11 +148,39 @@ export function DownloadRangeLogsButton() {
         fundingSnapshots,
       };
 
-      // Create filename with date range
-      const filename = `strategy_analysis_${fromDate}_${fromTime.replace(':', '')}_to_${toTime.replace(':', '')}.json`;
+      // Create ZIP file with compression
+      setProgress('Compressing...');
+      const zip = new JSZip();
       
-      // Download as JSON
-      const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+      // Add main analysis file
+      zip.file('analysis.json', JSON.stringify({
+        exportInfo: exportData.exportInfo,
+        summary: exportData.summary,
+        guardrailAnalysis: exportData.guardrailAnalysis,
+        pnlAnalysis: exportData.pnlAnalysis,
+      }, null, 2));
+      
+      // Add raw data files separately (easier to process)
+      zip.file('bot_events.json', JSON.stringify(botEvents));
+      zip.file('snapshot_logs.json', JSON.stringify(snapshotLogs));
+      zip.file('fill_logs.json', JSON.stringify(fillLogs));
+      zip.file('inventory_snapshots.json', JSON.stringify(inventorySnapshots));
+      zip.file('orders.json', JSON.stringify(orders));
+      zip.file('order_queue.json', JSON.stringify(orderQueue));
+      zip.file('settlement_logs.json', JSON.stringify(settlementLogs));
+      zip.file('hedge_intents.json', JSON.stringify(hedgeIntents));
+      zip.file('price_ticks.json', JSON.stringify(priceTicks));
+      zip.file('funding_snapshots.json', JSON.stringify(fundingSnapshots));
+
+      // Create filename with date range
+      const filename = `strategy_analysis_${fromDate}_${fromTime.replace(':', '')}_to_${toTime.replace(':', '')}.zip`;
+      
+      // Generate compressed ZIP
+      const blob = await zip.generateAsync({ 
+        type: 'blob', 
+        compression: 'DEFLATE', 
+        compressionOptions: { level: 9 } 
+      });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -251,7 +280,7 @@ export function DownloadRangeLogsButton() {
             ) : (
               <>
                 <Download className="w-4 h-4 mr-2" />
-                Export JSON
+                Export ZIP
               </>
             )}
           </Button>
