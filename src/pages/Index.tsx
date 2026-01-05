@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, AlertCircle } from 'lucide-react';
+import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, AlertCircle, Download, ChevronDown } from 'lucide-react';
 import { StatCard } from '@/components/StatCard';
 import { TradesTable } from '@/components/TradesTable';
 import { LiveOpenPositions } from '@/components/StrategyAnalysis';
@@ -14,6 +14,11 @@ import { DownloadEnrichedFillsButton } from '@/components/DownloadEnrichedFillsB
 import { DownloadAuditCodeButton } from '@/components/DownloadAuditCodeButton';
 import { DownloadZipButton } from '@/components/DownloadZipButton';
 import { Button } from '@/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { useTrades } from '@/hooks/useTrades';
 import { format } from 'date-fns';
 
@@ -98,10 +103,23 @@ const Index = () => {
               <MainNav />
             </div>
             <div className="flex items-center gap-2">
-              <DownloadZipButton />
-              <DownloadAllLogsButton />
-              <DownloadEnrichedFillsButton />
-              <DownloadAuditCodeButton />
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="sm" className="font-mono text-xs">
+                    <Download className="w-3 h-3 mr-2" />
+                    Export
+                    <ChevronDown className="w-3 h-3 ml-1" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-48 bg-popover border border-border">
+                  <div className="p-1 space-y-1">
+                    <DownloadZipButton />
+                    <DownloadAllLogsButton />
+                    <DownloadEnrichedFillsButton />
+                    <DownloadAuditCodeButton />
+                  </div>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <Button
                 variant="outline"
                 size="sm"

@@ -460,17 +460,17 @@ Hedge execution tracking:
 
   return (
     <Button
-      variant="default"
+      variant="ghost"
       onClick={downloadAllAsZip}
       disabled={isDownloading}
-      className="gap-2"
+      className="w-full justify-start gap-2 text-xs h-8"
     >
       {isDownloading ? (
-        <Loader2 className="h-4 w-4 animate-spin" />
+        <Loader2 className="h-3 w-3 animate-spin" />
       ) : (
-        <Archive className="h-4 w-4" />
+        <Archive className="h-3 w-3" />
       )}
-      {isDownloading ? progress || "Creating ZIP..." : "Download Unified ZIP"}
+      {isDownloading ? progress || "Creating..." : "Unified ZIP"}
     </Button>
   );
 }

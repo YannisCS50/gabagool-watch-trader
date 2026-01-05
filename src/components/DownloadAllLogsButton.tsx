@@ -698,16 +698,15 @@ export function DownloadAllLogsButton() {
     <Button
       onClick={downloadAllLogs}
       disabled={isDownloading}
-      variant="outline"
-      size="sm"
-      className="font-mono text-xs"
+      variant="ghost"
+      className="w-full justify-start text-xs h-8"
     >
       {isDownloading ? (
         <Loader2 className="w-3 h-3 mr-2 animate-spin" />
       ) : (
         <Download className="w-3 h-3 mr-2" />
       )}
-      {isDownloading ? 'Downloading...' : 'Download All CSV'}
+      {isDownloading ? 'Downloading...' : 'All CSV'}
     </Button>
   );
 }

@@ -471,9 +471,8 @@ export function DownloadEnrichedFillsButton() {
     <Button
       onClick={downloadEnrichedFills}
       disabled={isDownloading}
-      variant="outline"
-      size="sm"
-      className="font-mono text-xs"
+      variant="ghost"
+      className="w-full justify-start text-xs h-8"
     >
       {isDownloading ? (
         <Loader2 className="w-3 h-3 mr-2 animate-spin" />
