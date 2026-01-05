@@ -145,6 +145,12 @@ export async function getOrderbookDepth(tokenId: string): Promise<OrderbookDepth
     const asks = (book.asks || []) as { price: string; size: string }[];
     const bids = (book.bids || []) as { price: string; size: string }[];
 
+    // DEBUG: Log first 5 levels on BOTH sides to verify orderbook structure
+    const showLevels = 5;
+    const askSample = asks.slice(0, showLevels).map(l => `${l.price}@${parseFloat(l.size).toFixed(0)}`).join(', ');
+    const bidSample = bids.slice(0, showLevels).map(l => `${l.price}@${parseFloat(l.size).toFixed(0)}`).join(', ');
+    console.log(`BOOK_DEBUG tokenId=${tokenId.slice(0, 12)}... asks[0:${showLevels}]=[${askSample}] bids[0:${showLevels}]=[${bidSample}]`);
+
     // Sum volume at top 3 levels
     const topAsks = asks.slice(0, 3);
     const topBids = bids.slice(0, 3);
@@ -156,6 +162,11 @@ export async function getOrderbookDepth(tokenId: string): Promise<OrderbookDepth
     const topBid = bids.length > 0 ? parseFloat(bids[0].price) : null;
     
     const levels = asks.length + bids.length;
+
+    // SUSPICIOUS BOOK DETECTION: If top bid <= 0.02 AND top ask >= 0.98, warn
+    if (topBid !== null && topAsk !== null && topBid <= 0.02 && topAsk >= 0.98) {
+      console.log(`⚠️ SUSPICIOUS_BOOK_SHAPE tokenId=${tokenId.slice(0, 12)}... topBid=${topBid.toFixed(2)} topAsk=${topAsk.toFixed(2)} levels=${levels} - possible placeholder/illiquid market`);
+    }
 
     const depth: OrderbookDepth = {
       tokenId,
