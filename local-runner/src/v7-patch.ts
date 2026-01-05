@@ -54,6 +54,8 @@ const V7_READINESS_CONFIG = {
   maxSnapshotAgeMs: 2000,          // Orderbook must be < 2s old
   minLevels: 1,                     // At least 1 level required
   disableTimeoutSec: 12,            // Disable market if not ready after 12s
+  maxCombinedAsk: 1.10,             // Combined ask must be < 1.10 for tradeable spread
+  minSpreadForTrade: 0.90,          // Reject if spread > 90% (bid 0.01, ask 0.99)
 };
 
 const readinessStore = new Map<string, ReadinessState>();
@@ -76,11 +78,12 @@ export function isTokenReady(book: BookTop, bookAgeMs: number): boolean {
 
 /**
  * Check if entire market (both UP and DOWN) is ready for trading
+ * Now includes spread sanity check - combined ask must be < 1.10
  */
 export function isMarketReady(
   book: MarketBook,
   nowMs: number = Date.now()
-): { ready: boolean; upReady: boolean; downReady: boolean; reason?: string } {
+): { ready: boolean; upReady: boolean; downReady: boolean; reason?: string; combinedAsk?: number } {
   const bookAgeMs = nowMs - book.updatedAtMs;
   
   const upReady = isTokenReady(book.up, bookAgeMs);
@@ -94,6 +97,41 @@ export function isMarketReady(
   }
   if (!downReady) {
     return { ready: false, upReady, downReady, reason: 'DOWN_NOT_READY' };
+  }
+  
+  // Spread sanity check: combined ask must be reasonable for profitable trading
+  const upAsk = book.up.ask;
+  const downAsk = book.down.ask;
+  
+  if (upAsk !== null && downAsk !== null) {
+    const combinedAsk = upAsk + downAsk;
+    
+    // If combined ask is too high, no profitable arbitrage possible
+    if (combinedAsk > V7_READINESS_CONFIG.maxCombinedAsk) {
+      return { 
+        ready: false, 
+        upReady, 
+        downReady, 
+        reason: `SPREAD_TOO_WIDE: combined=${combinedAsk.toFixed(2)} > ${V7_READINESS_CONFIG.maxCombinedAsk}`,
+        combinedAsk,
+      };
+    }
+    
+    // Individual spread check (reject 0.01/0.99 extremes)
+    const upSpread = (upAsk - (book.up.bid ?? 0));
+    const downSpread = (downAsk - (book.down.bid ?? 0));
+    
+    if (upSpread > V7_READINESS_CONFIG.minSpreadForTrade || downSpread > V7_READINESS_CONFIG.minSpreadForTrade) {
+      return {
+        ready: false,
+        upReady,
+        downReady,
+        reason: `ILLIQUID_SPREAD: UP=${upSpread.toFixed(2)} DOWN=${downSpread.toFixed(2)}`,
+        combinedAsk,
+      };
+    }
+    
+    return { ready: true, upReady, downReady, combinedAsk };
   }
   
   return { ready: true, upReady, downReady };
