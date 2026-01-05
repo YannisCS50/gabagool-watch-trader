@@ -82,6 +82,7 @@ import {
 
 // v7.2.4 REV C.4: Hard Invariants (position caps, one-sided freeze, CPP paired-only)
 // v7.2.5 REV C.5: placeOrderWithCaps is now the ONLY allowed order entry point
+// v7.2.6: ExposureLedger for effective exposure tracking
 import {
   checkAllInvariants,
   onFillUpdateInvariants,
@@ -94,6 +95,13 @@ import {
   type OrderSide,
   type OrderContext,
 } from './hard-invariants.js';
+import {
+  syncPosition as ledgerSyncPosition,
+  clearMarket as ledgerClearMarket,
+  getEffectiveExposure,
+  getLedgerEntry,
+  assertInvariants as ledgerAssertInvariants,
+} from './exposure-ledger.js';
 
 // Ensure Node prefers IPv4 to avoid hangs on IPv6-only DNS results under some VPN setups.
 try {
@@ -104,7 +112,7 @@ try {
 }
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '7.2.5';  // v7.2.5 REV C.5: placeOrderWithCaps single entry point for all orders
+const RUNNER_VERSION = '7.2.6';  // v7.2.6: ExposureLedger for effective exposure tracking
 const RUN_ID = crypto.randomUUID();
 
 // v7 REV C: Initialize MarketStateManager singleton
@@ -303,12 +311,17 @@ async function fetchMarkets(): Promise<void> {
       }
     }
 
-    // Prune expired markets and clear v7 state
+    // Prune expired markets and clear v7 state + ledger
     for (const slug of markets.keys()) {
       if (!activeSlugs.has(slug)) {
+        const ctx = markets.get(slug);
         // v7.0.1: Clear readiness state and accumulators
         v7ClearReadinessState(slug);
         resetMicroHedgeAccumulator(slug);
+        // v7.2.6: Clear ledger for expired market
+        if (ctx) {
+          ledgerClearMarket(slug, ctx.market.asset);
+        }
         markets.delete(slug);
       }
     }
@@ -332,11 +345,14 @@ async function fetchExistingTrades(): Promise<void> {
 
   const trades = await fetchTrades(slugs);
 
-  // Reset positions
+  // Reset positions (both local context and ledger)
   for (const ctx of markets.values()) {
     ctx.position = { upShares: 0, downShares: 0, upInvested: 0, downInvested: 0 };
   }
 
+  // Aggregate positions per market
+  const positionsBySlug = new Map<string, { upShares: number; downShares: number }>();
+  
   for (const trade of trades) {
     const ctx = markets.get(trade.market_slug);
     if (ctx) {
@@ -347,10 +363,26 @@ async function fetchExistingTrades(): Promise<void> {
         ctx.position.downShares += trade.shares;
         ctx.position.downInvested += trade.total;
       }
+      
+      // Track for ledger sync
+      if (!positionsBySlug.has(trade.market_slug)) {
+        positionsBySlug.set(trade.market_slug, { upShares: 0, downShares: 0 });
+      }
+      const pos = positionsBySlug.get(trade.market_slug)!;
+      if (trade.outcome === 'UP') pos.upShares += trade.shares;
+      else pos.downShares += trade.shares;
     }
   }
 
-  console.log(`📋 Loaded ${trades.length} existing trades`);
+  // v7.2.6: Sync positions to ExposureLedger
+  for (const [slug, pos] of positionsBySlug) {
+    const ctx = markets.get(slug);
+    if (ctx) {
+      ledgerSyncPosition(slug, ctx.market.asset, pos.upShares, pos.downShares);
+    }
+  }
+
+  console.log(`📋 Loaded ${trades.length} existing trades, synced ${positionsBySlug.size} markets to ledger`);
 }
 
 // ============================================================

@@ -1,11 +1,12 @@
 /**
- * hard-invariants.ts - v7.2.5 REV C.5 HARD INVARIANTS
- * ====================================================
+ * hard-invariants.ts - v7.2.6 REV C.6 HARD INVARIANTS + EXPOSURE LEDGER
+ * ======================================================================
  * Implements ABSOLUTE guards that MUST hold for every order:
  * 
- * A) HARD POSITION CAP ENFORCEMENT
- *    - upShares <= maxSharesPerSide (100)
- *    - downShares <= maxSharesPerSide (100)
+ * A) HARD POSITION CAP ENFORCEMENT via ExposureLedger
+ *    - EFFECTIVE EXPOSURE = position + open + pending shares
+ *    - effectiveUp <= maxSharesPerSide (100)
+ *    - effectiveDown <= maxSharesPerSide (100)
  *    - total <= maxTotalSharesPerMarket (200)
  * 
  * B) ONE-SIDED FREEZE ADDS
@@ -16,10 +17,15 @@
  *    - cppPairedOnlyCents = avgUpPriceCents + avgDownPriceCents
  *    - No CPP-based emergency when paired=0
  * 
- * D) SINGLE ORDER GATEWAY (v7.2.5)
+ * D) SINGLE ORDER GATEWAY
  *    - ALL order placements MUST go through placeOrderWithCaps()
  *    - This function is the ONLY allowed entry point
  *    - Direct placeOrder() calls are FORBIDDEN
+ * 
+ * E) EXPOSURE LEDGER (v7.2.6)
+ *    - Tracks position, open orders, and pending orders per market/side
+ *    - Cap checks use EFFECTIVE EXPOSURE to prevent race conditions
+ *    - Ledger updated on: place, ack, fill, cancel, reject
  * 
  * These invariants are checked IMMEDIATELY BEFORE any order placement.
  * NO CODE PATH MAY BYPASS THESE CHECKS.
@@ -27,6 +33,21 @@
 
 import { saveBotEvent } from './backend.js';
 import { placeOrder as rawPlaceOrder, getOrderbookDepth, OrderbookDepth } from './polymarket.js';
+import {
+  checkCapWithEffectiveExposure,
+  reservePending,
+  promoteToOpen,
+  onFill as ledgerOnFill,
+  onRejectPending,
+  assertInvariants as ledgerAssertInvariants,
+  logOrderAttempt,
+  syncPosition as ledgerSyncPosition,
+  incrementPosition as ledgerIncrementPosition,
+  clearMarket as ledgerClearMarket,
+  getEffectiveExposure,
+  getLedgerEntry,
+  type Side as LedgerSide,
+} from './exposure-ledger.js';
 
 // ============================================================
 // CONFIGURATION
@@ -707,7 +728,11 @@ export function checkAllInvariants(params: {
 // ============================================================
 
 /**
- * Called after each fill to update freeze state and check invariants
+ * Called after each fill to update freeze state, ledger, and check invariants.
+ * 
+ * v7.2.6: Also updates ExposureLedger:
+ *   - ledgerOnFill: reduce openOrderShares
+ *   - ledgerIncrementPosition: increase positionShares
  */
 export function onFillUpdateInvariants(params: {
   marketId: string;
@@ -737,10 +762,15 @@ export function onFillUpdateInvariants(params: {
     runId,
   } = params;
 
-  // Consume pending BUY reservations now that inventory has been applied locally.
+  // v7.2.6: Update ExposureLedger on fill
+  // 1) Reduce open order shares (order is being filled)
+  ledgerOnFill(marketId, asset, fillSide, fillQty);
+  // 2) Increment position shares in ledger
+  ledgerIncrementPosition(marketId, asset, fillSide, fillQty);
+
+  // Legacy: consume reserved shares (for backward compat during transition)
   consumeReservedBuySharesOnFill(marketId, asset, fillSide, fillQty);
 
-  
   let freezeActivated = false;
   let freezeCleared = false;
   
@@ -762,13 +792,16 @@ export function onFillUpdateInvariants(params: {
     console.log(`🔓 [HARD_INVARIANT] FREEZE_CLEARED: ${asset} ${marketId} is now PAIRED`);
   }
   
-  // Assert invariants
+  // Assert position invariants (legacy)
   const invariantCheck = assertPositionInvariants({
     marketId,
     asset,
     upShares: newUpShares,
     downShares: newDownShares,
   });
+
+  // v7.2.6: Also assert ledger invariants (effective exposure)
+  const ledgerInvariant = ledgerAssertInvariants(marketId, asset, runId);
   
   // Calculate CPP for logging
   const cppResult = calculateCppPairedOnly({
@@ -781,7 +814,7 @@ export function onFillUpdateInvariants(params: {
   return {
     freezeActivated,
     freezeCleared,
-    invariantViolated: !invariantCheck.valid,
+    invariantViolated: !invariantCheck.valid || !ledgerInvariant.valid,
     cppPairedOnlyCents: cppResult.cppPairedOnlyCents,
   };
 }
@@ -836,11 +869,13 @@ export interface OrderContext {
 /**
  * placeOrderWithCaps - THE ONLY ALLOWED ENTRY POINT FOR ORDER PLACEMENT
  * 
+ * v7.2.6: Uses ExposureLedger for authoritative cap tracking.
+ * 
  * This function:
- * 1. Validates position caps BEFORE calling rawPlaceOrder
- * 2. Clamps order size if it would exceed caps
- * 3. Blocks orders entirely if no capacity remains
- * 4. Logs all cap enforcement events
+ * 1. Checks caps using EFFECTIVE EXPOSURE (position + open + pending)
+ * 2. Reserves pending shares BEFORE calling rawPlaceOrder
+ * 3. Promotes to open on ACK, releases on rejection
+ * 4. Logs structured order attempts
  * 
  * ALL order placements in the codebase MUST use this function.
  * Direct calls to placeOrder are FORBIDDEN.
@@ -854,45 +889,115 @@ export async function placeOrderWithCaps(
     marketId,
     asset,
     outcome,
-    currentUpShares: currentUpSharesRaw,
-    currentDownShares: currentDownSharesRaw,
+    currentUpShares: _posUpIgnored, // Position is now tracked by ledger
+    currentDownShares: _posDownIgnored,
     upCost = 0,
     downCost = 0,
     intentType,
     runId,
   } = ctx;
 
-  // Include pending BUY reservations so multiple in-flight orders cannot breach caps.
-  const reserved = getReservedBuyShares(marketId, asset);
-  const effectiveUpShares = currentUpSharesRaw + reserved.up;
-  const effectiveDownShares = currentDownSharesRaw + reserved.down;
-
   // Map side to OrderSide type
   const orderSide: OrderSide = order.side;
+  const ledgerSide: LedgerSide = outcome;
 
-  // 1) CHECK ALL INVARIANTS (using effective shares)
-  const invariantResult = checkAllInvariants({
+  // SELL orders: use legacy clamp (never short), skip ledger reservation
+  if (order.side === 'SELL') {
+    // For SELL, we only need to ensure we don't sell more than we have
+    const ledgerEntry = getLedgerEntry(marketId, asset);
+    const currentShares = outcome === 'UP' ? ledgerEntry.positionUp : ledgerEntry.positionDown;
+    const allowedSize = Math.min(order.size, currentShares);
+
+    if (allowedSize <= 0) {
+      logOrderAttempt({
+        marketId,
+        asset,
+        side: ledgerSide,
+        reqQty: order.size,
+        decision: 'block',
+        reason: `SELL_NO_SHARES: have ${currentShares}`,
+        runId,
+      });
+      return {
+        success: false,
+        error: `CAP_BLOCKED: Cannot SELL ${order.size} ${outcome}, only have ${currentShares}`,
+        failureReason: 'cap_blocked',
+      };
+    }
+
+    const wasClamped = allowedSize < order.size;
+    if (wasClamped) {
+      logOrderAttempt({
+        marketId,
+        asset,
+        side: ledgerSide,
+        reqQty: order.size,
+        decision: 'clamp',
+        clampedQty: allowedSize,
+        reason: `SELL_CLAMP: only ${currentShares} available`,
+        runId,
+      });
+    } else {
+      logOrderAttempt({
+        marketId,
+        asset,
+        side: ledgerSide,
+        reqQty: order.size,
+        decision: 'place',
+        runId,
+      });
+    }
+
+    // Place the SELL order (no ledger reservation needed)
+    let result: CappedOrderResponse;
+    try {
+      result = await rawPlaceOrder({
+        tokenId: order.tokenId,
+        side: order.side,
+        price: order.price,
+        size: allowedSize,
+        orderType: order.orderType,
+        intent: order.intent,
+        spread: order.spread,
+      });
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.message || 'Order placement exception',
+        failureReason: 'unknown',
+      };
+    }
+
+    return {
+      ...result,
+      clamped: wasClamped,
+      originalSize: wasClamped ? order.size : undefined,
+    };
+  }
+
+  // ================================================================
+  // BUY ORDER: Use ExposureLedger for cap enforcement
+  // ================================================================
+
+  // 1) CHECK CAP using effective exposure
+  const capCheck = checkCapWithEffectiveExposure({
     marketId,
     asset,
-    side: orderSide,
-    outcome,
-    requestedSize: order.size,
-    intentType,
-    currentUpShares: effectiveUpShares,
-    currentDownShares: effectiveDownShares,
-    upCost,
-    downCost,
-    combinedAsk: null, // Will be fetched if needed
-    runId,
+    side: ledgerSide,
+    requestedQty: order.size,
   });
 
-  // 2) BLOCKED: Return immediately with cap_blocked error
-  if (!invariantResult.allowed) {
-    console.log(`🚫 [HARD_INVARIANT] ORDER BLOCKED: ${invariantResult.blockReason}`);
-    console.log(`   Request: ${order.side} ${order.size} ${outcome} @ ${(order.price * 100).toFixed(0)}¢`);
-    console.log(
-      `   Position: UP=${currentUpSharesRaw} (+${reserved.up} pending) DOWN=${currentDownSharesRaw} (+${reserved.down} pending)`
-    );
+  // 2) BLOCKED: Return immediately
+  if (capCheck.blocked) {
+    logOrderAttempt({
+      marketId,
+      asset,
+      side: ledgerSide,
+      reqQty: order.size,
+      decision: 'block',
+      reason: capCheck.blockReason ?? 'CAP_EXCEEDED',
+      runId,
+    });
 
     saveBotEvent({
       event_type: 'ORDER_CAP_BLOCKED',
@@ -900,38 +1005,39 @@ export async function placeOrderWithCaps(
       market_id: marketId,
       ts: now,
       run_id: runId,
-      reason_code: 'HARD_CAP',
+      reason_code: 'EFFECTIVE_CAP',
       data: {
         side: order.side,
         outcome,
         requestedSize: order.size,
-        currentUpShares: currentUpSharesRaw,
-        currentDownShares: currentDownSharesRaw,
-        reservedBuyUpShares: reserved.up,
-        reservedBuyDownShares: reserved.down,
-        effectiveUpShares,
-        effectiveDownShares,
-        blockReason: invariantResult.blockReason,
+        effectiveExposure: capCheck.effectiveExposure,
+        blockReason: capCheck.blockReason,
         intentType,
       },
     }).catch(() => {});
 
     return {
       success: false,
-      error: `CAP_BLOCKED: ${invariantResult.blockReason}`,
+      error: `CAP_BLOCKED: ${capCheck.blockReason}`,
       failureReason: 'cap_blocked',
     };
   }
 
-  // 3) CLAMPED: Adjust size and log
-  const finalSize = invariantResult.finalSize;
-  const wasClamped = invariantResult.clampApplied;
+  // 3) CLAMP if needed
+  const finalSize = capCheck.clampedQty;
+  const wasClamped = finalSize < order.size;
 
   if (wasClamped) {
-    console.log(`📏 [HARD_INVARIANT] ORDER CLAMPED: ${order.size} → ${finalSize} shares`);
-    console.log(
-      `   Position: UP=${currentUpSharesRaw} (+${reserved.up} pending) DOWN=${currentDownSharesRaw} (+${reserved.down} pending)`
-    );
+    logOrderAttempt({
+      marketId,
+      asset,
+      side: ledgerSide,
+      reqQty: order.size,
+      decision: 'clamp',
+      clampedQty: finalSize,
+      reason: `EFFECTIVE_CAP: remaining=${capCheck.effectiveExposure.remainingUp}/${capCheck.effectiveExposure.remainingDown}`,
+      runId,
+    });
 
     saveBotEvent({
       event_type: 'ORDER_CLAMPED',
@@ -944,55 +1050,25 @@ export async function placeOrderWithCaps(
         outcome,
         originalSize: order.size,
         clampedSize: finalSize,
-        currentUpShares: currentUpSharesRaw,
-        currentDownShares: currentDownSharesRaw,
-        reservedBuyUpShares: reserved.up,
-        reservedBuyDownShares: reserved.down,
-        effectiveUpShares,
-        effectiveDownShares,
+        effectiveExposure: capCheck.effectiveExposure,
         intentType,
       },
     }).catch(() => {});
-  }
-
-  // 4) FINAL SAFETY CHECK: Verify post-order position won't exceed caps (effective)
-  const projectedShares = outcome === 'UP'
-    ? effectiveUpShares + (order.side === 'BUY' ? finalSize : 0)
-    : effectiveDownShares + (order.side === 'BUY' ? finalSize : 0);
-
-  if (order.side === 'BUY' && projectedShares > HARD_INVARIANT_CONFIG.maxSharesPerSide) {
-    console.error(`🚨 [HARD_INVARIANT] FATAL: Projected ${outcome}=${projectedShares} would exceed cap!`);
-    console.error(`   This should have been caught by clampOrderToCaps. BLOCKING ORDER.`);
-
-    saveBotEvent({
-      event_type: 'INVARIANT_SAFETY_BLOCK',
+  } else {
+    logOrderAttempt({
+      marketId,
       asset,
-      market_id: marketId,
-      ts: now,
-      run_id: runId,
-      data: {
-        outcome,
-        projectedShares,
-        maxSharesPerSide: HARD_INVARIANT_CONFIG.maxSharesPerSide,
-        currentSharesRaw: outcome === 'UP' ? currentUpSharesRaw : currentDownSharesRaw,
-        reservedBuyShares: outcome === 'UP' ? reserved.up : reserved.down,
-        orderSize: finalSize,
-      },
-    }).catch(() => {});
-
-    return {
-      success: false,
-      error: `SAFETY_BLOCK: Projected ${outcome}=${projectedShares} > ${HARD_INVARIANT_CONFIG.maxSharesPerSide}`,
-      failureReason: 'cap_blocked',
-    };
+      side: ledgerSide,
+      reqQty: order.size,
+      decision: 'place',
+      runId,
+    });
   }
 
-  // 5) Reserve shares BEFORE placing BUY order (prevents same-tick multi-order breach)
-  if (order.side === 'BUY') {
-    reserveBuyShares(marketId, asset, outcome, finalSize);
-  }
+  // 4) RESERVE PENDING before API call
+  reservePending(marketId, asset, ledgerSide, finalSize);
 
-  // 6) PLACE ORDER via rawPlaceOrder (and rollback reservation on failure)
+  // 5) PLACE ORDER
   let result: CappedOrderResponse;
   try {
     result = await rawPlaceOrder({
@@ -1005,9 +1081,8 @@ export async function placeOrderWithCaps(
       spread: order.spread,
     });
   } catch (err: any) {
-    if (order.side === 'BUY') {
-      releaseBuyShares(marketId, asset, outcome, finalSize);
-    }
+    // API call failed: release pending reservation
+    onRejectPending(marketId, asset, ledgerSide, finalSize);
     return {
       success: false,
       error: err?.message || 'Order placement exception',
@@ -1015,13 +1090,26 @@ export async function placeOrderWithCaps(
     };
   }
 
-  if (!result.success && order.side === 'BUY') {
-    releaseBuyShares(marketId, asset, outcome, finalSize);
+  // 6) UPDATE LEDGER based on result
+  if (!result.success) {
+    // Order rejected: release pending
+    onRejectPending(marketId, asset, ledgerSide, finalSize);
+  } else {
+    // Order accepted: promote pending → open
+    promoteToOpen(marketId, asset, ledgerSide, finalSize);
   }
 
-  // 7) LOG SUCCESS with cap enforcement info
+  // 7) ASSERT INVARIANTS after ledger update
+  const invariantCheck = ledgerAssertInvariants(marketId, asset, runId);
+  if (!invariantCheck.valid) {
+    // Critical: ledger shows breach, but order already placed
+    // This should not happen if logic is correct, but log for debugging
+    console.error(`🚨 [LEDGER] POST-ORDER INVARIANT BREACH (order already placed!)`);
+  }
+
+  // 8) LOG SUCCESS with cap enforcement info
   if (result.success && wasClamped) {
-    console.log(`✅ [HARD_INVARIANT] CLAMPED ORDER FILLED/PLACED: ${finalSize}@${(order.price * 100).toFixed(0)}¢ (was ${order.size})`);
+    console.log(`✅ [LEDGER] CLAMPED ORDER PLACED: ${finalSize}@${(order.price * 100).toFixed(0)}¢ (was ${order.size})`);
   }
 
   return {
