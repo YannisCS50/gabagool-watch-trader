@@ -733,3 +733,51 @@ export function onFill(
   
   return updated;
 }
+
+// ============================================================
+// v7.0.1 PATCH LAYER RE-EXPORTS
+// ============================================================
+
+export {
+  V7_PATCH_VERSION,
+  // Readiness
+  isMarketReady as v7IsMarketReady,
+  checkReadinessGate as v7CheckReadinessGate,
+  clearReadinessState as v7ClearReadinessState,
+  // Intent Slots
+  getIntentSlots,
+  setPendingEntry,
+  setPendingHedge,
+  clearEntrySlot,
+  clearHedgeSlot,
+  getPendingIntentCount,
+  canAddIntent,
+  clearIntentSlots,
+  // Micro-hedge Accumulator
+  getMicroHedgeAccumulator,
+  accumulateHedgeNeeded,
+  shouldPlaceMicroHedge,
+  clearMicroHedgeAccumulator,
+  resetMicroHedgeAccumulator,
+  // Risk Score / Degraded Mode
+  calculateRiskScore,
+  isActionAllowedInDegradedMode,
+  // Queue Stress
+  updateGlobalPendingCount,
+  isQueueStressed as v7IsQueueStressed,
+  isActionAllowedInQueueStress,
+  // Combined Gate
+  checkV7Gates,
+  // Stats
+  getV7PatchStats,
+  logV7PatchStatus,
+  // Types
+  type MarketBook as V7MarketBook,
+  type ReadinessState,
+  type PendingIntent as V7PendingIntent,
+  type IntentType as V7IntentType,
+  type MicroHedgeAccumulator,
+  type RiskScoreResult,
+  type V7GateResult,
+  type V7PatchStats,
+} from './v7-patch.js';
