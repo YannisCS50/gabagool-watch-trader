@@ -751,11 +751,16 @@ export function logV611Guardrail(
                 result.guardrailTriggered === 'SURVIVAL_MODE' ? '⏰' :
                 result.blockedAction ? '🛑' : '⚠️';
   
+  // v7.2.4 REV C.4: Use cppPairedOnly format (cents) for logging
+  const cppDisplay = result.costPerPaired !== null 
+    ? `${(result.costPerPaired * 100).toFixed(1)}¢` 
+    : 'N/A (one-sided)';
+  
   console.log(`[v6.1.1] ${emoji} GUARDRAIL: ${result.guardrailTriggered}`);
   console.log(`   Market: ${marketId}`);
   console.log(`   Action: ${action}`);
   console.log(`   paired_min_reached: ${result.pairedMinReached}`);
-  console.log(`   cost_per_paired: ${result.costPerPaired.toFixed(3)}`);
+  console.log(`   cppPairedOnlyCents: ${cppDisplay}`);
   console.log(`   blocked_action: ${result.blockedAction || 'none'}`);
   console.log(`   reason: ${result.reason}`);
 }
