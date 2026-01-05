@@ -46,39 +46,9 @@ Deno.serve(async (req) => {
 
     console.log('✅ Bot config fetched successfully');
 
-    // Return config in format expected by local-runner
-    const config = {
-      polymarket: {
-        apiKey: data.polymarket_api_key || '',
-        apiSecret: data.polymarket_api_secret || '',
-        passphrase: data.polymarket_passphrase || '',
-        privateKey: data.polymarket_private_key || '',
-        address: data.polymarket_address || '',
-      },
-      backend: {
-        url: data.backend_url || '',
-        sharedSecret: data.runner_shared_secret || '',
-      },
-      vpn: {
-        required: data.vpn_required ?? true,
-        endpoint: data.vpn_endpoint || 'wg0',
-      },
-      trading: {
-        assets: data.trade_assets || ['BTC', 'ETH'],
-        maxNotionalPerTrade: data.max_notional_per_trade || 5,
-        openingMaxPrice: data.opening_max_price || 0.52,
-        minOrderIntervalMs: data.min_order_interval_ms || 1500,
-        cloudflareBackoffMs: data.cloudflare_backoff_ms || 60000,
-      },
-      strategy: {
-        enabled: data.strategy_enabled ?? true,
-        minEdgeThreshold: data.min_edge_threshold || 0.02,
-        maxPositionSize: data.max_position_size || 100,
-      },
-    };
-
+    // Return raw bot_config row (what ResolvedConfig expects)
     return new Response(
-      JSON.stringify(config),
+      JSON.stringify(data),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 

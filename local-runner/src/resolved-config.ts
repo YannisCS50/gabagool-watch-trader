@@ -302,15 +302,23 @@ interface DatabaseConfig {
 
 async function fetchDatabaseConfig(): Promise<DatabaseConfig | null> {
   try {
-    const url = envConfig.backend.url;
+    const runnerProxyUrl = envConfig.backend.url;
     const secret = envConfig.backend.secret;
-    
-    if (!url || !secret) {
+
+    if (!runnerProxyUrl || !secret) {
       console.warn('⚠️  [ResolvedConfig] No backend URL/secret configured, skipping DB fetch');
       return null;
     }
 
-    // The backend URL points to get-bot-config edge function
+    // v7.1.1: The runner's BACKEND_URL typically points to runner-proxy (POST JSON).
+    // ResolvedConfig needs a simple GET endpoint for bot_config, so we derive it.
+    // Example:
+    //   .../functions/v1/runner-proxy  -> .../functions/v1/get-bot-config
+    let url = runnerProxyUrl;
+    if (runnerProxyUrl.includes('/functions/v1/')) {
+      url = runnerProxyUrl.replace(/\/functions\/v1\/[^/]+$/, '/functions/v1/get-bot-config');
+    }
+
     const response = await fetch(url, {
       method: 'GET',
       headers: {
@@ -325,9 +333,8 @@ async function fetchDatabaseConfig(): Promise<DatabaseConfig | null> {
     }
 
     const data = await response.json();
-    
-    // The edge function returns a transformed config, we need to map back
-    // But first, let's try to fetch raw from Supabase if we have the key
+
+    // get-bot-config returns the raw bot_config row.
     return data as DatabaseConfig;
   } catch (error) {
     console.warn(`⚠️  [ResolvedConfig] Error fetching DB config:`, error);
