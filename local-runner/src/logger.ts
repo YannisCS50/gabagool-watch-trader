@@ -164,6 +164,9 @@ export interface SettlementLog {
   last180sDislocation95: number; // Dislocation count in final 180s
   // v6.2.0: Theoretical PnL for comparing edge vs execution
   theoreticalPnL: number | null; // 1.0 - pair_cost
+  // v6.4.0: Complete settlement metrics
+  fees: number | null;           // Fees paid in USD
+  totalPayoutUsd: number | null; // Total payout received (winningSide shares * 1.00)
 }
 
 export function logSettlement(data: SettlementLog): void {

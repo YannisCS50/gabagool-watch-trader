@@ -466,11 +466,14 @@ export type Database = {
           id: string
           market_id: string
           pair_cost: number | null
+          paired_delay_sec: number | null
+          paired_shares: number | null
           skew_allowed_reason: string | null
           state: string
           state_age_ms: number | null
           trigger_type: string | null
           ts: number
+          unpaired_notional_usd: number | null
           unpaired_shares: number | null
           up_shares: number
         }
@@ -484,11 +487,14 @@ export type Database = {
           id?: string
           market_id: string
           pair_cost?: number | null
+          paired_delay_sec?: number | null
+          paired_shares?: number | null
           skew_allowed_reason?: string | null
           state: string
           state_age_ms?: number | null
           trigger_type?: string | null
           ts: number
+          unpaired_notional_usd?: number | null
           unpaired_shares?: number | null
           up_shares?: number
         }
@@ -502,11 +508,14 @@ export type Database = {
           id?: string
           market_id?: string
           pair_cost?: number | null
+          paired_delay_sec?: number | null
+          paired_shares?: number | null
           skew_allowed_reason?: string | null
           state?: string
           state_age_ms?: number | null
           trigger_type?: string | null
           ts?: number
+          unpaired_notional_usd?: number | null
           unpaired_shares?: number | null
           up_shares?: number
         }
@@ -1269,6 +1278,7 @@ export type Database = {
           time_in_high: number
           time_in_low: number
           time_in_mid: number
+          total_payout_usd: number | null
           ts: number
           winning_side: string | null
         }
@@ -1299,6 +1309,7 @@ export type Database = {
           time_in_high?: number
           time_in_low?: number
           time_in_mid?: number
+          total_payout_usd?: number | null
           ts: number
           winning_side?: string | null
         }
@@ -1329,6 +1340,7 @@ export type Database = {
           time_in_high?: number
           time_in_low?: number
           time_in_mid?: number
+          total_payout_usd?: number | null
           ts?: number
           winning_side?: string | null
         }

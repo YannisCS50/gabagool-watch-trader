@@ -536,7 +536,9 @@ Deno.serve(async (req) => {
           count_dislocation_95: l.countDislocation95,
           count_dislocation_97: l.countDislocation97,
           last_180s_dislocation_95: l.last180sDislocation95,
-          theoretical_pnl: l.theoreticalPnL,  // v6.2.0
+          theoretical_pnl: l.theoreticalPnL,
+          fees: l.fees,                       // v6.4.0: fees_paid_usd
+          total_payout_usd: l.totalPayoutUsd, // v6.4.0: total_payout_usd
         }));
 
         const { error } = await supabase.from('settlement_logs').insert(rows);
@@ -723,6 +725,9 @@ Deno.serve(async (req) => {
           avg_down_cost?: number;
           pair_cost?: number;
           unpaired_shares?: number;
+          unpaired_notional_usd?: number;  // v6.4.0
+          paired_shares?: number;          // v6.4.0
+          paired_delay_sec?: number;       // v6.4.0
           state: string;
           state_age_ms?: number;
           hedge_lag_ms?: number;
@@ -762,6 +767,9 @@ Deno.serve(async (req) => {
           avg_down_cost?: number;
           pair_cost?: number;
           unpaired_shares?: number;
+          unpaired_notional_usd?: number;  // v6.4.0: unpaired exposure in USD
+          paired_shares?: number;          // v6.4.0: explicit paired count
+          paired_delay_sec?: number;       // v6.4.0: time to complete hedge
           state: string;
           state_age_ms?: number;
           hedge_lag_ms?: number;
