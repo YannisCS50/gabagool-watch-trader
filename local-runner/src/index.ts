@@ -2487,40 +2487,106 @@ async function main(): Promise<void> {
       
       try {
         // v7.2.5: Use placeOrderWithCaps for hard cap enforcement
-        // Get current position from markets map if available
+        // IMPORTANT: In DATABASE/queue mode we MUST maintain an in-memory position,
+        // otherwise caps/freeze checks will see 0 and can be bypassed.
         const marketCtx = markets.get(order.market_slug);
+        if (!marketCtx) {
+          const msg = `NO_MARKET_CTX: ${order.market_slug} not in active markets map (refusing to execute order)`;
+          console.warn(`⛔ ${msg}`);
+          await updateOrder(order.id, 'failed', { error: msg });
+          continue;
+        }
+
         const queueOrderCtx: OrderContext = {
           marketId: order.market_slug,
           asset: order.asset,
           outcome: order.outcome as 'UP' | 'DOWN',
-          currentUpShares: marketCtx?.position.upShares ?? 0,
-          currentDownShares: marketCtx?.position.downShares ?? 0,
-          upCost: marketCtx?.position.upInvested ?? 0,
-          downCost: marketCtx?.position.downInvested ?? 0,
+          currentUpShares: marketCtx.position.upShares,
+          currentDownShares: marketCtx.position.downShares,
+          upCost: marketCtx.position.upInvested,
+          downCost: marketCtx.position.downInvested,
           intentType: order.intent_type || 'ENTRY',
           runId: RUN_ID,
         };
-        
-        const result = await placeOrderWithCaps({
-          tokenId: order.token_id,
-          side: 'BUY',
-          price: order.price,
-          size: orderShares,  // Use potentially resized shares
-          orderType: order.order_type as 'GTC' | 'FOK' | 'GTD',
-        }, queueOrderCtx);
+
+        const result = await placeOrderWithCaps(
+          {
+            tokenId: order.token_id,
+            side: 'BUY',
+            price: order.price,
+            size: orderShares, // Use potentially resized shares
+            orderType: order.order_type as 'GTC' | 'FOK' | 'GTD',
+          },
+          queueOrderCtx,
+        );
 
         if (result.success) {
           const status = result.status ?? 'unknown';
+
+          // Use filledSize when available, even if status reports "filled".
           const filledShares =
             status === 'filled'
-              ? order.shares
+              ? (result.filledSize ?? orderShares)
               : status === 'partial'
                 ? (result.filledSize ?? 0)
                 : 0;
 
+          // Update in-memory position + hard invariants on actual fills
+          if (filledShares > 0) {
+            const fillPrice = result.avgPrice ?? order.price;
+
+            if (order.outcome === 'UP') {
+              marketCtx.position.upShares += filledShares;
+              marketCtx.position.upInvested += filledShares * fillPrice;
+            } else {
+              marketCtx.position.downShares += filledShares;
+              marketCtx.position.downInvested += filledShares * fillPrice;
+            }
+
+            const invariantUpdate = onFillUpdateInvariants({
+              marketId: order.market_slug,
+              asset: order.asset,
+              fillSide: order.outcome as 'UP' | 'DOWN',
+              fillQty: filledShares,
+              newUpShares: marketCtx.position.upShares,
+              newDownShares: marketCtx.position.downShares,
+              upCost: marketCtx.position.upInvested,
+              downCost: marketCtx.position.downInvested,
+              runId: RUN_ID,
+            });
+
+            if (invariantUpdate.invariantViolated) {
+              console.error(`🚨 [v7.2.5] INVARIANT_BREACH: Position exceeds hard cap (QUEUE MODE)!`);
+              console.error(`   UP=${marketCtx.position.upShares} DOWN=${marketCtx.position.downShares}`);
+
+              marketStateManager?.suspendMarket(
+                order.market_slug,
+                order.asset,
+                300000,
+                'INVARIANT_BREACH_HARD_CAP_QUEUE',
+              );
+
+              saveBotEvent({
+                event_type: 'INVARIANT_BREACH_HARD_CAP',
+                asset: order.asset,
+                market_id: order.market_slug,
+                ts: Date.now(),
+                run_id: RUN_ID,
+                data: {
+                  upShares: marketCtx.position.upShares,
+                  downShares: marketCtx.position.downShares,
+                  maxSharesPerSide: HARD_INVARIANT_CONFIG.maxSharesPerSide,
+                  lastFillSide: order.outcome,
+                  lastFillQty: filledShares,
+                  mode: 'QUEUE',
+                },
+              }).catch(() => {});
+            }
+          }
+
           // CRITICAL FIX: Log ALL orders, not just filled ones
-          const logShares = filledShares > 0 ? filledShares : order.shares;
-          const logStatus = filledShares > 0 
+          const logShares = filledShares > 0 ? filledShares : orderShares;
+          const logStatus = filledShares > 0
             ? (status === 'partial' ? 'partial' : 'filled')
             : 'pending';
 
@@ -2547,11 +2613,11 @@ async function main(): Promise<void> {
           });
 
           tradeCount++;
-          
+
           if (filledShares > 0) {
             console.log(`✅ ORDER EXECUTED: ${order.outcome} ${filledShares}@${(order.price * 100).toFixed(0)}¢ (${logStatus})`);
           } else {
-            console.log(`📝 ORDER PLACED: ${order.outcome} ${order.shares}@${(order.price * 100).toFixed(0)}¢ (pending) - ${result.orderId}`);
+            console.log(`📝 ORDER PLACED: ${order.outcome} ${orderShares}@${(order.price * 100).toFixed(0)}¢ (pending) - ${result.orderId}`);
           }
         } else {
           await updateOrder(order.id, 'failed', { error: result.error });
