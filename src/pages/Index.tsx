@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, AlertCircle, Download, ChevronDown } from 'lucide-react';
+import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, AlertCircle } from 'lucide-react';
 import { StatCard } from '@/components/StatCard';
 import { TradesTable } from '@/components/TradesTable';
 import { LiveOpenPositions } from '@/components/StrategyAnalysis';
@@ -9,20 +9,10 @@ import { TraderHeader } from '@/components/TraderHeader';
 import { LiveRunnerStatus } from '@/components/LiveRunnerStatus';
 import { MainNav } from '@/components/MainNav';
 import { MobileNav } from '@/components/MobileNav';
-import { DownloadAllLogsButton } from '@/components/DownloadAllLogsButton';
-import { DownloadEnrichedFillsButton } from '@/components/DownloadEnrichedFillsButton';
-import { DownloadAuditCodeButton } from '@/components/DownloadAuditCodeButton';
-import { DownloadZipButton } from '@/components/DownloadZipButton';
-import { DownloadStrategyButton } from '@/components/DownloadStrategyButton';
-import { BotAnalysisDownload } from '@/components/BotAnalysisDownload';
 import { DownloadRangeLogsButton } from '@/components/DownloadRangeLogsButton';
+import { DownloadStrategyButton } from '@/components/DownloadStrategyButton';
 import { PolymarketScreenshotExtractor } from '@/components/PolymarketScreenshotExtractor';
 import { Button } from '@/components/ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
 import { useTrades } from '@/hooks/useTrades';
 import { format } from 'date-fns';
 
@@ -108,33 +98,7 @@ const Index = () => {
             </div>
             <div className="flex items-center gap-2">
               <DownloadRangeLogsButton />
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm" className="font-mono text-xs">
-                    <Download className="w-3 h-3 mr-2" />
-                    Export
-                    <ChevronDown className="w-3 h-3 ml-1" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-56 bg-popover border border-border">
-                  <div className="p-1 space-y-1">
-                    <a 
-                      href="/polymarket-extraction-2026-01-05.json" 
-                      download="polymarket-extraction-2026-01-05.json"
-                      className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent hover:text-accent-foreground transition-colors"
-                    >
-                      <Download className="w-4 h-4" />
-                      Polymarket Extraction
-                    </a>
-                    <BotAnalysisDownload />
-                    <DownloadZipButton />
-                    <DownloadStrategyButton />
-                    <DownloadAllLogsButton />
-                    <DownloadEnrichedFillsButton />
-                    <DownloadAuditCodeButton />
-                  </div>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              <DownloadStrategyButton />
               <Button
                 variant="outline"
                 size="sm"
