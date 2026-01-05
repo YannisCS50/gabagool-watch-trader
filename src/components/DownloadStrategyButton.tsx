@@ -101,7 +101,7 @@ export function DownloadStrategyButton() {
       }
 
       // Add a README with build timestamp
-      const readme = `# Polymarket Trading Strategy v7.2.1
+      const readme = `# Polymarket Trading Strategy v7.2.2
 
 ## Complete Trading Bot with All Hotfixes
 
@@ -138,16 +138,17 @@ This is the COMPLETE trading bot with all recent hotfixes applied.
 - **redeemer.ts**: Position redemption
 - **reconcile.ts**: Order reconciliation
 
-## Key Features (v7.2.1):
-- CPP_IMPLAUSIBLE triggers FREEZE_ADDS only (no emergency unwind)
-- Balance/allowance errors suspend market for 60s
-- No emergency orders without valid orderbook
-- Price improvement correctly applied (lower for SELL, higher for BUY)
-- Throttled guardrail logs (max 1 per 30s per market)
+## Key Features (v7.2.2 REV C.2):
+- State machine ENFORCES trading permissions (not just logging)
+- PAIRING state must be explicitly entered via beginPairing()
+- PAIRING timeout sets FREEZE_ADDS flag and blocks new entries
+- CPP uses paired-only formula (avgUp + avgDown) not totalInvested/paired
+- Micro-hedge only allowed in PAIRED state with time > 120s remaining
+- Central gating point for all trade types (ENTRY, HEDGE, ACCUMULATE)
 
 ## Build Info
-Generated: ${new Date().toISOString()}
-Version: 7.2.1 (Complete Bot)
+Generated: \${new Date().toISOString()}
+Version: 7.2.2 REV C.2 (State Enforced)
 `;
       rootFolder.file('README.md', readme);
 
@@ -155,7 +156,7 @@ Version: 7.2.1 (Complete Bot)
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `polymarket-strategy-v7.2.1-${new Date().toISOString().split('T')[0]}.zip`;
+      a.download = `polymarket-strategy-v7.2.2-${new Date().toISOString().split('T')[0]}.zip`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
