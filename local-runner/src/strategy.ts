@@ -442,11 +442,22 @@ export function pairedRatio(inv: Inventory): number {
 /**
  * v6.1: Calculate cost_per_paired - CRITICAL for risk control
  * cost_per_paired = (total_cost_up + total_cost_down) / min(up_shares, down_shares)
+ * 
+ * v6.6.1 FIX: Returns null when paired=0 to prevent Infinity deadlock
  */
-export function costPerPaired(inv: Inventory): number {
+export function costPerPaired(inv: Inventory): number | null {
   const paired = pairedShares(inv);
-  if (paired === 0) return Infinity;
+  if (paired === 0) return null; // v6.6.1: NOT Infinity - prevents deadlock
   return (inv.upCost + inv.downCost) / paired;
+}
+
+/**
+ * v6.6.1: Safe cost_per_paired accessor - returns a numeric value for display/logging
+ * Returns 0 when paired=0 instead of Infinity
+ */
+export function costPerPairedSafe(inv: Inventory): number {
+  const cpp = costPerPaired(inv);
+  return cpp ?? 0;
 }
 
 /**
@@ -486,14 +497,25 @@ export function hedgeLagSecFromInventory(inv: Inventory, nowMs: number): number 
 
 /**
  * v6.1.1: Check if cost_per_paired exceeds thresholds
- * Returns action to take based on guardrail hierarchy
+ * v6.6.1 FIX: When paired=0, returns NORMAL (CPP guards don't apply to one-sided)
  */
 export function checkCostPerPairedGuardrail(inv: Inventory): {
   action: 'NORMAL' | 'STOP_ACCUMULATE' | 'EMERGENCY_UNWIND';
-  costPerPaired: number;
+  costPerPaired: number | null;
   reason: string;
 } {
+  const paired = pairedShares(inv);
   const cpp = costPerPaired(inv);
+  
+  // v6.6.1 FIX: CPP guards only apply when paired > 0
+  // When paired=0, we're in one-sided state - use one-sided guards instead
+  if (paired === 0 || cpp === null) {
+    return {
+      action: 'NORMAL',
+      costPerPaired: null,
+      reason: 'CPP_UNDEFINED_ONE_SIDED: paired=0, CPP guards do not apply',
+    };
+  }
   
   if (cpp >= STRATEGY.pairedControl.costPerPairedEmergency) {
     return {
@@ -517,6 +539,7 @@ export function checkCostPerPairedGuardrail(inv: Inventory): {
     reason: 'cost_per_paired within limits',
   };
 }
+
 
 // ============================================================
 // V6.1.1: HARD GUARDRAIL SYSTEM WITH PRECEDENCE
@@ -542,12 +565,15 @@ export interface V611GuardrailResult {
   // Telemetry
   guardrailTriggered: GuardrailTrigger;
   pairedMinReached: boolean;
-  costPerPaired: number;
+  costPerPaired: number | null; // v6.6.1: null when paired=0
   blockedAction: string | null;
   reason: string;
   
   // For logging
   inSurvivalWindow: boolean;
+  
+  // v6.6.1: One-sided state info
+  isOneSided: boolean;
 }
 
 /**
@@ -556,10 +582,13 @@ export interface V611GuardrailResult {
  * 
  * Priority hierarchy:
  * 1. SURVIVAL (< 20s remaining) - allows all hedge/rebalance attempts
- * 2. COST_PER_PAIRED_EMERGENCY (>1.10) - force unwind
- * 3. COST_PER_PAIRED_STOP (>1.05) - block adds, allow hedge/rebalance
+ * 2. COST_PER_PAIRED_EMERGENCY (>1.10) - force unwind (ONLY when paired > 0)
+ * 3. COST_PER_PAIRED_STOP (>1.05) - block adds, allow hedge/rebalance (ONLY when paired > 0)
  * 4. PAIRED_MIN_BLOCK (paired < 20 after 60s) - block dominant side adds
  * 5. NORMAL - no restrictions
+ * 
+ * v6.6.1 FIX: When paired=0 (one-sided), CPP guards do NOT apply.
+ * This prevents the Infinity deadlock where bot can't hedge to become paired.
  */
 export function checkV611Guardrails(
   inv: Inventory,
@@ -572,6 +601,7 @@ export function checkV611Guardrails(
   const pairedMinReached = paired >= STRATEGY.pairedControl.minShares;
   const cpp = costPerPaired(inv);
   const cppCheck = checkCostPerPairedGuardrail(inv);
+  const isOneSided = paired === 0 && (inv.upShares > 0 || inv.downShares > 0);
   
   // Calculate elapsed since first fill
   const elapsedSec = inv.firstFillTs ? (nowMs - inv.firstFillTs) / 1000 : 0;
@@ -595,48 +625,56 @@ export function checkV611Guardrails(
       blockedAction: proposedAction === 'opening' || proposedAction === 'accumulate' ? proposedAction : null,
       reason: `SURVIVAL MODE: ${remainingSeconds}s remaining < ${survivalWindow}s window`,
       inSurvivalWindow: true,
+      isOneSided,
     };
   }
   
-  // Priority 2: COST_PER_PAIRED EMERGENCY (>1.10)
-  if (cppCheck.action === 'EMERGENCY_UNWIND') {
-    return {
-      blockEntry: true,
-      blockAccumulate: true,
-      blockDominantSideAdd: true,
-      allowHedge: true, // Still try to hedge
-      allowRebalance: true,
-      forceUnwind: true, // Signal emergency
-      guardrailTriggered: 'COST_PER_PAIRED_EMERGENCY',
-      pairedMinReached,
-      costPerPaired: cpp,
-      blockedAction: 'ALL_ADDS',
-      reason: cppCheck.reason,
-      inSurvivalWindow: false,
-    };
-  }
-  
-  // Priority 3: COST_PER_PAIRED STOP (>1.05)
-  if (cppCheck.action === 'STOP_ACCUMULATE') {
-    return {
-      blockEntry: true, // No new entries
-      blockAccumulate: true, // No accumulation
-      blockDominantSideAdd: true, // No dominant side adds
-      allowHedge: true,
-      allowRebalance: true,
-      forceUnwind: false,
-      guardrailTriggered: 'COST_PER_PAIRED_STOP',
-      pairedMinReached,
-      costPerPaired: cpp,
-      blockedAction: proposedAction === 'opening' || proposedAction === 'accumulate' ? proposedAction : null,
-      reason: cppCheck.reason,
-      inSurvivalWindow: false,
-    };
+  // v6.6.1 FIX: CPP guards only apply when paired > 0
+  // When one-sided (paired=0), NEVER trigger CPP emergency - that would deadlock the bot
+  if (paired > 0) {
+    // Priority 2: COST_PER_PAIRED EMERGENCY (>1.10) - ONLY when paired > 0
+    if (cppCheck.action === 'EMERGENCY_UNWIND') {
+      return {
+        blockEntry: true,
+        blockAccumulate: true,
+        blockDominantSideAdd: true,
+        allowHedge: true, // Still try to hedge
+        allowRebalance: true,
+        forceUnwind: true, // Signal emergency
+        guardrailTriggered: 'COST_PER_PAIRED_EMERGENCY',
+        pairedMinReached,
+        costPerPaired: cpp,
+        blockedAction: 'ALL_ADDS',
+        reason: cppCheck.reason,
+        inSurvivalWindow: false,
+        isOneSided: false,
+      };
+    }
+    
+    // Priority 3: COST_PER_PAIRED STOP (>1.05) - ONLY when paired > 0
+    if (cppCheck.action === 'STOP_ACCUMULATE') {
+      return {
+        blockEntry: true, // No new entries
+        blockAccumulate: true, // No accumulation
+        blockDominantSideAdd: true, // No dominant side adds
+        allowHedge: true,
+        allowRebalance: true,
+        forceUnwind: false,
+        guardrailTriggered: 'COST_PER_PAIRED_STOP',
+        pairedMinReached,
+        costPerPaired: cpp,
+        blockedAction: proposedAction === 'opening' || proposedAction === 'accumulate' ? proposedAction : null,
+        reason: cppCheck.reason,
+        inSurvivalWindow: false,
+        isOneSided: false,
+      };
+    }
   }
   
   // Priority 4: PAIRED_MIN_BLOCK (after deadline, paired < min)
   // Only blocks dominant side ADDS, allows hedge/rebalance to minority side
-  if (pastDeadline && !pairedMinReached) {
+  // v6.6.1: Only applies if we have some paired shares (not pure one-sided)
+  if (pastDeadline && !pairedMinReached && paired > 0) {
     // Determine dominant side
     const dominantSide: Outcome = inv.upShares >= inv.downShares ? 'UP' : 'DOWN';
     const tryingDominant = proposedSide === dominantSide;
@@ -655,10 +693,12 @@ export function checkV611Guardrails(
       blockedAction: tryingDominant && isAddAction ? `${proposedAction} on ${dominantSide}` : null,
       reason: `PAIRED_MIN_BLOCK: paired=${paired} < ${STRATEGY.pairedControl.minShares} min after ${elapsedSec.toFixed(0)}s > ${STRATEGY.timing.pairedTargetDeadlineSec}s deadline`,
       inSurvivalWindow: false,
+      isOneSided: false,
     };
   }
   
   // Priority 5: NORMAL - no restrictions
+  // v6.6.1: This includes one-sided state where CPP doesn't apply
   return {
     blockEntry: false,
     blockAccumulate: false,
@@ -670,8 +710,9 @@ export function checkV611Guardrails(
     pairedMinReached,
     costPerPaired: cpp,
     blockedAction: null,
-    reason: 'All guardrails passed',
+    reason: isOneSided ? 'ONE_SIDED: CPP guards do not apply, hedge allowed' : 'All guardrails passed',
     inSurvivalWindow: false,
+    isOneSided,
   };
 }
 
@@ -786,12 +827,13 @@ export function needsInitHedge(inv: Inventory, nowMs: number): {
 
 /**
  * v6.1: Log metrics for validation
+ * v6.6.1: cost_per_paired is now null when paired=0
  */
 export interface V61Metrics {
   entry_age_sec: number;
   hedge_lag_sec: number;
   paired_ratio: number;
-  cost_per_paired: number;
+  cost_per_paired: number | null; // v6.6.1: null when paired=0
   paired_min_reached: boolean;
   trades_per_market: number;
   paired_shares: number;
@@ -803,7 +845,7 @@ export function calculateV61Metrics(inv: Inventory, nowMs: number): V61Metrics {
     entry_age_sec: entryAgeSec(inv.marketOpenTs, nowMs),
     hedge_lag_sec: hedgeLagSecFromInventory(inv, nowMs),
     paired_ratio: pairedRatio(inv),
-    cost_per_paired: costPerPaired(inv),
+    cost_per_paired: costPerPaired(inv), // v6.6.1: Returns null when paired=0
     paired_min_reached: isPairedMinReached(inv),
     trades_per_market: inv.tradesCount ?? 0,
     paired_shares: pairedShares(inv),
