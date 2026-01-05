@@ -1337,12 +1337,28 @@ export function checkEntryGuards(
   upAsk: number,
   downAsk: number,
   spotPrice?: number | null,
-  strikePrice?: number | null
+  strikePrice?: number | null,
+  upBid?: number | null,
+  downBid?: number | null,
+  asset?: string
 ): EntryGuardResult {
   const minAsk = Math.min(upAsk, downAsk);
   const combinedAsk = upAsk + downAsk;
   const edge = 1 - combinedAsk;
   const cheaperSide: Outcome = upAsk <= downAsk ? 'UP' : 'DOWN';
+  
+  // v7.3 DEBUG: Verbose edge check logging
+  const edgeThreshold = 1 - STRATEGY.edge.baseBuffer;
+  const hasEdge = combinedAsk < edgeThreshold;
+  
+  console.log(`📊 [EDGE_DEBUG] ${asset || 'UNKNOWN'}: ` +
+    `UP(bid=${((upBid ?? 0) * 100).toFixed(0)}¢/ask=${(upAsk * 100).toFixed(0)}¢) ` +
+    `DOWN(bid=${((downBid ?? 0) * 100).toFixed(0)}¢/ask=${(downAsk * 100).toFixed(0)}¢) ` +
+    `| combined_ask=${(combinedAsk * 100).toFixed(1)}¢ ` +
+    `| threshold=${(edgeThreshold * 100).toFixed(1)}¢ ` +
+    `| edge=${(edge * 100).toFixed(2)}¢ ` +
+    `| PAIR_EDGE=${hasEdge ? 'YES ✅' : 'NO ❌'}`
+  );
 
   // RULE A: Tail-Entry Block
   // If min(upAsk, downAsk) < tailEntryBlockPrice, ENTRY forbidden
@@ -1363,7 +1379,32 @@ export function checkEntryGuards(
 
   // RULE B: Pair-Edge Required
   // ENTRY only when combinedAsk < 1 - edgeBuffer
-  if (STRATEGY.entry.requirePairEdge && combinedAsk >= 1 - STRATEGY.edge.baseBuffer) {
+  // 
+  // ┌─────────────────────────────────────────────────────────────────┐
+  // │ FORMULA EXPLANATION (Plain English):                            │
+  // │                                                                  │
+  // │ combinedAsk = upBestAsk + downBestAsk                           │
+  // │                                                                  │
+  // │ edgeThreshold = 1.00 - baseBuffer                               │
+  // │               = 1.00 - 0.015  (STRATEGY.edge.baseBuffer = 1.5%) │
+  // │               = 0.985 (98.5¢)                                   │
+  // │                                                                  │
+  // │ ENTRY ALLOWED if: combinedAsk < 0.985                           │
+  // │ ENTRY BLOCKED if: combinedAsk >= 0.985                          │
+  // │                                                                  │
+  // │ Example: UP ask=51¢ + DOWN ask=50¢ = 101¢ → BLOCKED             │
+  // │          because 101¢ >= 98.5¢                                  │
+  // │                                                                  │
+  // │ This guard is TAKER-ONLY: assumes we TAKE both asks immediately │
+  // │ No maker logic: we don't consider posting at the bid            │
+  // │                                                                  │
+  // │ Embedded buffers:                                                │
+  // │   - baseBuffer: 1.5¢ (STRATEGY.edge.baseBuffer)                 │
+  // │   - NO separate fees/slippage buffer added here                 │
+  // │   - feesBuffer (0.2¢) and slippageBuffer (0.4¢) exist in config │
+  // │     but are NOT used in this check                              │
+  // └─────────────────────────────────────────────────────────────────┘
+  if (STRATEGY.entry.requirePairEdge && combinedAsk >= edgeThreshold) {
     return {
       allowed: false,
       reason: 'NO_PAIR_EDGE',
@@ -1371,7 +1412,12 @@ export function checkEntryGuards(
         combinedAsk,
         edge,
         edgeBuffer: STRATEGY.edge.baseBuffer,
-        message: `Combined ${(combinedAsk * 100).toFixed(0)}¢ >= ${((1 - STRATEGY.edge.baseBuffer) * 100).toFixed(0)}¢ (no pair edge)`,
+        edgeThreshold,
+        upAsk,
+        downAsk,
+        upBid: upBid ?? null,
+        downBid: downBid ?? null,
+        message: `Combined ${(combinedAsk * 100).toFixed(1)}¢ >= ${(edgeThreshold * 100).toFixed(1)}¢ (no pair edge)`,
       },
     };
   }
