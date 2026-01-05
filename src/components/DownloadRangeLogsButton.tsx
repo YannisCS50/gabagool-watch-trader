@@ -7,9 +7,53 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 
+// Table names as type for type safety
+type TableName = 'bot_events' | 'snapshot_logs' | 'fill_logs' | 'inventory_snapshots' | 
+                  'orders' | 'order_queue' | 'settlement_logs' | 'hedge_intents' | 
+                  'price_ticks' | 'funding_snapshots';
+
+// Helper to fetch ALL records with pagination (Supabase default limit is 1000)
+async function fetchAllRecords(
+  tableName: TableName,
+  fromISO: string,
+  toISO: string,
+  orderColumn: string = 'created_at'
+): Promise<any[]> {
+  const PAGE_SIZE = 1000;
+  let allRecords: any[] = [];
+  let offset = 0;
+  let hasMore = true;
+
+  while (hasMore) {
+    const { data, error } = await supabase
+      .from(tableName)
+      .select('*')
+      .gte('created_at', fromISO)
+      .lte('created_at', toISO)
+      .order(orderColumn as any, { ascending: true })
+      .range(offset, offset + PAGE_SIZE - 1);
+
+    if (error) {
+      console.error(`Error fetching ${tableName}:`, error);
+      break;
+    }
+
+    if (data && data.length > 0) {
+      allRecords = allRecords.concat(data);
+      offset += PAGE_SIZE;
+      hasMore = data.length === PAGE_SIZE;
+    } else {
+      hasMore = false;
+    }
+  }
+
+  return allRecords;
+}
+
 export function DownloadRangeLogsButton() {
   const [isDownloading, setIsDownloading] = useState(false);
   const [isOpen, setIsOpen] = useState(false);
+  const [progress, setProgress] = useState('');
   
   // Default to today 13:30 - now
   const today = new Date().toISOString().split('T')[0];
@@ -26,67 +70,40 @@ export function DownloadRangeLogsButton() {
       const fromISO = new Date(`${fromDate}T${fromTime}:00Z`).toISOString();
       const toISO = new Date(`${toDate}T${toTime}:00Z`).toISOString();
       
-      toast.info(`Fetching logs from ${fromTime} to ${toTime}...`);
+      toast.info(`Fetching all logs from ${fromTime} to ${toTime}...`);
 
-      // Fetch all relevant tables with date range
-      const [
-        botEventsRes,
-        snapshotLogsRes,
-        fillLogsRes,
-        inventorySnapshotsRes,
-        ordersRes,
-        orderQueueRes,
-        settlementLogsRes,
-        hedgeIntentsRes,
-      ] = await Promise.all([
-        supabase.from('bot_events')
-          .select('*')
-          .gte('created_at', fromISO)
-          .lte('created_at', toISO)
-          .order('ts', { ascending: true }),
-        
-        supabase.from('snapshot_logs')
-          .select('*')
-          .gte('created_at', fromISO)
-          .lte('created_at', toISO)
-          .order('ts', { ascending: true }),
-        
-        supabase.from('fill_logs')
-          .select('*')
-          .gte('created_at', fromISO)
-          .lte('created_at', toISO)
-          .order('ts', { ascending: true }),
-        
-        supabase.from('inventory_snapshots')
-          .select('*')
-          .gte('created_at', fromISO)
-          .lte('created_at', toISO)
-          .order('ts', { ascending: true }),
-        
-        supabase.from('orders')
-          .select('*')
-          .gte('created_at', fromISO)
-          .lte('created_at', toISO)
-          .order('created_ts', { ascending: true }),
-        
-        supabase.from('order_queue')
-          .select('*')
-          .gte('created_at', fromISO)
-          .lte('created_at', toISO)
-          .order('created_at', { ascending: true }),
-        
-        supabase.from('settlement_logs')
-          .select('*')
-          .gte('created_at', fromISO)
-          .lte('created_at', toISO)
-          .order('ts', { ascending: true }),
-        
-        supabase.from('hedge_intents')
-          .select('*')
-          .gte('created_at', fromISO)
-          .lte('created_at', toISO)
-          .order('ts', { ascending: true }),
-      ]);
+      // Fetch all tables with full pagination
+      setProgress('Fetching bot_events...');
+      const botEvents = await fetchAllRecords('bot_events', fromISO, toISO, 'ts');
+      
+      setProgress('Fetching snapshot_logs...');
+      const snapshotLogs = await fetchAllRecords('snapshot_logs', fromISO, toISO, 'ts');
+      
+      setProgress('Fetching fill_logs...');
+      const fillLogs = await fetchAllRecords('fill_logs', fromISO, toISO, 'ts');
+      
+      setProgress('Fetching inventory_snapshots...');
+      const inventorySnapshots = await fetchAllRecords('inventory_snapshots', fromISO, toISO, 'ts');
+      
+      setProgress('Fetching orders...');
+      const orders = await fetchAllRecords('orders', fromISO, toISO, 'created_ts');
+      
+      setProgress('Fetching order_queue...');
+      const orderQueue = await fetchAllRecords('order_queue', fromISO, toISO, 'created_at');
+      
+      setProgress('Fetching settlement_logs...');
+      const settlementLogs = await fetchAllRecords('settlement_logs', fromISO, toISO, 'ts');
+      
+      setProgress('Fetching hedge_intents...');
+      const hedgeIntents = await fetchAllRecords('hedge_intents', fromISO, toISO, 'ts');
+      
+      setProgress('Fetching price_ticks...');
+      const priceTicks = await fetchAllRecords('price_ticks', fromISO, toISO, 'created_at');
+      
+      setProgress('Fetching funding_snapshots...');
+      const fundingSnapshots = await fetchAllRecords('funding_snapshots', fromISO, toISO, 'ts');
+      
+      setProgress('Building export...');
 
       // Build comprehensive JSON export
       const exportData = {
@@ -95,28 +112,39 @@ export function DownloadRangeLogsButton() {
           to: toISO,
           exportedAt: new Date().toISOString(),
           version: 'v6.6.1',
+          note: 'Complete strategy analysis export with all records (no pagination limits)',
         },
         summary: {
-          botEvents: botEventsRes.data?.length || 0,
-          snapshots: snapshotLogsRes.data?.length || 0,
-          fills: fillLogsRes.data?.length || 0,
-          inventorySnapshots: inventorySnapshotsRes.data?.length || 0,
-          orders: ordersRes.data?.length || 0,
-          orderQueue: orderQueueRes.data?.length || 0,
-          settlements: settlementLogsRes.data?.length || 0,
-          hedgeIntents: hedgeIntentsRes.data?.length || 0,
+          botEvents: botEvents.length,
+          snapshots: snapshotLogs.length,
+          fills: fillLogs.length,
+          inventorySnapshots: inventorySnapshots.length,
+          orders: orders.length,
+          orderQueue: orderQueue.length,
+          settlements: settlementLogs.length,
+          hedgeIntents: hedgeIntents.length,
+          priceTicks: priceTicks.length,
+          fundingSnapshots: fundingSnapshots.length,
+          totalRecords: botEvents.length + snapshotLogs.length + fillLogs.length + 
+                        inventorySnapshots.length + orders.length + orderQueue.length + 
+                        settlementLogs.length + hedgeIntents.length + priceTicks.length +
+                        fundingSnapshots.length,
         },
         // v6.6.0 Guardrail Analysis
-        guardrailAnalysis: analyzeGuardrails(botEventsRes.data || [], snapshotLogsRes.data || []),
-        // Raw data
-        botEvents: botEventsRes.data || [],
-        snapshotLogs: snapshotLogsRes.data || [],
-        fillLogs: fillLogsRes.data || [],
-        inventorySnapshots: inventorySnapshotsRes.data || [],
-        orders: ordersRes.data || [],
-        orderQueue: orderQueueRes.data || [],
-        settlementLogs: settlementLogsRes.data || [],
-        hedgeIntents: hedgeIntentsRes.data || [],
+        guardrailAnalysis: analyzeGuardrails(botEvents, snapshotLogs),
+        // PnL Analysis
+        pnlAnalysis: analyzePnL(fillLogs, settlementLogs, snapshotLogs),
+        // Raw data (all records, no limits)
+        botEvents,
+        snapshotLogs,
+        fillLogs,
+        inventorySnapshots,
+        orders,
+        orderQueue,
+        settlementLogs,
+        hedgeIntents,
+        priceTicks,
+        fundingSnapshots,
       };
 
       // Create filename with date range
@@ -133,13 +161,14 @@ export function DownloadRangeLogsButton() {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
-      toast.success(`Exported ${Object.values(exportData.summary).reduce((a, b) => a + b, 0)} records`);
+      toast.success(`Exported ${exportData.summary.totalRecords} records`);
       setIsOpen(false);
     } catch (error) {
       console.error('Export error:', error);
       toast.error('Failed to export logs');
     } finally {
       setIsDownloading(false);
+      setProgress('');
     }
   };
 
@@ -160,13 +189,13 @@ export function DownloadRangeLogsButton() {
           <div className="space-y-2">
             <h4 className="font-medium text-sm">Export Strategy Logs</h4>
             <p className="text-xs text-muted-foreground">
-              Includes bot events, snapshots, fills, and guardrail analysis.
+              Complete export: bot events, snapshots, fills, orders, prices, and analysis.
             </p>
           </div>
           
           <div className="grid gap-3">
             <div className="space-y-1.5">
-              <Label className="text-xs">From</Label>
+              <Label className="text-xs">From (UTC)</Label>
               <div className="flex gap-2">
                 <Input
                   type="date"
@@ -187,7 +216,7 @@ export function DownloadRangeLogsButton() {
             </div>
             
             <div className="space-y-1.5">
-              <Label className="text-xs">To</Label>
+              <Label className="text-xs">To (UTC)</Label>
               <div className="flex gap-2">
                 <Input
                   type="date"
@@ -217,7 +246,7 @@ export function DownloadRangeLogsButton() {
             {isDownloading ? (
               <>
                 <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Exporting...
+                {progress || 'Exporting...'}
               </>
             ) : (
               <>
@@ -255,6 +284,13 @@ function analyzeGuardrails(botEvents: any[], snapshots: any[]) {
     reasonCounts[reason] = (reasonCounts[reason] || 0) + 1;
   });
 
+  // All event types
+  const eventTypeCounts: Record<string, number> = {};
+  botEvents.forEach(e => {
+    const type = e.event_type || 'UNKNOWN';
+    eventTypeCounts[type] = (eventTypeCounts[type] || 0) + 1;
+  });
+
   // Unique bot states from snapshots
   const botStates: Record<string, number> = {};
   snapshots.forEach(s => {
@@ -266,17 +302,20 @@ function analyzeGuardrails(botEvents: any[], snapshots: any[]) {
   const cppValues = snapshots
     .filter(s => s.up_shares > 0 && s.down_shares > 0)
     .map(s => {
-      const paired = Math.min(s.up_shares, s.down_shares);
-      const cpp = paired > 0 ? (s.pair_cost || 0) / paired : null;
+      const paired = Math.min(Number(s.up_shares), Number(s.down_shares));
+      const cpp = paired > 0 ? (Number(s.pair_cost) || 0) / paired : null;
       return cpp;
     })
     .filter((v): v is number => v !== null && isFinite(v));
 
   return {
+    totalEvents: botEvents.length,
+    totalSnapshots: snapshots.length,
     totalSkippedActions: skippedEvents.length,
     emergencyUnwindEvents: emergencyEvents.length,
     safetyBlockEvents: safetyBlockEvents.length,
     cppAlertEvents: cppEvents.length,
+    eventTypeBreakdown: eventTypeCounts,
     reasonCodeBreakdown: reasonCounts,
     botStateDistribution: botStates,
     cppStats: cppValues.length > 0 ? {
@@ -284,6 +323,78 @@ function analyzeGuardrails(botEvents: any[], snapshots: any[]) {
       min: Math.min(...cppValues).toFixed(4),
       max: Math.max(...cppValues).toFixed(4),
       avg: (cppValues.reduce((a, b) => a + b, 0) / cppValues.length).toFixed(4),
+      median: cppValues.sort((a, b) => a - b)[Math.floor(cppValues.length / 2)]?.toFixed(4),
+    } : null,
+  };
+}
+
+// PnL Analysis Helper
+function analyzePnL(fills: any[], settlements: any[], snapshots: any[]) {
+  // Total notional traded
+  const totalNotional = fills.reduce((sum, f) => sum + (Number(f.fill_notional) || 0), 0);
+  
+  // Fills by intent
+  const fillsByIntent: Record<string, { count: number; notional: number }> = {};
+  fills.forEach(f => {
+    const intent = f.intent || 'UNKNOWN';
+    if (!fillsByIntent[intent]) {
+      fillsByIntent[intent] = { count: 0, notional: 0 };
+    }
+    fillsByIntent[intent].count++;
+    fillsByIntent[intent].notional += Number(f.fill_notional) || 0;
+  });
+
+  // Fills by asset
+  const fillsByAsset: Record<string, { count: number; notional: number }> = {};
+  fills.forEach(f => {
+    const asset = f.asset || 'UNKNOWN';
+    if (!fillsByAsset[asset]) {
+      fillsByAsset[asset] = { count: 0, notional: 0 };
+    }
+    fillsByAsset[asset].count++;
+    fillsByAsset[asset].notional += Number(f.fill_notional) || 0;
+  });
+
+  // Unique markets
+  const uniqueMarkets = new Set(fills.map(f => f.market_id)).size;
+
+  // Settlement summary
+  const totalRealizedPnL = settlements.reduce((sum, s) => sum + (Number(s.realized_pnl) || 0), 0);
+  const totalTheoreticalPnL = settlements.reduce((sum, s) => sum + (Number(s.theoretical_pnl) || 0), 0);
+  const settlementCount = settlements.length;
+  
+  // Failure analysis
+  const failures = settlements.filter(s => s.failure_flag);
+  const failuresByFlag: Record<string, number> = {};
+  failures.forEach(s => {
+    const flag = s.failure_flag || 'UNKNOWN';
+    failuresByFlag[flag] = (failuresByFlag[flag] || 0) + 1;
+  });
+
+  // Hedge lag analysis from fills
+  const hedgeLags = fills
+    .filter(f => f.hedge_lag_ms !== null && f.hedge_lag_ms !== undefined)
+    .map(f => Number(f.hedge_lag_ms));
+  
+  return {
+    totalFills: fills.length,
+    totalNotionalUsd: totalNotional.toFixed(2),
+    uniqueMarkets,
+    fillsByIntent,
+    fillsByAsset,
+    settlements: {
+      count: settlementCount,
+      totalRealizedPnL: totalRealizedPnL.toFixed(2),
+      totalTheoreticalPnL: totalTheoreticalPnL.toFixed(2),
+      failures: failures.length,
+      failuresByFlag,
+    },
+    hedgeLagStats: hedgeLags.length > 0 ? {
+      count: hedgeLags.length,
+      minMs: Math.min(...hedgeLags),
+      maxMs: Math.max(...hedgeLags),
+      avgMs: Math.round(hedgeLags.reduce((a, b) => a + b, 0) / hedgeLags.length),
+      medianMs: hedgeLags.sort((a, b) => a - b)[Math.floor(hedgeLags.length / 2)],
     } : null,
   };
 }
