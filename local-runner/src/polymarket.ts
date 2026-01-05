@@ -134,8 +134,10 @@ export async function getOrderbookDepth(tokenId: string): Promise<OrderbookDepth
 
   try {
     const res = await fetch(`${CLOB_URL}/book?token_id=${tokenId}`);
+    
+    // BOOK_SEED logging for diagnostics
     if (res.status !== 200) {
-      console.log(`📕 No orderbook for ${tokenId.slice(0, 20)}... (${res.status})`);
+      console.log(`BOOK_SEED tokenId=${tokenId.slice(0, 12)}... status=${res.status} levels=0 topBid=null topAsk=null`);
       return emptyDepth;
     }
 
@@ -152,6 +154,8 @@ export async function getOrderbookDepth(tokenId: string): Promise<OrderbookDepth
     
     const topAsk = asks.length > 0 ? parseFloat(asks[0].price) : null;
     const topBid = bids.length > 0 ? parseFloat(bids[0].price) : null;
+    
+    const levels = asks.length + bids.length;
 
     const depth: OrderbookDepth = {
       tokenId,
@@ -165,11 +169,12 @@ export async function getOrderbookDepth(tokenId: string): Promise<OrderbookDepth
 
     orderbookDepthCache.set(tokenId, { depth, fetchedAt: Date.now() });
     
-    console.log(`📊 Orderbook depth for ${tokenId.slice(0, 20)}...: ask=${topAsk?.toFixed(2) || 'none'} (${askVolume.toFixed(0)} vol), bid=${topBid?.toFixed(2) || 'none'} (${bidVolume.toFixed(0)} vol)`);
+    // BOOK_SEED logging for diagnostics
+    console.log(`BOOK_SEED tokenId=${tokenId.slice(0, 12)}... status=200 levels=${levels} topBid=${topBid?.toFixed(2) ?? 'null'} topAsk=${topAsk?.toFixed(2) ?? 'null'}`);
     
     return depth;
   } catch (error) {
-    console.error(`⚠️ Failed to fetch orderbook depth for ${tokenId.slice(0, 20)}...:`, error);
+    console.log(`BOOK_SEED tokenId=${tokenId.slice(0, 12)}... status=ERR levels=0 topBid=null topAsk=null error=${error}`);
     return emptyDepth;
   }
 }
