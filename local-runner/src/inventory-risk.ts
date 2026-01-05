@@ -842,23 +842,34 @@ export function checkEmergencyUnwindTrigger(
   const cfg = INVENTORY_RISK_CONFIG;
   const now = Date.now();
   
-  const { costPerPaired, skewRatio, unpairedAgeSec, upShares, downShares, upInvested, downInvested, paired } = ctx;
+  const { skewRatio, unpairedAgeSec, upShares, downShares, upInvested, downInvested, paired } = ctx;
   const dominantSide: 'UP' | 'DOWN' = upShares > downShares ? 'UP' : 'DOWN';
   
-  // v6.6.1 FIX: CPP checks only apply when paired > 0
-  // When paired=0, we're in one-sided state - CPP guards would deadlock the bot
-  if (paired > 0 && costPerPaired > 0) {
+  // v7.2.2 REV C.2: Use paired-only CPP (avgUp + avgDown) instead of totalInvested/paired
+  // This prevents false positives from unpaired exposure inflating the CPP
+  let cppPairedOnly: number | null = null;
+  if (paired > 0) {
+    const avgUpCents = upShares > 0 ? (upInvested / upShares) * 100 : null;
+    const avgDownCents = downShares > 0 ? (downInvested / downShares) * 100 : null;
+    
+    if (avgUpCents !== null && avgDownCents !== null) {
+      cppPairedOnly = (avgUpCents + avgDownCents) / 100; // Back to dollars for comparison
+    }
+  }
+  
+  // v6.6.1 FIX: CPP checks only apply when paired > 0 AND we have valid paired-only CPP
+  if (paired > 0 && cppPairedOnly !== null) {
     // v7.2.1 HOTFIX: CPP_IMPLAUSIBLE must NOT trigger EMERGENCY_UNWIND
     // The CPP formula includes unpaired exposure, so high values are expected
     // and do not indicate a real emergency situation.
     // Instead: log throttled warning + return implausibleCpp flag for FREEZE_ADDS
-    if (costPerPaired > cfg.cppImplausible) {
+    if (cppPairedOnly > cfg.cppImplausible) {
       // Throttle log to once per 30s per market
       const logKey = `cpp_implausible_warn_${marketId}`;
-      const now = Date.now();
       if (!(global as any)[logKey] || (now - (global as any)[logKey] > 30000)) {
         (global as any)[logKey] = now;
-        console.warn(`⚠️ [CPP_IMPLAUSIBLE] ${marketId} cpp=${costPerPaired.toFixed(3)} > ${cfg.cppImplausible}`);
+        console.warn(`⚠️ [CPP_PAIRED_ONLY] ${marketId} cpp=${cppPairedOnly.toFixed(3)} > ${cfg.cppImplausible}`);
+        console.warn(`   Formula: (avgUp + avgDown) = cppPairedOnly`);
         console.warn(`   upShares=${upShares}, downShares=${downShares}, paired=${paired}`);
         console.warn(`   → FREEZE_ADDS only (no emergency order placement)`);
       }
@@ -868,8 +879,8 @@ export function checkEmergencyUnwindTrigger(
     }
     
     // CPP emergency check (>= 1.10)
-    if (costPerPaired >= cfg.cppEmergency) {
-      const reason = `CPP_EMERGENCY: cpp=${costPerPaired.toFixed(3)} >= ${cfg.cppEmergency}`;
+    if (cppPairedOnly >= cfg.cppEmergency) {
+      const reason = `CPP_EMERGENCY: cppPairedOnly=${cppPairedOnly.toFixed(3)} >= ${cfg.cppEmergency}`;
       triggerEmergencyUnwind(state, asset, reason, dominantSide, false, runId);
       return { triggerEmergency: true, reason, dominantSide };
     }

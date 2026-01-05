@@ -54,6 +54,16 @@ export type PairingState =
 
 export type HedgeReason = 'PAIR_EDGE' | 'EMERGENCY_SKEW';
 
+// v7.2.2 REV C.2: State-based trading permissions
+export interface StatePermissions {
+  canEntry: boolean;
+  canAccumulate: boolean;
+  canHedge: boolean;
+  canMicroHedge: boolean;
+  canUnwind: boolean;
+  reason?: string;
+}
+
 export interface MarketStateContext {
   marketId: string;
   asset: string;
@@ -66,6 +76,13 @@ export interface MarketStateContext {
   // PAIRING lifecycle
   pairingStartTimestamp: number | null;
   pairingReason: HedgeReason | null;
+  
+  // v7.2.2 REV C.2: Freeze adds after pairing timeout
+  freezeAddsUntilEnd: boolean;
+  
+  // v7.2.2 REV C.2: Market suspension (e.g., balance errors)
+  suspendedUntil: number | null;
+  suspendReason: string | null;
   
   // Volatility tracking for dynamic caps
   priceHistory: Array<{ ts: number; midPrice: number }>;
@@ -86,6 +103,7 @@ export interface PairingStartedEvent {
   combinedAsk: number | null;
   impliedPairCostCents: number | null;
   hedgeReason: HedgeReason;
+  secondsRemaining?: number;
 }
 
 export interface PairingTimeoutRevertEvent {
@@ -95,6 +113,7 @@ export interface PairingTimeoutRevertEvent {
   upShares: number;
   downShares: number;
   revertedTo: PairingState;
+  freezeAddsSet: boolean;
 }
 
 export interface HedgePriceCapDynamicEvent {
@@ -105,6 +124,9 @@ export interface HedgePriceCapDynamicEvent {
   finalCap: number;
   recentVol: number | null;
 }
+
+// v7.2.2 REV C.2: Late expiry threshold for micro-hedge gating
+export const LATE_EXPIRY_SECONDS = 120;
 
 // ============================================================
 // MARKET STATE MANAGER CLASS
@@ -134,6 +156,9 @@ export class MarketStateManager {
         downShares: 0,
         pairingStartTimestamp: null,
         pairingReason: null,
+        freezeAddsUntilEnd: false,
+        suspendedUntil: null,
+        suspendReason: null,
         priceHistory: [],
         stateEnteredAt: Date.now(),
         lastTransitionAt: Date.now(),
@@ -146,6 +171,189 @@ export class MarketStateManager {
     const ctx = this.getOrCreateContext(marketId, asset);
     ctx.upShares = upShares;
     ctx.downShares = downShares;
+  }
+
+  // ============================================================
+  // v7.2.2 REV C.2: EXPLICIT PAIRING ENTRY API
+  // ============================================================
+
+  /**
+   * Explicitly enter PAIRING state before placing first hedge order.
+   * This is the ONLY way to enter PAIRING state from ONE_SIDED.
+   * Must be called by the trading decision code before hedge order placement.
+   */
+  beginPairing(
+    marketId: string,
+    asset: string,
+    reason: HedgeReason,
+    bookData?: { bestAskUp: number | null; bestAskDown: number | null },
+    secondsRemaining?: number
+  ): { success: boolean; state: PairingState; reason?: string } {
+    const ctx = this.getOrCreateContext(marketId, asset);
+    
+    // Can only enter PAIRING from ONE_SIDED states
+    if (!ctx.state.startsWith('ONE_SIDED')) {
+      return { 
+        success: false, 
+        state: ctx.state, 
+        reason: `Cannot begin PAIRING from state ${ctx.state} - must be ONE_SIDED_UP or ONE_SIDED_DOWN` 
+      };
+    }
+    
+    // Cannot begin pairing if freezeAddsUntilEnd is set (previous timeout)
+    if (ctx.freezeAddsUntilEnd) {
+      return { 
+        success: false, 
+        state: ctx.state, 
+        reason: `FREEZE_ADDS active - pairing blocked after previous timeout` 
+      };
+    }
+    
+    const now = Date.now();
+    ctx.pairingStartTimestamp = now;
+    ctx.pairingReason = reason;
+    ctx.state = 'PAIRING';
+    ctx.stateEnteredAt = now;
+    ctx.lastTransitionAt = now;
+    
+    // Log PAIRING_STARTED event
+    this.logPairingStarted(ctx, bookData, secondsRemaining);
+    
+    return { success: true, state: 'PAIRING' };
+  }
+
+  // ============================================================
+  // v7.2.2 REV C.2: SUSPENSION API
+  // ============================================================
+
+  suspendMarket(marketId: string, asset: string, durationMs: number, reason: string): void {
+    const ctx = this.getOrCreateContext(marketId, asset);
+    ctx.suspendedUntil = Date.now() + durationMs;
+    ctx.suspendReason = reason;
+    
+    console.log(`⏸️ [MarketState] SUSPENDED: ${asset} for ${durationMs / 1000}s - ${reason}`);
+    
+    saveBotEvent({
+      event_type: 'MARKET_SUSPENDED',
+      asset,
+      market_id: marketId,
+      ts: Date.now(),
+      run_id: this.runId,
+      data: { durationMs, reason },
+    }).catch(console.error);
+  }
+
+  isSuspended(marketId: string, asset: string): { suspended: boolean; reason?: string; remainingMs?: number } {
+    const ctx = this.getContext(marketId, asset);
+    if (!ctx || ctx.suspendedUntil === null) {
+      return { suspended: false };
+    }
+    
+    const now = Date.now();
+    if (now >= ctx.suspendedUntil) {
+      // Suspension expired
+      ctx.suspendedUntil = null;
+      ctx.suspendReason = null;
+      return { suspended: false };
+    }
+    
+    return { 
+      suspended: true, 
+      reason: ctx.suspendReason || 'SUSPENDED',
+      remainingMs: ctx.suspendedUntil - now,
+    };
+  }
+
+  // ============================================================
+  // v7.2.2 REV C.2: STATE PERMISSIONS API
+  // ============================================================
+
+  getStatePermissions(
+    marketId: string, 
+    asset: string, 
+    secondsRemaining: number
+  ): StatePermissions {
+    const ctx = this.getContext(marketId, asset);
+    const state = ctx?.state || 'FLAT';
+    const freezeAdds = ctx?.freezeAddsUntilEnd || false;
+    
+    // Check suspension first
+    const suspension = this.isSuspended(marketId, asset);
+    if (suspension.suspended) {
+      return {
+        canEntry: false,
+        canAccumulate: false,
+        canHedge: false,
+        canMicroHedge: false,
+        canUnwind: true, // Always allow unwind
+        reason: `SUSPENDED: ${suspension.reason}`,
+      };
+    }
+    
+    switch (state) {
+      case 'FLAT':
+        return {
+          canEntry: !freezeAdds,
+          canAccumulate: false,
+          canHedge: false,
+          canMicroHedge: false,
+          canUnwind: false,
+          reason: freezeAdds ? 'FREEZE_ADDS_ACTIVE' : undefined,
+        };
+        
+      case 'ONE_SIDED_UP':
+      case 'ONE_SIDED_DOWN':
+        return {
+          canEntry: false, // No adds on dominant side
+          canAccumulate: false,
+          canHedge: true, // Hedge initiation allowed (will transition to PAIRING)
+          canMicroHedge: false, // Never in ONE_SIDED
+          canUnwind: true,
+          reason: freezeAdds ? 'FREEZE_ADDS_ACTIVE' : undefined,
+        };
+        
+      case 'PAIRING':
+        return {
+          canEntry: false, // No new entries while pairing
+          canAccumulate: false,
+          canHedge: true, // Continue hedging to balance
+          canMicroHedge: false, // Not until PAIRED
+          canUnwind: true,
+          reason: 'IN_PAIRING_STATE',
+        };
+        
+      case 'PAIRED':
+        // Micro-hedge only if not near expiry
+        const canMicro = secondsRemaining > LATE_EXPIRY_SECONDS;
+        return {
+          canEntry: false, // No new entries when already paired
+          canAccumulate: !freezeAdds && secondsRemaining > 60, // Accumulate only with time
+          canHedge: true,
+          canMicroHedge: canMicro,
+          canUnwind: true,
+          reason: !canMicro ? 'LATE_EXPIRY' : undefined,
+        };
+        
+      case 'UNWIND_ONLY':
+        return {
+          canEntry: false,
+          canAccumulate: false,
+          canHedge: false, // No new hedges
+          canMicroHedge: false,
+          canUnwind: true,
+          reason: 'UNWIND_ONLY_STATE',
+        };
+        
+      default:
+        return {
+          canEntry: false,
+          canAccumulate: false,
+          canHedge: false,
+          canMicroHedge: false,
+          canUnwind: true,
+          reason: `UNKNOWN_STATE: ${state}`,
+        };
+    }
   }
 
   // ============================================================
@@ -242,6 +450,9 @@ export class MarketStateManager {
         ? 'ONE_SIDED_UP' 
         : 'ONE_SIDED_DOWN';
 
+      // v7.2.2 REV C.2: Set freezeAddsUntilEnd flag - no more entries this market window
+      ctx.freezeAddsUntilEnd = true;
+
       // Log timeout revert
       this.logPairingTimeoutRevert(ctx, timeInPairingSec, revertTo);
 
@@ -251,10 +462,10 @@ export class MarketStateManager {
       ctx.pairingReason = null;
       ctx.lastTransitionAt = now;
 
-      return { timedOut: true, timeInPairing: timeInPairingSec };
+      return { timedOut: true, timeInPairing: timeInPairingSec, shouldCancelHedges: true };
     }
 
-    return { timedOut: false, timeInPairing: timeInPairingSec };
+    return { timedOut: false, timeInPairing: timeInPairingSec, shouldCancelHedges: false };
   }
 
   // ============================================================
@@ -359,7 +570,8 @@ export class MarketStateManager {
 
   private logPairingStarted(
     ctx: MarketStateContext,
-    bookData?: { bestAskUp: number | null; bestAskDown: number | null }
+    bookData?: { bestAskUp: number | null; bestAskDown: number | null },
+    secondsRemaining?: number
   ): void {
     if (!this.config.logEvents) return;
 
@@ -382,6 +594,7 @@ export class MarketStateManager {
       combinedAsk,
       impliedPairCostCents,
       hedgeReason: ctx.pairingReason || 'PAIR_EDGE',
+      secondsRemaining,
     };
 
     saveBotEvent({
@@ -393,7 +606,7 @@ export class MarketStateManager {
       data: event,
     }).catch(console.error);
 
-    console.log(`[MarketState] PAIRING_STARTED: ${ctx.asset} up=${ctx.upShares} down=${ctx.downShares} reason=${event.hedgeReason}`);
+    console.log(`🔀 [MarketState] PAIRING_STARTED: ${ctx.asset} up=${ctx.upShares} down=${ctx.downShares} reason=${event.hedgeReason} timeLeft=${secondsRemaining ?? '?'}s`);
   }
 
   private logPairingTimeoutRevert(
@@ -410,6 +623,7 @@ export class MarketStateManager {
       upShares: ctx.upShares,
       downShares: ctx.downShares,
       revertedTo,
+      freezeAddsSet: true,
     };
 
     saveBotEvent({
@@ -422,7 +636,7 @@ export class MarketStateManager {
       data: event,
     }).catch(console.error);
 
-    console.warn(`[MarketState] PAIRING_TIMEOUT_REVERT: ${ctx.asset} after ${timeInPairing.toFixed(1)}s → ${revertedTo}`);
+    console.warn(`⏰ [MarketState] PAIRING_TIMEOUT_REVERT: ${ctx.asset} after ${timeInPairing.toFixed(1)}s → ${revertedTo} | FREEZE_ADDS=true`);
   }
 
   private logHedgePriceCapDynamic(

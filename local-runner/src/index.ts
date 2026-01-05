@@ -75,7 +75,9 @@ import {
   getMarketStateManager, 
   MarketStateManager,
   type PairingState,
+  type StatePermissions,
   MARKET_STATE_CONFIG,
+  LATE_EXPIRY_SECONDS,
 } from './market-state-manager.js';
 
 // Ensure Node prefers IPv4 to avoid hangs on IPv6-only DNS results under some VPN setups.
@@ -87,7 +89,7 @@ try {
 }
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '7.2.0';  // v7.2.0: MarketStateManager Integration + Pairing Guardrails
+const RUNNER_VERSION = '7.2.2';  // v7.2.2 REV C.2: State Machine Enforced Trading
 const RUN_ID = crypto.randomUUID();
 
 // v7 REV C: Initialize MarketStateManager singleton
@@ -688,32 +690,48 @@ async function executeTrade(
     
     // ============================================================
     // v7.0.1 PATCH 3: MICRO-HEDGE ACCUMULATOR (min order size safe)
-    // Instead of hedging every tiny fill, accumulate and hedge when >= minLotShares
+    // v7.2.2 REV C.2: Micro-hedge only allowed in PAIRED state
     // ============================================================
     if (intent !== 'HEDGE' && ctx.position.upShares > 0 && ctx.position.downShares > 0) {
       const endTime = new Date(ctx.market.eventEndTime).getTime();
       const remainingSeconds = Math.floor((endTime - nowMs) / 1000);
       
-      // Calculate fill delta (how much more unpaired we got from this fill)
-      const newUnpaired = Math.abs(ctx.position.upShares - ctx.position.downShares);
-      const deltaUnpaired = newUnpaired - ctx.previousUnpaired;
-      
-      // Accumulate hedge needed
-      if (deltaUnpaired > 0) {
-        const accumulatedShares = accumulateHedgeNeeded(ctx.slug, deltaUnpaired);
-        console.log(`[v7.0.1] HEDGE_ACCUMULATE: +${deltaUnpaired.toFixed(1)} shares → total ${accumulatedShares.toFixed(1)} pending`);
+      // v7.2.2 REV C.2: Check state permissions for micro-hedge
+      if (!marketStateManager) {
+        marketStateManager = getMarketStateManager(RUN_ID);
       }
+      const microHedgePermissions = marketStateManager.getStatePermissions(ctx.slug, ctx.market.asset, remainingSeconds);
       
-      // Check if we should place hedge now
-      const hedgeCheck = shouldPlaceMicroHedge(ctx.slug, remainingSeconds);
-      
-      if (!hedgeCheck.should) {
-        // Not placing hedge yet - log reason
-        if (hedgeCheck.reason !== 'NO_HEDGE_NEEDED') {
-          console.log(`[v7.0.1] MICRO_HEDGE DEFERRED: ${hedgeCheck.reason}`);
+      if (!microHedgePermissions.canMicroHedge) {
+        // Log once per 30s to avoid spam
+        const logKey = `micro_hedge_blocked_${ctx.slug}`;
+        if (!(global as any)[logKey] || (nowMs - (global as any)[logKey] > 30000)) {
+          (global as any)[logKey] = nowMs;
+          const currentState = marketStateManager.getState(ctx.slug, ctx.market.asset);
+          console.log(`🚫 [v7.2.2] MICRO_HEDGE BLOCKED: state=${currentState} (${microHedgePermissions.reason})`);
         }
-        ctx.previousUnpaired = newUnpaired;
+        // Don't accumulate or place micro-hedge
       } else {
+        // Calculate fill delta (how much more unpaired we got from this fill)
+        const newUnpaired = Math.abs(ctx.position.upShares - ctx.position.downShares);
+        const deltaUnpaired = newUnpaired - ctx.previousUnpaired;
+        
+        // Accumulate hedge needed
+        if (deltaUnpaired > 0) {
+          const accumulatedShares = accumulateHedgeNeeded(ctx.slug, deltaUnpaired);
+          console.log(`[v7.0.1] HEDGE_ACCUMULATE: +${deltaUnpaired.toFixed(1)} shares → total ${accumulatedShares.toFixed(1)} pending`);
+        }
+        
+        // Check if we should place hedge now
+        const hedgeCheck = shouldPlaceMicroHedge(ctx.slug, remainingSeconds);
+      
+        if (!hedgeCheck.should) {
+          // Not placing hedge yet - log reason
+          if (hedgeCheck.reason !== 'NO_HEDGE_NEEDED') {
+            console.log(`[v7.0.1] MICRO_HEDGE DEFERRED: ${hedgeCheck.reason}`);
+          }
+          ctx.previousUnpaired = newUnpaired;
+        } else {
         // Place accumulated hedge
         console.log(`[v7.0.1] MICRO_HEDGE TRIGGER: ${hedgeCheck.shares} shares (${hedgeCheck.reason})`);
         
@@ -845,10 +863,11 @@ async function executeTrade(
             },
             ts: nowMs,
           }).catch(() => { /* non-critical */ });
-        }
-      }
-    }
-  }
+          }
+        } // end else (hedgeCheck.should)
+      } // end else (canMicroHedge)
+    } // end if (micro-hedge conditions)
+  } // end if (position check)
 
   tradeCount++;
   
@@ -1131,33 +1150,53 @@ async function evaluateMarket(slug: string): Promise<void> {
     
     // Handle PAIRING_TIMEOUT_REVERT - block further trading and cancel unfilled hedges
     if (stateResult.pairingTimedOut) {
-      console.log(`🚨 [v7.2.0 REV C] PAIRING_TIMEOUT: ${ctx.market.asset} after ${stateResult.timeInPairing.toFixed(1)}s`);
+      console.log(`🚨 [v7.2.2 REV C.2] PAIRING_TIMEOUT: ${ctx.market.asset} after ${stateResult.timeInPairing.toFixed(1)}s`);
       console.log(`   UP=${ctx.position.upShares}, DOWN=${ctx.position.downShares}`);
-      console.log(`   → Reverted to ${stateResult.state}, blocking new entries`);
+      console.log(`   → Reverted to ${stateResult.state}, FREEZE_ADDS=true, blocking new entries`);
       
-      // In PAIRING timeout, we've been unable to hedge for 45s
-      // This is exactly the situation from the screenshot - heavy skew!
-      // Block new adds but allow existing hedge attempts to continue
-      if (stateResult.state === 'ONE_SIDED_UP' || stateResult.state === 'ONE_SIDED_DOWN') {
-        // The position is dangerously one-sided - warn and block ENTRY trades
-        const logKey = `pairing_timeout_block_${slug}`;
-        if (!(global as any)[logKey] || (nowMs - (global as any)[logKey] > 10000)) {
-          (global as any)[logKey] = nowMs;
-          console.warn(`⚠️ [v7.2.0] PAIRING_TIMEOUT_BLOCK: ${ctx.market.asset} is dangerously skewed!`);
-          console.warn(`   Skew: UP=${ctx.position.upShares} DOWN=${ctx.position.downShares}`);
-          console.warn(`   → ENTRY blocked, only HEDGE allowed`);
-        }
-      }
+      // v7.2.2 REV C.2: FREEZE_ADDS is now set in MarketStateManager
+      // All subsequent entry/accumulate will be blocked by state permissions
     }
     
-    // Check if we're in UNWIND_ONLY state (near expiry)
-    if (stateResult.state === 'UNWIND_ONLY') {
-      const logKey = `unwind_only_${slug}`;
-      if (!(global as any)[logKey] || (nowMs - (global as any)[logKey] > 10000)) {
+    // ============================================================
+    // v7.2.2 REV C.2: CENTRAL STATE GATING (AUTHORITATIVE)
+    // This is the ONE central point that gates all trading decisions
+    // ============================================================
+    const statePermissions = marketStateManager.getStatePermissions(slug, ctx.market.asset, remainingSeconds);
+    
+    // Check suspension first
+    const suspensionCheck = marketStateManager.isSuspended(slug, ctx.market.asset);
+    if (suspensionCheck.suspended) {
+      const logKey = `suspended_log_${slug}`;
+      if (!(global as any)[logKey] || (nowMs - (global as any)[logKey] > 30000)) {
         (global as any)[logKey] = nowMs;
-        console.log(`⏱️ [v7.2.0] UNWIND_ONLY: ${ctx.market.asset} - ${remainingSeconds}s remaining`);
+        console.log(`⏸️ [v7.2.2] MARKET_SUSPENDED: ${ctx.market.asset} - ${suspensionCheck.reason}`);
       }
-      // Continue to evaluateOpportunity but strategy should only allow unwind trades
+      ctx.inFlight = false;
+      return;
+    }
+    
+    // Log state changes for observability
+    const stateLogKey = `state_log_${slug}`;
+    const lastLoggedState = (global as any)[stateLogKey];
+    if (lastLoggedState !== stateResult.state) {
+      (global as any)[stateLogKey] = stateResult.state;
+      console.log(`🔄 [v7.2.2] STATE_CHANGE: ${ctx.market.asset} → ${stateResult.state}`);
+      if (statePermissions.reason) {
+        console.log(`   Permissions: entry=${statePermissions.canEntry} accum=${statePermissions.canAccumulate} hedge=${statePermissions.canHedge} micro=${statePermissions.canMicroHedge}`);
+      }
+      
+      // Log UNWIND_ONLY_ENTER when transitioning into UNWIND_ONLY
+      if (stateResult.state === 'UNWIND_ONLY') {
+        saveBotEvent({
+          event_type: 'UNWIND_ONLY_ENTER',
+          asset: ctx.market.asset,
+          market_id: slug,
+          run_id: RUN_ID,
+          ts: nowMs,
+          data: { secondsRemaining: remainingSeconds, upShares: ctx.position.upShares, downShares: ctx.position.downShares },
+        }).catch(() => {});
+      }
     }
 
     // ============================================================
@@ -1594,8 +1633,20 @@ async function evaluateMarket(slug: string): Promise<void> {
     );
 
     if (signal) {
+      // ============================================================
+      // v7.2.2 REV C.2: STATE-BASED TRADE GATING
+      // Check permissions BEFORE executing any trade
+      // ============================================================
+      
       // v4.6.0: Handle PAIRED atomic trades - both sides at once
       if (signal.type === 'paired' && signal.pairedWith) {
+        // ENTRY permission check
+        if (!statePermissions.canEntry) {
+          console.log(`🚫 [v7.2.2] ENTRY BLOCKED by state ${stateResult.state}: ${statePermissions.reason}`);
+          ctx.inFlight = false;
+          return;
+        }
+        
         console.log(`\n🎯 [v4.6.0] ATOMIC PAIRED ENTRY for ${ctx.slug}`);
         console.log(`   UP: ${signal.shares} shares @ ${(signal.price * 100).toFixed(0)}¢`);
         console.log(`   DOWN: ${signal.pairedWith.shares} shares @ ${(signal.pairedWith.price * 100).toFixed(0)}¢`);
@@ -1619,6 +1670,19 @@ async function evaluateMarket(slug: string): Promise<void> {
         const upSuccess = await executeTrade(ctx, 'UP', signal.price, signal.shares, signal.reasoning, 'ENTRY');
         
         if (upSuccess) {
+          // v7.2.2 REV C.2: After UP fills, call beginPairing() BEFORE placing hedge
+          const pairingResult = marketStateManager.beginPairing(
+            slug,
+            ctx.market.asset,
+            'PAIR_EDGE',
+            { bestAskUp: ctx.book.up.ask, bestAskDown: ctx.book.down.ask },
+            remainingSeconds
+          );
+          
+          if (!pairingResult.success) {
+            console.warn(`⚠️ [v7.2.2] beginPairing failed: ${pairingResult.reason} - continuing with DOWN anyway`);
+          }
+          
           // Immediately execute DOWN side - no waiting
           const downSuccess = await executeTrade(
             ctx,
@@ -1651,6 +1715,13 @@ async function evaluateMarket(slug: string): Promise<void> {
       }
       // Handle accumulate trades
       else if (signal.type === 'accumulate') {
+        // v7.2.2 REV C.2: ACCUMULATE permission check
+        if (!statePermissions.canAccumulate) {
+          console.log(`🚫 [v7.2.2] ACCUMULATE BLOCKED by state ${stateResult.state}: ${statePermissions.reason}`);
+          ctx.inFlight = false;
+          return;
+        }
+        
         // Extra balance check (redundant with strategy, but safety net)
         if (ctx.position.upShares !== ctx.position.downShares) {
           console.log(`⚖️ Skip accumulate: position not balanced (${ctx.position.upShares} UP vs ${ctx.position.downShares} DOWN)`);
@@ -1702,6 +1773,41 @@ async function evaluateMarket(slug: string): Promise<void> {
         }
       } else {
         // Single-side trade (opening, hedge, rebalance)
+        const isHedgeTrade = signal.type === 'hedge';
+        const isEntryTrade = signal.type === 'opening';
+        
+        // v7.2.2 REV C.2: State-based permission checks
+        if (isEntryTrade && !statePermissions.canEntry) {
+          console.log(`🚫 [v7.2.2] ENTRY BLOCKED by state ${stateResult.state}: ${statePermissions.reason}`);
+          ctx.inFlight = false;
+          return;
+        }
+        
+        if (isHedgeTrade && !statePermissions.canHedge) {
+          console.log(`🚫 [v7.2.2] HEDGE BLOCKED by state ${stateResult.state}: ${statePermissions.reason}`);
+          ctx.inFlight = false;
+          return;
+        }
+        
+        // v7.2.2 REV C.2: Before placing first hedge from ONE_SIDED, call beginPairing()
+        if (isHedgeTrade && (stateResult.state === 'ONE_SIDED_UP' || stateResult.state === 'ONE_SIDED_DOWN')) {
+          const hedgeReason: 'PAIR_EDGE' | 'EMERGENCY_SKEW' = skewRatio >= 0.70 ? 'EMERGENCY_SKEW' : 'PAIR_EDGE';
+          
+          const pairingResult = marketStateManager.beginPairing(
+            slug,
+            ctx.market.asset,
+            hedgeReason,
+            { bestAskUp: ctx.book.up.ask, bestAskDown: ctx.book.down.ask },
+            remainingSeconds
+          );
+          
+          if (!pairingResult.success) {
+            console.log(`🚫 [v7.2.2] HEDGE BLOCKED - beginPairing failed: ${pairingResult.reason}`);
+            ctx.inFlight = false;
+            return;
+          }
+        }
+        
         const tokenId = signal.outcome === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
         const depth = await getOrderbookDepth(tokenId);
         
