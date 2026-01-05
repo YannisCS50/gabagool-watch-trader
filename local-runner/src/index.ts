@@ -1334,6 +1334,45 @@ async function main(): Promise<void> {
     updateQueueSize(orders.length);
     for (const order of orders) {
       console.log(`\n📥 RECEIVED ORDER: ${order.outcome} ${order.shares}@${(order.price * 100).toFixed(0)}¢ on ${order.market_slug}`);
+
+      // v6.5.1 hotfix: hard-cap notional per queued order (defense-in-depth)
+      // Prevents “huge bets” even if the upstream signal accidentally oversizes.
+      const cfg = getCurrentConfig();
+      const maxNotionalPerTrade = cfg?.limits.maxNotionalPerTrade ?? config.trading.maxNotionalPerTrade;
+      const orderNotional = order.shares * order.price;
+
+      if (Number.isFinite(maxNotionalPerTrade) && maxNotionalPerTrade > 0 && orderNotional > maxNotionalPerTrade + 1e-9) {
+        const secondsRemaining = order.event_end_time
+          ? Math.max(0, Math.floor((new Date(order.event_end_time).getTime() - Date.now()) / 1000))
+          : 0;
+
+        console.warn(
+          `⛔ Skip: queued order notional $${orderNotional.toFixed(2)} exceeds maxNotionalPerTrade $${maxNotionalPerTrade.toFixed(2)} (${order.shares}@${(order.price * 100).toFixed(0)}¢) on ${order.market_slug}`
+        );
+
+        // Log explicit skip for observability
+        logActionSkipped({
+          ts: Date.now(),
+          marketId: order.market_slug,
+          asset: order.asset,
+          intendedAction: 'ADD',
+          reason: 'FUNDS',
+          keyMetrics: {
+            unpairedShares: 0,
+            unpairedNotionalUsd: 0,
+            inventoryRiskScore: 0,
+            secondsRemaining,
+            pairCost: null,
+            queueSize: orders.length,
+            degradedMode: isDegradedMode(order.market_slug, order.asset),
+          },
+        });
+
+        await updateOrder(order.id, 'failed', {
+          error: `MAX_NOTIONAL: ${orderNotional.toFixed(2)} > ${maxNotionalPerTrade.toFixed(2)}`,
+        });
+        continue;
+      }
       
       try {
         const result = await placeOrder({
