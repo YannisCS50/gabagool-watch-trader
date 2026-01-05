@@ -16,8 +16,14 @@ import { saveBotEvent } from './backend.js';
 // ============================================================
 // CONFIG VERSION
 // ============================================================
-export const CONFIG_VERSION = '6.3.0';
+export const CONFIG_VERSION = '7.1.0';
 export const CONFIG_SOURCE = 'DB_FIRST';
+
+// ============================================================
+// TEST MODE CONFIGURATION
+// Low-risk settings that still exercise full mechanics
+// ============================================================
+export const TEST_MODE_ENABLED = true; // Set to false for production
 
 // ============================================================
 // RESOLVED CONFIG TYPES
@@ -93,6 +99,22 @@ export interface ResolvedTick {
   hedgeCushion: number;
 }
 
+// v7.1.0: Shares-based sizing config
+export interface ResolvedSizing {
+  baseLotShares: number;         // Base lot size in shares
+  minLotShares: number;          // Minimum lot size
+  maxNotionalPerTrade: number;   // Max $ per single order
+  minNotionalPerTrade: number;   // Min $ per order
+}
+
+// v7.1.0: Risk limits
+export interface ResolvedRisk {
+  maxSharesPerSide: number;       // Max shares on UP or DOWN
+  maxTotalSharesPerMarket: number; // Max total shares per market
+  maxNotionalPerMarket: number;   // Max $ per market
+  globalMaxNotional: number;      // Max $ across all markets
+}
+
 export interface ConfigConflict {
   field: string;
   dbValue: any;
@@ -106,11 +128,14 @@ export interface ConfigConflict {
 export interface ResolvedConfig {
   version: string;
   source: string;
+  testMode: boolean;              // v7.1.0: Test mode flag
   buildTimestamp: number;
   buildIso: string;
 
   // Core config sections
   tradeSizing: ResolvedTradeSizing;
+  sizing: ResolvedSizing;         // v7.1.0: Shares-based sizing
+  risk: ResolvedRisk;             // v7.1.0: Risk limits
   edge: ResolvedEdge;
   timing: ResolvedTiming;
   skew: ResolvedSkew;
@@ -142,12 +167,51 @@ export interface ResolvedConfig {
 // CODE DEFAULTS (fallback only)
 // ============================================================
 
+// Test Mode Defaults - Low risk but functional
+const TEST_DEFAULTS = {
+  sizing: {
+    baseLotShares: 25,           // Base lot size in shares
+    minLotShares: 5,             // Minimum lot size
+    maxNotionalPerTrade: 20,     // $20 max per order (fits 25 @ 75¢ hedge)
+    minNotionalPerTrade: 8,      // $8 minimum per order
+  },
+  risk: {
+    maxSharesPerSide: 100,       // Low risk: max 100 shares per side
+    maxTotalSharesPerMarket: 200, // Low risk: max 200 total per market
+    maxNotionalPerMarket: 80,    // Low risk: $80 per market
+    globalMaxNotional: 250,      // Low risk: $250 total exposure
+  },
+  tradeAssets: ['BTC', 'ETH', 'SOL', 'XRP'],
+};
+
+// Production Defaults - Higher limits
+const PROD_DEFAULTS = {
+  sizing: {
+    baseLotShares: 50,
+    minLotShares: 10,
+    maxNotionalPerTrade: 50,
+    minNotionalPerTrade: 15,
+  },
+  risk: {
+    maxSharesPerSide: 500,
+    maxTotalSharesPerMarket: 1000,
+    maxNotionalPerMarket: 300,
+    globalMaxNotional: 1000,
+  },
+  tradeAssets: ['BTC', 'ETH'],
+};
+
+// Select defaults based on test mode
+const MODE_DEFAULTS = TEST_MODE_ENABLED ? TEST_DEFAULTS : PROD_DEFAULTS;
+
 const CODE_DEFAULTS = {
   tradeSizing: {
-    base: 25,
-    min: 20,
-    max: 50,
+    base: MODE_DEFAULTS.sizing.baseLotShares,
+    min: MODE_DEFAULTS.sizing.minNotionalPerTrade,
+    max: MODE_DEFAULTS.sizing.maxNotionalPerTrade,
   },
+  sizing: MODE_DEFAULTS.sizing,
+  risk: MODE_DEFAULTS.risk,
   edge: {
     baseBuffer: 0.015,        // 1.5¢
     strongEdge: 0.04,
@@ -168,21 +232,21 @@ const CODE_DEFAULTS = {
     hardCap: 0.70,
   },
   limits: {
-    maxTotalNotional: 500,
-    maxPerSide: 300,
-    maxSharesPerSide: 500,
-    maxNotionalPerTrade: 50,  // code default
+    maxTotalNotional: MODE_DEFAULTS.risk.globalMaxNotional,
+    maxPerSide: MODE_DEFAULTS.risk.maxNotionalPerMarket,
+    maxSharesPerSide: MODE_DEFAULTS.risk.maxSharesPerSide,
+    maxNotionalPerTrade: MODE_DEFAULTS.sizing.maxNotionalPerTrade,
   },
   opening: {
     maxPrice: 0.52,
-    shares: 25,
+    shares: MODE_DEFAULTS.sizing.baseLotShares,
     skipEdgeCheck: true,
     maxDelayMs: 5000,
   },
   hedge: {
     maxPrice: 0.75,
     cushionTicks: 3,
-    shares: 25,
+    shares: MODE_DEFAULTS.sizing.baseLotShares,
     forceTimeoutSec: 12,
     cooldownMs: 2000,
   },
@@ -202,7 +266,7 @@ const CODE_DEFAULTS = {
     validTicks: [0.01, 0.005, 0.002, 0.001],
     hedgeCushion: 3,
   },
-  tradeAssets: ['BTC', 'ETH'],
+  tradeAssets: MODE_DEFAULTS.tradeAssets,
   strategyEnabled: true,
   vpn: {
     required: true,
@@ -424,6 +488,7 @@ export async function buildResolvedConfig(runId?: string): Promise<ResolvedConfi
   const resolvedConfig: ResolvedConfig = {
     version: CONFIG_VERSION,
     source: hasDbConfig ? 'DATABASE' : 'ENV_FALLBACK',
+    testMode: TEST_MODE_ENABLED,
     buildTimestamp: now,
     buildIso: new Date(now).toISOString(),
 
@@ -432,6 +497,12 @@ export async function buildResolvedConfig(runId?: string): Promise<ResolvedConfi
       min: Math.min(CODE_DEFAULTS.tradeSizing.min, tradeSizingBase),
       max: tradeSizingMax,
     },
+
+    // v7.1.0: Shares-based sizing
+    sizing: CODE_DEFAULTS.sizing,
+    
+    // v7.1.0: Risk limits
+    risk: CODE_DEFAULTS.risk,
 
     edge: {
       baseBuffer: edgeBaseBuffer,
@@ -456,7 +527,7 @@ export async function buildResolvedConfig(runId?: string): Promise<ResolvedConfi
 
     opening: {
       maxPrice: openingMaxPrice,
-      shares: Math.floor(tradeSizingBase / openingMaxPrice),  // Auto-compute shares
+      shares: CODE_DEFAULTS.sizing.baseLotShares,  // Use baseLotShares directly
       skipEdgeCheck: CODE_DEFAULTS.opening.skipEdgeCheck,
       maxDelayMs: CODE_DEFAULTS.opening.maxDelayMs,
     },
@@ -464,7 +535,7 @@ export async function buildResolvedConfig(runId?: string): Promise<ResolvedConfi
     hedge: {
       maxPrice: CODE_DEFAULTS.hedge.maxPrice,
       cushionTicks: CODE_DEFAULTS.hedge.cushionTicks,
-      shares: Math.floor(tradeSizingBase / CODE_DEFAULTS.hedge.maxPrice),
+      shares: CODE_DEFAULTS.sizing.baseLotShares,  // Use baseLotShares
       forceTimeoutSec: CODE_DEFAULTS.timing.hedgeTimeoutSec,
       cooldownMs: CODE_DEFAULTS.hedge.cooldownMs,
     },
@@ -498,11 +569,19 @@ export async function buildResolvedConfig(runId?: string): Promise<ResolvedConfi
   console.log('\n┌────────────────────────────────────────────────────────────────┐');
   console.log('│  📋 RESOLVED CONFIG (EFFECTIVE VALUES)                         │');
   console.log('├────────────────────────────────────────────────────────────────┤');
+  const modeStr = resolvedConfig.testMode ? '🧪 TEST MODE' : '🚀 PRODUCTION';
+  console.log(`│  Mode: ${modeStr.padEnd(56)}│`);
   console.log(`│  Source: ${resolvedConfig.source.padEnd(54)}│`);
   console.log(`│  Version: ${CONFIG_VERSION.padEnd(53)}│`);
   console.log('├────────────────────────────────────────────────────────────────┤');
-  console.log(`│  Trade Size: $${resolvedConfig.tradeSizing.base} base, $${resolvedConfig.tradeSizing.min}-$${resolvedConfig.tradeSizing.max} range`.padEnd(65) + '│');
-  console.log(`│  Max Notional/Trade: $${resolvedConfig.limits.maxNotionalPerTrade}`.padEnd(65) + '│');
+  console.log('│  📊 SIZING:                                                    │');
+  console.log(`│     BaseLotShares: ${resolvedConfig.sizing.baseLotShares}, MinLotShares: ${resolvedConfig.sizing.minLotShares}`.padEnd(65) + '│');
+  console.log(`│     MaxNotionalPerTrade: $${resolvedConfig.sizing.maxNotionalPerTrade}, MinNotional: $${resolvedConfig.sizing.minNotionalPerTrade}`.padEnd(65) + '│');
+  console.log('├────────────────────────────────────────────────────────────────┤');
+  console.log('│  ⚠️  RISK LIMITS:                                               │');
+  console.log(`│     MaxSharesPerSide: ${resolvedConfig.risk.maxSharesPerSide}, MaxTotalShares/Market: ${resolvedConfig.risk.maxTotalSharesPerMarket}`.padEnd(65) + '│');
+  console.log(`│     MaxNotionalPerMarket: $${resolvedConfig.risk.maxNotionalPerMarket}, GlobalMax: $${resolvedConfig.risk.globalMaxNotional}`.padEnd(65) + '│');
+  console.log('├────────────────────────────────────────────────────────────────┤');
   console.log(`│  Edge Buffer: ${(resolvedConfig.edge.baseBuffer * 100).toFixed(1)}% (min exec: ${(resolvedConfig.edge.minExecutableEdge * 100).toFixed(1)}%)`.padEnd(65) + '│');
   console.log(`│  Opening Max: ${(resolvedConfig.opening.maxPrice * 100).toFixed(0)}¢ (${resolvedConfig.opening.shares} shares)`.padEnd(65) + '│');
   console.log(`│  Hedge Max: ${(resolvedConfig.hedge.maxPrice * 100).toFixed(0)}¢ (${resolvedConfig.hedge.shares} shares)`.padEnd(65) + '│');
@@ -546,7 +625,10 @@ export async function buildResolvedConfig(runId?: string): Promise<ResolvedConfi
     data: {
       version: resolvedConfig.version,
       source: resolvedConfig.source,
+      testMode: resolvedConfig.testMode,
       effective: {
+        sizing: resolvedConfig.sizing,
+        risk: resolvedConfig.risk,
         tradeSizing: resolvedConfig.tradeSizing,
         limits: resolvedConfig.limits,
         edge: resolvedConfig.edge,

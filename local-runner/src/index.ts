@@ -69,7 +69,7 @@ try {
 }
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '7.0.1';  // v7.0.1: Patch Layer on v6 Infrastructure
+const RUNNER_VERSION = '7.1.0';  // v7.1.0: Low-Risk Test Mode + Auto-Resize
 const RUN_ID = crypto.randomUUID();
 
 // v6.3.1: Track when runner started - only trade on markets that start AFTER this
@@ -1538,42 +1538,92 @@ async function main(): Promise<void> {
     for (const order of orders) {
       console.log(`\n📥 RECEIVED ORDER: ${order.outcome} ${order.shares}@${(order.price * 100).toFixed(0)}¢ on ${order.market_slug}`);
 
-      // v6.5.1 hotfix: hard-cap notional per queued order (defense-in-depth)
-      // Prevents “huge bets” even if the upstream signal accidentally oversizes.
+      // v7.1.0: Auto-resize on FUNDS instead of skipping
+      // If notional exceeds maxNotionalPerTrade, resize shares to fit
       const cfg = getCurrentConfig();
-      const maxNotionalPerTrade = cfg?.limits.maxNotionalPerTrade ?? config.trading.maxNotionalPerTrade;
-      const orderNotional = order.shares * order.price;
+      const maxNotionalPerTrade = cfg?.sizing?.maxNotionalPerTrade ?? cfg?.limits.maxNotionalPerTrade ?? config.trading.maxNotionalPerTrade;
+      const minLotShares = cfg?.sizing?.minLotShares ?? 5;
+      let orderShares = order.shares;
+      let orderNotional = orderShares * order.price;
 
       if (Number.isFinite(maxNotionalPerTrade) && maxNotionalPerTrade > 0 && orderNotional > maxNotionalPerTrade + 1e-9) {
-        const secondsRemaining = order.event_end_time
-          ? Math.max(0, Math.floor((new Date(order.event_end_time).getTime() - Date.now()) / 1000))
-          : 0;
+        // v7.1.0: Auto-resize instead of skip
+        const newQty = Math.floor(maxNotionalPerTrade / order.price);
+        
+        if (newQty < minLotShares) {
+          // Cannot resize - would be below minimum lot size
+          const secondsRemaining = order.event_end_time
+            ? Math.max(0, Math.floor((new Date(order.event_end_time).getTime() - Date.now()) / 1000))
+            : 0;
 
-        console.warn(
-          `⛔ Skip: queued order notional $${orderNotional.toFixed(2)} exceeds maxNotionalPerTrade $${maxNotionalPerTrade.toFixed(2)} (${order.shares}@${(order.price * 100).toFixed(0)}¢) on ${order.market_slug}`
+          console.warn(
+            `⛔ FUNDS_MIN_QTY: Cannot resize ${orderShares}@${(order.price * 100).toFixed(0)}¢ → ${newQty} shares (min: ${minLotShares}) on ${order.market_slug}`
+          );
+
+          logActionSkipped(
+            order.market_slug,
+            order.asset,
+            'ADD',
+            'FUNDS',
+            {
+              unpairedShares: 0,
+              unpairedNotionalUsd: 0,
+              inventoryRiskScore: 0,
+              secondsRemaining,
+              pairCost: null,
+              queueSize: orders.length,
+              degradedMode: isDegradedMode(order.market_slug, order.asset),
+            }
+          );
+
+          // Log FUNDS_MIN_QTY event
+          saveBotEvent({
+            event_type: 'FUNDS_MIN_QTY',
+            asset: order.asset,
+            market_id: order.market_slug,
+            data: {
+              originalQty: orderShares,
+              resizedQty: newQty,
+              minLotShares,
+              price: order.price,
+              maxNotionalPerTrade,
+            },
+            ts: Date.now(),
+          }).catch(() => {});
+
+          await updateOrder(order.id, 'failed', {
+            error: `FUNDS_MIN_QTY: resize ${orderShares}→${newQty} < min ${minLotShares}`,
+          });
+          continue;
+        }
+
+        // Successfully resized
+        const oldNotional = orderNotional;
+        const newNotional = newQty * order.price;
+        
+        console.log(
+          `📐 RESIZED_ORDER: ${orderShares}@${(order.price * 100).toFixed(0)}¢ → ${newQty}@${(order.price * 100).toFixed(0)}¢ ($${oldNotional.toFixed(2)} → $${newNotional.toFixed(2)}) on ${order.market_slug}`
         );
 
-        // Log explicit skip for observability
-        logActionSkipped(
-          order.market_slug,
-          order.asset,
-          'ADD',
-          'FUNDS',
-          {
-            unpairedShares: 0,
-            unpairedNotionalUsd: 0,
-            inventoryRiskScore: 0,
-            secondsRemaining,
-            pairCost: null,
-            queueSize: orders.length,
-            degradedMode: isDegradedMode(order.market_slug, order.asset),
-          }
-        );
+        // Log RESIZED_ORDER event
+        saveBotEvent({
+          event_type: 'RESIZED_ORDER',
+          asset: order.asset,
+          market_id: order.market_slug,
+          data: {
+            originalQty: orderShares,
+            resizedQty: newQty,
+            originalNotional: oldNotional,
+            resizedNotional: newNotional,
+            price: order.price,
+            maxNotionalPerTrade,
+          },
+          ts: Date.now(),
+        }).catch(() => {});
 
-        await updateOrder(order.id, 'failed', {
-          error: `MAX_NOTIONAL: ${orderNotional.toFixed(2)} > ${maxNotionalPerTrade.toFixed(2)}`,
-        });
-        continue;
+        // Use resized values
+        orderShares = newQty;
+        orderNotional = newNotional;
       }
       
       try {
@@ -1581,7 +1631,7 @@ async function main(): Promise<void> {
           tokenId: order.token_id,
           side: 'BUY',
           price: order.price,
-          size: order.shares,
+          size: orderShares,  // Use potentially resized shares
           orderType: order.order_type as 'GTC' | 'FOK' | 'GTD',
         });
 
