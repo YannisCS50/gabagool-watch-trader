@@ -80,6 +80,18 @@ import {
   LATE_EXPIRY_SECONDS,
 } from './market-state-manager.js';
 
+// v7.2.4 REV C.4: Hard Invariants (position caps, one-sided freeze, CPP paired-only)
+import {
+  checkAllInvariants,
+  onFillUpdateInvariants,
+  activateFreezeAdds,
+  clearFreezeAdds,
+  isFreezeAddsActive,
+  calculateCppPairedOnly,
+  HARD_INVARIANT_CONFIG,
+  type OrderSide,
+} from './hard-invariants.js';
+
 // Ensure Node prefers IPv4 to avoid hangs on IPv6-only DNS results under some VPN setups.
 try {
   dns.setDefaultResultOrder('ipv4first');
@@ -172,6 +184,14 @@ async function printStartupBanner(): Promise<void> {
   console.log(`║     ✓ Bounded hedge chunks: ${MARKET_STATE_CONFIG.minHedgeChunkAbs}-${MARKET_STATE_CONFIG.maxHedgeChunkAbs} shares                   ║`);
   console.log(`║     ✓ State machine: FLAT→ONE_SIDED→PAIRING→PAIRED             ║`);
   console.log(`║     ✓ Heavy skew warning at 75%+ ratio                         ║`);
+  
+  // v7.2.4 REV C.4: Hard Invariants
+  console.log('╠════════════════════════════════════════════════════════════════╣');
+  console.log(`║  🔒 v7.2.4 REV C.4 HARD INVARIANTS:                              ║`);
+  console.log(`║     ✓ maxSharesPerSide: ${HARD_INVARIANT_CONFIG.maxSharesPerSide} shares                            ║`);
+  console.log(`║     ✓ maxTotalSharesPerMarket: ${HARD_INVARIANT_CONFIG.maxTotalSharesPerMarket} shares                   ║`);
+  console.log(`║     ✓ ONE_SIDED freeze adds (no adds on dominant side)         ║`);
+  console.log(`║     ✓ CPP paired-only (avgUp + avgDown cents)                  ║`);
   
   console.log('╚════════════════════════════════════════════════════════════════╝');
   console.log('');
@@ -354,6 +374,37 @@ async function executeTrade(
   reasoning: string,
   intent: TradeIntent = 'ENTRY'
 ): Promise<boolean> {
+  // ============================================================
+  // v7.2.4 REV C.4: HARD INVARIANTS CHECK (MUST BE FIRST)
+  // This is the SINGLE entry point for all position/freeze guards
+  // ============================================================
+  const invariantCheck = checkAllInvariants({
+    marketId: ctx.slug,
+    asset: ctx.market.asset,
+    side: 'BUY' as OrderSide,
+    outcome,
+    requestedSize: shares,
+    intentType: intent,
+    currentUpShares: ctx.position.upShares,
+    currentDownShares: ctx.position.downShares,
+    upCost: ctx.position.upInvested,
+    downCost: ctx.position.downInvested,
+    combinedAsk: ctx.book.up.ask !== null && ctx.book.down.ask !== null 
+      ? ctx.book.up.ask + ctx.book.down.ask : null,
+    runId: RUN_ID,
+  });
+  
+  if (!invariantCheck.allowed) {
+    // Already logged by checkAllInvariants
+    return false;
+  }
+  
+  // Use clamped size if applicable
+  const finalShares = invariantCheck.finalSize;
+  if (finalShares !== shares) {
+    console.log(`📏 [v7.2.4] Using clamped size: ${shares}→${finalShares} shares`);
+  }
+  
   // v4.2.3: HARD SKEW STOP - block ONLY non-corrective trades.
   // Important: we must allow HEDGE orders to restore balance, otherwise we can get stuck one-sided.
   if (intent !== 'HEDGE') {
@@ -370,7 +421,7 @@ async function executeTrade(
     }
   }
   const tokenId = outcome === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
-  const total = shares * price;
+  const total = finalShares * price;
 
   // v6.0.0: Rate limit check
   const rateLimitCheck = canPlaceOrderRateLimited(ctx.slug);
@@ -388,7 +439,7 @@ async function executeTrade(
     }
   }
 
-  console.log(`\n📊 EXECUTING: ${outcome} ${shares} @ ${(price * 100).toFixed(0)}¢ on ${ctx.slug}`);
+  console.log(`\n📊 EXECUTING: ${outcome} ${finalShares} @ ${(price * 100).toFixed(0)}¢ on ${ctx.slug}`);
 
   // v6.0.0: Reserve notional before placing order
   const tempOrderId = `temp_${ctx.slug}_${outcome}_${Date.now()}`;
@@ -398,7 +449,7 @@ async function executeTrade(
     tokenId,
     side: 'BUY',
     price,
-    size: shares,
+    size: finalShares,
     orderType: 'GTC',
   });
 
@@ -583,6 +634,28 @@ async function executeTrade(
     } else {
       ctx.position.downShares += filledShares;
       ctx.position.downInvested += filledShares * price;
+    }
+    
+    // ============================================================
+    // v7.2.4 REV C.4: UPDATE HARD INVARIANTS AFTER FILL
+    // This triggers freeze activation/clearing and invariant assertions
+    // ============================================================
+    const invariantUpdate = onFillUpdateInvariants({
+      marketId: ctx.slug,
+      asset: ctx.market.asset,
+      fillSide: outcome,
+      fillQty: filledShares,
+      newUpShares: ctx.position.upShares,
+      newDownShares: ctx.position.downShares,
+      upCost: ctx.position.upInvested,
+      downCost: ctx.position.downInvested,
+      runId: RUN_ID,
+    });
+    
+    // If invariant violated, market should be suspended
+    if (invariantUpdate.invariantViolated) {
+      console.error(`🚨 [v7.2.4] INVARIANT_BREACH detected - consider SUSPENDED state`);
+      marketStateManager?.suspendMarket(ctx.slug, ctx.market.asset, 60000, 'INVARIANT_BREACH');
     }
     
     // Log fill for telemetry with v6.0.0 extended context

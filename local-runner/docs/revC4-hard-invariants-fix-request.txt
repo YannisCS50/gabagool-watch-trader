@@ -1,0 +1,158 @@
+v7.x FIX REQUEST — Rev C.4 “HARD INVARIANTS” (IMPLEMENT THIS REGARDLESS)
+
+Context:
+We have a Polymarket CLOB bot (v7.2.x) using Rev C state machine (ONE_SIDED / PAIRING / PAIRED / UNWIND_ONLY).
+Recent validation showed FAIL mainly due to:
+- position caps not being enforced cumulatively across multiple entries
+- one-sided positions receiving multiple adds without entering PAIRING / without hedge intent
+- lingering legacy CPP metrics (totalInvested/paired) causing false positives and confusing logs
+
+User has now hard-capped per-position to 100 shares (200 total bet), but we still need a robust code-level fix to:
+1) enforce caps at the LAST gate (before any order is placed),
+2) enforce “ONE_SIDED freeze adds” invariant,
+3) ensure CPP metrics used in guardrails/logging are paired-only.
+
+This patch should be SMALL, additive, and safe. No rewrite.
+
+========================================================
+A) HARD POSITION CAP ENFORCEMENT (CRITICAL)
+========================================================
+
+Invariant (must always hold per market):
+- upShares <= maxSharesPerSide
+- downShares <= maxSharesPerSide
+- AND (upShares + downShares) <= maxTotalSharesPerMarket (optional)
+User already uses:
+- maxSharesPerSide = 100
+- maxTotalSharesPerMarket = 200 (recommended)
+
+REQUIREMENT:
+Implement one single function that is called immediately before placing ANY order:
+
+function clampOrderToCaps({
+  marketId,
+  side,            // BUY/SELL
+  outcome,         // UP/DOWN
+  requestedSize,
+  currentUpShares,
+  currentDownShares,
+  cfg             // caps
+}) => { allowedSize, blockReason }
+
+Rules:
+1) For BUY orders:
+   - if outcome==UP:
+       remaining = cfg.maxSharesPerSide - currentUpShares
+     else outcome==DOWN:
+       remaining = cfg.maxSharesPerSide - currentDownShares
+   - also enforce total cap:
+       remainingTotal = cfg.maxTotalSharesPerMarket - (currentUpShares + currentDownShares)
+   - allowedSize = max(0, min(requestedSize, remaining, remainingTotal))
+2) For SELL orders:
+   - allowedSize = min(requestedSize, currentSharesOnThatOutcome)  // never short
+3) If allowedSize == 0:
+   - DO NOT place order
+   - log CAP_BLOCKED with details
+
+ABSOLUTE RULE:
+- No code path may bypass clampOrderToCaps (including emergency, pairing, micro-hedge, unwind).
+
+Acceptance:
+- It is impossible to exceed 100 shares on either side, even across many small adds.
+- It is impossible to exceed 200 total shares per market.
+
+========================================================
+B) ONE-SIDED FREEZE ADDS (CRITICAL)
+========================================================
+
+Problem:
+XRP showed multiple DOWN entries (12 + 15) without hedge attempt or PAIRING.
+Rev C intends one-sided safe start, but NOT repeated adds unless explicitly permitted.
+
+REQUIREMENT:
+Add per-market “freezeAdds” flag with scope = current 15m window.
+
+Definition:
+- freezeAdds becomes true immediately after the first fill that creates a ONE_SIDED position:
+   - state transitions to ONE_SIDED_UP or ONE_SIDED_DOWN
+   - OR first non-zero shares detected in polling
+
+Rule:
+- If freezeAdds==true AND state is ONE_SIDED_*:
+   - block any further BUY orders on the dominant side (adds)
+   - allow only:
+       a) hedge initiation (which must begin PAIRING)
+       b) unwind/reduce (SELL)
+       c) cancel/replace existing resting orders
+
+Exceptions (optional, keep OFF by default):
+- allowOneSidedAddIfDeepEdge: false by default
+- if enabled, allow a tiny add (<= microAddMaxShares, e.g. 5) only when combinedAsk <= 0.95
+
+Logging:
+- ONE_SIDED_FREEZE_ACTIVATED (once)
+- ADD_BLOCKED_ONE_SIDED_FREEZE (throttled)
+
+Acceptance:
+- Once one-sided exists, bot does not keep accumulating more on that same side.
+- ONE_SIDED exposure stays bounded and predictable.
+
+========================================================
+C) CPP METRICS: PAIRED-ONLY (IMPORTANT / SAFETY)
+========================================================
+
+Problem:
+Legacy CPP in logs/guardrails used totalInvested/paired, misleading and causing false signals.
+
+REQUIREMENT:
+Standardize on:
+- cppPairedOnlyCents = avgUpPriceCents + avgDownPriceCents  (when both known)
+- If either avg is null => cppPairedOnlyCents = null
+
+Usage rules:
+1) Any “CPP_EMERGENCY”, “CPP_IMPLAUSIBLE”, “CPP_GUARDRAIL” must use cppPairedOnly only.
+2) If cppPairedOnlyCents is null:
+   - do NOT trigger CPP-based emergency
+   - log CPP_UNAVAILABLE (throttled) and freeze adds instead if needed
+
+Logging:
+- Always log cppPairedOnlyCents (and optionally log legacy metric separately as “legacyTotalInvestedPerPaired”)
+
+Acceptance:
+- No CPP-based behavior can be triggered by unpaired inventory being large.
+- CPP logs match the economics of paired shares.
+
+========================================================
+D) IMPLEMENTATION NOTES (WHERE TO HOOK)
+========================================================
+
+1) Centralize order placement:
+   - Ensure all order placements go through ONE function:
+       placeOrderWithGuards(...)
+   - Inside it:
+       a) state gating checks
+       b) clampOrderToCaps(...)
+       c) one-sided freeze checks
+       d) then call clobClient.placeOrder
+
+2) Emergency / Unwind:
+   - Must use placeOrderWithGuards as well (no bypass)
+
+3) Tests / Runtime assertions:
+   - Add runtime assert after each fill update:
+       upShares <= maxSharesPerSide
+       downShares <= maxSharesPerSide
+       up+down <= maxTotalSharesPerMarket
+   - If violated, set market to SUSPENDED and log INVARIANT_BREACH
+
+========================================================
+E) QUICK VERIFICATION CHECKLIST (LOG-BASED)
+========================================================
+
+After deploying:
+- Look for CAP_BLOCKED logs when near limits
+- Confirm no market ends with up>100 or down>100
+- Confirm one-sided markets do not receive multiple adds (ADD_BLOCKED_ONE_SIDED_FREEZE should appear instead)
+- CPP logs should show cppPairedOnlyCents around ~90–102 (not 200+)
+
+END
