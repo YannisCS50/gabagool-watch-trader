@@ -15,6 +15,7 @@ import { DownloadAuditCodeButton } from '@/components/DownloadAuditCodeButton';
 import { DownloadZipButton } from '@/components/DownloadZipButton';
 import { DownloadStrategyButton } from '@/components/DownloadStrategyButton';
 import { BotAnalysisDownload } from '@/components/BotAnalysisDownload';
+import { DownloadRangeLogsButton } from '@/components/DownloadRangeLogsButton';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -105,6 +106,7 @@ const Index = () => {
               <MainNav />
             </div>
             <div className="flex items-center gap-2">
+              <DownloadRangeLogsButton />
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="outline" size="sm" className="font-mono text-xs">
