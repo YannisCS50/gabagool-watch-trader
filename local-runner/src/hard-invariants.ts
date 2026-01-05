@@ -230,6 +230,53 @@ const freezeAddsState = new Map<string, {
   dominantSide: Outcome;
 }>();
 
+// ============================================================
+// PENDING BUY SHARE RESERVATIONS (prevents multi-order cap breach)
+// ============================================================
+//
+// Root cause of "cap breach" in practice is multiple BUY orders getting placed
+// before inventory (fills/polling) updates `currentUpShares/currentDownShares`.
+//
+// We solve this at the LAST gate by reserving shares at order-placement time
+// and treating reserved shares as already held for cap calculations.
+//
+const reservedBuySharesState = new Map<string, { up: number; down: number }>();
+
+function getReservedBuyShares(marketId: string, asset: string): { up: number; down: number } {
+  const key = `${marketId}:${asset}`;
+  const v = reservedBuySharesState.get(key);
+  return v ?? { up: 0, down: 0 };
+}
+
+function reserveBuyShares(marketId: string, asset: string, outcome: Outcome, qty: number): void {
+  if (!Number.isFinite(qty) || qty <= 0) return;
+  const key = `${marketId}:${asset}`;
+  const cur = reservedBuySharesState.get(key) ?? { up: 0, down: 0 };
+  if (outcome === 'UP') cur.up += qty;
+  else cur.down += qty;
+  reservedBuySharesState.set(key, cur);
+}
+
+function releaseBuyShares(marketId: string, asset: string, outcome: Outcome, qty: number): void {
+  if (!Number.isFinite(qty) || qty <= 0) return;
+  const key = `${marketId}:${asset}`;
+  const cur = reservedBuySharesState.get(key);
+  if (!cur) return;
+
+  if (outcome === 'UP') cur.up = Math.max(0, cur.up - qty);
+  else cur.down = Math.max(0, cur.down - qty);
+
+  if (cur.up === 0 && cur.down === 0) reservedBuySharesState.delete(key);
+  else reservedBuySharesState.set(key, cur);
+}
+
+function consumeReservedBuySharesOnFill(marketId: string, asset: string, fillSide: Outcome, fillQty: number): void {
+  // Called after local inventory has been incremented.
+  // Reduces reserved shares so caps remain accurate for subsequent orders.
+  releaseBuyShares(marketId, asset, fillSide, fillQty);
+}
+
+
 /**
  * Activate freezeAdds for a market after first fill creates ONE_SIDED position
  */
@@ -682,12 +729,17 @@ export function onFillUpdateInvariants(params: {
     marketId,
     asset,
     fillSide,
+    fillQty,
     newUpShares,
     newDownShares,
     upCost,
     downCost,
     runId,
   } = params;
+
+  // Consume pending BUY reservations now that inventory has been applied locally.
+  consumeReservedBuySharesOnFill(marketId, asset, fillSide, fillQty);
+
   
   let freezeActivated = false;
   let freezeCleared = false;
@@ -798,12 +850,27 @@ export async function placeOrderWithCaps(
   ctx: OrderContext
 ): Promise<CappedOrderResponse> {
   const now = Date.now();
-  const { marketId, asset, outcome, currentUpShares, currentDownShares, upCost = 0, downCost = 0, intentType, runId } = ctx;
-  
+  const {
+    marketId,
+    asset,
+    outcome,
+    currentUpShares: currentUpSharesRaw,
+    currentDownShares: currentDownSharesRaw,
+    upCost = 0,
+    downCost = 0,
+    intentType,
+    runId,
+  } = ctx;
+
+  // Include pending BUY reservations so multiple in-flight orders cannot breach caps.
+  const reserved = getReservedBuyShares(marketId, asset);
+  const effectiveUpShares = currentUpSharesRaw + reserved.up;
+  const effectiveDownShares = currentDownSharesRaw + reserved.down;
+
   // Map side to OrderSide type
   const orderSide: OrderSide = order.side;
-  
-  // 1) CHECK ALL INVARIANTS
+
+  // 1) CHECK ALL INVARIANTS (using effective shares)
   const invariantResult = checkAllInvariants({
     marketId,
     asset,
@@ -811,20 +878,22 @@ export async function placeOrderWithCaps(
     outcome,
     requestedSize: order.size,
     intentType,
-    currentUpShares,
-    currentDownShares,
+    currentUpShares: effectiveUpShares,
+    currentDownShares: effectiveDownShares,
     upCost,
     downCost,
     combinedAsk: null, // Will be fetched if needed
     runId,
   });
-  
+
   // 2) BLOCKED: Return immediately with cap_blocked error
   if (!invariantResult.allowed) {
     console.log(`🚫 [HARD_INVARIANT] ORDER BLOCKED: ${invariantResult.blockReason}`);
     console.log(`   Request: ${order.side} ${order.size} ${outcome} @ ${(order.price * 100).toFixed(0)}¢`);
-    console.log(`   Position: UP=${currentUpShares} DOWN=${currentDownShares}`);
-    
+    console.log(
+      `   Position: UP=${currentUpSharesRaw} (+${reserved.up} pending) DOWN=${currentDownSharesRaw} (+${reserved.down} pending)`
+    );
+
     saveBotEvent({
       event_type: 'ORDER_CAP_BLOCKED',
       asset,
@@ -836,28 +905,34 @@ export async function placeOrderWithCaps(
         side: order.side,
         outcome,
         requestedSize: order.size,
-        currentUpShares,
-        currentDownShares,
+        currentUpShares: currentUpSharesRaw,
+        currentDownShares: currentDownSharesRaw,
+        reservedBuyUpShares: reserved.up,
+        reservedBuyDownShares: reserved.down,
+        effectiveUpShares,
+        effectiveDownShares,
         blockReason: invariantResult.blockReason,
         intentType,
       },
     }).catch(() => {});
-    
+
     return {
       success: false,
       error: `CAP_BLOCKED: ${invariantResult.blockReason}`,
       failureReason: 'cap_blocked',
     };
   }
-  
+
   // 3) CLAMPED: Adjust size and log
-  let finalSize = invariantResult.finalSize;
-  let wasClamped = invariantResult.clampApplied;
-  
+  const finalSize = invariantResult.finalSize;
+  const wasClamped = invariantResult.clampApplied;
+
   if (wasClamped) {
     console.log(`📏 [HARD_INVARIANT] ORDER CLAMPED: ${order.size} → ${finalSize} shares`);
-    console.log(`   Position: UP=${currentUpShares} DOWN=${currentDownShares}`);
-    
+    console.log(
+      `   Position: UP=${currentUpSharesRaw} (+${reserved.up} pending) DOWN=${currentDownSharesRaw} (+${reserved.down} pending)`
+    );
+
     saveBotEvent({
       event_type: 'ORDER_CLAMPED',
       asset,
@@ -869,22 +944,26 @@ export async function placeOrderWithCaps(
         outcome,
         originalSize: order.size,
         clampedSize: finalSize,
-        currentUpShares,
-        currentDownShares,
+        currentUpShares: currentUpSharesRaw,
+        currentDownShares: currentDownSharesRaw,
+        reservedBuyUpShares: reserved.up,
+        reservedBuyDownShares: reserved.down,
+        effectiveUpShares,
+        effectiveDownShares,
         intentType,
       },
     }).catch(() => {});
   }
-  
-  // 4) FINAL SAFETY CHECK: Verify post-order position won't exceed caps
-  const projectedShares = outcome === 'UP' 
-    ? currentUpShares + finalSize 
-    : currentDownShares + finalSize;
-  
+
+  // 4) FINAL SAFETY CHECK: Verify post-order position won't exceed caps (effective)
+  const projectedShares = outcome === 'UP'
+    ? effectiveUpShares + (order.side === 'BUY' ? finalSize : 0)
+    : effectiveDownShares + (order.side === 'BUY' ? finalSize : 0);
+
   if (order.side === 'BUY' && projectedShares > HARD_INVARIANT_CONFIG.maxSharesPerSide) {
     console.error(`🚨 [HARD_INVARIANT] FATAL: Projected ${outcome}=${projectedShares} would exceed cap!`);
     console.error(`   This should have been caught by clampOrderToCaps. BLOCKING ORDER.`);
-    
+
     saveBotEvent({
       event_type: 'INVARIANT_SAFETY_BLOCK',
       asset,
@@ -895,34 +974,56 @@ export async function placeOrderWithCaps(
         outcome,
         projectedShares,
         maxSharesPerSide: HARD_INVARIANT_CONFIG.maxSharesPerSide,
-        currentShares: outcome === 'UP' ? currentUpShares : currentDownShares,
+        currentSharesRaw: outcome === 'UP' ? currentUpSharesRaw : currentDownSharesRaw,
+        reservedBuyShares: outcome === 'UP' ? reserved.up : reserved.down,
         orderSize: finalSize,
       },
     }).catch(() => {});
-    
+
     return {
       success: false,
       error: `SAFETY_BLOCK: Projected ${outcome}=${projectedShares} > ${HARD_INVARIANT_CONFIG.maxSharesPerSide}`,
       failureReason: 'cap_blocked',
     };
   }
-  
-  // 5) PLACE ORDER via rawPlaceOrder
-  const result = await rawPlaceOrder({
-    tokenId: order.tokenId,
-    side: order.side,
-    price: order.price,
-    size: finalSize,
-    orderType: order.orderType,
-    intent: order.intent,
-    spread: order.spread,
-  });
-  
-  // 6) LOG SUCCESS with cap enforcement info
-  if (result.success && wasClamped) {
-    console.log(`✅ [HARD_INVARIANT] CLAMPED ORDER FILLED: ${finalSize}@${(order.price * 100).toFixed(0)}¢ (was ${order.size})`);
+
+  // 5) Reserve shares BEFORE placing BUY order (prevents same-tick multi-order breach)
+  if (order.side === 'BUY') {
+    reserveBuyShares(marketId, asset, outcome, finalSize);
   }
-  
+
+  // 6) PLACE ORDER via rawPlaceOrder (and rollback reservation on failure)
+  let result: CappedOrderResponse;
+  try {
+    result = await rawPlaceOrder({
+      tokenId: order.tokenId,
+      side: order.side,
+      price: order.price,
+      size: finalSize,
+      orderType: order.orderType,
+      intent: order.intent,
+      spread: order.spread,
+    });
+  } catch (err: any) {
+    if (order.side === 'BUY') {
+      releaseBuyShares(marketId, asset, outcome, finalSize);
+    }
+    return {
+      success: false,
+      error: err?.message || 'Order placement exception',
+      failureReason: 'unknown',
+    };
+  }
+
+  if (!result.success && order.side === 'BUY') {
+    releaseBuyShares(marketId, asset, outcome, finalSize);
+  }
+
+  // 7) LOG SUCCESS with cap enforcement info
+  if (result.success && wasClamped) {
+    console.log(`✅ [HARD_INVARIANT] CLAMPED ORDER FILLED/PLACED: ${finalSize}@${(order.price * 100).toFixed(0)}¢ (was ${order.size})`);
+  }
+
   return {
     ...result,
     clamped: wasClamped,
