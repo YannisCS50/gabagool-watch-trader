@@ -13,6 +13,7 @@ import { DownloadAllLogsButton } from '@/components/DownloadAllLogsButton';
 import { DownloadEnrichedFillsButton } from '@/components/DownloadEnrichedFillsButton';
 import { DownloadAuditCodeButton } from '@/components/DownloadAuditCodeButton';
 import { DownloadZipButton } from '@/components/DownloadZipButton';
+import { DownloadStrategyButton } from '@/components/DownloadStrategyButton';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -114,6 +115,7 @@ const Index = () => {
                 <DropdownMenuContent align="end" className="w-48 bg-popover border border-border">
                   <div className="p-1 space-y-1">
                     <DownloadZipButton />
+                    <DownloadStrategyButton />
                     <DownloadAllLogsButton />
                     <DownloadEnrichedFillsButton />
                     <DownloadAuditCodeButton />
