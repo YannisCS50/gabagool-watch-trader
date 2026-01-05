@@ -155,7 +155,7 @@ Version: 7.2.3 REV C.3 (No Emergency Hedge Fallback)
 `;
       rootFolder.file('README.md', readme);
 
-      const blob = await zip.generateAsync({ type: 'blob' });
+      const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE', compressionOptions: { level: 9 } });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
