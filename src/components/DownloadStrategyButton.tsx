@@ -13,6 +13,8 @@ import indexTs from '../../local-runner/src/index.ts?raw';
 import strategyTs from '../../local-runner/src/strategy.ts?raw';
 // @ts-ignore - raw imports
 import v7PatchTs from '../../local-runner/src/v7-patch.ts?raw';
+// @ts-ignore - raw imports
+import hardInvariantsTs from '../../local-runner/src/hard-invariants.ts?raw';
 
 // API & Infrastructure
 // @ts-ignore - raw imports
@@ -59,6 +61,7 @@ const STRATEGY_FILES = [
   // Core strategy
   { name: 'strategy.ts', content: strategyTs, folder: '' },
   { name: 'v7-patch.ts', content: v7PatchTs, folder: '' },
+  { name: 'hard-invariants.ts', content: hardInvariantsTs, folder: '' },
   
   // API & Infrastructure
   { name: 'polymarket.ts', content: polymarketTs, folder: '' },
@@ -91,7 +94,7 @@ export function DownloadStrategyButton() {
     
     try {
       const zip = new JSZip();
-      const rootFolder = zip.folder('polymarket-strategy-v7.2.3');
+      const rootFolder = zip.folder('polymarket-strategy-v7.2.4');
       
       if (!rootFolder) throw new Error('Failed to create zip folder');
 
@@ -101,20 +104,21 @@ export function DownloadStrategyButton() {
       }
 
       // Add a README with build timestamp
-      const readme = `# Polymarket Trading Strategy v7.2.3
+      const readme = `# Polymarket Trading Strategy v7.2.4
 
-## Complete Trading Bot with All Hotfixes
+## Complete Trading Bot with Rev C.4 Hard Invariants
 
-This is the COMPLETE trading bot with all recent hotfixes applied.
+This is the COMPLETE trading bot with all hotfixes and Rev C.4 Hard Invariants applied.
 
 ## Files Included
 
 ### Main Entry Point:
-- **index.ts**: Main bot loop with all hotfixes (CPP_IMPLAUSIBLE, balance handling, etc.)
+- **index.ts**: Main bot loop with all hotfixes and hard invariant integration
 
 ### Core Strategy:
 - **strategy.ts**: v6.1.2 GPT Strategy with v7 patch exports
 - **v7-patch.ts**: v7 Patch Layer with readiness gate, intent slots, etc.
+- **hard-invariants.ts**: v7.2.4 REV C.4 Hard Invariants (position caps, freeze adds, CPP paired-only)
 
 ### API & Infrastructure:
 - **polymarket.ts**: Polymarket CLOB API wrapper with price improvement fixes
@@ -138,20 +142,23 @@ This is the COMPLETE trading bot with all recent hotfixes applied.
 - **redeemer.ts**: Position redemption
 - **reconcile.ts**: Order reconciliation
 
-## Key Features (v7.2.3 REV C.3):
+## Key Features (v7.2.4 REV C.4):
+
+### Hard Invariants (NEW):
+- **clampOrderToCaps()**: Enforces maxSharesPerSide=100 and maxTotalSharesPerMarket=200
+- **One-Sided Freeze Adds**: After first ONE_SIDED fill, no more BUY on dominant side
+- **CPP Paired-Only**: cppPairedOnlyCents = avgUp + avgDown (null when paired=0)
+- **Runtime Assertions**: INVARIANT_BREACH detection and market suspension
+
+### State Machine (Rev C.3):
 - REMOVED aggressive emergency hedge fallback (ask+0.03)
-  → Partial pairs now remain in PAIRING state for standard hedge flow
-- FIXED costPerPaired undefined bug → uses cppPairedOnly consistently
-- State machine ENFORCES trading permissions (not just logging)
-- PAIRING state must be explicitly entered via beginPairing()
-- PAIRING timeout sets FREEZE_ADDS flag and blocks new entries
-- CPP uses paired-only formula (avgUp + avgDown) not totalInvested/paired
-- Micro-hedge only allowed in PAIRED state with time > 120s remaining
-- Central gating point for all trade types (ENTRY, HEDGE, ACCUMULATE)
+- Partial pairs remain in PAIRING state for standard hedge flow
+- State machine ENFORCES trading permissions
+- PAIRING timeout sets FREEZE_ADDS flag
 
 ## Build Info
-Generated: \${new Date().toISOString()}
-Version: 7.2.3 REV C.3 (No Emergency Hedge Fallback)
+Generated: ${new Date().toISOString()}
+Version: 7.2.4 REV C.4 (Hard Invariants)
 `;
       rootFolder.file('README.md', readme);
 
@@ -159,7 +166,7 @@ Version: 7.2.3 REV C.3 (No Emergency Hedge Fallback)
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `polymarket-strategy-v7.2.3-${new Date().toISOString().split('T')[0]}.zip`;
+      a.download = `polymarket-strategy-v7.2.4-${new Date().toISOString().split('T')[0]}.zip`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -175,15 +182,16 @@ Version: 7.2.3 REV C.3 (No Emergency Hedge Fallback)
     <Button
       onClick={downloadStrategy}
       disabled={isDownloading}
-      variant="ghost"
-      className="w-full justify-start text-xs h-8"
+      variant="outline"
+      size="sm"
+      className="font-mono text-xs"
     >
       {isDownloading ? (
         <Loader2 className="w-3 h-3 mr-2 animate-spin" />
       ) : (
         <FileCode className="w-3 h-3 mr-2" />
       )}
-      {isDownloading ? 'Creating...' : 'Strategy Code'}
+      {isDownloading ? 'Creating...' : 'Strategy'}
     </Button>
   );
 }
