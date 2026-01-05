@@ -486,9 +486,11 @@ export function logActionSkipped(
   if (INVENTORY_RISK_CONFIG.logEvents) {
     console.log(`⏭️ [ACTION_SKIPPED] ${intendedAction} on ${marketId}`);
     console.log(`   Reason: ${reason}`);
-    console.log(`   Unpaired: ${keyMetrics.unpairedShares} shares ($${keyMetrics.unpairedNotionalUsd.toFixed(2)})`);
-    console.log(`   Risk Score: ${keyMetrics.inventoryRiskScore.toFixed(0)} | Pair Cost: ${keyMetrics.pairCost?.toFixed(4) ?? 'N/A'}`);
-    console.log(`   Time Left: ${keyMetrics.secondsRemaining}s | Degraded: ${keyMetrics.degradedMode ?? false}`);
+    if (keyMetrics) {
+      console.log(`   Unpaired: ${keyMetrics.unpairedShares} shares ($${keyMetrics.unpairedNotionalUsd.toFixed(2)})`);
+      console.log(`   Risk Score: ${keyMetrics.inventoryRiskScore.toFixed(0)} | Pair Cost: ${keyMetrics.pairCost?.toFixed(4) ?? 'N/A'}`);
+      console.log(`   Time Left: ${keyMetrics.secondsRemaining}s | Degraded: ${keyMetrics.degradedMode ?? false}`);
+    }
   }
   
   // Log to backend
