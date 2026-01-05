@@ -69,8 +69,8 @@ export function MainNav() {
   const location = useLocation();
 
   return (
-    <NavigationMenu className="max-w-none">
-      <NavigationMenuList className="flex-wrap gap-1">
+    <NavigationMenu className="flex justify-start">
+      <NavigationMenuList className="flex flex-row space-x-1">
         {/* Dashboard */}
         <NavigationMenuItem>
           <Link to="/">
@@ -103,12 +103,12 @@ export function MainNav() {
 
         {/* Analysis */}
         <NavigationMenuItem>
-          <NavigationMenuTrigger>
+          <NavigationMenuTrigger className="h-9">
             <BarChart3 className="mr-2 h-4 w-4" />
             Analysis
           </NavigationMenuTrigger>
           <NavigationMenuContent>
-            <ul className="grid w-[300px] gap-1 p-2">
+            <ul className="grid w-[300px] gap-1 p-2 bg-popover border border-border rounded-md shadow-lg">
               {analysisItems.map((item) => (
                 <ListItem key={item.href} {...item} />
               ))}
@@ -118,12 +118,12 @@ export function MainNav() {
 
         {/* Monitoring */}
         <NavigationMenuItem>
-          <NavigationMenuTrigger>
+          <NavigationMenuTrigger className="h-9">
             <Activity className="mr-2 h-4 w-4" />
             Monitoring
           </NavigationMenuTrigger>
           <NavigationMenuContent>
-            <ul className="grid w-[300px] gap-1 p-2">
+            <ul className="grid w-[300px] gap-1 p-2 bg-popover border border-border rounded-md shadow-lg">
               {monitoringItems.map((item) => (
                 <ListItem key={item.href} {...item} />
               ))}
