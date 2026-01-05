@@ -43,6 +43,7 @@ import {
   v7CheckReadinessGate,
   v7ClearReadinessState,
   v7IsMarketReady,
+  getReadinessState,
   accumulateHedgeNeeded,
   shouldPlaceMicroHedge,
   clearMicroHedgeAccumulator,
@@ -971,7 +972,43 @@ async function evaluateMarket(slug: string): Promise<void> {
 
     // ============================================================
     // v7.0.1 PATCH 1: READINESS GATE + 12s TIMEOUT
+    // v7.1.1: Active orderbook fetch if WebSocket data is stale
     // ============================================================
+    
+    // Check if book data is stale (> 2s or never received)
+    const bookAgeMs = ctx.book.updatedAtMs > 0 ? (nowMs - ctx.book.updatedAtMs) : Infinity;
+    const isBookStale = bookAgeMs > 2000;
+    
+    // v7.1.1: If book is stale, try to fetch via HTTP as fallback
+    if (isBookStale && !getReadinessState(slug)?.disabled) {
+      try {
+        // Fetch orderbook for both tokens in parallel
+        const [upDepth, downDepth] = await Promise.all([
+          getOrderbookDepth(ctx.market.upTokenId),
+          getOrderbookDepth(ctx.market.downTokenId),
+        ]);
+        
+        // Update book if we got data
+        if (upDepth.topAsk !== null || upDepth.topBid !== null) {
+          ctx.book.up.ask = upDepth.topAsk;
+          ctx.book.up.bid = upDepth.topBid;
+        }
+        if (downDepth.topAsk !== null || downDepth.topBid !== null) {
+          ctx.book.down.ask = downDepth.topAsk;
+          ctx.book.down.bid = downDepth.topBid;
+        }
+        
+        // Update timestamp if we got any data
+        if ((upDepth.topAsk !== null || upDepth.topBid !== null) ||
+            (downDepth.topAsk !== null || downDepth.topBid !== null)) {
+          ctx.book.updatedAtMs = nowMs;
+          console.log(`📡 [v7.1.1] Orderbook fetched via HTTP for ${slug}: UP=${upDepth.topAsk?.toFixed(2) || 'n/a'} DOWN=${downDepth.topAsk?.toFixed(2) || 'n/a'}`);
+        }
+      } catch (err) {
+        // Non-critical - WebSocket may still update
+      }
+    }
+    
     const v7Book: V7MarketBook = {
       up: ctx.book.up,
       down: ctx.book.down,
