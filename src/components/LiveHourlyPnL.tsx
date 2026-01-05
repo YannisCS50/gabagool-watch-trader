@@ -1,9 +1,10 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Clock, TrendingUp, TrendingDown } from 'lucide-react';
-import { useLiveTrades, LiveTradeResult } from '@/hooks/useLiveTrades';
-import { format, subHours, startOfHour, isWithinInterval } from 'date-fns';
+import { Button } from '@/components/ui/button';
+import { Clock, TrendingUp, TrendingDown, RefreshCw } from 'lucide-react';
+import { supabase } from '@/integrations/supabase/client';
+import { format, subHours, startOfHour } from 'date-fns';
 import { nl } from 'date-fns/locale';
 import {
   BarChart,
@@ -25,12 +26,81 @@ interface HourlyData {
   roi: number;
 }
 
+interface SettlementLog {
+  id: string;
+  asset: string;
+  market_id: string;
+  realized_pnl: number | null;
+  theoretical_pnl: number | null;
+  pair_cost: number | null;
+  final_up_shares: number;
+  final_down_shares: number;
+  winning_side: string | null;
+  iso: string;
+  ts: number;
+  created_at: string;
+}
+
 interface LiveHourlyPnLProps {
   hoursToShow?: number;
 }
 
 export function LiveHourlyPnL({ hoursToShow = 24 }: LiveHourlyPnLProps) {
-  const { results } = useLiveTrades();
+  const [settlementLogs, setSettlementLogs] = useState<SettlementLog[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
+
+  // Fetch settlement logs from the database
+  const fetchSettlementLogs = async () => {
+    setIsLoading(true);
+    try {
+      const cutoffTime = subHours(new Date(), hoursToShow).toISOString();
+      
+      const { data, error } = await supabase
+        .from('settlement_logs')
+        .select('*')
+        .gte('created_at', cutoffTime)
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setSettlementLogs(data || []);
+      setLastRefresh(new Date());
+    } catch (err) {
+      console.error('Error fetching settlement logs:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Initial fetch
+  useEffect(() => {
+    fetchSettlementLogs();
+  }, [hoursToShow]);
+
+  // Subscribe to real-time updates
+  useEffect(() => {
+    const channel = supabase
+      .channel('settlement-logs-realtime')
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'settlement_logs' },
+        (payload) => {
+          const newLog = payload.new as SettlementLog;
+          setSettlementLogs(prev => [newLog, ...prev]);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  // Auto-refresh every 5 minutes
+  useEffect(() => {
+    const interval = setInterval(fetchSettlementLogs, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [hoursToShow]);
 
   const hourlyData = useMemo(() => {
     const now = new Date();
@@ -39,7 +109,6 @@ export function LiveHourlyPnL({ hoursToShow = 24 }: LiveHourlyPnLProps) {
     // Create buckets for each hour
     for (let i = hoursToShow - 1; i >= 0; i--) {
       const hourStart = startOfHour(subHours(now, i));
-      const hourEnd = startOfHour(subHours(now, i - 1));
       
       hours.push({
         hour: format(hourStart, 'HH:mm', { locale: nl }),
@@ -51,21 +120,25 @@ export function LiveHourlyPnL({ hoursToShow = 24 }: LiveHourlyPnLProps) {
       });
     }
 
-    // Aggregate settled results into hourly buckets
-    results.forEach((result) => {
-      if (!result.settled_at) return;
-      
-      const settledAt = new Date(result.settled_at);
+    // Aggregate settlement logs into hourly buckets
+    settlementLogs.forEach((log) => {
+      const logTime = new Date(log.created_at);
       
       // Find matching hour bucket
       for (let i = 0; i < hours.length; i++) {
         const hourStart = hours[i].hourStart;
         const hourEnd = i < hours.length - 1 ? hours[i + 1].hourStart : new Date();
         
-        if (settledAt >= hourStart && settledAt < hourEnd) {
-          hours[i].pnl += result.profit_loss || 0;
+        if (logTime >= hourStart && logTime < hourEnd) {
+          // Use realized_pnl if available, otherwise theoretical_pnl
+          const pnl = log.realized_pnl ?? log.theoretical_pnl ?? 0;
+          hours[i].pnl += pnl;
           hours[i].trades += 1;
-          hours[i].invested += result.total_invested || 0;
+          
+          // Calculate invested from pair_cost and paired shares
+          const paired = Math.min(log.final_up_shares, log.final_down_shares);
+          const invested = (log.pair_cost ?? 0) * paired;
+          hours[i].invested += invested;
           break;
         }
       }
@@ -77,7 +150,7 @@ export function LiveHourlyPnL({ hoursToShow = 24 }: LiveHourlyPnLProps) {
     });
 
     return hours;
-  }, [results, hoursToShow]);
+  }, [settlementLogs, hoursToShow]);
 
   const summaryStats = useMemo(() => {
     const totalPnL = hourlyData.reduce((sum, h) => sum + h.pnl, 0);
@@ -85,8 +158,15 @@ export function LiveHourlyPnL({ hoursToShow = 24 }: LiveHourlyPnLProps) {
     const totalInvested = hourlyData.reduce((sum, h) => sum + h.invested, 0);
     const profitableHours = hourlyData.filter((h) => h.pnl > 0).length;
     const unprofitableHours = hourlyData.filter((h) => h.pnl < 0).length;
-    const bestHour = hourlyData.reduce((best, h) => (h.pnl > best.pnl ? h : best), hourlyData[0]);
-    const worstHour = hourlyData.reduce((worst, h) => (h.pnl < worst.pnl ? h : worst), hourlyData[0]);
+    const activeHours = hourlyData.filter((h) => h.trades > 0).length;
+    
+    const hoursWithTrades = hourlyData.filter(h => h.trades > 0);
+    const bestHour = hoursWithTrades.length > 0 
+      ? hoursWithTrades.reduce((best, h) => (h.pnl > best.pnl ? h : best), hoursWithTrades[0])
+      : hourlyData[0];
+    const worstHour = hoursWithTrades.length > 0
+      ? hoursWithTrades.reduce((worst, h) => (h.pnl < worst.pnl ? h : worst), hoursWithTrades[0])
+      : hourlyData[0];
 
     return {
       totalPnL,
@@ -95,6 +175,7 @@ export function LiveHourlyPnL({ hoursToShow = 24 }: LiveHourlyPnLProps) {
       roi: totalInvested > 0 ? (totalPnL / totalInvested) * 100 : 0,
       profitableHours,
       unprofitableHours,
+      activeHours,
       bestHour,
       worstHour,
     };
@@ -110,7 +191,7 @@ export function LiveHourlyPnL({ hoursToShow = 24 }: LiveHourlyPnLProps) {
             P/L: ${data.pnl.toFixed(2)}
           </p>
           <p className="text-muted-foreground text-sm">
-            Trades: {data.trades}
+            Settlements: {data.trades}
           </p>
           <p className="text-muted-foreground text-sm">
             Invested: ${data.invested.toFixed(2)}
@@ -132,12 +213,20 @@ export function LiveHourlyPnL({ hoursToShow = 24 }: LiveHourlyPnLProps) {
         <div className="flex items-center justify-between">
           <CardTitle className="flex items-center gap-2 text-lg">
             <Clock className="w-5 h-5" />
-            Uurlijkse P/L
+            Uurlijkse P/L (Live Bot)
             <Badge variant="outline" className="ml-2">
               {hoursToShow}u
             </Badge>
           </CardTitle>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
+            <Button 
+              variant="ghost" 
+              size="sm" 
+              onClick={fetchSettlementLogs}
+              disabled={isLoading}
+            >
+              <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
+            </Button>
             {summaryStats.totalPnL >= 0 ? (
               <TrendingUp className="w-5 h-5 text-green-500" />
             ) : (
@@ -152,12 +241,16 @@ export function LiveHourlyPnL({ hoursToShow = 24 }: LiveHourlyPnLProps) {
             </span>
           </div>
         </div>
+        <p className="text-xs text-muted-foreground">
+          Laatste update: {format(lastRefresh, 'HH:mm:ss', { locale: nl })} • 
+          {summaryStats.totalTrades} settlements
+        </p>
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Summary Stats */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
           <div className="bg-muted/50 rounded-lg p-2">
-            <div className="text-muted-foreground">Trades</div>
+            <div className="text-muted-foreground">Settlements</div>
             <div className="font-semibold">{summaryStats.totalTrades}</div>
           </div>
           <div className="bg-muted/50 rounded-lg p-2">
@@ -169,6 +262,10 @@ export function LiveHourlyPnL({ hoursToShow = 24 }: LiveHourlyPnLProps) {
             <div className={`font-semibold ${summaryStats.roi >= 0 ? 'text-green-500' : 'text-red-500'}`}>
               {summaryStats.roi.toFixed(1)}%
             </div>
+          </div>
+          <div className="bg-muted/50 rounded-lg p-2">
+            <div className="text-muted-foreground">Actieve uren</div>
+            <div className="font-semibold">{summaryStats.activeHours}</div>
           </div>
           <div className="bg-muted/50 rounded-lg p-2">
             <div className="text-muted-foreground">Winsturen</div>
@@ -201,6 +298,7 @@ export function LiveHourlyPnL({ hoursToShow = 24 }: LiveHourlyPnLProps) {
                     <Cell
                       key={`cell-${index}`}
                       fill={entry.pnl >= 0 ? 'hsl(142, 76%, 36%)' : 'hsl(0, 84%, 60%)'}
+                      opacity={entry.trades > 0 ? 1 : 0.3}
                     />
                   ))}
                 </Bar>
@@ -209,22 +307,59 @@ export function LiveHourlyPnL({ hoursToShow = 24 }: LiveHourlyPnLProps) {
           </div>
         ) : (
           <div className="h-[200px] flex items-center justify-center text-muted-foreground">
-            Geen gesettelde trades in de afgelopen {hoursToShow} uur
+            {isLoading ? 'Laden...' : `Geen settlements in de afgelopen ${hoursToShow} uur`}
           </div>
         )}
 
         {/* Best/Worst Hours */}
-        {hasData && (
+        {hasData && summaryStats.bestHour && summaryStats.worstHour && (
           <div className="grid grid-cols-2 gap-3 text-sm">
             <div className="bg-green-500/10 border border-green-500/20 rounded-lg p-2">
               <div className="text-green-500 text-xs font-semibold">Beste uur</div>
               <div className="font-semibold">{summaryStats.bestHour.hour}</div>
               <div className="text-green-500">+${summaryStats.bestHour.pnl.toFixed(2)}</div>
+              <div className="text-xs text-muted-foreground">{summaryStats.bestHour.trades} settlements</div>
             </div>
             <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-2">
               <div className="text-red-500 text-xs font-semibold">Slechtste uur</div>
               <div className="font-semibold">{summaryStats.worstHour.hour}</div>
               <div className="text-red-500">${summaryStats.worstHour.pnl.toFixed(2)}</div>
+              <div className="text-xs text-muted-foreground">{summaryStats.worstHour.trades} settlements</div>
+            </div>
+          </div>
+        )}
+
+        {/* Recent Settlements (last 5) */}
+        {settlementLogs.length > 0 && (
+          <div className="border-t pt-3">
+            <div className="text-xs font-semibold text-muted-foreground mb-2">
+              Laatste settlements
+            </div>
+            <div className="space-y-1">
+              {settlementLogs.slice(0, 5).map((log) => {
+                const pnl = log.realized_pnl ?? log.theoretical_pnl ?? 0;
+                return (
+                  <div 
+                    key={log.id} 
+                    className="flex items-center justify-between text-xs py-1 px-2 rounded bg-muted/30"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline" className="text-xs">
+                        {log.asset}
+                      </Badge>
+                      <span className="text-muted-foreground">
+                        {format(new Date(log.created_at), 'HH:mm', { locale: nl })}
+                      </span>
+                      <span className="text-muted-foreground">
+                        {log.winning_side === 'UP' ? '📈' : log.winning_side === 'DOWN' ? '📉' : '❓'}
+                      </span>
+                    </div>
+                    <span className={pnl >= 0 ? 'text-green-500' : 'text-red-500'}>
+                      {pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
