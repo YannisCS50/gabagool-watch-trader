@@ -223,18 +223,22 @@ export function computeHealthMetrics(
   const filteredFills = fills.filter(f => f.ts >= startTime);
   const filteredSnapshots = snapshots.filter(s => s.ts >= startTime);
   
-  // Use snapshots if available, else reconstruct from fills
-  const positions = filteredSnapshots.length > 0
-    ? new Map(filteredSnapshots.map(s => [s.market_id, { upShares: s.up_shares, downShares: s.down_shares }]))
-    : reconstructPositionsFromFills(filteredFills);
-  
-  // Calculate max shares
+  // Calculate max shares observed within the time range
   let maxSharesPerSide = 0;
   let maxTotalShares = 0;
-  
-  for (const pos of positions.values()) {
-    maxSharesPerSide = Math.max(maxSharesPerSide, pos.upShares, pos.downShares);
-    maxTotalShares = Math.max(maxTotalShares, pos.upShares + pos.downShares);
+
+  if (filteredSnapshots.length > 0) {
+    for (const s of filteredSnapshots) {
+      maxSharesPerSide = Math.max(maxSharesPerSide, s.up_shares, s.down_shares);
+      maxTotalShares = Math.max(maxTotalShares, s.up_shares + s.down_shares);
+    }
+  } else {
+    // If no snapshots available, reconstruct from fills and compute maxima from resulting positions
+    const positions = reconstructPositionsFromFills(filteredFills);
+    for (const pos of positions.values()) {
+      maxSharesPerSide = Math.max(maxSharesPerSide, pos.upShares, pos.downShares);
+      maxTotalShares = Math.max(maxTotalShares, pos.upShares + pos.downShares);
+    }
   }
   
   // Count event types
