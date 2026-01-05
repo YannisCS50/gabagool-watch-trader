@@ -369,6 +369,9 @@ export interface InventorySnapshot {
   avg_down_cost?: number;
   pair_cost?: number;
   unpaired_shares?: number;
+  unpaired_notional_usd?: number;  // v6.4.0: USD value of unpaired exposure
+  paired_shares?: number;          // v6.4.0: explicit paired count
+  paired_delay_sec?: number;       // v6.4.0: time to complete hedge
   state: string;
   state_age_ms?: number;
   hedge_lag_ms?: number;
