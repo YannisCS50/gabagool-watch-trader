@@ -1,6 +1,37 @@
-# v6.5.0 Robustness & Observability Patch - Diagnostics
+# v6.6.0 Emergency Unwind & Safety Block Patch - Diagnostics
 
-## What's New in v6.5.0
+## What's New in v6.6.0
+
+### 1. SAFETY BLOCK (Invalid Book Detection)
+When orderbook is invalid or suspicious:
+- **Detection**: bestBid <= 0.02 AND bestAsk >= 0.98 with > 20 levels
+- **Behavior**: Block ALL trading except CANCEL_ALL
+- **Logging**: `SAFETY_BLOCK_ACTIVE` (logged once per state change)
+- **Exit**: Automatically clears when book becomes valid
+
+### 2. EMERGENCY UNWIND
+Triggered when position is critically underwater:
+- **CPP Emergency**: cost_per_paired >= 1.10
+- **CPP Implausible**: cost_per_paired > 1.50 (likely units bug)
+- **Skew Emergency**: skewRatio >= 70% AND unpairedAgeSec > 20s
+- **Behavior**: Cancel all orders, attempt to reduce dominant side
+- **Cooldown**: 10 minutes (600s) freeze on new entries after emergency
+
+### 3. GUARDRAIL LOG THROTTLE
+Stops guardrail log spam:
+- **State-change only**: Logs on change or every 5s max
+- **Format**: Single structured log with all metrics
+- **Fields**: marketId, trigger, paired, unpaired, cpp, skewRatio, action
+
+### 4. CPP SANITY CHECK
+Detects implausible cost_per_paired values:
+- **Threshold**: cpp > 1.50 = likely units bug
+- **Action**: Force EMERGENCY_UNWIND, log CPP components for debugging
+- **Fields logged**: upShares, downShares, upInvested, downInvested, paired, formula
+
+---
+
+## What's in v6.5.0 (Previous)
 
 ### 1. Inventory Risk Score (First-Class Metric)
 Per-market runtime metric tracking:
@@ -29,7 +60,65 @@ Explicit logging when bot skips actions:
 
 ---
 
-## How to verify the patch is working
+## How to verify v6.6.0 is working
+
+### 1. Safety Block (Invalid Book)
+
+**Check safety block events:**
+```bash
+grep "SAFETY_BLOCK" logs/*.log
+# Should see:
+🚨 [SAFETY_BLOCK_ACTIVE] market-slug
+   Reason: SUSPICIOUS_BOOK_SHAPE: bid=0.02 ask=0.98
+   → All trading blocked except CANCEL_ALL
+
+# Clear event:
+✅ [SAFETY_BLOCK_CLEARED] market-slug
+   Previous reason: SUSPICIOUS_BOOK_SHAPE...
+```
+
+### 2. Emergency Unwind
+
+**Check emergency unwind events:**
+```bash
+grep "EMERGENCY_UNWIND" logs/*.log
+# Should see:
+🚨 [EMERGENCY_UNWIND_START] market-slug
+   Reason: CPP_EMERGENCY: cpp=1.12 >= 1.10
+   Dominant: UP - will attempt to reduce
+   Max duration: 45s
+
+# End event:
+✅ [EMERGENCY_UNWIND_END] market-slug
+   Exit reason: conditions_improved
+   Cooldown until: 2026-01-05T...
+```
+
+### 3. CPP Implausible Detection
+
+**Check CPP implausible events:**
+```bash
+grep "CPP_IMPLAUSIBLE" logs/*.log
+# Should see:
+🚨 [CPP_IMPLAUSIBLE] market-slug
+   cpp=2.175 (> 1.50)
+   upShares=X, downShares=Y, paired=Z
+   upInvested=$XX, downInvested=$YY
+   Formula: cpp = (XX + YY) / Z = 2.175
+```
+
+### 4. Guardrail Throttle (No Spam)
+
+**Verify throttled logging:**
+```bash
+# Count guardrail logs per market - should be max 1 per 5s
+grep "GUARDRAIL" logs/*.log | cut -d' ' -f1-3 | uniq -c
+# High counts = old spam behavior, low counts = throttle working
+```
+
+---
+
+## How to verify v6.5.0 is working
 
 ### 1. Inventory Risk Tracking
 
@@ -150,6 +239,10 @@ tail -1 logs/settlement_$(date +%Y-%m-%d).jsonl | jq '{
 | Queue stress detection | Working | `grep -c "QUEUE_STRESS" logs/*.log` |
 | ACTION_SKIPPED events | Logged | `grep -c "ACTION_SKIPPED" logs/*.log` |
 | Settlement aggregations | Complete | Check settlement logs for new fields |
+| **v6.6.0** Guardrail spam | STOPPED | Max 1 guardrail log per 5s per market |
+| **v6.6.0** Safety block on bad book | Working | `grep -c "SAFETY_BLOCK" logs/*.log` |
+| **v6.6.0** Emergency unwind | Working | `grep -c "EMERGENCY_UNWIND" logs/*.log` |
+| **v6.6.0** CPP implausible detection | Working | `grep -c "CPP_IMPLAUSIBLE" logs/*.log` |
 
 ---
 
@@ -158,11 +251,25 @@ tail -1 logs/settlement_$(date +%Y-%m-%d).jsonl | jq '{
 ### inventory-risk.ts
 ```typescript
 INVENTORY_RISK_CONFIG = {
+  // Degraded Mode
   degradedTriggerNotional: 15,    // USD
   degradedTriggerAgeSec: 20,      // seconds
   riskScoreTrigger: 300,          // risk score threshold
+  
+  // Queue Stress
   queueStressSize: 6,             // pending orders
   queueStressWindowMs: 5000,      // ms
+  
+  // v6.6.0: Emergency Unwind
+  cppEmergency: 1.10,             // cpp >= this triggers emergency
+  cppImplausible: 1.50,           // cpp > this = units bug
+  hardSkewCap: 0.70,              // 70% skew cap
+  skewAgeEmergencySec: 20,        // seconds before skew emergency
+  emergencyUnwindMaxSec: 45,      // max time in emergency mode
+  cooldownAfterEmergencySec: 600, // 10 min cooldown after emergency
+  
+  // v6.6.0: Safety Block
+  safetyBlockOnInvalidBook: true, // block on bad book
 }
 ```
 
@@ -176,6 +283,7 @@ FUNDING_CONFIG = {
   maxTotalReserved: 400,
 }
 ```
+
 
 ---
 

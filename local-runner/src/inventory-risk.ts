@@ -31,13 +31,24 @@ export const INVENTORY_RISK_CONFIG = {
   // Logging
   logEvents: true,
   logIntervalMs: 5000,            // Don't spam logs more than once per 5s per market
+  
+  // v6.6.0: Emergency Unwind Thresholds
+  cppEmergency: 1.10,             // cpp >= this triggers emergency unwind
+  cppImplausible: 1.50,           // cpp > this = likely units bug, force unwind
+  hardSkewCap: 0.70,              // skew ratio >= this + age triggers emergency
+  skewAgeEmergencySec: 20,        // seconds skewed before emergency
+  emergencyUnwindMaxSec: 45,      // max time in emergency unwind mode
+  cooldownAfterEmergencySec: 600, // freeze new entries after emergency (10m)
+  
+  // v6.6.0: Safety Block (Invalid Book)
+  safetyBlockOnInvalidBook: true, // block all trading when book is invalid
 };
 
 // ============================================================
 // TYPES
 // ============================================================
 
-export type IntendedAction = 'ADD' | 'ACCUMULATE' | 'MICRO_HEDGE' | 'REBALANCE' | 'UNWIND' | 'ENTRY_HEDGE';
+export type IntendedAction = 'ADD' | 'ACCUMULATE' | 'MICRO_HEDGE' | 'REBALANCE' | 'UNWIND' | 'ENTRY_HEDGE' | 'ENTRY' | 'HEDGE' | 'CANCEL_ALL';
 
 export type SkipReason = 
   | 'PAIR_COST'           // Would worsen pair cost
@@ -53,7 +64,10 @@ export type SkipReason =
   | 'STARTUP_GRACE'       // Market started before boot
   | 'TAIL_ENTRY_BLOCK'    // v7: Price too low (tail odds)
   | 'NO_PAIR_EDGE'        // v7: Combined ask >= 1 - buffer (no edge)
-  | 'CONTRA_ENTRY_BLOCK'; // v7: Entry against spot direction
+  | 'CONTRA_ENTRY_BLOCK'  // v7: Entry against spot direction
+  | 'SAFETY_BLOCK'        // v6.6: Book is invalid/suspicious
+  | 'EMERGENCY_UNWIND'    // v6.6: Emergency unwind in progress
+  | 'EMERGENCY_COOLDOWN'; // v6.6: Cooling down after emergency
 
 export interface ActionSkippedEvent {
   ts: number;
@@ -99,6 +113,19 @@ export interface InventoryRiskState {
   queueStress: boolean;
   queueStressEnterTs: number | null;
   queueStressSecondsTotal: number;
+  
+  // v6.6.0: Emergency unwind tracking
+  emergencyUnwindActive: boolean;
+  emergencyUnwindEnterTs: number | null;
+  emergencyCooldownUntilTs: number | null;
+  
+  // v6.6.0: Safety block tracking (invalid book)
+  safetyBlockActive: boolean;
+  safetyBlockReason: string | null;
+  
+  // v6.6.0: Guardrail log throttle (state-change only)
+  lastGuardrailState: string | null;
+  lastGuardrailLogTs: number;
   
   // Action skip tracking
   actionSkippedCounts: Record<SkipReason, number>;
@@ -152,6 +179,16 @@ export function getOrCreateRiskState(marketId: string, asset: string): Inventory
       queueStress: false,
       queueStressEnterTs: null,
       queueStressSecondsTotal: 0,
+      // v6.6.0: Emergency unwind tracking
+      emergencyUnwindActive: false,
+      emergencyUnwindEnterTs: null,
+      emergencyCooldownUntilTs: null,
+      // v6.6.0: Safety block tracking
+      safetyBlockActive: false,
+      safetyBlockReason: null,
+      // v6.6.0: Guardrail log throttle
+      lastGuardrailState: null,
+      lastGuardrailLogTs: 0,
       actionSkippedCounts: {} as Record<SkipReason, number>,
       lastLogTs: 0,
     };
@@ -678,6 +715,329 @@ export function getRiskMetricsForSnapshot(marketId: string): {
  */
 export function getMarketAggregation(marketId: string): MarketAggregation | null {
   return clearRiskState(marketId);
+}
+
+// ============================================================
+// v6.6.0: SAFETY BLOCK (Invalid Book Detection)
+// ============================================================
+
+export interface SafetyBlockResult {
+  blocked: boolean;
+  reason?: string;
+}
+
+/**
+ * Set safety block when orderbook is invalid/suspicious.
+ * Blocks all trading except CANCEL_ALL.
+ */
+export function setSafetyBlock(
+  marketId: string,
+  asset: string,
+  reason: string,
+  runId?: string
+): void {
+  const state = getOrCreateRiskState(marketId, asset);
+  const wasBlocked = state.safetyBlockActive;
+  
+  if (!wasBlocked) {
+    state.safetyBlockActive = true;
+    state.safetyBlockReason = reason;
+    
+    // Only log on state change
+    console.log(`🚨 [SAFETY_BLOCK_ACTIVE] ${marketId}`);
+    console.log(`   Reason: ${reason}`);
+    console.log(`   → All trading blocked except CANCEL_ALL`);
+    
+    saveBotEvent({
+      event_type: 'SAFETY_BLOCK_ACTIVE',
+      asset,
+      market_id: marketId,
+      run_id: runId,
+      reason_code: 'INVALID_BOOK',
+      data: { reason },
+      ts: Date.now(),
+    }).catch(() => {});
+  }
+}
+
+/**
+ * Clear safety block when book becomes valid again.
+ */
+export function clearSafetyBlock(
+  marketId: string,
+  asset: string,
+  runId?: string
+): void {
+  const state = inventoryRiskStore.get(marketId);
+  if (!state || !state.safetyBlockActive) return;
+  
+  state.safetyBlockActive = false;
+  const oldReason = state.safetyBlockReason;
+  state.safetyBlockReason = null;
+  
+  console.log(`✅ [SAFETY_BLOCK_CLEARED] ${marketId}`);
+  console.log(`   Previous reason: ${oldReason}`);
+  
+  saveBotEvent({
+    event_type: 'SAFETY_BLOCK_CLEARED',
+    asset,
+    market_id: marketId,
+    run_id: runId,
+    data: { previousReason: oldReason },
+    ts: Date.now(),
+  }).catch(() => {});
+}
+
+/**
+ * Check if market is in safety block mode.
+ */
+export function isSafetyBlocked(marketId: string): SafetyBlockResult {
+  const state = inventoryRiskStore.get(marketId);
+  if (!state || !state.safetyBlockActive) {
+    return { blocked: false };
+  }
+  return { blocked: true, reason: state.safetyBlockReason || 'INVALID_BOOK' };
+}
+
+// ============================================================
+// v6.6.0: EMERGENCY UNWIND
+// ============================================================
+
+export interface EmergencyUnwindContext {
+  costPerPaired: number;
+  skewRatio: number;    // max(up,down)/total
+  unpairedAgeSec: number;
+  upShares: number;
+  downShares: number;
+  upInvested: number;
+  downInvested: number;
+  paired: number;
+}
+
+export interface EmergencyUnwindResult {
+  triggerEmergency: boolean;
+  reason?: string;
+  dominantSide?: 'UP' | 'DOWN';
+  implausibleCpp?: boolean;
+}
+
+/**
+ * Check if emergency unwind should be triggered.
+ * Triggers on:
+ * - cpp >= 1.10
+ * - cpp > 1.50 (implausible - likely units bug)
+ * - skewRatio >= 0.70 AND unpairedAgeSec > 20
+ */
+export function checkEmergencyUnwindTrigger(
+  marketId: string,
+  asset: string,
+  ctx: EmergencyUnwindContext,
+  runId?: string
+): EmergencyUnwindResult {
+  const state = getOrCreateRiskState(marketId, asset);
+  const cfg = INVENTORY_RISK_CONFIG;
+  const now = Date.now();
+  
+  const { costPerPaired, skewRatio, unpairedAgeSec, upShares, downShares, upInvested, downInvested, paired } = ctx;
+  const dominantSide: 'UP' | 'DOWN' = upShares > downShares ? 'UP' : 'DOWN';
+  
+  // CPP implausible check (> 1.50) - likely units bug
+  if (costPerPaired > cfg.cppImplausible) {
+    const reason = `CPP_IMPLAUSIBLE: cpp=${costPerPaired.toFixed(3)} > ${cfg.cppImplausible} (likely units bug)`;
+    
+    // Log CPP components for debugging
+    console.log(`🚨 [CPP_IMPLAUSIBLE] ${marketId}`);
+    console.log(`   cpp=${costPerPaired.toFixed(3)} (> ${cfg.cppImplausible})`);
+    console.log(`   upShares=${upShares}, downShares=${downShares}, paired=${paired}`);
+    console.log(`   upInvested=$${upInvested.toFixed(2)}, downInvested=$${downInvested.toFixed(2)}`);
+    console.log(`   Formula: cpp = (${upInvested.toFixed(2)} + ${downInvested.toFixed(2)}) / ${paired} = ${costPerPaired.toFixed(3)}`);
+    
+    triggerEmergencyUnwind(state, asset, reason, dominantSide, true, runId);
+    return { triggerEmergency: true, reason, dominantSide, implausibleCpp: true };
+  }
+  
+  // CPP emergency check (>= 1.10)
+  if (costPerPaired >= cfg.cppEmergency) {
+    const reason = `CPP_EMERGENCY: cpp=${costPerPaired.toFixed(3)} >= ${cfg.cppEmergency}`;
+    triggerEmergencyUnwind(state, asset, reason, dominantSide, false, runId);
+    return { triggerEmergency: true, reason, dominantSide };
+  }
+  
+  // Skew + age emergency check
+  if (skewRatio >= cfg.hardSkewCap && unpairedAgeSec > cfg.skewAgeEmergencySec) {
+    const reason = `SKEW_EMERGENCY: skew=${(skewRatio * 100).toFixed(1)}% >= ${(cfg.hardSkewCap * 100).toFixed(0)}% AND age=${unpairedAgeSec.toFixed(0)}s > ${cfg.skewAgeEmergencySec}s`;
+    triggerEmergencyUnwind(state, asset, reason, dominantSide, false, runId);
+    return { triggerEmergency: true, reason, dominantSide };
+  }
+  
+  // Check if we should exit emergency mode
+  if (state.emergencyUnwindActive && state.emergencyUnwindEnterTs) {
+    const elapsed = (now - state.emergencyUnwindEnterTs) / 1000;
+    if (elapsed >= cfg.emergencyUnwindMaxSec) {
+      exitEmergencyUnwind(state, asset, 'max_duration_reached', runId);
+    } else if (costPerPaired < cfg.cppEmergency && skewRatio < cfg.hardSkewCap) {
+      exitEmergencyUnwind(state, asset, 'conditions_improved', runId);
+    }
+  }
+  
+  return { triggerEmergency: false };
+}
+
+function triggerEmergencyUnwind(
+  state: InventoryRiskState,
+  asset: string,
+  reason: string,
+  dominantSide: 'UP' | 'DOWN',
+  implausible: boolean,
+  runId?: string
+): void {
+  const now = Date.now();
+  
+  if (!state.emergencyUnwindActive) {
+    state.emergencyUnwindActive = true;
+    state.emergencyUnwindEnterTs = now;
+    
+    console.log(`🚨 [EMERGENCY_UNWIND_START] ${state.marketId}`);
+    console.log(`   Reason: ${reason}`);
+    console.log(`   Dominant: ${dominantSide} - will attempt to reduce`);
+    console.log(`   Max duration: ${INVENTORY_RISK_CONFIG.emergencyUnwindMaxSec}s`);
+    
+    saveBotEvent({
+      event_type: 'EMERGENCY_UNWIND_START',
+      asset,
+      market_id: state.marketId,
+      run_id: runId,
+      reason_code: implausible ? 'CPP_IMPLAUSIBLE' : 'CPP_EMERGENCY',
+      data: {
+        reason,
+        dominantSide,
+        implausible,
+      },
+      ts: now,
+    }).catch(() => {});
+  }
+}
+
+function exitEmergencyUnwind(
+  state: InventoryRiskState,
+  asset: string,
+  exitReason: string,
+  runId?: string
+): void {
+  const now = Date.now();
+  const cfg = INVENTORY_RISK_CONFIG;
+  
+  state.emergencyUnwindActive = false;
+  state.emergencyUnwindEnterTs = null;
+  state.emergencyCooldownUntilTs = now + (cfg.cooldownAfterEmergencySec * 1000);
+  
+  console.log(`✅ [EMERGENCY_UNWIND_END] ${state.marketId}`);
+  console.log(`   Exit reason: ${exitReason}`);
+  console.log(`   Cooldown until: ${new Date(state.emergencyCooldownUntilTs).toISOString()}`);
+  
+  saveBotEvent({
+    event_type: 'EMERGENCY_UNWIND_END',
+    asset,
+    market_id: state.marketId,
+    run_id: runId,
+    data: {
+      exitReason,
+      cooldownUntilTs: state.emergencyCooldownUntilTs,
+      cooldownSec: cfg.cooldownAfterEmergencySec,
+    },
+    ts: now,
+  }).catch(() => {});
+}
+
+/**
+ * Check if market is in emergency unwind mode.
+ */
+export function isEmergencyUnwindActive(marketId: string): boolean {
+  const state = inventoryRiskStore.get(marketId);
+  return state?.emergencyUnwindActive ?? false;
+}
+
+/**
+ * Check if market is in emergency cooldown (no new entries).
+ */
+export function isInEmergencyCooldown(marketId: string): boolean {
+  const state = inventoryRiskStore.get(marketId);
+  if (!state || !state.emergencyCooldownUntilTs) return false;
+  return Date.now() < state.emergencyCooldownUntilTs;
+}
+
+// ============================================================
+// v6.6.0: GUARDRAIL LOG THROTTLE (State-Change Only)
+// ============================================================
+
+export interface GuardrailLogContext {
+  marketId: string;
+  asset: string;
+  trigger: string;
+  paired: number;
+  unpaired: number;
+  totalInvested: number;
+  costPerPaired: number;
+  skewRatio: number;
+  secondsRemaining: number;
+  action: string;
+}
+
+/**
+ * Log guardrail state only on change or every 5s.
+ * Prevents log spam while maintaining observability.
+ */
+export function logGuardrailThrottled(ctx: GuardrailLogContext, runId?: string): void {
+  const state = getOrCreateRiskState(ctx.marketId, ctx.asset);
+  const now = Date.now();
+  const cfg = INVENTORY_RISK_CONFIG;
+  
+  const currentState = ctx.trigger;
+  const stateChanged = currentState !== state.lastGuardrailState;
+  const intervalPassed = (now - state.lastGuardrailLogTs) >= cfg.logIntervalMs;
+  
+  // Only log on state change or interval
+  if (!stateChanged && !intervalPassed) {
+    return;
+  }
+  
+  state.lastGuardrailState = currentState;
+  state.lastGuardrailLogTs = now;
+  
+  // Only log if there's actually a guardrail triggered (not NONE)
+  if (currentState === 'NONE') {
+    return;
+  }
+  
+  const emoji = currentState.includes('EMERGENCY') ? '🚨' : 
+                currentState.includes('STOP') ? '🛑' :
+                currentState.includes('SURVIVAL') ? '⏰' : '⚠️';
+  
+  console.log(`${emoji} [GUARDRAIL] ${currentState} on ${ctx.marketId}`);
+  console.log(`   paired=${ctx.paired}, unpaired=${ctx.unpaired}, invested=$${ctx.totalInvested.toFixed(2)}`);
+  console.log(`   cpp=${ctx.costPerPaired.toFixed(3)}, skew=${(ctx.skewRatio * 100).toFixed(1)}%, timeLeft=${ctx.secondsRemaining}s`);
+  console.log(`   action=${ctx.action}`);
+  
+  // Log to backend
+  saveBotEvent({
+    event_type: 'GUARDRAIL_TRIGGERED',
+    asset: ctx.asset,
+    market_id: ctx.marketId,
+    run_id: runId,
+    reason_code: currentState,
+    data: {
+      trigger: currentState,
+      paired: ctx.paired,
+      unpaired: ctx.unpaired,
+      totalInvested: ctx.totalInvested,
+      costPerPaired: ctx.costPerPaired,
+      skewRatio: ctx.skewRatio,
+      secondsRemaining: ctx.secondsRemaining,
+      action: ctx.action,
+      stateChanged,
+    },
+    ts: now,
+  }).catch(() => {});
 }
 
 // ============================================================
