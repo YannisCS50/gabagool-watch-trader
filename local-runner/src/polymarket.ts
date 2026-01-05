@@ -145,43 +145,69 @@ export async function getOrderbookDepth(tokenId: string): Promise<OrderbookDepth
     const asks = (book.asks || []) as { price: string; size: string }[];
     const bids = (book.bids || []) as { price: string; size: string }[];
 
-    // DEBUG: Log first 5 levels on BOTH sides to verify orderbook structure
-    const showLevels = 5;
-    const askSample = asks.slice(0, showLevels).map(l => `${l.price}@${parseFloat(l.size).toFixed(0)}`).join(', ');
-    const bidSample = bids.slice(0, showLevels).map(l => `${l.price}@${parseFloat(l.size).toFixed(0)}`).join(', ');
-    console.log(`BOOK_DEBUG tokenId=${tokenId.slice(0, 12)}... asks[0:${showLevels}]=[${askSample}] bids[0:${showLevels}]=[${bidSample}]`);
+    // CRITICAL FIX: Do NOT assume array order!
+    // Compute bestBid = MAX(bids[].price), bestAsk = MIN(asks[].price)
+    let bestBid: number | null = null;
+    let bestAsk: number | null = null;
 
-    // Sum volume at top 3 levels
-    const topAsks = asks.slice(0, 3);
-    const topBids = bids.slice(0, 3);
+    for (const level of bids) {
+      const p = parseFloat(level.price);
+      if (Number.isFinite(p) && (bestBid === null || p > bestBid)) {
+        bestBid = p;
+      }
+    }
+    for (const level of asks) {
+      const p = parseFloat(level.price);
+      if (Number.isFinite(p) && (bestAsk === null || p < bestAsk)) {
+        bestAsk = p;
+      }
+    }
+
+    const levels = asks.length + bids.length;
+
+    // DEBUG: Log first/last 3 levels + computed best prices (first snapshot per token only)
+    const debugKey = `book_debug_${tokenId}`;
+    if (!(global as any)[debugKey]) {
+      (global as any)[debugKey] = true;
+      const firstAsks = asks.slice(0, 3).map(l => `${l.price}@${parseFloat(l.size).toFixed(0)}`);
+      const lastAsks = asks.slice(-3).map(l => `${l.price}@${parseFloat(l.size).toFixed(0)}`);
+      const firstBids = bids.slice(0, 3).map(l => `${l.price}@${parseFloat(l.size).toFixed(0)}`);
+      const lastBids = bids.slice(-3).map(l => `${l.price}@${parseFloat(l.size).toFixed(0)}`);
+      console.log(`BOOK_PARSE_DEBUG tokenId=${tokenId.slice(0, 12)}...`);
+      console.log(`   asks: ${asks.length} levels, first3=[${firstAsks.join(', ')}] last3=[${lastAsks.join(', ')}]`);
+      console.log(`   bids: ${bids.length} levels, first3=[${firstBids.join(', ')}] last3=[${lastBids.join(', ')}]`);
+      console.log(`   computed: bestBid=${bestBid?.toFixed(2) ?? 'null'} bestAsk=${bestAsk?.toFixed(2) ?? 'null'}`);
+    }
+
+    // Sum volume at best 3 ask/bid levels (by price, not array position)
+    const sortedAsks = [...asks].sort((a, b) => parseFloat(a.price) - parseFloat(b.price));
+    const sortedBids = [...bids].sort((a, b) => parseFloat(b.price) - parseFloat(a.price));
+    const topAsks = sortedAsks.slice(0, 3);
+    const topBids = sortedBids.slice(0, 3);
     
     const askVolume = topAsks.reduce((sum, l) => sum + parseFloat(l.size), 0);
     const bidVolume = topBids.reduce((sum, l) => sum + parseFloat(l.size), 0);
-    
-    const topAsk = asks.length > 0 ? parseFloat(asks[0].price) : null;
-    const topBid = bids.length > 0 ? parseFloat(bids[0].price) : null;
-    
-    const levels = asks.length + bids.length;
 
-    // SUSPICIOUS BOOK DETECTION (tight): placeholder-like books usually have very few levels.
-    // We only warn when BOTH sides are tiny, to avoid flagging real-but-illiquid markets.
+    // SUSPICIOUS BOOK DETECTION: After computing correct best prices,
+    // if still extreme with many levels, something is wrong
     if (
-      topBid !== null &&
-      topAsk !== null &&
-      topBid <= 0.02 &&
-      topAsk >= 0.98 &&
-      asks.length <= 2 &&
-      bids.length <= 2
+      bestBid !== null &&
+      bestAsk !== null &&
+      bestBid <= 0.02 &&
+      bestAsk >= 0.98 &&
+      levels > 20
     ) {
       console.log(
-        `⚠️ SUSPICIOUS_BOOK_SHAPE tokenId=${tokenId.slice(0, 12)}... topBid=${topBid.toFixed(2)} topAsk=${topAsk.toFixed(2)} asks=${asks.length} bids=${bids.length} endpoint=${CLOB_URL}/book`
+        `⚠️ SUSPICIOUS_BOOK_SHAPE tokenId=${tokenId.slice(0, 12)}... bestBid=${bestBid.toFixed(2)} bestAsk=${bestAsk.toFixed(2)} levels=${levels} - marking INVALID`
       );
+      // Return empty depth to prevent trading on bad data
+      return emptyDepth;
     }
 
     const depth: OrderbookDepth = {
       tokenId,
-      topAsk,
-      topBid,
+      topAsk: bestAsk,
+      topBid: bestBid,
       askVolume,
       bidVolume,
       hasLiquidity: askVolume >= 10, // At least 10 shares available
@@ -191,7 +217,7 @@ export async function getOrderbookDepth(tokenId: string): Promise<OrderbookDepth
     orderbookDepthCache.set(tokenId, { depth, fetchedAt: Date.now() });
     
     // BOOK_SEED logging for diagnostics
-    console.log(`BOOK_SEED tokenId=${tokenId.slice(0, 12)}... status=200 levels=${levels} topBid=${topBid?.toFixed(2) ?? 'null'} topAsk=${topAsk?.toFixed(2) ?? 'null'}`);
+    console.log(`BOOK_SEED tokenId=${tokenId.slice(0, 12)}... status=200 levels=${levels} bestBid=${bestBid?.toFixed(2) ?? 'null'} bestAsk=${bestAsk?.toFixed(2) ?? 'null'}`);
     
     return depth;
   } catch (error) {
