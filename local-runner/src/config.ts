@@ -224,8 +224,9 @@ export const config = {
     expectedEgressIp: process.env.EXPECTED_EGRESS_IP || null,
   },
   trading: {
-    assets: (process.env.TRADE_ASSETS || 'BTC').split(','),
-    maxNotionalPerTrade: parseFloat(process.env.MAX_NOTIONAL_PER_TRADE || '5'),
+    assets: (process.env.TRADE_ASSETS || 'BTC,ETH,SOL,XRP').split(','),
+    // v7.1.0: Updated default to match test mode settings
+    maxNotionalPerTrade: parseFloat(process.env.MAX_NOTIONAL_PER_TRADE || '20'),
     openingMaxPrice: parseFloat(process.env.OPENING_MAX_PRICE || '0.52'),
     // Rate limiting / backoff
     minOrderIntervalMs: parseInt(process.env.MIN_ORDER_INTERVAL_MS || '1500', 10),
