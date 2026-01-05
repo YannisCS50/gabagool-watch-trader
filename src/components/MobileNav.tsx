@@ -10,56 +10,21 @@ import {
   LayoutDashboard,
   TrendingUp,
   BarChart3,
-  Code2,
-  BookOpen,
   Activity,
   Settings,
-  Wallet,
-  Bot,
-  LineChart,
-  FileCode,
-  Zap,
   Database,
   Eye,
   Shield,
   ChevronDown,
 } from 'lucide-react';
 
-const tradingItems = [
-  { title: 'Live Trading', href: '/live-trading', icon: TrendingUp },
-  { title: 'Paper Trading', href: '/paper-trading', icon: Bot },
-  { title: 'Wallet', href: '/wallet', icon: Wallet },
-];
-
 const analysisItems = [
   { title: 'Trade Analysis', href: '/trade-analysis', icon: BarChart3 },
-  { title: 'Edge Analysis', href: '/edge-analysis', icon: Zap },
-  { title: 'Entry Analysis', href: '/entry-analysis', icon: LineChart },
   { title: 'Hedge Analysis', href: '/hedge-analysis', icon: Shield },
   { title: 'Gabagool Analysis', href: '/gabagool-analysis', icon: Activity },
-  { title: 'Arbitrage', href: '/arbitrage', icon: TrendingUp },
-];
-
-const strategyItems = [
-  { title: 'Strategy Overview', href: '/strategy', icon: Code2 },
-  { title: 'Strategy Deep Dive', href: '/strategy-deep-dive', icon: BookOpen },
-  { title: 'Strategy Code', href: '/strategy-code', icon: FileCode },
-  { title: 'Live Bot Strategy', href: '/live-bot-strategy', icon: Bot },
-  { title: 'Paper Bot Strategy', href: '/paper-bot-strategy', icon: Bot },
-  { title: 'GPT Strategy', href: '/gpt-strategy', icon: Zap },
-  { title: 'Rust Strategy', href: '/rust-strategy', icon: Code2 },
-  { title: 'Trading Strategies', href: '/trading-strategies', icon: TrendingUp },
-];
-
-const docsItems = [
-  { title: 'Dev Guide', href: '/dev-guide', icon: BookOpen },
-  { title: 'HFT Build Guide', href: '/hft-build-guide', icon: Zap },
-  { title: 'Order Flow Docs', href: '/order-flow-docs', icon: Database },
-  { title: 'Data Flow Docs', href: '/data-flow-docs', icon: Database },
 ];
 
 const monitoringItems = [
-  { title: 'Real-Time Signals', href: '/real-time-signals', icon: Activity },
   { title: 'Observability', href: '/observability', icon: Eye },
   { title: 'Data Logging', href: '/data-logging', icon: Database },
 ];
@@ -158,11 +123,23 @@ export function MobileNav() {
               Dashboard
             </Link>
 
+            {/* Live Trading */}
+            <Link
+              to="/live-trading"
+              onClick={handleNavigate}
+              className={cn(
+                "flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium transition-colors",
+                location.pathname === "/live-trading"
+                  ? "bg-accent text-accent-foreground"
+                  : "text-muted-foreground hover:text-foreground hover:bg-accent/50"
+              )}
+            >
+              <TrendingUp className="h-4 w-4" />
+              Live Trading
+            </Link>
+
             {/* Sections */}
-            <NavSection title="Trading" icon={TrendingUp} items={tradingItems} onNavigate={handleNavigate} />
             <NavSection title="Analysis" icon={BarChart3} items={analysisItems} onNavigate={handleNavigate} />
-            <NavSection title="Strategy" icon={Code2} items={strategyItems} onNavigate={handleNavigate} />
-            <NavSection title="Docs" icon={BookOpen} items={docsItems} onNavigate={handleNavigate} />
             <NavSection title="Monitoring" icon={Activity} items={monitoringItems} onNavigate={handleNavigate} />
 
             {/* Settings */}

@@ -6,26 +6,8 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { useRealtimeLiveBot } from "@/hooks/useRealtimeLiveBot";
 import Index from "./pages/Index";
 import Auth from "./pages/Auth";
-import Strategy from "./pages/Strategy";
-import Arbitrage from "./pages/Arbitrage";
-import EntryAnalysis from "./pages/EntryAnalysis";
-import DevGuide from "./pages/DevGuide";
-import TradingStrategies from "./pages/TradingStrategies";
-import RustStrategy from "./pages/RustStrategy";
-import HFTBuildGuide from "./pages/HFTBuildGuide";
-import EdgeAnalysis from "./pages/EdgeAnalysis";
-import StrategyDeepDive from "./pages/StrategyDeepDive";
-import RealTimeSignalsPage from "./pages/RealTimeSignalsPage";
-import PaperTrading from "./pages/PaperTrading";
 import GabagoolStrategyAnalysis from "./pages/GabagoolStrategyAnalysis";
-import StrategyCode from "./pages/StrategyCode";
-import PaperBotStrategy from "./pages/PaperBotStrategy";
-import Wallet from "./pages/Wallet";
 import LiveTrading from "./pages/LiveTrading";
-import LiveBotStrategy from "./pages/LiveBotStrategy";
-import GptStrategy from "./pages/GptStrategy";
-import OrderFlowDocs from "./pages/OrderFlowDocs";
-import DataFlowDocs from "./pages/DataFlowDocs";
 import Settings from "./pages/Settings";
 import TradeAnalysis from "./pages/TradeAnalysis";
 import HedgeAnalysis from "./pages/HedgeAnalysis";
@@ -51,33 +33,13 @@ const App = () => (
         <Routes>
           <Route path="/" element={<Index />} />
           <Route path="/auth" element={<Auth />} />
-          <Route path="/strategy" element={<Strategy />} />
-          <Route path="/arbitrage" element={<Arbitrage />} />
-          <Route path="/entry-analysis" element={<EntryAnalysis />} />
-          <Route path="/dev-guide" element={<DevGuide />} />
-          <Route path="/trading-strategies" element={<TradingStrategies />} />
-          <Route path="/rust-strategy" element={<RustStrategy />} />
-          <Route path="/hft-build-guide" element={<HFTBuildGuide />} />
-          <Route path="/edge-analysis" element={<EdgeAnalysis />} />
-          <Route path="/strategy-deep-dive" element={<StrategyDeepDive />} />
-          <Route path="/real-time-signals" element={<RealTimeSignalsPage />} />
-          <Route path="/paper-trading" element={<PaperTrading />} />
-          <Route path="/gabagool-analysis" element={<GabagoolStrategyAnalysis />} />
-          <Route path="/strategy-code" element={<StrategyCode />} />
-          <Route path="/paper-bot-strategy" element={<PaperBotStrategy />} />
-          <Route path="/wallet" element={<Wallet />} />
           <Route path="/live-trading" element={<LiveTrading />} />
-          <Route path="/live-bot-strategy" element={<LiveBotStrategy />} />
-          <Route path="/gpt-strategy" element={<GptStrategy />} />
-          <Route path="/order-flow-docs" element={<OrderFlowDocs />} />
-          <Route path="/data-flow-docs" element={<DataFlowDocs />} />
+          <Route path="/gabagool-analysis" element={<GabagoolStrategyAnalysis />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/trade-analysis" element={<TradeAnalysis />} />
           <Route path="/hedge-analysis" element={<HedgeAnalysis />} />
           <Route path="/data-logging" element={<DataLogging />} />
           <Route path="/observability" element={<Observability />} />
-          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>
