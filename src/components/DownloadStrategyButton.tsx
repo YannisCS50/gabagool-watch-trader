@@ -4,15 +4,19 @@ import { FileCode, Loader2 } from 'lucide-react';
 import JSZip from 'jszip';
 
 // Import strategy files as raw text - automatically updated at build time
-// Main strategy (v6 + v7 patch exports)
+// Main entry point
+// @ts-ignore - raw imports
+import indexTs from '../../local-runner/src/index.ts?raw';
+
+// Core strategy modules
 // @ts-ignore - raw imports
 import strategyTs from '../../local-runner/src/strategy.ts?raw';
-
-// v7.0.1 Patch Layer
 // @ts-ignore - raw imports
 import v7PatchTs from '../../local-runner/src/v7-patch.ts?raw';
 
-// Supporting modules (v6 infrastructure)
+// API & Infrastructure
+// @ts-ignore - raw imports
+import polymarketTs from '../../local-runner/src/polymarket.ts?raw';
 // @ts-ignore - raw imports
 import hedgeEscalatorTs from '../../local-runner/src/hedge-escalator.ts?raw';
 // @ts-ignore - raw imports
@@ -20,23 +24,63 @@ import inventoryRiskTs from '../../local-runner/src/inventory-risk.ts?raw';
 // @ts-ignore - raw imports
 import orderRateLimiterTs from '../../local-runner/src/order-rate-limiter.ts?raw';
 // @ts-ignore - raw imports
+import marketStateManagerTs from '../../local-runner/src/market-state-manager.ts?raw';
+// @ts-ignore - raw imports
+import positionsSyncTs from '../../local-runner/src/positions-sync.ts?raw';
+
+// Configuration
+// @ts-ignore - raw imports
 import configTs from '../../local-runner/src/config.ts?raw';
 // @ts-ignore - raw imports
 import resolvedConfigTs from '../../local-runner/src/resolved-config.ts?raw';
 
+// Supporting modules
+// @ts-ignore - raw imports
+import fundingTs from '../../local-runner/src/funding.ts?raw';
+// @ts-ignore - raw imports
+import telemetryTs from '../../local-runner/src/telemetry.ts?raw';
+// @ts-ignore - raw imports
+import loggerTs from '../../local-runner/src/logger.ts?raw';
+// @ts-ignore - raw imports
+import chainTs from '../../local-runner/src/chain.ts?raw';
+// @ts-ignore - raw imports
+import backendTs from '../../local-runner/src/backend.ts?raw';
+// @ts-ignore - raw imports
+import authManagerTs from '../../local-runner/src/authManager.ts?raw';
+// @ts-ignore - raw imports
+import redeemerTs from '../../local-runner/src/redeemer.ts?raw';
+// @ts-ignore - raw imports
+import reconcileTs from '../../local-runner/src/reconcile.ts?raw';
+
 const STRATEGY_FILES = [
-  // Main entry point (v6 strategy + v7 patch exports)
-  { name: 'strategy.ts', content: strategyTs, folder: '' },
+  // Main entry point
+  { name: 'index.ts', content: indexTs, folder: '' },
   
-  // v7.0.1 Patch Layer
+  // Core strategy
+  { name: 'strategy.ts', content: strategyTs, folder: '' },
   { name: 'v7-patch.ts', content: v7PatchTs, folder: '' },
   
-  // v6 Infrastructure modules (preserved)
+  // API & Infrastructure
+  { name: 'polymarket.ts', content: polymarketTs, folder: '' },
   { name: 'hedge-escalator.ts', content: hedgeEscalatorTs, folder: '' },
   { name: 'inventory-risk.ts', content: inventoryRiskTs, folder: '' },
   { name: 'order-rate-limiter.ts', content: orderRateLimiterTs, folder: '' },
+  { name: 'market-state-manager.ts', content: marketStateManagerTs, folder: '' },
+  { name: 'positions-sync.ts', content: positionsSyncTs, folder: '' },
+  
+  // Configuration
   { name: 'config.ts', content: configTs, folder: '' },
   { name: 'resolved-config.ts', content: resolvedConfigTs, folder: '' },
+  
+  // Supporting modules
+  { name: 'funding.ts', content: fundingTs, folder: '' },
+  { name: 'telemetry.ts', content: telemetryTs, folder: '' },
+  { name: 'logger.ts', content: loggerTs, folder: '' },
+  { name: 'chain.ts', content: chainTs, folder: '' },
+  { name: 'backend.ts', content: backendTs, folder: '' },
+  { name: 'authManager.ts', content: authManagerTs, folder: '' },
+  { name: 'redeemer.ts', content: redeemerTs, folder: '' },
+  { name: 'reconcile.ts', content: reconcileTs, folder: '' },
 ];
 
 export function DownloadStrategyButton() {
@@ -57,42 +101,53 @@ export function DownloadStrategyButton() {
       }
 
       // Add a README with build timestamp
-      const readme = `# Polymarket Trading Strategy v7.0.1
+      const readme = `# Polymarket Trading Strategy v7.2.1
 
-## v6 Infrastructure + v7.0.1 Patch Layer
+## Complete Trading Bot with All Hotfixes
 
-This is a PATCH-ONLY update on top of proven v6 infrastructure.
+This is the COMPLETE trading bot with all recent hotfixes applied.
 
-## Architecture
+## Files Included
 
-### Main Strategy:
-- **strategy.ts**: v6.1.2 GPT Strategy with v7.0.1 patch exports
+### Main Entry Point:
+- **index.ts**: Main bot loop with all hotfixes (CPP_IMPLAUSIBLE, balance handling, etc.)
 
-### v7.0.1 Patch Layer:
-- **v7-patch.ts**: Contains the 5 MUST patches:
-  1. Readiness Gate + 12s Timeout
-  2. Bounded Intent Slots (max 2 per market)
-  3. Micro-Hedge Accumulator (min 5 shares)
-  4. Degraded Mode via riskScore >= 400
-  5. Queue-Stress Gating
+### Core Strategy:
+- **strategy.ts**: v6.1.2 GPT Strategy with v7 patch exports
+- **v7-patch.ts**: v7 Patch Layer with readiness gate, intent slots, etc.
 
-### v6 Infrastructure (preserved):
+### API & Infrastructure:
+- **polymarket.ts**: Polymarket CLOB API wrapper with price improvement fixes
 - **hedge-escalator.ts**: Atomic hedge retry with price escalation
-- **inventory-risk.ts**: Inventory risk management  
+- **inventory-risk.ts**: Inventory risk management with CPP_IMPLAUSIBLE handling
 - **order-rate-limiter.ts**: Rate limiting for order placement
+- **market-state-manager.ts**: Market state machine management
+- **positions-sync.ts**: Position synchronization
+
+### Configuration:
 - **config.ts**: Environment configuration
 - **resolved-config.ts**: Runtime configuration resolution
 
-## Key v7.0.1 Features:
-- No order placement unless BOTH token orderbooks are ready
-- Market disabled after 12s if not ready (MARKET_DISABLED_NO_ORDERBOOK)
-- Micro-hedge accumulator batches small fills (min 5 shares)
-- riskScore triggers degraded mode (blocks ENTRY/ACCUMULATE)
-- Queue stress blocks new entries but allows hedges
+### Supporting Modules:
+- **funding.ts**: Balance and funding management
+- **telemetry.ts**: Logging to Supabase
+- **logger.ts**: Console logging utilities
+- **chain.ts**: Blockchain interaction
+- **backend.ts**: Backend API communication
+- **authManager.ts**: Authentication management
+- **redeemer.ts**: Position redemption
+- **reconcile.ts**: Order reconciliation
+
+## Key Features (v7.2.1):
+- CPP_IMPLAUSIBLE triggers FREEZE_ADDS only (no emergency unwind)
+- Balance/allowance errors suspend market for 60s
+- No emergency orders without valid orderbook
+- Price improvement correctly applied (lower for SELL, higher for BUY)
+- Throttled guardrail logs (max 1 per 30s per market)
 
 ## Build Info
 Generated: ${new Date().toISOString()}
-Version: 7.0.1 (Patch Layer on v6)
+Version: 7.2.1 (Complete Bot)
 `;
       rootFolder.file('README.md', readme);
 
@@ -100,7 +155,7 @@ Version: 7.0.1 (Patch Layer on v6)
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `polymarket-strategy-v7.0.1-${new Date().toISOString().split('T')[0]}.zip`;
+      a.download = `polymarket-strategy-v7.2.1-${new Date().toISOString().split('T')[0]}.zip`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
