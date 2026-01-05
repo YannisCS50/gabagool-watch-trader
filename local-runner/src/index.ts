@@ -89,7 +89,7 @@ try {
 }
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '7.2.3';  // v7.2.3 REV C.3: Remove aggressive emergency hedge + fix CPP bug
+const RUNNER_VERSION = '7.2.4';  // v7.2.4 REV C.4: Hard position limit enforcement
 const RUN_ID = crypto.randomUUID();
 
 // v7 REV C: Initialize MarketStateManager singleton
@@ -1633,6 +1633,55 @@ async function evaluateMarket(slug: string): Promise<void> {
     );
 
     if (signal) {
+      // ============================================================
+      // v7.2.3 REV C.3: HARD POSITION LIMIT CHECK
+      // Block ANY trade that would exceed maxSharesPerSide (100)
+      // ============================================================
+      const cfg = getCurrentConfig();
+      const maxSharesPerSide = cfg?.risk.maxSharesPerSide ?? 100;
+      
+      // Calculate what the position would be AFTER this trade
+      const tradeOutcome = signal.outcome;
+      const tradeShares = signal.shares;
+      const projectedUp = tradeOutcome === 'UP' ? ctx.position.upShares + tradeShares : ctx.position.upShares;
+      const projectedDown = tradeOutcome === 'DOWN' ? ctx.position.downShares + tradeShares : ctx.position.downShares;
+      
+      // For paired trades, also check the paired side
+      const pairedShares = signal.pairedWith?.shares ?? 0;
+      const projectedUpWithPair = signal.pairedWith && signal.pairedWith.outcome === 'UP' 
+        ? projectedUp + pairedShares : projectedUp;
+      const projectedDownWithPair = signal.pairedWith && signal.pairedWith.outcome === 'DOWN'
+        ? projectedDown + pairedShares : projectedDown;
+      
+      if (projectedUpWithPair > maxSharesPerSide || projectedDownWithPair > maxSharesPerSide) {
+        console.log(`🚫 [v7.2.3] POSITION_LIMIT_BLOCK: Trade would exceed maxSharesPerSide (${maxSharesPerSide})`);
+        console.log(`   Current: UP=${ctx.position.upShares} DOWN=${ctx.position.downShares}`);
+        console.log(`   After trade: UP=${projectedUpWithPair} DOWN=${projectedDownWithPair}`);
+        console.log(`   Blocked: ${signal.type} ${signal.outcome} ${tradeShares}sh`);
+        
+        saveBotEvent({
+          event_type: 'POSITION_LIMIT_BLOCK',
+          asset: ctx.market.asset,
+          market_id: slug,
+          run_id: RUN_ID,
+          reason_code: 'MAX_SHARES_PER_SIDE',
+          data: {
+            maxSharesPerSide,
+            currentUp: ctx.position.upShares,
+            currentDown: ctx.position.downShares,
+            projectedUp: projectedUpWithPair,
+            projectedDown: projectedDownWithPair,
+            tradeType: signal.type,
+            tradeOutcome: signal.outcome,
+            tradeShares,
+          },
+          ts: Date.now(),
+        }).catch(() => {});
+        
+        ctx.inFlight = false;
+        return;
+      }
+      
       // ============================================================
       // v7.2.2 REV C.2: STATE-BASED TRADE GATING
       // Check permissions BEFORE executing any trade
