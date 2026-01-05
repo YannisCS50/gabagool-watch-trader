@@ -1468,13 +1468,12 @@ async function main(): Promise<void> {
         );
 
         // Log explicit skip for observability
-        logActionSkipped({
-          ts: Date.now(),
-          marketId: order.market_slug,
-          asset: order.asset,
-          intendedAction: 'ADD',
-          reason: 'FUNDS',
-          keyMetrics: {
+        logActionSkipped(
+          order.market_slug,
+          order.asset,
+          'ADD',
+          'FUNDS',
+          {
             unpairedShares: 0,
             unpairedNotionalUsd: 0,
             inventoryRiskScore: 0,
@@ -1482,8 +1481,8 @@ async function main(): Promise<void> {
             pairCost: null,
             queueSize: orders.length,
             degradedMode: isDegradedMode(order.market_slug, order.asset),
-          },
-        });
+          }
+        );
 
         await updateOrder(order.id, 'failed', {
           error: `MAX_NOTIONAL: ${orderNotional.toFixed(2)} > ${maxNotionalPerTrade.toFixed(2)}`,
