@@ -69,8 +69,9 @@ async function printStartupBanner(): Promise<void> {
   console.log('╔════════════════════════════════════════════════════════════════╗');
   console.log('║        🚀 POLYMARKET LIVE TRADER - LOCAL RUNNER                ║');
   console.log('╠════════════════════════════════════════════════════════════════╣');
+  console.log(`║  📋 Runner:    ${RUNNER_VERSION.padEnd(47)}║`);
   console.log(`║  📋 Strategy:  ${STRATEGY_NAME.padEnd(47)}║`);
-  console.log(`║  📋 Version:   ${STRATEGY_VERSION.padEnd(47)}║`);
+  console.log(`║  📋 Strat Ver: ${STRATEGY_VERSION.padEnd(47)}║`);
   console.log(`║  🔧 Config:    ${CONFIG_VERSION.padEnd(47)}║`);
   console.log('╠════════════════════════════════════════════════════════════════╣');
   
