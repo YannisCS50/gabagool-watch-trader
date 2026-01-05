@@ -91,7 +91,7 @@ export function DownloadStrategyButton() {
     
     try {
       const zip = new JSZip();
-      const rootFolder = zip.folder('polymarket-strategy-v7.0.1');
+      const rootFolder = zip.folder('polymarket-strategy-v7.2.3');
       
       if (!rootFolder) throw new Error('Failed to create zip folder');
 
@@ -101,7 +101,7 @@ export function DownloadStrategyButton() {
       }
 
       // Add a README with build timestamp
-      const readme = `# Polymarket Trading Strategy v7.2.2
+      const readme = `# Polymarket Trading Strategy v7.2.3
 
 ## Complete Trading Bot with All Hotfixes
 
@@ -138,7 +138,10 @@ This is the COMPLETE trading bot with all recent hotfixes applied.
 - **redeemer.ts**: Position redemption
 - **reconcile.ts**: Order reconciliation
 
-## Key Features (v7.2.2 REV C.2):
+## Key Features (v7.2.3 REV C.3):
+- REMOVED aggressive emergency hedge fallback (ask+0.03)
+  → Partial pairs now remain in PAIRING state for standard hedge flow
+- FIXED costPerPaired undefined bug → uses cppPairedOnly consistently
 - State machine ENFORCES trading permissions (not just logging)
 - PAIRING state must be explicitly entered via beginPairing()
 - PAIRING timeout sets FREEZE_ADDS flag and blocks new entries
@@ -148,7 +151,7 @@ This is the COMPLETE trading bot with all recent hotfixes applied.
 
 ## Build Info
 Generated: \${new Date().toISOString()}
-Version: 7.2.2 REV C.2 (State Enforced)
+Version: 7.2.3 REV C.3 (No Emergency Hedge Fallback)
 `;
       rootFolder.file('README.md', readme);
 
@@ -156,7 +159,7 @@ Version: 7.2.2 REV C.2 (State Enforced)
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `polymarket-strategy-v7.2.2-${new Date().toISOString().split('T')[0]}.zip`;
+      a.download = `polymarket-strategy-v7.2.3-${new Date().toISOString().split('T')[0]}.zip`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);

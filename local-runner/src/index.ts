@@ -89,7 +89,7 @@ try {
 }
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '7.2.2';  // v7.2.2 REV C.2: State Machine Enforced Trading
+const RUNNER_VERSION = '7.2.3';  // v7.2.3 REV C.3: Remove aggressive emergency hedge + fix CPP bug
 const RUN_ID = crypto.randomUUID();
 
 // v7 REV C: Initialize MarketStateManager singleton
@@ -1696,18 +1696,30 @@ async function evaluateMarket(slug: string): Promise<void> {
           if (downSuccess) {
             console.log(`✅ [v4.6.0] ATOMIC PAIR COMPLETE: ${signal.shares} UP + ${signal.pairedWith.shares} DOWN`);
           } else {
-            console.log(`⚠️ [v4.6.0] PARTIAL PAIR: UP filled, DOWN failed - EMERGENCY hedge now`);
-
-            const fallbackAsk = ctx.book.down.ask ?? signal.pairedWith.price;
-            const emergencyPrice = Math.min(0.95, fallbackAsk + 0.03);
-            await executeTrade(
-              ctx,
-              'DOWN',
-              emergencyPrice,
-              signal.pairedWith.shares,
-              `EMERGENCY_HEDGE DOWN ${signal.pairedWith.shares}sh @ ${(emergencyPrice * 100).toFixed(0)}¢`,
-              'HEDGE'
-            );
+            // v7.2.3 REV C.3: NO AGGRESSIVE EMERGENCY HEDGE
+            // Instead: remain in PAIRING state, let standard hedge flow handle it
+            // The beginPairing() call above already established PAIRING state
+            // Standard hedge logic will respect hedgeSlippageCap, pairingTimeout, lateExpiry rules
+            console.log(`⚠️ [v7.2.3] PARTIAL PAIR: UP filled, DOWN failed - staying in PAIRING state`);
+            console.log(`   → Standard hedge flow will attempt pairing (no aggressive ask+0.03)`);
+            console.log(`   → Bounded by: hedgeSlippageCap, minHedgeChunk, pairingTimeout`);
+            
+            // Log bot event for tracking
+            saveBotEvent({
+              event_type: 'PAIR_LEG_FAILED',
+              asset: ctx.market.asset,
+              market_id: slug,
+              run_id: RUN_ID,
+              reason_code: 'DOWN_LEG_FAILED',
+              data: {
+                upShares: signal.shares,
+                downSharesAttempted: signal.pairedWith.shares,
+                downPrice: signal.pairedWith.price,
+                bookDownAsk: ctx.book.down.ask,
+                action: 'REMAIN_IN_PAIRING',
+              },
+              ts: Date.now(),
+            }).catch(() => {});
           }
         } else {
           console.log(`⚠️ [v4.6.0] PAIR FAILED: UP side failed, skipping DOWN`);
@@ -1757,16 +1769,38 @@ async function evaluateMarket(slug: string): Promise<void> {
           );
 
           if (!downSuccess) {
-            console.log(`⚠️ Accumulate PARTIAL: UP ok, DOWN failed - EMERGENCY hedge now`);
-            const emergencyPrice = Math.min(0.95, ctx.book.down.ask + 0.03);
-            await executeTrade(
-              ctx,
-              'DOWN',
-              emergencyPrice,
-              signal.shares,
-              `EMERGENCY_HEDGE DOWN ${signal.shares}sh @ ${(emergencyPrice * 100).toFixed(0)}¢`,
-              'HEDGE'
+            // v7.2.3 REV C.3: NO AGGRESSIVE EMERGENCY HEDGE
+            // Instead: call beginPairing() and let standard hedge flow handle it
+            console.log(`⚠️ [v7.2.3] Accumulate PARTIAL: UP ok, DOWN failed - entering PAIRING state`);
+            console.log(`   → Standard hedge flow will attempt pairing (no aggressive ask+0.03)`);
+            
+            // Ensure we enter PAIRING state for the accumulated shares
+            const pairingResult = marketStateManager.beginPairing(
+              slug,
+              ctx.market.asset,
+              'PAIR_EDGE',
+              { bestAskUp: ctx.book.up.ask, bestAskDown: ctx.book.down.ask },
+              remainingSeconds
             );
+            
+            if (!pairingResult.success) {
+              console.warn(`⚠️ [v7.2.3] beginPairing after accumulate failed: ${pairingResult.reason}`);
+            }
+            
+            // Log bot event for tracking
+            saveBotEvent({
+              event_type: 'ACCUMULATE_LEG_FAILED',
+              asset: ctx.market.asset,
+              market_id: slug,
+              run_id: RUN_ID,
+              reason_code: 'DOWN_LEG_FAILED',
+              data: {
+                upShares: signal.shares,
+                bookDownAsk: ctx.book.down.ask,
+                action: 'ENTER_PAIRING',
+              },
+              ts: Date.now(),
+            }).catch(() => {});
           }
         } else if (!upSuccess) {
           console.log(`⚠️ Accumulate aborted: UP side failed, skipping DOWN`);
