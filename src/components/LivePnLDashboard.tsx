@@ -226,10 +226,26 @@ export const LivePnLDashboard = () => {
     const unhedgedBets = betStats.filter((b) => !b.isHedged);
     const totalLockedProfit = hedgedBets.reduce((sum, b) => sum + b.lockedProfit, 0);
 
-    const btcBets = betStats.filter((b) => b.asset === 'BTC');
-    const ethBets = betStats.filter((b) => b.asset === 'ETH');
-    const solBets = betStats.filter((b) => b.asset === 'SOL');
-    const xrpBets = betStats.filter((b) => b.asset === 'XRP');
+    const assetStats = (asset: string) => {
+      const all = betStats.filter((b) => b.asset === asset);
+      const running = all.filter((b) => isBetRunning(b));
+      const settled = all.filter((b) => b.isSettled);
+
+      return {
+        totalBets: all.length,
+        runningBets: running.length,
+        settledBets: settled.length,
+        openInvested: running.reduce((sum, b) => sum + b.totalInvested, 0),
+        realizedPL: settled.reduce((sum, b) => sum + (b.profitLoss || 0), 0),
+      };
+    };
+
+    const assets = {
+      BTC: assetStats('BTC'),
+      ETH: assetStats('ETH'),
+      SOL: assetStats('SOL'),
+      XRP: assetStats('XRP'),
+    } as const;
 
     return {
       totalBets: betStats.length,
@@ -256,15 +272,8 @@ export const LivePnLDashboard = () => {
       totalUnpairedNotional: runningBets.reduce((sum, b) => sum + b.unpairedNotional, 0),
       totalPairedShares: runningBets.reduce((sum, b) => sum + b.pairedShares, 0),
       totalUnpairedShares: runningBets.reduce((sum, b) => sum + b.unpairedShares, 0),
-      betsWithUnpairedRisk: runningBets.filter(b => b.unpairedShares > 0).length,
-      btcBets: btcBets.length,
-      ethBets: ethBets.length,
-      solBets: solBets.length,
-      xrpBets: xrpBets.length,
-      btcPL: btcBets.filter(b => b.isSettled).reduce((sum, b) => sum + (b.profitLoss || 0), 0),
-      ethPL: ethBets.filter(b => b.isSettled).reduce((sum, b) => sum + (b.profitLoss || 0), 0),
-      solPL: solBets.filter(b => b.isSettled).reduce((sum, b) => sum + (b.profitLoss || 0), 0),
-      xrpPL: xrpBets.filter(b => b.isSettled).reduce((sum, b) => sum + (b.profitLoss || 0), 0),
+      betsWithUnpairedRisk: runningBets.filter((b) => b.unpairedShares > 0).length,
+      assets,
     };
   }, [betStats]);
 
@@ -484,42 +493,40 @@ export const LivePnLDashboard = () => {
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="flex items-center justify-between p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
-              <div className="flex items-center gap-2">
-                <Badge variant="outline" className="bg-amber-500/20 text-amber-500 border-amber-500/30">BTC</Badge>
-                <span className="text-sm">{summaryStats.btcBets} bets</span>
-              </div>
-              <span className={`font-mono font-bold ${summaryStats.btcPL >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                {summaryStats.btcPL >= 0 ? '+' : ''}${summaryStats.btcPL.toFixed(2)}
-              </span>
-            </div>
-            <div className="flex items-center justify-between p-3 rounded-lg bg-blue-500/10 border border-blue-500/20">
-              <div className="flex items-center gap-2">
-                <Badge variant="outline" className="bg-blue-500/20 text-blue-500 border-blue-500/30">ETH</Badge>
-                <span className="text-sm">{summaryStats.ethBets} bets</span>
-              </div>
-              <span className={`font-mono font-bold ${summaryStats.ethPL >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                {summaryStats.ethPL >= 0 ? '+' : ''}${summaryStats.ethPL.toFixed(2)}
-              </span>
-            </div>
-            <div className="flex items-center justify-between p-3 rounded-lg bg-purple-500/10 border border-purple-500/20">
-              <div className="flex items-center gap-2">
-                <Badge variant="outline" className="bg-purple-500/20 text-purple-500 border-purple-500/30">SOL</Badge>
-                <span className="text-sm">{summaryStats.solBets} bets</span>
-              </div>
-              <span className={`font-mono font-bold ${summaryStats.solPL >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                {summaryStats.solPL >= 0 ? '+' : ''}${summaryStats.solPL.toFixed(2)}
-              </span>
-            </div>
-            <div className="flex items-center justify-between p-3 rounded-lg bg-slate-500/10 border border-slate-500/20">
-              <div className="flex items-center gap-2">
-                <Badge variant="outline" className="bg-slate-500/20 text-slate-400 border-slate-500/30">XRP</Badge>
-                <span className="text-sm">{summaryStats.xrpBets} bets</span>
-              </div>
-              <span className={`font-mono font-bold ${summaryStats.xrpPL >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                {summaryStats.xrpPL >= 0 ? '+' : ''}${summaryStats.xrpPL.toFixed(2)}
-              </span>
-            </div>
+            {([
+              { key: 'BTC', badge: 'BTC', container: 'bg-amber-500/10 border-amber-500/20', badgeClass: 'bg-amber-500/20 text-amber-500 border-amber-500/30' },
+              { key: 'ETH', badge: 'ETH', container: 'bg-blue-500/10 border-blue-500/20', badgeClass: 'bg-blue-500/20 text-blue-500 border-blue-500/30' },
+              { key: 'SOL', badge: 'SOL', container: 'bg-purple-500/10 border-purple-500/20', badgeClass: 'bg-purple-500/20 text-purple-500 border-purple-500/30' },
+              { key: 'XRP', badge: 'XRP', container: 'bg-slate-500/10 border-slate-500/20', badgeClass: 'bg-slate-500/20 text-slate-400 border-slate-500/30' },
+            ] as const).map(({ key, badge, container, badgeClass }) => {
+              const a = summaryStats.assets[key];
+              const hasRealized = a.settledBets > 0;
+
+              return (
+                <div key={key} className={`p-3 rounded-lg border ${container}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className={badgeClass}>{badge}</Badge>
+                        <span className="text-sm text-muted-foreground">
+                          {a.runningBets} running • {a.settledBets} settled
+                        </span>
+                      </div>
+                      <div className="text-xs text-muted-foreground">
+                        Open invested: <span className="font-mono">${a.openInvested.toFixed(2)}</span>
+                      </div>
+                    </div>
+
+                    <div className="text-right">
+                      <div className="text-[11px] text-muted-foreground">Realized P/L</div>
+                      <div className={`font-mono font-bold ${a.realizedPL >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                        {hasRealized ? `${a.realizedPL >= 0 ? '+' : ''}$${a.realizedPL.toFixed(2)}` : '—'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </CardContent>
       </Card>
