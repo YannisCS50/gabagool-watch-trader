@@ -1,12 +1,12 @@
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
-import { 
-  BotEvent, 
-  Order, 
-  Fill, 
+import {
+  BotEvent,
+  Order,
+  Fill,
   InventorySnapshot,
   computeHealthMetrics,
-  HealthMetrics
+  HealthMetrics,
 } from '@/lib/botHealthMetrics';
 
 export type TimeRange = '15m' | '1h' | '6h' | '24h';
@@ -18,18 +18,32 @@ const TIME_RANGE_MS: Record<TimeRange, number> = {
   '24h': 24 * 60 * 60 * 1000,
 };
 
+const SNAPSHOT_MAX_ROWS: Record<TimeRange, number> = {
+  // snapshot_logs is high-frequency; cap while still keeping charts meaningful
+  '15m': 20000,
+  '1h': 50000,
+  '6h': 160000,
+  '24h': 200000,
+};
+
+const SNAPSHOT_REFETCH_MS: Record<TimeRange, number> = {
+  '15m': 30000,
+  '1h': 30000,
+  '6h': 60000,
+  '24h': 120000,
+};
+
 interface UseBotHealthDataOptions {
   timeRange: TimeRange;
   assetFilter?: string;
   marketIdFilter?: string;
 }
 
-export function useBotHealthData(options: UseBotHealthDataOptions) {
+export function useBotHealthDataV2(options: UseBotHealthDataOptions) {
   const { timeRange, assetFilter, marketIdFilter } = options;
   const timeRangeMs = TIME_RANGE_MS[timeRange];
   const startTime = Date.now() - timeRangeMs;
 
-  // Fetch bot events
   const eventsQuery = useQuery({
     queryKey: ['bot-health-events', timeRange, assetFilter, marketIdFilter],
     queryFn: async (): Promise<BotEvent[]> => {
@@ -38,25 +52,20 @@ export function useBotHealthData(options: UseBotHealthDataOptions) {
         .select('*')
         .gte('ts', startTime)
         .order('ts', { ascending: true });
-      
-      if (assetFilter) {
-        query = query.eq('asset', assetFilter);
-      }
-      if (marketIdFilter) {
-        query = query.ilike('market_id', `%${marketIdFilter}%`);
-      }
-      
+
+      if (assetFilter) query = query.eq('asset', assetFilter);
+      if (marketIdFilter) query = query.ilike('market_id', `%${marketIdFilter}%`);
+
       const { data, error } = await query;
       if (error) throw error;
-      return (data || []).map(e => ({
+      return (data || []).map((e) => ({
         ...e,
         data: e.data as Record<string, unknown> | null,
       }));
     },
-    refetchInterval: 30000, // Refetch every 30 seconds
+    refetchInterval: 30000,
   });
 
-  // Fetch orders
   const ordersQuery = useQuery({
     queryKey: ['bot-health-orders', timeRange, assetFilter, marketIdFilter],
     queryFn: async (): Promise<Order[]> => {
@@ -65,14 +74,10 @@ export function useBotHealthData(options: UseBotHealthDataOptions) {
         .select('*')
         .gte('created_ts', startTime)
         .order('created_ts', { ascending: true });
-      
-      if (assetFilter) {
-        query = query.eq('asset', assetFilter);
-      }
-      if (marketIdFilter) {
-        query = query.ilike('market_id', `%${marketIdFilter}%`);
-      }
-      
+
+      if (assetFilter) query = query.eq('asset', assetFilter);
+      if (marketIdFilter) query = query.ilike('market_id', `%${marketIdFilter}%`);
+
       const { data, error } = await query;
       if (error) throw error;
       return data || [];
@@ -80,7 +85,6 @@ export function useBotHealthData(options: UseBotHealthDataOptions) {
     refetchInterval: 30000,
   });
 
-  // Fetch fills
   const fillsQuery = useQuery({
     queryKey: ['bot-health-fills', timeRange, assetFilter, marketIdFilter],
     queryFn: async (): Promise<Fill[]> => {
@@ -89,17 +93,13 @@ export function useBotHealthData(options: UseBotHealthDataOptions) {
         .select('*')
         .gte('ts', startTime)
         .order('ts', { ascending: true });
-      
-      if (assetFilter) {
-        query = query.eq('asset', assetFilter);
-      }
-      if (marketIdFilter) {
-        query = query.ilike('market_id', `%${marketIdFilter}%`);
-      }
-      
+
+      if (assetFilter) query = query.eq('asset', assetFilter);
+      if (marketIdFilter) query = query.ilike('market_id', `%${marketIdFilter}%`);
+
       const { data, error } = await query;
       if (error) throw error;
-      return (data || []).map(f => ({
+      return (data || []).map((f) => ({
         id: f.id,
         ts: f.ts,
         asset: f.asset,
@@ -115,28 +115,25 @@ export function useBotHealthData(options: UseBotHealthDataOptions) {
     refetchInterval: 30000,
   });
 
-  // Fetch inventory snapshots (snapshot_logs contains the live state; inventory_snapshots may be empty)
   const snapshotsQuery = useQuery({
     queryKey: ['bot-health-snapshots', 'snapshot_logs', timeRange, assetFilter, marketIdFilter],
     queryFn: async (): Promise<InventorySnapshot[]> => {
+      const maxRows = SNAPSHOT_MAX_ROWS[timeRange];
+
       let query = supabase
         .from('snapshot_logs')
         .select('id, ts, asset, market_id, up_shares, down_shares, bot_state, pair_cost')
         .gte('ts', startTime)
-        // Pull latest first so we always have the most recent state within the time range
-        .order('ts', { ascending: false });
+        .order('ts', { ascending: true })
+        .range(0, maxRows - 1);
 
-      if (assetFilter) {
-        query = query.eq('asset', assetFilter);
-      }
-      if (marketIdFilter) {
-        query = query.ilike('market_id', `%${marketIdFilter}%`);
-      }
+      if (assetFilter) query = query.eq('asset', assetFilter);
+      if (marketIdFilter) query = query.ilike('market_id', `%${marketIdFilter}%`);
 
       const { data, error } = await query;
       if (error) throw error;
 
-      const mapped: InventorySnapshot[] = (data || []).map((s) => ({
+      return (data || []).map((s) => ({
         id: s.id,
         ts: s.ts,
         asset: s.asset,
@@ -147,16 +144,11 @@ export function useBotHealthData(options: UseBotHealthDataOptions) {
         pair_cost: s.pair_cost,
         skew_allowed_reason: null,
       }));
-
-      // Keep downstream bucketing consistent
-      mapped.sort((a, b) => a.ts - b.ts);
-      return mapped;
     },
-    refetchInterval: 30000,
+    refetchInterval: SNAPSHOT_REFETCH_MS[timeRange],
   });
 
-  // Compute metrics
-  const metrics: HealthMetrics | null = 
+  const metrics: HealthMetrics | null =
     eventsQuery.data && ordersQuery.data && fillsQuery.data && snapshotsQuery.data
       ? computeHealthMetrics(
           eventsQuery.data,
@@ -168,11 +160,13 @@ export function useBotHealthData(options: UseBotHealthDataOptions) {
         )
       : null;
 
-  const isLoading = eventsQuery.isLoading || ordersQuery.isLoading || 
-                    fillsQuery.isLoading || snapshotsQuery.isLoading;
-  
-  const error = eventsQuery.error || ordersQuery.error || 
-                fillsQuery.error || snapshotsQuery.error;
+  const isLoading =
+    eventsQuery.isLoading ||
+    ordersQuery.isLoading ||
+    fillsQuery.isLoading ||
+    snapshotsQuery.isLoading;
+
+  const error = eventsQuery.error || ordersQuery.error || fillsQuery.error || snapshotsQuery.error;
 
   return {
     metrics,

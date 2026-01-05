@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { MainNav } from '@/components/MainNav';
 import { MobileNav } from '@/components/MobileNav';
-import { useBotHealthData, TimeRange } from '@/hooks/useBotHealthData';
+import { useBotHealthDataV2 as useBotHealthData, TimeRange } from '@/hooks/useBotHealthDataV2';
 import { BotHealthStatusBadge } from '@/components/BotHealthStatusBadge';
 import { BotHealthKeyNumbers } from '@/components/BotHealthKeyNumbers';
 import { BotHealthCharts } from '@/components/BotHealthCharts';
