@@ -1382,9 +1382,43 @@ function connectToClob(): void {
   console.log(`🔌 Connecting to CLOB with ${tokenIds.length} tokens...`);
   clobSocket = new WebSocket('wss://ws-subscriptions-clob.polymarket.com/ws/market');
 
-  clobSocket.on('open', () => {
+  clobSocket.on('open', async () => {
     console.log('✅ Connected to Polymarket CLOB WebSocket');
+    
+    // Subscribe to market updates (price changes + book updates)
     clobSocket!.send(JSON.stringify({ type: 'market', assets_ids: tokenIds }));
+    
+    // v7.1.1: Immediately fetch orderbooks via HTTP to bootstrap data
+    // This ensures we have data before WebSocket starts streaming updates
+    console.log('📡 [v7.1.1] Fetching initial orderbooks via HTTP...');
+    let fetchedCount = 0;
+    
+    for (const ctx of markets.values()) {
+      try {
+        const [upDepth, downDepth] = await Promise.all([
+          getOrderbookDepth(ctx.market.upTokenId),
+          getOrderbookDepth(ctx.market.downTokenId),
+        ]);
+        
+        if (upDepth.topAsk !== null || upDepth.topBid !== null) {
+          ctx.book.up.ask = upDepth.topAsk;
+          ctx.book.up.bid = upDepth.topBid;
+        }
+        if (downDepth.topAsk !== null || downDepth.topBid !== null) {
+          ctx.book.down.ask = downDepth.topAsk;
+          ctx.book.down.bid = downDepth.topBid;
+        }
+        
+        if ((upDepth.topAsk !== null || downDepth.topAsk !== null)) {
+          ctx.book.updatedAtMs = Date.now();
+          fetchedCount++;
+        }
+      } catch (err) {
+        // Non-critical, WebSocket will provide updates
+      }
+    }
+    
+    console.log(`📡 [v7.1.1] Initial orderbooks loaded: ${fetchedCount}/${markets.size} markets`);
   });
 
   clobSocket.on('message', async (data: WebSocket.Data) => {
@@ -1744,6 +1778,44 @@ async function main(): Promise<void> {
       logV7PatchStatus();
     }
   }, 15000);
+
+  // v7.1.1: Periodic orderbook refresh every 3 seconds for markets with stale data
+  setInterval(async () => {
+    const nowMs = Date.now();
+    const staleThresholdMs = 3000;
+    
+    for (const ctx of markets.values()) {
+      const bookAge = ctx.book.updatedAtMs > 0 ? (nowMs - ctx.book.updatedAtMs) : Infinity;
+      
+      // Only refresh if book is stale and market is still active
+      if (bookAge > staleThresholdMs) {
+        const endMs = new Date(ctx.market.eventEndTime).getTime();
+        if (nowMs >= endMs) continue; // Skip expired markets
+        
+        try {
+          const [upDepth, downDepth] = await Promise.all([
+            getOrderbookDepth(ctx.market.upTokenId),
+            getOrderbookDepth(ctx.market.downTokenId),
+          ]);
+          
+          if (upDepth.topAsk !== null || upDepth.topBid !== null) {
+            ctx.book.up.ask = upDepth.topAsk;
+            ctx.book.up.bid = upDepth.topBid;
+          }
+          if (downDepth.topAsk !== null || downDepth.topBid !== null) {
+            ctx.book.down.ask = downDepth.topAsk;
+            ctx.book.down.bid = downDepth.topBid;
+          }
+          
+          if ((upDepth.topAsk !== null || downDepth.topAsk !== null)) {
+            ctx.book.updatedAtMs = nowMs;
+          }
+        } catch (err) {
+          // Non-critical
+        }
+      }
+    }
+  }, 3000);
 
   // Auto-claim winnings every 30 seconds
   setInterval(async () => {
