@@ -1457,26 +1457,59 @@ async function processMarketEvent(data: any): Promise<void> {
     if (marketInfo) {
       const ctx = markets.get(marketInfo.slug);
       if (ctx) {
-        const asks = (data.asks || []) as [string, string][];
-        const bids = (data.bids || []) as [string, string][];
+        const asks = (data.asks || []) as any[];
+        const bids = (data.bids || []) as any[];
 
-        const topAsk = asks.length > 0 ? parseFloat(asks[0][0]) : null;
-        const topBid = bids.length > 0 ? parseFloat(bids[0][0]) : null;
+        const parseLevelPrice = (level: any): number | null => {
+          // WS payloads vary: [price,size] tuples OR { price, size } objects
+          const rawPrice = Array.isArray(level)
+            ? level[0]
+            : (level && typeof level === 'object' ? level.price : null);
+
+          const n = typeof rawPrice === 'number'
+            ? rawPrice
+            : typeof rawPrice === 'string'
+              ? parseFloat(rawPrice)
+              : NaN;
+
+          return Number.isFinite(n) ? n : null;
+        };
+
+        const topAsk = asks.length > 0 ? parseLevelPrice(asks[0]) : null;
+        const topBid = bids.length > 0 ? parseLevelPrice(bids[0]) : null;
         const levels = asks.length + bids.length;
-        
+
         // BOOK_WS logging for diagnostics
-        console.log(`BOOK_WS marketId=${marketInfo.slug} side=${marketInfo.side} levels=${levels} topBid=${topBid?.toFixed(2) ?? 'null'} topAsk=${topAsk?.toFixed(2) ?? 'null'}`);
+        console.log(
+          `BOOK_WS marketId=${marketInfo.slug} side=${marketInfo.side} levels=${levels} topBid=${topBid === null ? 'null' : topBid.toFixed(2)} topAsk=${topAsk === null ? 'null' : topAsk.toFixed(2)}`
+        );
 
+        // IMPORTANT: don't overwrite good HTTP-seeded values with invalid WS values
+        let updated = false;
         if (marketInfo.side === 'up') {
-          ctx.book.up.ask = topAsk;
-          ctx.book.up.bid = topBid;
+          if (topAsk !== null) {
+            ctx.book.up.ask = topAsk;
+            updated = true;
+          }
+          if (topBid !== null) {
+            ctx.book.up.bid = topBid;
+            updated = true;
+          }
         } else {
-          ctx.book.down.ask = topAsk;
-          ctx.book.down.bid = topBid;
+          if (topAsk !== null) {
+            ctx.book.down.ask = topAsk;
+            updated = true;
+          }
+          if (topBid !== null) {
+            ctx.book.down.bid = topBid;
+            updated = true;
+          }
         }
-        ctx.book.updatedAtMs = Date.now();
 
-        await evaluateMarket(marketInfo.slug);
+        if (updated) {
+          ctx.book.updatedAtMs = Date.now();
+          await evaluateMarket(marketInfo.slug);
+        }
       }
     }
   } else if (eventType === 'price_change') {
