@@ -172,6 +172,12 @@ export const STRATEGY = {
     minPrice: 0.03,
     maxPrice: 0.92,
     staleBookMs: 5000,
+    // v7: Tail-Entry Prevention
+    tailEntryBlockPrice: 0.20,   // Never ENTRY if min(upAsk, downAsk) < 20¢
+    // v7: Direction Sanity
+    directionEpsPct: 0.0002,     // 0.02% epsilon for neutral zone
+    // v7: Pair-Edge Required
+    requirePairEdge: true,       // Only ENTRY when combinedAsk < 1 - edgeBuffer
   },
   
   // Cooldown between trades - v6.1: Reduced for micro-sizing
@@ -1250,22 +1256,129 @@ function getTradeSize(
 }
 
 // ============================================================
-// ENTRY BUILDING (PDF: Opening Trade)
+// v7 ENTRY GUARD: Check all entry conditions
+// ============================================================
+
+export interface EntryGuardResult {
+  allowed: boolean;
+  reason?: 'TAIL_ENTRY_BLOCK' | 'NO_PAIR_EDGE' | 'CONTRA_ENTRY_BLOCK' | 'MIN_PRICE_BLOCK';
+  details?: Record<string, any>;
+}
+
+export function checkEntryGuards(
+  upAsk: number,
+  downAsk: number,
+  spotPrice?: number | null,
+  strikePrice?: number | null
+): EntryGuardResult {
+  const minAsk = Math.min(upAsk, downAsk);
+  const combinedAsk = upAsk + downAsk;
+  const edge = 1 - combinedAsk;
+  const cheaperSide: Outcome = upAsk <= downAsk ? 'UP' : 'DOWN';
+
+  // RULE A: Tail-Entry Block
+  // If min(upAsk, downAsk) < tailEntryBlockPrice, ENTRY forbidden
+  if (minAsk < STRATEGY.entry.tailEntryBlockPrice) {
+    return {
+      allowed: false,
+      reason: 'TAIL_ENTRY_BLOCK',
+      details: {
+        minAsk,
+        upAsk,
+        downAsk,
+        combinedAsk,
+        threshold: STRATEGY.entry.tailEntryBlockPrice,
+        message: `Min ask ${(minAsk * 100).toFixed(0)}¢ < ${(STRATEGY.entry.tailEntryBlockPrice * 100).toFixed(0)}¢ threshold`,
+      },
+    };
+  }
+
+  // RULE B: Pair-Edge Required
+  // ENTRY only when combinedAsk < 1 - edgeBuffer
+  if (STRATEGY.entry.requirePairEdge && combinedAsk >= 1 - STRATEGY.edge.baseBuffer) {
+    return {
+      allowed: false,
+      reason: 'NO_PAIR_EDGE',
+      details: {
+        combinedAsk,
+        edge,
+        edgeBuffer: STRATEGY.edge.baseBuffer,
+        message: `Combined ${(combinedAsk * 100).toFixed(0)}¢ >= ${((1 - STRATEGY.edge.baseBuffer) * 100).toFixed(0)}¢ (no pair edge)`,
+      },
+    };
+  }
+
+  // RULE C: Direction Sanity (No Contra Entry)
+  // Only check if we have spot and strike prices
+  if (spotPrice != null && strikePrice != null && strikePrice > 0) {
+    const dirEps = STRATEGY.entry.directionEpsPct;
+    const isUpLeading = spotPrice > strikePrice * (1 + dirEps);
+    const isDownLeading = spotPrice < strikePrice * (1 - dirEps);
+
+    // If spot > strike (UP-leading), do NOT allow ENTRY on DOWN
+    if (isUpLeading && cheaperSide === 'DOWN') {
+      return {
+        allowed: false,
+        reason: 'CONTRA_ENTRY_BLOCK',
+        details: {
+          cheaperSide,
+          spotPrice,
+          strikePrice,
+          direction: 'UP_LEADING',
+          message: `Spot $${spotPrice.toFixed(2)} > Strike $${strikePrice.toFixed(2)}, but cheaper side is DOWN`,
+        },
+      };
+    }
+
+    // If spot < strike (DOWN-leading), do NOT allow ENTRY on UP
+    if (isDownLeading && cheaperSide === 'UP') {
+      return {
+        allowed: false,
+        reason: 'CONTRA_ENTRY_BLOCK',
+        details: {
+          cheaperSide,
+          spotPrice,
+          strikePrice,
+          direction: 'DOWN_LEADING',
+          message: `Spot $${spotPrice.toFixed(2)} < Strike $${strikePrice.toFixed(2)}, but cheaper side is UP`,
+        },
+      };
+    }
+  }
+
+  return { allowed: true };
+}
+
+// ============================================================
+// ENTRY BUILDING (PDF: Opening Trade) - with v7 guards
 // ============================================================
 
 export function buildEntry(
   upAsk: number,
   downAsk: number,
-  tradeSize: number = STRATEGY.tradeSizeUsd.base
+  tradeSize: number = STRATEGY.tradeSizeUsd.base,
+  spotPrice?: number | null,
+  strikePrice?: number | null
 ): TradeSignal | null {
+  // v7: Check all entry guards first
+  const guardResult = checkEntryGuards(upAsk, downAsk, spotPrice, strikePrice);
+  if (!guardResult.allowed) {
+    const side: Outcome = upAsk <= downAsk ? 'UP' : 'DOWN';
+    console.log(`🛡️ [v7] ENTRY BLOCKED: ${guardResult.reason}`);
+    console.log(`   → ${guardResult.details?.message}`);
+    if (guardResult.details) {
+      console.log(`   📊 UP: ${(upAsk * 100).toFixed(0)}¢ | DOWN: ${(downAsk * 100).toFixed(0)}¢ | Combined: ${((upAsk + downAsk) * 100).toFixed(0)}¢`);
+    }
+    return null;
+  }
+
   const side: Outcome = upAsk <= downAsk ? 'UP' : 'DOWN';
   const price = side === 'UP' ? upAsk : downAsk;
   const shares = Math.floor(tradeSize / price);
   
   if (shares < 1) return null;
   
-  // v6.3.2: Block entries on prices that are too low (implies market already decided)
-  // E.g. 9¢ means 91% probability against you - never take that bet
+  // v6.3.2: Block entries on prices that are too low (backup check)
   if (price < STRATEGY.opening.minPrice) {
     console.log(`🛡️ [v6.3.2] ENTRY BLOCKED: ${side} @ ${(price * 100).toFixed(0)}¢ < min ${(STRATEGY.opening.minPrice * 100).toFixed(0)}¢`);
     console.log(`   → Price too low, implies ${((1 - price) * 100).toFixed(0)}% probability against. Skipping.`);
@@ -1456,6 +1569,8 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
     adverseStreak = 0,
     tick = STRATEGY.tick.fallback,
     marketOpenTs,
+    currentPrice: spotPrice,  // v7: For direction sanity check
+    strikePrice,              // v7: For direction sanity check
   } = ctx;
 
   // v6.1: Set market open time in inventory if provided
@@ -1597,7 +1712,8 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
       
       // v6.1: Micro-sizing - use smaller trade size
       const tradeSize = getTradeSize(remainingSeconds, edgePct, false);
-      const signal = buildEntry(upAsk, downAsk, tradeSize);
+      // v7: Pass spot/strike for direction sanity check
+      const signal = buildEntry(upAsk, downAsk, tradeSize, spotPrice, strikePrice);
       if (signal) {
         console.log(`[v6.1.1] 🎯 Opening: ${signal.outcome} ${signal.shares} shares @ ${(signal.price * 100).toFixed(1)}¢`);
       }
