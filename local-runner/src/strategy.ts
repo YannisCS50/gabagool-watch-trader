@@ -1578,6 +1578,8 @@ export interface EvaluationContext {
   tick?: number;
   currentPrice?: number;
   strikePrice?: number;
+  // v7.2.4: Add marketId for clearer diagnostics
+  marketId?: string;
   // v6.1: Market open time for entry window discipline
   marketOpenTs?: number;
 }
@@ -1590,7 +1592,8 @@ export function evaluateOpportunity(
   nowMs: number,
   availableBalance?: number,
   currentPrice?: number,
-  strikePrice?: number
+  strikePrice?: number,
+  marketId?: string
 ): TradeSignal | null {
   const inventory: Inventory = {
     upShares: position.upShares,
@@ -1616,6 +1619,7 @@ export function evaluateOpportunity(
     tick: STRATEGY.tick.fallback,
     currentPrice,
     strikePrice,
+    marketId,
   });
 }
 
@@ -1634,6 +1638,7 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
     marketOpenTs,
     currentPrice: spotPrice,  // v7: For direction sanity check
     strikePrice,              // v7: For direction sanity check
+    marketId,
   } = ctx;
 
   // v6.1: Set market open time in inventory if provided
@@ -1954,8 +1959,9 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
     case 'HEDGED': {
       // v6.1.1: Hard guardrail check - blockAccumulate means NO adds at all
       if (guardrails.blockAccumulate) {
-        console.log(`[v6.1.1] 🛑 BLOCK accumulate: ${guardrails.reason}`);
-        
+        const tag = marketId ? ` [${marketId}]` : '';
+        console.log(`[v6.1.1] 🛑 BLOCK accumulate${tag}: ${guardrails.reason}`);
+
         // If paired min not reached and allowed to rebalance, force to minority side
         if (guardrails.allowRebalance && guardrails.blockDominantSideAdd && !guardrails.pairedMinReached) {
           const dominantSide: Outcome = inv.upShares >= inv.downShares ? 'UP' : 'DOWN';
@@ -2012,7 +2018,8 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
       const shareDiff = Math.abs(inv.upShares - inv.downShares);
       const avgShares = (inv.upShares + inv.downShares) / 2;
       if (avgShares > 0 && shareDiff / avgShares > 0.1) {
-        console.log(`[v6.1.1] BLOCK accumulate: shares not balanced (diff=${shareDiff})`);
+        const tag = marketId ? ` [${marketId}]` : '';
+        console.log(`[v6.1.1] BLOCK accumulate${tag}: shares not balanced (diff=${shareDiff})`);
         return null;
       }
       
