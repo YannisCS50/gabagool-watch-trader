@@ -15,6 +15,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Card, CardContent } from '@/components/ui/card';
 import { Download, RefreshCw, Search, Activity } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
+import { TooltipProvider } from '@/components/ui/tooltip';
 
 const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP'];
 
@@ -55,6 +56,7 @@ export default function BotHealth() {
   };
 
   return (
+    <TooltipProvider>
     <div className="min-h-screen bg-background">
       <MainNav />
       <MobileNav />
@@ -200,5 +202,6 @@ export default function BotHealth() {
         )}
       </main>
     </div>
+    </TooltipProvider>
   );
 }
