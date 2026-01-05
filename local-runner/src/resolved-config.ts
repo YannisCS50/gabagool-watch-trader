@@ -184,7 +184,7 @@ const TEST_DEFAULTS = {
   tradeAssets: ['BTC', 'ETH', 'SOL', 'XRP'],
 };
 
-// Production Defaults - Higher limits
+// Production Defaults - With 100 share cap per side
 const PROD_DEFAULTS = {
   sizing: {
     baseLotShares: 50,
@@ -193,10 +193,10 @@ const PROD_DEFAULTS = {
     minNotionalPerTrade: 15,
   },
   risk: {
-    maxSharesPerSide: 500,
-    maxTotalSharesPerMarket: 1000,
-    maxNotionalPerMarket: 300,
-    globalMaxNotional: 1000,
+    maxSharesPerSide: 100,            // Hard cap: 100 shares per side
+    maxTotalSharesPerMarket: 200,     // Hard cap: 200 total per market
+    maxNotionalPerMarket: 150,        // ~$150 per market at 75¢ avg
+    globalMaxNotional: 500,           // $500 total exposure
   },
   tradeAssets: ['BTC', 'ETH'],
 };
