@@ -117,12 +117,12 @@ export default function BotHealth() {
               {/* Asset Filter */}
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">Asset:</span>
-                <Select value={assetFilter} onValueChange={setAssetFilter}>
+                <Select value={assetFilter || "all"} onValueChange={(v) => setAssetFilter(v === "all" ? "" : v)}>
                   <SelectTrigger className="w-24">
                     <SelectValue placeholder="Alle" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">Alle</SelectItem>
+                    <SelectItem value="all">Alle</SelectItem>
                     {ASSETS.map(a => (
                       <SelectItem key={a} value={a}>{a}</SelectItem>
                     ))}
