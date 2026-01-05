@@ -186,7 +186,6 @@ export interface SettlementLog {
   queueStressSecondsTotal?: number;         // Total seconds in queue stress
   actionSkippedCountsByReason?: Record<string, number>; // Skip counts by reason
 }
-}
 
 export function logSettlement(data: SettlementLog): void {
   appendJsonl('settlement', data);
