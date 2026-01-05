@@ -62,13 +62,32 @@ function parseLevels(raw: unknown, type: 'bids' | 'asks'): Level[] {
 }
 
 /**
+ * Fetch with timeout wrapper
+ */
+async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number = 5000): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    return response;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+/**
  * Fetch order book for a token from CLOB API with correct sorting
  */
 async function fetchTokenBook(tokenId: string): Promise<TokenPrice | null> {
   try {
-    const response = await fetch(
+    const response = await fetchWithTimeout(
       `https://clob.polymarket.com/book?token_id=${tokenId}`,
-      { headers: { 'Accept': 'application/json' } }
+      { headers: { 'Accept': 'application/json' } },
+      5000 // 5 second timeout per request
     );
     
     if (!response.ok) {
@@ -113,7 +132,11 @@ async function fetchTokenBook(tokenId: string): Promise<TokenPrice | null> {
     };
     
   } catch (error) {
-    console.error(`[CLOB] Error fetching book for ${tokenId.slice(0, 16)}...:`, error);
+    if (error instanceof Error && error.name === 'AbortError') {
+      console.log(`[CLOB] Timeout for ${tokenId.slice(0, 16)}...`);
+    } else {
+      console.error(`[CLOB] Error fetching book for ${tokenId.slice(0, 16)}...:`, error);
+    }
     return null;
   }
 }
