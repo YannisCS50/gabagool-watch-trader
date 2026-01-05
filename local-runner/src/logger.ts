@@ -46,6 +46,7 @@ export function appendJsonl(logType: 'snapshot' | 'fill' | 'settlement' | 'settl
 
 // ---------- Snapshot Log Schema ----------
 // v6.0.0: Extended with additional price context for enrichment
+// v6.5.0: Extended with inventory risk metrics
 
 export interface SnapshotLog {
   ts: number;                    // epoch ms
@@ -93,6 +94,14 @@ export interface SnapshotLog {
   skew: number | null;           // upShares / (upShares + downShares)
   noLiquidityStreak: number;
   adverseStreak: number;
+  
+  // v6.5.0: Inventory Risk Metrics
+  unpairedShares?: number;          // abs(upShares - downShares)
+  unpairedNotionalUsd?: number;     // unpaired × avg cost
+  unpairedAgeSec?: number;          // time since unpaired became non-zero
+  inventoryRiskScore?: number;      // notional × age (higher = more risk)
+  degradedMode?: boolean;           // true if in degraded mode
+  queueStress?: boolean;            // true if queue stressed
 }
 
 export function logSnapshot(data: SnapshotLog): void {
@@ -139,6 +148,7 @@ export function logFill(data: FillLog): void {
 }
 
 // ---------- Settlement Summary Log Schema ----------
+// v6.5.0: Extended with market aggregation data
 
 export interface SettlementLog {
   ts: number;
@@ -167,6 +177,15 @@ export interface SettlementLog {
   // v6.4.0: Complete settlement metrics
   fees: number | null;           // Fees paid in USD
   totalPayoutUsd: number | null; // Total payout received (winningSide shares * 1.00)
+  // v6.5.0: Market aggregations for risk analysis
+  pairedDelaySec?: number | null;           // Time from first fill to paired
+  unpairedNotionalMax?: number;             // Max unpaired notional during market
+  unpairedAgeMaxSec?: number;               // Max age of unpaired exposure
+  inventoryRiskScoreMax?: number;           // Max inventory risk score
+  degradedModeSecondsTotal?: number;        // Total seconds in degraded mode
+  queueStressSecondsTotal?: number;         // Total seconds in queue stress
+  actionSkippedCountsByReason?: Record<string, number>; // Skip counts by reason
+}
 }
 
 export function logSettlement(data: SettlementLog): void {

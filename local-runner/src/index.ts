@@ -21,6 +21,22 @@ import { executeHedgeWithEscalation, getHedgeEscalatorStats, HEDGE_ESCALATOR_CON
 // v6.3.0: Config Unification
 import { getResolvedConfig, getCurrentConfig, CONFIG_VERSION } from './resolved-config.js';
 
+// v6.5.0: Inventory Risk & Robustness
+import { 
+  checkRiskGate, 
+  calculateInventoryRisk, 
+  evaluateDegradedMode, 
+  updateQueueSize, 
+  logActionSkipped, 
+  getRiskMetricsForSnapshot, 
+  getMarketAggregation,
+  isDegradedMode,
+  isQueueStressed,
+  INVENTORY_RISK_CONFIG,
+  type IntendedAction,
+  type SkipReason,
+} from './inventory-risk.js';
+
 // Ensure Node prefers IPv4 to avoid hangs on IPv6-only DNS results under some VPN setups.
 try {
   dns.setDefaultResultOrder('ipv4first');
@@ -30,7 +46,7 @@ try {
 }
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '6.3.4';  // v6.3.4: v6.1.2 Micro-Hedge Full Integration
+const RUNNER_VERSION = '6.5.0';  // v6.5.0: Inventory Risk & Robustness Patch
 const RUN_ID = crypto.randomUUID();
 
 // v6.3.1: Track when runner started - only trade on markets that start AFTER this
@@ -1313,6 +1329,8 @@ async function main(): Promise<void> {
   setInterval(async () => {
     const orders = await fetchPendingOrders();
     
+    // v6.5.0: Update queue size for queue stress tracking
+    updateQueueSize(orders.length);
     for (const order of orders) {
       console.log(`\n📥 RECEIVED ORDER: ${order.outcome} ${order.shares}@${(order.price * 100).toFixed(0)}¢ on ${order.market_slug}`);
       

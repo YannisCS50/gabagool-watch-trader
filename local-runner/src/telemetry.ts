@@ -8,6 +8,7 @@
  * - Dislocation counts (combined ask < 0.95, < 0.97)
  * - Max/min delta during market lifetime
  * - Hedge lag tracking for pair completion
+ * - v6.5.0: Inventory risk metrics integration
  */
 
 import {
@@ -26,6 +27,7 @@ import {
   SNAPSHOT_INTERVAL_MS
 } from './logger.js';
 import { saveFillLogs, saveSettlementLogs, saveSnapshotLogs } from './backend.js';
+import { getRiskMetricsForSnapshot, getMarketAggregation, calculateInventoryRisk } from './inventory-risk.js';
 
 const FLUSH_INTERVAL_MS = 2000; // Flush to DB every 2 seconds (was 5s)
 const MAX_BATCH = 500; // Increased batch size for higher volume
@@ -219,6 +221,13 @@ export interface SnapshotInput {
   ethPrice?: number | null;
   // v6.2.0: Orderbook readiness flag
   orderbookReady?: boolean;
+  // v6.5.0: Inventory risk metrics (optional, will be computed if not provided)
+  unpairedShares?: number;
+  unpairedNotionalUsd?: number;
+  unpairedAgeSec?: number;
+  inventoryRiskScore?: number;
+  degradedMode?: boolean;
+  queueStress?: boolean;
 }
 
 export function recordSnapshot(input: SnapshotInput): void {
@@ -309,7 +318,27 @@ export function recordSnapshot(input: SnapshotInput): void {
     input.downBid !== null && input.downAsk !== null
   );
 
-  // Build and log snapshot with v6.0.0 extended fields
+  // v6.5.0: Get or calculate inventory risk metrics
+  let riskMetrics = getRiskMetricsForSnapshot(input.marketId);
+  if (!riskMetrics) {
+    // Calculate on demand if not already tracked
+    const riskState = calculateInventoryRisk(input.marketId, input.asset, {
+      upShares: input.upShares,
+      downShares: input.downShares,
+      upCost: input.upCost,
+      downCost: input.downCost,
+    }, now);
+    riskMetrics = {
+      unpairedShares: riskState.unpairedShares,
+      unpairedNotionalUsd: riskState.unpairedNotionalUsd,
+      unpairedAgeSec: riskState.unpairedAgeSec,
+      inventoryRiskScore: riskState.inventoryRiskScore,
+      degradedMode: riskState.degradedMode,
+      queueStress: riskState.queueStress,
+    };
+  }
+
+  // Build and log snapshot with v6.0.0 extended fields + v6.5.0 risk metrics
   const snapshotLog: SnapshotLog = {
     ts: now,
     iso: new Date(now).toISOString(),
@@ -344,6 +373,13 @@ export function recordSnapshot(input: SnapshotInput): void {
     skew,
     noLiquidityStreak: telemetry.noLiquidityStreak,
     adverseStreak: telemetry.adverseStreak,
+    // v6.5.0: Inventory Risk Metrics
+    unpairedShares: input.unpairedShares ?? riskMetrics.unpairedShares,
+    unpairedNotionalUsd: input.unpairedNotionalUsd ?? riskMetrics.unpairedNotionalUsd,
+    unpairedAgeSec: input.unpairedAgeSec ?? riskMetrics.unpairedAgeSec,
+    inventoryRiskScore: input.inventoryRiskScore ?? riskMetrics.inventoryRiskScore,
+    degradedMode: input.degradedMode ?? riskMetrics.degradedMode,
+    queueStress: input.queueStress ?? riskMetrics.queueStress,
   };
 
   logSnapshot(snapshotLog);
@@ -494,6 +530,9 @@ export function recordSettlement(input: SettlementInput): void {
     input.winningSide === 'DOWN' ? input.finalDownShares * 1.0 : null
   );
 
+  // v6.5.0: Get market aggregation data for risk metrics
+  const marketAgg = getMarketAggregation(input.marketId);
+
   const settlementLog: SettlementLog = {
     ts: now,
     iso: new Date(now).toISOString(),
@@ -519,6 +558,14 @@ export function recordSettlement(input: SettlementInput): void {
     theoreticalPnL,
     fees: input.fees ?? null,           // v6.4.0
     totalPayoutUsd,                     // v6.4.0
+    // v6.5.0: Market aggregations for risk analysis
+    pairedDelaySec: marketAgg?.pairedDelaySec ?? null,
+    unpairedNotionalMax: marketAgg?.unpairedNotionalMax,
+    unpairedAgeMaxSec: marketAgg?.unpairedAgeMaxSec,
+    inventoryRiskScoreMax: marketAgg?.inventoryRiskScoreMax,
+    degradedModeSecondsTotal: marketAgg?.degradedModeSecondsTotal,
+    queueStressSecondsTotal: marketAgg?.queueStressSecondsTotal,
+    actionSkippedCountsByReason: marketAgg?.actionSkippedCountsByReason,
   };
   
   logSettlement(settlementLog);
