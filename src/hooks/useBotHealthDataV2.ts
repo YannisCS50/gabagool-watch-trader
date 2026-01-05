@@ -19,11 +19,12 @@ const TIME_RANGE_MS: Record<TimeRange, number> = {
 };
 
 const SNAPSHOT_MAX_ROWS: Record<TimeRange, number> = {
-  // snapshot_logs is high-frequency; cap while still keeping charts meaningful
-  '15m': 20000,
-  '1h': 50000,
-  '6h': 160000,
-  '24h': 200000,
+  // PostgREST enforces a default max rows limit (often ~1000). Keep this <= 1000,
+  // and fetch the most-recent rows so metrics don't get stuck on early/empty snapshots.
+  '15m': 1000,
+  '1h': 1000,
+  '6h': 1000,
+  '24h': 1000,
 };
 
 const SNAPSHOT_REFETCH_MS: Record<TimeRange, number> = {
@@ -39,6 +40,8 @@ interface UseBotHealthDataOptions {
   marketIdFilter?: string;
 }
 
+const DEFAULT_MAX_ROWS = 1000;
+
 export function useBotHealthDataV2(options: UseBotHealthDataOptions) {
   const { timeRange, assetFilter, marketIdFilter } = options;
   const timeRangeMs = TIME_RANGE_MS[timeRange];
@@ -51,17 +54,22 @@ export function useBotHealthDataV2(options: UseBotHealthDataOptions) {
         .from('bot_events')
         .select('*')
         .gte('ts', startTime)
-        .order('ts', { ascending: true });
+        // Important: if results exceed the server row limit, we want the most recent data.
+        .order('ts', { ascending: false })
+        .range(0, DEFAULT_MAX_ROWS - 1);
 
       if (assetFilter) query = query.eq('asset', assetFilter);
       if (marketIdFilter) query = query.ilike('market_id', `%${marketIdFilter}%`);
 
       const { data, error } = await query;
       if (error) throw error;
-      return (data || []).map((e) => ({
-        ...e,
-        data: e.data as Record<string, unknown> | null,
-      }));
+
+      return (data || [])
+        .map((e) => ({
+          ...e,
+          data: e.data as Record<string, unknown> | null,
+        }))
+        .reverse();
     },
     refetchInterval: 30000,
   });
@@ -73,14 +81,16 @@ export function useBotHealthDataV2(options: UseBotHealthDataOptions) {
         .from('orders')
         .select('*')
         .gte('created_ts', startTime)
-        .order('created_ts', { ascending: true });
+        // Most-recent orders first (then reverse for charts)
+        .order('created_ts', { ascending: false })
+        .range(0, DEFAULT_MAX_ROWS - 1);
 
       if (assetFilter) query = query.eq('asset', assetFilter);
       if (marketIdFilter) query = query.ilike('market_id', `%${marketIdFilter}%`);
 
       const { data, error } = await query;
       if (error) throw error;
-      return data || [];
+      return (data || []).reverse();
     },
     refetchInterval: 30000,
   });
@@ -92,25 +102,30 @@ export function useBotHealthDataV2(options: UseBotHealthDataOptions) {
         .from('fill_logs')
         .select('*')
         .gte('ts', startTime)
-        .order('ts', { ascending: true });
+        // Most-recent fills first (then reverse for charts)
+        .order('ts', { ascending: false })
+        .range(0, DEFAULT_MAX_ROWS - 1);
 
       if (assetFilter) query = query.eq('asset', assetFilter);
       if (marketIdFilter) query = query.ilike('market_id', `%${marketIdFilter}%`);
 
       const { data, error } = await query;
       if (error) throw error;
-      return (data || []).map((f) => ({
-        id: f.id,
-        ts: f.ts,
-        asset: f.asset,
-        market_id: f.market_id,
-        side: f.side,
-        intent: f.intent,
-        fill_qty: f.fill_qty,
-        fill_price: f.fill_price,
-        fill_notional: f.fill_notional,
-        order_id: f.order_id,
-      }));
+
+      return (data || [])
+        .map((f) => ({
+          id: f.id,
+          ts: f.ts,
+          asset: f.asset,
+          market_id: f.market_id,
+          side: f.side,
+          intent: f.intent,
+          fill_qty: f.fill_qty,
+          fill_price: f.fill_price,
+          fill_notional: f.fill_notional,
+          order_id: f.order_id,
+        }))
+        .reverse();
     },
     refetchInterval: 30000,
   });
@@ -118,13 +133,14 @@ export function useBotHealthDataV2(options: UseBotHealthDataOptions) {
   const snapshotsQuery = useQuery({
     queryKey: ['bot-health-snapshots', 'snapshot_logs', timeRange, assetFilter, marketIdFilter],
     queryFn: async (): Promise<InventorySnapshot[]> => {
-      const maxRows = SNAPSHOT_MAX_ROWS[timeRange];
+      const maxRows = Math.min(SNAPSHOT_MAX_ROWS[timeRange], DEFAULT_MAX_ROWS);
 
       let query = supabase
         .from('snapshot_logs')
         .select('id, ts, asset, market_id, up_shares, down_shares, bot_state, pair_cost')
         .gte('ts', startTime)
-        .order('ts', { ascending: true })
+        // Most-recent snapshots first (then reverse for charts)
+        .order('ts', { ascending: false })
         .range(0, maxRows - 1);
 
       if (assetFilter) query = query.eq('asset', assetFilter);
@@ -133,17 +149,19 @@ export function useBotHealthDataV2(options: UseBotHealthDataOptions) {
       const { data, error } = await query;
       if (error) throw error;
 
-      return (data || []).map((s) => ({
-        id: s.id,
-        ts: s.ts,
-        asset: s.asset,
-        market_id: s.market_id,
-        up_shares: s.up_shares,
-        down_shares: s.down_shares,
-        state: s.bot_state,
-        pair_cost: s.pair_cost,
-        skew_allowed_reason: null,
-      }));
+      return (data || [])
+        .map((s) => ({
+          id: s.id,
+          ts: s.ts,
+          asset: s.asset,
+          market_id: s.market_id,
+          up_shares: s.up_shares,
+          down_shares: s.down_shares,
+          state: s.bot_state,
+          pair_cost: s.pair_cost,
+          skew_allowed_reason: null,
+        }))
+        .reverse();
     },
     refetchInterval: SNAPSHOT_REFETCH_MS[timeRange],
   });
