@@ -3,7 +3,7 @@ import os from 'os';
 import dns from 'node:dns';
 import { config } from './config.js';
 import { placeOrder, testConnection, getBalance, getOrderbookDepth, invalidateBalanceCache, ensureValidCredentials } from './polymarket.js';
-import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, checkHardSkewStop, STRATEGY, STRATEGY_VERSION, STRATEGY_NAME, buildMicroHedge, logMicroHedgeIntent, logMicroHedgeResult, checkV611Guardrails, MicroHedgeState, MicroHedgeIntent, MicroHedgeResult, unpairedShares as stratUnpairedShares } from './strategy.js';
+import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, checkHardSkewStop, STRATEGY, STRATEGY_VERSION, STRATEGY_NAME, buildMicroHedge, logMicroHedgeIntent, logMicroHedgeResult, checkV611Guardrails, MicroHedgeState, MicroHedgeIntent, MicroHedgeResult, unpairedShares as stratUnpairedShares, checkEntryGuards } from './strategy.js';
 import { enforceVpnOrExit } from './vpn-check.js';
 import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder, syncPositionsToBackend, savePriceTicks, PriceTick, saveBotEvent, saveOrderLifecycle, saveInventorySnapshot, saveFundingSnapshot, BotEvent, OrderLifecycle, InventorySnapshot, FundingSnapshot } from './backend.js';
 import { fetchChainlinkPrice } from './chain.js';
@@ -1136,6 +1136,43 @@ async function evaluateMarket(slug: string): Promise<void> {
         return;
       }
       
+      // ============================================================
+      // v7: ENTRY GUARD CHECK (Tail-Entry, Pair-Edge, Direction Sanity)
+      // ============================================================
+      const upAsk = ctx.book?.UP?.ask;
+      const downAsk = ctx.book?.DOWN?.ask;
+      if (typeof upAsk === 'number' && typeof downAsk === 'number') {
+        const entryGuard = checkEntryGuards(upAsk, downAsk, ctx.spotPrice, ctx.strikePrice);
+        if (!entryGuard.allowed) {
+          console.log(`🛡️ [v7] ENTRY BLOCKED by guard: ${entryGuard.reason}`);
+          console.log(`   → ${entryGuard.details?.message}`);
+          console.log(`   📊 Market: ${ctx.market.asset} | UP: ${(upAsk * 100).toFixed(0)}¢ | DOWN: ${(downAsk * 100).toFixed(0)}¢`);
+          if (ctx.spotPrice != null && ctx.strikePrice != null) {
+            console.log(`   📈 Spot: $${ctx.spotPrice.toFixed(2)} | Strike: $${ctx.strikePrice.toFixed(2)}`);
+          }
+          
+          // Log to backend for auditing
+          logActionSkipped(
+            ctx.slug,
+            ctx.market.asset,
+            'ENTRY',
+            entryGuard.reason as any,
+            {
+              unpairedShares: 0,
+              unpairedNotionalUsd: 0,
+              inventoryRiskScore: riskScore.riskScore,
+              pairCost: null,
+              secondsRemaining: remainingSeconds,
+              degradedMode: riskScore.inDegradedMode,
+            },
+            RUN_ID
+          );
+          
+          ctx.inFlight = false;
+          return;
+        }
+      }
+      
       // Check balance before evaluating opening opportunity
       const balanceResult = await getBalance();
       balanceForCheck = balanceResult.usdc;
@@ -1149,13 +1186,16 @@ async function evaluateMarket(slug: string): Promise<void> {
       }
     }
 
+    // v7: Pass spot/strike to evaluateOpportunity for direction sanity check
     const signal = evaluateOpportunity(
       ctx.book,
       ctx.position,
       remainingSeconds,
       ctx.lastTradeAtMs,
       nowMs,
-      balanceForCheck // Pass balance for opening trade validation
+      balanceForCheck, // Pass balance for opening trade validation
+      ctx.spotPrice ?? undefined,
+      ctx.strikePrice ?? undefined
     );
 
     if (signal) {

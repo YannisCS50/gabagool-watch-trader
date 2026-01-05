@@ -50,7 +50,10 @@ export type SkipReason =
   | 'TIME_EXPIRED'        // Too close to expiry
   | 'EDGE_INSUFFICIENT'   // Edge below threshold
   | 'SKEW_LIMIT'          // Would exceed skew cap
-  | 'STARTUP_GRACE';      // Market started before boot
+  | 'STARTUP_GRACE'       // Market started before boot
+  | 'TAIL_ENTRY_BLOCK'    // v7: Price too low (tail odds)
+  | 'NO_PAIR_EDGE'        // v7: Combined ask >= 1 - buffer (no edge)
+  | 'CONTRA_ENTRY_BLOCK'; // v7: Entry against spot direction
 
 export interface ActionSkippedEvent {
   ts: number;
