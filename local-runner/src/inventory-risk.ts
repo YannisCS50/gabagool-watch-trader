@@ -67,7 +67,9 @@ export type SkipReason =
   | 'CONTRA_ENTRY_BLOCK'  // v7: Entry against spot direction
   | 'SAFETY_BLOCK'        // v6.6: Book is invalid/suspicious
   | 'EMERGENCY_UNWIND'    // v6.6: Emergency unwind in progress
-  | 'EMERGENCY_COOLDOWN'; // v6.6: Cooling down after emergency
+  | 'EMERGENCY_COOLDOWN'  // v6.6: Cooling down after emergency
+  | 'CPP_UNDEFINED_ONE_SIDED' // v6.6.1: paired=0, CPP guards not applicable
+  | 'ONE_SIDED_CAP_BLOCK';    // v6.6.1: Would exceed one-sided notional cap
 
 export interface ActionSkippedEvent {
   ts: number;
@@ -824,9 +826,11 @@ export interface EmergencyUnwindResult {
 /**
  * Check if emergency unwind should be triggered.
  * Triggers on:
- * - cpp >= 1.10
- * - cpp > 1.50 (implausible - likely units bug)
+ * - cpp >= 1.10 (ONLY when paired > 0)
+ * - cpp > 1.50 (implausible - likely units bug, ONLY when paired > 0)
  * - skewRatio >= 0.70 AND unpairedAgeSec > 20
+ * 
+ * v6.6.1 FIX: CPP checks only apply when paired > 0 to prevent Infinity deadlock
  */
 export function checkEmergencyUnwindTrigger(
   marketId: string,
@@ -841,29 +845,33 @@ export function checkEmergencyUnwindTrigger(
   const { costPerPaired, skewRatio, unpairedAgeSec, upShares, downShares, upInvested, downInvested, paired } = ctx;
   const dominantSide: 'UP' | 'DOWN' = upShares > downShares ? 'UP' : 'DOWN';
   
-  // CPP implausible check (> 1.50) - likely units bug
-  if (costPerPaired > cfg.cppImplausible) {
-    const reason = `CPP_IMPLAUSIBLE: cpp=${costPerPaired.toFixed(3)} > ${cfg.cppImplausible} (likely units bug)`;
+  // v6.6.1 FIX: CPP checks only apply when paired > 0
+  // When paired=0, we're in one-sided state - CPP guards would deadlock the bot
+  if (paired > 0 && costPerPaired > 0) {
+    // CPP implausible check (> 1.50) - likely units bug
+    if (costPerPaired > cfg.cppImplausible) {
+      const reason = `CPP_IMPLAUSIBLE: cpp=${costPerPaired.toFixed(3)} > ${cfg.cppImplausible} (likely units bug)`;
+      
+      // Log CPP components for debugging
+      console.log(`🚨 [CPP_IMPLAUSIBLE] ${marketId}`);
+      console.log(`   cpp=${costPerPaired.toFixed(3)} (> ${cfg.cppImplausible})`);
+      console.log(`   upShares=${upShares}, downShares=${downShares}, paired=${paired}`);
+      console.log(`   upInvested=$${upInvested.toFixed(2)}, downInvested=$${downInvested.toFixed(2)}`);
+      console.log(`   Formula: cpp = (${upInvested.toFixed(2)} + ${downInvested.toFixed(2)}) / ${paired} = ${costPerPaired.toFixed(3)}`);
+      
+      triggerEmergencyUnwind(state, asset, reason, dominantSide, true, runId);
+      return { triggerEmergency: true, reason, dominantSide, implausibleCpp: true };
+    }
     
-    // Log CPP components for debugging
-    console.log(`🚨 [CPP_IMPLAUSIBLE] ${marketId}`);
-    console.log(`   cpp=${costPerPaired.toFixed(3)} (> ${cfg.cppImplausible})`);
-    console.log(`   upShares=${upShares}, downShares=${downShares}, paired=${paired}`);
-    console.log(`   upInvested=$${upInvested.toFixed(2)}, downInvested=$${downInvested.toFixed(2)}`);
-    console.log(`   Formula: cpp = (${upInvested.toFixed(2)} + ${downInvested.toFixed(2)}) / ${paired} = ${costPerPaired.toFixed(3)}`);
-    
-    triggerEmergencyUnwind(state, asset, reason, dominantSide, true, runId);
-    return { triggerEmergency: true, reason, dominantSide, implausibleCpp: true };
+    // CPP emergency check (>= 1.10)
+    if (costPerPaired >= cfg.cppEmergency) {
+      const reason = `CPP_EMERGENCY: cpp=${costPerPaired.toFixed(3)} >= ${cfg.cppEmergency}`;
+      triggerEmergencyUnwind(state, asset, reason, dominantSide, false, runId);
+      return { triggerEmergency: true, reason, dominantSide };
+    }
   }
   
-  // CPP emergency check (>= 1.10)
-  if (costPerPaired >= cfg.cppEmergency) {
-    const reason = `CPP_EMERGENCY: cpp=${costPerPaired.toFixed(3)} >= ${cfg.cppEmergency}`;
-    triggerEmergencyUnwind(state, asset, reason, dominantSide, false, runId);
-    return { triggerEmergency: true, reason, dominantSide };
-  }
-  
-  // Skew + age emergency check
+  // Skew + age emergency check (applies even when paired=0)
   if (skewRatio >= cfg.hardSkewCap && unpairedAgeSec > cfg.skewAgeEmergencySec) {
     const reason = `SKEW_EMERGENCY: skew=${(skewRatio * 100).toFixed(1)}% >= ${(cfg.hardSkewCap * 100).toFixed(0)}% AND age=${unpairedAgeSec.toFixed(0)}s > ${cfg.skewAgeEmergencySec}s`;
     triggerEmergencyUnwind(state, asset, reason, dominantSide, false, runId);

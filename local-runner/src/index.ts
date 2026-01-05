@@ -1088,17 +1088,21 @@ async function evaluateMarket(slug: string): Promise<void> {
     
     // ============================================================
     // v6.6.0: EMERGENCY UNWIND CHECK
+    // v6.6.1 FIX: CPP guards only apply when paired > 0
     // ============================================================
     const paired = Math.min(ctx.position.upShares, ctx.position.downShares);
     const totalInvested = ctx.position.upInvested + ctx.position.downInvested;
-    const costPerPaired = paired > 0 ? totalInvested / paired : Infinity;
+    // v6.6.1: Use null for costPerPaired when paired=0 to prevent Infinity deadlock
+    const costPerPaired = paired > 0 ? totalInvested / paired : null;
     const totalShares = ctx.position.upShares + ctx.position.downShares;
     const skewRatio = totalShares > 0 ? Math.max(ctx.position.upShares, ctx.position.downShares) / totalShares : 0.5;
+    const isOneSided = paired === 0 && totalShares > 0;
     
-    // Only check emergency if we have a position
-    if (paired > 0 || unpaired > 0) {
+    // v6.6.1 FIX: Only check emergency unwind when paired > 0
+    // When one-sided (paired=0), CPP emergency doesn't apply - that would deadlock the bot
+    if (paired > 0) {
       const emergencyCtx: EmergencyUnwindContext = {
-        costPerPaired: Number.isFinite(costPerPaired) ? costPerPaired : 999,
+        costPerPaired: costPerPaired ?? 0,
         skewRatio,
         unpairedAgeSec,
         upShares: ctx.position.upShares,
@@ -1122,25 +1126,11 @@ async function evaluateMarket(slug: string): Promise<void> {
         return;
       }
       
-      // Check cooldown after emergency
-      if (isInEmergencyCooldown(slug)) {
-        const isNewEntry = ctx.position.upShares === 0 && ctx.position.downShares === 0;
-        if (isNewEntry) {
-          const logKey = `emergency_cooldown_${slug}`;
-          if (!(global as any)[logKey] || (nowMs - (global as any)[logKey] > 10000)) {
-            (global as any)[logKey] = nowMs;
-            console.log(`⏳ [v6.6.0] EMERGENCY_COOLDOWN: No new entries for ${slug}`);
-          }
-          ctx.inFlight = false;
-          return;
-        }
-      }
-      
-      // v6.6.0: Throttled guardrail logging
+      // v6.6.0: Throttled guardrail logging (only when paired > 0)
       const guardrailTrigger = 
         emergencyResult.implausibleCpp ? 'CPP_IMPLAUSIBLE' :
-        costPerPaired >= INVENTORY_RISK_CONFIG.cppEmergency ? 'COST_PER_PAIRED_EMERGENCY' :
-        costPerPaired >= 1.05 ? 'COST_PER_PAIRED_STOP' :
+        (costPerPaired !== null && costPerPaired >= INVENTORY_RISK_CONFIG.cppEmergency) ? 'COST_PER_PAIRED_EMERGENCY' :
+        (costPerPaired !== null && costPerPaired >= 1.05) ? 'COST_PER_PAIRED_STOP' :
         skewRatio >= 0.70 ? 'SKEW_CAP_EXCEEDED' :
         'NONE';
       
@@ -1152,11 +1142,34 @@ async function evaluateMarket(slug: string): Promise<void> {
           paired,
           unpaired,
           totalInvested,
-          costPerPaired: Number.isFinite(costPerPaired) ? costPerPaired : 999,
+          costPerPaired: costPerPaired ?? 0,
           skewRatio,
           secondsRemaining: remainingSeconds,
           action: isEmergencyUnwindActive(slug) ? 'EMERGENCY_UNWIND' : 'BLOCK_ALL_ADDS',
         }, RUN_ID);
+      }
+    } else if (isOneSided) {
+      // v6.6.1: Log one-sided state (once per 10s to avoid spam)
+      const logKey = `one_sided_${slug}`;
+      if (!(global as any)[logKey] || (nowMs - (global as any)[logKey] > 10000)) {
+        (global as any)[logKey] = nowMs;
+        console.log(`📊 [v6.6.1] ONE_SIDED: ${slug} - CPP guards do not apply`);
+        console.log(`   UP=${ctx.position.upShares}, DOWN=${ctx.position.downShares}, paired=0`);
+        console.log(`   → Hedge allowed to become paired`);
+      }
+    }
+    
+    // Check cooldown after emergency (applies regardless of paired state)
+    if (isInEmergencyCooldown(slug)) {
+      const isNewEntry = ctx.position.upShares === 0 && ctx.position.downShares === 0;
+      if (isNewEntry) {
+        const logKey = `emergency_cooldown_${slug}`;
+        if (!(global as any)[logKey] || (nowMs - (global as any)[logKey] > 10000)) {
+          (global as any)[logKey] = nowMs;
+          console.log(`⏳ [v6.6.0] EMERGENCY_COOLDOWN: No new entries for ${slug}`);
+        }
+        ctx.inFlight = false;
+        return;
       }
     }
     ctx.lastRiskScore = riskScore;

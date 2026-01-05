@@ -1,6 +1,32 @@
-# v6.6.0 Emergency Unwind & Safety Block Patch - Diagnostics
+# v6.6.1 CPP Infinity Deadlock Fix - Diagnostics
 
-## What's New in v6.6.0
+## What's New in v6.6.1
+
+### 1. CPP INFINITY DEADLOCK FIX
+**Problem**: When paired=0 (one-sided state), cpp = totalCost/0 = Infinity, which triggered
+COST_PER_PAIRED_EMERGENCY and blocked ALL trading - including the hedge needed to become paired.
+
+**Solution**:
+- `costPerPaired()` now returns `null` when paired=0 (not Infinity)
+- CPP guardrails (EMERGENCY/STOP) only apply when `paired > 0`
+- One-sided state is logged as `ONE_SIDED: CPP guards do not apply`
+
+### 2. ONE-SIDED STATE HANDLING
+When `paired == 0` (bot has only UP or only DOWN shares):
+- **CPP guards**: Do NOT apply (would deadlock)
+- **Entry guards**: Still apply (tail-entry, direction sanity, pair-edge)
+- **Hedge**: ALWAYS allowed - this is how we exit one-sided state
+- **Logging**: `📊 [v6.6.1] ONE_SIDED: CPP guards do not apply`
+
+### 3. UPDATED INTERFACES
+- `costPerPaired()`: Returns `number | null` (null when paired=0)
+- `costPerPairedSafe()`: NEW - returns 0 when paired=0 (for display/logging)
+- `V611GuardrailResult.costPerPaired`: Now `number | null`
+- `V611GuardrailResult.isOneSided`: NEW - true when paired=0 but has shares
+
+---
+
+## What's in v6.6.0
 
 ### 1. SAFETY BLOCK (Invalid Book Detection)
 When orderbook is invalid or suspicious:
@@ -11,8 +37,8 @@ When orderbook is invalid or suspicious:
 
 ### 2. EMERGENCY UNWIND
 Triggered when position is critically underwater:
-- **CPP Emergency**: cost_per_paired >= 1.10
-- **CPP Implausible**: cost_per_paired > 1.50 (likely units bug)
+- **CPP Emergency**: cost_per_paired >= 1.10 (ONLY when paired > 0)
+- **CPP Implausible**: cost_per_paired > 1.50 (ONLY when paired > 0)
 - **Skew Emergency**: skewRatio >= 70% AND unpairedAgeSec > 20s
 - **Behavior**: Cancel all orders, attempt to reduce dominant side
 - **Cooldown**: 10 minutes (600s) freeze on new entries after emergency
@@ -25,7 +51,7 @@ Stops guardrail log spam:
 
 ### 4. CPP SANITY CHECK
 Detects implausible cost_per_paired values:
-- **Threshold**: cpp > 1.50 = likely units bug
+- **Threshold**: cpp > 1.50 = likely units bug (ONLY when paired > 0)
 - **Action**: Force EMERGENCY_UNWIND, log CPP components for debugging
 - **Fields logged**: upShares, downShares, upInvested, downInvested, paired, formula
 
