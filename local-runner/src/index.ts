@@ -1475,33 +1475,49 @@ async function processMarketEvent(data: any): Promise<void> {
           return Number.isFinite(n) ? n : null;
         };
 
-        const topAsk = asks.length > 0 ? parseLevelPrice(asks[0]) : null;
-        const topBid = bids.length > 0 ? parseLevelPrice(bids[0]) : null;
+        // CRITICAL FIX: Compute bestBid = MAX(bids), bestAsk = MIN(asks)
+        // Do NOT assume array order!
+        let bestBid: number | null = null;
+        let bestAsk: number | null = null;
+
+        for (const level of bids) {
+          const p = parseLevelPrice(level);
+          if (p !== null && (bestBid === null || p > bestBid)) {
+            bestBid = p;
+          }
+        }
+        for (const level of asks) {
+          const p = parseLevelPrice(level);
+          if (p !== null && (bestAsk === null || p < bestAsk)) {
+            bestAsk = p;
+          }
+        }
+
         const levels = asks.length + bids.length;
 
         // BOOK_WS logging for diagnostics
         console.log(
-          `BOOK_WS marketId=${marketInfo.slug} side=${marketInfo.side} levels=${levels} topBid=${topBid === null ? 'null' : topBid.toFixed(2)} topAsk=${topAsk === null ? 'null' : topAsk.toFixed(2)}`
+          `BOOK_WS marketId=${marketInfo.slug} side=${marketInfo.side} levels=${levels} bestBid=${bestBid === null ? 'null' : bestBid.toFixed(2)} bestAsk=${bestAsk === null ? 'null' : bestAsk.toFixed(2)}`
         );
 
         // IMPORTANT: don't overwrite good HTTP-seeded values with invalid WS values
         let updated = false;
         if (marketInfo.side === 'up') {
-          if (topAsk !== null) {
-            ctx.book.up.ask = topAsk;
+          if (bestAsk !== null) {
+            ctx.book.up.ask = bestAsk;
             updated = true;
           }
-          if (topBid !== null) {
-            ctx.book.up.bid = topBid;
+          if (bestBid !== null) {
+            ctx.book.up.bid = bestBid;
             updated = true;
           }
         } else {
-          if (topAsk !== null) {
-            ctx.book.down.ask = topAsk;
+          if (bestAsk !== null) {
+            ctx.book.down.ask = bestAsk;
             updated = true;
           }
-          if (topBid !== null) {
-            ctx.book.down.bid = topBid;
+          if (bestBid !== null) {
+            ctx.book.down.bid = bestBid;
             updated = true;
           }
         }
