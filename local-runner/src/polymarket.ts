@@ -163,9 +163,19 @@ export async function getOrderbookDepth(tokenId: string): Promise<OrderbookDepth
     
     const levels = asks.length + bids.length;
 
-    // SUSPICIOUS BOOK DETECTION: If top bid <= 0.02 AND top ask >= 0.98, warn
-    if (topBid !== null && topAsk !== null && topBid <= 0.02 && topAsk >= 0.98) {
-      console.log(`⚠️ SUSPICIOUS_BOOK_SHAPE tokenId=${tokenId.slice(0, 12)}... topBid=${topBid.toFixed(2)} topAsk=${topAsk.toFixed(2)} levels=${levels} - possible placeholder/illiquid market`);
+    // SUSPICIOUS BOOK DETECTION (tight): placeholder-like books usually have very few levels.
+    // We only warn when BOTH sides are tiny, to avoid flagging real-but-illiquid markets.
+    if (
+      topBid !== null &&
+      topAsk !== null &&
+      topBid <= 0.02 &&
+      topAsk >= 0.98 &&
+      asks.length <= 2 &&
+      bids.length <= 2
+    ) {
+      console.log(
+        `⚠️ SUSPICIOUS_BOOK_SHAPE tokenId=${tokenId.slice(0, 12)}... topBid=${topBid.toFixed(2)} topAsk=${topAsk.toFixed(2)} asks=${asks.length} bids=${bids.length} endpoint=${CLOB_URL}/book`
+      );
     }
 
     const depth: OrderbookDepth = {
