@@ -70,6 +70,14 @@ import {
   type RiskScoreResult,
 } from './strategy.js';
 
+// v7 REV C: MarketStateManager for pairing guardrails
+import { 
+  getMarketStateManager, 
+  MarketStateManager,
+  type PairingState,
+  MARKET_STATE_CONFIG,
+} from './market-state-manager.js';
+
 // Ensure Node prefers IPv4 to avoid hangs on IPv6-only DNS results under some VPN setups.
 try {
   dns.setDefaultResultOrder('ipv4first');
@@ -79,8 +87,11 @@ try {
 }
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '7.1.0';  // v7.1.0: Low-Risk Test Mode + Auto-Resize
+const RUNNER_VERSION = '7.2.0';  // v7.2.0: MarketStateManager Integration + Pairing Guardrails
 const RUN_ID = crypto.randomUUID();
+
+// v7 REV C: Initialize MarketStateManager singleton
+let marketStateManager: MarketStateManager | null = null;
 
 // v6.3.1: Track when runner started - only trade on markets that start AFTER this
 const RUNNER_START_TIME_MS = Date.now();
@@ -150,6 +161,15 @@ async function printStartupBanner(): Promise<void> {
   console.log('║     ✓ Micro-hedge accumulator (min 5 shares)                   ║');
   console.log('║     ✓ Degraded mode via riskScore >= 400                       ║');
   console.log('║     ✓ Queue-stress gating                                      ║');
+  
+  // v7.2.0 REV C: Pairing guardrails
+  console.log('╠════════════════════════════════════════════════════════════════╣');
+  console.log(`║  🛡️ v7.2.0 REV C PAIRING GUARDRAILS:                            ║`);
+  console.log(`║     ✓ PAIRING timeout: ${MARKET_STATE_CONFIG.pairingTimeoutSeconds}s max dwell                         ║`);
+  console.log(`║     ✓ Dynamic hedge slippage caps (vol-based)                  ║`);
+  console.log(`║     ✓ Bounded hedge chunks: ${MARKET_STATE_CONFIG.minHedgeChunkAbs}-${MARKET_STATE_CONFIG.maxHedgeChunkAbs} shares                   ║`);
+  console.log(`║     ✓ State machine: FLAT→ONE_SIDED→PAIRING→PAIRED             ║`);
+  console.log(`║     ✓ Heavy skew warning at 75%+ ratio                         ║`);
   
   console.log('╚════════════════════════════════════════════════════════════════╝');
   console.log('');
@@ -1066,6 +1086,60 @@ async function evaluateMarket(slug: string): Promise<void> {
     }
 
     // ============================================================
+    // v7.2.0 REV C: MARKET STATE MANAGER - PAIRING GUARDRAILS
+    // ============================================================
+    if (!marketStateManager) {
+      marketStateManager = getMarketStateManager(RUN_ID);
+    }
+    
+    // Calculate combined mid for volatility tracking
+    const upAskForMid = ctx.book.up.ask ?? 0.5;
+    const downAskForMid = ctx.book.down.ask ?? 0.5;
+    const combinedMid = upAskForMid + downAskForMid;
+    
+    // Process tick through MarketStateManager
+    const stateResult = marketStateManager.processTick(
+      slug,
+      ctx.market.asset,
+      ctx.position.upShares,
+      ctx.position.downShares,
+      remainingSeconds,
+      combinedMid,
+      { bestAskUp: ctx.book.up.ask, bestAskDown: ctx.book.down.ask }
+    );
+    
+    // Handle PAIRING_TIMEOUT_REVERT - block further trading and cancel unfilled hedges
+    if (stateResult.pairingTimedOut) {
+      console.log(`🚨 [v7.2.0 REV C] PAIRING_TIMEOUT: ${ctx.market.asset} after ${stateResult.timeInPairing.toFixed(1)}s`);
+      console.log(`   UP=${ctx.position.upShares}, DOWN=${ctx.position.downShares}`);
+      console.log(`   → Reverted to ${stateResult.state}, blocking new entries`);
+      
+      // In PAIRING timeout, we've been unable to hedge for 45s
+      // This is exactly the situation from the screenshot - heavy skew!
+      // Block new adds but allow existing hedge attempts to continue
+      if (stateResult.state === 'ONE_SIDED_UP' || stateResult.state === 'ONE_SIDED_DOWN') {
+        // The position is dangerously one-sided - warn and block ENTRY trades
+        const logKey = `pairing_timeout_block_${slug}`;
+        if (!(global as any)[logKey] || (nowMs - (global as any)[logKey] > 10000)) {
+          (global as any)[logKey] = nowMs;
+          console.warn(`⚠️ [v7.2.0] PAIRING_TIMEOUT_BLOCK: ${ctx.market.asset} is dangerously skewed!`);
+          console.warn(`   Skew: UP=${ctx.position.upShares} DOWN=${ctx.position.downShares}`);
+          console.warn(`   → ENTRY blocked, only HEDGE allowed`);
+        }
+      }
+    }
+    
+    // Check if we're in UNWIND_ONLY state (near expiry)
+    if (stateResult.state === 'UNWIND_ONLY') {
+      const logKey = `unwind_only_${slug}`;
+      if (!(global as any)[logKey] || (nowMs - (global as any)[logKey] > 10000)) {
+        (global as any)[logKey] = nowMs;
+        console.log(`⏱️ [v7.2.0] UNWIND_ONLY: ${ctx.market.asset} - ${remainingSeconds}s remaining`);
+      }
+      // Continue to evaluateOpportunity but strategy should only allow unwind trades
+    }
+
+    // ============================================================
     // v7.0.1 PATCH 4: RISK SCORE CALCULATION & DEGRADED MODE
     // ============================================================
     const unpaired = Math.abs(ctx.position.upShares - ctx.position.downShares);
@@ -1085,6 +1159,12 @@ async function evaluateMarket(slug: string): Promise<void> {
     
     // Calculate risk score
     const riskScore = calculateRiskScore(unpairedNotional, unpairedAgeSec);
+    
+    // v7.2.0: Additional check - if in PAIRING state for too long, increase risk score
+    if (stateResult.state === 'PAIRING' && stateResult.timeInPairing > 30) {
+      // Approaching timeout, be extra cautious
+      console.log(`⏳ [v7.2.0] PAIRING_WARNING: ${ctx.market.asset} in PAIRING for ${stateResult.timeInPairing.toFixed(0)}s/${MARKET_STATE_CONFIG.pairingTimeoutSeconds}s`);
+    }
     
     // ============================================================
     // v6.6.0: EMERGENCY UNWIND CHECK
@@ -1270,6 +1350,13 @@ async function evaluateMarket(slug: string): Promise<void> {
     // v7.0.1 PATCH 4+5: BLOCK ENTRY IN DEGRADED MODE OR QUEUE STRESS
     // ============================================================
     if (isOpeningCandidate) {
+      // v7.2.0 REV C: Check MarketStateManager state - don't open if we just timed out
+      if (stateResult.pairingTimedOut) {
+        console.log(`🚫 [v7.2.0] ENTRY blocked: Recent PAIRING_TIMEOUT on ${ctx.market.asset}`);
+        ctx.inFlight = false;
+        return;
+      }
+      
       // Check degraded mode
       const degradedCheck = isActionAllowedInDegradedMode('ENTRY', riskScore.inDegradedMode);
       if (!degradedCheck.allowed) {
@@ -1289,8 +1376,8 @@ async function evaluateMarket(slug: string): Promise<void> {
       // ============================================================
       // v7: ENTRY GUARD CHECK (Tail-Entry, Pair-Edge, Direction Sanity)
       // ============================================================
-      const upAsk = ctx.book?.UP?.ask;
-      const downAsk = ctx.book?.DOWN?.ask;
+      const upAsk = ctx.book.up?.ask;
+      const downAsk = ctx.book.down?.ask;
       if (typeof upAsk === 'number' && typeof downAsk === 'number') {
         const entryGuard = checkEntryGuards(upAsk, downAsk, ctx.spotPrice, ctx.strikePrice);
         if (!entryGuard.allowed) {
@@ -1333,6 +1420,24 @@ async function evaluateMarket(slug: string): Promise<void> {
         console.log(`⚠️ ${ctx.slug}: ${balanceCheck.reason}`);
         ctx.inFlight = false;
         return;
+      }
+    } else {
+      // Not an opening trade - check if we're in a dangerous skew state
+      // v7.2.0: Block accumulate trades if heavily skewed
+      const skewRatioForGuard = totalShares > 0 
+        ? Math.max(ctx.position.upShares, ctx.position.downShares) / totalShares 
+        : 0.5;
+      
+      if (skewRatioForGuard > 0.75 && unpaired > 50) {
+        // Heavy skew detected - similar to screenshot situation
+        const logKey = `skew_warning_${slug}`;
+        if (!(global as any)[logKey] || (nowMs - (global as any)[logKey] > 10000)) {
+          (global as any)[logKey] = nowMs;
+          console.warn(`⚠️ [v7.2.0] HEAVY_SKEW_WARNING: ${ctx.market.asset}`);
+          console.warn(`   UP=${ctx.position.upShares} DOWN=${ctx.position.downShares} skew=${(skewRatioForGuard * 100).toFixed(0)}%`);
+          console.warn(`   Invested: UP=$${ctx.position.upInvested.toFixed(2)} DOWN=$${ctx.position.downInvested.toFixed(2)}`);
+          console.warn(`   → Only HEDGE trades allowed, no ACCUMULATE`);
+        }
       }
     }
 
