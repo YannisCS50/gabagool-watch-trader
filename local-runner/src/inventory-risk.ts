@@ -898,7 +898,7 @@ export function checkEmergencyUnwindTrigger(
     const elapsed = (now - state.emergencyUnwindEnterTs) / 1000;
     if (elapsed >= cfg.emergencyUnwindMaxSec) {
       exitEmergencyUnwind(state, asset, 'max_duration_reached', runId);
-    } else if (costPerPaired < cfg.cppEmergency && skewRatio < cfg.hardSkewCap) {
+    } else if (cppPairedOnly !== null && cppPairedOnly < cfg.cppEmergency && skewRatio < cfg.hardSkewCap) {
       exitEmergencyUnwind(state, asset, 'conditions_improved', runId);
     }
   }
