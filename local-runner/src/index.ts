@@ -357,7 +357,13 @@ async function executeTrade(
   if (intent !== 'HEDGE') {
     const skewCheck = checkHardSkewStop(ctx.position);
     if (skewCheck.blocked) {
-      console.log(`🛑 TRADE BLOCKED: ${skewCheck.reason}`);
+      // v7.2.0: Throttle this log to once per 10s per market to reduce spam
+      const logKey = `skew_block_${ctx.slug}`;
+      const nowMs = Date.now();
+      if (!(global as any)[logKey] || (nowMs - (global as any)[logKey] > 10000)) {
+        (global as any)[logKey] = nowMs;
+        console.log(`🛑 TRADE BLOCKED: ${skewCheck.reason} (${ctx.market.asset})`);
+      }
       return false;
     }
   }
