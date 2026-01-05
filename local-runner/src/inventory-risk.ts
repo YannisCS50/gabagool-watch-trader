@@ -470,41 +470,91 @@ export function logActionSkipped(
   reason: SkipReason,
   keyMetrics: ActionSkippedEvent['keyMetrics'],
   runId?: string
-): void {
-  const state = getOrCreateRiskState(marketId, asset);
+): void;
+export function logActionSkipped(event: {
+  ts?: number;
+  marketId: string;
+  asset?: string;
+  intendedAction: IntendedAction;
+  reason: SkipReason;
+  keyMetrics: ActionSkippedEvent['keyMetrics'];
+  runId?: string;
+}): void;
+export function logActionSkipped(...args: any[]): void {
+  // Backwards-compatible: support both the newer "args" signature and older "event object" signature.
+  const normalized =
+    args.length === 1 && args[0] && typeof args[0] === 'object'
+      ? {
+          ts: typeof args[0].ts === 'number' ? args[0].ts : Date.now(),
+          marketId: args[0].marketId,
+          asset: args[0].asset,
+          intendedAction: args[0].intendedAction,
+          reason: args[0].reason,
+          keyMetrics: args[0].keyMetrics,
+          runId: args[0].runId,
+        }
+      : {
+          ts: Date.now(),
+          marketId: args[0],
+          asset: args[1],
+          intendedAction: args[2],
+          reason: args[3],
+          keyMetrics: args[4],
+          runId: args[5],
+        };
+
+  const derivedAsset =
+    (typeof normalized.asset === 'string' && normalized.asset.trim())
+      ? normalized.asset.trim()
+      : (typeof normalized.marketId === 'string' && normalized.marketId.split('-')[0]
+          ? normalized.marketId.split('-')[0].toUpperCase()
+          : 'UNKNOWN');
+
+  const marketId = normalized.marketId as string;
+  const intendedAction = normalized.intendedAction as IntendedAction;
+  const reason = normalized.reason as SkipReason;
+  const keyMetrics = normalized.keyMetrics as ActionSkippedEvent['keyMetrics'];
+  const runId = normalized.runId as string | undefined;
+
+  const state = getOrCreateRiskState(marketId, derivedAsset);
   const now = Date.now();
-  
+
   // Increment skip counter
   state.actionSkippedCounts[reason] = (state.actionSkippedCounts[reason] || 0) + 1;
-  
+
   // Rate limit logging
   if (now - state.lastLogTs < INVENTORY_RISK_CONFIG.logIntervalMs) {
     return; // Don't spam logs
   }
   state.lastLogTs = now;
-  
+
   if (INVENTORY_RISK_CONFIG.logEvents) {
     console.log(`⏭️ [ACTION_SKIPPED] ${intendedAction} on ${marketId}`);
     console.log(`   Reason: ${reason}`);
     if (keyMetrics) {
-      console.log(`   Unpaired: ${keyMetrics.unpairedShares} shares ($${keyMetrics.unpairedNotionalUsd.toFixed(2)})`);
-      console.log(`   Risk Score: ${keyMetrics.inventoryRiskScore.toFixed(0)} | Pair Cost: ${keyMetrics.pairCost?.toFixed(4) ?? 'N/A'}`);
-      console.log(`   Time Left: ${keyMetrics.secondsRemaining}s | Degraded: ${keyMetrics.degradedMode ?? false}`);
+      console.log(
+        `   Unpaired: ${keyMetrics.unpairedShares} shares ($${keyMetrics.unpairedNotionalUsd.toFixed(2)})`
+      );
+      console.log(
+        `   Risk Score: ${keyMetrics.inventoryRiskScore.toFixed(0)} | Pair Cost: ${keyMetrics.pairCost?.toFixed(4) ?? 'N/A'}`
+      );
+      console.log(
+        `   Time Left: ${keyMetrics.secondsRemaining}s | Degraded: ${keyMetrics.degradedMode ?? false}`
+      );
     }
   }
-  
-  // Log to backend
+
+  // Log to backend (only if we have valid data)
+  const data = keyMetrics ? { intendedAction, ...keyMetrics } : { intendedAction };
+
   saveBotEvent({
     event_type: 'ACTION_SKIPPED',
-    asset,
+    asset: derivedAsset,
     market_id: marketId,
     run_id: runId,
     reason_code: reason,
-    data: {
-      intendedAction,
-      ...keyMetrics,
-    },
-    ts: now,
+    data,
+    ts: normalized.ts,
   }).catch(() => {});
 }
 
