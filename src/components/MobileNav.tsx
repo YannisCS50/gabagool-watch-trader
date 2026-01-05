@@ -25,6 +25,7 @@ const analysisItems = [
 ];
 
 const monitoringItems = [
+  { title: 'Bot Health', href: '/bot-health', icon: Activity },
   { title: 'Observability', href: '/observability', icon: Eye },
   { title: 'Data Logging', href: '/data-logging', icon: Database },
 ];
