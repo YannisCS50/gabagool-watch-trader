@@ -3,7 +3,7 @@ import os from 'os';
 import dns from 'node:dns';
 import { config } from './config.js';
 import { placeOrder, testConnection, getBalance, getOrderbookDepth, invalidateBalanceCache, ensureValidCredentials } from './polymarket.js';
-import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, checkHardSkewStop, STRATEGY, STRATEGY_VERSION, STRATEGY_NAME, LegacyTradeSignal, getStrategy, buildMicroHedge, logMicroHedgeIntent, logMicroHedgeResult, checkV611Guardrails, MicroHedgeState, MicroHedgeIntent, MicroHedgeResult, unpairedShares as stratUnpairedShares } from './strategy.js';
+import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, checkHardSkewStop, STRATEGY, STRATEGY_VERSION, STRATEGY_NAME, buildMicroHedge, logMicroHedgeIntent, logMicroHedgeResult, checkV611Guardrails, MicroHedgeState, MicroHedgeIntent, MicroHedgeResult, unpairedShares as stratUnpairedShares } from './strategy.js';
 import { enforceVpnOrExit } from './vpn-check.js';
 import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder, syncPositionsToBackend, savePriceTicks, PriceTick, saveBotEvent, saveOrderLifecycle, saveInventorySnapshot, saveFundingSnapshot, BotEvent, OrderLifecycle, InventorySnapshot, FundingSnapshot } from './backend.js';
 import { fetchChainlinkPrice } from './chain.js';
@@ -86,7 +86,6 @@ const STARTUP_GRACE_CONFIG = {
 // Startup banner will be printed AFTER config is built
 async function printStartupBanner(): Promise<void> {
   const cfg = getCurrentConfig();
-  const strategy = getStrategy();
   
   console.log('');
   console.log('╔════════════════════════════════════════════════════════════════╗');
@@ -115,8 +114,8 @@ async function printStartupBanner(): Promise<void> {
     }
   } else {
     console.log('║  ⚙️  STRATEGY CONFIG (hardcoded fallback):                     ║');
-    console.log(`║     Opening: max ${(strategy.opening.maxPrice * 100).toFixed(0)}¢, ${strategy.opening.shares} shares`.padEnd(66) + '║');
-    console.log(`║     Edge buffer: ${(strategy.edge.buffer * 100).toFixed(1)}¢`.padEnd(66) + '║');
+    console.log(`║     Opening: max ${(STRATEGY.opening.maxPrice * 100).toFixed(0)}¢, ${STRATEGY.opening.shares} shares`.padEnd(66) + '║');
+    console.log(`║     Edge buffer: ${(STRATEGY.edge.baseBuffer * 100).toFixed(1)}¢`.padEnd(66) + '║');
     console.log(`║     Assets: ${config.trading.assets.join(', ')}`.padEnd(66) + '║');
   }
   
