@@ -463,6 +463,8 @@ export interface SettlementInput {
   downCost: number;
   realizedPnL: number | null;
   winningSide: 'UP' | 'DOWN' | null;
+  fees?: number;              // v6.4.0: Fees paid in USD
+  totalPayoutUsd?: number;    // v6.4.0: Total payout (winning shares * 1.00)
 }
 
 export function recordSettlement(input: SettlementInput): void {
@@ -486,6 +488,12 @@ export function recordSettlement(input: SettlementInput): void {
   // v6.2.0: Calculate theoretical PnL = 1.0 - pair_cost
   const theoreticalPnL = pairCost !== null ? 1.0 - pairCost : null;
 
+  // v6.4.0: Calculate total_payout_usd = winning side shares * 1.00
+  const totalPayoutUsd = input.totalPayoutUsd ?? (
+    input.winningSide === 'UP' ? input.finalUpShares * 1.0 :
+    input.winningSide === 'DOWN' ? input.finalDownShares * 1.0 : null
+  );
+
   const settlementLog: SettlementLog = {
     ts: now,
     iso: new Date(now).toISOString(),
@@ -508,7 +516,9 @@ export function recordSettlement(input: SettlementInput): void {
     countDislocation95: telemetry.countDislocation95,
     countDislocation97: telemetry.countDislocation97,
     last180sDislocation95,
-    theoreticalPnL,              // v6.2.0
+    theoreticalPnL,
+    fees: input.fees ?? null,           // v6.4.0
+    totalPayoutUsd,                     // v6.4.0
   };
   
   logSettlement(settlementLog);

@@ -123,6 +123,7 @@ interface MarketContext {
   // v6.1.2: Micro-hedge state tracking
   microHedgeState: MicroHedgeState;
   previousUnpaired: number;  // Track unpaired shares before last fill
+  firstFillTs: number | null;  // v6.4.0: Track first fill time for paired_delay_sec
 }
 
 const markets = new Map<string, MarketContext>();
@@ -183,6 +184,7 @@ async function fetchMarkets(): Promise<void> {
             pairedMinReachedTs: undefined,
           },
           previousUnpaired: 0,
+          firstFillTs: null,  // v6.4.0: Track first fill time
         });
       }
     }
@@ -468,6 +470,11 @@ async function executeTrade(
 
   // Update local position (use filledShares for actual position, but track pending too)
   if (filledShares > 0) {
+    // v6.4.0: Track first fill time for paired_delay_sec calculation
+    if (ctx.firstFillTs === null) {
+      ctx.firstFillTs = Date.now();
+    }
+    
     if (outcome === 'UP') {
       ctx.position.upShares += filledShares;
       ctx.position.upInvested += filledShares * price;
@@ -545,10 +552,22 @@ async function executeTrade(
     const downAvg = ctx.position.downShares > 0 ? ctx.position.downInvested / ctx.position.downShares : 0;
     const pairCost = upAvg + downAvg;
     const unpaired = Math.abs(ctx.position.upShares - ctx.position.downShares);
+    const paired = Math.min(ctx.position.upShares, ctx.position.downShares);
     const state = ctx.position.upShares === 0 && ctx.position.downShares === 0 ? 'FLAT'
       : ctx.position.upShares === 0 || ctx.position.downShares === 0 ? 'ONE_SIDED'
       : unpaired / (ctx.position.upShares + ctx.position.downShares) > 0.2 ? 'SKEWED'
       : 'HEDGED';
+    
+    // v6.4.0: Calculate unpaired_notional_usd (unpaired shares * avg cost of unpaired side)
+    const unpairedSide = ctx.position.upShares > ctx.position.downShares ? 'UP' : 'DOWN';
+    const unpairedAvgCost = unpairedSide === 'UP' ? upAvg : downAvg;
+    const unpairedNotionalUsd = unpaired * unpairedAvgCost;
+    
+    // v6.4.0: Calculate paired_delay_sec (time from first fill to becoming paired)
+    let pairedDelaySec: number | undefined = undefined;
+    if (paired > 0 && ctx.microHedgeState?.pairedMinReachedTs && ctx.firstFillTs) {
+      pairedDelaySec = (ctx.microHedgeState.pairedMinReachedTs - ctx.firstFillTs) / 1000;
+    }
     
     saveInventorySnapshot({
       market_id: ctx.slug,
@@ -559,6 +578,9 @@ async function executeTrade(
       avg_down_cost: downAvg > 0 ? downAvg : undefined,
       pair_cost: pairCost > 0 ? pairCost : undefined,
       unpaired_shares: unpaired,
+      paired_shares: paired,                           // v6.4.0
+      unpaired_notional_usd: unpairedNotionalUsd > 0 ? unpairedNotionalUsd : undefined, // v6.4.0
+      paired_delay_sec: pairedDelaySec,                // v6.4.0
       state,
       trigger_type: `FILL_${intent}`,
       ts: nowMs,
