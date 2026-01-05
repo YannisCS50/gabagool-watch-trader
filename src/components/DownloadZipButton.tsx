@@ -10,7 +10,8 @@ type TableName = "live_trades" | "order_queue" | "bot_events" | "orders" | "fill
   "snapshot_logs" | "settlement_logs" | "funding_snapshots" | "hedge_intents" | 
   "inventory_snapshots" | "price_ticks" | "runner_heartbeats" | "bot_positions" | 
   "strike_prices" | "hedge_feasibility" | "settlement_failures" | "live_trade_results" |
-  "trades" | "position_snapshots" | "positions" | "market_history";
+  "trades" | "position_snapshots" | "positions" | "market_history" | "bot_config" | 
+  "claim_logs" | "live_bot_settings" | "paper_bot_settings";
 
 // Helper to fetch ALL records with pagination (Supabase default limit is 1000)
 async function fetchAllRecords(
@@ -240,6 +241,12 @@ export function DownloadZipButton() {
         { name: "trades", orderBy: "created_at", cutoff: true },
         { name: "positions", orderBy: "created_at", cutoff: false },
         { name: "position_snapshots", orderBy: "created_at", cutoff: true },
+        
+        // Config & settings
+        { name: "bot_config", orderBy: "updated_at", cutoff: false, maxRecords: 10, dateColumn: "updated_at" },
+        { name: "claim_logs", orderBy: "created_at", cutoff: true },
+        { name: "live_bot_settings", orderBy: "updated_at", cutoff: false, maxRecords: 10, dateColumn: "updated_at" },
+        { name: "paper_bot_settings", orderBy: "updated_at", cutoff: false, maxRecords: 10, dateColumn: "updated_at" },
       ];
 
       for (let i = 0; i < tableConfigs.length; i++) {
@@ -329,6 +336,10 @@ export function DownloadZipButton() {
       refFolder?.file("market_history.json", JSON.stringify(tables.market_history || [], null, 2));
       refFolder?.file("price_ticks.json", JSON.stringify(tables.price_ticks || [], null, 2));
       refFolder?.file("runner_heartbeats.json", JSON.stringify(tables.runner_heartbeats || [], null, 2));
+      refFolder?.file("bot_config.json", JSON.stringify(tables.bot_config || [], null, 2));
+      refFolder?.file("claim_logs.json", JSON.stringify(tables.claim_logs || [], null, 2));
+      refFolder?.file("live_bot_settings.json", JSON.stringify(tables.live_bot_settings || [], null, 2));
+      refFolder?.file("paper_bot_settings.json", JSON.stringify(tables.paper_bot_settings || [], null, 2));
 
       // Add a comprehensive manifest
       let totalRecords = 0;
