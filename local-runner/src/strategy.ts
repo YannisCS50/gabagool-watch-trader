@@ -1626,18 +1626,10 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
   const cheaperSide: Outcome = upAsk <= downAsk ? 'UP' : 'DOWN';
   const guardrails = checkV611Guardrails(inv, remainingSeconds, nowMs, undefined, cheaperSide);
   
-  // Log guardrail status for telemetry (only when triggered)
-  if (guardrails.guardrailTriggered !== 'NONE') {
-    console.log(`[v6.1.1] 📊 GUARDRAIL CHECK: trigger=${guardrails.guardrailTriggered}, paired_min=${guardrails.pairedMinReached}, cpp=${guardrails.costPerPaired.toFixed(3)}`);
-    if (guardrails.blockedAction) {
-      console.log(`[v6.1.1] 🛑 BLOCKED: ${guardrails.blockedAction} | ${guardrails.reason}`);
-    }
-  }
-  
-  // v6.1.1: LOG METRICS (enhanced with guardrail info)
-  if (state !== 'FLAT') {
-    console.log(`[v6.1.1] 📊 Metrics: paired=${pairedShares(inv)}, cpp=${guardrails.costPerPaired.toFixed(3)}, paired_min_ok=${guardrails.pairedMinReached}, guardrail=${guardrails.guardrailTriggered}`);
-  }
+  // v6.6.0: Use throttled guardrail logging (state-change only or every 5s)
+  // No more spam - only log on state change or interval
+  // (The actual logging is now done via logGuardrailThrottled in inventory-risk.ts,
+  // which is called from index.ts where we have access to the full context)
   
   // ========== UNWIND CHECK ==========
   

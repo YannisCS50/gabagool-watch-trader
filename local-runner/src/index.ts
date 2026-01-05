@@ -35,6 +35,15 @@ import {
   INVENTORY_RISK_CONFIG,
   type IntendedAction,
   type SkipReason,
+  // v6.6.0: Emergency Unwind & Safety Block
+  setSafetyBlock,
+  clearSafetyBlock,
+  isSafetyBlocked,
+  checkEmergencyUnwindTrigger,
+  isEmergencyUnwindActive,
+  isInEmergencyCooldown,
+  logGuardrailThrottled,
+  type EmergencyUnwindContext,
 } from './inventory-risk.js';
 
 // v7.0.1: Patch Layer (minimal additions)
@@ -1040,6 +1049,23 @@ async function evaluateMarket(slug: string): Promise<void> {
     }
 
     // ============================================================
+    // v6.6.0: SAFETY BLOCK CHECK (Invalid Book)
+    // ============================================================
+    const safetyCheck = isSafetyBlocked(slug);
+    if (safetyCheck.blocked) {
+      // Only allow CANCEL_ALL in safety block mode
+      // Log once per 5s to avoid spam
+      const logKey = `safety_block_${slug}`;
+      if (!(global as any)[logKey] || (nowMs - (global as any)[logKey] > 5000)) {
+        (global as any)[logKey] = nowMs;
+        console.log(`🚨 [v6.6.0] SAFETY_BLOCK: All trading blocked for ${slug}`);
+        console.log(`   Reason: ${safetyCheck.reason}`);
+      }
+      ctx.inFlight = false;
+      return;
+    }
+
+    // ============================================================
     // v7.0.1 PATCH 4: RISK SCORE CALCULATION & DEGRADED MODE
     // ============================================================
     const unpaired = Math.abs(ctx.position.upShares - ctx.position.downShares);
@@ -1059,6 +1085,80 @@ async function evaluateMarket(slug: string): Promise<void> {
     
     // Calculate risk score
     const riskScore = calculateRiskScore(unpairedNotional, unpairedAgeSec);
+    
+    // ============================================================
+    // v6.6.0: EMERGENCY UNWIND CHECK
+    // ============================================================
+    const paired = Math.min(ctx.position.upShares, ctx.position.downShares);
+    const totalInvested = ctx.position.upInvested + ctx.position.downInvested;
+    const costPerPaired = paired > 0 ? totalInvested / paired : Infinity;
+    const totalShares = ctx.position.upShares + ctx.position.downShares;
+    const skewRatio = totalShares > 0 ? Math.max(ctx.position.upShares, ctx.position.downShares) / totalShares : 0.5;
+    
+    // Only check emergency if we have a position
+    if (paired > 0 || unpaired > 0) {
+      const emergencyCtx: EmergencyUnwindContext = {
+        costPerPaired: Number.isFinite(costPerPaired) ? costPerPaired : 999,
+        skewRatio,
+        unpairedAgeSec,
+        upShares: ctx.position.upShares,
+        downShares: ctx.position.downShares,
+        upInvested: ctx.position.upInvested,
+        downInvested: ctx.position.downInvested,
+        paired,
+      };
+      
+      const emergencyResult = checkEmergencyUnwindTrigger(slug, ctx.market.asset, emergencyCtx, RUN_ID);
+      
+      if (emergencyResult.triggerEmergency) {
+        // Emergency unwind mode: block entries, attempt to reduce position
+        console.log(`🚨 [v6.6.0] EMERGENCY_UNWIND triggered for ${slug}`);
+        console.log(`   Reason: ${emergencyResult.reason}`);
+        console.log(`   Dominant side: ${emergencyResult.dominantSide}`);
+        
+        // TODO: Implement actual unwind logic here (cancel orders, sell dominant side)
+        // For now, just block all new entries
+        ctx.inFlight = false;
+        return;
+      }
+      
+      // Check cooldown after emergency
+      if (isInEmergencyCooldown(slug)) {
+        const isNewEntry = ctx.position.upShares === 0 && ctx.position.downShares === 0;
+        if (isNewEntry) {
+          const logKey = `emergency_cooldown_${slug}`;
+          if (!(global as any)[logKey] || (nowMs - (global as any)[logKey] > 10000)) {
+            (global as any)[logKey] = nowMs;
+            console.log(`⏳ [v6.6.0] EMERGENCY_COOLDOWN: No new entries for ${slug}`);
+          }
+          ctx.inFlight = false;
+          return;
+        }
+      }
+      
+      // v6.6.0: Throttled guardrail logging
+      const guardrailTrigger = 
+        emergencyResult.implausibleCpp ? 'CPP_IMPLAUSIBLE' :
+        costPerPaired >= INVENTORY_RISK_CONFIG.cppEmergency ? 'COST_PER_PAIRED_EMERGENCY' :
+        costPerPaired >= 1.05 ? 'COST_PER_PAIRED_STOP' :
+        skewRatio >= 0.70 ? 'SKEW_CAP_EXCEEDED' :
+        'NONE';
+      
+      if (guardrailTrigger !== 'NONE') {
+        logGuardrailThrottled({
+          marketId: slug,
+          asset: ctx.market.asset,
+          trigger: guardrailTrigger,
+          paired,
+          unpaired,
+          totalInvested,
+          costPerPaired: Number.isFinite(costPerPaired) ? costPerPaired : 999,
+          skewRatio,
+          secondsRemaining: remainingSeconds,
+          action: isEmergencyUnwindActive(slug) ? 'EMERGENCY_UNWIND' : 'BLOCK_ALL_ADDS',
+        }, RUN_ID);
+      }
+    }
     ctx.lastRiskScore = riskScore;
 
     // ============================================================
@@ -1495,10 +1595,34 @@ async function processMarketEvent(data: any): Promise<void> {
 
         const levels = asks.length + bids.length;
 
-        // BOOK_WS logging for diagnostics
-        console.log(
-          `BOOK_WS marketId=${marketInfo.slug} side=${marketInfo.side} levels=${levels} bestBid=${bestBid === null ? 'null' : bestBid.toFixed(2)} bestAsk=${bestAsk === null ? 'null' : bestAsk.toFixed(2)}`
-        );
+        // v6.6.0: SUSPICIOUS_BOOK_SHAPE detection (same as HTTP handler)
+        // If bestBid <= 0.02 AND bestAsk >= 0.98 with many levels, book is invalid
+        if (
+          bestBid !== null &&
+          bestAsk !== null &&
+          bestBid <= 0.02 &&
+          bestAsk >= 0.98 &&
+          levels > 20
+        ) {
+          console.log(
+            `⚠️ [WS] SUSPICIOUS_BOOK_SHAPE marketId=${marketInfo.slug} bestBid=${bestBid.toFixed(2)} bestAsk=${bestAsk.toFixed(2)} levels=${levels}`
+          );
+          setSafetyBlock(marketInfo.slug, ctx.market.asset, `SUSPICIOUS_BOOK_SHAPE: bid=${bestBid.toFixed(2)} ask=${bestAsk.toFixed(2)}`, RUN_ID);
+          ctx.inFlight = false;
+          return;
+        } else if (levels > 0 && bestBid !== null && bestAsk !== null) {
+          // Clear safety block if book looks valid now
+          clearSafetyBlock(marketInfo.slug, ctx.market.asset, RUN_ID);
+        }
+
+        // BOOK_WS logging for diagnostics (rate-limited)
+        const logKey = `book_ws_${marketInfo.slug}_${marketInfo.side}`;
+        if (!(global as any)[logKey] || (Date.now() - (global as any)[logKey] > 10000)) {
+          (global as any)[logKey] = Date.now();
+          console.log(
+            `BOOK_WS marketId=${marketInfo.slug} side=${marketInfo.side} levels=${levels} bestBid=${bestBid === null ? 'null' : bestBid.toFixed(2)} bestAsk=${bestAsk === null ? 'null' : bestAsk.toFixed(2)}`
+          );
+        }
 
         // IMPORTANT: don't overwrite good HTTP-seeded values with invalid WS values
         let updated = false;
