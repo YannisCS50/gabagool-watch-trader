@@ -706,10 +706,17 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
     }
   }
 
-  const adjustedPrice = Math.min(order.price + priceImprovement, 0.99);
+  // IMPORTANT: Price improvement direction depends on side.
+  // - BUY: raise price to cross/fill faster
+  // - SELL: lower price to cross/fill faster
+  const adjustedPrice = order.side === 'BUY'
+    ? Math.min(order.price + priceImprovement, 0.99)
+    : Math.max(order.price - priceImprovement, 0.01);
+
+  const deltaCents = Math.round((adjustedPrice - order.price) * 100);
 
   console.log(
-    `📤 Placing order: ${order.side} ${order.size} @ ${(order.price * 100).toFixed(0)}¢ → ${(adjustedPrice * 100).toFixed(0)}¢ (+${(priceImprovement * 100).toFixed(0)}¢ ${intent})`
+    `📤 Placing order: ${order.side} ${order.size} @ ${(order.price * 100).toFixed(0)}¢ → ${(adjustedPrice * 100).toFixed(0)}¢ (${deltaCents >= 0 ? '+' : ''}${deltaCents}¢ ${intent})`
   );
 
   // Check if orderbook exists and has liquidity before placing order

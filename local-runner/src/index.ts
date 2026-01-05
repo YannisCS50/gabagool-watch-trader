@@ -1211,16 +1211,24 @@ async function evaluateMarket(slug: string): Promise<void> {
         const dominantShares = dominantSide === 'UP' ? ctx.position.upShares : ctx.position.downShares;
         const tokenId = dominantSide === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
         
-        // Sell up to 25% of dominant position per tick to reduce risk
-        const sellShares = Math.min(Math.floor(dominantShares * 0.25), 50);
+        // Sell a chunk of the dominant position per tick to reduce risk
+        // - Target: 25%
+        // - Floor: 5 shares (otherwise we get stuck in endless EMERGENCY_UNWIND)
+        // - Cap: 50 shares
+        const desiredChunk = Math.floor(dominantShares * 0.25);
+        const sellShares = Math.min(50, dominantShares, Math.max(5, desiredChunk));
         
-        if (sellShares >= 5) {
+        if (dominantShares >= 5 && sellShares >= 5) {
           // Get current bid to sell at
           const currentBid = dominantSide === 'UP' ? ctx.book.up.bid : ctx.book.down.bid;
+          const currentAsk = dominantSide === 'UP' ? ctx.book.up.ask : ctx.book.down.ask;
+          const spread = (typeof currentAsk === 'number' && typeof currentBid === 'number')
+            ? Math.max(0, currentAsk - currentBid)
+            : 0;
           
-          if (currentBid && currentBid > 0.02) {
-            // Sell slightly below bid for faster fill
-            const sellPrice = Math.max(0.01, currentBid - 0.02);
+          if (typeof currentBid === 'number' && currentBid >= 0.01) {
+            // For a SELL, price at bid (placeOrder will improve by lowering further for SURVIVAL)
+            const sellPrice = Math.max(0.01, currentBid);
             
             console.log(`🔥 [v7.2.0] EMERGENCY_SELL: ${dominantSide} ${sellShares} shares @ ${(sellPrice * 100).toFixed(0)}¢`);
             
@@ -1231,6 +1239,8 @@ async function evaluateMarket(slug: string): Promise<void> {
                 price: sellPrice,
                 size: sellShares,
                 orderType: 'GTC',
+                intent: 'SURVIVAL',
+                spread,
               });
               
               if (sellResult.success) {
