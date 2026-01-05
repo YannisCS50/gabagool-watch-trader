@@ -1200,8 +1200,72 @@ async function evaluateMarket(slug: string): Promise<void> {
         console.log(`   Reason: ${emergencyResult.reason}`);
         console.log(`   Dominant side: ${emergencyResult.dominantSide}`);
         
-        // TODO: Implement actual unwind logic here (cancel orders, sell dominant side)
-        // For now, just block all new entries
+        // v7.2.0: IMPLEMENT ACTUAL UNWIND - Sell the dominant side to reduce exposure
+        const dominantSide = emergencyResult.dominantSide as 'UP' | 'DOWN';
+        const dominantShares = dominantSide === 'UP' ? ctx.position.upShares : ctx.position.downShares;
+        const tokenId = dominantSide === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
+        
+        // Sell up to 25% of dominant position per tick to reduce risk
+        const sellShares = Math.min(Math.floor(dominantShares * 0.25), 50);
+        
+        if (sellShares >= 5) {
+          // Get current bid to sell at
+          const currentBid = dominantSide === 'UP' ? ctx.book.up.bid : ctx.book.down.bid;
+          
+          if (currentBid && currentBid > 0.02) {
+            // Sell slightly below bid for faster fill
+            const sellPrice = Math.max(0.01, currentBid - 0.02);
+            
+            console.log(`🔥 [v7.2.0] EMERGENCY_SELL: ${dominantSide} ${sellShares} shares @ ${(sellPrice * 100).toFixed(0)}¢`);
+            
+            try {
+              const sellResult = await placeOrder({
+                tokenId,
+                side: 'SELL',
+                price: sellPrice,
+                size: sellShares,
+                orderType: 'GTC',
+              });
+              
+              if (sellResult.success) {
+                console.log(`✅ [v7.2.0] EMERGENCY_SELL executed: orderId=${sellResult.orderId}`);
+                
+                // Update local position tracking (approximate)
+                if (dominantSide === 'UP') {
+                  ctx.position.upShares -= sellShares;
+                } else {
+                  ctx.position.downShares -= sellShares;
+                }
+                
+                // Log event
+                saveBotEvent({
+                  event_type: 'EMERGENCY_SELL',
+                  asset: ctx.market.asset,
+                  market_id: slug,
+                  run_id: RUN_ID,
+                  ts: Date.now(),
+                  data: {
+                    dominantSide,
+                    sharesSold: sellShares,
+                    price: sellPrice,
+                    orderId: sellResult.orderId,
+                    reason: emergencyResult.reason,
+                    cpp: costPerPaired,
+                  },
+                }).catch(() => { /* non-critical */ });
+              } else {
+                console.log(`⚠️ [v7.2.0] EMERGENCY_SELL failed: ${sellResult.error}`);
+              }
+            } catch (err) {
+              console.error(`❌ [v7.2.0] EMERGENCY_SELL error:`, err);
+            }
+          } else {
+            console.log(`⚠️ [v7.2.0] Cannot sell: no valid bid (${currentBid}) for ${dominantSide}`);
+          }
+        } else {
+          console.log(`⏭️ [v7.2.0] Skip emergency sell: only ${dominantShares} shares (need 5+)`);
+        }
+        
         ctx.inFlight = false;
         return;
       }
