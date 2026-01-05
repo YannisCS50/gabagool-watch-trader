@@ -1462,6 +1462,10 @@ async function processMarketEvent(data: any): Promise<void> {
 
         const topAsk = asks.length > 0 ? parseFloat(asks[0][0]) : null;
         const topBid = bids.length > 0 ? parseFloat(bids[0][0]) : null;
+        const levels = asks.length + bids.length;
+        
+        // BOOK_WS logging for diagnostics
+        console.log(`BOOK_WS marketId=${marketInfo.slug} side=${marketInfo.side} levels=${levels} topBid=${topBid?.toFixed(2) ?? 'null'} topAsk=${topAsk?.toFixed(2) ?? 'null'}`);
 
         if (marketInfo.side === 'up') {
           ctx.book.up.ask = topAsk;
@@ -1786,18 +1790,33 @@ async function main(): Promise<void> {
     }
   }, 15000);
 
-  // v7.1.1: Periodic orderbook refresh every 3 seconds for markets with stale data
-  setInterval(async () => {
-    const nowMs = Date.now();
-    const staleThresholdMs = 3000;
+  // v7.1.1: Periodic orderbook refresh with jitter for markets with stale data
+  // Only refresh if: market enabled AND book stale > 3s AND WS silent
+  const STALE_THRESHOLD_MS = 3000;
+  const REFRESH_BASE_MS = 3000;
+  const REFRESH_JITTER_MS = 1500; // 3000 ± 1500 = 1.5s - 4.5s
+  let refreshInFlight = false;
+  
+  const doStaleRefresh = async () => {
+    if (refreshInFlight) return;
+    refreshInFlight = true;
     
-    for (const ctx of markets.values()) {
-      const bookAge = ctx.book.updatedAtMs > 0 ? (nowMs - ctx.book.updatedAtMs) : Infinity;
+    try {
+      const nowMs = Date.now();
       
-      // Only refresh if book is stale and market is still active
-      if (bookAge > staleThresholdMs) {
+      for (const ctx of markets.values()) {
+        const bookAge = ctx.book.updatedAtMs > 0 ? (nowMs - ctx.book.updatedAtMs) : Infinity;
+        
+        // Skip if book is fresh (WS is providing updates)
+        if (bookAge <= STALE_THRESHOLD_MS) continue;
+        
+        // Skip expired markets
         const endMs = new Date(ctx.market.eventEndTime).getTime();
-        if (nowMs >= endMs) continue; // Skip expired markets
+        if (nowMs >= endMs) continue;
+        
+        // Skip disabled markets
+        const readinessState = getReadinessState(ctx.slug);
+        if (readinessState?.disabled) continue;
         
         try {
           const [upDepth, downDepth] = await Promise.all([
@@ -1815,16 +1834,24 @@ async function main(): Promise<void> {
           }
           
           if (upDepth.topAsk !== null || upDepth.topBid !== null || downDepth.topAsk !== null || downDepth.topBid !== null) {
-            ctx.book.updatedAtMs = nowMs;
-            // Evaluate immediately on refreshed data (keeps trading on fresh info even if WS is quiet)
+            ctx.book.updatedAtMs = Date.now();
+            // Evaluate immediately on refreshed data
             void evaluateMarket(ctx.slug);
           }
-        } catch (err) {
+        } catch {
           // Non-critical
         }
       }
+    } finally {
+      refreshInFlight = false;
+      // Schedule next with jitter
+      const jitter = (Math.random() - 0.5) * 2 * REFRESH_JITTER_MS;
+      setTimeout(doStaleRefresh, REFRESH_BASE_MS + jitter);
     }
-  }, 3000);
+  };
+  
+  // Start the refresh loop with initial jitter
+  setTimeout(doStaleRefresh, REFRESH_BASE_MS + Math.random() * REFRESH_JITTER_MS);
 
   // Auto-claim winnings every 30 seconds
   setInterval(async () => {

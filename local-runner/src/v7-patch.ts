@@ -132,9 +132,16 @@ export function checkReadinessGate(
   
   // Check current readiness
   const readiness = isMarketReady(book, nowMs);
+  const prevUpReady = state.upReady;
+  const prevDownReady = state.downReady;
   state.upReady = readiness.upReady;
   state.downReady = readiness.downReady;
   state.lastCheckTs = nowMs;
+  
+  // READY_CHANGE logging for diagnostics (only on state change)
+  if (prevUpReady !== readiness.upReady || prevDownReady !== readiness.downReady) {
+    console.log(`READY_CHANGE marketId=${marketId} readyUp=${readiness.upReady} readyDown=${readiness.downReady} reason=${readiness.reason || 'READY'}`);
+  }
   
   if (readiness.ready) {
     return { allowed: true, disabled: false };
