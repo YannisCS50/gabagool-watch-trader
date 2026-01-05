@@ -10,7 +10,8 @@
  * - Return atomic result { ok: true, orderId } | { ok: false, errorCode }
  */
 
-import { placeOrder, getOrderbookDepth, invalidateBalanceCache } from './polymarket.js';
+import { getOrderbookDepth, invalidateBalanceCache } from './polymarket.js';
+import { placeOrderWithCaps, type OrderContext } from './hard-invariants.js';
 import { canPlaceOrder, ReserveManager } from './funding.js';
 import { OrderRateLimiter } from './order-rate-limiter.js';
 
@@ -57,6 +58,13 @@ export interface HedgeEscalatorInput {
   // v6.0.1: For pair-cost gate
   avgOtherSideCost?: number;  // Average cost of the other side
   currentPairCost?: number;   // Current total pair cost
+  // v7.2.5: Required for hard cap enforcement
+  asset: string;
+  currentUpShares: number;
+  currentDownShares: number;
+  upCost?: number;
+  downCost?: number;
+  runId?: string;
 }
 
 export interface HedgeEvent {
@@ -95,7 +103,7 @@ function logHedgeEvent(event: HedgeEvent): void {
 }
 
 export async function executeHedgeWithEscalation(input: HedgeEscalatorInput): Promise<HedgeAttemptResult> {
-  const { marketId, tokenId, side, targetShares, initialPrice, secondsRemaining, avgOtherSideCost, currentPairCost } = input;
+  const { marketId, tokenId, side, targetShares, initialPrice, secondsRemaining, avgOtherSideCost, currentPairCost, asset, currentUpShares, currentDownShares, upCost, downCost, runId } = input;
   
   // Determine mode
   const isPanicMode = secondsRemaining < HEDGE_ESCALATOR_CONFIG.panicModeThresholdSec;
@@ -283,21 +291,34 @@ export async function executeHedgeWithEscalation(input: HedgeEscalatorInput): Pr
     const tempOrderId = `hedge_${marketId}_${side}_${Date.now()}`;
     ReserveManager.reserve(tempOrderId, marketId, notional, side);
     
-    // 5) Place order with v6.0.1 context-aware price improvement
+    // 5) Place order with v7.2.5 hard cap enforcement via placeOrderWithCaps
     try {
       OrderRateLimiter.recordEvent(marketId, 'order');
       
       // Determine intent for price improvement
       const orderIntent = isSurvivalMode ? 'SURVIVAL' : 'HEDGE';
       
-      const result = await placeOrder({
+      // v7.2.5: Build order context for cap enforcement
+      const orderCtx: OrderContext = {
+        marketId,
+        asset,
+        outcome: side,
+        currentUpShares,
+        currentDownShares,
+        upCost,
+        downCost,
+        intentType: 'HEDGE',
+        runId,
+      };
+      
+      const result = await placeOrderWithCaps({
         tokenId,
         side: 'BUY',
         price: currentPrice,
         size: currentShares,
         orderType: 'GTC',
         intent: orderIntent,
-      });
+      }, orderCtx);
       
       if (result.success) {
         const filledShares = result.status === 'filled' ? currentShares : (result.filledSize ?? 0);

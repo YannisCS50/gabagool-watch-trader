@@ -1,5 +1,5 @@
 /**
- * hard-invariants.ts - v7.2.4 REV C.4 HARD INVARIANTS
+ * hard-invariants.ts - v7.2.5 REV C.5 HARD INVARIANTS
  * ====================================================
  * Implements ABSOLUTE guards that MUST hold for every order:
  * 
@@ -16,11 +16,17 @@
  *    - cppPairedOnlyCents = avgUpPriceCents + avgDownPriceCents
  *    - No CPP-based emergency when paired=0
  * 
+ * D) SINGLE ORDER GATEWAY (v7.2.5)
+ *    - ALL order placements MUST go through placeOrderWithCaps()
+ *    - This function is the ONLY allowed entry point
+ *    - Direct placeOrder() calls are FORBIDDEN
+ * 
  * These invariants are checked IMMEDIATELY BEFORE any order placement.
  * NO CODE PATH MAY BYPASS THESE CHECKS.
  */
 
 import { saveBotEvent } from './backend.js';
+import { placeOrder as rawPlaceOrder, getOrderbookDepth, OrderbookDepth } from './polymarket.js';
 
 // ============================================================
 // CONFIGURATION
@@ -726,4 +732,210 @@ export function onFillUpdateInvariants(params: {
     invariantViolated: !invariantCheck.valid,
     cppPairedOnlyCents: cppResult.cppPairedOnlyCents,
   };
+}
+
+// ============================================================
+// G) SINGLE ORDER GATEWAY - placeOrderWithCaps (v7.2.5)
+// ============================================================
+
+/**
+ * OrderRequest interface matching polymarket.ts
+ */
+interface CappedOrderRequest {
+  tokenId: string;
+  side: 'BUY' | 'SELL';
+  price: number;
+  size: number;
+  orderType?: 'GTC' | 'GTD' | 'FOK';
+  intent?: 'ENTRY' | 'HEDGE' | 'FORCE' | 'SURVIVAL';
+  spread?: number;
+}
+
+/**
+ * OrderResponse interface matching polymarket.ts
+ */
+interface CappedOrderResponse {
+  success: boolean;
+  orderId?: string;
+  avgPrice?: number;
+  filledSize?: number;
+  error?: string;
+  status?: 'filled' | 'partial' | 'open' | 'pending' | 'unknown';
+  failureReason?: 'no_liquidity' | 'cloudflare' | 'auth' | 'balance' | 'no_orderbook' | 'cap_blocked' | 'unknown';
+  clamped?: boolean;
+  originalSize?: number;
+}
+
+/**
+ * Context required for position cap enforcement
+ */
+export interface OrderContext {
+  marketId: string;
+  asset: string;
+  outcome: Outcome;
+  currentUpShares: number;
+  currentDownShares: number;
+  upCost?: number;
+  downCost?: number;
+  intentType: string;
+  runId?: string;
+}
+
+/**
+ * placeOrderWithCaps - THE ONLY ALLOWED ENTRY POINT FOR ORDER PLACEMENT
+ * 
+ * This function:
+ * 1. Validates position caps BEFORE calling rawPlaceOrder
+ * 2. Clamps order size if it would exceed caps
+ * 3. Blocks orders entirely if no capacity remains
+ * 4. Logs all cap enforcement events
+ * 
+ * ALL order placements in the codebase MUST use this function.
+ * Direct calls to placeOrder are FORBIDDEN.
+ */
+export async function placeOrderWithCaps(
+  order: CappedOrderRequest,
+  ctx: OrderContext
+): Promise<CappedOrderResponse> {
+  const now = Date.now();
+  const { marketId, asset, outcome, currentUpShares, currentDownShares, upCost = 0, downCost = 0, intentType, runId } = ctx;
+  
+  // Map side to OrderSide type
+  const orderSide: OrderSide = order.side;
+  
+  // 1) CHECK ALL INVARIANTS
+  const invariantResult = checkAllInvariants({
+    marketId,
+    asset,
+    side: orderSide,
+    outcome,
+    requestedSize: order.size,
+    intentType,
+    currentUpShares,
+    currentDownShares,
+    upCost,
+    downCost,
+    combinedAsk: null, // Will be fetched if needed
+    runId,
+  });
+  
+  // 2) BLOCKED: Return immediately with cap_blocked error
+  if (!invariantResult.allowed) {
+    console.log(`🚫 [HARD_INVARIANT] ORDER BLOCKED: ${invariantResult.blockReason}`);
+    console.log(`   Request: ${order.side} ${order.size} ${outcome} @ ${(order.price * 100).toFixed(0)}¢`);
+    console.log(`   Position: UP=${currentUpShares} DOWN=${currentDownShares}`);
+    
+    saveBotEvent({
+      event_type: 'ORDER_CAP_BLOCKED',
+      asset,
+      market_id: marketId,
+      ts: now,
+      run_id: runId,
+      reason_code: 'HARD_CAP',
+      data: {
+        side: order.side,
+        outcome,
+        requestedSize: order.size,
+        currentUpShares,
+        currentDownShares,
+        blockReason: invariantResult.blockReason,
+        intentType,
+      },
+    }).catch(() => {});
+    
+    return {
+      success: false,
+      error: `CAP_BLOCKED: ${invariantResult.blockReason}`,
+      failureReason: 'cap_blocked',
+    };
+  }
+  
+  // 3) CLAMPED: Adjust size and log
+  let finalSize = invariantResult.finalSize;
+  let wasClamped = invariantResult.clampApplied;
+  
+  if (wasClamped) {
+    console.log(`📏 [HARD_INVARIANT] ORDER CLAMPED: ${order.size} → ${finalSize} shares`);
+    console.log(`   Position: UP=${currentUpShares} DOWN=${currentDownShares}`);
+    
+    saveBotEvent({
+      event_type: 'ORDER_CLAMPED',
+      asset,
+      market_id: marketId,
+      ts: now,
+      run_id: runId,
+      data: {
+        side: order.side,
+        outcome,
+        originalSize: order.size,
+        clampedSize: finalSize,
+        currentUpShares,
+        currentDownShares,
+        intentType,
+      },
+    }).catch(() => {});
+  }
+  
+  // 4) FINAL SAFETY CHECK: Verify post-order position won't exceed caps
+  const projectedShares = outcome === 'UP' 
+    ? currentUpShares + finalSize 
+    : currentDownShares + finalSize;
+  
+  if (order.side === 'BUY' && projectedShares > HARD_INVARIANT_CONFIG.maxSharesPerSide) {
+    console.error(`🚨 [HARD_INVARIANT] FATAL: Projected ${outcome}=${projectedShares} would exceed cap!`);
+    console.error(`   This should have been caught by clampOrderToCaps. BLOCKING ORDER.`);
+    
+    saveBotEvent({
+      event_type: 'INVARIANT_SAFETY_BLOCK',
+      asset,
+      market_id: marketId,
+      ts: now,
+      run_id: runId,
+      data: {
+        outcome,
+        projectedShares,
+        maxSharesPerSide: HARD_INVARIANT_CONFIG.maxSharesPerSide,
+        currentShares: outcome === 'UP' ? currentUpShares : currentDownShares,
+        orderSize: finalSize,
+      },
+    }).catch(() => {});
+    
+    return {
+      success: false,
+      error: `SAFETY_BLOCK: Projected ${outcome}=${projectedShares} > ${HARD_INVARIANT_CONFIG.maxSharesPerSide}`,
+      failureReason: 'cap_blocked',
+    };
+  }
+  
+  // 5) PLACE ORDER via rawPlaceOrder
+  const result = await rawPlaceOrder({
+    tokenId: order.tokenId,
+    side: order.side,
+    price: order.price,
+    size: finalSize,
+    orderType: order.orderType,
+    intent: order.intent,
+    spread: order.spread,
+  });
+  
+  // 6) LOG SUCCESS with cap enforcement info
+  if (result.success && wasClamped) {
+    console.log(`✅ [HARD_INVARIANT] CLAMPED ORDER FILLED: ${finalSize}@${(order.price * 100).toFixed(0)}¢ (was ${order.size})`);
+  }
+  
+  return {
+    ...result,
+    clamped: wasClamped,
+    originalSize: wasClamped ? order.size : undefined,
+  };
+}
+
+/**
+ * DEPRECATED: Direct placeOrder access
+ * This re-export exists only for backwards compatibility detection.
+ * All new code should use placeOrderWithCaps.
+ */
+export function placeOrderDirect(order: CappedOrderRequest): Promise<CappedOrderResponse> {
+  console.warn(`⚠️ [DEPRECATED] placeOrderDirect called - should use placeOrderWithCaps!`);
+  return rawPlaceOrder(order);
 }

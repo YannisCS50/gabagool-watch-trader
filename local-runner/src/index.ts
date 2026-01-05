@@ -2,7 +2,7 @@ import WebSocket from 'ws';
 import os from 'os';
 import dns from 'node:dns';
 import { config } from './config.js';
-import { placeOrder, testConnection, getBalance, getOrderbookDepth, invalidateBalanceCache, ensureValidCredentials } from './polymarket.js';
+import { testConnection, getBalance, getOrderbookDepth, invalidateBalanceCache, ensureValidCredentials } from './polymarket.js';
 import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, checkHardSkewStop, STRATEGY, STRATEGY_VERSION, STRATEGY_NAME, buildMicroHedge, logMicroHedgeIntent, logMicroHedgeResult, checkV611Guardrails, MicroHedgeState, MicroHedgeIntent, MicroHedgeResult, unpairedShares as stratUnpairedShares, checkEntryGuards } from './strategy.js';
 import { enforceVpnOrExit } from './vpn-check.js';
 import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder, syncPositionsToBackend, savePriceTicks, PriceTick, saveBotEvent, saveOrderLifecycle, saveInventorySnapshot, saveFundingSnapshot, BotEvent, OrderLifecycle, InventorySnapshot, FundingSnapshot } from './backend.js';
@@ -81,6 +81,7 @@ import {
 } from './market-state-manager.js';
 
 // v7.2.4 REV C.4: Hard Invariants (position caps, one-sided freeze, CPP paired-only)
+// v7.2.5 REV C.5: placeOrderWithCaps is now the ONLY allowed order entry point
 import {
   checkAllInvariants,
   onFillUpdateInvariants,
@@ -89,7 +90,9 @@ import {
   isFreezeAddsActive,
   calculateCppPairedOnly,
   HARD_INVARIANT_CONFIG,
+  placeOrderWithCaps,
   type OrderSide,
+  type OrderContext,
 } from './hard-invariants.js';
 
 // Ensure Node prefers IPv4 to avoid hangs on IPv6-only DNS results under some VPN setups.
@@ -101,7 +104,7 @@ try {
 }
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '7.2.4';  // v7.2.4 REV C.4: Hard position limit enforcement
+const RUNNER_VERSION = '7.2.5';  // v7.2.5 REV C.5: placeOrderWithCaps single entry point for all orders
 const RUN_ID = crypto.randomUUID();
 
 // v7 REV C: Initialize MarketStateManager singleton
@@ -445,13 +448,26 @@ async function executeTrade(
   const tempOrderId = `temp_${ctx.slug}_${outcome}_${Date.now()}`;
   ReserveManager.reserve(tempOrderId, ctx.slug, total, outcome);
 
-  const result = await placeOrder({
+  // v7.2.5: Use placeOrderWithCaps for hard cap enforcement
+  const orderCtx: OrderContext = {
+    marketId: ctx.slug,
+    asset: ctx.market.asset,
+    outcome,
+    currentUpShares: ctx.position.upShares,
+    currentDownShares: ctx.position.downShares,
+    upCost: ctx.position.upInvested,
+    downCost: ctx.position.downInvested,
+    intentType: intent,
+    runId: RUN_ID,
+  };
+
+  const result = await placeOrderWithCaps({
     tokenId,
     side: 'BUY',
     price,
     size: finalShares,
     orderType: 'GTC',
-  });
+  }, orderCtx);
 
   if (!result.success) {
     // v6.0.0: Release reservation on failure
@@ -518,6 +534,13 @@ async function executeTrade(
           secondsRemaining: remainingSeconds,
           avgOtherSideCost,
           currentPairCost: currentPairCost > 0 ? currentPairCost : undefined,
+          // v7.2.5: Required fields for hard cap enforcement
+          asset: ctx.market.asset,
+          currentUpShares: ctx.position.upShares,
+          currentDownShares: ctx.position.downShares,
+          upCost: ctx.position.upInvested,
+          downCost: ctx.position.downInvested,
+          runId: RUN_ID,
         });
         
         if (escalationResult.ok) {
@@ -637,8 +660,9 @@ async function executeTrade(
     }
     
     // ============================================================
-    // v7.2.4 REV C.4: UPDATE HARD INVARIANTS AFTER FILL
+    // v7.2.5 REV C.5: UPDATE HARD INVARIANTS AFTER FILL
     // This triggers freeze activation/clearing and invariant assertions
+    // If position exceeds caps, market is SUSPENDED immediately
     // ============================================================
     const invariantUpdate = onFillUpdateInvariants({
       marketId: ctx.slug,
@@ -652,10 +676,30 @@ async function executeTrade(
       runId: RUN_ID,
     });
     
-    // If invariant violated, market should be suspended
+    // CRITICAL: If invariant violated (position > 100), market MUST be suspended
     if (invariantUpdate.invariantViolated) {
-      console.error(`🚨 [v7.2.4] INVARIANT_BREACH detected - consider SUSPENDED state`);
-      marketStateManager?.suspendMarket(ctx.slug, ctx.market.asset, 60000, 'INVARIANT_BREACH');
+      console.error(`🚨 [v7.2.5] INVARIANT_BREACH: Position exceeds hard cap!`);
+      console.error(`   UP=${ctx.position.upShares} DOWN=${ctx.position.downShares}`);
+      console.error(`   Max per side: ${HARD_INVARIANT_CONFIG.maxSharesPerSide}`);
+      
+      // Suspend market to prevent further trading
+      marketStateManager?.suspendMarket(ctx.slug, ctx.market.asset, 300000, 'INVARIANT_BREACH_HARD_CAP');
+      
+      // Log critical event
+      saveBotEvent({
+        event_type: 'INVARIANT_BREACH_HARD_CAP',
+        asset: ctx.market.asset,
+        market_id: ctx.slug,
+        ts: Date.now(),
+        run_id: RUN_ID,
+        data: {
+          upShares: ctx.position.upShares,
+          downShares: ctx.position.downShares,
+          maxSharesPerSide: HARD_INVARIANT_CONFIG.maxSharesPerSide,
+          lastFillSide: outcome,
+          lastFillQty: filledShares,
+        },
+      }).catch(() => {});
     }
     
     // Log fill for telemetry with v6.0.0 extended context
@@ -845,13 +889,26 @@ async function executeTrade(
           const microStartMs = Date.now();
           console.log(`[v7.0.1] PLACING ACCUMULATED MICRO-HEDGE: ${microResult.side} ${microResult.qty}@${(microResult.price * 100).toFixed(1)}¢`);
           
-          placeOrder({
+          // v7.2.5: Use placeOrderWithCaps for hard cap enforcement
+          const microOrderCtx: OrderContext = {
+            marketId: ctx.slug,
+            asset: ctx.market.asset,
+            outcome: microResult.side,
+            currentUpShares: ctx.position.upShares,
+            currentDownShares: ctx.position.downShares,
+            upCost: ctx.position.upInvested,
+            downCost: ctx.position.downInvested,
+            intentType: 'HEDGE',
+            runId: RUN_ID,
+          };
+          
+          placeOrderWithCaps({
             tokenId: microTokenId,
             side: 'BUY',
             price: microResult.price,
             size: microResult.qty,
             orderType: 'GTC',
-          }).then(microOrderResult => {
+          }, microOrderCtx).then(microOrderResult => {
             const microEndMs = Date.now();
             const fillLatencyMs = microEndMs - microStartMs;
             
@@ -1015,13 +1072,26 @@ async function executeHedgeWithRetry(
     // Wait before retry
     await new Promise(r => setTimeout(r, HEDGE_RETRY_CONFIG.retryDelayMs));
     
-    const result = await placeOrder({
+    // v7.2.5: Use placeOrderWithCaps for hard cap enforcement
+    const hedgeRetryCtx: OrderContext = {
+      marketId: ctx.slug,
+      asset: ctx.market.asset,
+      outcome,
+      currentUpShares: ctx.position.upShares,
+      currentDownShares: ctx.position.downShares,
+      upCost: ctx.position.upInvested,
+      downCost: ctx.position.downInvested,
+      intentType: 'HEDGE',
+      runId: RUN_ID,
+    };
+    
+    const result = await placeOrderWithCaps({
       tokenId,
       side: 'BUY',
       price: currentPrice,
       size: currentShares,
       orderType: 'GTC',
-    });
+    }, hedgeRetryCtx);
     
     if (result.success) {
       const filledShares = result.status === 'filled' ? currentShares : (result.filledSize ?? 0);
@@ -1388,7 +1458,20 @@ async function evaluateMarket(slug: string): Promise<void> {
         console.log(`🔥 [v7.2.0] EMERGENCY_SELL: ${dominantSide} ${sellQtyCandidate} shares @ ${(sellPrice * 100).toFixed(0)}¢`);
         
         try {
-          const sellResult = await placeOrder({
+          // v7.2.5: Use placeOrderWithCaps for hard cap enforcement (SELL orders)
+          const sellCtx: OrderContext = {
+            marketId: ctx.slug,
+            asset: ctx.market.asset,
+            outcome: dominantSide,
+            currentUpShares: ctx.position.upShares,
+            currentDownShares: ctx.position.downShares,
+            upCost: ctx.position.upInvested,
+            downCost: ctx.position.downInvested,
+            intentType: 'UNWIND',
+            runId: RUN_ID,
+          };
+          
+          const sellResult = await placeOrderWithCaps({
             tokenId,
             side: 'SELL',
             price: sellPrice,
@@ -1396,7 +1479,7 @@ async function evaluateMarket(slug: string): Promise<void> {
             orderType: 'GTC',
             intent: 'SURVIVAL',
             spread,
-          });
+          }, sellCtx);
           
           if (sellResult.success) {
             console.log(`✅ [v7.2.0] EMERGENCY_SELL executed: orderId=${sellResult.orderId}`);
@@ -2403,13 +2486,28 @@ async function main(): Promise<void> {
       }
       
       try {
-        const result = await placeOrder({
+        // v7.2.5: Use placeOrderWithCaps for hard cap enforcement
+        // Get current position from markets map if available
+        const marketCtx = markets.get(order.market_slug);
+        const queueOrderCtx: OrderContext = {
+          marketId: order.market_slug,
+          asset: order.asset,
+          outcome: order.outcome as 'UP' | 'DOWN',
+          currentUpShares: marketCtx?.position.upShares ?? 0,
+          currentDownShares: marketCtx?.position.downShares ?? 0,
+          upCost: marketCtx?.position.upInvested ?? 0,
+          downCost: marketCtx?.position.downInvested ?? 0,
+          intentType: order.intent_type || 'ENTRY',
+          runId: RUN_ID,
+        };
+        
+        const result = await placeOrderWithCaps({
           tokenId: order.token_id,
           side: 'BUY',
           price: order.price,
           size: orderShares,  // Use potentially resized shares
           orderType: order.order_type as 'GTC' | 'FOK' | 'GTD',
-        });
+        }, queueOrderCtx);
 
         if (result.success) {
           const status = result.status ?? 'unknown';
