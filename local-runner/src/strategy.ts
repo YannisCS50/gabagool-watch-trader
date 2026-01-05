@@ -144,6 +144,27 @@ export const STRATEGY = {
     edgeLockBuffer: 0.005,    // 0.5¢ buffer - abort if would burn edge in normal mode
     urgentOverpayCap: 0.01,   // 1¢ max overpay in urgent mode
   },
+
+  // v7 REV C: Partial-Pair Guardrails (market-state-manager.ts)
+  pairingGuardrails: {
+    // A) PAIRING State Timeout
+    pairingTimeoutSeconds: 45,    // Max dwell time in PAIRING state
+
+    // B) Dynamic Hedge Slippage Caps (per asset)
+    hedgeSlippageCaps: {
+      BTC: { base: 1.0, max: 2.0 },
+      ETH: { base: 1.5, max: 2.5 },
+      SOL: { base: 2.0, max: 3.0 },
+      XRP: { base: 2.0, max: 4.0 },
+    } as Record<string, { base: number; max: number }>,
+    volatilityMultiplier: 50,     // Scaling factor for vol-based cap
+    volatilityLookbackSeconds: 300, // 5 minutes lookback
+
+    // C) Bounded Hedge Chunk Sizing
+    minHedgeChunkAbs: 25,         // Minimum hedge chunk (shares)
+    minHedgeChunkPct: 0.25,       // 25% of one-sided position
+    maxHedgeChunkAbs: 100,        // Maximum hedge chunk (shares)
+  },
   
   // Tick & Rounding
   tick: {
