@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useLiveBotSettings } from './useLiveBotSettings';
+import { supabase } from '@/integrations/supabase/client';
 
 interface RealtimeLiveTrade {
   market: string;
@@ -39,8 +39,8 @@ function getFunctionsWsUrl(path: string): string {
 }
 
 export function useRealtimeLiveBot() {
-  const { isEnabled, setEnabled } = useLiveBotSettings();
-
+  const [isEnabled, setIsEnabledState] = useState(false);
+  
   const wsUrl = useMemo(() => getFunctionsWsUrl('live-trade-realtime'), []);
 
   const [status, setStatus] = useState<RealtimeLiveBotStatus>({
@@ -59,6 +59,37 @@ export function useRealtimeLiveBot() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Fetch enabled state from database
+  useEffect(() => {
+    const fetchEnabled = async () => {
+      try {
+        const { data } = await supabase
+          .from('live_bot_settings')
+          .select('is_enabled')
+          .single();
+        setIsEnabledState(data?.is_enabled ?? false);
+      } catch {
+        // Ignore errors
+      }
+    };
+    fetchEnabled();
+  }, []);
+
+  const setEnabled = useCallback(async (enabled: boolean) => {
+    try {
+      await supabase
+        .from('live_bot_settings')
+        .upsert({ 
+          id: '00000000-0000-0000-0000-000000000001',
+          is_enabled: enabled,
+          updated_at: new Date().toISOString()
+        });
+      setIsEnabledState(enabled);
+    } catch (err) {
+      console.error('Error setting enabled state:', err);
+    }
+  }, []);
 
   const clearTimers = useCallback(() => {
     if (reconnectTimeoutRef.current) {
@@ -130,24 +161,7 @@ export function useRealtimeLiveBot() {
             }));
             break;
 
-          // Live bot emits `signal` when it queues an order
           case 'signal':
-            setStatus((prev) => ({
-              ...prev,
-              lastTrades: [
-                {
-                  market: data.market,
-                  outcome: data.outcome,
-                  price: data.price,
-                  shares: data.shares,
-                  orderId: data.orderId,
-                },
-                ...prev.lastTrades,
-              ].slice(0, 20),
-            }));
-            break;
-
-          // Backwards-compatible (if server ever emits these)
           case 'trade':
             setStatus((prev) => ({
               ...prev,
@@ -192,7 +206,6 @@ export function useRealtimeLiveBot() {
     };
 
     ws.onerror = () => {
-      // Browser WebSocket error event is opaque; keep it user-friendly.
       setStatus((prev) => ({
         ...prev,
         isConnected: false,
@@ -211,7 +224,7 @@ export function useRealtimeLiveBot() {
 
       clearTimers();
 
-      // Always reconnect (bot checks enabled state internally)
+      // Reconnect after delay
       reconnectTimeoutRef.current = setTimeout(() => {
         connect();
       }, 5000);
@@ -219,7 +232,6 @@ export function useRealtimeLiveBot() {
   }, [clearTimers, wsUrl]);
 
   useEffect(() => {
-    // Always connect - the bot checks enabled state internally
     connect();
 
     return () => {
@@ -239,7 +251,6 @@ export function useRealtimeLiveBot() {
 
   return {
     ...status,
-    // Expose persisted state as the source of truth for UI toggles
     isEnabled,
     toggleEnabled,
     setEnabled,
