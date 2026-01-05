@@ -357,10 +357,10 @@ async function executeTrade(
   if (intent !== 'HEDGE') {
     const skewCheck = checkHardSkewStop(ctx.position);
     if (skewCheck.blocked) {
-      // v7.2.0: Throttle this log to once per 10s per market to reduce spam
+      // v7.2.1 HOTFIX E: Throttle to max 1 log per 30s per market per reason
       const logKey = `skew_block_${ctx.slug}`;
       const nowMs = Date.now();
-      if (!(global as any)[logKey] || (nowMs - (global as any)[logKey] > 10000)) {
+      if (!(global as any)[logKey] || (nowMs - (global as any)[logKey] > 30000)) {
         (global as any)[logKey] = nowMs;
         console.log(`🛑 TRADE BLOCKED: ${skewCheck.reason} (${ctx.market.asset})`);
       }
@@ -1001,6 +1001,21 @@ async function evaluateMarket(slug: string): Promise<void> {
 
   try {
     const nowMs = Date.now();
+    
+    // v7.2.1 HOTFIX C: Check if market is suspended due to balance error
+    const suspendKey = `market_suspended_${slug}`;
+    const suspendedUntil = (global as any)[suspendKey];
+    if (suspendedUntil && nowMs < suspendedUntil) {
+      const remainingSec = Math.ceil((suspendedUntil - nowMs) / 1000);
+      const logKey = `suspended_log_${slug}`;
+      if (!(global as any)[logKey] || (nowMs - (global as any)[logKey] > 30000)) {
+        (global as any)[logKey] = nowMs;
+        console.log(`⏸️ [v7.2.1] MARKET_SUSPENDED: ${ctx.market.asset} (${remainingSec}s remaining)`);
+      }
+      ctx.inFlight = false;
+      return;
+    }
+    
     const startTime = new Date(ctx.market.eventStartTime).getTime();
     const endTime = new Date(ctx.market.eventEndTime).getTime();
     const remainingSeconds = Math.floor((endTime - nowMs) / 1000);
@@ -1200,6 +1215,19 @@ async function evaluateMarket(slug: string): Promise<void> {
       
       const emergencyResult = checkEmergencyUnwindTrigger(slug, ctx.market.asset, emergencyCtx, RUN_ID);
       
+      // v7.2.1 HOTFIX A: CPP_IMPLAUSIBLE returns implausibleCpp=true but triggerEmergency=false
+      // In that case, freeze adds but do NOT place emergency orders
+      if (emergencyResult.implausibleCpp && !emergencyResult.triggerEmergency) {
+        // FREEZE_ADDS only - no order placement
+        const logKey = `freeze_adds_${slug}`;
+        if (!(global as any)[logKey] || (nowMs - (global as any)[logKey] > 30000)) {
+          (global as any)[logKey] = nowMs;
+          console.log(`🛑 [v7.2.1] FREEZE_ADDS: ${ctx.market.asset} - CPP implausible, blocking new adds`);
+        }
+        ctx.inFlight = false;
+        return;
+      }
+      
       if (emergencyResult.triggerEmergency) {
         // Emergency unwind mode: block entries, attempt to reduce position
         console.log(`🚨 [v6.6.0] EMERGENCY_UNWIND triggered for ${slug}`);
@@ -1211,75 +1239,107 @@ async function evaluateMarket(slug: string): Promise<void> {
         const dominantShares = dominantSide === 'UP' ? ctx.position.upShares : ctx.position.downShares;
         const tokenId = dominantSide === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
         
-        // Sell a chunk of the dominant position per tick to reduce risk
-        // - Target: 25%
-        // - Floor: 5 shares (otherwise we get stuck in endless EMERGENCY_UNWIND)
-        // - Cap: 50 shares
-        const desiredChunk = Math.floor(dominantShares * 0.25);
-        const sellShares = Math.min(50, dominantShares, Math.max(5, desiredChunk));
+        // v7.2.1 HOTFIX B: Check orderbook depth BEFORE attempting sell
+        const currentBid = dominantSide === 'UP' ? ctx.book.up.bid : ctx.book.down.bid;
+        const currentAsk = dominantSide === 'UP' ? ctx.book.up.ask : ctx.book.down.ask;
         
-        if (dominantShares >= 5 && sellShares >= 5) {
-          // Get current bid to sell at
-          const currentBid = dominantSide === 'UP' ? ctx.book.up.bid : ctx.book.down.bid;
-          const currentAsk = dominantSide === 'UP' ? ctx.book.up.ask : ctx.book.down.ask;
-          const spread = (typeof currentAsk === 'number' && typeof currentBid === 'number')
-            ? Math.max(0, currentAsk - currentBid)
-            : 0;
-          
-          if (typeof currentBid === 'number' && currentBid >= 0.01) {
-            // For a SELL, price at bid (placeOrder will improve by lowering further for SURVIVAL)
-            const sellPrice = Math.max(0.01, currentBid);
-            
-            console.log(`🔥 [v7.2.0] EMERGENCY_SELL: ${dominantSide} ${sellShares} shares @ ${(sellPrice * 100).toFixed(0)}¢`);
-            
-            try {
-              const sellResult = await placeOrder({
-                tokenId,
-                side: 'SELL',
-                price: sellPrice,
-                size: sellShares,
-                orderType: 'GTC',
-                intent: 'SURVIVAL',
-                spread,
-              });
-              
-              if (sellResult.success) {
-                console.log(`✅ [v7.2.0] EMERGENCY_SELL executed: orderId=${sellResult.orderId}`);
-                
-                // Update local position tracking (approximate)
-                if (dominantSide === 'UP') {
-                  ctx.position.upShares -= sellShares;
-                } else {
-                  ctx.position.downShares -= sellShares;
-                }
-                
-                // Log event
-                saveBotEvent({
-                  event_type: 'EMERGENCY_SELL',
-                  asset: ctx.market.asset,
-                  market_id: slug,
-                  run_id: RUN_ID,
-                  ts: Date.now(),
-                  data: {
-                    dominantSide,
-                    sharesSold: sellShares,
-                    price: sellPrice,
-                    orderId: sellResult.orderId,
-                    reason: emergencyResult.reason,
-                    cpp: costPerPaired,
-                  },
-                }).catch(() => { /* non-critical */ });
-              } else {
-                console.log(`⚠️ [v7.2.0] EMERGENCY_SELL failed: ${sellResult.error}`);
-              }
-            } catch (err) {
-              console.error(`❌ [v7.2.0] EMERGENCY_SELL error:`, err);
-            }
-          } else {
-            console.log(`⚠️ [v7.2.0] Cannot sell: no valid bid (${currentBid}) for ${dominantSide}`);
+        if (typeof currentBid !== 'number' || typeof currentAsk !== 'number' || currentBid < 0.01) {
+          // No valid book - abort emergency order, do NOT fallback to 1¢
+          const logKey = `emergency_abort_no_book_${slug}`;
+          if (!(global as any)[logKey] || (nowMs - (global as any)[logKey] > 30000)) {
+            (global as any)[logKey] = nowMs;
+            console.warn(`⏭️ [v7.2.1] EMERGENCY_ABORT_NO_BOOK: ${ctx.market.asset} - no valid bid/ask`);
           }
-        } else {
-          console.log(`⏭️ [v7.2.0] Skip emergency sell: only ${dominantShares} shares (need 5+)`);
+          ctx.inFlight = false;
+          return;
+        }
+        
+        const spread = Math.max(0, currentAsk - currentBid);
+        
+        // Sell a chunk of the dominant position per tick to reduce risk
+        const desiredChunk = Math.floor(dominantShares * 0.25);
+        const minEmergencySellShares = 5;
+        const maxEmergencySellShares = 50;
+        const sellQtyCandidate = Math.min(maxEmergencySellShares, dominantShares, Math.max(minEmergencySellShares, desiredChunk));
+        
+        // v7.2.1 HOTFIX D: Fix misleading log - show actual compared values
+        if (dominantShares < minEmergencySellShares || sellQtyCandidate < minEmergencySellShares) {
+          console.log(`⏭️ [v7.2.1] Skip emergency sell: sellQtyCandidate=${sellQtyCandidate} < minEmergencySellShares=${minEmergencySellShares}`);
+          ctx.inFlight = false;
+          return;
+        }
+        
+        // For a SELL, price at bid (placeOrder with SURVIVAL intent will improve by lowering further)
+        // v7.2.1: NEVER use fallback to 1¢ - if bid is too low, abort
+        const sellPrice = currentBid;
+        
+        console.log(`🔥 [v7.2.0] EMERGENCY_SELL: ${dominantSide} ${sellQtyCandidate} shares @ ${(sellPrice * 100).toFixed(0)}¢`);
+        
+        try {
+          const sellResult = await placeOrder({
+            tokenId,
+            side: 'SELL',
+            price: sellPrice,
+            size: sellQtyCandidate,
+            orderType: 'GTC',
+            intent: 'SURVIVAL',
+            spread,
+          });
+          
+          if (sellResult.success) {
+            console.log(`✅ [v7.2.0] EMERGENCY_SELL executed: orderId=${sellResult.orderId}`);
+            
+            // Update local position tracking (approximate)
+            if (dominantSide === 'UP') {
+              ctx.position.upShares -= sellQtyCandidate;
+            } else {
+              ctx.position.downShares -= sellQtyCandidate;
+            }
+            
+            // Log event
+            saveBotEvent({
+              event_type: 'EMERGENCY_SELL',
+              asset: ctx.market.asset,
+              market_id: slug,
+              run_id: RUN_ID,
+              ts: Date.now(),
+              data: {
+                dominantSide,
+                sharesSold: sellQtyCandidate,
+                price: sellPrice,
+                orderId: sellResult.orderId,
+                reason: emergencyResult.reason,
+                cpp: costPerPaired,
+              },
+            }).catch(() => { /* non-critical */ });
+          } else {
+            // v7.2.1 HOTFIX C: Handle balance/allowance error
+            const isBalanceError = sellResult.error?.toLowerCase().includes('balance') 
+              || sellResult.error?.toLowerCase().includes('allowance');
+            
+            if (isBalanceError) {
+              console.warn(`🛑 [v7.2.1] EMERGENCY_ABORT_BALANCE: ${ctx.market.asset}`);
+              console.warn(`   Error: ${sellResult.error}`);
+              console.warn(`   → Market suspended for 60s, setting UNWIND_ONLY`);
+              
+              // Suspend market for 60s
+              const suspendKey = `market_suspended_${slug}`;
+              (global as any)[suspendKey] = nowMs + 60000;
+              
+              saveBotEvent({
+                event_type: 'EMERGENCY_ABORT_BALANCE',
+                asset: ctx.market.asset,
+                market_id: slug,
+                run_id: RUN_ID,
+                ts: nowMs,
+                data: { error: sellResult.error },
+              }).catch(() => {});
+            } else {
+              console.log(`⚠️ [v7.2.0] EMERGENCY_SELL failed: ${sellResult.error}`);
+            }
+          }
+        } catch (err) {
+          console.error(`❌ [v7.2.0] EMERGENCY_SELL error:`, err);
         }
         
         ctx.inFlight = false;

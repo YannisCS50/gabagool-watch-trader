@@ -848,19 +848,23 @@ export function checkEmergencyUnwindTrigger(
   // v6.6.1 FIX: CPP checks only apply when paired > 0
   // When paired=0, we're in one-sided state - CPP guards would deadlock the bot
   if (paired > 0 && costPerPaired > 0) {
-    // CPP implausible check (> 1.50) - likely units bug
+    // v7.2.1 HOTFIX: CPP_IMPLAUSIBLE must NOT trigger EMERGENCY_UNWIND
+    // The CPP formula includes unpaired exposure, so high values are expected
+    // and do not indicate a real emergency situation.
+    // Instead: log throttled warning + return implausibleCpp flag for FREEZE_ADDS
     if (costPerPaired > cfg.cppImplausible) {
-      const reason = `CPP_IMPLAUSIBLE: cpp=${costPerPaired.toFixed(3)} > ${cfg.cppImplausible} (likely units bug)`;
-      
-      // Log CPP components for debugging
-      console.log(`🚨 [CPP_IMPLAUSIBLE] ${marketId}`);
-      console.log(`   cpp=${costPerPaired.toFixed(3)} (> ${cfg.cppImplausible})`);
-      console.log(`   upShares=${upShares}, downShares=${downShares}, paired=${paired}`);
-      console.log(`   upInvested=$${upInvested.toFixed(2)}, downInvested=$${downInvested.toFixed(2)}`);
-      console.log(`   Formula: cpp = (${upInvested.toFixed(2)} + ${downInvested.toFixed(2)}) / ${paired} = ${costPerPaired.toFixed(3)}`);
-      
-      triggerEmergencyUnwind(state, asset, reason, dominantSide, true, runId);
-      return { triggerEmergency: true, reason, dominantSide, implausibleCpp: true };
+      // Throttle log to once per 30s per market
+      const logKey = `cpp_implausible_warn_${marketId}`;
+      const now = Date.now();
+      if (!(global as any)[logKey] || (now - (global as any)[logKey] > 30000)) {
+        (global as any)[logKey] = now;
+        console.warn(`⚠️ [CPP_IMPLAUSIBLE] ${marketId} cpp=${costPerPaired.toFixed(3)} > ${cfg.cppImplausible}`);
+        console.warn(`   upShares=${upShares}, downShares=${downShares}, paired=${paired}`);
+        console.warn(`   → FREEZE_ADDS only (no emergency order placement)`);
+      }
+      // Return implausibleCpp=true so caller can set FREEZE_ADDS
+      // But triggerEmergency=false to prevent order placement!
+      return { triggerEmergency: false, reason: 'CPP_IMPLAUSIBLE_FREEZE_ADDS', dominantSide, implausibleCpp: true };
     }
     
     // CPP emergency check (>= 1.10)
