@@ -155,6 +155,7 @@ export const STRATEGY = {
   // Opening parameters
   opening: {
     maxPrice: 0.52,           // Markets start ~48-52¢
+    minPrice: 0.35,           // v6.3.2: Never open below 35¢ - implies 65% against you
     skipEdgeCheck: true,      // At open, trade directly
     maxDelayMs: 5000,         // Max wait after market open
   },
@@ -1262,6 +1263,14 @@ export function buildEntry(
   const shares = Math.floor(tradeSize / price);
   
   if (shares < 1) return null;
+  
+  // v6.3.2: Block entries on prices that are too low (implies market already decided)
+  // E.g. 9¢ means 91% probability against you - never take that bet
+  if (price < STRATEGY.opening.minPrice) {
+    console.log(`🛡️ [v6.3.2] ENTRY BLOCKED: ${side} @ ${(price * 100).toFixed(0)}¢ < min ${(STRATEGY.opening.minPrice * 100).toFixed(0)}¢`);
+    console.log(`   → Price too low, implies ${((1 - price) * 100).toFixed(0)}% probability against. Skipping.`);
+    return null;
+  }
   
   const combined = upAsk + downAsk;
   const edge = ((1 - combined) * 100).toFixed(1);
