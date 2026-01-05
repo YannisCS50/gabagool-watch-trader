@@ -116,8 +116,16 @@ const Index = () => {
                     <ChevronDown className="w-3 h-3 ml-1" />
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-48 bg-popover border border-border">
+                <DropdownMenuContent align="end" className="w-56 bg-popover border border-border">
                   <div className="p-1 space-y-1">
+                    <a 
+                      href="/polymarket-extraction-2026-01-05.json" 
+                      download="polymarket-extraction-2026-01-05.json"
+                      className="flex items-center gap-2 w-full px-2 py-1.5 text-sm rounded-sm hover:bg-accent hover:text-accent-foreground transition-colors"
+                    >
+                      <Download className="w-4 h-4" />
+                      Polymarket Extraction
+                    </a>
                     <BotAnalysisDownload />
                     <DownloadZipButton />
                     <DownloadStrategyButton />
