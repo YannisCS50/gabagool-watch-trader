@@ -66,13 +66,13 @@ const readinessStore = new Map<string, ReadinessState>();
 export function isTokenReady(book: BookTop, bookAgeMs: number): boolean {
   // Must have book data
   if (!book) return false;
-  
-  // Must have bid OR ask
-  if (book.bid === null && book.ask === null) return false;
-  
+
+  // For BUY-based strategies we need an ask; bid-only books are not tradeable.
+  if (book.ask === null) return false;
+
   // Must be fresh
   if (bookAgeMs > V7_READINESS_CONFIG.maxSnapshotAgeMs) return false;
-  
+
   return true;
 }
 
@@ -188,9 +188,14 @@ export function checkReadinessGate(
   // Not ready - check if we should disable
   const secSinceFirstSeen = (nowMs - state.firstSeenAtMs) / 1000;
 
+  // Only "NO ORDERBOOK" conditions should permanently disable a market.
+  // Wide spreads can normalize later, so we keep waiting.
+  const reason = readiness.reason ?? 'UNKNOWN_NOT_READY';
+  const shouldDisable = reason === 'UP_NOT_READY' || reason === 'DOWN_NOT_READY' || reason === 'BOTH_SIDES_NOT_READY';
+
   // NOTE: We intentionally gate by "time since runner first saw this market".
   // The runner can start mid-interval; using marketOpenTs would instantly disable.
-  if (secSinceFirstSeen > V7_READINESS_CONFIG.disableTimeoutSec) {
+  if (shouldDisable && secSinceFirstSeen > V7_READINESS_CONFIG.disableTimeoutSec) {
     // DISABLE this market until next round
     state.disabled = true;
     state.disabledReason = `MARKET_DISABLED_NO_ORDERBOOK: not ready after ${V7_READINESS_CONFIG.disableTimeoutSec}s`;
@@ -198,7 +203,7 @@ export function checkReadinessGate(
     const secSinceOpen = (nowMs - marketOpenTs) / 1000;
 
     console.log(`🚫 [v7.0.1] MARKET DISABLED: ${marketId}`);
-    console.log(`   Reason: ${readiness.reason}`);
+    console.log(`   Reason: ${reason}`);
     console.log(
       `   Time since first seen: ${secSinceFirstSeen.toFixed(1)}s > ${V7_READINESS_CONFIG.disableTimeoutSec}s threshold (market open age: ${secSinceOpen.toFixed(1)}s)`
     );
@@ -209,7 +214,7 @@ export function checkReadinessGate(
       asset,
       market_id: marketId,
       run_id: runId,
-      reason_code: readiness.reason,
+      reason_code: reason,
       data: {
         secSinceFirstSeen,
         secSinceOpen,
@@ -223,8 +228,8 @@ export function checkReadinessGate(
     return { allowed: false, disabled: true, reason: state.disabledReason };
   }
 
-  // Not ready but not timed out yet - block but don't disable
-  return { allowed: false, disabled: false, reason: readiness.reason };
+  // Not ready but not disabled
+  return { allowed: false, disabled: false, reason };
 }
 
 /**
