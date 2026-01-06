@@ -83,6 +83,7 @@ import {
 // v7.2.4 REV C.4: Hard Invariants (position caps, one-sided freeze, CPP paired-only)
 // v7.2.5 REV C.5: placeOrderWithCaps is now the ONLY allowed order entry point
 // v7.2.6: ExposureLedger for effective exposure tracking
+// v7.2.7 REV C.4.1: Concurrency safety (mutex, burst limiter, halt on breach)
 import {
   checkAllInvariants,
   onFillUpdateInvariants,
@@ -91,7 +92,11 @@ import {
   isFreezeAddsActive,
   calculateCppPairedOnly,
   HARD_INVARIANT_CONFIG,
+  HALT_ON_BREACH_CONFIG,
   placeOrderWithCaps,
+  checkForEffectiveBreachHalt,
+  getConcurrencyStats,
+  clearConcurrencyState,
   type OrderSide,
   type OrderContext,
 } from './hard-invariants.js';
@@ -102,6 +107,9 @@ import {
   getLedgerEntry,
   assertInvariants as ledgerAssertInvariants,
 } from './exposure-ledger.js';
+// v7.2.7: Market mutex for concurrency protection
+import { tryAcquire as mutexTryAcquire, forceRelease as mutexForceRelease, getMutexStats } from './market-mutex.js';
+import { BURST_LIMITER_CONFIG, getBurstStats, clearBurstState } from './burst-limiter.js';
 
 // Ensure Node prefers IPv4 to avoid hangs on IPv6-only DNS results under some VPN setups.
 try {
@@ -112,7 +120,7 @@ try {
 }
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '7.2.6';  // v7.2.6: ExposureLedger for effective exposure tracking
+const RUNNER_VERSION = '7.2.7';  // v7.2.7: Concurrency safety (mutex, burst limiter, halt on breach)
 const RUN_ID = crypto.randomUUID();
 
 // v7 REV C: Initialize MarketStateManager singleton
@@ -203,6 +211,13 @@ async function printStartupBanner(): Promise<void> {
   console.log(`║     ✓ maxTotalSharesPerMarket: ${HARD_INVARIANT_CONFIG.maxTotalSharesPerMarket} shares                   ║`);
   console.log(`║     ✓ ONE_SIDED freeze adds (no adds on dominant side)         ║`);
   console.log(`║     ✓ CPP paired-only (avgUp + avgDown cents)                  ║`);
+  
+  // v7.2.7 REV C.4.1: Concurrency safety
+  console.log('╠════════════════════════════════════════════════════════════════╣');
+  console.log(`║  🔐 v7.2.7 REV C.4.1 CONCURRENCY SAFETY:                         ║`);
+  console.log(`║     ✓ Per-market mutex (no concurrent orders)                  ║`);
+  console.log(`║     ✓ Burst limiter: max ${BURST_LIMITER_CONFIG.maxOrdersPerMinutePerMarket}/min, ${BURST_LIMITER_CONFIG.minMsBetweenOrdersPerMarket}ms min interval      ║`);
+  console.log(`║     ✓ Halt on breach: suspend market + cancel orders           ║`);
   
   console.log('╚════════════════════════════════════════════════════════════════╝');
   console.log('');
@@ -319,8 +334,10 @@ async function fetchMarkets(): Promise<void> {
         v7ClearReadinessState(slug);
         resetMicroHedgeAccumulator(slug);
         // v7.2.6: Clear ledger for expired market
+        // v7.2.7: Clear concurrency state (mutex, burst limiter)
         if (ctx) {
           ledgerClearMarket(slug, ctx.market.asset);
+          clearConcurrencyState(slug, ctx.market.asset);
         }
         markets.delete(slug);
       }
@@ -1357,6 +1374,24 @@ async function evaluateMarket(slug: string): Promise<void> {
         (global as any)[logKey] = nowMs;
         console.log(`⏸️ [v7.2.2] MARKET_SUSPENDED: ${ctx.market.asset} - ${suspensionCheck.reason}`);
       }
+      ctx.inFlight = false;
+      return;
+    }
+    
+    // ============================================================
+    // v7.2.7 REV C.4.1: PROACTIVE EFFECTIVE EXPOSURE BREACH CHECK
+    // Halt market if effective exposure exceeds caps
+    // ============================================================
+    const breachCheck = checkForEffectiveBreachHalt(slug, ctx.market.asset, RUN_ID);
+    if (breachCheck.breached) {
+      console.error(`🚨 [v7.2.7] EFFECTIVE_BREACH_HALT: ${ctx.market.asset}`);
+      console.error(`   Effective: UP=${breachCheck.effectiveUp} DOWN=${breachCheck.effectiveDown} TOTAL=${breachCheck.effectiveTotal}`);
+      for (const v of breachCheck.violations) {
+        console.error(`   ❌ ${v}`);
+      }
+      
+      // Suspend market for 15 minutes
+      marketStateManager?.suspendMarket(slug, ctx.market.asset, HALT_ON_BREACH_CONFIG.suspendDurationMs, 'EFFECTIVE_EXPOSURE_BREACH');
       ctx.inFlight = false;
       return;
     }

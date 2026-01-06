@@ -1,6 +1,6 @@
 /**
- * hard-invariants.ts - v7.2.6 REV C.6 HARD INVARIANTS + EXPOSURE LEDGER
- * ======================================================================
+ * hard-invariants.ts - v7.2.7 REV C.4.1 HARD INVARIANTS + CONCURRENCY SAFETY
+ * ==========================================================================
  * Implements ABSOLUTE guards that MUST hold for every order:
  * 
  * A) HARD POSITION CAP ENFORCEMENT via ExposureLedger
@@ -27,12 +27,17 @@
  *    - Cap checks use EFFECTIVE EXPOSURE to prevent race conditions
  *    - Ledger updated on: place, ack, fill, cancel, reject
  * 
+ * F) CONCURRENCY SAFETY (v7.2.7 REV C.4.1)
+ *    - Per-market mutex to prevent concurrent order placement
+ *    - Burst limiter (max 6 orders/min, min 2s interval)
+ *    - Halt on invariant breach (cancel orders + suspend market)
+ * 
  * These invariants are checked IMMEDIATELY BEFORE any order placement.
  * NO CODE PATH MAY BYPASS THESE CHECKS.
  */
 
 import { saveBotEvent } from './backend.js';
-import { placeOrder as rawPlaceOrder, getOrderbookDepth, OrderbookDepth } from './polymarket.js';
+import { placeOrder as rawPlaceOrder, getOrderbookDepth, OrderbookDepth, cancelOrder } from './polymarket.js';
 import {
   checkCapWithEffectiveExposure,
   reservePending,
@@ -46,8 +51,13 @@ import {
   clearMarket as ledgerClearMarket,
   getEffectiveExposure,
   getLedgerEntry,
+  EXPOSURE_CAP_CONFIG,
   type Side as LedgerSide,
 } from './exposure-ledger.js';
+
+// v7.2.7 REV C.4.1: Concurrency safety imports
+import { tryAcquire, forceRelease, getMutexStats, type AcquireResult } from './market-mutex.js';
+import { checkBurstLimit, recordOrderPlacement, clearBurstState, getBurstStats, BURST_LIMITER_CONFIG } from './burst-limiter.js';
 
 // ============================================================
 // CONFIGURATION
@@ -64,6 +74,19 @@ export const HARD_INVARIANT_CONFIG = {
   
   // Logging throttle
   logThrottleMs: 5000,
+};
+
+// ============================================================
+// HALT-ON-BREACH CONFIGURATION (v7.2.7 REV C.4.1)
+// ============================================================
+
+export const HALT_ON_BREACH_CONFIG = {
+  // Suspend market for this duration on breach
+  suspendDurationMs: 15 * 60 * 1000, // 15 minutes
+  // Cancel all open orders on breach
+  cancelOrdersOnBreach: true,
+  // Max cancel attempts per order
+  maxCancelAttempts: 3,
 };
 
 // ============================================================
@@ -869,13 +892,21 @@ export interface OrderContext {
 /**
  * placeOrderWithCaps - THE ONLY ALLOWED ENTRY POINT FOR ORDER PLACEMENT
  * 
+ * v7.2.7 REV C.4.1: Now includes:
+ * - Per-market mutex (concurrency protection)
+ * - Burst limiter (max 6 orders/min, min 2s interval)
+ * - Halt on invariant breach (suspend market)
+ * 
  * v7.2.6: Uses ExposureLedger for authoritative cap tracking.
  * 
  * This function:
- * 1. Checks caps using EFFECTIVE EXPOSURE (position + open + pending)
- * 2. Reserves pending shares BEFORE calling rawPlaceOrder
- * 3. Promotes to open on ACK, releases on rejection
- * 4. Logs structured order attempts
+ * 1. Acquires market mutex (blocks concurrent orders)
+ * 2. Checks burst limit (rate limiting)
+ * 3. Checks caps using EFFECTIVE EXPOSURE (position + open + pending)
+ * 4. Reserves pending shares BEFORE calling rawPlaceOrder
+ * 5. Promotes to open on ACK, releases on rejection
+ * 6. Records order placement for burst limiter
+ * 7. Releases mutex
  * 
  * ALL order placements in the codebase MUST use this function.
  * Direct calls to placeOrder are FORBIDDEN.
@@ -891,6 +922,79 @@ export async function placeOrderWithCaps(
     outcome,
     currentUpShares: _posUpIgnored, // Position is now tracked by ledger
     currentDownShares: _posDownIgnored,
+    upCost = 0,
+    downCost = 0,
+    intentType,
+    runId,
+  } = ctx;
+
+  // ================================================================
+  // STEP 0: CHECK BURST LIMIT (before acquiring mutex)
+  // ================================================================
+  const burstCheck = checkBurstLimit({
+    marketId,
+    asset,
+    side: order.side,
+    runId,
+  });
+
+  if (burstCheck.blocked) {
+    return {
+      success: false,
+      error: `BURST_BLOCKED: ${burstCheck.reason}`,
+      failureReason: 'cap_blocked',
+    };
+  }
+
+  // ================================================================
+  // STEP 1: ACQUIRE MARKET MUTEX
+  // ================================================================
+  const lock = tryAcquire(marketId, asset, `placeOrder_${intentType}`, runId);
+
+  if (!lock.acquired) {
+    saveBotEvent({
+      event_type: 'ORDER_MUTEX_BLOCKED',
+      asset,
+      market_id: marketId,
+      ts: now,
+      run_id: runId,
+      data: {
+        side: order.side,
+        outcome,
+        size: order.size,
+        intentType,
+        reason: lock.reason,
+      },
+    }).catch(() => {});
+
+    return {
+      success: false,
+      error: `MUTEX_BLOCKED: ${lock.reason}`,
+      failureReason: 'cap_blocked',
+    };
+  }
+
+  // From this point, we MUST release the mutex in finally block
+  try {
+    return await placeOrderWithCapsInner(order, ctx, now);
+  } finally {
+    lock.release();
+  }
+}
+
+/**
+ * Inner function that does the actual order placement.
+ * Must be called with mutex already acquired.
+ */
+async function placeOrderWithCapsInner(
+  order: CappedOrderRequest,
+  ctx: OrderContext,
+  startTime: number
+): Promise<CappedOrderResponse> {
+  const {
+    marketId,
+    asset,
+    outcome,
     upCost = 0,
     downCost = 0,
     intentType,
@@ -1097,14 +1201,62 @@ export async function placeOrderWithCaps(
   } else {
     // Order accepted: promote pending → open
     promoteToOpen(marketId, asset, ledgerSide, finalSize);
+
+    // v7.2.7 REV C.4.1: Record successful order for burst limiter
+    recordOrderPlacement({
+      marketId,
+      asset,
+      side: order.side,
+    });
   }
 
   // 7) ASSERT INVARIANTS after ledger update
   const invariantCheck = ledgerAssertInvariants(marketId, asset, runId);
   if (!invariantCheck.valid) {
-    // Critical: ledger shows breach, but order already placed
-    // This should not happen if logic is correct, but log for debugging
-    console.error(`🚨 [LEDGER] POST-ORDER INVARIANT BREACH (order already placed!)`);
+    // v7.2.7 REV C.4.1: HALT ON BREACH - Cancel orders and suspend market
+    console.error(`🚨 [LEDGER] INVARIANT_BREACH_HALT: ${asset} ${marketId}`);
+    console.error(`   Effective: UP=${invariantCheck.exposure.effectiveUp} DOWN=${invariantCheck.exposure.effectiveDown}`);
+    console.error(`   Caps: maxPerSide=${EXPOSURE_CAP_CONFIG.maxSharesPerSide} maxTotal=${EXPOSURE_CAP_CONFIG.maxTotalSharesPerMarket}`);
+
+    saveBotEvent({
+      event_type: 'INVARIANT_BREACH_HALT',
+      asset,
+      market_id: marketId,
+      ts: Date.now(),
+      run_id: runId,
+      reason_code: 'EFFECTIVE_EXPOSURE_BREACH',
+      data: {
+        effectiveUp: invariantCheck.exposure.effectiveUp,
+        effectiveDown: invariantCheck.exposure.effectiveDown,
+        effectiveTotal: invariantCheck.exposure.effectiveUp + invariantCheck.exposure.effectiveDown,
+        maxSharesPerSide: EXPOSURE_CAP_CONFIG.maxSharesPerSide,
+        maxTotalSharesPerMarket: EXPOSURE_CAP_CONFIG.maxTotalSharesPerMarket,
+        violations: invariantCheck.violations,
+        lastOrderId: result.orderId,
+      },
+    }).catch(() => {});
+
+    // v7.2.7: Cancel all open orders for this market (best-effort)
+    if (HALT_ON_BREACH_CONFIG.cancelOrdersOnBreach && result.orderId) {
+      console.log(`🚫 [HALT] Attempting to cancel order ${result.orderId}...`);
+      try {
+        await cancelOrder(result.orderId);
+        console.log(`✅ [HALT] Order ${result.orderId} cancelled`);
+      } catch (cancelErr: any) {
+        console.error(`❌ [HALT] Failed to cancel order: ${cancelErr?.message}`);
+      }
+    }
+
+    // Note: Market suspension should be handled by the caller (index.ts)
+    // as it has access to the MarketStateManager instance.
+    // We return a special flag to indicate breach occurred.
+    return {
+      ...result,
+      clamped: wasClamped,
+      originalSize: wasClamped ? order.size : undefined,
+      // Signal to caller that market should be suspended
+      error: result.success ? 'INVARIANT_BREACH_HALT' : result.error,
+    };
   }
 
   // 8) LOG SUCCESS with cap enforcement info
@@ -1117,6 +1269,87 @@ export async function placeOrderWithCaps(
     clamped: wasClamped,
     originalSize: wasClamped ? order.size : undefined,
   };
+}
+
+// ============================================================
+// H) HALT-ON-BREACH API (v7.2.7 REV C.4.1)
+// ============================================================
+
+/**
+ * Check if effective exposure exceeds caps for a market.
+ * Used for proactive breach detection in the main loop.
+ */
+export function checkForEffectiveBreachHalt(
+  marketId: string,
+  asset: string,
+  runId?: string
+): {
+  breached: boolean;
+  effectiveUp: number;
+  effectiveDown: number;
+  effectiveTotal: number;
+  violations: string[];
+} {
+  const exposure = getEffectiveExposure(marketId, asset);
+  const effectiveTotal = exposure.effectiveUp + exposure.effectiveDown;
+  const violations: string[] = [];
+
+  if (exposure.effectiveUp > EXPOSURE_CAP_CONFIG.maxSharesPerSide) {
+    violations.push(`EFFECTIVE_UP=${exposure.effectiveUp} > ${EXPOSURE_CAP_CONFIG.maxSharesPerSide}`);
+  }
+  if (exposure.effectiveDown > EXPOSURE_CAP_CONFIG.maxSharesPerSide) {
+    violations.push(`EFFECTIVE_DOWN=${exposure.effectiveDown} > ${EXPOSURE_CAP_CONFIG.maxSharesPerSide}`);
+  }
+  if (effectiveTotal > EXPOSURE_CAP_CONFIG.maxTotalSharesPerMarket) {
+    violations.push(`EFFECTIVE_TOTAL=${effectiveTotal} > ${EXPOSURE_CAP_CONFIG.maxTotalSharesPerMarket}`);
+  }
+
+  const breached = violations.length > 0;
+
+  if (breached) {
+    saveBotEvent({
+      event_type: 'EFFECTIVE_BREACH_DETECTED',
+      asset,
+      market_id: marketId,
+      ts: Date.now(),
+      run_id: runId,
+      data: {
+        effectiveUp: exposure.effectiveUp,
+        effectiveDown: exposure.effectiveDown,
+        effectiveTotal,
+        violations,
+      },
+    }).catch(() => {});
+  }
+
+  return {
+    breached,
+    effectiveUp: exposure.effectiveUp,
+    effectiveDown: exposure.effectiveDown,
+    effectiveTotal,
+    violations,
+  };
+}
+
+/**
+ * Get concurrency stats for diagnostics.
+ */
+export function getConcurrencyStats(): {
+  mutex: ReturnType<typeof getMutexStats>;
+  burst: ReturnType<typeof getBurstStats>;
+} {
+  return {
+    mutex: getMutexStats(),
+    burst: getBurstStats(),
+  };
+}
+
+/**
+ * Clear all concurrency state for a market (e.g., on expiry).
+ */
+export function clearConcurrencyState(marketId: string, asset: string): void {
+  forceRelease(marketId, asset);
+  clearBurstState(marketId, asset);
 }
 
 /**
