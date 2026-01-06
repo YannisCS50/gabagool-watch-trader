@@ -2012,8 +2012,14 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
     case 'HEDGED': {
       // v6.1.1: Hard guardrail check - blockAccumulate means NO adds at all
       if (guardrails.blockAccumulate) {
-        const tag = marketId ? ` [${marketId}]` : '';
-        console.log(`[v6.1.1] 🛑 BLOCK accumulate${tag}: ${guardrails.reason}`);
+        // v7.2.9: Throttle this log to max 1x per 10s per market
+        const logKey = `block_accumulate_log_${marketId ?? 'unknown'}`;
+        const nowMs = Date.now();
+        if (!(global as any)[logKey] || (nowMs - (global as any)[logKey] > 10000)) {
+          (global as any)[logKey] = nowMs;
+          const tag = marketId ? ` [${marketId}]` : '';
+          console.log(`[v6.1.1] 🛑 BLOCK accumulate${tag}: ${guardrails.reason}`);
+        }
 
         // If paired min not reached and allowed to rebalance, force to minority side
         if (guardrails.allowRebalance && guardrails.blockDominantSideAdd && !guardrails.pairedMinReached) {
@@ -2071,8 +2077,14 @@ export function evaluateWithContext(ctx: EvaluationContext): TradeSignal | null 
       const shareDiff = Math.abs(inv.upShares - inv.downShares);
       const avgShares = (inv.upShares + inv.downShares) / 2;
       if (avgShares > 0 && shareDiff / avgShares > 0.1) {
-        const tag = marketId ? ` [${marketId}]` : '';
-        console.log(`[v6.1.1] BLOCK accumulate${tag}: shares not balanced (diff=${shareDiff})`);
+        // v7.2.9: Throttle this log too
+        const logKey2 = `block_accum_balance_${marketId ?? 'unknown'}`;
+        const nowMs2 = Date.now();
+        if (!(global as any)[logKey2] || (nowMs2 - (global as any)[logKey2] > 10000)) {
+          (global as any)[logKey2] = nowMs2;
+          const tag = marketId ? ` [${marketId}]` : '';
+          console.log(`[v6.1.1] BLOCK accumulate${tag}: shares not balanced (diff=${shareDiff})`);
+        }
         return null;
       }
       
