@@ -111,6 +111,26 @@ import {
 import { tryAcquire as mutexTryAcquire, forceRelease as mutexForceRelease, getMutexStats } from './market-mutex.js';
 import { BURST_LIMITER_CONFIG, getBurstStats, clearBurstState } from './burst-limiter.js';
 
+// v7.2.8 REV C.4.2: PnL Accounting + Sell Policy
+import {
+  processFill as accountingProcessFill,
+  processSettlement as accountingProcessSettlement,
+  updateMarkPrices as accountingUpdateMarkPrices,
+  getMarketPnL,
+  getGlobalPnL,
+  getEntry as getAccountingEntry,
+  initializePosition as accountingInitializePosition,
+  clearMarket as accountingClearMarket,
+  logPnLSnapshot,
+  type FillEvent as AccountingFillEvent,
+} from './accounting-ledger.js';
+import {
+  checkSellPolicy,
+  getSellPolicy,
+  logSellPolicyStatus,
+  type SellReason,
+} from './sell-policy.js';
+
 // Ensure Node prefers IPv4 to avoid hangs on IPv6-only DNS results under some VPN setups.
 try {
   dns.setDefaultResultOrder('ipv4first');
@@ -120,7 +140,7 @@ try {
 }
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '7.2.7';  // v7.2.7: Concurrency safety (mutex, burst limiter, halt on breach)
+const RUNNER_VERSION = '7.2.8';  // v7.2.8: PnL accounting (realized/unrealized) + sell policy (gabagool style)
 const RUN_ID = crypto.randomUUID();
 
 // v7 REV C: Initialize MarketStateManager singleton
@@ -219,9 +239,25 @@ async function printStartupBanner(): Promise<void> {
   console.log(`║     ✓ Burst limiter: max ${BURST_LIMITER_CONFIG.maxOrdersPerMinutePerMarket}/min, ${BURST_LIMITER_CONFIG.minMsBetweenOrdersPerMarket}ms min interval      ║`);
   console.log(`║     ✓ Halt on breach: suspend market + cancel orders           ║`);
   
+  // v7.2.8 REV C.4.2: PnL Accounting + Sell Policy
+  console.log('╠════════════════════════════════════════════════════════════════╣');
+  console.log(`║  📊 v7.2.8 REV C.4.2 PNL ACCOUNTING:                              ║`);
+  console.log(`║     ✓ Realized PnL: tracked per SELL/settlement                ║`);
+  console.log(`║     ✓ Unrealized PnL: mark-to-market (bestBid)                 ║`);
+  console.log(`║     ✓ Cost basis: average-cost method                          ║`);
+  const policy = getSellPolicy();
+  const modeLabel = (!policy.allowProactiveSells && !policy.allowProfitTakingSells) 
+    ? '💎 GABAGOOL' 
+    : (policy.allowProactiveSells && policy.allowProfitTakingSells) 
+      ? '⚡ AGGRESSIVE' 
+      : '🔀 CUSTOM';
+  console.log(`║     ✓ Sell Policy: ${modeLabel} (proactive=${policy.allowProactiveSells ? 'ON' : 'OFF'})             ║`);
+  
   console.log('╚════════════════════════════════════════════════════════════════╝');
   console.log('');
-}
+  
+  // Log full sell policy details
+  logSellPolicyStatus();
 
 let currentBalance = 0;
 let lastClaimCheck = 0;
@@ -335,9 +371,11 @@ async function fetchMarkets(): Promise<void> {
         resetMicroHedgeAccumulator(slug);
         // v7.2.6: Clear ledger for expired market
         // v7.2.7: Clear concurrency state (mutex, burst limiter)
+        // v7.2.8: Clear accounting ledger for expired market
         if (ctx) {
           ledgerClearMarket(slug, ctx.market.asset);
           clearConcurrencyState(slug, ctx.market.asset);
+          accountingClearMarket(slug, ctx.market.asset);
         }
         markets.delete(slug);
       }
@@ -635,6 +673,18 @@ async function executeTrade(
             downBestBid: ctx.book.down.bid,
           });
           
+          // v7.2.8: Update accounting ledger with fill
+          accountingProcessFill({
+            marketId: ctx.slug,
+            asset: ctx.market.asset,
+            side: outcome as 'UP' | 'DOWN',
+            action: 'BUY',  // Hedge is always a BUY (we don't SELL during normal operation)
+            qty: filledShares,
+            price: avgPrice,
+            orderId: escalationResult.orderId,
+            runId: RUN_ID,
+          });
+          
           await saveTrade({
             market_slug: ctx.slug,
             asset: ctx.market.asset,
@@ -783,6 +833,18 @@ async function executeTrade(
       downBestAsk: ctx.book.down.ask,
       upBestBid: ctx.book.up.bid,
       downBestBid: ctx.book.down.bid,
+    });
+    
+    // v7.2.8: Update accounting ledger with fill
+    accountingProcessFill({
+      marketId: ctx.slug,
+      asset: ctx.market.asset,
+      side: outcome as 'UP' | 'DOWN',
+      action: 'BUY',  // All fills are BUYs (gabagool style - no proactive sells)
+      qty: filledShares,
+      price: result.avgPrice || price,
+      orderId: result.orderId,
+      runId: RUN_ID,
     });
   }
 
@@ -3001,7 +3063,18 @@ async function main(): Promise<void> {
         btcPrice: lastBtcPrice,
         ethPrice: lastEthPrice,
       });
+      
+      // v7.2.8: Update mark prices for unrealized PnL calculation
+      accountingUpdateMarkPrices(
+        ctx.slug,
+        ctx.market.asset,
+        ctx.book.up.bid,   // Conservative: use bestBid (what we can sell at)
+        ctx.book.down.bid,
+      );
     }
+    
+    // v7.2.8: Log global PnL snapshot (throttled internally)
+    logPnLSnapshot(RUN_ID);
   }, SNAPSHOT_INTERVAL_MS);
 
   // ===================================================================
