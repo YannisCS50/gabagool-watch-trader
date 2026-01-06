@@ -140,7 +140,7 @@ try {
 }
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '7.2.8';  // v7.2.8: PnL accounting (realized/unrealized) + sell policy (gabagool style)
+const RUNNER_VERSION = '7.3.0';  // v7.3.0: Rev C.4.3 - PassivePairMicroAdd, CSV Reconciler, PnL Timeseries export
 const RUN_ID = crypto.randomUUID();
 
 // v7 REV C: Initialize MarketStateManager singleton
