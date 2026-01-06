@@ -170,30 +170,42 @@ function MarketBookDisplay({ snapshot }: { snapshot: SnapshotLog }) {
         </div>
       </div>
 
-      {/* Combined Metrics */}
-      <div className="grid grid-cols-3 gap-2 pt-2 border-t border-border/50 text-xs">
-        <div>
-          <div className="text-muted-foreground">Combined</div>
-          <div className={cn('font-mono font-bold', combinedAsk < 1 ? 'text-success' : 'text-destructive')}>
-            {formatPrice(combinedAsk)}
+      {/* Combined Metrics - Only show when we have both sides or are FLAT */}
+      {(snapshot.bot_state === 'FLAT' || snapshot.bot_state === 'PAIRED' || snapshot.bot_state === 'HEDGED' || 
+        (snapshot.up_shares > 0 && snapshot.down_shares > 0)) && (
+        <div className="grid grid-cols-3 gap-2 pt-2 border-t border-border/50 text-xs">
+          <div>
+            <div className="text-muted-foreground">Combined</div>
+            <div className={cn('font-mono font-bold', combinedAsk < 1 ? 'text-success' : 'text-destructive')}>
+              {formatPrice(combinedAsk)}
+            </div>
+          </div>
+          <div>
+            <div className="text-muted-foreground">Edge</div>
+            <div className={cn('font-mono font-bold', hasEdge ? 'text-success' : 'text-muted-foreground')}>
+              {edgePercent}%
+            </div>
+          </div>
+          <div>
+            <div className="text-muted-foreground">Pair Cost</div>
+            <div className="font-mono font-bold">
+              ${(snapshot.pair_cost ?? 0).toFixed(2)}
+            </div>
           </div>
         </div>
-        <div>
-          <div className="text-muted-foreground">Edge</div>
-          <div className={cn('font-mono font-bold', hasEdge ? 'text-success' : 'text-muted-foreground')}>
-            {edgePercent}%
-          </div>
-        </div>
-        <div>
-          <div className="text-muted-foreground">Delta</div>
-          <div className={cn('font-mono', 
-            (snapshot.delta ?? 0) > 0 ? 'text-success' : 
-            (snapshot.delta ?? 0) < 0 ? 'text-destructive' : 'text-muted-foreground'
-          )}>
-            {formatDelta(snapshot.delta)}
-          </div>
-        </div>
+      )}
+
+      {/* Delta - Always show */}
+      <div className="flex items-center justify-between pt-2 border-t border-border/50 text-xs">
+        <span className="text-muted-foreground">Delta (Spot vs Strike):</span>
+        <span className={cn('font-mono font-bold', 
+          (snapshot.delta ?? 0) > 0 ? 'text-success' : 
+          (snapshot.delta ?? 0) < 0 ? 'text-destructive' : 'text-muted-foreground'
+        )}>
+          {formatDelta(snapshot.delta)}
+        </span>
       </div>
+
 
       {/* Spot/Strike */}
       {(snapshot.spot_price || snapshot.strike_price) && (
