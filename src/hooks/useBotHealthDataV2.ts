@@ -9,22 +9,26 @@ import {
   HealthMetrics,
 } from '@/lib/botHealthMetrics';
 
-export type TimeRange = '15m' | '1h' | '6h' | '24h';
+export type TimeRange = '15m' | '1h' | '6h' | '24h' | '7d' | '30d' | 'all';
 
 const TIME_RANGE_MS: Record<TimeRange, number> = {
   '15m': 15 * 60 * 1000,
   '1h': 60 * 60 * 1000,
   '6h': 6 * 60 * 60 * 1000,
   '24h': 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+  '30d': 30 * 24 * 60 * 60 * 1000,
+  'all': 365 * 24 * 60 * 60 * 1000, // 1 year as "all"
 };
 
 const SNAPSHOT_MAX_ROWS: Record<TimeRange, number> = {
-  // PostgREST enforces a default max rows limit (often ~1000). Keep this <= 1000,
-  // and fetch the most-recent rows so metrics don't get stuck on early/empty snapshots.
   '15m': 1000,
   '1h': 1000,
   '6h': 1000,
   '24h': 1000,
+  '7d': 1000,
+  '30d': 1000,
+  'all': 1000,
 };
 
 const SNAPSHOT_REFETCH_MS: Record<TimeRange, number> = {
@@ -32,6 +36,9 @@ const SNAPSHOT_REFETCH_MS: Record<TimeRange, number> = {
   '1h': 30000,
   '6h': 60000,
   '24h': 120000,
+  '7d': 300000,
+  '30d': 600000,
+  'all': 600000,
 };
 
 interface UseBotHealthDataOptions {
@@ -40,12 +47,67 @@ interface UseBotHealthDataOptions {
   marketIdFilter?: string;
 }
 
+export interface PnLStats {
+  totalPnL: number;
+  totalWins: number;
+  totalLosses: number;
+  totalTrades: number;
+  winCount: number;
+  lossCount: number;
+  winRate: number;
+  avgWin: number;
+  avgLoss: number;
+  profitFactor: number;
+}
+
 const DEFAULT_MAX_ROWS = 1000;
 
 export function useBotHealthDataV2(options: UseBotHealthDataOptions) {
   const { timeRange, assetFilter, marketIdFilter } = options;
   const timeRangeMs = TIME_RANGE_MS[timeRange];
   const startTime = Date.now() - timeRangeMs;
+  const startDate = new Date(startTime).toISOString();
+
+  // Fetch PnL from live_trade_results
+  const pnlQuery = useQuery({
+    queryKey: ['bot-health-pnl', timeRange, assetFilter],
+    queryFn: async (): Promise<PnLStats> => {
+      let query = supabase
+        .from('live_trade_results')
+        .select('profit_loss, asset, created_at');
+
+      if (timeRange !== 'all') {
+        query = query.gte('created_at', startDate);
+      }
+      if (assetFilter) {
+        query = query.eq('asset', assetFilter);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+
+      const results = data || [];
+      const totalPnL = results.reduce((sum, r) => sum + (r.profit_loss || 0), 0);
+      const wins = results.filter(r => (r.profit_loss || 0) > 0);
+      const losses = results.filter(r => (r.profit_loss || 0) < 0);
+      const totalWins = wins.reduce((sum, r) => sum + (r.profit_loss || 0), 0);
+      const totalLosses = losses.reduce((sum, r) => sum + (r.profit_loss || 0), 0);
+      
+      return {
+        totalPnL,
+        totalWins,
+        totalLosses: Math.abs(totalLosses),
+        totalTrades: results.length,
+        winCount: wins.length,
+        lossCount: losses.length,
+        winRate: results.length > 0 ? (wins.length / results.length) * 100 : 0,
+        avgWin: wins.length > 0 ? totalWins / wins.length : 0,
+        avgLoss: losses.length > 0 ? Math.abs(totalLosses) / losses.length : 0,
+        profitFactor: Math.abs(totalLosses) > 0 ? totalWins / Math.abs(totalLosses) : totalWins > 0 ? Infinity : 0,
+      };
+    },
+    refetchInterval: 60000,
+  });
 
   const eventsQuery = useQuery({
     queryKey: ['bot-health-events', timeRange, assetFilter, marketIdFilter],
@@ -54,7 +116,6 @@ export function useBotHealthDataV2(options: UseBotHealthDataOptions) {
         .from('bot_events')
         .select('*')
         .gte('ts', startTime)
-        // Important: if results exceed the server row limit, we want the most recent data.
         .order('ts', { ascending: false })
         .range(0, DEFAULT_MAX_ROWS - 1);
 
@@ -81,7 +142,6 @@ export function useBotHealthDataV2(options: UseBotHealthDataOptions) {
         .from('orders')
         .select('*')
         .gte('created_ts', startTime)
-        // Most-recent orders first (then reverse for charts)
         .order('created_ts', { ascending: false })
         .range(0, DEFAULT_MAX_ROWS - 1);
 
@@ -102,7 +162,6 @@ export function useBotHealthDataV2(options: UseBotHealthDataOptions) {
         .from('fill_logs')
         .select('*')
         .gte('ts', startTime)
-        // Most-recent fills first (then reverse for charts)
         .order('ts', { ascending: false })
         .range(0, DEFAULT_MAX_ROWS - 1);
 
@@ -139,7 +198,6 @@ export function useBotHealthDataV2(options: UseBotHealthDataOptions) {
         .from('snapshot_logs')
         .select('id, ts, asset, market_id, up_shares, down_shares, bot_state, pair_cost')
         .gte('ts', startTime)
-        // Most-recent snapshots first (then reverse for charts)
         .order('ts', { ascending: false })
         .range(0, maxRows - 1);
 
@@ -166,6 +224,19 @@ export function useBotHealthDataV2(options: UseBotHealthDataOptions) {
     refetchInterval: SNAPSHOT_REFETCH_MS[timeRange],
   });
 
+  const pnlStats = pnlQuery.data || {
+    totalPnL: 0,
+    totalWins: 0,
+    totalLosses: 0,
+    totalTrades: 0,
+    winCount: 0,
+    lossCount: 0,
+    winRate: 0,
+    avgWin: 0,
+    avgLoss: 0,
+    profitFactor: 0,
+  };
+
   const metrics: HealthMetrics | null =
     eventsQuery.data && ordersQuery.data && fillsQuery.data && snapshotsQuery.data
       ? computeHealthMetrics(
@@ -174,7 +245,8 @@ export function useBotHealthDataV2(options: UseBotHealthDataOptions) {
           fillsQuery.data,
           snapshotsQuery.data,
           {},
-          timeRangeMs
+          timeRangeMs,
+          pnlStats
         )
       : null;
 
@@ -182,19 +254,22 @@ export function useBotHealthDataV2(options: UseBotHealthDataOptions) {
     eventsQuery.isLoading ||
     ordersQuery.isLoading ||
     fillsQuery.isLoading ||
-    snapshotsQuery.isLoading;
+    snapshotsQuery.isLoading ||
+    pnlQuery.isLoading;
 
-  const error = eventsQuery.error || ordersQuery.error || fillsQuery.error || snapshotsQuery.error;
+  const error = eventsQuery.error || ordersQuery.error || fillsQuery.error || snapshotsQuery.error || pnlQuery.error;
 
   return {
     metrics,
     isLoading,
     error,
+    pnlStats,
     refetch: () => {
       eventsQuery.refetch();
       ordersQuery.refetch();
       fillsQuery.refetch();
       snapshotsQuery.refetch();
+      pnlQuery.refetch();
     },
     rawData: {
       events: eventsQuery.data || [],

@@ -79,6 +79,17 @@ export interface HealthMetrics {
   emergencyEventsPerHour: number;
   orderFailureRate: number;
   
+  // PnL stats from live_trade_results
+  totalWins: number;
+  totalLosses: number;
+  totalTrades: number;
+  winCount: number;
+  lossCount: number;
+  winRate: number;
+  avgWin: number;
+  avgLoss: number;
+  profitFactor: number;
+  
   // Counters
   oneSidedOpensCount: number;
   pairingStartedCount: number;
@@ -204,6 +215,19 @@ export function reconstructPositionsFromFills(
   return result;
 }
 
+export interface PnLStats {
+  totalPnL: number;
+  totalWins: number;
+  totalLosses: number;
+  totalTrades: number;
+  winCount: number;
+  lossCount: number;
+  winRate: number;
+  avgWin: number;
+  avgLoss: number;
+  profitFactor: number;
+}
+
 // Compute all health metrics
 export function computeHealthMetrics(
   events: BotEvent[],
@@ -211,7 +235,8 @@ export function computeHealthMetrics(
   fills: Fill[],
   snapshots: InventorySnapshot[],
   config: Partial<BotConfig> = {},
-  timeRangeMs: number = 60 * 60 * 1000 // default 1 hour
+  timeRangeMs: number = 60 * 60 * 1000, // default 1 hour
+  pnlStats?: PnLStats
 ): HealthMetrics {
   const cfg = { ...DEFAULT_CONFIG, ...config };
   const now = Date.now();
@@ -368,12 +393,14 @@ export function computeHealthMetrics(
   // Sort by skew descending
   riskyMarkets.sort((a, b) => b.skewPct - a.skewPct);
   
-  // Calculate PnL from fills
-  let totalPnL = 0;
-  const pnlEvents = filteredEvents.filter(e => e.event_type === 'PNL_UPDATE');
-  if (pnlEvents.length > 0) {
-    const latestPnl = pnlEvents[pnlEvents.length - 1];
-    totalPnL = (latestPnl.data as { pnl?: number })?.pnl || 0;
+  // Use PnL from pnlStats if provided, otherwise fallback to events
+  let totalPnL = pnlStats?.totalPnL || 0;
+  if (!pnlStats) {
+    const pnlEvents = filteredEvents.filter(e => e.event_type === 'PNL_UPDATE');
+    if (pnlEvents.length > 0) {
+      const latestPnl = pnlEvents[pnlEvents.length - 1];
+      totalPnL = (latestPnl.data as { pnl?: number })?.pnl || 0;
+    }
   }
   
   // Determine status
@@ -481,6 +508,17 @@ export function computeHealthMetrics(
     maxTotalSharesPerMarket: maxTotalShares,
     emergencyEventsPerHour,
     orderFailureRate,
+    // PnL stats
+    totalWins: pnlStats?.totalWins || 0,
+    totalLosses: pnlStats?.totalLosses || 0,
+    totalTrades: pnlStats?.totalTrades || 0,
+    winCount: pnlStats?.winCount || 0,
+    lossCount: pnlStats?.lossCount || 0,
+    winRate: pnlStats?.winRate || 0,
+    avgWin: pnlStats?.avgWin || 0,
+    avgLoss: pnlStats?.avgLoss || 0,
+    profitFactor: pnlStats?.profitFactor || 0,
+    // Counters
     oneSidedOpensCount: oneSidedOpens.length,
     pairingStartedCount: pairingStarted.length,
     pairingTimeoutRevertCount: pairingTimeout.length,
