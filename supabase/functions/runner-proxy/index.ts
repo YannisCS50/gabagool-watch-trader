@@ -99,10 +99,17 @@ Deno.serve(async (req) => {
           });
         }
 
+        // v7.2.7 FIX: Only count FILLED trades for position calculation
+        // Previously this counted ALL trades including pending/cancelled, causing
+        // the ledger to show inflated positions and bypassing the 100 share cap.
+        //
+        // CRITICAL: Only status='filled' trades represent actual positions.
+        // 'pending', 'cancelled', 'failed', 'partial' should NOT be counted.
         const { data: trades, error } = await supabase
           .from('live_trades')
           .select('market_slug, outcome, shares, total')
-          .in('market_slug', slugs);
+          .in('market_slug', slugs)
+          .eq('status', 'filled');
 
         if (error) {
           console.error('[runner-proxy] get-trades error:', error);
@@ -111,6 +118,8 @@ Deno.serve(async (req) => {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
+
+        console.log(`[runner-proxy] get-trades: returning ${trades?.length ?? 0} FILLED trades for ${slugs.length} markets`);
 
         return new Response(JSON.stringify({ success: true, trades: trades || [] }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
