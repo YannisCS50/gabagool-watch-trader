@@ -87,8 +87,17 @@ function MarketBookDisplay({ snapshot }: { snapshot: SnapshotLog }) {
   const edgePercent = (edge * 100).toFixed(2);
   const hasEdge = edge > 0.015; // 1.5% minimum edge
   
+  const totalShares = snapshot.up_shares + snapshot.down_shares;
+  const pairedShares = Math.min(snapshot.up_shares, snapshot.down_shares);
+  const unpairedShares = Math.abs(snapshot.up_shares - snapshot.down_shares);
+  const isHedged = pairedShares > 0 && unpairedShares < pairedShares;
+  
+  // Calculate avg prices from pair_cost if available
+  const upAvg = snapshot.up_shares > 0 ? (snapshot.up_mid ?? 0.5) : 0;
+  const downAvg = snapshot.down_shares > 0 ? (snapshot.down_mid ?? 0.5) : 0;
+  
   return (
-    <div className="glass rounded-lg p-3 space-y-2">
+    <div className="glass rounded-lg p-3 space-y-3">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -108,26 +117,88 @@ function MarketBookDisplay({ snapshot }: { snapshot: SnapshotLog }) {
         </span>
       </div>
 
-      {/* Orderbook Grid */}
+      {/* Position Summary - NEW PROMINENT SECTION */}
+      {totalShares > 0 && (
+        <div className="bg-primary/5 rounded-lg p-3 border border-primary/20">
+          <div className="grid grid-cols-2 gap-4">
+            {/* UP Position */}
+            <div className="space-y-1">
+              <div className="flex items-center gap-1 text-success font-semibold text-sm">
+                <TrendingUp className="h-4 w-4" />
+                UP Position
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-bold font-mono">{snapshot.up_shares}</span>
+                <span className="text-sm text-muted-foreground">shares</span>
+              </div>
+              <div className="text-sm text-muted-foreground">
+                avg: <span className="font-mono text-foreground">{formatPrice(upAvg)}</span>
+                <span className="mx-1">•</span>
+                ask: <span className="font-mono text-foreground">{formatPrice(snapshot.up_ask)}</span>
+              </div>
+            </div>
+
+            {/* DOWN Position */}
+            <div className="space-y-1">
+              <div className="flex items-center gap-1 text-destructive font-semibold text-sm">
+                <TrendingDown className="h-4 w-4" />
+                DOWN Position
+              </div>
+              <div className="flex items-baseline gap-2">
+                <span className="text-2xl font-bold font-mono">{snapshot.down_shares}</span>
+                <span className="text-sm text-muted-foreground">shares</span>
+              </div>
+              <div className="text-sm text-muted-foreground">
+                avg: <span className="font-mono text-foreground">{formatPrice(downAvg)}</span>
+                <span className="mx-1">•</span>
+                ask: <span className="font-mono text-foreground">{formatPrice(snapshot.down_ask)}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Paired / Unpaired summary */}
+          <div className="flex items-center justify-between mt-3 pt-2 border-t border-primary/20 text-sm">
+            <div className="flex items-center gap-4">
+              <span>
+                <span className="text-muted-foreground">Paired:</span>{' '}
+                <span className={cn('font-mono font-bold', isHedged ? 'text-success' : 'text-muted-foreground')}>
+                  {pairedShares}
+                </span>
+              </span>
+              <span>
+                <span className="text-muted-foreground">Unpaired:</span>{' '}
+                <span className={cn('font-mono font-bold', unpairedShares > 0 ? 'text-warning' : 'text-muted-foreground')}>
+                  {unpairedShares}
+                </span>
+              </span>
+            </div>
+            {snapshot.pair_cost && (
+              <span>
+                <span className="text-muted-foreground">Cost/Pair:</span>{' '}
+                <span className={cn('font-mono font-bold', snapshot.pair_cost < 1 ? 'text-success' : 'text-destructive')}>
+                  {(snapshot.pair_cost * 100).toFixed(1)}¢
+                </span>
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Orderbook Grid - Compact when position exists */}
       <div className="grid grid-cols-2 gap-3 text-xs">
         {/* UP Side */}
         <div className="space-y-1">
           <div className="flex items-center gap-1 font-semibold text-success">
             <TrendingUp className="h-3 w-3" />
-            UP
+            UP Book
           </div>
           <div className="grid grid-cols-2 gap-1 text-muted-foreground">
             <span>Bid:</span>
             <span className="font-mono text-foreground">{formatPrice(snapshot.up_bid)}</span>
             <span>Ask:</span>
             <span className="font-mono text-foreground">{formatPrice(snapshot.up_ask)}</span>
-            <span>Mid:</span>
-            <span className="font-mono text-foreground">{formatPrice(snapshot.up_mid)}</span>
             <span>Spread:</span>
             <span className="font-mono text-foreground">{formatPrice(snapshot.spread_up)}</span>
-          </div>
-          <div className="text-muted-foreground">
-            Shares: <span className="font-mono text-foreground">{snapshot.up_shares}</span>
           </div>
         </div>
 
@@ -135,20 +206,15 @@ function MarketBookDisplay({ snapshot }: { snapshot: SnapshotLog }) {
         <div className="space-y-1">
           <div className="flex items-center gap-1 font-semibold text-destructive">
             <TrendingDown className="h-3 w-3" />
-            DOWN
+            DOWN Book
           </div>
           <div className="grid grid-cols-2 gap-1 text-muted-foreground">
             <span>Bid:</span>
             <span className="font-mono text-foreground">{formatPrice(snapshot.down_bid)}</span>
             <span>Ask:</span>
             <span className="font-mono text-foreground">{formatPrice(snapshot.down_ask)}</span>
-            <span>Mid:</span>
-            <span className="font-mono text-foreground">{formatPrice(snapshot.down_mid)}</span>
             <span>Spread:</span>
             <span className="font-mono text-foreground">{formatPrice(snapshot.spread_down)}</span>
-          </div>
-          <div className="text-muted-foreground">
-            Shares: <span className="font-mono text-foreground">{snapshot.down_shares}</span>
           </div>
         </div>
       </div>
