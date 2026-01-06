@@ -310,14 +310,24 @@ export function LiveBotDataFeed() {
 
       if (snapshotError) throw snapshotError;
 
-      // Dedupe to get latest per asset
+      // Dedupe to get latest per asset, then sort by fixed order
+      const ASSET_ORDER = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'ADA', 'AVAX', 'LINK'];
       const latestByAsset = new Map<string, SnapshotLog>();
       for (const s of snapshotData || []) {
         if (!latestByAsset.has(s.asset)) {
           latestByAsset.set(s.asset, s);
         }
       }
-      setSnapshots(Array.from(latestByAsset.values()));
+      // Sort by fixed asset order
+      const sorted = Array.from(latestByAsset.values()).sort((a, b) => {
+        const aIdx = ASSET_ORDER.indexOf(a.asset);
+        const bIdx = ASSET_ORDER.indexOf(b.asset);
+        // Unknown assets go to the end
+        const aOrder = aIdx === -1 ? 999 : aIdx;
+        const bOrder = bIdx === -1 ? 999 : bIdx;
+        return aOrder - bOrder;
+      });
+      setSnapshots(sorted);
 
       // Fetch recent fills
       const { data: fillData, error: fillError } = await supabase
