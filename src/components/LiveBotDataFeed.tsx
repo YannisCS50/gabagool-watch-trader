@@ -54,6 +54,17 @@ interface FillLog {
   created_at: string;
 }
 
+interface BotEvent {
+  id: string;
+  ts: number;
+  event_type: string;
+  asset: string;
+  market_id: string | null;
+  reason_code: string | null;
+  data: unknown;
+  created_at: string;
+}
+
 function formatPrice(price: number | null | undefined): string {
   if (price === null || price === undefined) return '—';
   return `${(price * 100).toFixed(1)}¢`;
@@ -293,9 +304,70 @@ function RecentFillRow({ fill }: { fill: FillLog }) {
   );
 }
 
+function getEventColor(eventType: string): string {
+  if (eventType.includes('ORDER_ATTEMPT')) return 'text-blue-400';
+  if (eventType.includes('ORDER_FAILED')) return 'text-destructive';
+  if (eventType.includes('HEDGE')) return 'text-purple-400';
+  if (eventType.includes('EMERGENCY')) return 'text-red-400';
+  if (eventType.includes('GUARDRAIL')) return 'text-orange-400';
+  if (eventType.includes('PAIRING')) return 'text-cyan-400';
+  if (eventType.includes('SKIPPED')) return 'text-yellow-400';
+  return 'text-muted-foreground';
+}
+
+function getEventIcon(eventType: string): string {
+  if (eventType.includes('ORDER_ATTEMPT')) return '📤';
+  if (eventType.includes('ORDER_FAILED')) return '❌';
+  if (eventType.includes('HEDGE')) return '🛡️';
+  if (eventType.includes('EMERGENCY')) return '🚨';
+  if (eventType.includes('GUARDRAIL')) return '⚠️';
+  if (eventType.includes('PAIRING')) return '🔗';
+  if (eventType.includes('SKIPPED')) return '⏭️';
+  if (eventType.includes('PNL')) return '💰';
+  return '📋';
+}
+
+function BotEventRow({ event }: { event: BotEvent }) {
+  const data = (typeof event.data === 'object' && event.data !== null) ? event.data as Record<string, unknown> : null;
+  
+  // Extract useful info from data
+  let details = '';
+  if (data) {
+    if (data.side) details += `${data.side} `;
+    if (data.qty) details += `${data.qty} shares `;
+    if (data.price) details += `@ ${((data.price as number) * 100).toFixed(1)}¢ `;
+    if (data.reason) details += `- ${data.reason}`;
+    if (data.error) details += `- ${data.error}`;
+  }
+  if (event.reason_code && !details.includes(event.reason_code)) {
+    details += event.reason_code;
+  }
+  
+  return (
+    <div className="flex items-start gap-2 text-xs py-1.5 border-b border-border/30 last:border-0">
+      <span className="flex-shrink-0">{getEventIcon(event.event_type)}</span>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-2">
+          <span className={cn('font-medium', getEventColor(event.event_type))}>
+            {event.event_type.replace(/_/g, ' ')}
+          </span>
+          <span className="text-muted-foreground">{event.asset}</span>
+        </div>
+        {details && (
+          <div className="text-muted-foreground truncate">{details}</div>
+        )}
+      </div>
+      <span className="text-muted-foreground flex-shrink-0">
+        {format(new Date(event.created_at), 'HH:mm:ss', { locale: nl })}
+      </span>
+    </div>
+  );
+}
+
 export function LiveBotDataFeed() {
   const [snapshots, setSnapshots] = useState<SnapshotLog[]>([]);
   const [fills, setFills] = useState<FillLog[]>([]);
+  const [events, setEvents] = useState<BotEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
@@ -322,7 +394,6 @@ export function LiveBotDataFeed() {
       const sorted = Array.from(latestByAsset.values()).sort((a, b) => {
         const aIdx = ASSET_ORDER.indexOf(a.asset);
         const bIdx = ASSET_ORDER.indexOf(b.asset);
-        // Unknown assets go to the end
         const aOrder = aIdx === -1 ? 999 : aIdx;
         const bOrder = bIdx === -1 ? 999 : bIdx;
         return aOrder - bOrder;
@@ -334,10 +405,25 @@ export function LiveBotDataFeed() {
         .from('fill_logs')
         .select('*')
         .order('ts', { ascending: false })
-        .limit(10);
+        .limit(15);
 
       if (fillError) throw fillError;
       setFills(fillData || []);
+
+      // Fetch recent bot events (order attempts, hedge decisions, etc.)
+      const { data: eventData, error: eventError } = await supabase
+        .from('bot_events')
+        .select('id, ts, event_type, asset, market_id, reason_code, data, created_at')
+        .in('event_type', [
+          'ORDER_ATTEMPT', 'ORDER_FAILED', 'V73_HEDGE_DECISION', 
+          'EMERGENCY_DECISION', 'GUARDRAIL_TRIGGERED', 'PAIRING_STARTED',
+          'ACTION_SKIPPED', 'EMERGENCY_SELL', 'PNL_SNAPSHOT'
+        ])
+        .order('ts', { ascending: false })
+        .limit(20);
+
+      if (eventError) throw eventError;
+      setEvents(eventData || []);
 
       setLastUpdate(new Date());
     } catch (err) {
@@ -361,6 +447,11 @@ export function LiveBotDataFeed() {
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'fill_logs' },
+        () => fetchData()
+      )
+      .on(
+        'postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'bot_events' },
         () => fetchData()
       )
       .subscribe();
@@ -429,20 +520,46 @@ export function LiveBotDataFeed() {
               </div>
             </div>
 
-            {/* Recent Fills */}
-            {fills.length > 0 && (
+            {/* Side by Side: Recent Fills (50%) + Bot Events (50%) */}
+            <div className="grid md:grid-cols-2 gap-4">
+              {/* Recent Fills */}
               <div>
                 <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
                   <Activity className="h-4 w-4 text-success" />
-                  Recent Fills
+                  Recent Fills ({fills.length})
                 </h3>
-                <div className="glass rounded-lg p-3">
-                  {fills.map(fill => (
-                    <RecentFillRow key={fill.id} fill={fill} />
-                  ))}
+                <div className="glass rounded-lg p-3 max-h-80 overflow-y-auto">
+                  {fills.length > 0 ? (
+                    fills.map(fill => (
+                      <RecentFillRow key={fill.id} fill={fill} />
+                    ))
+                  ) : (
+                    <div className="text-xs text-muted-foreground text-center py-4">
+                      No recent fills
+                    </div>
+                  )}
                 </div>
               </div>
-            )}
+
+              {/* Bot Events / Order Log */}
+              <div>
+                <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                  <Zap className="h-4 w-4 text-blue-400" />
+                  Bot Decisions & Orders ({events.length})
+                </h3>
+                <div className="glass rounded-lg p-3 max-h-80 overflow-y-auto">
+                  {events.length > 0 ? (
+                    events.map(event => (
+                      <BotEventRow key={event.id} event={event} />
+                    ))
+                  ) : (
+                    <div className="text-xs text-muted-foreground text-center py-4">
+                      No recent events
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
           </>
         )}
       </CardContent>
