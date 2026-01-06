@@ -1,5 +1,5 @@
 /**
- * inventory-risk.ts - v6.5.0 Robustness Patch
+ * inventory-risk.ts - v6.5.1 Gabagool-Aligned Emergency Fix
  * ============================================================
  * First-class inventory risk management with:
  * - Inventory risk score tracking (unpaired exposure × age)
@@ -32,13 +32,17 @@ export const INVENTORY_RISK_CONFIG = {
   logEvents: true,
   logIntervalMs: 5000,            // Don't spam logs more than once per 5s per market
   
-  // v6.6.0: Emergency Unwind Thresholds
-  cppEmergency: 1.10,             // cpp >= this triggers emergency unwind
-  cppImplausible: 1.50,           // cpp > this = likely units bug, force unwind
-  hardSkewCap: 0.70,              // skew ratio >= this + age triggers emergency
-  skewAgeEmergencySec: 20,        // seconds skewed before emergency
+  // v6.6.0: Emergency Unwind Thresholds (v6.5.1 Gabagool-Aligned)
+  cppEmergency: 1.40,             // cpp >= this triggers emergency unwind (was 1.10)
+  cppImplausible: 1.60,           // cpp > this = likely units bug (was 1.50)
+  hardSkewCap: 0.90,              // skew ratio >= this + age triggers emergency (was 0.70)
+  skewAgeEmergencySec: 120,       // seconds skewed before emergency (was 20)
   emergencyUnwindMaxSec: 45,      // max time in emergency unwind mode
   cooldownAfterEmergencySec: 600, // freeze new entries after emergency (10m)
+  
+  // v6.5.1: CPP Sanity Guard
+  cppSanityThreshold: 1.20,       // CPP above this with paired>=20 = tracking bug
+  cppSanityMinPaired: 20,         // min paired shares for sanity check
   
   // v6.6.0: Safety Block (Invalid Book)
   safetyBlockOnInvalidBook: true, // block all trading when book is invalid
@@ -845,16 +849,76 @@ export function checkEmergencyUnwindTrigger(
   const { skewRatio, unpairedAgeSec, upShares, downShares, upInvested, downInvested, paired } = ctx;
   const dominantSide: 'UP' | 'DOWN' = upShares > downShares ? 'UP' : 'DOWN';
   
+  // ============================================================
+  // v6.5.1: MANDATORY STRUCTURED LOG - Input data for audit trail
+  // ============================================================
+  const avgUpCentsCalc = upShares > 0 ? (upInvested / upShares) * 100 : null;
+  const avgDownCentsCalc = downShares > 0 ? (downInvested / downShares) * 100 : null;
+  
+  const decisionLogInput = {
+    marketId,
+    asset,
+    upShares,
+    downShares,
+    upInvestedUSD: upInvested,
+    downInvestedUSD: downInvested,
+    paired,
+    avgUpCents: avgUpCentsCalc,
+    avgDownCents: avgDownCentsCalc,
+    skew: skewRatio,
+    skewAge: unpairedAgeSec,
+    dominantSide,
+    thresholds: {
+      cppEmergency: cfg.cppEmergency,
+      cppImplausible: cfg.cppImplausible,
+      hardSkewCap: cfg.hardSkewCap,
+      skewAgeEmergencySec: cfg.skewAgeEmergencySec,
+      cppSanityThreshold: cfg.cppSanityThreshold,
+      cppSanityMinPaired: cfg.cppSanityMinPaired,
+    },
+  };
+  
+  console.log(`📋 [EMERGENCY_CHECK_INPUT] ${marketId}:`);
+  console.log(`   Position: UP=${upShares} DOWN=${downShares} PAIRED=${paired}`);
+  console.log(`   Invested: UP=$${upInvested.toFixed(2)} DOWN=$${downInvested.toFixed(2)}`);
+  console.log(`   AvgCents: UP=${avgUpCentsCalc?.toFixed(1) ?? 'N/A'}¢ DOWN=${avgDownCentsCalc?.toFixed(1) ?? 'N/A'}¢`);
+  console.log(`   Skew: ${(skewRatio * 100).toFixed(1)}% age=${unpairedAgeSec.toFixed(0)}s dominant=${dominantSide}`);
+  
   // v7.2.2 REV C.2: Use paired-only CPP (avgUp + avgDown) instead of totalInvested/paired
   // This prevents false positives from unpaired exposure inflating the CPP
   let cppPairedOnly: number | null = null;
   if (paired > 0) {
-    const avgUpCents = upShares > 0 ? (upInvested / upShares) * 100 : null;
-    const avgDownCents = downShares > 0 ? (downInvested / downShares) * 100 : null;
-    
-    if (avgUpCents !== null && avgDownCents !== null) {
-      cppPairedOnly = (avgUpCents + avgDownCents) / 100; // Back to dollars for comparison
+    if (avgUpCentsCalc !== null && avgDownCentsCalc !== null) {
+      cppPairedOnly = (avgUpCentsCalc + avgDownCentsCalc) / 100; // Back to dollars for comparison
     }
+  }
+  
+  console.log(`   CPP PairedOnly: ${cppPairedOnly?.toFixed(3) ?? 'N/A'} (threshold: ${cfg.cppEmergency})`);
+  
+  // ============================================================
+  // v6.5.1: CPP SANITY GUARD - Skip emergency if CPP is implausible
+  // This catches tracking bugs where CPP is unrealistically high
+  // ============================================================
+  if (cppPairedOnly !== null && cppPairedOnly > cfg.cppSanityThreshold && paired >= cfg.cppSanityMinPaired) {
+    console.warn(`⚠️ [CPP_SANITY_FAIL] ${marketId}: cppPairedOnly=${cppPairedOnly.toFixed(3)} > ${cfg.cppSanityThreshold} but paired=${paired}`);
+    console.warn(`   This indicates a tracking bug, not a real emergency`);
+    console.warn(`   → Skipping emergency logic entirely, treating as FREEZE_ADDS only`);
+    
+    saveBotEvent({
+      event_type: 'CPP_SANITY_FAIL',
+      asset,
+      market_id: marketId,
+      run_id: runId,
+      ts: now,
+      reason_code: 'TRACKING_BUG_SUSPECTED',
+      data: { 
+        ...decisionLogInput,
+        cppPairedOnly,
+        emergencyDecision: 'BLOCKED_SANITY_FAIL',
+      },
+    }).catch(() => {});
+    
+    return { triggerEmergency: false, reason: 'CPP_SANITY_FAIL', dominantSide, implausibleCpp: true };
   }
   
   // v6.6.1 FIX: CPP checks only apply when paired > 0 AND we have valid paired-only CPP
@@ -873,14 +937,40 @@ export function checkEmergencyUnwindTrigger(
         console.warn(`   upShares=${upShares}, downShares=${downShares}, paired=${paired}`);
         console.warn(`   → FREEZE_ADDS only (no emergency order placement)`);
       }
+      
+      // Log final decision
+      saveBotEvent({
+        event_type: 'EMERGENCY_DECISION',
+        asset,
+        market_id: marketId,
+        run_id: runId,
+        ts: now,
+        reason_code: 'BLOCKED_IMPLAUSIBLE',
+        data: { ...decisionLogInput, cppPairedOnly, emergencyDecision: 'BLOCKED_IMPLAUSIBLE' },
+      }).catch(() => {});
+      
       // Return implausibleCpp=true so caller can set FREEZE_ADDS
       // But triggerEmergency=false to prevent order placement!
       return { triggerEmergency: false, reason: 'CPP_IMPLAUSIBLE_FREEZE_ADDS', dominantSide, implausibleCpp: true };
     }
     
-    // CPP emergency check (>= 1.10)
+    // CPP emergency check (>= cppEmergency threshold)
     if (cppPairedOnly >= cfg.cppEmergency) {
       const reason = `CPP_EMERGENCY: cppPairedOnly=${cppPairedOnly.toFixed(3)} >= ${cfg.cppEmergency}`;
+      
+      // Log final decision before triggering
+      console.log(`📋 [EMERGENCY_DECISION] ${marketId}: TRIGGERED`);
+      console.log(`   Reason: ${reason}`);
+      saveBotEvent({
+        event_type: 'EMERGENCY_DECISION',
+        asset,
+        market_id: marketId,
+        run_id: runId,
+        ts: now,
+        reason_code: 'TRIGGERED',
+        data: { ...decisionLogInput, cppPairedOnly, emergencyDecision: 'TRIGGERED', triggerReason: reason },
+      }).catch(() => {});
+      
       triggerEmergencyUnwind(state, asset, reason, dominantSide, false, runId);
       return { triggerEmergency: true, reason, dominantSide };
     }
@@ -889,6 +979,20 @@ export function checkEmergencyUnwindTrigger(
   // Skew + age emergency check (applies even when paired=0)
   if (skewRatio >= cfg.hardSkewCap && unpairedAgeSec > cfg.skewAgeEmergencySec) {
     const reason = `SKEW_EMERGENCY: skew=${(skewRatio * 100).toFixed(1)}% >= ${(cfg.hardSkewCap * 100).toFixed(0)}% AND age=${unpairedAgeSec.toFixed(0)}s > ${cfg.skewAgeEmergencySec}s`;
+    
+    // Log final decision before triggering
+    console.log(`📋 [EMERGENCY_DECISION] ${marketId}: TRIGGERED`);
+    console.log(`   Reason: ${reason}`);
+    saveBotEvent({
+      event_type: 'EMERGENCY_DECISION',
+      asset,
+      market_id: marketId,
+      run_id: runId,
+      ts: now,
+      reason_code: 'TRIGGERED',
+      data: { ...decisionLogInput, cppPairedOnly, emergencyDecision: 'TRIGGERED', triggerReason: reason },
+    }).catch(() => {});
+    
     triggerEmergencyUnwind(state, asset, reason, dominantSide, false, runId);
     return { triggerEmergency: true, reason, dominantSide };
   }
@@ -902,6 +1006,18 @@ export function checkEmergencyUnwindTrigger(
       exitEmergencyUnwind(state, asset, 'conditions_improved', runId);
     }
   }
+  
+  // Log final decision - SKIPPED (no emergency triggered)
+  console.log(`📋 [EMERGENCY_DECISION] ${marketId}: SKIPPED (no conditions met)`);
+  saveBotEvent({
+    event_type: 'EMERGENCY_DECISION',
+    asset,
+    market_id: marketId,
+    run_id: runId,
+    ts: now,
+    reason_code: 'SKIPPED',
+    data: { ...decisionLogInput, cppPairedOnly, emergencyDecision: 'SKIPPED' },
+  }).catch(() => {});
   
   return { triggerEmergency: false };
 }
