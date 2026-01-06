@@ -29,6 +29,7 @@ import { BotPositionsCard } from '@/components/BotPositionsCard';
 import { LiveBotDataFeed } from '@/components/LiveBotDataFeed';
 import { HedgeFeasibilityDashboard } from '@/components/HedgeFeasibilityDashboard';
 import { RunnerConflictBanner } from '@/components/RunnerConflictBanner';
+import { PositionCacheStatus } from '@/components/PositionCacheStatus';
 import { supabase } from '@/integrations/supabase/client';
 
 interface WalletBalance {
@@ -137,7 +138,8 @@ export default function LiveTrading() {
               </p>
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-4">
+            <PositionCacheStatus />
             {lastRefresh && (
               <span className="text-xs text-muted-foreground">
                 Updated {lastRefresh.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
