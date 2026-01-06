@@ -67,7 +67,13 @@ interface LiveTrade {
   created_at: string;
 }
 
-export function useBotPositions(): UseBotPositionsResult {
+type UseBotPositionsOptions = {
+  enabled?: boolean;
+};
+
+export function useBotPositions(options: UseBotPositionsOptions = {}): UseBotPositionsResult {
+  const enabled = options.enabled ?? true;
+
   const [positions, setPositions] = useState<BotPosition[]>([]);
   const [liveTrades, setLiveTrades] = useState<LiveTrade[]>([]);
   const [loading, setLoading] = useState(true);
@@ -75,10 +81,15 @@ export function useBotPositions(): UseBotPositionsResult {
   const [dataSource, setDataSource] = useState<'bot_positions' | 'live_trades'>('bot_positions');
 
   const fetchPositions = async () => {
+    if (!enabled) {
+      setLoading(false);
+      return;
+    }
+
     try {
       setError(null);
       setLoading(true);
-      
+
       // First try bot_positions
       const { data: botData, error: botError } = await supabase
         .from('bot_positions')
@@ -111,7 +122,7 @@ export function useBotPositions(): UseBotPositionsResult {
         .not('settled_at', 'is', null);
 
       const settledSlugs = new Set((settledData || []).map(r => r.market_slug));
-      
+
       // Filter to only open markets (not settled, event hasn't ended yet or ended recently)
       const now = new Date();
       const openTrades = (tradesData || []).filter(t => {
@@ -136,6 +147,11 @@ export function useBotPositions(): UseBotPositionsResult {
   };
 
   useEffect(() => {
+    if (!enabled) {
+      setLoading(false);
+      return;
+    }
+
     fetchPositions();
 
     // Subscribe to realtime updates
@@ -149,22 +165,21 @@ export function useBotPositions(): UseBotPositionsResult {
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'live_trades' },
-        () => {
-          if (dataSource === 'live_trades') fetchPositions();
-        }
+        () => fetchPositions()
       )
       .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [enabled]);
 
   // Auto-refresh every 30 seconds
   useEffect(() => {
+    if (!enabled) return;
     const interval = setInterval(fetchPositions, 30 * 1000);
     return () => clearInterval(interval);
-  }, []);
+  }, [enabled]);
 
   // Helper to extract event end time from slug like "btc-updown-15m-1767731400"
   const extractEventEndTime = (slug: string): string | null => {

@@ -163,7 +163,11 @@ export default function LiveTrading() {
 
         {/* Bot Positions from Polymarket Sync */}
         <div className="mb-8">
-          <BotPositionsCard />
+          <BotPositionsCard
+            portfolioPositions={positions}
+            portfolioLoading={isLoadingWallet}
+            onRefresh={fetchBalances}
+          />
         </div>
 
         {/* Main Tabs */}
