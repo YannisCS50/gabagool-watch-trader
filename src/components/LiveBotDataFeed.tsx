@@ -98,17 +98,8 @@ function MarketBookDisplay({ snapshot }: { snapshot: SnapshotLog }) {
   const edgePercent = (edge * 100).toFixed(2);
   const hasEdge = edge > 0.015; // 1.5% minimum edge
   
-  const totalShares = snapshot.up_shares + snapshot.down_shares;
-  const pairedShares = Math.min(snapshot.up_shares, snapshot.down_shares);
-  const unpairedShares = Math.abs(snapshot.up_shares - snapshot.down_shares);
-  const isHedged = pairedShares > 0 && unpairedShares < pairedShares;
-  
-  // Calculate avg prices from pair_cost if available
-  const upAvg = snapshot.up_shares > 0 ? (snapshot.up_mid ?? 0.5) : 0;
-  const downAvg = snapshot.down_shares > 0 ? (snapshot.down_mid ?? 0.5) : 0;
-  
   return (
-    <div className="glass rounded-lg p-3 space-y-3">
+    <div className="glass rounded-lg p-3 space-y-2">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
@@ -128,74 +119,7 @@ function MarketBookDisplay({ snapshot }: { snapshot: SnapshotLog }) {
         </span>
       </div>
 
-      {/* Position Summary - NEW PROMINENT SECTION */}
-      {totalShares > 0 && (
-        <div className="bg-primary/5 rounded-lg p-3 border border-primary/20">
-          <div className="grid grid-cols-2 gap-4">
-            {/* UP Position */}
-            <div className="space-y-1">
-              <div className="flex items-center gap-1 text-success font-semibold text-sm">
-                <TrendingUp className="h-4 w-4" />
-                UP Position
-              </div>
-              <div className="flex items-baseline gap-2">
-                <span className="text-2xl font-bold font-mono">{snapshot.up_shares}</span>
-                <span className="text-sm text-muted-foreground">shares</span>
-              </div>
-              <div className="text-sm text-muted-foreground">
-                avg: <span className="font-mono text-foreground">{formatPrice(upAvg)}</span>
-                <span className="mx-1">•</span>
-                ask: <span className="font-mono text-foreground">{formatPrice(snapshot.up_ask)}</span>
-              </div>
-            </div>
-
-            {/* DOWN Position */}
-            <div className="space-y-1">
-              <div className="flex items-center gap-1 text-destructive font-semibold text-sm">
-                <TrendingDown className="h-4 w-4" />
-                DOWN Position
-              </div>
-              <div className="flex items-baseline gap-2">
-                <span className="text-2xl font-bold font-mono">{snapshot.down_shares}</span>
-                <span className="text-sm text-muted-foreground">shares</span>
-              </div>
-              <div className="text-sm text-muted-foreground">
-                avg: <span className="font-mono text-foreground">{formatPrice(downAvg)}</span>
-                <span className="mx-1">•</span>
-                ask: <span className="font-mono text-foreground">{formatPrice(snapshot.down_ask)}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Paired / Unpaired summary */}
-          <div className="flex items-center justify-between mt-3 pt-2 border-t border-primary/20 text-sm">
-            <div className="flex items-center gap-4">
-              <span>
-                <span className="text-muted-foreground">Paired:</span>{' '}
-                <span className={cn('font-mono font-bold', isHedged ? 'text-success' : 'text-muted-foreground')}>
-                  {pairedShares}
-                </span>
-              </span>
-              <span>
-                <span className="text-muted-foreground">Unpaired:</span>{' '}
-                <span className={cn('font-mono font-bold', unpairedShares > 0 ? 'text-warning' : 'text-muted-foreground')}>
-                  {unpairedShares}
-                </span>
-              </span>
-            </div>
-            {snapshot.pair_cost && (
-              <span>
-                <span className="text-muted-foreground">Cost/Pair:</span>{' '}
-                <span className={cn('font-mono font-bold', snapshot.pair_cost < 1 ? 'text-success' : 'text-destructive')}>
-                  {(snapshot.pair_cost * 100).toFixed(1)}¢
-                </span>
-              </span>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Orderbook Grid - Compact when position exists */}
+      {/* Orderbook Grid */}
       <div className="grid grid-cols-2 gap-3 text-xs">
         {/* UP Side */}
         <div className="space-y-1">
@@ -231,7 +155,7 @@ function MarketBookDisplay({ snapshot }: { snapshot: SnapshotLog }) {
       </div>
 
       {/* Combined Metrics */}
-      <div className="grid grid-cols-4 gap-2 pt-2 border-t border-border/50 text-xs">
+      <div className="grid grid-cols-3 gap-2 pt-2 border-t border-border/50 text-xs">
         <div>
           <div className="text-muted-foreground">Combined</div>
           <div className={cn('font-mono font-bold', combinedAsk < 1 ? 'text-success' : 'text-destructive')}>
@@ -253,19 +177,11 @@ function MarketBookDisplay({ snapshot }: { snapshot: SnapshotLog }) {
             {formatDelta(snapshot.delta)}
           </div>
         </div>
-        <div>
-          <div className="text-muted-foreground">Pair Cost</div>
-          <div className={cn('font-mono', 
-            (snapshot.pair_cost ?? 1) < 1 ? 'text-success' : 'text-destructive'
-          )}>
-            {snapshot.pair_cost ? `${(snapshot.pair_cost * 100).toFixed(1)}¢` : '—'}
-          </div>
-        </div>
       </div>
 
       {/* Spot/Strike */}
       {(snapshot.spot_price || snapshot.strike_price) && (
-        <div className="flex items-center justify-between text-xs text-muted-foreground pt-1">
+        <div className="flex items-center justify-between text-xs text-muted-foreground">
           <span>Spot: ${snapshot.spot_price?.toLocaleString() ?? '—'}</span>
           <span>Strike: ${snapshot.strike_price?.toLocaleString() ?? '—'}</span>
         </div>
@@ -507,11 +423,17 @@ export function LiveBotDataFeed() {
           </div>
         ) : (
           <>
+            {/* Info banner */}
+            <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted/30 rounded-md px-3 py-2">
+              <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+              <span>Dit toont de <strong>bot's view</strong> van de markt (orderbook data). Echte posities staan in "Open Positions" hieronder.</span>
+            </div>
+
             {/* Market Books */}
             <div>
               <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
                 <Zap className="h-4 w-4 text-primary" />
-                Live Orderbooks
+                Live Orderbooks (Bot View)
               </h3>
               <div className="grid gap-3 md:grid-cols-2">
                 {snapshots.map(snapshot => (
