@@ -276,7 +276,7 @@ export function BotPositionsCard({
     };
   }, [usePortfolio, dbSummary, portfolioGrouped, portfolioPositions]);
 
-  const loading = usePortfolio ? !!portfolioLoading : dbLoading;
+  const loading = usePortfolio ? false : dbLoading; // Don't show loading for portfolio since parent handles it
 
   const lastSyncTime = !usePortfolio && groupedPositions.length > 0 && groupedPositions[0].positions.length > 0
     ? groupedPositions[0].positions[0]?.synced_at

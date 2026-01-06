@@ -65,9 +65,10 @@ export default function LiveTrading() {
   const [portfolio, setPortfolio] = useState<Portfolio | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
   const [isLoadingWallet, setIsLoadingWallet] = useState(true);
+  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
 
-  const fetchBalances = async () => {
-    setIsLoadingWallet(true);
+  const fetchBalances = async (silent = false) => {
+    if (!silent) setIsLoadingWallet(true);
     try {
       // Settle any expired trades first
       await supabase.functions.invoke('settle-live-trades', { body: {} });
@@ -92,15 +93,25 @@ export default function LiveTrading() {
       if (portfolioData?.positions) {
         setPositions(portfolioData.positions);
       }
+      setLastRefresh(new Date());
     } catch (err) {
       console.error('Error fetching balances:', err);
     } finally {
-      setIsLoadingWallet(false);
+      if (!silent) setIsLoadingWallet(false);
     }
   };
 
+  // Initial load
   useEffect(() => {
     fetchBalances();
+  }, []);
+
+  // Auto-refresh every 10 seconds for near-realtime updates
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchBalances(true); // silent refresh
+    }, 10 * 1000);
+    return () => clearInterval(interval);
   }, []);
 
   return (
@@ -126,13 +137,18 @@ export default function LiveTrading() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {lastRefresh && (
+              <span className="text-xs text-muted-foreground">
+                Updated {lastRefresh.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              </span>
+            )}
             <Link to="/wallet">
               <Button variant="outline" size="sm">
                 <Wallet className="w-4 h-4 mr-2" />
                 Wallet
               </Button>
             </Link>
-            <Button variant="outline" size="sm" onClick={fetchBalances} disabled={isLoadingWallet}>
+            <Button variant="outline" size="sm" onClick={() => fetchBalances(false)} disabled={isLoadingWallet}>
               <RefreshCw className={`w-4 h-4 mr-2 ${isLoadingWallet ? 'animate-spin' : ''}`} />
               Refresh
             </Button>
