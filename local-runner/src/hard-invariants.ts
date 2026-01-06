@@ -59,6 +59,18 @@ import {
 import { tryAcquire, forceRelease, getMutexStats, type AcquireResult } from './market-mutex.js';
 import { checkBurstLimit, recordOrderPlacement, clearBurstState, getBurstStats, BURST_LIMITER_CONFIG } from './burst-limiter.js';
 
+// Rev D: CPP Quality imports
+import {
+  CppQuality,
+  checkCppFeasibility,
+  checkCombinationGuard,
+  getCppActivityState,
+  isEntryAllowedByActivityState,
+  isHedgeAllowedByActivityState,
+  CPP_QUALITY_CONFIG,
+  type CppActivityState,
+} from './cpp-quality.js';
+
 // ============================================================
 // CONFIGURATION
 // ============================================================
@@ -876,6 +888,7 @@ interface CappedOrderResponse {
 
 /**
  * Context required for position cap enforcement
+ * Rev D: Extended with orderbook data for CPP feasibility checks
  */
 export interface OrderContext {
   marketId: string;
@@ -887,6 +900,10 @@ export interface OrderContext {
   downCost?: number;
   intentType: string;
   runId?: string;
+  // Rev D: Orderbook data for CPP feasibility and combination guards
+  upAsk?: number;
+  downAsk?: number;
+  entryPrice?: number;  // The price we're placing this order at
 }
 
 /**
@@ -1080,8 +1097,148 @@ async function placeOrderWithCapsInner(
   }
 
   // ================================================================
-  // BUY ORDER: Use ExposureLedger for cap enforcement
+  // BUY ORDER: Rev D CPP Quality + ExposureLedger for cap enforcement
   // ================================================================
+
+  // Rev D PRIORITY 3: Check CPP activity state BEFORE placing order
+  // HEDGE_ONLY allows hedges, blocks entries
+  // HOLD_ONLY blocks everything
+  const ledgerEntry = getLedgerEntry(marketId, asset);
+  const currentUpShares = ledgerEntry.positionUp;
+  const currentDownShares = ledgerEntry.positionDown;
+  
+  const isHedgeIntent = intentType === 'HEDGE' || intentType === 'hedge' || 
+                        intentType === 'FORCE' || intentType === 'SURVIVAL' ||
+                        intentType === 'force_hedge' || intentType === 'panic_hedge';
+  
+  if (isHedgeIntent) {
+    // Check if hedge is allowed by activity state
+    const hedgeAllowed = isHedgeAllowedByActivityState({
+      marketId,
+      asset,
+      upShares: currentUpShares,
+      downShares: currentDownShares,
+      upCost,
+      downCost,
+      runId,
+    });
+    
+    if (!hedgeAllowed.allowed) {
+      logOrderAttempt({
+        marketId,
+        asset,
+        side: ledgerSide,
+        reqQty: order.size,
+        decision: 'block',
+        reason: hedgeAllowed.reason,
+        runId,
+      });
+      
+      return {
+        success: false,
+        error: `CPP_STATE_BLOCKED: ${hedgeAllowed.reason}`,
+        failureReason: 'cap_blocked',
+      };
+    }
+  } else {
+    // Entry/accumulate: check if entry is allowed by activity state
+    const entryAllowed = isEntryAllowedByActivityState({
+      marketId,
+      asset,
+      upShares: currentUpShares,
+      downShares: currentDownShares,
+      upCost,
+      downCost,
+      runId,
+    });
+    
+    if (!entryAllowed.allowed) {
+      logOrderAttempt({
+        marketId,
+        asset,
+        side: ledgerSide,
+        reqQty: order.size,
+        decision: 'block',
+        reason: entryAllowed.reason,
+        runId,
+      });
+      
+      return {
+        success: false,
+        error: `CPP_STATE_BLOCKED: ${entryAllowed.reason}`,
+        failureReason: 'cap_blocked',
+      };
+    }
+    
+    // Rev D PRIORITY 1: CPP Feasibility check for new entries
+    // Only check if we have orderbook data AND this is a fresh entry (no existing position on this side)
+    const currentSideShares = outcome === 'UP' ? currentUpShares : currentDownShares;
+    const hasOrderbookData = ctx.upAsk !== undefined && ctx.downAsk !== undefined && ctx.entryPrice !== undefined;
+    
+    if (hasOrderbookData && currentSideShares === 0) {
+      const feasibility = checkCppFeasibility({
+        marketId,
+        asset,
+        entrySide: outcome,
+        entryPrice: ctx.entryPrice!,
+        upAsk: ctx.upAsk!,
+        downAsk: ctx.downAsk!,
+        runId,
+      });
+      
+      if (!feasibility.allowed) {
+        logOrderAttempt({
+          marketId,
+          asset,
+          side: ledgerSide,
+          reqQty: order.size,
+          decision: 'block',
+          reason: feasibility.reason,
+          runId,
+        });
+        
+        return {
+          success: false,
+          error: `CPP_FEASIBILITY_BLOCKED: ${feasibility.reason}`,
+          failureReason: 'cap_blocked',
+        };
+      }
+    }
+    
+    // Rev D PRIORITY 2: Combination guard for adds (when we already have position)
+    if (hasOrderbookData && currentSideShares > 0) {
+      const currentCost = outcome === 'UP' ? upCost : downCost;
+      const currentAvgPrice = currentCost / currentSideShares;
+      const oppositeSideAsk = outcome === 'UP' ? ctx.downAsk! : ctx.upAsk!;
+      
+      const combinationCheck = checkCombinationGuard({
+        marketId,
+        asset,
+        side: outcome,
+        currentAvgPrice,
+        oppositeSideAsk,
+        runId,
+      });
+      
+      if (!combinationCheck.allowed) {
+        logOrderAttempt({
+          marketId,
+          asset,
+          side: ledgerSide,
+          reqQty: order.size,
+          decision: 'block',
+          reason: combinationCheck.reason,
+          runId,
+        });
+        
+        return {
+          success: false,
+          error: `COMBINATION_GUARD_BLOCKED: ${combinationCheck.reason}`,
+          failureReason: 'cap_blocked',
+        };
+      }
+    }
+  }
 
   // 1) CHECK CAP using effective exposure
   const capCheck = checkCapWithEffectiveExposure({
@@ -1361,3 +1518,18 @@ export function placeOrderDirect(order: CappedOrderRequest): Promise<CappedOrder
   console.warn(`⚠️ [DEPRECATED] placeOrderDirect called - should use placeOrderWithCaps!`);
   return rawPlaceOrder(order);
 }
+
+// ============================================================
+// REV D EXPORTS - CPP Quality
+// ============================================================
+
+export {
+  CppQuality,
+  CPP_QUALITY_CONFIG,
+  checkCppFeasibility,
+  checkCombinationGuard,
+  getCppActivityState,
+  isEntryAllowedByActivityState,
+  isHedgeAllowedByActivityState,
+  type CppActivityState,
+} from './cpp-quality.js';
