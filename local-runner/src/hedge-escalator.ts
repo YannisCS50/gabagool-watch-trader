@@ -299,6 +299,7 @@ export async function executeHedgeWithEscalation(input: HedgeEscalatorInput): Pr
       const orderIntent = isSurvivalMode ? 'SURVIVAL' : 'HEDGE';
       
       // v7.2.5: Build order context for cap enforcement
+      // Rev D.1: Include orderbook data for CPP checks
       const orderCtx: OrderContext = {
         marketId,
         asset,
@@ -309,6 +310,9 @@ export async function executeHedgeWithEscalation(input: HedgeEscalatorInput): Pr
         downCost,
         intentType: 'HEDGE',
         runId,
+        upAsk: depth.bestAsk, // Use depth for hedge price context
+        downAsk: depth.bestAsk, // Will be same side, but provides context
+        entryPrice: currentPrice,
       };
       
       const result = await placeOrderWithCaps({

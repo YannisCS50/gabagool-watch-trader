@@ -273,21 +273,23 @@ export function checkCppFeasibility(params: {
       console.log(`   projectedCPP_taker=${projectedCppTaker.toFixed(4)} (for reference)`);
       console.log(`   entryPrice=${entryPrice.toFixed(4)}, makerHedge=${projectedMakerHedge.toFixed(4)}, takerHedge=${bestAskHedge.toFixed(4)}`);
       
+      // V73 Event: Entry skip due to projected CPP too high
       saveBotEvent({
-        event_type: 'PROJECTED_CPP_TOO_HIGH',
+        event_type: 'V73_ENTRY_SKIP',
         asset,
         market_id: marketId,
         ts: now,
         run_id: runId,
-        reason_code: 'CPP_FEASIBILITY_BLOCKED',
+        reason_code: 'PROJECTED_CPP_TOO_HIGH',
         data: {
           entrySide,
           entryPrice,
-          projectedCppMaker,
-          projectedCppTaker,
-          projectedMakerHedge,
-          bestAskHedge,
-          entryCppMax: cfg.entryCppMax,
+          projected_cpp_maker: projectedCppMaker,
+          projected_cpp_taker: projectedCppTaker,
+          projected_maker_hedge: projectedMakerHedge,
+          best_ask_hedge: bestAskHedge,
+          entry_cpp_max: cfg.entryCppMax,
+          skip_reason: 'CPP_FEASIBILITY_BLOCKED',
         },
       }).catch(() => {});
     }
@@ -462,6 +464,29 @@ export function getCppActivityState(params: {
     reason = `HOLD_ONLY: cpp=${cpp.toFixed(4)} >= ${cfg.cppHedgeOnlyMax}`;
   }
   
+  // V73 Event: Log state changes
+  const previousState = state.lastActivityState;
+  if (previousState !== activityState) {
+    const now = Date.now();
+    console.log(`📊 [CPP_QUALITY] CPP_STATE_CHANGE: ${asset} ${marketId.slice(0, 8)} ${previousState} → ${activityState}`);
+    
+    saveBotEvent({
+      event_type: 'CPP_STATE_CHANGE',
+      asset,
+      market_id: marketId,
+      ts: now,
+      data: {
+        previous_state: previousState,
+        new_state: activityState,
+        cpp,
+        up_shares: upShares,
+        down_shares: downShares,
+        cpp_normal_max: cfg.cppNormalMax,
+        cpp_hedge_only_max: cfg.cppHedgeOnlyMax,
+      },
+    }).catch(() => {});
+  }
+  
   state.lastActivityState = activityState;
   
   return { state: activityState, cpp, reason };
@@ -537,18 +562,72 @@ export function isHedgeAllowedByActivityState(params: {
   const { runId, hedgeSide, ...stateParams } = params;
   const result = getCppActivityState(stateParams);
   
+  const sideAnalysis = analyzeSides(params.upShares, params.downShares);
+  const { marketId, asset } = params;
+  const now = Date.now();
+  
   // NORMAL: all hedges allowed
   if (result.state === 'NORMAL') {
+    // V73 Event: Log hedge decision
+    saveBotEvent({
+      event_type: 'V73_HEDGE_DECISION',
+      asset,
+      market_id: marketId,
+      ts: now,
+      run_id: runId,
+      data: {
+        decision: 'ALLOWED',
+        activity_state: result.state,
+        cpp: result.cpp,
+        hedge_side: hedgeSide,
+        dominant_side: sideAnalysis.dominantSide,
+        minority_side: sideAnalysis.minoritySide,
+      },
+    }).catch(() => {});
+    
     return { allowed: true, state: result.state, reason: result.reason };
   }
   
   // HEDGE_ONLY: only minority side allowed
   if (result.state === 'HEDGE_ONLY') {
-    const sideAnalysis = analyzeSides(params.upShares, params.downShares);
     if (hedgeSide === sideAnalysis.minoritySide) {
+      // V73 Event: Log hedge decision (allowed on minority)
+      saveBotEvent({
+        event_type: 'V73_HEDGE_DECISION',
+        asset,
+        market_id: marketId,
+        ts: now,
+        run_id: runId,
+        data: {
+          decision: 'ALLOWED_MINORITY',
+          activity_state: result.state,
+          cpp: result.cpp,
+          hedge_side: hedgeSide,
+          dominant_side: sideAnalysis.dominantSide,
+          minority_side: sideAnalysis.minoritySide,
+        },
+      }).catch(() => {});
+      
       return { allowed: true, state: result.state, reason: `HEDGE_ALLOWED: minority side in HEDGE_ONLY` };
     }
-    // Dominant side not allowed in HEDGE_ONLY
+    
+    // Dominant side not allowed in HEDGE_ONLY - log blocked
+    saveBotEvent({
+      event_type: 'V73_HEDGE_DECISION',
+      asset,
+      market_id: marketId,
+      ts: now,
+      run_id: runId,
+      data: {
+        decision: 'BLOCKED_DOMINANT_IN_HEDGE_ONLY',
+        activity_state: result.state,
+        cpp: result.cpp,
+        hedge_side: hedgeSide,
+        dominant_side: sideAnalysis.dominantSide,
+        minority_side: sideAnalysis.minoritySide,
+      },
+    }).catch(() => {});
+    
     return {
       allowed: false,
       state: result.state,
@@ -557,8 +636,6 @@ export function isHedgeAllowedByActivityState(params: {
   }
   
   // HOLD_ONLY: nothing allowed
-  const { marketId, asset } = params;
-  const now = Date.now();
   const key = `${marketId}:${asset}`;
   
   const lastLog = logThrottles.get(`hedge_hold_${key}`) ?? 0;
@@ -567,16 +644,20 @@ export function isHedgeAllowedByActivityState(params: {
     console.log(`🚫 [CPP_QUALITY] HEDGE_BLOCKED_HOLD_ONLY: ${asset} ${marketId.slice(0, 8)}`);
     console.log(`   cpp=${result.cpp?.toFixed(4)} - waiting for expiry`);
     
+    // V73 Event: Log hedge decision (blocked in HOLD_ONLY)
     saveBotEvent({
-      event_type: 'HEDGE_BLOCKED_HOLD_ONLY',
+      event_type: 'V73_HEDGE_DECISION',
       asset,
       market_id: marketId,
       ts: now,
       run_id: runId,
-      reason_code: 'HOLD_ONLY',
       data: {
+        decision: 'BLOCKED_HOLD_ONLY',
+        activity_state: result.state,
         cpp: result.cpp,
-        hedgeSide,
+        hedge_side: hedgeSide,
+        dominant_side: sideAnalysis.dominantSide,
+        minority_side: sideAnalysis.minoritySide,
       },
     }).catch(() => {});
   }
@@ -648,17 +729,20 @@ export function isAccumulateAllowed(params: {
       console.log(`🚫 [CPP_QUALITY] ACCUMULATE_BLOCKED_DOMINANT: ${asset} ${marketId.slice(0, 8)}`);
       console.log(`   Cannot accumulate on dominant side (${accumulateSide})`);
       
+      // V73 Event: Accumulate blocked - dominant side
       saveBotEvent({
-        event_type: 'ACCUMULATE_BLOCKED_DOMINANT',
+        event_type: 'V73_ACCUM_DECISION',
         asset,
         market_id: marketId,
         ts: now,
         run_id: runId,
-        reason_code: 'DOMINANT_SIDE',
         data: {
-          accumulateSide,
-          dominantSide: sideAnalysis.dominantSide,
-          minoritySide: sideAnalysis.minoritySide,
+          decision: 'BLOCKED_DOMINANT_SIDE',
+          accumulate_side: accumulateSide,
+          dominant_side: sideAnalysis.dominantSide,
+          minority_side: sideAnalysis.minoritySide,
+          current_cpp: null,
+          new_cpp: null,
         },
       }).catch(() => {});
     }
@@ -675,6 +759,23 @@ export function isAccumulateAllowed(params: {
   const currentCpp = calculateCpp(upShares, downShares, upCost, downCost);
   if (currentCpp === null) {
     // Not paired yet - allow initial accumulate
+    // V73 Event: Accumulate allowed - not paired yet
+    saveBotEvent({
+      event_type: 'V73_ACCUM_DECISION',
+      asset,
+      market_id: marketId,
+      ts: now,
+      run_id: runId,
+      data: {
+        decision: 'ALLOWED_NOT_PAIRED',
+        accumulate_side: accumulateSide,
+        dominant_side: sideAnalysis.dominantSide,
+        minority_side: sideAnalysis.minoritySide,
+        current_cpp: null,
+        new_cpp: null,
+      },
+    }).catch(() => {});
+    
     return {
       allowed: true,
       reason: 'ACCUMULATE_ALLOWED: not yet paired',
@@ -698,19 +799,22 @@ export function isAccumulateAllowed(params: {
       console.log(`🚫 [CPP_QUALITY] ACCUMULATE_BLOCKED_CPP: ${asset} ${marketId.slice(0, 8)}`);
       console.log(`   newCpp=${newCpp?.toFixed(4)} >= currentCpp=${currentCpp.toFixed(4)}`);
       
+      // V73 Event: Accumulate blocked - CPP worse
       saveBotEvent({
-        event_type: 'ACCUMULATE_BLOCKED_CPP_WORSE',
+        event_type: 'V73_ACCUM_DECISION',
         asset,
         market_id: marketId,
         ts: now,
         run_id: runId,
-        reason_code: 'CPP_NOT_IMPROVED',
         data: {
-          currentCpp,
-          newCpp,
-          accumulateSide,
-          accumulatePrice,
-          accumulateShares,
+          decision: 'BLOCKED_CPP_WORSE',
+          accumulate_side: accumulateSide,
+          accumulate_price: accumulatePrice,
+          accumulate_shares: accumulateShares,
+          current_cpp: currentCpp,
+          new_cpp: newCpp,
+          dominant_side: sideAnalysis.dominantSide,
+          minority_side: sideAnalysis.minoritySide,
         },
       }).catch(() => {});
     }
@@ -722,6 +826,26 @@ export function isAccumulateAllowed(params: {
       currentCpp,
     };
   }
+  
+  // V73 Event: Accumulate allowed - CPP improved
+  saveBotEvent({
+    event_type: 'V73_ACCUM_DECISION',
+    asset,
+    market_id: marketId,
+    ts: now,
+    run_id: runId,
+    data: {
+      decision: 'ALLOWED_CPP_IMPROVED',
+      accumulate_side: accumulateSide,
+      accumulate_price: accumulatePrice,
+      accumulate_shares: accumulateShares,
+      current_cpp: currentCpp,
+      new_cpp: newCpp,
+      cpp_improvement: currentCpp - newCpp,
+      dominant_side: sideAnalysis.dominantSide,
+      minority_side: sideAnalysis.minoritySide,
+    },
+  }).catch(() => {});
   
   return {
     allowed: true,

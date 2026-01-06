@@ -17,6 +17,7 @@ import { startBenchmarkPolling, stopBenchmarkPolling, updateBenchmarkSnapshot, g
 import { canPlaceOrder, ReserveManager, getAvailableBalance, invalidateBalanceCacheNow, getBlockedOrderStats, FUNDING_CONFIG } from './funding.js';
 import { OrderRateLimiter, canPlaceOrderRateLimited, recordOrderPlaced, recordOrderFailure, RATE_LIMIT_CONFIG } from './order-rate-limiter.js';
 import { executeHedgeWithEscalation, getHedgeEscalatorStats, HEDGE_ESCALATOR_CONFIG } from './hedge-escalator.js';
+import { CppQuality } from './cpp-quality.js';
 
 // v6.3.0: Config Unification
 import { getResolvedConfig, getCurrentConfig, CONFIG_VERSION } from './resolved-config.js';
@@ -559,6 +560,7 @@ async function executeTrade(
   ReserveManager.reserve(tempOrderId, ctx.slug, total, outcome);
 
   // v7.2.5: Use placeOrderWithCaps for hard cap enforcement
+  // Rev D.1: Include orderbook data for CPP feasibility check
   const orderCtx: OrderContext = {
     marketId: ctx.slug,
     asset: ctx.market.asset,
@@ -569,6 +571,10 @@ async function executeTrade(
     downCost: ctx.position.downInvested,
     intentType: intent,
     runId: RUN_ID,
+    // Rev D.1: Orderbook data for CPP feasibility checks
+    upAsk: ctx.book.up.ask ?? undefined,
+    downAsk: ctx.book.down.ask ?? undefined,
+    entryPrice: price,
   };
 
   const result = await placeOrderWithCaps({
@@ -922,6 +928,16 @@ async function executeTrade(
       pairedDelaySec = (ctx.microHedgeState.pairedMinReachedTs - ctx.firstFillTs) / 1000;
     }
     
+    // Rev D.1: Get CPP metrics for inventory snapshot
+    const cppMetrics = CppQuality.getMetrics({
+      marketId: ctx.slug,
+      asset: ctx.market.asset,
+      upShares: ctx.position.upShares,
+      downShares: ctx.position.downShares,
+      upCost: ctx.position.upInvested,
+      downCost: ctx.position.downInvested,
+    });
+    
     saveInventorySnapshot({
       market_id: ctx.slug,
       asset: ctx.market.asset,
@@ -931,12 +947,18 @@ async function executeTrade(
       avg_down_cost: downAvg > 0 ? downAvg : undefined,
       pair_cost: pairCost > 0 ? pairCost : undefined,
       unpaired_shares: unpaired,
-      paired_shares: paired,                           // v6.4.0
-      unpaired_notional_usd: unpairedNotionalUsd > 0 ? unpairedNotionalUsd : undefined, // v6.4.0
-      paired_delay_sec: pairedDelaySec,                // v6.4.0
+      paired_shares: paired,
+      unpaired_notional_usd: unpairedNotionalUsd > 0 ? unpairedNotionalUsd : undefined,
+      paired_delay_sec: pairedDelaySec,
       state,
       trigger_type: `FILL_${intent}`,
       ts: nowMs,
+      // Rev D.1: CPP quality metrics
+      activity_state: cppMetrics.activityState,
+      dominant_side: cppMetrics.dominantSide ?? undefined,
+      minority_side: cppMetrics.minoritySide ?? undefined,
+      projected_cpp_maker: cppMetrics.projectedCppMaker ?? undefined,
+      actual_cpp: cppMetrics.actualCpp ?? undefined,
     }).catch(() => { /* non-critical */ });
     
     // ============================================================
@@ -1024,6 +1046,7 @@ async function executeTrade(
           console.log(`[v7.0.1] PLACING ACCUMULATED MICRO-HEDGE: ${microResult.side} ${microResult.qty}@${(microResult.price * 100).toFixed(1)}¢`);
           
           // v7.2.5: Use placeOrderWithCaps for hard cap enforcement
+          // Rev D.1: Include orderbook data for CPP checks
           const microOrderCtx: OrderContext = {
             marketId: ctx.slug,
             asset: ctx.market.asset,
@@ -1034,6 +1057,9 @@ async function executeTrade(
             downCost: ctx.position.downInvested,
             intentType: 'HEDGE',
             runId: RUN_ID,
+            upAsk: ctx.book.up.ask ?? undefined,
+            downAsk: ctx.book.down.ask ?? undefined,
+            entryPrice: microResult.price,
           };
           
           placeOrderWithCaps({
@@ -1207,6 +1233,7 @@ async function executeHedgeWithRetry(
     await new Promise(r => setTimeout(r, HEDGE_RETRY_CONFIG.retryDelayMs));
     
     // v7.2.5: Use placeOrderWithCaps for hard cap enforcement
+    // Rev D.1: Include orderbook data for CPP checks
     const hedgeRetryCtx: OrderContext = {
       marketId: ctx.slug,
       asset: ctx.market.asset,
@@ -1217,6 +1244,9 @@ async function executeHedgeWithRetry(
       downCost: ctx.position.downInvested,
       intentType: 'HEDGE',
       runId: RUN_ID,
+      upAsk: ctx.book.up.ask ?? undefined,
+      downAsk: ctx.book.down.ask ?? undefined,
+      entryPrice: currentPrice,
     };
     
     const result = await placeOrderWithCaps({
@@ -2755,6 +2785,10 @@ async function main(): Promise<void> {
           downCost: marketCtx.position.downInvested,
           intentType: order.intent_type || 'ENTRY',
           runId: RUN_ID,
+          // Rev D.1: Include orderbook data for CPP checks
+          upAsk: marketCtx.book.up.ask ?? undefined,
+          downAsk: marketCtx.book.down.ask ?? undefined,
+          entryPrice: order.price,
         };
 
         const result = await placeOrderWithCaps(
