@@ -143,6 +143,20 @@ import {
   type SellReason,
 } from './sell-policy.js';
 
+// v7.4.0: Professional-grade real-time position cache
+import {
+  startPositionCache,
+  stopPositionCache,
+  getCachedPosition,
+  getAuthoritativePosition,
+  detectPositionDrift,
+  isCacheStale,
+  isCacheHealthy,
+  getCacheStats,
+  logCacheStatus,
+  forceRefresh as forcePositionRefresh,
+} from './position-cache.js';
+
 // Ensure Node prefers IPv4 to avoid hangs on IPv6-only DNS results under some VPN setups.
 try {
   dns.setDefaultResultOrder('ipv4first');
@@ -152,7 +166,7 @@ try {
 }
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '7.3.1';  // v7.3.1: Gabagool-Aligned Emergency Fix - CPP sanity guard, dominantSide invariant, skew worsening check
+const RUNNER_VERSION = '7.4.0';  // v7.4.0: Professional-grade real-time position sync - 1s refresh from Polymarket API, drift detection, auto-sync
 const RUN_ID = crypto.randomUUID();
 
 // v7 REV C: Initialize MarketStateManager singleton
@@ -1434,6 +1448,59 @@ async function evaluateMarket(slug: string): Promise<void> {
     }
 
     // ============================================================
+    // v7.4.0: POSITION DRIFT DETECTION (Professional-grade)
+    // Before any trading decision, verify local state matches Polymarket
+    // ============================================================
+    if (!isCacheStale()) {
+      const driftCheck = detectPositionDrift(
+        slug,
+        ctx.market.asset,
+        ctx.position.upShares,
+        ctx.position.downShares
+      );
+      
+      if (driftCheck.detected) {
+        // MAJOR DRIFT DETECTED - HALT trading on this market
+        console.error(`🚨 [v7.4.0] POSITION_DRIFT_HALT: ${ctx.market.asset}`);
+        console.error(`   Local:     UP=${driftCheck.localUp.toFixed(1)} DOWN=${driftCheck.localDown.toFixed(1)}`);
+        console.error(`   Polymarket: UP=${driftCheck.cacheUp.toFixed(1)} DOWN=${driftCheck.cacheDown.toFixed(1)}`);
+        console.error(`   Drift:     UP=${driftCheck.driftUp.toFixed(1)} DOWN=${driftCheck.driftDown.toFixed(1)}`);
+        console.error(`   → Trading HALTED. Syncing from Polymarket...`);
+        
+        // Sync local state from Polymarket cache (authoritative)
+        const authPos = getAuthoritativePosition(slug);
+        ctx.position.upShares = authPos.upShares;
+        ctx.position.downShares = authPos.downShares;
+        ctx.position.upInvested = authPos.upCost;
+        ctx.position.downInvested = authPos.downCost;
+        
+        // Log the sync event
+        saveBotEvent({
+          event_type: 'POSITION_DRIFT_SYNC',
+          asset: ctx.market.asset,
+          market_id: slug,
+          run_id: RUN_ID,
+          ts: nowMs,
+          data: {
+            ...driftCheck,
+            syncedFromCache: true,
+          },
+        }).catch(() => {});
+        
+        ctx.inFlight = false;
+        return;
+      }
+    } else {
+      // Cache is stale - log warning but continue with local state
+      const logKey = `cache_stale_${slug}`;
+      if (!(global as any)[logKey] || (nowMs - (global as any)[logKey] > 10000)) {
+        (global as any)[logKey] = nowMs;
+        const stats = getCacheStats();
+        console.warn(`⚠️ [v7.4.0] Position cache stale (${Date.now() - stats.lastRefreshAtMs}ms old) - using local state`);
+      }
+    }
+
+    // ============================================================
     // v7.2.0 REV C: MARKET STATE MANAGER - PAIRING GUARDRAILS
     // ============================================================
     if (!marketStateManager) {
@@ -2650,6 +2717,12 @@ async function main(): Promise<void> {
   // Initial setup
   await fetchMarkets();
   await fetchExistingTrades();
+  
+  // v7.4.0: Start real-time position cache (1s refresh from Polymarket API)
+  // This is the SINGLE SOURCE OF TRUTH for position data
+  console.log('\n🔄 [v7.4.0] Starting real-time position cache...');
+  startPositionCache();
+  
   connectToClob();
 
   // Send initial heartbeat
@@ -2922,12 +2995,14 @@ async function main(): Promise<void> {
   }, 10000);
 
   // v7.0.1: Log patch stats every 60 seconds
+  // v7.4.0: Also log position cache status
   let lastV7StatsLog = 0;
   setInterval(() => {
     const nowMs = Date.now();
     if (nowMs - lastV7StatsLog >= 60000) {
       lastV7StatsLog = nowMs;
       logV7PatchStatus();
+      logCacheStatus();  // v7.4.0: Position cache health
     }
   }, 15000);
 
@@ -3378,6 +3453,9 @@ process.on('SIGINT', async () => {
   
   // Stop auto-claim loop
   stopAutoClaimLoop();
+  
+  // v7.4.0: Stop position cache
+  stopPositionCache();
   
   // v7.4.0: Stop stale order cleanup
   stopStaleCleanupLoop();
