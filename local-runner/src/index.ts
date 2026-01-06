@@ -2578,11 +2578,17 @@ async function main(): Promise<void> {
 
   // v7.3.2: CRITICAL - Acquire exclusive runner lease before trading
   // Only ONE runner may be active at a time to prevent conflicting orders
+  // v7.3.3: Support FORCE_LEASE=1 env var to override existing lease
+  const forceLease = process.env.FORCE_LEASE === '1' || process.env.FORCE_LEASE === 'true';
+  if (forceLease) {
+    console.log('\n⚡ FORCE_LEASE=1 detected - will override existing lease');
+  }
   console.log('\n🔒 Acquiring exclusive runner lease...');
-  const leaseAcquired = await acquireLeaseOrHalt(RUNNER_ID);
+  const leaseAcquired = await acquireLeaseOrHalt(RUNNER_ID, forceLease);
   if (!leaseAcquired) {
     console.error('\n🚫 HALTING: Another runner holds the lease. Only one runner may be active at a time.');
-    console.error('   Stop the other runner or wait for its lease to expire (~60s after it stops).\n');
+    console.error('   Stop the other runner or wait for its lease to expire (~60s after it stops).');
+    console.error('   OR restart with: FORCE_LEASE=1 docker-compose up -d runner\n');
     process.exit(1);
   }
   console.log('✅ Exclusive runner lease acquired\n');

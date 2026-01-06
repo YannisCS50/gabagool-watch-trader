@@ -83,15 +83,16 @@ export async function getLeaseStatus(): Promise<LeaseStatus | null> {
   }
 }
 
-export async function tryAcquireLease(runnerId: string): Promise<boolean> {
+export async function tryAcquireLease(runnerId: string, force = false): Promise<boolean> {
   currentRunnerId = runnerId;
 
   try {
-    const result = await callProxy<{ acquired: boolean; lease?: { runner_id: string; locked_until: string } }>(
+    const result = await callProxy<{ acquired: boolean; forced?: boolean; lease?: { runner_id: string; locked_until: string } }>(
       'lease-claim',
       {
         runner_id: runnerId,
         lease_duration_ms: LEASE_CONFIG.leaseDurationMs,
+        force, // v7.3.3: Force acquire option
       }
     );
 
@@ -102,7 +103,11 @@ export async function tryAcquireLease(runnerId: string): Promise<boolean> {
 
     if (result.acquired) {
       leaseHeld = true;
-      console.log(`✅ [Lease] Acquired lease for ${runnerId} until ${result.lease?.locked_until}`);
+      if (result.forced) {
+        console.log(`⚡ [Lease] FORCE acquired lease for ${runnerId} until ${result.lease?.locked_until}`);
+      } else {
+        console.log(`✅ [Lease] Acquired lease for ${runnerId} until ${result.lease?.locked_until}`);
+      }
       return true;
     }
 
@@ -188,12 +193,15 @@ export function startLeaseRenewal(): void {
   console.log(`⏰ [Lease] Started renewal loop every ${LEASE_CONFIG.renewIntervalMs / 1000}s`);
 }
 
-export async function acquireLeaseOrHalt(runnerId: string): Promise<boolean> {
+export async function acquireLeaseOrHalt(runnerId: string, force = false): Promise<boolean> {
   console.log(`\n🔒 [Lease] Attempting to acquire exclusive runner lease...`);
   console.log(`   Runner ID: ${runnerId}`);
   console.log(`   Lease duration: ${LEASE_CONFIG.leaseDurationMs / 1000}s`);
+  if (force) {
+    console.log(`   ⚡ FORCE MODE: Will override existing lease`);
+  }
 
-  if (LEASE_CONFIG.graceOnStartupMs > 0) {
+  if (!force && LEASE_CONFIG.graceOnStartupMs > 0) {
     console.log(`   Waiting ${LEASE_CONFIG.graceOnStartupMs / 1000}s grace period...`);
     await new Promise((r) => setTimeout(r, LEASE_CONFIG.graceOnStartupMs));
   }
@@ -202,14 +210,29 @@ export async function acquireLeaseOrHalt(runnerId: string): Promise<boolean> {
   if (status) {
     console.log(`   Current lease: runner=${status.runnerId || '(none)'}, expired=${status.expired}`);
     if (!status.expired && status.runnerId && status.runnerId !== runnerId) {
-      console.log(`   ⚠️ Another runner (${status.runnerId}) holds the lease until ${status.lockedUntil?.toISOString()}`);
+      if (force) {
+        console.log(`   ⚡ FORCING takeover from ${status.runnerId}`);
+      } else {
+        console.log(`   ⚠️ Another runner (${status.runnerId}) holds the lease until ${status.lockedUntil?.toISOString()}`);
+      }
     }
+  }
+
+  // v7.3.3: If force mode, try once with force flag
+  if (force) {
+    const acquired = await tryAcquireLease(runnerId, true);
+    if (acquired) {
+      startLeaseRenewal();
+      return true;
+    }
+    console.error('❌ [Lease] Force acquire failed unexpectedly');
+    return false;
   }
 
   for (let attempt = 1; attempt <= LEASE_CONFIG.maxRetries; attempt++) {
     console.log(`   Attempt ${attempt}/${LEASE_CONFIG.maxRetries}...`);
 
-    const acquired = await tryAcquireLease(runnerId);
+    const acquired = await tryAcquireLease(runnerId, false);
     if (acquired) {
       startLeaseRenewal();
       return true;
@@ -233,6 +256,7 @@ export async function acquireLeaseOrHalt(runnerId: string): Promise<boolean> {
   console.error('   Either:');
   console.error('   1. Stop the other runner, OR');
   console.error('   2. Wait for the lease to expire (~60s after the other runner stops)');
+  console.error('   3. Restart with --force flag to override: docker-compose up -d runner --force');
   console.error('═'.repeat(70) + '\n');
 
   return false;
