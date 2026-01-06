@@ -140,7 +140,7 @@ try {
 }
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '7.3.0';  // v7.3.0: Rev C.4.3 - PassivePairMicroAdd, CSV Reconciler, PnL Timeseries export
+const RUNNER_VERSION = '7.3.1';  // v7.3.1: Gabagool-Aligned Emergency Fix - CPP sanity guard, dominantSide invariant, skew worsening check
 const RUN_ID = crypto.randomUUID();
 
 // v7 REV C: Initialize MarketStateManager singleton
@@ -1561,6 +1561,40 @@ async function evaluateMarket(slug: string): Promise<void> {
         const dominantShares = dominantSide === 'UP' ? ctx.position.upShares : ctx.position.downShares;
         const tokenId = dominantSide === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
         
+        // ============================================================
+        // v7.3.1: DOMINANT SIDE INVARIANT CHECK
+        // Verify we're selling the correct side - HARD ERROR if mismatch
+        // ============================================================
+        const actualDominantSide: 'UP' | 'DOWN' = ctx.position.upShares > ctx.position.downShares ? 'UP' : 'DOWN';
+        
+        if (emergencyResult.dominantSide !== actualDominantSide) {
+          console.error(`🚨 [EMERGENCY_SIDE_MISMATCH] HARD ERROR DETECTED!`);
+          console.error(`   emergencyResult.dominantSide: ${emergencyResult.dominantSide}`);
+          console.error(`   actualDominantSide: ${actualDominantSide}`);
+          console.error(`   upShares: ${ctx.position.upShares}, downShares: ${ctx.position.downShares}`);
+          console.error(`   → Aborting emergency sell to prevent minority side sell`);
+          
+          saveBotEvent({
+            event_type: 'EMERGENCY_SIDE_MISMATCH',
+            asset: ctx.market.asset,
+            market_id: slug,
+            run_id: RUN_ID,
+            ts: Date.now(),
+            reason_code: 'INVARIANT_BREACH',
+            data: {
+              expected: actualDominantSide,
+              got: emergencyResult.dominantSide,
+              upShares: ctx.position.upShares,
+              downShares: ctx.position.downShares,
+              upInvested: ctx.position.upInvested,
+              downInvested: ctx.position.downInvested,
+            },
+          }).catch(() => {});
+          
+          ctx.inFlight = false;
+          return;
+        }
+        
         // v7.2.1 HOTFIX B: Check orderbook depth BEFORE attempting sell
         const currentBid = dominantSide === 'UP' ? ctx.book.up.bid : ctx.book.down.bid;
         const currentAsk = dominantSide === 'UP' ? ctx.book.up.ask : ctx.book.down.ask;
@@ -1587,6 +1621,48 @@ async function evaluateMarket(slug: string): Promise<void> {
         // v7.2.1 HOTFIX D: Fix misleading log - show actual compared values
         if (dominantShares < minEmergencySellShares || sellQtyCandidate < minEmergencySellShares) {
           console.log(`⏭️ [v7.2.1] Skip emergency sell: sellQtyCandidate=${sellQtyCandidate} < minEmergencySellShares=${minEmergencySellShares}`);
+          ctx.inFlight = false;
+          return;
+        }
+        
+        // ============================================================
+        // v7.3.1: SKEW WORSENING CHECK
+        // Verify sell will REDUCE skew, not increase it
+        // ============================================================
+        const currentSkew = totalShares > 0 ? Math.max(ctx.position.upShares, ctx.position.downShares) / totalShares : 0;
+        
+        const afterUpShares = actualDominantSide === 'UP' 
+          ? ctx.position.upShares - sellQtyCandidate 
+          : ctx.position.upShares;
+        const afterDownShares = actualDominantSide === 'DOWN' 
+          ? ctx.position.downShares - sellQtyCandidate 
+          : ctx.position.downShares;
+        const afterTotal = afterUpShares + afterDownShares;
+        const afterSkew = afterTotal > 0 ? Math.max(afterUpShares, afterDownShares) / afterTotal : 0;
+        
+        if (afterSkew > currentSkew) {
+          console.error(`🚨 [SKEW_WORSENING] BLOCKED: Sell would worsen skew!`);
+          console.error(`   currentSkew: ${(currentSkew * 100).toFixed(1)}% → afterSkew: ${(afterSkew * 100).toFixed(1)}%`);
+          console.error(`   sellSide: ${actualDominantSide}, sellQty: ${sellQtyCandidate}`);
+          console.error(`   → Aborting emergency sell`);
+          
+          saveBotEvent({
+            event_type: 'EMERGENCY_SELL_BLOCKED_SKEW_WORSENING',
+            asset: ctx.market.asset,
+            market_id: slug,
+            run_id: RUN_ID,
+            ts: Date.now(),
+            reason_code: 'SKEW_WORSENING',
+            data: { 
+              currentSkew, 
+              afterSkew, 
+              sellSide: actualDominantSide, 
+              sellQty: sellQtyCandidate,
+              upShares: ctx.position.upShares,
+              downShares: ctx.position.downShares,
+            },
+          }).catch(() => {});
+          
           ctx.inFlight = false;
           return;
         }
@@ -1645,6 +1721,8 @@ async function evaluateMarket(slug: string): Promise<void> {
                 orderId: sellResult.orderId,
                 reason: emergencyResult.reason,
                 cpp: costPerPaired,
+                currentSkew,
+                afterSkew,
               },
             }).catch(() => { /* non-critical */ });
           } else {
