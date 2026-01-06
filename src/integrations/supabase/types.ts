@@ -1154,6 +1154,69 @@ export type Database = {
         }
         Relationships: []
       }
+      reconcile_reports: {
+        Row: {
+          coverage_pct: number | null
+          created_at: string
+          csv_filename: string | null
+          csv_storage_path: string | null
+          error_message: string | null
+          fully_covered_count: number | null
+          id: string
+          not_covered_count: number | null
+          partially_covered_count: number | null
+          processed_at: string | null
+          processing_time_ms: number | null
+          report_data: Json | null
+          status: string
+          total_bot_fills: number | null
+          total_csv_transactions: number | null
+          unexplained_count: number | null
+          zip_filename: string | null
+          zip_storage_path: string | null
+        }
+        Insert: {
+          coverage_pct?: number | null
+          created_at?: string
+          csv_filename?: string | null
+          csv_storage_path?: string | null
+          error_message?: string | null
+          fully_covered_count?: number | null
+          id?: string
+          not_covered_count?: number | null
+          partially_covered_count?: number | null
+          processed_at?: string | null
+          processing_time_ms?: number | null
+          report_data?: Json | null
+          status?: string
+          total_bot_fills?: number | null
+          total_csv_transactions?: number | null
+          unexplained_count?: number | null
+          zip_filename?: string | null
+          zip_storage_path?: string | null
+        }
+        Update: {
+          coverage_pct?: number | null
+          created_at?: string
+          csv_filename?: string | null
+          csv_storage_path?: string | null
+          error_message?: string | null
+          fully_covered_count?: number | null
+          id?: string
+          not_covered_count?: number | null
+          partially_covered_count?: number | null
+          processed_at?: string | null
+          processing_time_ms?: number | null
+          report_data?: Json | null
+          status?: string
+          total_bot_fills?: number | null
+          total_csv_transactions?: number | null
+          unexplained_count?: number | null
+          zip_filename?: string | null
+          zip_storage_path?: string | null
+        }
+        Relationships: []
+      }
       runner_heartbeats: {
         Row: {
           balance: number | null
