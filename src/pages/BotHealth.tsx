@@ -20,7 +20,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP'];
 
 export default function BotHealth() {
-  const [timeRange, setTimeRange] = useState<TimeRange>('1h');
+  const [timeRange, setTimeRange] = useState<TimeRange>('all');
   const [assetFilter, setAssetFilter] = useState<string>('');
   const [marketIdFilter, setMarketIdFilter] = useState('');
   
@@ -104,14 +104,16 @@ export default function BotHealth() {
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">Periode:</span>
                 <Select value={timeRange} onValueChange={(v) => setTimeRange(v as TimeRange)}>
-                  <SelectTrigger className="w-24">
+                  <SelectTrigger className="w-28">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="15m">15 min</SelectItem>
                     <SelectItem value="1h">1 uur</SelectItem>
                     <SelectItem value="6h">6 uur</SelectItem>
                     <SelectItem value="24h">24 uur</SelectItem>
+                    <SelectItem value="7d">7 dagen</SelectItem>
+                    <SelectItem value="30d">30 dagen</SelectItem>
+                    <SelectItem value="all">Alles</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
