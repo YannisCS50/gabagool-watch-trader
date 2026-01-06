@@ -88,9 +88,16 @@ export const STRATEGY = {
     strongEdge: 0.04,         // 4¢+ = strong signal, scale up
     strongEdgeBuffer: 0.03,   // v6.1: For late entry, require combined ≤ 97¢
     allowOverpay: 0.01,       // Max 1¢ overpay allowed for fill
-    feesBuffer: 0.002,        // 0.2¢ for Polymarket 2% fee
     slippageBuffer: 0.004,    // 0.4¢ for execution slippage
     deepDislocationThreshold: 0.96, // Combined ≤ $0.96 = DEEP mode
+  },
+  
+  // v7.2: Polymarket taker fee structure (15-min crypto markets only)
+  // Formula: fee = C × feeRate × (p × (1-p))^exponent
+  fees: {
+    feeRate: 0.25,            // 25% base rate
+    exponent: 2,              // Squared for curve shape
+    minFee: 0.0001,           // Min fee = $0.0001 (precision limit)
   },
   
   // Timing and lifecycle - v6.1: Gabagool-style entry window
@@ -259,15 +266,74 @@ export function roundUp(price: number, tick: number): number {
 }
 
 // ============================================================
+// POLYMARKET TAKER FEE CALCULATION (v7.2)
+// Formula: fee = shares × feeRate × (p × (1-p))^exponent
+// Only applies to 15-minute crypto markets
+// ============================================================
+
+/**
+ * Calculate Polymarket taker fee for a given trade
+ * @param shares Number of shares to trade
+ * @param price Price per share (0-1)
+ * @returns Fee in USDC
+ */
+export function calculateTakerFee(shares: number, price: number): number {
+  if (shares <= 0 || price <= 0 || price >= 1) return 0;
+  
+  const { feeRate, exponent, minFee } = STRATEGY.fees;
+  const variance = price * (1 - price);
+  const fee = shares * feeRate * Math.pow(variance, exponent);
+  
+  // Round to 4 decimals (Polymarket precision)
+  const roundedFee = Math.round(fee * 10000) / 10000;
+  
+  // Below minimum = no fee
+  return roundedFee < minFee ? 0 : roundedFee;
+}
+
+/**
+ * Calculate fee as percentage of notional
+ * @param price Price per share (0-1)
+ * @returns Fee percentage (0-1)
+ */
+export function calculateTakerFeePercent(price: number): number {
+  if (price <= 0 || price >= 1) return 0;
+  
+  const { feeRate, exponent } = STRATEGY.fees;
+  const variance = price * (1 - price);
+  return feeRate * Math.pow(variance, exponent);
+}
+
+/**
+ * Calculate effective cost including fees
+ * @param shares Number of shares
+ * @param price Price per share
+ * @returns Total cost (notional + fee)
+ */
+export function calculateTotalCostWithFees(shares: number, price: number): number {
+  const notional = shares * price;
+  const fee = calculateTakerFee(shares, price);
+  return notional + fee;
+}
+
+// ============================================================
 // DYNAMIC EDGE BUFFER (PDF: dynamicEdgeBuffer)
 // Adapts based on liquidity and adverse conditions
+// Now includes estimated taker fees
 // ============================================================
 
 export function dynamicEdgeBuffer(
   noLiquidityStreak: number,
-  adverseStreak: number
+  adverseStreak: number,
+  estimatedPrice: number = 0.5  // For fee estimation
 ): number {
-  let buffer = STRATEGY.edge.baseBuffer + STRATEGY.edge.feesBuffer + STRATEGY.edge.slippageBuffer;
+  // Base buffer + slippage
+  let buffer = STRATEGY.edge.baseBuffer + STRATEGY.edge.slippageBuffer;
+  
+  // v7.2: Add estimated taker fee to buffer
+  // At 50% price: ~1.56% fee, at 20%/80%: ~0.64%
+  const feePercent = calculateTakerFeePercent(estimatedPrice);
+  buffer += feePercent;
   
   // Low liquidity: relax buffer slightly to get fills
   if (noLiquidityStreak > 3) {
@@ -279,20 +345,35 @@ export function dynamicEdgeBuffer(
     buffer += 0.005; // +0.5¢ to avoid chasing losses
   }
   
-  // Clamp to reasonable range
-  return Math.max(0.01, Math.min(0.03, buffer));
+  // Clamp to reasonable range (increased max due to fees)
+  return Math.max(0.01, Math.min(0.05, buffer));
 }
 
 // ============================================================
 // EXECUTION-AWARE EDGE CHECK (PDF: executionAwareEdgeOk)
 // Uses cheapest ask + other mid to estimate actual execution cost
+// v7.2: Now includes taker fee estimation
 // ============================================================
 
 export interface EdgeCheckResult {
   ok: boolean;
   entrySide: Outcome | null;
   expectedPairCost: number;
+  expectedFees: number;           // v7.2: Estimated total fees for pair
   edge: number;
+  netEdge: number;                // v7.2: Edge after fees
+}
+
+/**
+ * v7.2: Calculate estimated fees for a paired trade
+ * @param upAsk UP side ask price
+ * @param downAsk DOWN side ask price (or mid for hedge estimate)
+ * @param sharesPerSide Estimated shares per side
+ */
+export function estimatePairFees(upAsk: number, downAsk: number, sharesPerSide: number = 25): number {
+  const upFee = calculateTakerFee(sharesPerSide, upAsk);
+  const downFee = calculateTakerFee(sharesPerSide, downAsk);
+  return upFee + downFee;
 }
 
 export function executionAwareEdgeOk(
@@ -300,38 +381,85 @@ export function executionAwareEdgeOk(
   downAsk: number,
   upMid: number,
   downMid: number,
-  buffer: number
+  buffer: number,
+  sharesPerSide: number = 25  // v7.2: For fee estimation
 ): EdgeCheckResult {
   // Check both combinations: UP ask + DOWN mid, DOWN ask + UP mid
   const upEntryPairCost = upAsk + downMid;
   const downEntryPairCost = downAsk + upMid;
   
+  // v7.2: Estimate fees for each entry path
+  const upEntryFees = calculateTakerFee(sharesPerSide, upAsk) + calculateTakerFee(sharesPerSide, downMid);
+  const downEntryFees = calculateTakerFee(sharesPerSide, downAsk) + calculateTakerFee(sharesPerSide, upMid);
+  
+  // v7.2: Fee as percentage of notional for comparison
+  const upFeePercent = upEntryFees / (sharesPerSide * (upAsk + downMid));
+  const downFeePercent = downEntryFees / (sharesPerSide * (downAsk + upMid));
+  
   const upEdge = 1 - upEntryPairCost;
   const downEdge = 1 - downEntryPairCost;
   
-  // Choose the better edge
-  if (upEdge > downEdge && upEdge >= buffer) {
-    return { ok: true, entrySide: 'UP', expectedPairCost: upEntryPairCost, edge: upEdge };
+  // v7.2: Net edge = gross edge - fee percentage
+  const upNetEdge = upEdge - upFeePercent;
+  const downNetEdge = downEdge - downFeePercent;
+  
+  // Choose the better NET edge (after fees)
+  if (upNetEdge > downNetEdge && upNetEdge >= buffer) {
+    return { 
+      ok: true, 
+      entrySide: 'UP', 
+      expectedPairCost: upEntryPairCost, 
+      expectedFees: upEntryFees,
+      edge: upEdge, 
+      netEdge: upNetEdge 
+    };
   }
-  if (downEdge >= buffer) {
-    return { ok: true, entrySide: 'DOWN', expectedPairCost: downEntryPairCost, edge: downEdge };
+  if (downNetEdge >= buffer) {
+    return { 
+      ok: true, 
+      entrySide: 'DOWN', 
+      expectedPairCost: downEntryPairCost, 
+      expectedFees: downEntryFees,
+      edge: downEdge, 
+      netEdge: downNetEdge 
+    };
   }
   
-  return { ok: false, entrySide: null, expectedPairCost: Math.min(upEntryPairCost, downEntryPairCost), edge: Math.max(upEdge, downEdge) };
+  const betterPath = upNetEdge > downNetEdge ? 'UP' : 'DOWN';
+  return { 
+    ok: false, 
+    entrySide: null, 
+    expectedPairCost: betterPath === 'UP' ? upEntryPairCost : downEntryPairCost, 
+    expectedFees: betterPath === 'UP' ? upEntryFees : downEntryFees,
+    edge: Math.max(upEdge, downEdge),
+    netEdge: Math.max(upNetEdge, downNetEdge)
+  };
 }
 
-/** Simple paired lock check */
+/** Simple paired lock check - v7.2: Now accounts for fees */
 export function pairedLockOk(
   upAsk: number,
   downAsk: number,
-  buffer: number = STRATEGY.edge.baseBuffer
+  buffer: number = STRATEGY.edge.baseBuffer,
+  sharesPerSide: number = 25
 ): boolean {
-  return upAsk + downAsk <= 1 - buffer;
+  const combinedAsk = upAsk + downAsk;
+  const feePercent = estimatePairFees(upAsk, downAsk, sharesPerSide) / (sharesPerSide * combinedAsk);
+  return combinedAsk <= 1 - buffer - feePercent;
 }
 
-/** Calculate edge percentage */
+/** Calculate edge percentage - v7.2: Returns gross edge (before fees) */
 export function calculateEdge(upAsk: number, downAsk: number): number {
   return (1 - (upAsk + downAsk)) * 100;
+}
+
+/** v7.2: Calculate net edge percentage (after estimated fees) */
+export function calculateNetEdge(upAsk: number, downAsk: number, sharesPerSide: number = 25): number {
+  const grossEdge = 1 - (upAsk + downAsk);
+  const combinedNotional = sharesPerSide * (upAsk + downAsk);
+  const fees = estimatePairFees(upAsk, downAsk, sharesPerSide);
+  const feePercent = fees / combinedNotional;
+  return (grossEdge - feePercent) * 100;
 }
 
 // ============================================================
