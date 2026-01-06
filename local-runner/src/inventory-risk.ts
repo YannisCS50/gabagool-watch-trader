@@ -1016,19 +1016,20 @@ export function checkEmergencyUnwindTrigger(
     }
   }
   
-  // v7.2.9: Throttle SKIPPED log to once per 10s per market (same key as check log)
+  // v7.2.9: Throttle SKIPPED log AND saveBotEvent to once per 10s per market
   if (shouldLogCheck) {
     console.log(`📋 [EMERGENCY_DECISION] ${marketId}: SKIPPED (no conditions met)`);
+    // Only save to DB when we also log (throttled)
+    saveBotEvent({
+      event_type: 'EMERGENCY_DECISION',
+      asset,
+      market_id: marketId,
+      run_id: runId,
+      ts: now,
+      reason_code: 'SKIPPED',
+      data: { ...decisionLogInput, cppPairedOnly, emergencyDecision: 'SKIPPED' },
+    }).catch(() => {});
   }
-  saveBotEvent({
-    event_type: 'EMERGENCY_DECISION',
-    asset,
-    market_id: marketId,
-    run_id: runId,
-    ts: now,
-    reason_code: 'SKIPPED',
-    data: { ...decisionLogInput, cppPairedOnly, emergencyDecision: 'SKIPPED' },
-  }).catch(() => {});
   
   return { triggerEmergency: false };
 }
