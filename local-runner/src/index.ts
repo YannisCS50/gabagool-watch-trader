@@ -258,6 +258,7 @@ async function printStartupBanner(): Promise<void> {
   
   // Log full sell policy details
   logSellPolicyStatus();
+}
 
 let currentBalance = 0;
 let lastClaimCheck = 0;
