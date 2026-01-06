@@ -26,6 +26,7 @@ import { RunnerStatus } from '@/components/RunnerStatus';
 import { OrderQueueStatus } from '@/components/OrderQueueStatus';
 import { RunnerInstructions } from '@/components/RunnerInstructions';
 import { BotPositionsCard } from '@/components/BotPositionsCard';
+import { LiveBotDataFeed } from '@/components/LiveBotDataFeed';
 import { HedgeFeasibilityDashboard } from '@/components/HedgeFeasibilityDashboard';
 import { RunnerConflictBanner } from '@/components/RunnerConflictBanner';
 import { supabase } from '@/integrations/supabase/client';
@@ -176,6 +177,11 @@ export default function LiveTrading() {
             </div>
           </CollapsibleContent>
         </Collapsible>
+
+        {/* Live Bot Data Feed - Realtime orderbook + fills from runner */}
+        <div className="mb-8">
+          <LiveBotDataFeed />
+        </div>
 
         {/* Bot Positions from Polymarket Sync */}
         <div className="mb-8">
