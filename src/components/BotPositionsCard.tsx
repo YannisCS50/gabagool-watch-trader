@@ -1,4 +1,5 @@
-import { useBotPositions, MarketPositionGroup } from '@/hooks/useBotPositions';
+import { useMemo } from 'react';
+import { useBotPositions } from '@/hooks/useBotPositions';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { RefreshCw, Shield, AlertTriangle, TrendingUp, TrendingDown, Clock, Database } from 'lucide-react';
@@ -6,6 +7,45 @@ import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { formatDistanceToNow, format } from 'date-fns';
 import { nl } from 'date-fns/locale';
+
+export interface PortfolioPosition {
+  title?: string;
+  slug: string;
+  outcome: string;
+  size: number;
+  avgPrice: number;
+  currentPrice: number;
+  currentValue: number;
+  initialValue: number;
+  cashPnl?: number;
+  percentPnl?: number;
+  redeemable?: boolean;
+  endDate?: string;
+}
+
+type PositionGroup = {
+  market_slug: string;
+  asset: string;
+  upShares: number;
+  downShares: number;
+  upCost: number;
+  downCost: number;
+  upValue: number;
+  downValue: number;
+  upAvgPrice: number;
+  downAvgPrice: number;
+  totalInvested: number;
+  totalValue: number;
+  pnl: number;
+  pnlPercent: number;
+  isHedged: boolean;
+  eventEndTime: string | null;
+  positions: Array<{ synced_at?: string }>; // only present for DB-synced positions
+};
+
+function formatShares(shares: number) {
+  return Number.isInteger(shares) ? shares.toFixed(0) : shares.toFixed(1);
+}
 
 function formatMarketSlug(slug: string, asset?: string): string {
   const parts = slug.split('-');
@@ -22,15 +62,17 @@ function formatMarketSlug(slug: string, asset?: string): string {
   return slug.replace(/-/g, ' ').slice(0, 30);
 }
 
-function PositionGroupRow({ group }: { group: MarketPositionGroup }) {
+function PositionGroupRow({ group }: { group: PositionGroup }) {
   const now = new Date();
   const isExpired = group.eventEndTime ? new Date(group.eventEndTime) < now : false;
-  
+
   return (
-    <div className={cn(
-      "glass rounded-lg p-3 space-y-2",
-      isExpired && "opacity-60"
-    )}>
+    <div
+      className={cn(
+        'glass rounded-lg p-3 space-y-2',
+        isExpired && 'opacity-60'
+      )}
+    >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           {group.isHedged ? (
@@ -40,12 +82,18 @@ function PositionGroupRow({ group }: { group: MarketPositionGroup }) {
           )}
           <span className="font-medium text-sm">{formatMarketSlug(group.market_slug, group.asset)}</span>
           {group.isHedged && (
-            <Badge variant="outline" className="text-xs bg-success/10 text-success border-success/20">
+            <Badge
+              variant="outline"
+              className="text-xs bg-success/10 text-success border-success/20"
+            >
               Hedged
             </Badge>
           )}
           {isExpired && (
-            <Badge variant="outline" className="text-xs bg-yellow-500/10 text-yellow-500 border-yellow-500/20">
+            <Badge
+              variant="outline"
+              className="text-xs bg-yellow-500/10 text-yellow-500 border-yellow-500/20"
+            >
               Pending
             </Badge>
           )}
@@ -57,25 +105,25 @@ function PositionGroupRow({ group }: { group: MarketPositionGroup }) {
           </div>
         )}
       </div>
-      
+
       <div className="grid grid-cols-2 gap-2 text-xs">
         <div className="flex items-center gap-1">
           <TrendingUp className="h-3 w-3 text-success" />
           <span className="text-muted-foreground">UP:</span>
-          <span className="font-mono">{group.upShares.toFixed(0)}</span>
+          <span className="font-mono">{formatShares(group.upShares)}</span>
           <span className="text-muted-foreground">@ {(group.upAvgPrice * 100).toFixed(0)}¢</span>
         </div>
         <div className="flex items-center gap-1">
           <TrendingDown className="h-3 w-3 text-destructive" />
           <span className="text-muted-foreground">DOWN:</span>
-          <span className="font-mono">{group.downShares.toFixed(0)}</span>
+          <span className="font-mono">{formatShares(group.downShares)}</span>
           <span className="text-muted-foreground">@ {(group.downAvgPrice * 100).toFixed(0)}¢</span>
         </div>
       </div>
-      
+
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <span>Cost: ${group.totalInvested.toFixed(2)}</span>
-        <span>Paired: {Math.min(group.upShares, group.downShares).toFixed(0)}</span>
+        <span>Paired: {formatShares(Math.min(group.upShares, group.downShares))}</span>
         {group.isHedged && (
           <span className="text-success">
             Est. P/L: ${(Math.min(group.upShares, group.downShares) - group.totalInvested).toFixed(2)}
@@ -86,18 +134,157 @@ function PositionGroupRow({ group }: { group: MarketPositionGroup }) {
   );
 }
 
-export function BotPositionsCard() {
-  const { groupedPositions, loading, error, refetch, summary, dataSource } = useBotPositions();
-  
-  const lastSyncTime = groupedPositions.length > 0 && groupedPositions[0].positions.length > 0
-    ? groupedPositions[0].positions[0]?.synced_at 
+function extractEventEndTimeFromSlug(slug: string): string | null {
+  const parts = slug.split('-');
+  if (parts.length >= 4 && parts[1] === 'updown' && parts[2] === '15m') {
+    const timestamp = parseInt(parts[3], 10);
+    if (timestamp > 0) {
+      // Add 15 minutes (900 seconds) to get end time
+      return new Date((timestamp + 900) * 1000).toISOString();
+    }
+  }
+  return null;
+}
+
+function buildGroupsFromPortfolioPositions(portfolioPositions: PortfolioPosition[]): PositionGroup[] {
+  const groups = new Map<string, PortfolioPosition[]>();
+
+  for (const pos of portfolioPositions) {
+    if (!pos.slug) continue;
+    if (!groups.has(pos.slug)) groups.set(pos.slug, []);
+    groups.get(pos.slug)!.push(pos);
+  }
+
+  return Array.from(groups.entries())
+    .map(([slug, positions]) => {
+      let upShares = 0,
+        downShares = 0;
+      let upCost = 0,
+        downCost = 0;
+      let upValue = 0,
+        downValue = 0;
+      let upAvgPriceW = 0,
+        downAvgPriceW = 0;
+      let upQty = 0,
+        downQty = 0;
+
+      let eventEndTime: string | null = null;
+
+      for (const p of positions) {
+        if (!eventEndTime && p.endDate) eventEndTime = p.endDate;
+
+        const o = (p.outcome || '').toLowerCase();
+        const isUp = o === 'up' || o === 'yes';
+
+        if (isUp) {
+          upShares += p.size;
+          upCost += p.initialValue || 0;
+          upValue += p.currentValue || 0;
+          upAvgPriceW += (p.avgPrice || 0) * (p.size || 0);
+          upQty += p.size || 0;
+        } else {
+          downShares += p.size;
+          downCost += p.initialValue || 0;
+          downValue += p.currentValue || 0;
+          downAvgPriceW += (p.avgPrice || 0) * (p.size || 0);
+          downQty += p.size || 0;
+        }
+      }
+
+      const upAvgPrice = upQty > 0 ? upAvgPriceW / upQty : 0;
+      const downAvgPrice = downQty > 0 ? downAvgPriceW / downQty : 0;
+
+      const totalInvested = upCost + downCost;
+      const totalValue = upValue + downValue;
+      const pnl = totalValue - totalInvested;
+      const pnlPercent = totalInvested > 0 ? (pnl / totalInvested) * 100 : 0;
+      const isHedged = upShares > 0 && downShares > 0;
+
+      if (!eventEndTime) eventEndTime = extractEventEndTimeFromSlug(slug);
+
+      return {
+        market_slug: slug,
+        asset: slug.split('-')[0]?.toUpperCase() || '—',
+        upShares,
+        downShares,
+        upCost,
+        downCost,
+        upValue,
+        downValue,
+        upAvgPrice,
+        downAvgPrice,
+        totalInvested,
+        totalValue,
+        pnl,
+        pnlPercent,
+        isHedged,
+        eventEndTime,
+        positions: [],
+      } satisfies PositionGroup;
+    })
+    .sort((a, b) => {
+      if (a.eventEndTime && b.eventEndTime) {
+        return new Date(a.eventEndTime).getTime() - new Date(b.eventEndTime).getTime();
+      }
+      return Math.abs(b.totalInvested) - Math.abs(a.totalInvested);
+    });
+}
+
+export function BotPositionsCard({
+  portfolioPositions,
+  portfolioLoading,
+  onRefresh,
+}: {
+  portfolioPositions?: PortfolioPosition[];
+  portfolioLoading?: boolean;
+  onRefresh?: () => void;
+}) {
+  const usePortfolio = (portfolioPositions?.length ?? 0) > 0;
+
+  const {
+    groupedPositions: dbGrouped,
+    loading: dbLoading,
+    error,
+    refetch,
+    summary: dbSummary,
+    dataSource,
+  } = useBotPositions({ enabled: !usePortfolio });
+
+  const portfolioGrouped = useMemo(() => {
+    if (!usePortfolio) return [] as PositionGroup[];
+    return buildGroupsFromPortfolioPositions(portfolioPositions || []);
+  }, [usePortfolio, portfolioPositions]);
+
+  const groupedPositions: PositionGroup[] = usePortfolio ? portfolioGrouped : (dbGrouped as unknown as PositionGroup[]);
+  const summary = useMemo(() => {
+    if (!usePortfolio) return dbSummary;
+
+    const totalInvested = portfolioGrouped.reduce((sum, g) => sum + g.totalInvested, 0);
+    const totalValue = portfolioGrouped.reduce((sum, g) => sum + g.totalValue, 0);
+    const hedgedMarkets = portfolioGrouped.filter(g => g.isHedged).length;
+
+    // Positions count = sum of legs, not markets.
+    const totalPositions = (portfolioPositions || []).length;
+
+    return {
+      totalPositions,
+      totalMarkets: portfolioGrouped.length,
+      totalInvested,
+      totalValue,
+      totalPnl: totalValue - totalInvested,
+      hedgedMarkets,
+    };
+  }, [usePortfolio, dbSummary, portfolioGrouped, portfolioPositions]);
+
+  const loading = usePortfolio ? !!portfolioLoading : dbLoading;
+
+  const lastSyncTime = !usePortfolio && groupedPositions.length > 0 && groupedPositions[0].positions.length > 0
+    ? groupedPositions[0].positions[0]?.synced_at
     : null;
 
   // Separate active (currently running) and pending/expired positions
   const now = new Date();
-  
-  // Active = market is currently running (started and hasn't ended yet)
-  // For 15m markets, we extract the start time from slug and check if we're within the 15min window
+
   const activePositions = groupedPositions.filter(g => {
     if (!g.eventEndTime) return false;
     const endTime = new Date(g.eventEndTime);
@@ -105,15 +292,13 @@ export function BotPositionsCard() {
     const startTime = new Date(endTime.getTime() - 15 * 60 * 1000);
     return now >= startTime && now < endTime;
   });
-  
-  // Pending = market has ended but not yet settled
+
   const pendingPositions = groupedPositions.filter(g => {
-    if (!g.eventEndTime) return true; // Unknown end time = pending
+    if (!g.eventEndTime) return true;
     const endTime = new Date(g.eventEndTime);
     return now >= endTime;
   });
-  
-  // Future = market hasn't started yet (show separately or ignore)
+
   const futurePositions = groupedPositions.filter(g => {
     if (!g.eventEndTime) return false;
     const endTime = new Date(g.eventEndTime);
@@ -121,37 +306,40 @@ export function BotPositionsCard() {
     return now < startTime;
   });
 
+  const handleRefresh = () => {
+    if (onRefresh) return onRefresh();
+    return refetch();
+  };
+
   return (
     <Card className="glass">
       <CardHeader className="flex flex-row items-center justify-between pb-2">
         <CardTitle className="text-lg flex items-center gap-2">
           🤖 Open Positions
-          {dataSource === 'live_trades' && (
+          {usePortfolio ? (
+            <Badge variant="outline" className="text-xs">
+              <Database className="h-3 w-3 mr-1" />
+              Polymarket
+            </Badge>
+          ) : dataSource === 'live_trades' ? (
             <Badge variant="outline" className="text-xs">
               <Database className="h-3 w-3 mr-1" />
               live_trades
             </Badge>
-          )}
-          {lastSyncTime && dataSource === 'bot_positions' && (
+          ) : null}
+          {lastSyncTime && !usePortfolio && dataSource === 'bot_positions' && (
             <span className="text-xs font-normal text-muted-foreground">
               synced {formatDistanceToNow(new Date(lastSyncTime), { addSuffix: true })}
             </span>
           )}
         </CardTitle>
-        <Button 
-          variant="ghost" 
-          size="sm" 
-          onClick={refetch}
-          disabled={loading}
-        >
+        <Button variant="ghost" size="sm" onClick={handleRefresh} disabled={loading}>
           <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
         </Button>
       </CardHeader>
       <CardContent className="space-y-4">
-        {error && (
-          <div className="text-destructive text-sm">{error}</div>
-        )}
-        
+        {error && !usePortfolio && <div className="text-destructive text-sm">{error}</div>}
+
         {/* Summary Stats */}
         <div className="grid grid-cols-4 gap-2 text-center">
           <div className="glass rounded-md p-2">
@@ -168,7 +356,7 @@ export function BotPositionsCard() {
           </div>
           <div className="glass rounded-md p-2">
             <div className="text-lg font-mono font-bold">{summary.totalPositions}</div>
-            <div className="text-xs text-muted-foreground">Trades</div>
+            <div className="text-xs text-muted-foreground">Positions</div>
           </div>
         </div>
 
@@ -179,12 +367,9 @@ export function BotPositionsCard() {
             Loading positions...
           </div>
         ) : groupedPositions.length === 0 ? (
-          <div className="text-center py-8 text-muted-foreground">
-            No open positions found.
-          </div>
+          <div className="text-center py-8 text-muted-foreground">No open positions found.</div>
         ) : (
           <div className="space-y-4">
-            {/* Currently running markets (LIVE) */}
             {activePositions.length > 0 && (
               <div className="space-y-2">
                 <div className="text-xs font-semibold text-muted-foreground flex items-center gap-2">
@@ -192,14 +377,13 @@ export function BotPositionsCard() {
                   LIVE ({activePositions.length})
                 </div>
                 <div className="space-y-2">
-                  {activePositions.map((group) => (
+                  {activePositions.map(group => (
                     <PositionGroupRow key={group.market_slug} group={group} />
                   ))}
                 </div>
               </div>
             )}
 
-            {/* Future markets (not started yet) */}
             {futurePositions.length > 0 && (
               <div className="space-y-2">
                 <div className="text-xs font-semibold text-muted-foreground flex items-center gap-2">
@@ -207,7 +391,7 @@ export function BotPositionsCard() {
                   Upcoming ({futurePositions.length})
                 </div>
                 <div className="space-y-2 max-h-40 overflow-y-auto">
-                  {futurePositions.slice(0, 3).map((group) => (
+                  {futurePositions.slice(0, 3).map(group => (
                     <PositionGroupRow key={group.market_slug} group={group} />
                   ))}
                   {futurePositions.length > 3 && (
@@ -219,7 +403,6 @@ export function BotPositionsCard() {
               </div>
             )}
 
-            {/* Pending settlement positions */}
             {pendingPositions.length > 0 && (
               <div className="space-y-2">
                 <div className="text-xs font-semibold text-muted-foreground flex items-center gap-2">
@@ -227,7 +410,7 @@ export function BotPositionsCard() {
                   Pending Settlement ({pendingPositions.length})
                 </div>
                 <div className="space-y-2 max-h-40 overflow-y-auto">
-                  {pendingPositions.slice(0, 5).map((group) => (
+                  {pendingPositions.slice(0, 5).map(group => (
                     <PositionGroupRow key={group.market_slug} group={group} />
                   ))}
                   {pendingPositions.length > 5 && (
@@ -244,3 +427,4 @@ export function BotPositionsCard() {
     </Card>
   );
 }
+
