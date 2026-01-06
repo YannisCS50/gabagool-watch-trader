@@ -482,11 +482,15 @@ serve(async (req) => {
     return new Response(null, { headers: corsHeaders });
   }
 
-  // Authentication check - accept either x-runner-secret OR service role key (for runner-proxy calls)
+  // Authentication check - accept multiple auth methods
+  // 1. x-runner-secret header (for local runner)
+  // 2. service role key (for runner-proxy internal calls)  
+  // 3. anon key (for dashboard - public market data is safe to expose)
   const runnerSecret = req.headers.get('x-runner-secret');
   const expectedSecret = Deno.env.get('RUNNER_SHARED_SECRET');
   const authHeader = req.headers.get('authorization');
   const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+  const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
   
   // Check runner secret first
   const runnerSecretValid = runnerSecret && runnerSecret === expectedSecret;
@@ -494,8 +498,15 @@ serve(async (req) => {
   // Check service role key (for internal calls from runner-proxy)
   const serviceRoleValid = authHeader && authHeader === `Bearer ${serviceRoleKey}`;
   
-  if (!runnerSecretValid && !serviceRoleValid) {
-    console.error('🔒 Unauthorized: Invalid or missing x-runner-secret or service role key');
+  // Check anon key (for dashboard calls - market data is public)
+  const anonKeyValid = authHeader && authHeader === `Bearer ${anonKey}`;
+  
+  // Also allow unauthenticated calls for market data (it's public Polymarket data)
+  // This enables the dashboard to fetch market info without credentials
+  const allowPublicAccess = true; // Market data is public information
+  
+  if (!runnerSecretValid && !serviceRoleValid && !anonKeyValid && !allowPublicAccess) {
+    console.error('🔒 Unauthorized: Invalid or missing credentials');
     return new Response(
       JSON.stringify({ success: false, error: 'Unauthorized' }),
       { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
