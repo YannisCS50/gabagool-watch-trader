@@ -1644,14 +1644,16 @@ export function evaluateOpportunity(
   availableBalance?: number,
   currentPrice?: number,
   strikePrice?: number,
-  marketId?: string
+  marketId?: string,
+  firstFillTs?: number | null
 ): TradeSignal | null {
   const inventory: Inventory = {
     upShares: position.upShares,
     downShares: position.downShares,
     upCost: position.upInvested ?? position.upCost ?? 0,
     downCost: position.downInvested ?? position.downCost ?? 0,
-    firstFillTs: undefined,
+    // v6.1/v6.4: propagate first fill time so init-hedge window can expire
+    firstFillTs: firstFillTs ?? undefined,
     lastFillTs: undefined,
   };
   
