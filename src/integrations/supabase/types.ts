@@ -1262,6 +1262,30 @@ export type Database = {
         }
         Relationships: []
       }
+      runner_lease: {
+        Row: {
+          created_at: string
+          id: string
+          locked_until: string
+          runner_id: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          locked_until?: string
+          runner_id: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          locked_until?: string
+          runner_id?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       settlement_failures: {
         Row: {
           asset: string
