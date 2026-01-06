@@ -12,6 +12,7 @@ import { Download, RefreshCw, Filter, Activity, Package, Database } from "lucide
 import { DownloadAllLogsButton } from "@/components/DownloadAllLogsButton";
 import { DownloadEnrichedFillsButton } from "@/components/DownloadEnrichedFillsButton";
 import { DownloadAuditCodeButton } from "@/components/DownloadAuditCodeButton";
+import { DownloadZipButton } from "@/components/DownloadZipButton";
 import { format } from "date-fns";
 import { toast } from "sonner";
 import { NavLink } from "@/components/NavLink";
@@ -346,6 +347,7 @@ export default function Observability() {
               <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
               Refresh
             </Button>
+            <DownloadZipButton />
             <DownloadAllLogsButton />
             <DownloadEnrichedFillsButton />
             <DownloadAuditCodeButton />
