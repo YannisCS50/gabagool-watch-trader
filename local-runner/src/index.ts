@@ -377,8 +377,18 @@ async function fetchExistingTrades(): Promise<void> {
   // v7.2.6: Sync positions to ExposureLedger
   for (const [slug, pos] of positionsBySlug) {
     const ctx = markets.get(slug);
-    if (ctx) {
-      ledgerSyncPosition(slug, ctx.market.asset, pos.upShares, pos.downShares);
+    if (!ctx) continue;
+
+    ledgerSyncPosition(slug, ctx.market.asset, pos.upShares, pos.downShares);
+
+    // DEBUG: If we start already over the cap, we should see it immediately in logs.
+    // This does NOT change behavior; it just helps confirm whether >100 is pre-existing.
+    const cap = HARD_INVARIANT_CONFIG.maxSharesPerSide;
+    if (pos.upShares > cap || pos.downShares > cap) {
+      console.warn(
+        `🚨 [STARTUP] POSITION_OVER_CAP: ${ctx.market.asset} ${slug} ` +
+          `UP=${pos.upShares} DOWN=${pos.downShares} (cap=${cap}/side)`
+      );
     }
   }
 
