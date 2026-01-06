@@ -597,16 +597,24 @@ export class MarketStateManager {
       secondsRemaining,
     };
 
-    saveBotEvent({
-      event_type: 'PAIRING_STARTED',
-      asset: ctx.asset,
-      market_id: ctx.marketId,
-      ts: Date.now(),
-      run_id: this.runId,
-      data: event,
-    }).catch(console.error);
+    // v7.2.9: Throttle PAIRING_STARTED to max 1x per 10s per market
+    const logKey = `pairing_started_${ctx.marketId}`;
+    const now = Date.now();
+    const shouldLog = !(global as any)[logKey] || (now - (global as any)[logKey] > 10000);
+    
+    if (shouldLog) {
+      (global as any)[logKey] = now;
+      saveBotEvent({
+        event_type: 'PAIRING_STARTED',
+        asset: ctx.asset,
+        market_id: ctx.marketId,
+        ts: now,
+        run_id: this.runId,
+        data: event,
+      }).catch(console.error);
 
-    console.log(`🔀 [MarketState] PAIRING_STARTED: ${ctx.asset} up=${ctx.upShares} down=${ctx.downShares} reason=${event.hedgeReason} timeLeft=${secondsRemaining ?? '?'}s`);
+      console.log(`🔀 [MarketState] PAIRING_STARTED: ${ctx.asset} up=${ctx.upShares} down=${ctx.downShares} reason=${event.hedgeReason} timeLeft=${secondsRemaining ?? '?'}s`);
+    }
   }
 
   private logPairingTimeoutRevert(
