@@ -154,6 +154,22 @@ function MarketBookDisplay({ snapshot }: { snapshot: SnapshotLog }) {
         </div>
       </div>
 
+      {/* Position Info */}
+      <div className="grid grid-cols-2 gap-3 pt-2 border-t border-border/50 text-xs">
+        <div className="flex items-center justify-between">
+          <span className="text-muted-foreground">UP Shares:</span>
+          <span className={cn('font-mono font-bold', snapshot.up_shares > 0 ? 'text-success' : 'text-muted-foreground')}>
+            {snapshot.up_shares.toFixed(1)}
+          </span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-muted-foreground">DOWN Shares:</span>
+          <span className={cn('font-mono font-bold', snapshot.down_shares > 0 ? 'text-destructive' : 'text-muted-foreground')}>
+            {snapshot.down_shares.toFixed(1)}
+          </span>
+        </div>
+      </div>
+
       {/* Combined Metrics */}
       <div className="grid grid-cols-3 gap-2 pt-2 border-t border-border/50 text-xs">
         <div>
