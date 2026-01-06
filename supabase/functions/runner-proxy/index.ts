@@ -432,19 +432,17 @@ Deno.serve(async (req) => {
       // v7.4.0: Fetch stale placed orders for cleanup
       case 'get-stale-orders': {
         const ttlMs = (data?.ttl_ms as number) ?? 20_000; // Default 20 seconds
-        const hedgeTtlMs = (data?.hedge_ttl_ms as number) ?? 10_000; // 10s for hedge orders
         
         const cutoffTime = new Date(Date.now() - ttlMs).toISOString();
-        const hedgeCutoffTime = new Date(Date.now() - hedgeTtlMs).toISOString();
         
         // Fetch placed orders that have an exchange order_id and are stale
-        // Use different TTL for hedge-type orders (more aggressive cleanup)
+        // Simple approach: just get all placed orders older than TTL
         const { data: staleOrders, error } = await supabase
           .from('order_queue')
           .select('id, market_slug, asset, outcome, shares, price, order_id, intent_type, created_at, executed_at')
           .eq('status', 'placed')
           .not('order_id', 'is', null)
-          .or(`intent_type.in.(HEDGE,FORCE,SURVIVAL).and.executed_at.lt.${hedgeCutoffTime},intent_type.not.in.(HEDGE,FORCE,SURVIVAL).and.executed_at.lt.${cutoffTime}`)
+          .lt('executed_at', cutoffTime)
           .order('executed_at', { ascending: true })
           .limit(20);
 
