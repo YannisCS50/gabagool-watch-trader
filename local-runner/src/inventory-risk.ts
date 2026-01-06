@@ -878,11 +878,17 @@ export function checkEmergencyUnwindTrigger(
     },
   };
   
-  console.log(`📋 [EMERGENCY_CHECK_INPUT] ${marketId}:`);
-  console.log(`   Position: UP=${upShares} DOWN=${downShares} PAIRED=${paired}`);
-  console.log(`   Invested: UP=$${upInvested.toFixed(2)} DOWN=$${downInvested.toFixed(2)}`);
-  console.log(`   AvgCents: UP=${avgUpCentsCalc?.toFixed(1) ?? 'N/A'}¢ DOWN=${avgDownCentsCalc?.toFixed(1) ?? 'N/A'}¢`);
-  console.log(`   Skew: ${(skewRatio * 100).toFixed(1)}% age=${unpairedAgeSec.toFixed(0)}s dominant=${dominantSide}`);
+  // v7.2.9: Throttle EMERGENCY_CHECK_INPUT logs to max 1x per 10s per market
+  const checkLogKey = `emergency_check_log_${marketId}`;
+  const shouldLogCheck = !(global as any)[checkLogKey] || (now - (global as any)[checkLogKey] > 10000);
+  if (shouldLogCheck) {
+    (global as any)[checkLogKey] = now;
+    console.log(`📋 [EMERGENCY_CHECK_INPUT] ${marketId}:`);
+    console.log(`   Position: UP=${upShares} DOWN=${downShares} PAIRED=${paired}`);
+    console.log(`   Invested: UP=$${upInvested.toFixed(2)} DOWN=$${downInvested.toFixed(2)}`);
+    console.log(`   AvgCents: UP=${avgUpCentsCalc?.toFixed(1) ?? 'N/A'}¢ DOWN=${avgDownCentsCalc?.toFixed(1) ?? 'N/A'}¢`);
+    console.log(`   Skew: ${(skewRatio * 100).toFixed(1)}% age=${unpairedAgeSec.toFixed(0)}s dominant=${dominantSide}`);
+  }
   
   // v7.2.2 REV C.2: Use paired-only CPP (avgUp + avgDown) instead of totalInvested/paired
   // This prevents false positives from unpaired exposure inflating the CPP
@@ -893,7 +899,10 @@ export function checkEmergencyUnwindTrigger(
     }
   }
   
-  console.log(`   CPP PairedOnly: ${cppPairedOnly?.toFixed(3) ?? 'N/A'} (threshold: ${cfg.cppEmergency})`);
+  // Only log CPP if we logged the check above
+  if (shouldLogCheck) {
+    console.log(`   CPP PairedOnly: ${cppPairedOnly?.toFixed(3) ?? 'N/A'} (threshold: ${cfg.cppEmergency})`);
+  }
   
   // ============================================================
   // v6.5.1: CPP SANITY GUARD - Skip emergency if CPP is implausible
@@ -1007,8 +1016,10 @@ export function checkEmergencyUnwindTrigger(
     }
   }
   
-  // Log final decision - SKIPPED (no emergency triggered)
-  console.log(`📋 [EMERGENCY_DECISION] ${marketId}: SKIPPED (no conditions met)`);
+  // v7.2.9: Throttle SKIPPED log to once per 10s per market (same key as check log)
+  if (shouldLogCheck) {
+    console.log(`📋 [EMERGENCY_DECISION] ${marketId}: SKIPPED (no conditions met)`);
+  }
   saveBotEvent({
     event_type: 'EMERGENCY_DECISION',
     asset,
