@@ -35,6 +35,9 @@ export interface AccountingEntry {
   totalBuyShares: number;       // Total shares ever bought
   totalSellShares: number;      // Total shares ever sold
   
+  // v7.2: Fee tracking
+  totalFeesUsd: number;         // Total taker fees paid
+  
   // Last update
   lastUpdateTs: number;
 }
@@ -61,6 +64,7 @@ export interface GlobalPnL {
   totalRealizedPnlUsd: number;
   totalUnrealizedPnlUsd: number;
   totalPnlUsd: number;
+  totalFeesUsd: number;           // v7.2: Total fees paid across all markets
   marketCount: number;
   lastSnapshotTs: number;
 }
@@ -72,6 +76,7 @@ export interface FillEvent {
   action: TradeAction;
   qty: number;
   price: number;
+  feeUsd?: number;              // v7.2: Taker fee paid (if any)
   orderId?: string;
   correlationId?: string;
   runId?: string;
@@ -104,6 +109,7 @@ function getOrCreate(marketId: string, asset: string, side: Side): AccountingEnt
       sellNotionalUsd: 0,
       totalBuyShares: 0,
       totalSellShares: 0,
+      totalFeesUsd: 0,           // v7.2: Initialize fee tracking
       lastUpdateTs: Date.now(),
     };
     ledger.set(k, entry);
@@ -124,17 +130,18 @@ export function processFill(fill: FillEvent): {
   avgCostUsed: number;
   newOpenShares: number;
   newOpenCost: number;
+  feeUsd: number;
 } {
-  const { marketId, asset, side, action, qty, price, runId } = fill;
+  const { marketId, asset, side, action, qty, price, feeUsd = 0, runId } = fill;
   
   if (!Number.isFinite(qty) || qty <= 0) {
     console.warn(`[ACCOUNTING] Invalid fill qty: ${qty}`);
-    return { realizedDelta: 0, avgCostUsed: 0, newOpenShares: 0, newOpenCost: 0 };
+    return { realizedDelta: 0, avgCostUsed: 0, newOpenShares: 0, newOpenCost: 0, feeUsd: 0 };
   }
   
   if (!Number.isFinite(price) || price < 0) {
     console.warn(`[ACCOUNTING] Invalid fill price: ${price}`);
-    return { realizedDelta: 0, avgCostUsed: 0, newOpenShares: 0, newOpenCost: 0 };
+    return { realizedDelta: 0, avgCostUsed: 0, newOpenShares: 0, newOpenCost: 0, feeUsd: 0 };
   }
   
   const entry = getOrCreate(marketId, asset, side);
@@ -142,15 +149,22 @@ export function processFill(fill: FillEvent): {
   let realizedDelta = 0;
   let avgCostUsed = 0;
   
+  // v7.2: Track fees
+  if (feeUsd > 0) {
+    entry.totalFeesUsd += feeUsd;
+  }
+  
   if (action === 'BUY') {
-    // BUY: Add to position
-    entry.openCostUsd += notional;
+    // BUY: Add to position (include fee in cost basis)
+    const totalCost = notional + feeUsd;
+    entry.openCostUsd += totalCost;
     entry.openShares += qty;
     entry.buyNotionalUsd += notional;
     entry.totalBuyShares += qty;
     
+    const feeStr = feeUsd > 0 ? ` (fee: $${feeUsd.toFixed(4)})` : '';
     console.log(
-      `📗 [ACCOUNTING] BUY ${side}: +${qty.toFixed(2)} @ ${(price * 100).toFixed(1)}¢ = $${notional.toFixed(2)} | ` +
+      `📗 [ACCOUNTING] BUY ${side}: +${qty.toFixed(2)} @ ${(price * 100).toFixed(1)}¢ = $${totalCost.toFixed(2)}${feeStr} | ` +
       `Open: ${entry.openShares.toFixed(2)} shares, cost $${entry.openCostUsd.toFixed(2)}`
     );
     
@@ -165,7 +179,7 @@ export function processFill(fill: FillEvent): {
       const actualQty = entry.openShares;
       if (actualQty <= 0) {
         console.warn(`[ACCOUNTING] No shares to sell, skipping`);
-        return { realizedDelta: 0, avgCostUsed: 0, newOpenShares: 0, newOpenCost: 0 };
+        return { realizedDelta: 0, avgCostUsed: 0, newOpenShares: 0, newOpenCost: 0, feeUsd: 0 };
       }
       
       // Use clamped qty
@@ -236,6 +250,8 @@ export function processFill(fill: FillEvent): {
       openShares: entry.openShares,
       openCostUsd: entry.openCostUsd,
       realizedPnlUsd: entry.realizedPnlUsd,
+      feeUsd,
+      totalFeesUsd: entry.totalFeesUsd,
     },
   }).catch(() => {});
   
@@ -244,6 +260,7 @@ export function processFill(fill: FillEvent): {
     avgCostUsed,
     newOpenShares: entry.openShares,
     newOpenCost: entry.openCostUsd,
+    feeUsd,
   };
 }
 
@@ -370,10 +387,12 @@ export function getMarketPnL(marketId: string, asset: string): MarketPnL {
 export function getGlobalPnL(): GlobalPnL {
   let totalRealized = 0;
   let totalUnrealized = 0;
+  let totalFees = 0;
   const marketsProcessed = new Set<string>();
   
   for (const [k, entry] of ledger) {
     totalRealized += entry.realizedPnlUsd;
+    totalFees += entry.totalFeesUsd;
     
     // Parse key to get market info
     const parts = k.split(':');
@@ -399,6 +418,7 @@ export function getGlobalPnL(): GlobalPnL {
     totalRealizedPnlUsd: totalRealized,
     totalUnrealizedPnlUsd: totalUnrealized,
     totalPnlUsd: totalRealized + totalUnrealized,
+    totalFeesUsd: totalFees,
     marketCount: marketsProcessed.size,
     lastSnapshotTs: Date.now(),
   };
@@ -480,6 +500,7 @@ export function logPnLSnapshot(runId?: string): void {
     `${totalEmoji} [PNL SNAPSHOT] ` +
     `Realized: ${realizedEmoji} $${global.totalRealizedPnlUsd >= 0 ? '+' : ''}${global.totalRealizedPnlUsd.toFixed(2)} | ` +
     `Unrealized: ${unrealizedEmoji} $${global.totalUnrealizedPnlUsd >= 0 ? '+' : ''}${global.totalUnrealizedPnlUsd.toFixed(2)} | ` +
+    `Fees: $${global.totalFeesUsd.toFixed(2)} | ` +
     `Total: $${global.totalPnlUsd >= 0 ? '+' : ''}${global.totalPnlUsd.toFixed(2)} | ` +
     `Markets: ${global.marketCount}`
   );
