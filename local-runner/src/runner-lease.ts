@@ -1,45 +1,52 @@
 /**
  * runner-lease.ts - v7.3.2
- * 
+ *
  * Enforces a hard lock: only ONE runner can be active at a time.
- * Uses a single-row table `runner_lease` with a `locked_until` timestamp.
- * 
- * - On startup, the runner tries to acquire the lease.
- * - If the lease is held by another runner and not expired, this runner HALTs.
- * - The lease is renewed every heartbeat (every 30s by default).
- * - Lease duration is 60s, so if a runner dies, another can take over after 60s.
+ *
+ * IMPORTANT: This runner does NOT need database/service keys.
+ * It uses the backend proxy (config.backend.url + config.backend.secret) to claim/renew/release the lease.
  */
 
-import { createClient } from '@supabase/supabase-js';
-
-const SUPABASE_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+import { config } from './config.js';
 
 // Lease configuration
 export const LEASE_CONFIG = {
-  leaseDurationMs: 60_000,        // 60 seconds - lease expires after this
-  renewIntervalMs: 30_000,        // 30 seconds - renew lease every heartbeat
-  graceOnStartupMs: 5_000,        // 5 seconds - wait before first lease attempt (allow old runner to release)
-  maxRetries: 3,                  // Retry lease acquisition this many times
-  retryDelayMs: 2_000,            // Wait between retries
+  leaseDurationMs: 60_000, // 60 seconds - lease expires after this
+  renewIntervalMs: 30_000, // 30 seconds - renew lease every heartbeat
+  graceOnStartupMs: 5_000, // 5 seconds - wait before first lease attempt
+  maxRetries: 3,
+  retryDelayMs: 2_000,
 };
 
-const LEASE_ID = '00000000-0000-0000-0000-000000000001';
-
-let supabase: ReturnType<typeof createClient> | null = null;
-let currentRunnerId: string = '';
+let currentRunnerId = '';
 let leaseHeld = false;
 let renewInterval: NodeJS.Timeout | null = null;
 
-function getSupabase() {
-  if (!supabase) {
-    if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-      console.error('❌ [Lease] Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY');
-      return null;
-    }
-    supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
+type ProxyResult<T> = T & { success: boolean; error?: string };
+
+async function callProxy<T>(action: string, data?: Record<string, unknown>): Promise<ProxyResult<T>> {
+  if (!config.backend.url || !config.backend.secret) {
+    return {
+      success: false,
+      error: 'Missing BACKEND_URL or RUNNER_SHARED_SECRET in runner env',
+    } as ProxyResult<T>;
   }
-  return supabase;
+
+  const res = await fetch(config.backend.url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Runner-Secret': config.backend.secret,
+    },
+    body: JSON.stringify({ action, data }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    return { success: false, error: `Backend error ${res.status}: ${text}` } as ProxyResult<T>;
+  }
+
+  return res.json();
 }
 
 export interface LeaseStatus {
@@ -50,33 +57,22 @@ export interface LeaseStatus {
   expired: boolean;
 }
 
-/**
- * Get current lease status from database
- */
 export async function getLeaseStatus(): Promise<LeaseStatus | null> {
-  const sb = getSupabase();
-  if (!sb) return null;
-
   try {
-    const { data, error } = await sb
-      .from('runner_lease')
-      .select('*')
-      .eq('id', LEASE_ID)
-      .single();
-
-    if (error) {
-      console.error('❌ [Lease] Failed to fetch lease status:', error.message);
+    const result = await callProxy<{ lease?: { runner_id: string; locked_until: string } }>('lease-status');
+    if (!result.success || !result.lease) {
+      console.error('❌ [Lease] Failed to fetch lease status:', result.error);
       return null;
     }
 
-    const lockedUntil = data?.locked_until ? new Date(data.locked_until) : null;
+    const lockedUntil = result.lease.locked_until ? new Date(result.lease.locked_until) : null;
     const now = new Date();
     const expired = !lockedUntil || lockedUntil <= now;
-    const isOurs = data?.runner_id === currentRunnerId;
+    const isOurs = result.lease.runner_id === currentRunnerId;
 
     return {
       held: !expired,
-      runnerId: data?.runner_id || '',
+      runnerId: result.lease.runner_id || '',
       lockedUntil,
       isOurs,
       expired,
@@ -87,45 +83,26 @@ export async function getLeaseStatus(): Promise<LeaseStatus | null> {
   }
 }
 
-/**
- * Try to acquire the lease. Returns true if successful.
- * Uses atomic update: only succeeds if lease is expired OR we already hold it.
- */
 export async function tryAcquireLease(runnerId: string): Promise<boolean> {
-  const sb = getSupabase();
-  if (!sb) {
-    console.error('❌ [Lease] No Supabase client available');
-    return false;
-  }
-
   currentRunnerId = runnerId;
-  const now = new Date();
-  const newLockedUntil = new Date(now.getTime() + LEASE_CONFIG.leaseDurationMs);
 
   try {
-    // Try to update the lease atomically:
-    // Only succeeds if: locked_until < now (expired) OR runner_id = our id (renewal)
-    const { data, error } = await sb
-      .from('runner_lease')
-      .update({
+    const result = await callProxy<{ acquired: boolean; lease?: { runner_id: string; locked_until: string } }>(
+      'lease-claim',
+      {
         runner_id: runnerId,
-        locked_until: newLockedUntil.toISOString(),
-        updated_at: now.toISOString(),
-      })
-      .eq('id', LEASE_ID)
-      .or(`locked_until.lt.${now.toISOString()},runner_id.eq.${runnerId}`)
-      .select()
-      .single();
+        lease_duration_ms: LEASE_CONFIG.leaseDurationMs,
+      }
+    );
 
-    if (error) {
-      // Could be that another runner holds the lease
-      console.warn('⚠️ [Lease] Failed to acquire lease:', error.message);
+    if (!result.success) {
+      console.error('❌ [Lease] Failed to acquire lease:', result.error);
       return false;
     }
 
-    if (data && data.runner_id === runnerId) {
+    if (result.acquired) {
       leaseHeld = true;
-      console.log(`✅ [Lease] Acquired lease for ${runnerId} until ${newLockedUntil.toISOString()}`);
+      console.log(`✅ [Lease] Acquired lease for ${runnerId} until ${result.lease?.locked_until}`);
       return true;
     }
 
@@ -136,39 +113,31 @@ export async function tryAcquireLease(runnerId: string): Promise<boolean> {
   }
 }
 
-/**
- * Renew the lease (extend locked_until). Only works if we hold it.
- */
 export async function renewLease(): Promise<boolean> {
-  if (!leaseHeld || !currentRunnerId) {
-    return false;
-  }
-
-  const sb = getSupabase();
-  if (!sb) return false;
-
-  const now = new Date();
-  const newLockedUntil = new Date(now.getTime() + LEASE_CONFIG.leaseDurationMs);
+  if (!leaseHeld || !currentRunnerId) return false;
 
   try {
-    const { data, error } = await sb
-      .from('runner_lease')
-      .update({
-        locked_until: newLockedUntil.toISOString(),
-        updated_at: now.toISOString(),
-      })
-      .eq('id', LEASE_ID)
-      .eq('runner_id', currentRunnerId)
-      .select()
-      .single();
+    const result = await callProxy<{ renewed: boolean; lease?: { runner_id: string; locked_until: string } }>(
+      'lease-renew',
+      {
+        runner_id: currentRunnerId,
+        lease_duration_ms: LEASE_CONFIG.leaseDurationMs,
+      }
+    );
 
-    if (error || !data) {
-      console.error('❌ [Lease] Failed to renew lease - lost it?', error?.message);
+    if (!result.success) {
+      console.error('❌ [Lease] Failed to renew lease:', result.error);
       leaseHeld = false;
       return false;
     }
 
-    console.log(`🔄 [Lease] Renewed lease until ${newLockedUntil.toISOString()}`);
+    if (!result.renewed) {
+      console.error('❌ [Lease] Failed to renew lease - lost it?');
+      leaseHeld = false;
+      return false;
+    }
+
+    console.log(`🔄 [Lease] Renewed lease until ${result.lease?.locked_until}`);
     return true;
   } catch (err) {
     console.error('❌ [Lease] Exception renewing lease:', err);
@@ -177,31 +146,20 @@ export async function renewLease(): Promise<boolean> {
   }
 }
 
-/**
- * Release the lease (set locked_until to past). Call on graceful shutdown.
- */
 export async function releaseLease(): Promise<void> {
-  if (!leaseHeld || !currentRunnerId) {
-    return;
-  }
+  if (!leaseHeld || !currentRunnerId) return;
 
   if (renewInterval) {
     clearInterval(renewInterval);
     renewInterval = null;
   }
 
-  const sb = getSupabase();
-  if (!sb) return;
-
   try {
-    await sb
-      .from('runner_lease')
-      .update({
-        locked_until: new Date(Date.now() - 1000).toISOString(), // Set to past
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', LEASE_ID)
-      .eq('runner_id', currentRunnerId);
+    const result = await callProxy<{ released: boolean }>('lease-release', { runner_id: currentRunnerId });
+    if (!result.success) {
+      console.error('❌ [Lease] Failed to release lease:', result.error);
+      return;
+    }
 
     console.log(`🔓 [Lease] Released lease for ${currentRunnerId}`);
     leaseHeld = false;
@@ -210,23 +168,19 @@ export async function releaseLease(): Promise<void> {
   }
 }
 
-/**
- * Start automatic lease renewal loop
- */
 export function startLeaseRenewal(): void {
   if (renewInterval) {
     clearInterval(renewInterval);
   }
 
   renewInterval = setInterval(async () => {
-    const success = await renewLease();
-    if (!success) {
+    const ok = await renewLease();
+    if (!ok) {
       console.error('🚨 [Lease] LOST LEASE - stopping renewal loop');
       if (renewInterval) {
         clearInterval(renewInterval);
         renewInterval = null;
       }
-      // Signal to main loop that we should halt
       leaseHeld = false;
     }
   }, LEASE_CONFIG.renewIntervalMs);
@@ -234,22 +188,16 @@ export function startLeaseRenewal(): void {
   console.log(`⏰ [Lease] Started renewal loop every ${LEASE_CONFIG.renewIntervalMs / 1000}s`);
 }
 
-/**
- * Main entry point: try to acquire lease with retries.
- * Returns true if we got the lease, false if we should HALT.
- */
 export async function acquireLeaseOrHalt(runnerId: string): Promise<boolean> {
   console.log(`\n🔒 [Lease] Attempting to acquire exclusive runner lease...`);
   console.log(`   Runner ID: ${runnerId}`);
   console.log(`   Lease duration: ${LEASE_CONFIG.leaseDurationMs / 1000}s`);
 
-  // Optional: wait a bit to let a dying runner's lease expire
   if (LEASE_CONFIG.graceOnStartupMs > 0) {
     console.log(`   Waiting ${LEASE_CONFIG.graceOnStartupMs / 1000}s grace period...`);
-    await new Promise(resolve => setTimeout(resolve, LEASE_CONFIG.graceOnStartupMs));
+    await new Promise((r) => setTimeout(r, LEASE_CONFIG.graceOnStartupMs));
   }
 
-  // Check current status
   const status = await getLeaseStatus();
   if (status) {
     console.log(`   Current lease: runner=${status.runnerId || '(none)'}, expired=${status.expired}`);
@@ -258,10 +206,9 @@ export async function acquireLeaseOrHalt(runnerId: string): Promise<boolean> {
     }
   }
 
-  // Try to acquire with retries
   for (let attempt = 1; attempt <= LEASE_CONFIG.maxRetries; attempt++) {
     console.log(`   Attempt ${attempt}/${LEASE_CONFIG.maxRetries}...`);
-    
+
     const acquired = await tryAcquireLease(runnerId);
     if (acquired) {
       startLeaseRenewal();
@@ -270,11 +217,10 @@ export async function acquireLeaseOrHalt(runnerId: string): Promise<boolean> {
 
     if (attempt < LEASE_CONFIG.maxRetries) {
       console.log(`   Retrying in ${LEASE_CONFIG.retryDelayMs / 1000}s...`);
-      await new Promise(resolve => setTimeout(resolve, LEASE_CONFIG.retryDelayMs));
+      await new Promise((r) => setTimeout(r, LEASE_CONFIG.retryDelayMs));
     }
   }
 
-  // Failed to acquire
   const finalStatus = await getLeaseStatus();
   console.error('\n' + '═'.repeat(70));
   console.error('🚨 RUNNER LEASE CONFLICT - HALTING');
@@ -292,16 +238,12 @@ export async function acquireLeaseOrHalt(runnerId: string): Promise<boolean> {
   return false;
 }
 
-/**
- * Check if we currently hold the lease
- */
 export function isLeaseHeld(): boolean {
   return leaseHeld;
 }
 
-/**
- * Get current runner ID
- */
 export function getCurrentRunnerId(): string {
   return currentRunnerId;
 }
+
+export { LEASE_CONFIG as _LEASE_CONFIG_INTERNAL }; // for debugging/import consistency

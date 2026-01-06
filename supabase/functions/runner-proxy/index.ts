@@ -9,6 +9,8 @@ const RUNNER_SECRET = Deno.env.get('RUNNER_SHARED_SECRET');
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
+const LEASE_ID = '00000000-0000-0000-0000-000000000001';
+
 type Action =
   | 'get-markets'
   | 'get-trades'
@@ -23,6 +25,11 @@ type Action =
   | 'save-fill-logs'
   | 'save-settlement-logs'
   | 'save-settlement-failure'
+  // v7.3.2: Runner lease actions
+  | 'lease-status'
+  | 'lease-claim'
+  | 'lease-renew'
+  | 'lease-release'
   // NEW: Observability v1 actions
   | 'save-bot-event'
   | 'save-bot-events'
@@ -208,6 +215,160 @@ Deno.serve(async (req) => {
         }
 
         return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      case 'lease-status': {
+        const { data: lease, error } = await supabase
+          .from('runner_lease')
+          .select('runner_id, locked_until')
+          .eq('id', LEASE_ID)
+          .single();
+
+        if (error) {
+          console.error('[runner-proxy] lease-status error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true, lease }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      case 'lease-claim': {
+        const runnerId = data?.runner_id as string | undefined;
+        const durationMsRaw = data?.lease_duration_ms;
+        const durationMs = Number.isFinite(Number(durationMsRaw)) ? Number(durationMsRaw) : 60_000;
+
+        if (!runnerId) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing runner_id' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const now = new Date();
+        const nowIso = now.toISOString();
+        const lockedUntilIso = new Date(now.getTime() + durationMs).toISOString();
+
+        // Atomic claim: succeed only if expired OR already ours
+        const { data: updated, error: updateError } = await supabase
+          .from('runner_lease')
+          .update({
+            runner_id: runnerId,
+            locked_until: lockedUntilIso,
+            updated_at: nowIso,
+          })
+          .eq('id', LEASE_ID)
+          .or(`locked_until.lt.${nowIso},runner_id.eq.${runnerId}`)
+          .select('runner_id, locked_until');
+
+        if (updateError) {
+          console.error('[runner-proxy] lease-claim update error:', updateError);
+          return new Response(JSON.stringify({ success: false, error: updateError.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const acquired = (updated?.[0]?.runner_id === runnerId);
+
+        if (acquired) {
+          return new Response(JSON.stringify({ success: true, acquired: true, lease: updated?.[0] }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const { data: lease } = await supabase
+          .from('runner_lease')
+          .select('runner_id, locked_until')
+          .eq('id', LEASE_ID)
+          .single();
+
+        return new Response(JSON.stringify({ success: true, acquired: false, lease }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      case 'lease-renew': {
+        const runnerId = data?.runner_id as string | undefined;
+        const durationMsRaw = data?.lease_duration_ms;
+        const durationMs = Number.isFinite(Number(durationMsRaw)) ? Number(durationMsRaw) : 60_000;
+
+        if (!runnerId) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing runner_id' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const now = new Date();
+        const nowIso = now.toISOString();
+        const lockedUntilIso = new Date(now.getTime() + durationMs).toISOString();
+
+        const { data: updated, error } = await supabase
+          .from('runner_lease')
+          .update({
+            locked_until: lockedUntilIso,
+            updated_at: nowIso,
+          })
+          .eq('id', LEASE_ID)
+          .eq('runner_id', runnerId)
+          .select('runner_id, locked_until');
+
+        if (error) {
+          console.error('[runner-proxy] lease-renew error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const renewed = (updated?.[0]?.runner_id === runnerId);
+
+        return new Response(JSON.stringify({ success: true, renewed, lease: updated?.[0] ?? null }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      case 'lease-release': {
+        const runnerId = data?.runner_id as string | undefined;
+        if (!runnerId) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing runner_id' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const nowIso = new Date().toISOString();
+        const pastIso = new Date(Date.now() - 1000).toISOString();
+
+        const { data: updated, error } = await supabase
+          .from('runner_lease')
+          .update({
+            runner_id: '',
+            locked_until: pastIso,
+            updated_at: nowIso,
+          })
+          .eq('id', LEASE_ID)
+          .eq('runner_id', runnerId)
+          .select('runner_id, locked_until');
+
+        if (error) {
+          console.error('[runner-proxy] lease-release error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const released = (updated?.length ?? 0) > 0;
+
+        return new Response(JSON.stringify({ success: true, released }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
