@@ -1066,6 +1066,63 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
   }
 }
 
+// ============================================================
+// CANCEL ORDER (v7.2.7 REV C.4.1)
+// ============================================================
+
+/**
+ * Cancel an order by its order ID.
+ * Used by halt-on-breach to cancel open orders when caps are violated.
+ */
+export async function cancelOrder(orderId: string): Promise<{ success: boolean; error?: string }> {
+  if (!orderId) {
+    return { success: false, error: 'No order ID provided' };
+  }
+
+  console.log(`🚫 Cancelling order: ${orderId}`);
+
+  try {
+    const client = await getClient();
+
+    // The CLOB client has a cancelOrder or cancelOrders method
+    const anyClient = client as any;
+
+    let result: any;
+    if (typeof anyClient.cancelOrder === 'function') {
+      result = await anyClient.cancelOrder(orderId);
+    } else if (typeof anyClient.cancelOrders === 'function') {
+      result = await anyClient.cancelOrders([orderId]);
+    } else {
+      // Fallback: try direct API call
+      const res = await fetch(`${CLOB_URL}/order/${orderId}`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        return { success: false, error: `HTTP ${res.status}: ${text.slice(0, 100)}` };
+      }
+
+      result = await res.json();
+    }
+
+    // Check for explicit failure
+    if (result?.success === false || result?.error) {
+      return { success: false, error: result?.error || 'Cancel failed' };
+    }
+
+    console.log(`✅ Order ${orderId} cancelled`);
+    return { success: true };
+  } catch (error: any) {
+    const msg = error?.message || String(error);
+    console.error(`❌ Failed to cancel order ${orderId}: ${msg}`);
+    return { success: false, error: msg };
+  }
+}
+
 // Invalidate balance cache (call after trades)
 export function invalidateBalanceCache(): void {
   balanceCache = null;

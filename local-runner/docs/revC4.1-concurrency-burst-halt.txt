@@ -1,0 +1,154 @@
+LOVEABLE PATCH REQUEST — v7.x Rev C.4.1
+CONCURRENCY-SAFE ORDERING: PER-MARKET MUTEX + ATOMIC RESERVE + BURST LIMITER + HALT ON INVARIANT BREACH
+
+Context:
+We discovered real production behavior where a single 15m market accumulated 200 shares on one outcome.
+Root cause: concurrent evaluateMarket() ticks placed multiple orders before prior orders updated the ledger.
+Even though ExposureLedger includes positionShares + openShares + pendingShares, without a per-market mutex
+multiple ticks observe the same remaining capacity and each places (e.g.) 25 shares, producing a burst.
+
+Goal:
+Make it impossible to exceed caps due to concurrency, WS tick bursts, async order acks, or delayed fill updates.
+This patch MUST be correctness-only (no strategy rewrite). Apply to local-runner and shared order gateway.
+
+Summary of required components:
+A) Per-market mutex (async lock) — REQUIRED
+B) Atomic reserved exposure — REQUIRED
+C) Burst limiter — REQUIRED (backstop)
+D) Halt on invariant breach — REQUIRED
+
+========================================================
+A) PER-MARKET MUTEX (REQUIRED)
+========================================================
+
+Problem:
+Multiple ticks run evaluateMarket() concurrently for the same marketId and can place multiple orders.
+
+Requirement:
+1) Introduce MarketMutex keyed by marketId:
+   - acquire(marketId) returns a release() function
+   - only ONE evaluate+place path may run at a time per marketId
+2) Wrap the ENTIRE market evaluation + any order placements in the lock:
+   - decision + guardrails + sizing + placeOrder calls
+3) If a tick arrives while locked:
+   - default behavior: DROP (skip) the tick
+   - optional: DEBOUNCE ONCE (set a flag to run one more time after unlock)
+
+Logging (throttled):
+- MARKET_LOCK_ACQUIRED marketId
+- MARKET_LOCK_SKIPPED marketId reason=LOCKED
+- MARKET_LOCK_RELEASED marketId
+
+Acceptance:
+- Two order placements for the same marketId cannot occur concurrently.
+
+========================================================
+B) ATOMIC RESERVED EXPOSURE (REQUIRED)
+========================================================
+
+Problem:
+Even with pendingShares in ExposureLedger, if pending is incremented after sizing decisions,
+another tick can sneak in and see old remaining capacity.
+
+Requirement:
+1) Add an ExposureLedger method:
+   reservePending(marketId, outcome, size, orderContext) -> reservationId
+   releasePending(reservationId) -> void
+2) reservePending MUST be called:
+   - AFTER cap check/clamp
+   - BEFORE starting the HTTP request
+   - INSIDE the market mutex
+3) On ANY failure (HTTP error, reject, thrown exception), releasePending must run in finally{}.
+4) On order ACK:
+   - convert reservation to openShares (or mark reservation “accounted” so it’s counted only once)
+   - ensure no double counting (pending + open) for same shares
+
+Effective exposure must always count:
+effective = positionShares + openOrderShares + pendingShares(reserved)
+
+Acceptance:
+- After placing an order, remaining capacity immediately decreases for subsequent ticks, even before fills arrive.
+
+========================================================
+C) BURST LIMITER (REQUIRED BACKSTOP)
+========================================================
+
+Problem:
+If a hidden leak exists (replace loops, multiple modules, ack delays), burst orders can still occur.
+
+Requirement:
+Per marketId enforce:
+- maxOrdersPerMinutePerMarket = 6
+- minMsBetweenOrdersPerMarket = 2000
+
+Implementation:
+- Track a sliding window of order timestamps per marketId
+- On each attempted order (BUY and optionally SELL):
+   - if within 60s window count >= max => block
+   - if now - lastOrderTs < minMs => block
+- If blocked:
+   - DO NOT reservePending
+   - DO NOT place order
+   - log BURST_BLOCKED with reason
+
+Acceptance:
+- It becomes impossible to generate many fills with the same “X minutes ago” bucket from rapid-fire placements.
+
+========================================================
+D) HALT ON INVARIANT BREACH (REQUIRED)
+========================================================
+
+Problem:
+assertInvariants currently logs, but does not stop further damage.
+
+Requirement:
+If any invariant breach is detected for a marketId:
+- outcome cap: effectiveUp > maxSharesPerSide OR effectiveDown > maxSharesPerSide
+- total cap: (effectiveUp + effectiveDown) > maxTotalSharesPerMarket
+
+Then:
+1) Emit INVARIANT_BREACH_HALT log with:
+   - marketId, effectiveUp, effectiveDown, effectiveTotal, caps
+2) Cancel ALL open orders for that market (best-effort, throttle)
+3) Suspend trading for that market until the market window ends
+   (or at least 15 minutes):
+   MarketStateManager.suspendMarket(marketId, reason, untilTimestamp)
+4) Block any further entry/hedge/micro/unwind actions for that market while suspended,
+   except safe cancel calls.
+
+Acceptance:
+- If something slips through, bot halts that market before exposure grows further.
+
+========================================================
+E) WHERE TO WIRE THIS (NO BYPASS)
+========================================================
+
+1) Single order gateway:
+- Ensure ALL paths (entry, hedge, micro-hedge, emergency, unwind) place orders via:
+  placeOrderWithGuards(...) / placeOrderWithCaps(...)
+
+2) Apply burst limiter + cap clamp + reservePending inside the gateway,
+   and ensure the gateway is called only inside the per-market mutex.
+
+3) Make sure cancel/replace paths also use the same mutex for that marketId.
+
+Files likely touched:
+- local-runner/index.ts (or market loop)
+- exposure-ledger.ts
+- order-gateway.ts (placeOrderWithGuards)
+- market-state-manager.ts (suspendMarket)
+- order-cancel helpers
+
+========================================================
+F) VERIFICATION CHECKLIST
+========================================================
+
+After patch:
+1) Reproduce high tick rate / WS bursts:
+- Confirm MARKET_LOCK_SKIPPED occurs
+- Confirm no more than 6 orders/minute per market
+2) Confirm effective exposure never exceeds caps
+3) Confirm no Polymarket UI screenshot can show DOWN=200 in a single 15m market
+4) Confirm on forced breach the bot cancels orders and suspends that market
+
+END
