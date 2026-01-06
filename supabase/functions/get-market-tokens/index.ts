@@ -482,12 +482,20 @@ serve(async (req) => {
     return new Response(null, { headers: corsHeaders });
   }
 
-  // Authentication check
+  // Authentication check - accept either x-runner-secret OR service role key (for runner-proxy calls)
   const runnerSecret = req.headers.get('x-runner-secret');
   const expectedSecret = Deno.env.get('RUNNER_SHARED_SECRET');
+  const authHeader = req.headers.get('authorization');
+  const serviceRoleKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
   
-  if (!runnerSecret || runnerSecret !== expectedSecret) {
-    console.error('🔒 Unauthorized: Invalid or missing x-runner-secret');
+  // Check runner secret first
+  const runnerSecretValid = runnerSecret && runnerSecret === expectedSecret;
+  
+  // Check service role key (for internal calls from runner-proxy)
+  const serviceRoleValid = authHeader && authHeader === `Bearer ${serviceRoleKey}`;
+  
+  if (!runnerSecretValid && !serviceRoleValid) {
+    console.error('🔒 Unauthorized: Invalid or missing x-runner-secret or service role key');
     return new Response(
       JSON.stringify({ success: false, error: 'Unauthorized' }),
       { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
