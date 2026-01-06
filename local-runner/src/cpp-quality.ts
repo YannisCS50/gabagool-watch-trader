@@ -1,18 +1,26 @@
 /**
- * cpp-quality.ts - Rev D CPP-First Entry & Hedge Guards
+ * cpp-quality.ts - Rev D.1 CPP-First Inventory Strategy
  * =========================================================
  * 
- * PURPOSE: Prevent structurally unprofitable trades by enforcing CPP quality
- *          BEFORE entry and DURING pairing.
+ * CONTEXT: Losses are caused by structurally bad CPP, not by skew or low pairing rate.
  * 
- * KEY INSIGHT: Losses are caused by paying too much for one side,
- *              resulting in CPP > $1.00 that can never recover.
+ * GOAL: PREVENT bad trades from being entered or expanded.
  * 
- * PRIORITY 1: Pre-entry CPP feasibility check
- * PRIORITY 2: Combination-based price guard (not hard caps)
- * PRIORITY 3: CPP activity state machine (NORMAL/HEDGE_ONLY/HOLD_ONLY)
- * PRIORITY 4: Entry & hedge sizing (supportive, not aggressive)
- * PRIORITY 5: Observability metrics
+ * Core philosophy:
+ * - Inventory-based pair arbitrage
+ * - Maker-first, patient execution
+ * - No SELL for skew correction
+ * - No force-hedging
+ * - Tolerate skew and time risk
+ * - CPP quality is the primary invariant
+ * 
+ * PRIORITIES:
+ * 1. Pre-entry CPP feasibility (maker-based)
+ * 2. Combination-based price guards
+ * 3. CPP activity state machine
+ * 4. Hedge & accumulate logic (minority side only)
+ * 5. Entry sizing
+ * 6. Observability metrics
  * 
  * NON-GOALS:
  * - No SELL for skew correction
@@ -23,25 +31,32 @@
 import { saveBotEvent } from './backend.js';
 
 // ============================================================
-// CONFIGURATION - Rev D
+// CONFIGURATION - Rev D.1
 // ============================================================
 
 export const CPP_QUALITY_CONFIG = {
-  // PRIORITY 1: Pre-entry CPP feasibility
-  maxProjectedCpp: 0.98,       // Soft feasibility threshold for entry
+  // PRIORITY 1: Pre-entry CPP feasibility (MAKER-based)
+  entryCppMax: 0.98,             // projectedCPP_maker must be <= this
   
   // PRIORITY 2: Combination-based price guard
-  maxCombinedPrice: 0.98,      // entryAvgPrice + hedgeAsk must be <= this
+  maxCombinedCppSoft: 0.98,      // soft limit - allow only micro sizing
+  maxCombinedCppHard: 1.00,      // hard limit - block completely
   
   // PRIORITY 3: CPP activity state thresholds
-  cppNormalMax: 1.00,          // cpp < 1.00 = NORMAL
-  cppHedgeOnlyMax: 1.02,       // 1.00 <= cpp < 1.02 = HEDGE_ONLY
-                               // cpp >= 1.02 = HOLD_ONLY
+  cppNormalMax: 1.00,            // cpp < 1.00 = NORMAL
+  cppHedgeOnlyMax: 1.02,         // 1.00 <= cpp < 1.02 = HEDGE_ONLY
+                                 // cpp >= 1.02 = HOLD_ONLY
   
-  // PRIORITY 4: Entry & hedge sizing
+  // PRIORITY 4: Hedge & accumulate
+  hedgeChunkShares: { min: 3, max: 5 },      // Maker-first hedge chunks
+  hedgeRestTimeMs: { min: 30000, max: 60000 }, // Orders may rest 30-60 seconds
+  
+  // PRIORITY 5: Entry sizing
   initialEntryShares: { min: 5, max: 10 },
-  hedgeChunkShares: { min: 1, max: 5 },
-  maxCppForAdds: 0.98,         // Only allow adds if cpp < this
+  maxCppForAdds: 0.98,           // Only allow adds if cpp < this
+  
+  // Maker price estimation (spread offset from mid)
+  makerSpreadOffset: 0.01,       // Assume maker can get 1¢ better than ask
   
   // Logging
   logThrottleMs: 5000,
@@ -53,17 +68,30 @@ export const CPP_QUALITY_CONFIG = {
 
 export type CppActivityState = 'NORMAL' | 'HEDGE_ONLY' | 'HOLD_ONLY';
 
+export type Side = 'UP' | 'DOWN';
+
+export interface SideAnalysis {
+  dominantSide: Side;
+  minoritySide: Side;
+  dominantShares: number;
+  minorityShares: number;
+  skew: number;  // dominantShares - minorityShares
+}
+
 export interface CppFeasibilityResult {
   allowed: boolean;
-  projectedCpp: number;
+  projectedCppMaker: number;
+  projectedCppTaker: number;  // For logging only
   entryPrice: number;
-  oppositeSideAsk: number;
+  projectedMakerHedgePrice: number;
+  bestAskHedgePrice: number;
   reason: string;
 }
 
 export interface CombinationGuardResult {
   allowed: boolean;
   combinedPrice: number;
+  microSizingOnly: boolean;  // True if in soft-to-hard zone
   reason: string;
 }
 
@@ -73,24 +101,54 @@ export interface CppActivityStateResult {
   reason: string;
 }
 
+export interface AccumulateResult {
+  allowed: boolean;
+  reason: string;
+  newCpp: number | null;
+  currentCpp: number | null;
+}
+
 export interface CppMetrics {
-  projectedCpp: number | null;       // At entry
-  actualCpp: number | null;          // Paired-only
-  cppDrift: number | null;           // actual - projected
+  // Projected CPP at entry
+  projectedCppMaker: number | null;
+  projectedCppTaker: number | null;
+  
+  // Actual paired CPP
+  actualCpp: number | null;
+  
+  // Drift tracking
+  cppDrift: number | null;           // actual - projectedMaker
+  
+  // Timing
   timeToFirstPairMs: number | null;
-  maxLegPriceSeen: number;
+  
+  // Side analysis
+  dominantSide: Side | null;
+  minoritySide: Side | null;
+  
+  // State
   activityState: CppActivityState;
+  
+  // Price tracking
+  maxUpPriceSeen: number;
+  maxDownPriceSeen: number;
+  
+  // Observational only
+  pairingRate: number | null;        // pairedShares / totalShares
   skippedReason: string | null;
 }
 
 // Per-market CPP tracking state
 interface MarketCppState {
-  projectedCppAtEntry: number | null;
+  projectedCppMakerAtEntry: number | null;
+  projectedCppTakerAtEntry: number | null;
   entryTs: number | null;
   firstPairTs: number | null;
   maxUpPriceSeen: number;
   maxDownPriceSeen: number;
   lastActivityState: CppActivityState;
+  totalEntries: number;
+  totalPairs: number;
 }
 
 const marketCppStates = new Map<string, MarketCppState>();
@@ -99,42 +157,121 @@ const marketCppStates = new Map<string, MarketCppState>();
 const logThrottles = new Map<string, number>();
 
 // ============================================================
-// PRIORITY 1: PRE-ENTRY CPP FEASIBILITY CHECK
+// HELPER FUNCTIONS
 // ============================================================
 
 /**
- * Check if entry is allowed based on projected CPP.
+ * Analyze dominant vs minority side.
+ */
+export function analyzeSides(upShares: number, downShares: number): SideAnalysis {
+  if (upShares >= downShares) {
+    return {
+      dominantSide: 'UP',
+      minoritySide: 'DOWN',
+      dominantShares: upShares,
+      minorityShares: downShares,
+      skew: upShares - downShares,
+    };
+  }
+  return {
+    dominantSide: 'DOWN',
+    minoritySide: 'UP',
+    dominantShares: downShares,
+    minorityShares: upShares,
+    skew: downShares - upShares,
+  };
+}
+
+/**
+ * Estimate maker price from ask (assume 1¢ improvement).
+ */
+export function estimateMakerPrice(
+  bestAsk: number,
+  cfg: typeof CPP_QUALITY_CONFIG = CPP_QUALITY_CONFIG
+): number {
+  return Math.max(0.01, bestAsk - cfg.makerSpreadOffset);
+}
+
+/**
+ * Calculate paired-only CPP.
+ */
+export function calculateCpp(
+  upShares: number,
+  downShares: number,
+  upCost: number,
+  downCost: number
+): number | null {
+  if (upShares <= 0 || downShares <= 0) return null;
+  const avgUp = upCost / upShares;
+  const avgDown = downCost / downShares;
+  return avgUp + avgDown;
+}
+
+function getOrCreateState(key: string): MarketCppState {
+  let state = marketCppStates.get(key);
+  if (!state) {
+    state = {
+      projectedCppMakerAtEntry: null,
+      projectedCppTakerAtEntry: null,
+      entryTs: null,
+      firstPairTs: null,
+      maxUpPriceSeen: 0,
+      maxDownPriceSeen: 0,
+      lastActivityState: 'NORMAL',
+      totalEntries: 0,
+      totalPairs: 0,
+    };
+    marketCppStates.set(key, state);
+  }
+  return state;
+}
+
+// ============================================================
+// PRIORITY 1: PRE-ENTRY CPP FEASIBILITY (MAKER-BASED)
+// ============================================================
+
+/**
+ * Check if entry is allowed based on projected CPP using MAKER assumption.
  * 
- * projectedCPP = entryPrice + oppositeSideBestAsk
+ * projectedCPP_maker = entryPrice + projectedMakerHedgePrice
+ * projectedCPP_taker = entryPrice + bestAskHedgePrice (for logging only)
  * 
- * Entry allowed only if projectedCPP <= MAX_PROJECTED_CPP (0.98)
+ * Entry allowed only if projectedCPP_maker <= ENTRY_CPP_MAX (0.98)
  */
 export function checkCppFeasibility(params: {
   marketId: string;
   asset: string;
-  entrySide: 'UP' | 'DOWN';
+  entrySide: Side;
   entryPrice: number;
   upAsk: number;
   downAsk: number;
+  upBid?: number;
+  downBid?: number;
   runId?: string;
   cfg?: typeof CPP_QUALITY_CONFIG;
 }): CppFeasibilityResult {
   const { marketId, asset, entrySide, entryPrice, upAsk, downAsk, runId, cfg = CPP_QUALITY_CONFIG } = params;
   
-  const oppositeSideAsk = entrySide === 'UP' ? downAsk : upAsk;
-  const projectedCpp = entryPrice + oppositeSideAsk;
+  // Opposite side prices
+  const bestAskHedge = entrySide === 'UP' ? downAsk : upAsk;
+  const projectedMakerHedge = estimateMakerPrice(bestAskHedge, cfg);
+  
+  // Both projections
+  const projectedCppMaker = entryPrice + projectedMakerHedge;
+  const projectedCppTaker = entryPrice + bestAskHedge;
   
   const key = `${marketId}:${asset}`;
   const now = Date.now();
   
-  if (projectedCpp > cfg.maxProjectedCpp) {
+  if (projectedCppMaker > cfg.entryCppMax) {
     // Log (throttled)
     const lastLog = logThrottles.get(`feasibility_${key}`) ?? 0;
     if (now - lastLog > cfg.logThrottleMs) {
       logThrottles.set(`feasibility_${key}`, now);
       console.log(`🚫 [CPP_QUALITY] PROJECTED_CPP_TOO_HIGH: ${asset} ${marketId.slice(0, 8)}`);
-      console.log(`   projectedCpp=${projectedCpp.toFixed(4)} > max=${cfg.maxProjectedCpp}`);
-      console.log(`   entryPrice=${entryPrice.toFixed(4)}, oppAsk=${oppositeSideAsk.toFixed(4)}`);
+      console.log(`   projectedCPP_maker=${projectedCppMaker.toFixed(4)} > max=${cfg.entryCppMax}`);
+      console.log(`   projectedCPP_taker=${projectedCppTaker.toFixed(4)} (for reference)`);
+      console.log(`   entryPrice=${entryPrice.toFixed(4)}, makerHedge=${projectedMakerHedge.toFixed(4)}, takerHedge=${bestAskHedge.toFixed(4)}`);
       
       saveBotEvent({
         event_type: 'PROJECTED_CPP_TOO_HIGH',
@@ -146,87 +283,85 @@ export function checkCppFeasibility(params: {
         data: {
           entrySide,
           entryPrice,
-          oppositeSideAsk,
-          projectedCpp,
-          maxProjectedCpp: cfg.maxProjectedCpp,
+          projectedCppMaker,
+          projectedCppTaker,
+          projectedMakerHedge,
+          bestAskHedge,
+          entryCppMax: cfg.entryCppMax,
         },
       }).catch(() => {});
     }
     
     return {
       allowed: false,
-      projectedCpp,
+      projectedCppMaker,
+      projectedCppTaker,
       entryPrice,
-      oppositeSideAsk,
-      reason: `PROJECTED_CPP_TOO_HIGH: ${projectedCpp.toFixed(4)} > ${cfg.maxProjectedCpp}`,
+      projectedMakerHedgePrice: projectedMakerHedge,
+      bestAskHedgePrice: bestAskHedge,
+      reason: `PROJECTED_CPP_TOO_HIGH: maker=${projectedCppMaker.toFixed(4)} > ${cfg.entryCppMax}`,
     };
   }
   
   // Store projected CPP for drift tracking
-  let state = marketCppStates.get(key);
-  if (!state) {
-    state = {
-      projectedCppAtEntry: null,
-      entryTs: null,
-      firstPairTs: null,
-      maxUpPriceSeen: 0,
-      maxDownPriceSeen: 0,
-      lastActivityState: 'NORMAL',
-    };
-    marketCppStates.set(key, state);
-  }
+  const state = getOrCreateState(key);
   
   // Only set projected if this is first entry
-  if (state.projectedCppAtEntry === null) {
-    state.projectedCppAtEntry = projectedCpp;
+  if (state.projectedCppMakerAtEntry === null) {
+    state.projectedCppMakerAtEntry = projectedCppMaker;
+    state.projectedCppTakerAtEntry = projectedCppTaker;
     state.entryTs = now;
   }
+  state.totalEntries++;
   
   return {
     allowed: true,
-    projectedCpp,
+    projectedCppMaker,
+    projectedCppTaker,
     entryPrice,
-    oppositeSideAsk,
-    reason: `CPP_FEASIBLE: ${projectedCpp.toFixed(4)} <= ${cfg.maxProjectedCpp}`,
+    projectedMakerHedgePrice: projectedMakerHedge,
+    bestAskHedgePrice: bestAskHedge,
+    reason: `CPP_FEASIBLE: maker=${projectedCppMaker.toFixed(4)} <= ${cfg.entryCppMax}`,
   };
 }
 
 // ============================================================
-// PRIORITY 2: COMBINATION-BASED PRICE GUARD
+// PRIORITY 2: COMBINATION-BASED PRICE GUARDS
 // ============================================================
 
 /**
  * Check if order is allowed based on combination price.
  * 
  * Entry or hedge is valid ONLY if:
- *   currentAvgPrice + hedgeAsk <= MAX_COMBINED_PRICE (0.98)
+ *   entryAvgPrice + hedgePrice <= MAX_COMBINED_CPP
  * 
- * This replaces absolute single-side price caps.
- * A $0.65 leg is acceptable if the other side is $0.30.
+ * Two thresholds:
+ * - Soft (0.98): allow only micro sizing
+ * - Hard (1.00): block completely
  */
 export function checkCombinationGuard(params: {
   marketId: string;
   asset: string;
-  side: 'UP' | 'DOWN';
-  currentAvgPrice: number;  // Avg price of the side we're adding to
-  oppositeSideAsk: number;  // Best ask of the opposite side (for hedge)
+  side: Side;
+  currentAvgPrice: number;    // Avg price of the side we're adding to
+  hedgePrice: number;         // Price of the hedge (maker-estimated or actual)
   runId?: string;
   cfg?: typeof CPP_QUALITY_CONFIG;
 }): CombinationGuardResult {
-  const { marketId, asset, side, currentAvgPrice, oppositeSideAsk, runId, cfg = CPP_QUALITY_CONFIG } = params;
+  const { marketId, asset, side, currentAvgPrice, hedgePrice, runId, cfg = CPP_QUALITY_CONFIG } = params;
   
-  const combinedPrice = currentAvgPrice + oppositeSideAsk;
+  const combinedPrice = currentAvgPrice + hedgePrice;
   
-  if (combinedPrice > cfg.maxCombinedPrice) {
+  // Hard block
+  if (combinedPrice > cfg.maxCombinedCppHard) {
     const key = `${marketId}:${asset}`;
     const now = Date.now();
     
     const lastLog = logThrottles.get(`combination_${key}`) ?? 0;
     if (now - lastLog > cfg.logThrottleMs) {
       logThrottles.set(`combination_${key}`, now);
-      console.log(`🚫 [CPP_QUALITY] COMBINATION_GUARD_BLOCKED: ${asset} ${marketId.slice(0, 8)}`);
-      console.log(`   combinedPrice=${combinedPrice.toFixed(4)} > max=${cfg.maxCombinedPrice}`);
-      console.log(`   avgPrice=${currentAvgPrice.toFixed(4)}, oppAsk=${oppositeSideAsk.toFixed(4)}`);
+      console.log(`🚫 [CPP_QUALITY] COMBINATION_GUARD_HARD_BLOCK: ${asset} ${marketId.slice(0, 8)}`);
+      console.log(`   combinedPrice=${combinedPrice.toFixed(4)} > hardMax=${cfg.maxCombinedCppHard}`);
       
       saveBotEvent({
         event_type: 'COMBINATION_GUARD_BLOCKED',
@@ -234,13 +369,13 @@ export function checkCombinationGuard(params: {
         market_id: marketId,
         ts: now,
         run_id: runId,
-        reason_code: 'COMBINATION_PRICE_TOO_HIGH',
+        reason_code: 'COMBINATION_HARD_BLOCK',
         data: {
           side,
           currentAvgPrice,
-          oppositeSideAsk,
+          hedgePrice,
           combinedPrice,
-          maxCombinedPrice: cfg.maxCombinedPrice,
+          maxCombinedCppHard: cfg.maxCombinedCppHard,
         },
       }).catch(() => {});
     }
@@ -248,14 +383,26 @@ export function checkCombinationGuard(params: {
     return {
       allowed: false,
       combinedPrice,
-      reason: `COMBINATION_BLOCKED: ${combinedPrice.toFixed(4)} > ${cfg.maxCombinedPrice}`,
+      microSizingOnly: false,
+      reason: `COMBINATION_HARD_BLOCK: ${combinedPrice.toFixed(4)} > ${cfg.maxCombinedCppHard}`,
+    };
+  }
+  
+  // Soft zone - micro sizing only
+  if (combinedPrice > cfg.maxCombinedCppSoft) {
+    return {
+      allowed: true,
+      combinedPrice,
+      microSizingOnly: true,
+      reason: `COMBINATION_MICRO_ONLY: ${cfg.maxCombinedCppSoft} < ${combinedPrice.toFixed(4)} <= ${cfg.maxCombinedCppHard}`,
     };
   }
   
   return {
     allowed: true,
     combinedPrice,
-    reason: `COMBINATION_OK: ${combinedPrice.toFixed(4)} <= ${cfg.maxCombinedPrice}`,
+    microSizingOnly: false,
+    reason: `COMBINATION_OK: ${combinedPrice.toFixed(4)} <= ${cfg.maxCombinedCppSoft}`,
   };
 }
 
@@ -267,9 +414,9 @@ export function checkCombinationGuard(params: {
  * Determine CPP activity state based on current paired-only CPP.
  * 
  * States:
- * - NORMAL (cpp < 1.00): entries allowed, hedges allowed
- * - HEDGE_ONLY (1.00 <= cpp < 1.02): no new entries, only passive hedges
- * - HOLD_ONLY (cpp >= 1.02): freeze market, no new orders, wait for expiry
+ * - NORMAL (cpp < 1.00): entries, hedges, accumulate allowed
+ * - HEDGE_ONLY (1.00 <= cpp < 1.02): no entries, only maker hedges on minority
+ * - HOLD_ONLY (cpp >= 1.02): freeze market, wait for expiry
  */
 export function getCppActivityState(params: {
   marketId: string;
@@ -283,21 +430,11 @@ export function getCppActivityState(params: {
   const { marketId, asset, upShares, downShares, upCost, downCost, cfg = CPP_QUALITY_CONFIG } = params;
   
   const key = `${marketId}:${asset}`;
-  let state = marketCppStates.get(key);
-  if (!state) {
-    state = {
-      projectedCppAtEntry: null,
-      entryTs: null,
-      firstPairTs: null,
-      maxUpPriceSeen: 0,
-      maxDownPriceSeen: 0,
-      lastActivityState: 'NORMAL',
-    };
-    marketCppStates.set(key, state);
-  }
+  const state = getOrCreateState(key);
   
   // Cannot calculate CPP if not paired
-  if (upShares <= 0 || downShares <= 0) {
+  const cpp = calculateCpp(upShares, downShares, upCost, downCost);
+  if (cpp === null) {
     return {
       state: 'NORMAL',  // Default to NORMAL when not paired
       cpp: null,
@@ -308,11 +445,8 @@ export function getCppActivityState(params: {
   // Record first pair time
   if (state.firstPairTs === null) {
     state.firstPairTs = Date.now();
+    state.totalPairs++;
   }
-  
-  const avgUp = upCost / upShares;
-  const avgDown = downCost / downShares;
-  const cpp = avgUp + avgDown;
   
   let activityState: CppActivityState;
   let reason: string;
@@ -335,6 +469,7 @@ export function getCppActivityState(params: {
 
 /**
  * Check if entry is allowed based on CPP activity state.
+ * Entries only allowed in NORMAL state.
  */
 export function isEntryAllowedByActivityState(params: {
   marketId: string;
@@ -386,10 +521,12 @@ export function isEntryAllowedByActivityState(params: {
 
 /**
  * Check if hedge is allowed based on CPP activity state.
+ * Hedges allowed in NORMAL and HEDGE_ONLY (on minority side only).
  */
 export function isHedgeAllowedByActivityState(params: {
   marketId: string;
   asset: string;
+  hedgeSide: Side;
   upShares: number;
   downShares: number;
   upCost: number;
@@ -397,15 +534,29 @@ export function isHedgeAllowedByActivityState(params: {
   runId?: string;
   cfg?: typeof CPP_QUALITY_CONFIG;
 }): { allowed: boolean; state: CppActivityState; reason: string } {
-  const { runId, ...stateParams } = params;
+  const { runId, hedgeSide, ...stateParams } = params;
   const result = getCppActivityState(stateParams);
   
-  // NORMAL and HEDGE_ONLY allow hedging
-  if (result.state === 'NORMAL' || result.state === 'HEDGE_ONLY') {
+  // NORMAL: all hedges allowed
+  if (result.state === 'NORMAL') {
     return { allowed: true, state: result.state, reason: result.reason };
   }
   
-  // HOLD_ONLY blocks everything
+  // HEDGE_ONLY: only minority side allowed
+  if (result.state === 'HEDGE_ONLY') {
+    const sideAnalysis = analyzeSides(params.upShares, params.downShares);
+    if (hedgeSide === sideAnalysis.minoritySide) {
+      return { allowed: true, state: result.state, reason: `HEDGE_ALLOWED: minority side in HEDGE_ONLY` };
+    }
+    // Dominant side not allowed in HEDGE_ONLY
+    return {
+      allowed: false,
+      state: result.state,
+      reason: `HEDGE_BLOCKED: dominant side not allowed in HEDGE_ONLY`,
+    };
+  }
+  
+  // HOLD_ONLY: nothing allowed
   const { marketId, asset } = params;
   const now = Date.now();
   const key = `${marketId}:${asset}`;
@@ -425,6 +576,7 @@ export function isHedgeAllowedByActivityState(params: {
       reason_code: 'HOLD_ONLY',
       data: {
         cpp: result.cpp,
+        hedgeSide,
       },
     }).catch(() => {});
   }
@@ -437,33 +589,156 @@ export function isHedgeAllowedByActivityState(params: {
 }
 
 // ============================================================
-// PRIORITY 4: ENTRY & HEDGE SIZING
+// PRIORITY 4: HEDGE & ACCUMULATE LOGIC
 // ============================================================
 
 /**
- * Calculate initial entry size (5-10 shares).
+ * Get the minority side for hedging.
+ * Hedges should ALWAYS target the minority side.
  */
-export function getInitialEntrySize(cfg?: typeof CPP_QUALITY_CONFIG): number {
-  const { min, max } = (cfg ?? CPP_QUALITY_CONFIG).initialEntryShares;
+export function getHedgeTarget(upShares: number, downShares: number): Side {
+  const analysis = analyzeSides(upShares, downShares);
+  return analysis.minoritySide;
+}
+
+/**
+ * Calculate hedge chunk size (3-5 shares).
+ */
+export function getHedgeChunkSize(cfg: typeof CPP_QUALITY_CONFIG = CPP_QUALITY_CONFIG): number {
+  const { min, max } = cfg.hedgeChunkShares;
   return Math.floor(min + Math.random() * (max - min + 1));
 }
 
 /**
- * Calculate hedge chunk size (1-5 shares).
+ * Check if accumulate is allowed.
+ * 
+ * Accumulate rules:
+ * - Only allowed if newCPP < currentCPP
+ * - Always on minority side
+ * - Never on dominant side
+ * - Never based on "cheapest side" logic
  */
-export function getHedgeChunkSize(cfg?: typeof CPP_QUALITY_CONFIG): number {
-  const { min, max } = (cfg ?? CPP_QUALITY_CONFIG).hedgeChunkShares;
-  return Math.floor(min + Math.random() * (max - min + 1));
+export function isAccumulateAllowed(params: {
+  marketId: string;
+  asset: string;
+  accumulateSide: Side;
+  accumulatePrice: number;
+  accumulateShares: number;
+  upShares: number;
+  downShares: number;
+  upCost: number;
+  downCost: number;
+  runId?: string;
+  cfg?: typeof CPP_QUALITY_CONFIG;
+}): AccumulateResult {
+  const { 
+    marketId, asset, accumulateSide, accumulatePrice, accumulateShares,
+    upShares, downShares, upCost, downCost, runId, cfg = CPP_QUALITY_CONFIG 
+  } = params;
+  
+  const key = `${marketId}:${asset}`;
+  const now = Date.now();
+  
+  // Check side - must be minority side
+  const sideAnalysis = analyzeSides(upShares, downShares);
+  if (accumulateSide === sideAnalysis.dominantSide) {
+    const lastLog = logThrottles.get(`acc_dom_${key}`) ?? 0;
+    if (now - lastLog > cfg.logThrottleMs) {
+      logThrottles.set(`acc_dom_${key}`, now);
+      console.log(`🚫 [CPP_QUALITY] ACCUMULATE_BLOCKED_DOMINANT: ${asset} ${marketId.slice(0, 8)}`);
+      console.log(`   Cannot accumulate on dominant side (${accumulateSide})`);
+      
+      saveBotEvent({
+        event_type: 'ACCUMULATE_BLOCKED_DOMINANT',
+        asset,
+        market_id: marketId,
+        ts: now,
+        run_id: runId,
+        reason_code: 'DOMINANT_SIDE',
+        data: {
+          accumulateSide,
+          dominantSide: sideAnalysis.dominantSide,
+          minoritySide: sideAnalysis.minoritySide,
+        },
+      }).catch(() => {});
+    }
+    
+    return {
+      allowed: false,
+      reason: `ACCUMULATE_BLOCKED: cannot accumulate on dominant side (${accumulateSide})`,
+      newCpp: null,
+      currentCpp: null,
+    };
+  }
+  
+  // Calculate current CPP
+  const currentCpp = calculateCpp(upShares, downShares, upCost, downCost);
+  if (currentCpp === null) {
+    // Not paired yet - allow initial accumulate
+    return {
+      allowed: true,
+      reason: 'ACCUMULATE_ALLOWED: not yet paired',
+      newCpp: null,
+      currentCpp: null,
+    };
+  }
+  
+  // Calculate new CPP after accumulate
+  const newUpShares = accumulateSide === 'UP' ? upShares + accumulateShares : upShares;
+  const newDownShares = accumulateSide === 'DOWN' ? downShares + accumulateShares : downShares;
+  const newUpCost = accumulateSide === 'UP' ? upCost + (accumulateShares * accumulatePrice) : upCost;
+  const newDownCost = accumulateSide === 'DOWN' ? downCost + (accumulateShares * accumulatePrice) : downCost;
+  
+  const newCpp = calculateCpp(newUpShares, newDownShares, newUpCost, newDownCost);
+  
+  if (newCpp === null || newCpp >= currentCpp) {
+    const lastLog = logThrottles.get(`acc_cpp_${key}`) ?? 0;
+    if (now - lastLog > cfg.logThrottleMs) {
+      logThrottles.set(`acc_cpp_${key}`, now);
+      console.log(`🚫 [CPP_QUALITY] ACCUMULATE_BLOCKED_CPP: ${asset} ${marketId.slice(0, 8)}`);
+      console.log(`   newCpp=${newCpp?.toFixed(4)} >= currentCpp=${currentCpp.toFixed(4)}`);
+      
+      saveBotEvent({
+        event_type: 'ACCUMULATE_BLOCKED_CPP_WORSE',
+        asset,
+        market_id: marketId,
+        ts: now,
+        run_id: runId,
+        reason_code: 'CPP_NOT_IMPROVED',
+        data: {
+          currentCpp,
+          newCpp,
+          accumulateSide,
+          accumulatePrice,
+          accumulateShares,
+        },
+      }).catch(() => {});
+    }
+    
+    return {
+      allowed: false,
+      reason: `ACCUMULATE_BLOCKED: newCpp=${newCpp?.toFixed(4)} >= currentCpp=${currentCpp.toFixed(4)}`,
+      newCpp,
+      currentCpp,
+    };
+  }
+  
+  return {
+    allowed: true,
+    reason: `ACCUMULATE_ALLOWED: newCpp=${newCpp.toFixed(4)} < currentCpp=${currentCpp.toFixed(4)}`,
+    newCpp,
+    currentCpp,
+  };
 }
 
 /**
- * Check if adding to position is allowed based on current CPP.
- * Adds only allowed if cpp < 0.98 AND projected CPP still <= 0.98.
+ * Check if adding to position is allowed (for initial sizing adds).
+ * Only if cpp < maxCppForAdds AND projected CPP still <= entryCppMax.
  */
 export function isAddAllowed(params: {
   marketId: string;
   asset: string;
-  addSide: 'UP' | 'DOWN';
+  addSide: Side;
   addPrice: number;
   upShares: number;
   downShares: number;
@@ -486,6 +761,14 @@ export function isAddAllowed(params: {
     cfg,
   });
   
+  // Block if not in NORMAL or if CPP too high
+  if (activityResult.state !== 'NORMAL') {
+    return {
+      allowed: false,
+      reason: `ADD_BLOCKED: state=${activityResult.state}`,
+    };
+  }
+  
   if (activityResult.cpp !== null && activityResult.cpp >= cfg.maxCppForAdds) {
     return {
       allowed: false,
@@ -498,16 +781,20 @@ export function isAddAllowed(params: {
   const currentCost = params.addSide === 'UP' ? params.upCost : params.downCost;
   
   if (currentShares > 0) {
-    // Estimate new avg price after add
-    const newShares = currentShares + 5; // Assume 5 share add
-    const newCost = currentCost + (5 * params.addPrice);
+    // Estimate new avg price after add (use hedge chunk size)
+    const addShares = getHedgeChunkSize(cfg);
+    const newShares = currentShares + addShares;
+    const newCost = currentCost + (addShares * params.addPrice);
     const newAvg = newCost / newShares;
-    const projectedCpp = newAvg + params.oppositeSideAsk;
     
-    if (projectedCpp > cfg.maxProjectedCpp) {
+    // Use maker-estimated hedge price
+    const makerHedgePrice = estimateMakerPrice(params.oppositeSideAsk, cfg);
+    const projectedCpp = newAvg + makerHedgePrice;
+    
+    if (projectedCpp > cfg.entryCppMax) {
       return {
         allowed: false,
-        reason: `ADD_BLOCKED: projectedCpp=${projectedCpp.toFixed(4)} > ${cfg.maxProjectedCpp}`,
+        reason: `ADD_BLOCKED: projectedCpp=${projectedCpp.toFixed(4)} > ${cfg.entryCppMax}`,
       };
     }
   }
@@ -516,11 +803,23 @@ export function isAddAllowed(params: {
 }
 
 // ============================================================
-// PRIORITY 5: OBSERVABILITY METRICS
+// PRIORITY 5: ENTRY SIZING
 // ============================================================
 
 /**
- * Get CPP metrics for a market.
+ * Calculate initial entry size (5-10 shares).
+ */
+export function getInitialEntrySize(cfg: typeof CPP_QUALITY_CONFIG = CPP_QUALITY_CONFIG): number {
+  const { min, max } = cfg.initialEntryShares;
+  return Math.floor(min + Math.random() * (max - min + 1));
+}
+
+// ============================================================
+// PRIORITY 6: OBSERVABILITY METRICS
+// ============================================================
+
+/**
+ * Get comprehensive CPP metrics for a market.
  */
 export function getCppMetrics(params: {
   marketId: string;
@@ -534,26 +833,37 @@ export function getCppMetrics(params: {
   const key = `${marketId}:${asset}`;
   const state = marketCppStates.get(key);
   
-  let actualCpp: number | null = null;
-  if (upShares > 0 && downShares > 0) {
-    actualCpp = (upCost / upShares) + (downCost / downShares);
-  }
+  const actualCpp = calculateCpp(upShares, downShares, upCost, downCost);
   
-  const cppDrift = (state?.projectedCppAtEntry !== null && actualCpp !== null)
-    ? actualCpp - state.projectedCppAtEntry
+  const cppDrift = (state?.projectedCppMakerAtEntry !== null && actualCpp !== null)
+    ? actualCpp - state.projectedCppMakerAtEntry
     : null;
   
   const timeToFirstPairMs = (state?.entryTs !== null && state?.firstPairTs !== null)
     ? state.firstPairTs - state.entryTs
     : null;
   
+  const sideAnalysis = (upShares > 0 || downShares > 0) 
+    ? analyzeSides(upShares, downShares)
+    : null;
+  
+  // Pairing rate calculation
+  const pairedShares = Math.min(upShares, downShares);
+  const totalShares = upShares + downShares;
+  const pairingRate = totalShares > 0 ? pairedShares / totalShares : null;
+  
   return {
-    projectedCpp: state?.projectedCppAtEntry ?? null,
+    projectedCppMaker: state?.projectedCppMakerAtEntry ?? null,
+    projectedCppTaker: state?.projectedCppTakerAtEntry ?? null,
     actualCpp,
     cppDrift,
     timeToFirstPairMs,
-    maxLegPriceSeen: Math.max(state?.maxUpPriceSeen ?? 0, state?.maxDownPriceSeen ?? 0),
+    dominantSide: sideAnalysis?.dominantSide ?? null,
+    minoritySide: sideAnalysis?.minoritySide ?? null,
     activityState: state?.lastActivityState ?? 'NORMAL',
+    maxUpPriceSeen: state?.maxUpPriceSeen ?? 0,
+    maxDownPriceSeen: state?.maxDownPriceSeen ?? 0,
+    pairingRate,
     skippedReason: null,
   };
 }
@@ -564,23 +874,11 @@ export function getCppMetrics(params: {
 export function updateMaxLegPrice(params: {
   marketId: string;
   asset: string;
-  side: 'UP' | 'DOWN';
+  side: Side;
   price: number;
 }): void {
   const key = `${params.marketId}:${params.asset}`;
-  let state = marketCppStates.get(key);
-  
-  if (!state) {
-    state = {
-      projectedCppAtEntry: null,
-      entryTs: null,
-      firstPairTs: null,
-      maxUpPriceSeen: 0,
-      maxDownPriceSeen: 0,
-      lastActivityState: 'NORMAL',
-    };
-    marketCppStates.set(key, state);
-  }
+  const state = getOrCreateState(key);
   
   if (params.side === 'UP') {
     state.maxUpPriceSeen = Math.max(state.maxUpPriceSeen, params.price);
@@ -629,7 +927,12 @@ export const CppQuality = {
   // Config
   config: CPP_QUALITY_CONFIG,
   
-  // Priority 1: Feasibility
+  // Helpers
+  analyzeSides,
+  estimateMakerPrice,
+  calculateCpp,
+  
+  // Priority 1: Feasibility (maker-based)
   checkFeasibility: checkCppFeasibility,
   
   // Priority 2: Combination guard
@@ -640,12 +943,16 @@ export const CppQuality = {
   isEntryAllowed: isEntryAllowedByActivityState,
   isHedgeAllowed: isHedgeAllowedByActivityState,
   
-  // Priority 4: Sizing
-  getInitialEntrySize,
+  // Priority 4: Hedge & accumulate
+  getHedgeTarget,
   getHedgeChunkSize,
+  isAccumulateAllowed,
   isAddAllowed,
   
-  // Priority 5: Observability
+  // Priority 5: Entry sizing
+  getInitialEntrySize,
+  
+  // Priority 6: Observability
   getMetrics: getCppMetrics,
   updateMaxLegPrice,
   clearState: clearCppState,
