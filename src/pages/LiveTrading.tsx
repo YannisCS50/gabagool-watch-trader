@@ -27,6 +27,7 @@ import { OrderQueueStatus } from '@/components/OrderQueueStatus';
 import { RunnerInstructions } from '@/components/RunnerInstructions';
 import { BotPositionsCard } from '@/components/BotPositionsCard';
 import { HedgeFeasibilityDashboard } from '@/components/HedgeFeasibilityDashboard';
+import { RunnerConflictBanner } from '@/components/RunnerConflictBanner';
 import { supabase } from '@/integrations/supabase/client';
 
 interface WalletBalance {
@@ -137,6 +138,9 @@ export default function LiveTrading() {
             </Button>
           </div>
         </div>
+
+        {/* v7.3.2: Runner Conflict Warning Banner */}
+        <RunnerConflictBanner />
 
         {/* Runner Status & Instructions - Collapsible */}
         <Collapsible className="mb-8">

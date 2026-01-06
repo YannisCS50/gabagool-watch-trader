@@ -111,6 +111,16 @@ import {
 import { tryAcquire as mutexTryAcquire, forceRelease as mutexForceRelease, getMutexStats } from './market-mutex.js';
 import { BURST_LIMITER_CONFIG, getBurstStats, clearBurstState } from './burst-limiter.js';
 
+// v7.3.2: Runner lease for single-runner enforcement
+import {
+  acquireLeaseOrHalt,
+  releaseLease,
+  renewLease,
+  isLeaseHeld,
+  getLeaseStatus,
+  LEASE_CONFIG,
+} from './runner-lease.js';
+
 // v7.2.8 REV C.4.2: PnL Accounting + Sell Policy
 import {
   processFill as accountingProcessFill,
@@ -2563,6 +2573,17 @@ async function main(): Promise<void> {
   // CRITICAL: Verify VPN is active before ANY trading activity
   await enforceVpnOrExit();
 
+  // v7.3.2: CRITICAL - Acquire exclusive runner lease before trading
+  // Only ONE runner may be active at a time to prevent conflicting orders
+  console.log('\n🔒 Acquiring exclusive runner lease...');
+  const leaseAcquired = await acquireLeaseOrHalt(RUNNER_ID);
+  if (!leaseAcquired) {
+    console.error('\n🚫 HALTING: Another runner holds the lease. Only one runner may be active at a time.');
+    console.error('   Stop the other runner or wait for its lease to expire (~60s after it stops).\n');
+    process.exit(1);
+  }
+  console.log('✅ Exclusive runner lease acquired\n');
+
   // Test Polymarket connection
   const connected = await testConnection();
   if (!connected) {
@@ -3300,6 +3321,10 @@ async function main(): Promise<void> {
 process.on('SIGINT', async () => {
   console.log('\n\n👋 Shutting down...');
   isRunning = false;
+  
+  // v7.3.2: Release runner lease FIRST so another runner can start immediately
+  console.log('🔓 Releasing runner lease...');
+  await releaseLease();
   
   // Stop auto-claim loop
   stopAutoClaimLoop();
