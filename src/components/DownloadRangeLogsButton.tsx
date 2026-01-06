@@ -8,6 +8,278 @@ import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import JSZip from 'jszip';
 
+// Rev D.1 Logging Specification Document
+const REV_D1_LOGGING_SPEC = `# Loveable Prompt: Logging Uitbreidingen voor Rev D.1
+
+## Context
+
+We implementeren Rev D.1 (CPP-First Inventory Strategy). Om te valideren of de nieuwe logica werkt, hebben we extra logging nodig. Zonder deze logging kunnen we niet zien:
+- Hoeveel entries worden geskipped door de CPP check
+- Wanneer de activity state verandert
+- Waarom hedge/accumulate beslissingen worden genomen
+
+---
+
+## DEEL 1: Nieuwe Bot Events
+
+### 1.1 V73_ENTRY_SKIP Event
+
+Log wanneer een entry wordt geskipped door de pre-entry CPP check.
+
+\`\`\`typescript
+// Wanneer: In computeSignal() case 'FLAT', wanneer entry wordt geskipped
+// Waar: strategy.ts of waar je entry beslissingen maakt
+
+saveBotEvent({
+  event_type: 'V73_ENTRY_SKIP',
+  asset,
+  market_id: marketId,
+  ts: Date.now(),
+  run_id: runId,
+  reason_code: 'PROJECTED_CPP_TOO_HIGH',  // of 'COMBINED_TOO_HIGH'
+  data: {
+    projected_cpp_maker: projectedCppMaker,
+    projected_cpp_taker: projectedCppTaker,
+    threshold: 0.98,
+    up_bid: upBid,
+    up_ask: upAsk,
+    down_bid: downBid,
+    down_ask: downAsk,
+    combined_ask: upAsk + downAsk,
+    combined_maker: (upBid + tick) + (downBid + tick),
+    seconds_remaining: remainingSeconds,
+  }
+}).catch(() => {});
+\`\`\`
+
+**Throttling:** Max 1x per 10 seconden per market om spam te voorkomen.
+
+---
+
+### 1.2 CPP_STATE_CHANGE Event
+
+Log wanneer de activity state verandert (NORMAL → HEDGE_ONLY → HOLD_ONLY).
+
+\`\`\`typescript
+saveBotEvent({
+  event_type: 'CPP_STATE_CHANGE',
+  asset,
+  market_id: marketId,
+  ts: Date.now(),
+  run_id: runId,
+  reason_code: newState,  // 'NORMAL', 'HEDGE_ONLY', 'HOLD_ONLY'
+  data: {
+    old_state: oldState,
+    new_state: newState,
+    current_cpp: currentCpp,
+    trigger_threshold: threshold,
+    up_shares: inv.upShares,
+    down_shares: inv.downShares,
+    avg_up_cost: avgUpCost,
+    avg_down_cost: avgDownCost,
+    seconds_remaining: remainingSeconds,
+  }
+}).catch(() => {});
+\`\`\`
+
+**Belangrijk:** Log ALLEEN bij daadwerkelijke state CHANGE, niet elke tick.
+
+---
+
+### 1.3 V73_HEDGE_DECISION Event
+
+Log elke hedge beslissing met volledige context.
+
+\`\`\`typescript
+saveBotEvent({
+  event_type: 'V73_HEDGE_DECISION',
+  asset,
+  market_id: marketId,
+  ts: Date.now(),
+  run_id: runId,
+  reason_code: decision,  // 'HEDGE_OK', 'HEDGE_WAIT', 'HEDGE_BLOCKED'
+  data: {
+    decision: decision,
+    decision_reason: reason,
+    projected_cpp_maker: projectedCppMaker,
+    projected_cpp_taker: projectedCppTaker,
+    target_max_cpp: 0.99,
+    absolute_max_cpp: 1.03,
+    dominant_side: dominantSide,
+    dominant_shares: dominantShares,
+    minority_side: minoritySide,
+    minority_shares: minorityShares,
+    hedge_bid: hedgeBid,
+    hedge_ask: hedgeAsk,
+    activity_state: activityState,
+    seconds_remaining: remainingSeconds,
+  }
+}).catch(() => {});
+\`\`\`
+
+**Throttling:** Max 1x per 5 seconden per market.
+
+---
+
+### 1.4 V73_ACCUM_DECISION Event
+
+Log accumulate beslissingen.
+
+\`\`\`typescript
+saveBotEvent({
+  event_type: 'V73_ACCUM_DECISION',
+  asset,
+  market_id: marketId,
+  ts: Date.now(),
+  run_id: runId,
+  reason_code: decision,  // 'ACCUM_OK', 'ACCUM_BLOCKED', 'ACCUM_NO_IMPROVE'
+  data: {
+    decision: decision,
+    decision_reason: reason,
+    current_cpp: currentCpp,
+    projected_new_cpp: projectedNewCpp,
+    target_side: minoritySide,
+    add_shares: addShares,
+    maker_price: makerPrice,
+    activity_state: activityState,
+    seconds_remaining: remainingSeconds,
+  }
+}).catch(() => {});
+\`\`\`
+
+**Throttling:** Max 1x per 10 seconden per market.
+
+---
+
+## DEEL 2: Database Schema Uitbreidingen
+
+### 2.1 inventory_snapshots Tabel
+
+\`\`\`sql
+ALTER TABLE inventory_snapshots ADD COLUMN IF NOT EXISTS activity_state TEXT;
+ALTER TABLE inventory_snapshots ADD COLUMN IF NOT EXISTS projected_cpp_maker DECIMAL(10,6);
+ALTER TABLE inventory_snapshots ADD COLUMN IF NOT EXISTS projected_cpp_taker DECIMAL(10,6);
+ALTER TABLE inventory_snapshots ADD COLUMN IF NOT EXISTS dominant_side TEXT;
+ALTER TABLE inventory_snapshots ADD COLUMN IF NOT EXISTS minority_side TEXT;
+\`\`\`
+
+### 2.2 snapshot_logs Tabel
+
+\`\`\`sql
+ALTER TABLE snapshot_logs ADD COLUMN IF NOT EXISTS projected_cpp_maker DECIMAL(10,6);
+ALTER TABLE snapshot_logs ADD COLUMN IF NOT EXISTS projected_cpp_taker DECIMAL(10,6);
+ALTER TABLE snapshot_logs ADD COLUMN IF NOT EXISTS activity_state TEXT;
+ALTER TABLE snapshot_logs ADD COLUMN IF NOT EXISTS entry_allowed BOOLEAN;
+ALTER TABLE snapshot_logs ADD COLUMN IF NOT EXISTS hedge_allowed BOOLEAN;
+ALTER TABLE snapshot_logs ADD COLUMN IF NOT EXISTS accum_allowed BOOLEAN;
+\`\`\`
+
+### 2.3 fill_logs Tabel
+
+\`\`\`sql
+ALTER TABLE fill_logs ADD COLUMN IF NOT EXISTS projected_cpp_at_fill DECIMAL(10,6);
+ALTER TABLE fill_logs ADD COLUMN IF NOT EXISTS actual_cpp_after_fill DECIMAL(10,6);
+ALTER TABLE fill_logs ADD COLUMN IF NOT EXISTS cpp_drift DECIMAL(10,6);
+ALTER TABLE fill_logs ADD COLUMN IF NOT EXISTS activity_state_at_fill TEXT;
+\`\`\`
+
+---
+
+## DEEL 3: Analysis Query Voorbeelden
+
+### 3.1 Entry Skip Analyse
+
+\`\`\`sql
+SELECT 
+  reason_code,
+  COUNT(*) as count,
+  AVG((data->>'projected_cpp_maker')::decimal) as avg_projected_cpp
+FROM bot_events
+WHERE event_type = 'V73_ENTRY_SKIP'
+  AND ts > NOW() - INTERVAL '24 hours'
+GROUP BY reason_code;
+\`\`\`
+
+### 3.2 Activity State Distributies
+
+\`\`\`sql
+SELECT 
+  activity_state,
+  COUNT(*) as snapshot_count,
+  COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () as percentage
+FROM snapshot_logs
+WHERE ts > NOW() - INTERVAL '24 hours'
+GROUP BY activity_state;
+\`\`\`
+
+### 3.3 CPP Drift Analyse
+
+\`\`\`sql
+SELECT 
+  asset,
+  AVG(cpp_drift) as avg_drift,
+  STDDEV(cpp_drift) as stddev_drift,
+  MIN(cpp_drift) as min_drift,
+  MAX(cpp_drift) as max_drift
+FROM fill_logs
+WHERE cpp_drift IS NOT NULL
+  AND ts > NOW() - INTERVAL '24 hours'
+GROUP BY asset;
+\`\`\`
+
+### 3.4 Hedge Decision Breakdown
+
+\`\`\`sql
+SELECT 
+  data->>'decision' as decision,
+  data->>'decision_reason' as reason,
+  COUNT(*) as count
+FROM bot_events
+WHERE event_type = 'V73_HEDGE_DECISION'
+  AND ts > NOW() - INTERVAL '24 hours'
+GROUP BY data->>'decision', data->>'decision_reason'
+ORDER BY count DESC;
+\`\`\`
+
+---
+
+## DEEL 4: Implementatie Checklist
+
+### Stap 1: Database Migraties
+- [ ] Run ALTER TABLE statements voor inventory_snapshots
+- [ ] Run ALTER TABLE statements voor snapshot_logs
+- [ ] Run ALTER TABLE statements voor fill_logs
+- [ ] Verify kolommen bestaan
+
+### Stap 2: TypeScript Types
+- [ ] Update InventorySnapshot interface
+- [ ] Update SnapshotLog interface
+- [ ] Update FillLog interface
+
+### Stap 3: Event Logging
+- [ ] Implementeer V73_ENTRY_SKIP logging
+- [ ] Implementeer CPP_STATE_CHANGE logging
+- [ ] Implementeer V73_HEDGE_DECISION logging
+- [ ] Implementeer V73_ACCUM_DECISION logging
+- [ ] Add throttling voor alle events
+
+### Stap 4: Snapshot Updates
+- [ ] Update saveSnapshotLog met projected_cpp_maker
+- [ ] Update saveSnapshotLog met activity_state
+- [ ] Update saveSnapshotLog met entry/hedge/accum_allowed
+
+### Stap 5: Fill Log Updates
+- [ ] Log projected_cpp_at_fill bij fills
+- [ ] Log actual_cpp_after_fill bij fills
+- [ ] Bereken en log cpp_drift
+
+### Stap 6: Validatie
+- [ ] Run bot voor 1 uur
+- [ ] Check of nieuwe events verschijnen
+- [ ] Run analysis queries
+- [ ] Verify data kwaliteit
+`;
+
 // Table names as type for type safety
 type TableName = 'bot_events' | 'snapshot_logs' | 'fill_logs' | 'inventory_snapshots' | 
                   'orders' | 'order_queue' | 'settlement_logs' | 'hedge_intents' | 
@@ -176,6 +448,9 @@ export function DownloadRangeLogsButton() {
       zip.file('hedge_intents.json', JSON.stringify(hedgeIntents));
       zip.file('price_ticks.json', JSON.stringify(priceTicks));
       zip.file('funding_snapshots.json', JSON.stringify(fundingSnapshots));
+      
+      // Add Rev D.1 logging specification document
+      zip.file('docs/REV_D1_LOGGING_SPEC.md', REV_D1_LOGGING_SPEC);
 
       // Create filename with date range
       const filename = `strategy_analysis_${fromDate}_${fromTime.replace(':', '')}_to_${toTime.replace(':', '')}.zip`;
