@@ -56,20 +56,25 @@ export function DownloadRangeLogsButton() {
   const [isOpen, setIsOpen] = useState(false);
   const [progress, setProgress] = useState('');
   
-  // Default to today 13:30 - now
-  const today = new Date().toISOString().split('T')[0];
+  // Default to today 13:30 - now (LOCAL TIME)
+  const now = new Date();
+  const today = now.toLocaleDateString('en-CA'); // YYYY-MM-DD format
   const [fromDate, setFromDate] = useState(today);
   const [fromTime, setFromTime] = useState('13:30');
   const [toDate, setToDate] = useState(today);
-  const [toTime, setToTime] = useState(new Date().toTimeString().slice(0, 5));
+  const [toTime, setToTime] = useState(
+    now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
+  );
 
   const downloadRangeLogs = async () => {
     setIsDownloading(true);
     
     try {
-      // Build date range
-      const fromISO = new Date(`${fromDate}T${fromTime}:00Z`).toISOString();
-      const toISO = new Date(`${toDate}T${toTime}:00Z`).toISOString();
+      // Build date range - input is LOCAL TIME, convert to UTC for database query
+      const fromLocal = new Date(`${fromDate}T${fromTime}:00`);
+      const toLocal = new Date(`${toDate}T${toTime}:00`);
+      const fromISO = fromLocal.toISOString();
+      const toISO = toLocal.toISOString();
       
       toast.info(`Fetching all logs from ${fromTime} to ${toTime}...`);
 
@@ -224,7 +229,7 @@ export function DownloadRangeLogsButton() {
           
           <div className="grid gap-3">
             <div className="space-y-1.5">
-              <Label className="text-xs">From (UTC)</Label>
+              <Label className="text-xs">From (local time)</Label>
               <div className="flex gap-2">
                 <Input
                   type="date"
@@ -245,7 +250,7 @@ export function DownloadRangeLogsButton() {
             </div>
             
             <div className="space-y-1.5">
-              <Label className="text-xs">To (UTC)</Label>
+              <Label className="text-xs">To (local time)</Label>
               <div className="flex gap-2">
                 <Input
                   type="date"
