@@ -28,6 +28,26 @@ interface QueuedOrder {
   created_at: string;
   executed_at: string | null;
   reasoning: string | null;
+  intent_type: string | null;
+}
+
+// v7.4.0: Calculate if an order is stale based on TTL
+const STALE_TTL_HEDGE_MS = 10_000; // 10s for hedge orders
+const STALE_TTL_ENTRY_MS = 20_000; // 20s for entry orders
+
+function isOrderStale(order: QueuedOrder): boolean {
+  if (order.status !== 'placed' || !order.order_id || !order.executed_at) return false;
+  
+  const ageMs = Date.now() - new Date(order.executed_at).getTime();
+  const isHedge = ['HEDGE', 'FORCE', 'SURVIVAL'].includes(order.intent_type || '');
+  const ttl = isHedge ? STALE_TTL_HEDGE_MS : STALE_TTL_ENTRY_MS;
+  
+  return ageMs > ttl;
+}
+
+function getOrderAgeMs(order: QueuedOrder): number {
+  if (!order.executed_at) return 0;
+  return Date.now() - new Date(order.executed_at).getTime();
 }
 
 export function OrderQueueStatus() {
@@ -82,13 +102,24 @@ export function OrderQueueStatus() {
     };
   }, []);
 
-  const getStatusBadge = (status: string) => {
+  const getStatusBadge = (status: string, order: QueuedOrder) => {
+    const stale = isOrderStale(order);
+    const ageMs = getOrderAgeMs(order);
+    const ageSec = Math.floor(ageMs / 1000);
+    
     switch (status) {
       case 'pending':
         return <Badge variant="outline" className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20"><Clock className="w-3 h-3 mr-1" /> Pending</Badge>;
       case 'processing':
         return <Badge variant="outline" className="bg-blue-500/10 text-blue-500 border-blue-500/20"><Loader2 className="w-3 h-3 mr-1 animate-spin" /> Processing</Badge>;
       case 'placed':
+        if (stale) {
+          return (
+            <Badge variant="outline" className="bg-orange-500/10 text-orange-500 border-orange-500/20 animate-pulse">
+              <Clock className="w-3 h-3 mr-1" /> STALE ({ageSec}s)
+            </Badge>
+          );
+        }
         return <Badge variant="outline" className="bg-blue-500/10 text-blue-400 border-blue-500/20"><Clock className="w-3 h-3 mr-1" /> Placed</Badge>;
       case 'filled':
         return <Badge variant="outline" className="bg-emerald-500/10 text-emerald-500 border-emerald-500/20"><CheckCircle2 className="w-3 h-3 mr-1" /> Filled</Badge>;
@@ -96,6 +127,8 @@ export function OrderQueueStatus() {
         return <Badge variant="outline" className="bg-amber-500/10 text-amber-500 border-amber-500/20"><CheckCircle2 className="w-3 h-3 mr-1" /> Partial</Badge>;
       case 'failed':
         return <Badge variant="outline" className="bg-red-500/10 text-red-500 border-red-500/20"><XCircle className="w-3 h-3 mr-1" /> Failed</Badge>;
+      case 'cancelled':
+        return <Badge variant="outline" className="bg-gray-500/10 text-gray-400 border-gray-500/20"><XCircle className="w-3 h-3 mr-1" /> Cancelled</Badge>;
       default:
         return <Badge variant="outline">{status}</Badge>;
     }
@@ -127,6 +160,7 @@ export function OrderQueueStatus() {
   const pendingCount = orders.filter(o => o.status === 'pending' || o.status === 'processing').length;
   const filledCount = orders.filter(o => o.status === 'filled').length;
   const failedCount = orders.filter(o => o.status === 'failed').length;
+  const staleCount = orders.filter(o => isOrderStale(o)).length;
 
   return (
     <Card>
@@ -145,7 +179,7 @@ export function OrderQueueStatus() {
             <RefreshCw className={`w-4 h-4 ${isLoading ? 'animate-spin' : ''}`} />
           </Button>
         </div>
-        <div className="flex gap-4 text-sm text-muted-foreground">
+        <div className="flex gap-4 text-sm text-muted-foreground flex-wrap">
           <span className="flex items-center gap-1">
             <div className="w-2 h-2 rounded-full bg-emerald-500" />
             {filledCount} filled
@@ -158,6 +192,12 @@ export function OrderQueueStatus() {
             <div className="w-2 h-2 rounded-full bg-red-500" />
             {failedCount} failed
           </span>
+          {staleCount > 0 && (
+            <span className="flex items-center gap-1 text-orange-500 font-medium animate-pulse">
+              <div className="w-2 h-2 rounded-full bg-orange-500" />
+              {staleCount} stale
+            </span>
+          )}
         </div>
       </CardHeader>
       <CardContent>
@@ -186,7 +226,7 @@ export function OrderQueueStatus() {
                       <Badge variant="outline" className={order.outcome === 'UP' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-red-500/10 text-red-500'}>
                         {order.asset} {order.outcome}
                       </Badge>
-                      {getStatusBadge(order.status)}
+                      {getStatusBadge(order.status, order)}
                     </div>
                     <div className="text-sm font-mono">
                       {order.shares.toFixed(0)} shares @ {(order.price * 100).toFixed(0)}¢

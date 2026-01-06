@@ -155,6 +155,43 @@ export async function updateOrder(
   }
 }
 
+// ============================================
+// v7.4.0: STALE ORDER CLEANUP
+// ============================================
+
+export interface StalePlacedOrder {
+  id: string;
+  market_slug: string;
+  asset: string;
+  outcome: string;
+  shares: number;
+  price: number;
+  order_id: string;
+  intent_type: string | null;
+  created_at: string;
+  executed_at: string | null;
+}
+
+/**
+ * v7.4.0: Fetch stale placed orders that need to be cancelled
+ * Orders with status='placed' and order_id that are older than TTL
+ */
+export async function fetchStalePlacedOrders(
+  ttlMs: number = 20_000,
+  hedgeTtlMs: number = 10_000
+): Promise<StalePlacedOrder[]> {
+  try {
+    const result = await callProxy<{ success: boolean; orders?: StalePlacedOrder[] }>(
+      'get-stale-orders',
+      { ttl_ms: ttlMs, hedge_ttl_ms: hedgeTtlMs }
+    );
+    return result.orders || [];
+  } catch (error) {
+    console.error('❌ fetchStalePlacedOrders error:', error);
+    return [];
+  }
+}
+
 interface PositionData {
   conditionId: string;
   market: string;
