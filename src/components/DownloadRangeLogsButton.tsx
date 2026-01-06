@@ -412,6 +412,8 @@ export function DownloadRangeLogsButton() {
         guardrailAnalysis: analyzeGuardrails(botEvents, snapshotLogs),
         // PnL Analysis
         pnlAnalysis: analyzePnL(fillLogs, settlementLogs, snapshotLogs),
+        // Rev D.1 specific analysis
+        revD1Analysis: analyzeRevD1(botEvents, snapshotLogs, fillLogs, inventorySnapshots),
         // Raw data (all records, no limits)
         botEvents,
         snapshotLogs,
@@ -435,6 +437,7 @@ export function DownloadRangeLogsButton() {
         summary: exportData.summary,
         guardrailAnalysis: exportData.guardrailAnalysis,
         pnlAnalysis: exportData.pnlAnalysis,
+        revD1Analysis: exportData.revD1Analysis,
       }, null, 2));
       
       // Add raw data files separately (easier to process)
@@ -705,5 +708,122 @@ function analyzePnL(fills: any[], settlements: any[], snapshots: any[]) {
       avgMs: Math.round(hedgeLags.reduce((a, b) => a + b, 0) / hedgeLags.length),
       medianMs: hedgeLags.sort((a, b) => a - b)[Math.floor(hedgeLags.length / 2)],
     } : null,
+  };
+}
+
+// Rev D.1 Analysis Helper - Analyzes V73 specific events and CPP metrics
+function analyzeRevD1(botEvents: any[], snapshots: any[], fills: any[], inventorySnapshots: any[]) {
+  // V73 Entry Skip events
+  const entrySkips = botEvents.filter(e => e.event_type === 'V73_ENTRY_SKIP');
+  const entrySkipsByReason: Record<string, number> = {};
+  entrySkips.forEach(e => {
+    const reason = e.reason_code || 'UNKNOWN';
+    entrySkipsByReason[reason] = (entrySkipsByReason[reason] || 0) + 1;
+  });
+  
+  // CPP State Change events
+  const stateChanges = botEvents.filter(e => e.event_type === 'CPP_STATE_CHANGE');
+  const stateTransitions: Record<string, number> = {};
+  stateChanges.forEach(e => {
+    const data = e.data || {};
+    const transition = `${data.old_state || 'UNKNOWN'} → ${data.new_state || 'UNKNOWN'}`;
+    stateTransitions[transition] = (stateTransitions[transition] || 0) + 1;
+  });
+  
+  // V73 Hedge Decision events
+  const hedgeDecisions = botEvents.filter(e => e.event_type === 'V73_HEDGE_DECISION');
+  const hedgeDecisionsByType: Record<string, number> = {};
+  hedgeDecisions.forEach(e => {
+    const decision = e.reason_code || 'UNKNOWN';
+    hedgeDecisionsByType[decision] = (hedgeDecisionsByType[decision] || 0) + 1;
+  });
+  
+  // V73 Accumulate Decision events  
+  const accumDecisions = botEvents.filter(e => e.event_type === 'V73_ACCUM_DECISION');
+  const accumDecisionsByType: Record<string, number> = {};
+  accumDecisions.forEach(e => {
+    const decision = e.reason_code || 'UNKNOWN';
+    accumDecisionsByType[decision] = (accumDecisionsByType[decision] || 0) + 1;
+  });
+  
+  // Activity state distribution from snapshots
+  const activityStates: Record<string, number> = {};
+  snapshots.forEach(s => {
+    const state = s.activity_state || 'NOT_SET';
+    activityStates[state] = (activityStates[state] || 0) + 1;
+  });
+  
+  // Projected CPP stats from snapshots
+  const projectedCppMakerValues = snapshots
+    .filter(s => s.projected_cpp_maker !== null && s.projected_cpp_maker !== undefined)
+    .map(s => Number(s.projected_cpp_maker))
+    .filter(v => isFinite(v));
+    
+  const projectedCppTakerValues = snapshots
+    .filter(s => s.projected_cpp_taker !== null && s.projected_cpp_taker !== undefined)
+    .map(s => Number(s.projected_cpp_taker))
+    .filter(v => isFinite(v));
+  
+  // CPP drift from fills
+  const cppDriftValues = fills
+    .filter(f => f.cpp_drift !== null && f.cpp_drift !== undefined)
+    .map(f => Number(f.cpp_drift))
+    .filter(v => isFinite(v));
+  
+  // Dominant/minority side distribution from inventory snapshots
+  const dominantSideCounts: Record<string, number> = {};
+  inventorySnapshots.forEach(s => {
+    const side = s.dominant_side || 'NOT_SET';
+    dominantSideCounts[side] = (dominantSideCounts[side] || 0) + 1;
+  });
+  
+  // Entry/hedge/accum allowed stats from snapshots
+  const allowedStats = {
+    entryAllowed: snapshots.filter(s => s.entry_allowed === true).length,
+    entryBlocked: snapshots.filter(s => s.entry_allowed === false).length,
+    hedgeAllowed: snapshots.filter(s => s.hedge_allowed === true).length,
+    hedgeBlocked: snapshots.filter(s => s.hedge_allowed === false).length,
+    accumAllowed: snapshots.filter(s => s.accum_allowed === true).length,
+    accumBlocked: snapshots.filter(s => s.accum_allowed === false).length,
+  };
+
+  return {
+    entrySkips: {
+      total: entrySkips.length,
+      byReason: entrySkipsByReason,
+    },
+    stateChanges: {
+      total: stateChanges.length,
+      transitions: stateTransitions,
+    },
+    hedgeDecisions: {
+      total: hedgeDecisions.length,
+      byDecision: hedgeDecisionsByType,
+    },
+    accumDecisions: {
+      total: accumDecisions.length,
+      byDecision: accumDecisionsByType,
+    },
+    activityStateDistribution: activityStates,
+    allowedStats,
+    projectedCppMaker: projectedCppMakerValues.length > 0 ? {
+      count: projectedCppMakerValues.length,
+      min: Math.min(...projectedCppMakerValues).toFixed(4),
+      max: Math.max(...projectedCppMakerValues).toFixed(4),
+      avg: (projectedCppMakerValues.reduce((a, b) => a + b, 0) / projectedCppMakerValues.length).toFixed(4),
+    } : null,
+    projectedCppTaker: projectedCppTakerValues.length > 0 ? {
+      count: projectedCppTakerValues.length,
+      min: Math.min(...projectedCppTakerValues).toFixed(4),
+      max: Math.max(...projectedCppTakerValues).toFixed(4),
+      avg: (projectedCppTakerValues.reduce((a, b) => a + b, 0) / projectedCppTakerValues.length).toFixed(4),
+    } : null,
+    cppDrift: cppDriftValues.length > 0 ? {
+      count: cppDriftValues.length,
+      min: Math.min(...cppDriftValues).toFixed(4),
+      max: Math.max(...cppDriftValues).toFixed(4),
+      avg: (cppDriftValues.reduce((a, b) => a + b, 0) / cppDriftValues.length).toFixed(4),
+    } : null,
+    dominantSideDistribution: dominantSideCounts,
   };
 }
