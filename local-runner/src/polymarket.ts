@@ -643,7 +643,18 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
     return {
       success: false,
       error: `Invalid price (${order.price}), min: 0.01 - max: 0.99`,
-      failureReason: 'invalid_price',
+      failureReason: 'invalid_price' as any,
+    };
+  }
+
+  // v7.2.9: Validate minimum order notional ($1 required by Polymarket)
+  const orderNotional = order.size * order.price;
+  if (orderNotional < 1.0) {
+    console.warn(`⚠️ Order too small: $${orderNotional.toFixed(2)} < $1.00 minimum`);
+    return {
+      success: false,
+      error: `Order notional $${orderNotional.toFixed(2)} below $1 minimum`,
+      failureReason: 'balance' as any,
     };
   }
 

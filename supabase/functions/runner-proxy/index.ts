@@ -894,7 +894,7 @@ Deno.serve(async (req) => {
           avg_up_cost?: number;
           avg_down_cost?: number;
           pair_cost?: number;
-          unpaired_shares?: number;
+          unpaired_shares?: number; // v7.2.9: This is a GENERATED column - will be stripped
           unpaired_notional_usd?: number;  // v6.4.0
           paired_shares?: number;          // v6.4.0
           paired_delay_sec?: number;       // v6.4.0
@@ -911,7 +911,10 @@ Deno.serve(async (req) => {
           });
         }
 
-        const { error } = await supabase.from('inventory_snapshots').insert(snapshot);
+        // v7.2.9: Strip unpaired_shares - it's a GENERATED ALWAYS column
+        const { unpaired_shares: _unused, ...cleanSnapshot } = snapshot;
+        
+        const { error } = await supabase.from('inventory_snapshots').insert(cleanSnapshot);
         if (error) {
           console.error('[runner-proxy] save-inventory-snapshot error:', error);
           return new Response(JSON.stringify({ success: false, error: error.message }), {
@@ -936,7 +939,7 @@ Deno.serve(async (req) => {
           avg_up_cost?: number;
           avg_down_cost?: number;
           pair_cost?: number;
-          unpaired_shares?: number;
+          unpaired_shares?: number; // v7.2.9: GENERATED column - will be stripped
           unpaired_notional_usd?: number;  // v6.4.0: unpaired exposure in USD
           paired_shares?: number;          // v6.4.0: explicit paired count
           paired_delay_sec?: number;       // v6.4.0: time to complete hedge
@@ -954,7 +957,10 @@ Deno.serve(async (req) => {
           });
         }
 
-        const { error } = await supabase.from('inventory_snapshots').insert(snapshots);
+        // v7.2.9: Strip unpaired_shares from all snapshots - it's a GENERATED ALWAYS column
+        const cleanSnapshots = snapshots.map(({ unpaired_shares: _unused, ...rest }) => rest);
+        
+        const { error } = await supabase.from('inventory_snapshots').insert(cleanSnapshots);
         if (error) {
           console.error('[runner-proxy] save-inventory-snapshots error:', error);
           return new Response(JSON.stringify({ success: false, error: error.message }), {
