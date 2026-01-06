@@ -3,12 +3,24 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-runner-secret',
 };
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
+  }
+
+  // Authentication check
+  const runnerSecret = req.headers.get('x-runner-secret');
+  const expectedSecret = Deno.env.get('RUNNER_SHARED_SECRET');
+  
+  if (!runnerSecret || runnerSecret !== expectedSecret) {
+    console.error('🔒 Unauthorized: Invalid or missing x-runner-secret');
+    return new Response(
+      JSON.stringify({ success: false, error: 'Unauthorized' }),
+      { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
   }
 
   try {
