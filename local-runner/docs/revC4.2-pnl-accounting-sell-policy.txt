@@ -1,0 +1,160 @@
+LOVEABLE PATCH REQUEST — v7.x Rev C.4.2
+FIX PnL ACCOUNTING (REALIZED + UNREALIZED) + OPTIONAL “NO-SELL POLICY” TO MATCH GABAGOOL STYLE
+
+Context:
+User observes that the bot sometimes SELLS / unwinds positions, but the reported total profit/loss
+does not reflect those sells. This suggests realized PnL is not being accounted for (or is double-counted/ignored).
+We need correct accounting so “winst wegvloeit” is not an illusion caused by bookkeeping.
+
+Additionally, user wants to align more with gabagool22 behavior (often holds positions to expiry and does not actively sell),
+so we should make selling policy configurable: default to risk-only sells, not “profit-taking” sells.
+
+========================================================
+A) DEFINE PnL TERMINOLOGY (REQUIRED)
+========================================================
+
+We must separately track:
+1) Realized PnL: profit/loss locked in by SELLs (and redemptions/settlements if available)
+2) Unrealized PnL: mark-to-market value of OPEN shares minus open cost basis
+3) Total PnL: realized + unrealized
+
+Report BOTH realized and unrealized. Never report only one.
+
+========================================================
+B) IMPLEMENT PER-MARKET/OUTCOME COST BASIS LEDGER (REQUIRED)
+========================================================
+
+Add a small accounting ledger module that is fed by FILLS (not by “intents”).
+Track per marketId + outcome (UP/DOWN):
+
+- openShares: number
+- openCostUsd: number            // cost basis for OPEN shares only
+- realizedPnlUsd: number         // cumulative realized PnL from SELLs
+- buyNotionalUsd: number         // optional for stats
+- sellNotionalUsd: number        // optional for stats
+- feesUsd: number                // optional if fees exist
+
+Update rules (average-cost method, deterministic):
+
+On BUY fill (qty, price):
+- openCostUsd += qty * price
+- openShares  += qty
+- buyNotionalUsd += qty * price
+
+On SELL fill (qty, price):
+- avgCost = (openShares > 0) ? openCostUsd / openShares : 0
+- realizedPnlUsd += qty * price - qty * avgCost
+- openCostUsd -= qty * avgCost
+- openShares  -= qty
+- sellNotionalUsd += qty * price
+
+Guards:
+- Never allow openShares to go negative. If qty > openShares, clamp or throw + halt market.
+- If openShares becomes 0, force openCostUsd = 0 to avoid drift.
+
+Logging:
+- REALIZED_PNL_EVENT (marketId, outcome, qty, sellPrice, avgCost, realizedDelta, realizedTotal)
+- OPEN_POSITION_UPDATE (marketId, outcome, openShares, openCostUsd)
+
+Acceptance:
+- After a SELL, realizedPnlUsd changes by the correct amount.
+- TotalPnL does not “forget” prior wins/losses after shares are sold.
+
+========================================================
+C) COMPUTE UNREALIZED PnL CONSISTENTLY (REQUIRED)
+========================================================
+
+Unrealized requires a mark price. Use a consistent, conservative mark:
+- If you have bestBid: mark = bestBid (what you can sell at now)
+- Else if mid: mark = mid
+- Else null (unavailable)
+
+For each marketId+outcome:
+- unrealizedPnlUsd = (openShares * markPrice) - openCostUsd
+
+Total per market:
+- totalPnlUsd = sum(realizedPnlUsd) + sum(unrealizedPnlUsd)
+
+Report:
+- realizedPnlUsd, unrealizedPnlUsd, totalPnlUsd
+- plus a global rollup across all markets
+
+Logging:
+- PNL_SNAPSHOT (throttled, e.g. 30–60s) with realized/unrealized/total
+
+Acceptance:
+- Total PnL changes when prices move (unrealized) AND when sells happen (realized).
+
+========================================================
+D) RECONCILE TO POLYMARKET CSV (OPTIONAL BUT RECOMMENDED)
+========================================================
+
+Provide a small offline reconciliation utility that:
+- reads Polymarket Transaction History CSV
+- reads bot fill logs
+- compares per market/outcome net shares and realized PnL
+- flags mismatches
+
+Output:
+- coverage % of CSV explained by bot fills
+- per market list of missing fills
+
+This helps prove accounting is correct.
+
+========================================================
+E) OPTIONAL: “NO-SELL POLICY” (GABAGOOL ALIGNMENT)
+========================================================
+
+User request:
+Gabagool22 often does not actively sell; he mainly accumulates pairs and holds to expiry.
+We should make bot selling behavior configurable.
+
+Introduce config:
+- allowProactiveSells: boolean (default false)
+- allowEmergencySells: boolean (default true)
+- allowUnwindOnlySells: boolean (default true)
+- allowProfitTakingSells: boolean (default false)
+
+Rules:
+1) If allowProactiveSells=false:
+   - Do NOT place SELL orders for “profit taking” or “inventory shaping”
+   - Only allow SELL in:
+     a) UNWIND_ONLY (near expiry) if allowUnwindOnlySells=true
+     b) INVARIANT_BREACH / SKEW_EMERGENCY if allowEmergencySells=true
+2) Ensure any SELL path clearly logs which policy allowed it:
+   - SELL_ALLOWED_BY_POLICY reason=UNWIND_ONLY | EMERGENCY | MANUAL
+
+Acceptance:
+- With default settings, bot behaves closer to gabagool: holds positions, sells only for safety/expiry.
+- PnL reporting remains correct regardless of sell policy.
+
+========================================================
+F) FILES / HOOK POINTS
+========================================================
+
+- Hook fills handler (where you process confirmed fills) to feed the accounting ledger.
+- Ensure the accounting ledger is not updated from order placement intent, only from fills.
+- Expose a reporting function for UI/logs and exports.
+
+Expected files:
+- accounting-ledger.ts (new)
+- index.ts / fill handler (wire in)
+- reporting / exporter module (add realized/unrealized/total)
+- config.ts (sell policy flags)
+
+========================================================
+G) VERIFICATION CHECKLIST (VERY IMPORTANT)
+========================================================
+
+1) Run a short session with at least one BUY then SELL:
+- Confirm REALIZED_PNL_EVENT appears
+- Confirm realizedPnlUsd changes by (sell - avgCost)*qty
+
+2) Compare against Polymarket CSV for that market:
+- Shares match
+- Realized PnL matches (within rounding)
+
+3) With allowProactiveSells=false:
+- Bot should not place SELL unless UNWIND_ONLY or EMERGENCY.
+
+END
