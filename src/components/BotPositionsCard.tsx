@@ -93,14 +93,33 @@ export function BotPositionsCard() {
     ? groupedPositions[0].positions[0]?.synced_at 
     : null;
 
-  // Separate open and expired positions
+  // Separate active (currently running) and pending/expired positions
   const now = new Date();
-  const openPositions = groupedPositions.filter(g => 
-    !g.eventEndTime || new Date(g.eventEndTime) > now
-  );
-  const pendingPositions = groupedPositions.filter(g => 
-    g.eventEndTime && new Date(g.eventEndTime) <= now
-  );
+  
+  // Active = market is currently running (started and hasn't ended yet)
+  // For 15m markets, we extract the start time from slug and check if we're within the 15min window
+  const activePositions = groupedPositions.filter(g => {
+    if (!g.eventEndTime) return false;
+    const endTime = new Date(g.eventEndTime);
+    // Start time is 15 min (900 sec) before end time
+    const startTime = new Date(endTime.getTime() - 15 * 60 * 1000);
+    return now >= startTime && now < endTime;
+  });
+  
+  // Pending = market has ended but not yet settled
+  const pendingPositions = groupedPositions.filter(g => {
+    if (!g.eventEndTime) return true; // Unknown end time = pending
+    const endTime = new Date(g.eventEndTime);
+    return now >= endTime;
+  });
+  
+  // Future = market hasn't started yet (show separately or ignore)
+  const futurePositions = groupedPositions.filter(g => {
+    if (!g.eventEndTime) return false;
+    const endTime = new Date(g.eventEndTime);
+    const startTime = new Date(endTime.getTime() - 15 * 60 * 1000);
+    return now < startTime;
+  });
 
   return (
     <Card className="glass">
@@ -165,17 +184,37 @@ export function BotPositionsCard() {
           </div>
         ) : (
           <div className="space-y-4">
-            {/* Open positions */}
-            {openPositions.length > 0 && (
+            {/* Currently running markets (LIVE) */}
+            {activePositions.length > 0 && (
               <div className="space-y-2">
                 <div className="text-xs font-semibold text-muted-foreground flex items-center gap-2">
                   <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
-                  Active ({openPositions.length})
+                  LIVE ({activePositions.length})
                 </div>
-                <div className="space-y-2 max-h-60 overflow-y-auto">
-                  {openPositions.map((group) => (
+                <div className="space-y-2">
+                  {activePositions.map((group) => (
                     <PositionGroupRow key={group.market_slug} group={group} />
                   ))}
+                </div>
+              </div>
+            )}
+
+            {/* Future markets (not started yet) */}
+            {futurePositions.length > 0 && (
+              <div className="space-y-2">
+                <div className="text-xs font-semibold text-muted-foreground flex items-center gap-2">
+                  <Clock className="h-3 w-3 text-blue-400" />
+                  Upcoming ({futurePositions.length})
+                </div>
+                <div className="space-y-2 max-h-40 overflow-y-auto">
+                  {futurePositions.slice(0, 3).map((group) => (
+                    <PositionGroupRow key={group.market_slug} group={group} />
+                  ))}
+                  {futurePositions.length > 3 && (
+                    <div className="text-xs text-center text-muted-foreground">
+                      +{futurePositions.length - 3} more upcoming...
+                    </div>
+                  )}
                 </div>
               </div>
             )}

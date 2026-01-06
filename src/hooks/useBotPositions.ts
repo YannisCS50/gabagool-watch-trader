@@ -166,6 +166,19 @@ export function useBotPositions(): UseBotPositionsResult {
     return () => clearInterval(interval);
   }, []);
 
+  // Helper to extract event end time from slug like "btc-updown-15m-1767731400"
+  const extractEventEndTime = (slug: string): string | null => {
+    const parts = slug.split('-');
+    if (parts.length >= 4 && parts[1] === 'updown' && parts[2] === '15m') {
+      const timestamp = parseInt(parts[3], 10);
+      if (timestamp > 0) {
+        // Add 15 minutes (900 seconds) to get end time
+        return new Date((timestamp + 900) * 1000).toISOString();
+      }
+    }
+    return null;
+  };
+
   const groupedPositions = useMemo<MarketPositionGroup[]>(() => {
     // If using bot_positions
     if (dataSource === 'bot_positions' && positions.length > 0) {
@@ -205,6 +218,7 @@ export function useBotPositions(): UseBotPositionsResult {
         const pnl = totalValue - totalInvested;
         const pnlPercent = totalInvested > 0 ? (pnl / totalInvested) * 100 : 0;
         const isHedged = upShares > 0 && downShares > 0;
+        const eventEndTime = extractEventEndTime(slug);
 
         return {
           market_slug: slug,
@@ -222,10 +236,16 @@ export function useBotPositions(): UseBotPositionsResult {
           pnl,
           pnlPercent,
           isHedged,
-          eventEndTime: null,
+          eventEndTime,
           positions: marketPositions,
         };
-      }).sort((a, b) => Math.abs(b.totalInvested) - Math.abs(a.totalInvested));
+      }).sort((a, b) => {
+        // Sort by event end time (soonest first for active markets)
+        if (a.eventEndTime && b.eventEndTime) {
+          return new Date(a.eventEndTime).getTime() - new Date(b.eventEndTime).getTime();
+        }
+        return Math.abs(b.totalInvested) - Math.abs(a.totalInvested);
+      });
     }
 
     // Fallback: build from live_trades
