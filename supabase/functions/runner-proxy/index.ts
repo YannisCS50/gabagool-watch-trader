@@ -18,6 +18,7 @@ type Action =
   | 'heartbeat'
   | 'offline'
   | 'get-pending-orders'
+  | 'get-stale-orders'  // v7.4.0: Stale order cleanup
   | 'update-order'
   | 'sync-positions'
   | 'save-price-ticks'
@@ -424,6 +425,40 @@ Deno.serve(async (req) => {
         }
 
         return new Response(JSON.stringify({ success: true, orders: orders || [] }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // v7.4.0: Fetch stale placed orders for cleanup
+      case 'get-stale-orders': {
+        const ttlMs = (data?.ttl_ms as number) ?? 20_000; // Default 20 seconds
+        const hedgeTtlMs = (data?.hedge_ttl_ms as number) ?? 10_000; // 10s for hedge orders
+        
+        const cutoffTime = new Date(Date.now() - ttlMs).toISOString();
+        const hedgeCutoffTime = new Date(Date.now() - hedgeTtlMs).toISOString();
+        
+        // Fetch placed orders that have an exchange order_id and are stale
+        // Use different TTL for hedge-type orders (more aggressive cleanup)
+        const { data: staleOrders, error } = await supabase
+          .from('order_queue')
+          .select('id, market_slug, asset, outcome, shares, price, order_id, intent_type, created_at, executed_at')
+          .eq('status', 'placed')
+          .not('order_id', 'is', null)
+          .or(`intent_type.in.(HEDGE,FORCE,SURVIVAL).and.executed_at.lt.${hedgeCutoffTime},intent_type.not.in.(HEDGE,FORCE,SURVIVAL).and.executed_at.lt.${cutoffTime}`)
+          .order('executed_at', { ascending: true })
+          .limit(20);
+
+        if (error) {
+          console.error('[runner-proxy] get-stale-orders error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] 🕐 Found ${staleOrders?.length ?? 0} stale placed orders`);
+
+        return new Response(JSON.stringify({ success: true, orders: staleOrders || [] }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }

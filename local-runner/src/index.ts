@@ -6,6 +6,7 @@ import { testConnection, getBalance, getOrderbookDepth, invalidateBalanceCache, 
 import { evaluateOpportunity, TopOfBook, MarketPosition, Outcome, checkLiquidityForAccumulate, checkBalanceForOpening, calculatePreHedgePrice, checkHardSkewStop, STRATEGY, STRATEGY_VERSION, STRATEGY_NAME, buildMicroHedge, logMicroHedgeIntent, logMicroHedgeResult, checkV611Guardrails, MicroHedgeState, MicroHedgeIntent, MicroHedgeResult, unpairedShares as stratUnpairedShares, checkEntryGuards } from './strategy.js';
 import { enforceVpnOrExit } from './vpn-check.js';
 import { fetchMarkets as backendFetchMarkets, fetchTrades, saveTrade, sendHeartbeat, sendOffline, fetchPendingOrders, updateOrder, syncPositionsToBackend, savePriceTicks, PriceTick, saveBotEvent, saveOrderLifecycle, saveInventorySnapshot, saveFundingSnapshot, BotEvent, OrderLifecycle, InventorySnapshot, FundingSnapshot } from './backend.js';
+import { startStaleCleanupLoop, stopStaleCleanupLoop, getStaleCleanupStats } from './stale-order-cleanup.js';
 import { fetchChainlinkPrice } from './chain.js';
 import { checkAndClaimWinnings, getClaimableValue, startAutoClaimLoop, stopAutoClaimLoop, isAutoClaimActive, getClaimStats } from './redeemer.js';
 import { syncPositions, syncPositionsToDatabase, printPositionsReport, filter15mPositions } from './positions-sync.js';
