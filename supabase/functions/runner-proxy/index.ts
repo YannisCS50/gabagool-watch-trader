@@ -243,6 +243,7 @@ Deno.serve(async (req) => {
         const runnerId = data?.runner_id as string | undefined;
         const durationMsRaw = data?.lease_duration_ms;
         const durationMs = Number.isFinite(Number(durationMsRaw)) ? Number(durationMsRaw) : 60_000;
+        const forceAcquire = data?.force === true; // v7.3.3: Force acquire option
 
         if (!runnerId) {
           return new Response(JSON.stringify({ success: false, error: 'Missing runner_id' }), {
@@ -255,17 +256,38 @@ Deno.serve(async (req) => {
         const nowIso = now.toISOString();
         const lockedUntilIso = new Date(now.getTime() + durationMs).toISOString();
 
-        // Atomic claim: succeed only if expired OR already ours
-        const { data: updated, error: updateError } = await supabase
-          .from('runner_lease')
-          .update({
-            runner_id: runnerId,
-            locked_until: lockedUntilIso,
-            updated_at: nowIso,
-          })
-          .eq('id', LEASE_ID)
-          .or(`locked_until.lt.${nowIso},runner_id.eq.${runnerId}`)
-          .select('runner_id, locked_until');
+        let updated;
+        let updateError;
+
+        if (forceAcquire) {
+          // v7.3.3: Force mode - unconditionally take the lease
+          console.log(`[runner-proxy] FORCE lease-claim by ${runnerId}`);
+          const result = await supabase
+            .from('runner_lease')
+            .update({
+              runner_id: runnerId,
+              locked_until: lockedUntilIso,
+              updated_at: nowIso,
+            })
+            .eq('id', LEASE_ID)
+            .select('runner_id, locked_until');
+          updated = result.data;
+          updateError = result.error;
+        } else {
+          // Normal mode: atomic claim only if expired OR already ours
+          const result = await supabase
+            .from('runner_lease')
+            .update({
+              runner_id: runnerId,
+              locked_until: lockedUntilIso,
+              updated_at: nowIso,
+            })
+            .eq('id', LEASE_ID)
+            .or(`locked_until.lt.${nowIso},runner_id.eq.${runnerId}`)
+            .select('runner_id, locked_until');
+          updated = result.data;
+          updateError = result.error;
+        }
 
         if (updateError) {
           console.error('[runner-proxy] lease-claim update error:', updateError);
@@ -278,7 +300,7 @@ Deno.serve(async (req) => {
         const acquired = (updated?.[0]?.runner_id === runnerId);
 
         if (acquired) {
-          return new Response(JSON.stringify({ success: true, acquired: true, lease: updated?.[0] }), {
+          return new Response(JSON.stringify({ success: true, acquired: true, lease: updated?.[0], forced: forceAcquire }), {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
