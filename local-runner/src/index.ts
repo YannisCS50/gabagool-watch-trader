@@ -538,6 +538,8 @@ async function executeTrade(
   const rateLimitCheck = canPlaceOrderRateLimited(ctx.slug);
   if (!rateLimitCheck.allowed) {
     console.log(`⚡ [v6.0.0] Rate limited: ${rateLimitCheck.reason} (wait ${rateLimitCheck.waitMs}ms)`);
+    // Avoid log/attempt spam while breaker is open
+    ctx.lastTradeAtMs = Date.now();
     return false;
   }
 
@@ -2014,7 +2016,8 @@ async function evaluateMarket(slug: string): Promise<void> {
       balanceForCheck, // Pass balance for opening trade validation
       ctx.spotPrice ?? undefined,
       ctx.strikePrice ?? undefined,
-      slug
+      slug,
+      ctx.firstFillTs ?? undefined
     );
 
     if (signal) {
