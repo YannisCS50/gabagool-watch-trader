@@ -506,6 +506,7 @@ Deno.serve(async (req) => {
       case 'sync-positions': {
         // Sync positions from Polymarket API and reconcile with our database
         // Receives positions data from runner, updates live_trades status
+        // v7.5.0: Also writes to bot_positions for dashboard real-time display
         const positions = data?.positions as Array<{
           conditionId: string;
           market: string;
@@ -515,6 +516,7 @@ Deno.serve(async (req) => {
           currentValue: number;
           initialValue: number;
           eventSlug?: string;
+          tokenId?: string;
         }> | undefined;
 
         const wallet = data?.wallet as string | undefined;
@@ -528,6 +530,84 @@ Deno.serve(async (req) => {
 
         console.log(`[runner-proxy] 🔄 Syncing ${positions.length} positions for wallet ${wallet.slice(0, 10)}...`);
 
+        // ========== PART 1: Write to bot_positions for dashboard ==========
+        const syncedAt = new Date().toISOString();
+        const positionRecords = positions
+          .filter(p => p.size > 0.01) // Filter out dust positions
+          .map(p => {
+            const slug = p.eventSlug || p.market;
+            const cost = p.initialValue;
+            const value = p.currentValue;
+            const pnl = value - cost;
+            const pnlPercent = cost > 0 ? (pnl / cost) * 100 : 0;
+            const currentPrice = p.size > 0 ? value / p.size : p.avgPrice;
+            
+            return {
+              wallet_address: wallet,
+              market_slug: slug,
+              outcome: p.outcome.toUpperCase(),
+              shares: p.size,
+              avg_price: p.avgPrice,
+              current_price: currentPrice,
+              value: value,
+              cost: cost,
+              pnl: pnl,
+              pnl_percent: pnlPercent,
+              token_id: p.tokenId || null,
+              synced_at: syncedAt,
+            };
+          });
+
+        let upserted = 0;
+        let deleted = 0;
+
+        if (positionRecords.length > 0) {
+          // Upsert all positions - need to do one by one since no unique constraint
+          for (const record of positionRecords) {
+            const { error: upsertError } = await supabase
+              .from('bot_positions')
+              .upsert(record, { 
+                onConflict: 'wallet_address,market_slug,outcome',
+                ignoreDuplicates: false 
+              });
+            
+            if (!upsertError) {
+              upserted++;
+            } else {
+              console.error(`[runner-proxy] bot_positions upsert error: ${upsertError.message}`);
+            }
+          }
+          console.log(`[runner-proxy] 📊 bot_positions: ${upserted} upserted`);
+        }
+
+        // Delete stale positions (not in current sync, synced_at older than now)
+        const currentSlugsOutcomes = positionRecords.map(p => `${p.market_slug}|${p.outcome}`);
+        
+        const { data: existingPositions } = await supabase
+          .from('bot_positions')
+          .select('id, market_slug, outcome')
+          .eq('wallet_address', wallet);
+
+        if (existingPositions && existingPositions.length > 0) {
+          const toDelete = existingPositions.filter(ep => 
+            !currentSlugsOutcomes.includes(`${ep.market_slug}|${ep.outcome}`)
+          );
+          
+          if (toDelete.length > 0) {
+            const deleteIds = toDelete.map(d => d.id);
+            const { error: deleteError } = await supabase
+              .from('bot_positions')
+              .delete()
+              .in('id', deleteIds);
+            
+            if (!deleteError) {
+              deleted = toDelete.length;
+              console.log(`[runner-proxy] 🗑️ bot_positions: ${deleted} stale deleted`);
+            }
+          }
+        }
+
+        // ========== PART 2: Reconcile live_trades (existing logic) ==========
         // Get recent live_trades that are pending/unknown
         const { data: pendingTrades, error: fetchError } = await supabase
           .from('live_trades')
@@ -589,12 +669,14 @@ Deno.serve(async (req) => {
           }
         }
 
-        console.log(`[runner-proxy] 🔄 Sync complete: ${updated} filled, ${cancelled} cancelled`);
+        console.log(`[runner-proxy] 🔄 Sync complete: ${upserted} positions synced, ${updated} trades filled, ${cancelled} cancelled, ${deleted} stale removed`);
 
         return new Response(JSON.stringify({ 
           success: true, 
-          updated,
-          cancelled,
+          positions_synced: upserted,
+          positions_deleted: deleted,
+          trades_updated: updated,
+          trades_cancelled: cancelled,
           totalPositions: positions.length 
         }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
