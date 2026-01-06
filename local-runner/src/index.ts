@@ -3358,6 +3358,12 @@ async function main(): Promise<void> {
   startAutoClaimLoop(5 * 60 * 1000); // 5 minute interval
   console.log('💰 Auto-claim loop started (5 min interval)');
 
+  // ===================================================================
+  // v7.4.0: STALE ORDER CLEANUP - Cancel lingering placed orders
+  // ===================================================================
+  startStaleCleanupLoop(RUN_ID);
+  console.log('🧹 Stale order cleanup loop started (3s interval)');
+
   console.log('\n✅ Live trader running with auto-claim! Press Ctrl+C to stop.\n');
 }
 
@@ -3372,6 +3378,9 @@ process.on('SIGINT', async () => {
   
   // Stop auto-claim loop
   stopAutoClaimLoop();
+  
+  // v7.4.0: Stop stale order cleanup
+  stopStaleCleanupLoop();
   
   // Print claim stats
   const claimStats = getClaimStats();
