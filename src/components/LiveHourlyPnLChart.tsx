@@ -501,13 +501,19 @@ export function LiveHourlyPnLChart({ defaultHours = 24 }: LiveHourlyPnLChartProp
                 <ReferenceLine y={0} stroke="hsl(var(--muted-foreground))" strokeWidth={1} />
                 <Bar dataKey="totalPnl" radius={[2, 2, 0, 0]} name="P/L">
                   {hourlyData.map((entry, index) => {
-                    // Color: green for profit, red for loss, blue tint if has projected
+                    // Priority: settled > expected
+                    // If we have settled trades, use green/red
+                    // If only expected (open positions), use cyan/orange
                     let fill = 'hsl(var(--muted))';
-                    if (entry.totalPnl > 0) {
-                      fill = entry.isProjected ? 'hsl(190, 76%, 45%)' : 'hsl(142, 76%, 36%)';
-                    } else if (entry.totalPnl < 0) {
-                      fill = entry.isProjected ? 'hsl(30, 84%, 50%)' : 'hsl(0, 84%, 60%)';
+                    
+                    if (entry.settledCount > 0) {
+                      // Has settled trades - use definitive green/red based on settled P/L
+                      fill = entry.settledPnl >= 0 ? 'hsl(142, 76%, 36%)' : 'hsl(0, 84%, 60%)';
+                    } else if (entry.openCount > 0) {
+                      // Only expected (no settled) - use cyan/orange
+                      fill = entry.expectedPnl >= 0 ? 'hsl(190, 76%, 45%)' : 'hsl(30, 84%, 50%)';
                     }
+                    
                     return (
                       <Cell
                         key={`cell-${index}`}
