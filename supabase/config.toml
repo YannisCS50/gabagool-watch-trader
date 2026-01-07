@@ -62,3 +62,6 @@ verify_jwt = false
 
 [functions.reconcile-fills]
 verify_jwt = false
+
+[functions.v26-sync-fills]
+verify_jwt = false
