@@ -21,12 +21,12 @@ interface MarketToTrack {
   needsClosePrice: boolean;
 }
 
-// Chainlink feed IDs for Polygon
+// Chainlink feed IDs for Polygon (verified from data.chain.link)
 const CHAINLINK_FEEDS: Record<string, string> = {
   'BTC': '0xc907E116054Ad103354f2D350FD2514433D57F6f', // BTC/USD on Polygon
   'ETH': '0xF9680D99D6C9589e2a93a78A04A279e509205945', // ETH/USD on Polygon
-  'SOL': '0x4ffcB8A5e03D303C90f8878fA85EBA22F4603c69', // SOL/USD on Polygon
-  'XRP': '0x4046332373C24Aed1dC8bAd489A04E187833B28d', // XRP/USD on Polygon
+  'SOL': '0x10C8264C0935b3B9870013e057f330Ff3e9C56dC', // SOL/USD on Polygon (verified)
+  'XRP': '0x785ba89291f676b5386652eB12b30cF361020694', // XRP/USD on Polygon (verified)
 };
 
 // Parse timestamp from market slug like btc-updown-15m-1766485800
@@ -102,8 +102,8 @@ function generateActiveMarketSlugs(): string[] {
   
   const slugs: string[] = [];
   
-  // Check current interval, previous interval, and 2 intervals back
-  for (const offset of [0, -1, -2]) {
+  // Check current interval, previous interval, and 2 intervals back (and 3 for late close prices)
+  for (const offset of [0, -1, -2, -3]) {
     const intervalTs = currentIntervalStart + (offset * intervalSecs);
     
     // Include all V26 assets: BTC, ETH, SOL, XRP
@@ -112,7 +112,7 @@ function generateActiveMarketSlugs(): string[] {
     }
   }
   
-  console.log(`Generated ${slugs.length} deterministic slugs for collection`);
+  console.log(`Generated ${slugs.length} deterministic slugs for all assets (BTC, ETH, SOL, XRP)`);
   return slugs;
 }
 
@@ -151,9 +151,9 @@ async function getMarketsNeedingPrices(supabase: any): Promise<MarketToTrack[]> 
     const eventStartMs = eventStartTime * 1000;
     const eventEndMs = eventEndTime * 1000;
     
-    // Extended collection windows (10 minutes instead of 5)
-    const openWindowEnd = eventStartMs + 10 * 60 * 1000;
-    const closeWindowEnd = eventEndMs + 10 * 60 * 1000;
+    // Extended collection windows (15 minutes instead of 10 for more reliability)
+    const openWindowEnd = eventStartMs + 15 * 60 * 1000;
+    const closeWindowEnd = eventEndMs + 15 * 60 * 1000;
     
     const existing = priceMap.get(slug);
     const hasOpenPrice = existing?.open_price != null;
@@ -181,10 +181,11 @@ async function getMarketsNeedingPrices(supabase: any): Promise<MarketToTrack[]> 
         needsClosePrice
       });
       
-      console.log(`Market ${slug}: start=${new Date(eventStartMs).toISOString()}, end=${new Date(eventEndMs).toISOString()}, needsOpen=${needsOpenPrice}, needsClose=${needsClosePrice}`);
+      console.log(`[${asset}] Market ${slug}: start=${new Date(eventStartMs).toISOString()}, end=${new Date(eventEndMs).toISOString()}, needsOpen=${needsOpenPrice}, needsClose=${needsClosePrice}`);
     }
   }
   
+  console.log(`Total: ${marketsNeeding.length} markets need prices (${marketsNeeding.filter(m => m.needsOpenPrice).length} open, ${marketsNeeding.filter(m => m.needsClosePrice).length} close)`);
   return marketsNeeding;
 }
 
