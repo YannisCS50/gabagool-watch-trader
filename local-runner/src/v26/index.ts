@@ -24,7 +24,8 @@ export const V26_CONFIG = {
   shares: 10,
   
   // Timing (in seconds relative to market start)
-  placeOrderBeforeStartSec: 600, // Place order 10 minutes before market opens
+  maxLeadTimeSec: 600, // Place order up to 10 minutes before market opens
+  minLeadTimeSec: 60,  // Must place at least 1 minute before start (after this = too late)
   cancelAfterStartSec: 30, // Cancel 30s AFTER market start if not filled
   
   // Safety
