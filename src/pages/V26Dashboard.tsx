@@ -119,7 +119,7 @@ export default function V26Dashboard() {
   };
 
   const getResultBadge = (trade: V26Trade) => {
-    const { result, pnl, status, event_end_time, filled_shares } = trade;
+    const { result, pnl, status, event_end_time, filled_shares, side } = trade;
     const isMarketEnded = new Date(event_end_time) < new Date();
     
     // Not filled = no P/L possible
@@ -127,20 +127,24 @@ export default function V26Dashboard() {
       if (isMarketEnded) {
         return <Badge variant="outline" className="text-muted-foreground">No Fill</Badge>;
       }
-      return <Badge variant="outline" className="text-muted-foreground">-</Badge>;
+      return <Badge variant="outline" className="text-muted-foreground">Waiting...</Badge>;
     }
     
     // Filled but not settled yet
     if (!result) {
       if (isMarketEnded) {
-        return <Badge className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20">Settling...</Badge>;
+        return <Badge className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20">⏳ Needs Settlement</Badge>;
       }
-      return <Badge variant="outline" className="text-muted-foreground">In Progress</Badge>;
+      return <Badge className="bg-blue-500/10 text-blue-500 border-blue-500/20">Live</Badge>;
     }
     
-    // Settled with result
-    const isWin = result === 'DOWN';
-    const pnlFormatted = pnl !== null ? `$${pnl.toFixed(2)}` : '';
+    // Settled with result - WIN if our side matches the result
+    // If we bought DOWN and result is DOWN → WIN (token worth $1)
+    // If we bought DOWN and result is UP → LOSS (token worth $0)
+    // If we bought UP and result is UP → WIN
+    // If we bought UP and result is DOWN → LOSS
+    const isWin = side === result;
+    const pnlFormatted = pnl !== null ? `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}` : '';
     
     return (
       <Badge className={isWin 
