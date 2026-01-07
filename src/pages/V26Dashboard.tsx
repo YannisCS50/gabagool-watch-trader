@@ -141,9 +141,12 @@ export default function V26Dashboard() {
       const avgPrice = trade.avg_fill_price ?? trade.price;
       const cost = filledShares * avgPrice;
 
-      // Determine result
+      // Use trade.result from database if available (runner already calculated)
+      const tradeResult = trade.result; // 'UP', 'DOWN', or null
+      const tradePnl = trade.pnl; // already calculated by runner
+
+      // Determine display result
       let result: TradeLog['result'];
-      let marketResult: 'DOWN' | 'UP' | null = null;
       
       if (!isFilled) {
         result = 'NOT_BOUGHT';
@@ -151,15 +154,21 @@ export default function V26Dashboard() {
         result = 'LIVE';
         totalFilled++;
         totalInvested += cost;
-      } else if (delta === null) {
-        result = 'PENDING';
-        totalPending++;
+      } else if (tradeResult === 'DOWN') {
+        // DOWN = we win (we bet on DOWN)
+        result = 'WIN';
+        totalWins++;
         totalFilled++;
         totalInvested += cost;
-      } else {
-        marketResult = delta < 0 ? 'DOWN' : 'UP';
-        // We bet DOWN, so DOWN = win
-        if (marketResult === 'DOWN') {
+      } else if (tradeResult === 'UP') {
+        // UP = we lose
+        result = 'LOSS';
+        totalLosses++;
+        totalFilled++;
+        totalInvested += cost;
+      } else if (delta !== null) {
+        // Fallback: calculate from delta if runner hasn't set result yet
+        if (delta < 0) {
           result = 'WIN';
           totalWins++;
         } else {
@@ -168,21 +177,25 @@ export default function V26Dashboard() {
         }
         totalFilled++;
         totalInvested += cost;
+      } else {
+        result = 'PENDING';
+        totalPending++;
+        totalFilled++;
+        totalInvested += cost;
       }
 
-      // Calculate fees (assume maker for limit orders at our price)
-      // Maker rebate: we GET money back
+      // Calculate fees (assume maker for limit orders)
       const fee = isFilled ? -(cost * MAKER_REBATE) : 0; // negative = rebate
       totalFees += fee;
 
-      // Calculate P&L
+      // Use runner's P&L if available, otherwise calculate
       let pnl: number | null = null;
       let gross: number | null = null;
       
-      if (isFilled && result === 'WIN') {
-        // WIN: we get $1 per share, minus cost, plus rebate
-        gross = filledShares - cost;
-        pnl = gross - fee; // subtract negative fee = add rebate
+      if (tradePnl !== null) {
+        // Use runner's calculated P&L
+        gross = tradePnl;
+        pnl = tradePnl - fee; // add rebate
         grossPnl += gross;
         totalPnl += pnl;
       } else if (isFilled && result === 'LOSS') {
