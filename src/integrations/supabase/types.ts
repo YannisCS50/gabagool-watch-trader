@@ -2098,6 +2098,7 @@ export type Database = {
           error_message: string | null
           event_end_time: string
           event_start_time: string
+          fill_matched_at: string | null
           fill_time_ms: number | null
           filled_shares: number | null
           id: string
@@ -2105,6 +2106,7 @@ export type Database = {
           market_slug: string
           notional: number | null
           order_id: string | null
+          placed_at: string | null
           pnl: number | null
           price: number
           result: string | null
@@ -2121,6 +2123,7 @@ export type Database = {
           error_message?: string | null
           event_end_time: string
           event_start_time: string
+          fill_matched_at?: string | null
           fill_time_ms?: number | null
           filled_shares?: number | null
           id?: string
@@ -2128,6 +2131,7 @@ export type Database = {
           market_slug: string
           notional?: number | null
           order_id?: string | null
+          placed_at?: string | null
           pnl?: number | null
           price?: number
           result?: string | null
@@ -2144,6 +2148,7 @@ export type Database = {
           error_message?: string | null
           event_end_time?: string
           event_start_time?: string
+          fill_matched_at?: string | null
           fill_time_ms?: number | null
           filled_shares?: number | null
           id?: string
@@ -2151,6 +2156,7 @@ export type Database = {
           market_slug?: string
           notional?: number | null
           order_id?: string | null
+          placed_at?: string | null
           pnl?: number | null
           price?: number
           result?: string | null
