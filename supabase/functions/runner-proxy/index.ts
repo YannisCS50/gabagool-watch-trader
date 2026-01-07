@@ -224,6 +224,8 @@ Deno.serve(async (req) => {
         const id = data?.id as string | undefined;
         const updates = data?.updates as Record<string, unknown> | undefined;
 
+        console.log(`[runner-proxy] v26-update-trade: id=${id}, updates=${JSON.stringify(updates)}`);
+
         if (!id || !updates) {
           return new Response(JSON.stringify({ success: false, error: 'Missing id or updates' }), {
             status: 400,

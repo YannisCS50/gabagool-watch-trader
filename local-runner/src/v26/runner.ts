@@ -200,7 +200,7 @@ async function logV26Settlement(
 
 async function logPriceTicks(): Promise<void> {
   try {
-    const [btc, eth] = await Promise.all([
+    const [btcResult, ethResult] = await Promise.all([
       fetchChainlinkPrice('BTC'),
       fetchChainlinkPrice('ETH'),
     ]);
@@ -208,18 +208,20 @@ async function logPriceTicks(): Promise<void> {
     const ticks: PriceTick[] = [];
     const now = new Date().toISOString();
 
-    if (btc !== null) {
-      const delta = lastBtcPrice !== null ? btc - lastBtcPrice : null;
+    if (btcResult !== null) {
+      const btcPrice = btcResult.price;
+      const delta = lastBtcPrice !== null ? btcPrice - lastBtcPrice : null;
       const deltaPct = lastBtcPrice !== null && lastBtcPrice > 0 ? (delta! / lastBtcPrice) * 100 : null;
-      ticks.push({ asset: 'BTC', price: btc, delta, delta_percent: deltaPct, source: 'chainlink', created_at: now });
-      lastBtcPrice = btc;
+      ticks.push({ asset: 'BTC', price: btcPrice, delta, delta_percent: deltaPct, source: 'chainlink', created_at: now });
+      lastBtcPrice = btcPrice;
     }
 
-    if (eth !== null) {
-      const delta = lastEthPrice !== null ? eth - lastEthPrice : null;
+    if (ethResult !== null) {
+      const ethPrice = ethResult.price;
+      const delta = lastEthPrice !== null ? ethPrice - lastEthPrice : null;
       const deltaPct = lastEthPrice !== null && lastEthPrice > 0 ? (delta! / lastEthPrice) * 100 : null;
-      ticks.push({ asset: 'ETH', price: eth, delta, delta_percent: deltaPct, source: 'chainlink', created_at: now });
-      lastEthPrice = eth;
+      ticks.push({ asset: 'ETH', price: ethPrice, delta, delta_percent: deltaPct, source: 'chainlink', created_at: now });
+      lastEthPrice = ethPrice;
     }
 
     if (ticks.length > 0) {
