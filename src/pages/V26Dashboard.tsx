@@ -118,11 +118,27 @@ export default function V26Dashboard() {
     }
   };
 
-  const getResultBadge = (result: string | null, pnl: number | null) => {
-    if (!result) {
-      return <Badge variant="outline" className="text-muted-foreground">Pending</Badge>;
+  const getResultBadge = (trade: V26Trade) => {
+    const { result, pnl, status, event_end_time, filled_shares } = trade;
+    const isMarketEnded = new Date(event_end_time) < new Date();
+    
+    // Not filled = no P/L possible
+    if (filled_shares === 0 || status === 'cancelled' || status === 'expired') {
+      if (isMarketEnded) {
+        return <Badge variant="outline" className="text-muted-foreground">No Fill</Badge>;
+      }
+      return <Badge variant="outline" className="text-muted-foreground">-</Badge>;
     }
     
+    // Filled but not settled yet
+    if (!result) {
+      if (isMarketEnded) {
+        return <Badge className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20">Settling...</Badge>;
+      }
+      return <Badge variant="outline" className="text-muted-foreground">In Progress</Badge>;
+    }
+    
+    // Settled with result
     const isWin = result === 'DOWN';
     const pnlFormatted = pnl !== null ? `$${pnl.toFixed(2)}` : '';
     
@@ -313,7 +329,7 @@ export default function V26Dashboard() {
                             <span className="text-muted-foreground">-</span>
                           )}
                         </TableCell>
-                        <TableCell>{getResultBadge(trade.result, trade.pnl)}</TableCell>
+                        <TableCell>{getResultBadge(trade)}</TableCell>
                       </TableRow>
                     ))}
                   </TableBody>
