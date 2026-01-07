@@ -38,6 +38,12 @@ interface StrikePrice {
   close_price: number | null;
 }
 
+interface FillLog {
+  order_id: string;
+  ts: number; // Unix timestamp in ms
+  market_id: string;
+}
+
 interface TradeLog {
   id: string;
   market: string;
@@ -114,20 +120,42 @@ export default function V26Dashboard() {
     }
 
     const marketSlugs = Array.from(new Set(tradesData.map((t) => t.market_slug))).filter(Boolean);
+    const orderIds = Array.from(new Set(tradesData.map((t) => t.order_id).filter(Boolean))) as string[];
 
-    const strikesRes = marketSlugs.length
-      ? await supabase
-          .from('strike_prices')
-          .select('market_slug, strike_price, close_price')
-          .in('market_slug', marketSlugs)
-      : { data: [] as StrikePrice[] };
+    // Fetch strike prices and fill logs in parallel
+    const [strikesRes, fillLogsRes] = await Promise.all([
+      marketSlugs.length
+        ? supabase
+            .from('strike_prices')
+            .select('market_slug, strike_price, close_price')
+            .in('market_slug', marketSlugs)
+        : Promise.resolve({ data: [] as StrikePrice[] }),
+      orderIds.length
+        ? supabase
+            .from('fill_logs')
+            .select('order_id, ts, market_id')
+            .in('order_id', orderIds)
+        : Promise.resolve({ data: [] as FillLog[] }),
+    ]);
 
     const strikesData = strikesRes.data as StrikePrice[] | null;
+    const fillLogsData = fillLogsRes.data as FillLog[] | null;
 
     const strikeLookup = new Map<string, StrikePrice>();
     if (strikesData) {
       for (const s of strikesData) {
         strikeLookup.set(s.market_slug, s);
+      }
+    }
+
+    // Build lookup: order_id -> earliest fill timestamp (ms)
+    const fillTimeLookup = new Map<string, number>();
+    if (fillLogsData) {
+      for (const f of fillLogsData) {
+        const existing = fillTimeLookup.get(f.order_id);
+        if (!existing || f.ts < existing) {
+          fillTimeLookup.set(f.order_id, f.ts);
+        }
       }
     }
 
@@ -252,22 +280,20 @@ export default function V26Dashboard() {
       const dateStr = format(startTimeET, 'MMMM d');
       const marketTitle = `${trade.asset} Up or Down - ${dateStr}, ${startTimeStr}-${endTimeStr} ET`;
 
+      // Calculate entry offset using fill_logs timestamp (most accurate)
       const entryOffsetSec = (() => {
-        // Backfilled/imported rows often have unreliable timestamps (batch insert time).
-        // If we don't have a real order id, show it as unknown.
-        if (!trade.order_id) return null;
+        const eventStartMs = new Date(trade.event_start_time).getTime();
 
-        const createdAtTime = new Date(trade.created_at).getTime();
-        const eventStartTime = new Date(trade.event_start_time).getTime();
-
-        // Prefer bot-provided fill_time_ms; in practice this represents the distance to market open.
-        if (trade.fill_time_ms !== null && trade.fill_time_ms > 0) {
-          const sec = Math.round(trade.fill_time_ms / 1000);
-          const isBeforeOpen = createdAtTime < eventStartTime;
-          return isBeforeOpen ? -sec : sec;
+        // Priority 1: Use fill_logs timestamp (most accurate - actual fill time from CLOB)
+        if (trade.order_id) {
+          const fillTs = fillTimeLookup.get(trade.order_id);
+          if (fillTs) {
+            return Math.round((fillTs - eventStartMs) / 1000);
+          }
         }
 
-        return Math.round((createdAtTime - eventStartTime) / 1000);
+        // Priority 2: No fill log available, show as unknown for backfilled data
+        return null;
       })();
 
       logs.push({
