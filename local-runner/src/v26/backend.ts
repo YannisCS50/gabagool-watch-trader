@@ -105,6 +105,22 @@ export async function getRecentV26Trades(_limit = 50): Promise<V26Trade[]> {
 }
 
 /**
+ * Check if a trade already exists for a given market/asset.
+ */
+export async function hasExistingTrade(marketId: string, asset: string): Promise<boolean> {
+  try {
+    const result = await callRunnerProxy<{ success: boolean; exists: boolean }>('v26-has-trade', {
+      market_id: marketId,
+      asset,
+    });
+    return result.exists ?? false;
+  } catch (err: any) {
+    console.error(`[V26] Failed to check existing trade:`, err?.message ?? err);
+    return false;
+  }
+}
+
+/**
  * Get oracle data for a market (strike + close).
  */
 export async function getV26Oracle(marketSlug: string, asset: string): Promise<{
