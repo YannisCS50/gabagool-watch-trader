@@ -106,7 +106,8 @@ function generateActiveMarketSlugs(): string[] {
   for (const offset of [0, -1, -2]) {
     const intervalTs = currentIntervalStart + (offset * intervalSecs);
     
-    for (const asset of ['btc', 'eth']) {
+    // Include all V26 assets: BTC, ETH, SOL, XRP
+    for (const asset of ['btc', 'eth', 'sol', 'xrp']) {
       slugs.push(`${asset}-updown-15m-${intervalTs}`);
     }
   }
