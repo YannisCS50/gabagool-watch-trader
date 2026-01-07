@@ -130,6 +130,13 @@ export class FairSurface {
   }
   
   /**
+   * Get total number of cells in the surface
+   */
+  getCellCount(): number {
+    return this.cells.size;
+  }
+  
+  /**
    * Get surface statistics for monitoring
    */
   getStats(): { totalCells: number; cellsByAsset: Record<string, number>; avgSamples: number } {

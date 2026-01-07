@@ -125,11 +125,22 @@ export class StrategyV8 {
     this.stats.totalEvals++;
     this.killSwitch.totalEvalCount++;
     
+    // Log every 10th eval for debugging (rate limited)
+    const logKey = `v8_eval_${m.marketId}`;
+    const lastLog = (global as any)[logKey] ?? 0;
+    const shouldLog = ts - lastLog > 10_000; // Log every 10 seconds max
+    if (shouldLog) {
+      (global as any)[logKey] = ts;
+    }
+    
     // Get spot price
     const spotData = this.spot.get(m.asset);
     const spot = spotData?.price ?? NaN;
     if (!Number.isFinite(spot) || spot <= 0) {
       reasons.push('NO_SPOT');
+      if (shouldLog) {
+        console.log(`[V8] ${m.asset} NO_SPOT - waiting for Chainlink feed`);
+      }
     }
     
     // Get time bucket
@@ -197,6 +208,15 @@ export class StrategyV8 {
       fairN = cell?.n ?? 0;
       fairTrusted = surface.isTrusted(cell, ts);
       
+      // Debug: Log surface status periodically
+      if (shouldLog) {
+        const totalCells = surface.getCellCount();
+        console.log(`[V8] ${m.asset} surface: n=${fairN}/${V8.surface.minSamplesToTrade} trusted=${fairTrusted} cells=${totalCells}`);
+        if (fairUp !== undefined) {
+          console.log(`[V8] ${m.asset} fairUp=${(fairUp * 100).toFixed(1)}¢ askUp=${(up.bestAsk * 100).toFixed(1)}¢ edge=${((fairUp - up.bestAsk) * 100).toFixed(1)}¢`);
+        }
+      }
+      
       if (fairTrusted && fairUp !== undefined) {
         const fairDown = 1 - fairUp;
         
@@ -219,6 +239,11 @@ export class StrategyV8 {
           if (edgeUp >= V8.entry.edgeEntryMin && edgeUp > (edgeDown ?? -9)) {
             chosen = 'UP';
           }
+        }
+        
+        // Debug: Log edge analysis when trusted
+        if (shouldLog && (edgeUp !== undefined || edgeDown !== undefined)) {
+          console.log(`[V8] ${m.asset} delta=$${deltaUsd.toFixed(2)} edgeUp=${((edgeUp ?? 0) * 100).toFixed(1)}¢ edgeDown=${((edgeDown ?? 0) * 100).toFixed(1)}¢ chosen=${chosen}`);
         }
       }
     }
