@@ -104,10 +104,11 @@ function formatUsd(value: unknown): string {
 
 async function fetchUpcomingMarkets(): Promise<V26Market[]> {
   try {
-    const result = await fetchMarkets();
+    // V26 mode: request upcoming markets (within 10 minutes)
+    const result = await fetchMarkets({ v26: true });
     
     if (!result.success || !result.markets) {
-      log('⚠️ No markets returned from backend');
+      log('⚠️ No markets returned from backend (v26 mode)');
       return [];
     }
 

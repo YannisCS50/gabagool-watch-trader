@@ -97,8 +97,17 @@ function get15mWindowFromSlug(slug: string): { startMs: number; endMs: number } 
  * Only allow trading markets that are starting soon or already started.
  * For 15m markets: allow entry up to 90 seconds before start (to place opening orders).
  */
-function isMarketStarted(marketType: MarketToken['marketType'], slug: string, eventStartTimeStr: string): boolean {
+function isMarketStarted(marketType: MarketToken['marketType'], slug: string, eventStartTimeStr: string, allowUpcoming: boolean = false): boolean {
   const now = Date.now();
+
+  // V26 mode: allow markets starting within 10 minutes
+  if (allowUpcoming) {
+    const startMs = new Date(eventStartTimeStr).getTime();
+    if (!Number.isFinite(startMs)) return true;
+    const msUntilStart = startMs - now;
+    // Allow markets starting within 10 minutes (600s)
+    return msUntilStart <= 600_000;
+  }
 
   if (marketType === '15min') {
     const w = get15mWindowFromSlug(slug);
@@ -118,7 +127,7 @@ function isMarketStarted(marketType: MarketToken['marketType'], slug: string, ev
 /**
  * Fetch a specific market by slug from Gamma API
  */
-async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
+async function fetchMarketBySlug(slug: string, allowUpcoming: boolean = false): Promise<MarketToken | null> {
   try {
     const response = await fetch(
       `https://gamma-api.polymarket.com/markets?slug=${encodeURIComponent(slug)}`,
@@ -185,8 +194,8 @@ async function fetchMarketBySlug(slug: string): Promise<MarketToken | null> {
       }
     }
 
-    // Filter: Don't trade markets that haven't started yet
-    if (!isMarketStarted(marketType, slug, eventStartTime)) {
+    // Filter: Don't trade markets that haven't started yet (unless allowUpcoming is true)
+    if (!isMarketStarted(marketType, slug, eventStartTime, allowUpcoming)) {
       console.log(`[Gamma] Skipping not-started market: ${asset} ${marketType} - ${slug} (starts ${eventStartTime})`);
       return null;
     }
@@ -518,20 +527,36 @@ serve(async (req) => {
 
   try {
     let requestedSlug: string | null = null;
+    let v26Mode = false;
     try {
       const body = await req.json();
       requestedSlug = body.slug || null;
+      v26Mode = body.v26 === true;
     } catch {
       // No body or invalid JSON
     }
     
+    console.log(`[Mode] v26=${v26Mode}, slug=${requestedSlug || 'auto'}`);
+    
     const markets: MarketToken[] = [];
     
     if (requestedSlug) {
-      const market = await fetchMarketBySlug(requestedSlug);
+      const market = await fetchMarketBySlug(requestedSlug, v26Mode);
       if (market) {
         markets.push(market);
       }
+    } else if (v26Mode) {
+      // V26 mode: fetch upcoming 15m markets (within 10 minutes)
+      const slugs15m = await searchActive15mMarkets();
+      console.log(`[V26] Checking ${slugs15m.length} potential 15m slugs for upcoming markets...`);
+      
+      const fetch15m = await Promise.all(slugs15m.map((slug) => fetchMarketBySlug(slug, true)));
+      
+      for (const m of fetch15m) {
+        if (m && m.marketType === '15min') markets.push(m);
+      }
+      
+      console.log(`[V26] Found ${markets.length} upcoming 15m markets: ${markets.map(m => `${m.asset}@${m.eventStartTime}`).join(', ')}`);
     } else {
       // Prefer 15-minute markets (user requested)
       const slugs15m = await searchActive15mMarkets();
