@@ -1460,8 +1460,6 @@ async function placeOrderWithCapsInner(
       intent: order.intent,
       spread: order.spread,
     });
-      spread: order.spread,
-    });
   } catch (err: any) {
     // API call failed: release pending reservation
     onRejectPending(marketId, asset, ledgerSide, finalSize);
