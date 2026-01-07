@@ -319,7 +319,8 @@ async function main(): Promise<void> {
 
   // Get initial balance
   const balance = await getBalance();
-  log(`💰 Balance: $${balance?.toFixed(2) ?? 'unknown'}`);
+  const balanceNum = typeof balance === 'string' ? parseFloat(balance) : balance;
+  log(`💰 Balance: $${balanceNum ? balanceNum.toFixed(2) : 'unknown'}`);
 
   // Start polling loop
   log('🚀 Starting V26 strategy...');
