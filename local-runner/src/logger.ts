@@ -28,12 +28,23 @@ function getDateString(): string {
   return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 }
 
-function getLogFilePath(logType: 'snapshot' | 'fill' | 'settlement' | 'settlement_failure'): string {
+// v8.0.0: Extended log types for Gabagool observability directive
+export type LogType = 
+  | 'snapshot' 
+  | 'fill' 
+  | 'settlement' 
+  | 'settlement_failure'
+  | 'decision'      // DECISION_SNAPSHOT
+  | 'reconciliation' // STATE_RECONCILIATION_RESULT
+  | 'hedge_skip'    // HEDGE_SKIP_EXPLAINED
+  | 'mtm';          // MARK_TO_MARKET_SNAPSHOT
+
+function getLogFilePath(logType: LogType): string {
   const dateStr = getDateString();
   return path.join(LOGS_DIR, `${logType}_${dateStr}.jsonl`);
 }
 
-export function appendJsonl(logType: 'snapshot' | 'fill' | 'settlement' | 'settlement_failure', data: object): void {
+export function appendJsonl(logType: LogType, data: object): void {
   const filePath = getLogFilePath(logType);
   const line = JSON.stringify(data) + '\n';
   
