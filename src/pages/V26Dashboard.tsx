@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { supabase } from '@/integrations/supabase/client';
 import { format } from 'date-fns';
+import { toZonedTime } from 'date-fns-tz';
 
 interface V26Trade {
   id: string;
@@ -236,13 +237,18 @@ export default function V26Dashboard() {
         perAsset[trade.asset].pnl += pnl;
       }
 
-      const startTime = new Date(trade.event_start_time);
-      const endTime = new Date(trade.event_end_time);
+      const startTimeUTC = new Date(trade.event_start_time);
+      const endTimeUTC = new Date(trade.event_end_time);
+      
+      // Convert to ET timezone
+      const etTimezone = 'America/New_York';
+      const startTimeET = toZonedTime(startTimeUTC, etTimezone);
+      const endTimeET = toZonedTime(endTimeUTC, etTimezone);
       
       // Format: "XRP Up or Down - January 7, 5:15PM-5:30PM ET"
-      const startTimeStr = format(startTime, 'h:mma').replace(':00', '');
-      const endTimeStr = format(endTime, 'h:mma').replace(':00', '');
-      const dateStr = format(startTime, 'MMMM d');
+      const startTimeStr = format(startTimeET, 'h:mma').replace(':00', '');
+      const endTimeStr = format(endTimeET, 'h:mma').replace(':00', '');
+      const dateStr = format(startTimeET, 'MMMM d');
       const marketTitle = `${trade.asset} Up or Down - ${dateStr}, ${startTimeStr}-${endTimeStr} ET`;
 
       logs.push({
@@ -250,7 +256,7 @@ export default function V26Dashboard() {
         market: marketTitle,
         marketSlug: trade.market_slug,
         asset: trade.asset,
-        time: format(startTime, 'dd-MM HH:mm'),
+        time: format(startTimeET, 'dd-MM HH:mm'),
         shares: filledShares,
         pricePerShare: avgPrice,
         total: cost,
