@@ -39,6 +39,18 @@ interface StrikePrice {
   close_price: number | null;
 }
 
+interface BotPosition {
+  market_slug: string;
+  outcome: string;
+  shares: number;
+  avg_price: number;
+  cost: number;
+  current_price: number | null;
+  value: number | null;
+  pnl: number | null;
+  pnl_percent: number | null;
+}
+
 interface V26Bet {
   market_slug: string;
   asset: string;
@@ -49,9 +61,11 @@ interface V26Bet {
   close_price: number | null;
   delta: number | null;
   result: 'WIN' | 'LOSS' | 'PENDING' | 'NO_FILL';
-  total_filled_shares: number;
-  total_invested: number;
-  pnl: number | null;
+  // From bot_positions (real fill data)
+  position_shares: number;
+  position_avg_price: number | null;
+  position_cost: number;
+  position_pnl: number | null;
 }
 
 interface V26Stats {
@@ -81,19 +95,29 @@ export default function V26Dashboard() {
   const fetchData = async () => {
     setLoading(true);
 
-    // Fetch trades
-    const { data: tradesData } = await supabase
-      .from('v26_trades')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(200);
+    // Fetch trades, strike prices, and bot positions in parallel
+    const [tradesRes, strikesRes, positionsRes] = await Promise.all([
+      supabase
+        .from('v26_trades')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(200),
+      supabase
+        .from('strike_prices')
+        .select('market_slug, asset, strike_price, close_price')
+        .order('created_at', { ascending: false })
+        .limit(500),
+      supabase
+        .from('bot_positions')
+        .select('market_slug, outcome, shares, avg_price, cost, current_price, value, pnl, pnl_percent')
+        .eq('outcome', 'DOWN')
+        .order('synced_at', { ascending: false })
+        .limit(500),
+    ]);
 
-    // Fetch strike prices
-    const { data: strikesData } = await supabase
-      .from('strike_prices')
-      .select('market_slug, asset, strike_price, close_price')
-      .order('created_at', { ascending: false })
-      .limit(500);
+    const tradesData = tradesRes.data;
+    const strikesData = strikesRes.data;
+    const positionsData = positionsRes.data;
 
     if (!tradesData) {
       setLoading(false);
@@ -104,9 +128,18 @@ export default function V26Dashboard() {
     const strikeLookup = new Map<string, StrikePrice>();
     if (strikesData) {
       for (const s of strikesData) {
-        const key = `${s.market_slug}`;
-        if (!strikeLookup.has(key)) {
-          strikeLookup.set(key, s as StrikePrice);
+        if (!strikeLookup.has(s.market_slug)) {
+          strikeLookup.set(s.market_slug, s as StrikePrice);
+        }
+      }
+    }
+
+    // Create position lookup (real fill data from Polymarket)
+    const positionLookup = new Map<string, BotPosition>();
+    if (positionsData) {
+      for (const p of positionsData) {
+        if (!positionLookup.has(p.market_slug)) {
+          positionLookup.set(p.market_slug, p as BotPosition);
         }
       }
     }
@@ -119,6 +152,7 @@ export default function V26Dashboard() {
       
       if (!betMap.has(key)) {
         const strike = strikeLookup.get(key);
+        const position = positionLookup.get(key);
         const strikePrice = strike?.strike_price ?? null;
         const closePrice = strike?.close_price ?? null;
         const delta = (strikePrice !== null && closePrice !== null) 
@@ -135,19 +169,19 @@ export default function V26Dashboard() {
           close_price: closePrice,
           delta,
           result: 'PENDING',
-          total_filled_shares: 0,
-          total_invested: 0,
-          pnl: null,
+          // Use real position data if available
+          position_shares: position?.shares ?? 0,
+          position_avg_price: position?.avg_price ?? null,
+          position_cost: position?.cost ?? 0,
+          position_pnl: position?.pnl ?? null,
         });
       }
       
       const bet = betMap.get(key)!;
       bet.trades.push(trade);
-      bet.total_filled_shares += trade.filled_shares ?? 0;
-      bet.total_invested += (trade.filled_shares ?? 0) * (trade.avg_fill_price ?? trade.price);
     }
 
-    // Calculate results for each bet
+    // Calculate results for each bet using real position data
     const betsArray: V26Bet[] = [];
     let totalWins = 0;
     let totalLosses = 0;
@@ -156,33 +190,44 @@ export default function V26Dashboard() {
     let totalPnl = 0;
 
     for (const bet of betMap.values()) {
-      // Determine result based on delta
-      if (bet.total_filled_shares === 0) {
+      const isEnded = new Date(bet.event_end_time) < new Date();
+      
+      // Use position data for fill status
+      if (bet.position_shares === 0) {
         bet.result = 'NO_FILL';
-      } else if (bet.delta === null) {
-        // Market not settled yet
-        const isEnded = new Date(bet.event_end_time) < new Date();
-        bet.result = isEnded ? 'PENDING' : 'PENDING';
+      } else if (!isEnded) {
+        // Still live
+        bet.result = 'PENDING';
         totalPending++;
         totalFilled++;
-      } else {
-        // We bought DOWN, so:
-        // - delta < 0 (price went down) → DOWN wins → WIN
-        // - delta > 0 (price went up) → UP wins → LOSS
-        // - delta = 0 → depends on exact rules, treat as LOSS for safety
-        if (bet.delta < 0) {
+      } else if (bet.position_pnl !== null) {
+        // Market ended and we have PnL from position
+        if (bet.position_pnl > 0) {
           bet.result = 'WIN';
-          // WIN: we get $1 per share
-          bet.pnl = bet.total_filled_shares * 1 - bet.total_invested;
           totalWins++;
-          totalPnl += bet.pnl;
         } else {
           bet.result = 'LOSS';
-          // LOSS: we get $0 per share
-          bet.pnl = 0 - bet.total_invested;
           totalLosses++;
-          totalPnl += bet.pnl;
         }
+        totalPnl += bet.position_pnl;
+        totalFilled++;
+      } else if (bet.delta !== null) {
+        // Fallback: use delta if position PnL not available
+        if (bet.delta < 0) {
+          bet.result = 'WIN';
+          const pnl = bet.position_shares * 1 - bet.position_cost;
+          totalPnl += pnl;
+          totalWins++;
+        } else {
+          bet.result = 'LOSS';
+          totalPnl -= bet.position_cost;
+          totalLosses++;
+        }
+        totalFilled++;
+      } else {
+        // Ended but no oracle data yet
+        bet.result = 'PENDING';
+        totalPending++;
         totalFilled++;
       }
       
@@ -233,13 +278,13 @@ export default function V26Dashboard() {
       case 'WIN':
         return (
           <Badge className="bg-green-500/10 text-green-500 border-green-500/20">
-            ✓ WIN {bet.pnl !== null && `+$${bet.pnl.toFixed(2)}`}
+            ✓ WIN {bet.position_pnl !== null && `+$${bet.position_pnl.toFixed(2)}`}
           </Badge>
         );
       case 'LOSS':
         return (
           <Badge className="bg-red-500/10 text-red-500 border-red-500/20">
-            ✗ LOSS {bet.pnl !== null && `-$${Math.abs(bet.pnl).toFixed(2)}`}
+            ✗ LOSS {bet.position_pnl !== null && `-$${Math.abs(bet.position_pnl).toFixed(2)}`}
           </Badge>
         );
       case 'NO_FILL':
@@ -426,14 +471,12 @@ export default function V26Dashboard() {
                     {bets
                       .filter((bet) => assetFilter === 'ALL' || bet.asset === assetFilter)
                       .map((bet) => {
-                        const filledTrade = bet.trades.find(t => t.filled_shares > 0);
-                        const avgPrice = filledTrade?.avg_fill_price ?? filledTrade?.price ?? 0.48;
                         const isEnded = new Date(bet.event_end_time) < new Date();
                         const hasOrder = bet.trades.some(t => t.order_id);
                         
-                        // Status logic
+                        // Status logic - use position_shares for fill status
                         let status: 'placed' | 'open' | 'closed' = 'placed';
-                        if (bet.total_filled_shares > 0 && !isEnded) {
+                        if (bet.position_shares > 0 && !isEnded) {
                           status = 'open';
                         } else if (isEnded) {
                           status = 'closed';
@@ -460,23 +503,41 @@ export default function V26Dashboard() {
                           if (status !== 'closed') {
                             return <span className="text-muted-foreground">-</span>;
                           }
-                          // Closed but no fill
-                          if (bet.total_filled_shares === 0) {
+                          // Closed but no fill (from positions)
+                          if (bet.position_shares === 0) {
                             return <Badge variant="outline" className="text-muted-foreground">No Fill</Badge>;
                           }
-                          // Filled and closed - MUST have result
-                          // If delta is available, use it
-                          if (bet.delta !== null) {
-                            if (bet.delta < 0) {
+                          // Use position PnL if available
+                          if (bet.position_pnl !== null) {
+                            if (bet.position_pnl > 0) {
                               return (
                                 <Badge className="bg-green-500/10 text-green-500 border-green-500/20">
-                                  ✓ Win {bet.pnl !== null && `+$${bet.pnl.toFixed(2)}`}
+                                  ✓ Win +${bet.position_pnl.toFixed(2)}
                                 </Badge>
                               );
                             } else {
                               return (
                                 <Badge className="bg-red-500/10 text-red-500 border-red-500/20">
-                                  ✗ Loss {bet.pnl !== null && `-$${Math.abs(bet.pnl).toFixed(2)}`}
+                                  ✗ Loss -${Math.abs(bet.position_pnl).toFixed(2)}
+                                </Badge>
+                              );
+                            }
+                          }
+                          // Fallback to delta if position PnL not available
+                          if (bet.delta !== null) {
+                            const estimatedPnl = bet.delta < 0 
+                              ? bet.position_shares - bet.position_cost 
+                              : -bet.position_cost;
+                            if (bet.delta < 0) {
+                              return (
+                                <Badge className="bg-green-500/10 text-green-500 border-green-500/20">
+                                  ✓ Win +${estimatedPnl.toFixed(2)}
+                                </Badge>
+                              );
+                            } else {
+                              return (
+                                <Badge className="bg-red-500/10 text-red-500 border-red-500/20">
+                                  ✗ Loss -${Math.abs(estimatedPnl).toFixed(2)}
                                 </Badge>
                               );
                             }
@@ -494,17 +555,17 @@ export default function V26Dashboard() {
                               </div>
                             </TableCell>
                             <TableCell>
-                              {bet.total_filled_shares > 0 ? (
-                                <span className="font-medium">{bet.total_filled_shares}</span>
+                              {bet.position_shares > 0 ? (
+                                <span className="font-medium">{bet.position_shares}</span>
                               ) : (
                                 <span className="text-muted-foreground">0</span>
                               )}
                             </TableCell>
                             <TableCell className="font-mono">
-                              ${avgPrice.toFixed(2)}
+                              ${(bet.position_avg_price ?? 0.48).toFixed(2)}
                             </TableCell>
                             <TableCell className="font-mono font-medium">
-                              ${bet.total_invested.toFixed(2)}
+                              ${bet.position_cost.toFixed(2)}
                             </TableCell>
                             <TableCell>
                               {bet.delta !== null ? (
