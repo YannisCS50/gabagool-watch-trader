@@ -325,129 +325,90 @@ serve(async (req) => {
 
     console.log(`[v26-sync-fills] Found ${trades?.length || 0} trades to sync`);
 
-    // Build a map of order_id -> v26_trade for quick lookup
-    const orderIdToTrade = new Map<string, typeof trades[0]>();
-    for (const t of trades || []) {
-      if (t.order_id) {
-        orderIdToTrade.set(t.order_id.toLowerCase(), t);
-      }
+    if (!trades || trades.length === 0) {
+      return new Response(
+        JSON.stringify({ success: true, synced: 0, failed: 0, total: 0, results: [] }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
-    // Fetch all trades for this wallet from CLOB (last 7 days)
-    // Use maker param since our orders are maker orders
-    const sevenDaysAgoUnix = Math.floor((Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000);
-    const tradesPath = `/data/trades`;
+    // Get all order_ids to look up in fill_logs
+    const orderIds = trades.map(t => t.order_id).filter(Boolean) as string[];
+    
+    // Fetch matching fill_logs entries
+    const { data: fillLogs, error: fillError } = await supabase
+      .from('fill_logs')
+      .select('order_id, ts, iso, fill_qty, fill_price')
+      .in('order_id', orderIds);
 
-    // Fetch trades where we are the taker (market orders) - this is how v26 places orders
-    // Use funderAddress (Safe/Proxy) for trade lookup, EOA for L2 auth
-    const tradesUrl = `${CLOB_BASE_URL}${tradesPath}?taker=${encodeURIComponent(funderAddress)}&after=${sevenDaysAgoUnix}`;
-    console.log(`[v26-sync-fills] Fetching CLOB trades (taker) from: ${tradesUrl}`);
-
-    const tradesHeaders = await createL2Headers(eoaAddress, creds, 'GET', tradesPath);
-    const tradesRes = await fetch(tradesUrl, {
-      method: 'GET',
-      headers: {
-        ...tradesHeaders,
-        'Content-Type': 'application/json',
-      },
-    });
-
-    if (!tradesRes.ok) {
-      const errText = await tradesRes.text();
-      console.error(`[v26-sync-fills] Failed to fetch CLOB trades:`, tradesRes.status, errText);
+    if (fillError) {
+      console.error('[v26-sync-fills] Error fetching fill_logs:', fillError);
       return new Response(
-        JSON.stringify({ error: `Failed to fetch CLOB trades: ${tradesRes.status}` }),
+        JSON.stringify({ error: fillError.message }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    const clobTradesRaw = await tradesRes.json();
-    // Ensure it's an array
-    const clobTrades: any[] = Array.isArray(clobTradesRaw) ? clobTradesRaw : [];
-    console.log(`[v26-sync-fills] Got ${clobTrades.length} CLOB trades (taker)`);
+    console.log(`[v26-sync-fills] Found ${fillLogs?.length || 0} matching fill_logs entries`);
 
-    // Build a map of order_id -> { match_time, size } from CLOB trades
-    // CLOB trades have: maker_orders[].order_id (for maker fills)
-    // and taker_order_id (for taker fills)
-    interface MatchInfo {
+    // Build a map of order_id -> fill info (aggregate if multiple fills per order)
+    interface FillInfo {
       matchTimeMs: number;
-      sizeMatched: number;
+      iso: string;
+      totalShares: number;
     }
-    const orderMatchInfo = new Map<string, MatchInfo>();
+    const orderFillInfo = new Map<string, FillInfo>();
 
-    for (const ct of clobTrades || []) {
-      const matchTimeRaw = ct?.match_time;
-      let matchTimeMs: number | null = null;
+    for (const fl of fillLogs || []) {
+      const orderId = fl.order_id?.toLowerCase();
+      if (!orderId) continue;
 
-      if (matchTimeRaw != null) {
-        const n = Number(matchTimeRaw);
-        if (Number.isFinite(n)) {
-          matchTimeMs = n < 1e12 ? n * 1000 : n;
-        } else {
-          const parsed = Date.parse(String(matchTimeRaw));
-          if (Number.isFinite(parsed)) matchTimeMs = parsed;
+      const ts = Number(fl.ts);
+      const shares = Number(fl.fill_qty) || 0;
+      const existing = orderFillInfo.get(orderId);
+
+      if (!existing) {
+        orderFillInfo.set(orderId, {
+          matchTimeMs: ts,
+          iso: fl.iso,
+          totalShares: shares,
+        });
+      } else {
+        // Use latest timestamp, aggregate shares
+        if (ts > existing.matchTimeMs) {
+          existing.matchTimeMs = ts;
+          existing.iso = fl.iso;
         }
-      }
-
-      if (matchTimeMs === null) continue;
-
-      // Check taker_order_id
-      const takerOrderId = ct?.taker_order_id?.toLowerCase();
-      if (takerOrderId && orderIdToTrade.has(takerOrderId)) {
-        const existing = orderMatchInfo.get(takerOrderId);
-        const size = parseFloat(ct?.size || '0');
-        if (!existing || matchTimeMs > existing.matchTimeMs) {
-          orderMatchInfo.set(takerOrderId, {
-            matchTimeMs,
-            sizeMatched: (existing?.sizeMatched || 0) + size,
-          });
-        } else {
-          existing.sizeMatched += size;
-        }
-      }
-
-      // Check maker_orders
-      const makerOrders = ct?.maker_orders;
-      if (Array.isArray(makerOrders)) {
-        for (const mo of makerOrders) {
-          const moOrderId = mo?.order_id?.toLowerCase();
-          if (moOrderId && orderIdToTrade.has(moOrderId)) {
-            const existing = orderMatchInfo.get(moOrderId);
-            const size = parseFloat(mo?.matched_amount || '0');
-            if (!existing || matchTimeMs > existing.matchTimeMs) {
-              orderMatchInfo.set(moOrderId, {
-                matchTimeMs,
-                sizeMatched: (existing?.sizeMatched || 0) + size,
-              });
-            } else {
-              existing.sizeMatched += size;
-            }
-          }
-        }
+        existing.totalShares += shares;
       }
     }
 
-    console.log(`[v26-sync-fills] Found match info for ${orderMatchInfo.size} orders`);
+    console.log(`[v26-sync-fills] Aggregated fill info for ${orderFillInfo.size} orders`);
 
     const results: Array<{ id: string; order_id: string; success: boolean; error?: string; fill_matched_at?: string }> = [];
 
-    // Update v26_trades with match info
-    for (const trade of trades || []) {
+    // Update v26_trades with fill info from fill_logs
+    for (const trade of trades) {
       const orderId = trade.order_id?.toLowerCase();
-      if (!orderId) continue;
-
-      const matchInfo = orderMatchInfo.get(orderId);
-
-      if (!matchInfo) {
-        // No CLOB trade found for this order - could be unfilled or from different API key
-        results.push({ id: trade.id, order_id: trade.order_id, success: false, error: 'No CLOB match found' });
+      if (!orderId) {
+        results.push({ id: trade.id, order_id: trade.order_id || '', success: false, error: 'No order_id' });
         continue;
       }
 
+      const fillInfo = orderFillInfo.get(orderId);
+
+      if (!fillInfo) {
+        results.push({ id: trade.id, order_id: trade.order_id!, success: false, error: 'No fill_logs match' });
+        continue;
+      }
+
+      // Convert timestamp (ms) to ISO string
+      const fillMatchedAt = new Date(fillInfo.matchTimeMs).toISOString();
+
       const updateData: Record<string, any> = {
-        fill_matched_at: new Date(matchInfo.matchTimeMs).toISOString(),
-        filled_shares: Math.round(matchInfo.sizeMatched),
-        status: matchInfo.sizeMatched > 0 ? 'filled' : trade.status,
+        fill_matched_at: fillMatchedAt,
+        filled_shares: Math.round(fillInfo.totalShares),
+        status: fillInfo.totalShares > 0 ? 'filled' : trade.status,
       };
 
       const { error: updateError } = await supabase
@@ -457,14 +418,14 @@ serve(async (req) => {
 
       if (updateError) {
         console.error(`[v26-sync-fills] Update failed for ${trade.order_id}:`, updateError);
-        results.push({ id: trade.id, order_id: trade.order_id, success: false, error: updateError.message });
+        results.push({ id: trade.id, order_id: trade.order_id!, success: false, error: updateError.message });
       } else {
-        console.log(`[v26-sync-fills] Updated ${trade.order_id}: match_at=${updateData.fill_matched_at}, filled=${updateData.filled_shares}`);
+        console.log(`[v26-sync-fills] Updated ${trade.order_id}: fill_matched_at=${fillMatchedAt}, filled=${updateData.filled_shares}`);
         results.push({
           id: trade.id,
-          order_id: trade.order_id,
+          order_id: trade.order_id!,
           success: true,
-          fill_matched_at: updateData.fill_matched_at,
+          fill_matched_at: fillMatchedAt,
         });
       }
     }
@@ -477,7 +438,7 @@ serve(async (req) => {
         success: true, 
         synced: successCount, 
         failed: failCount,
-        total: trades?.length || 0,
+        total: trades.length,
         results 
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
