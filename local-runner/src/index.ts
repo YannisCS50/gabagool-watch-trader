@@ -123,6 +123,23 @@ import {
   LEASE_CONFIG,
 } from './runner-lease.js';
 
+// v8.0.0: Clean strategy rewrite - state mispricing exploitation
+import {
+  StrategyV8,
+  initStrategy as initV8Strategy,
+  getStrategy as getV8Strategy,
+  resetStrategy as resetV8Strategy,
+  createExecutionAdapter,
+  getSurface,
+  getTelemetry,
+  setTelemetry,
+  ConsoleTelemetryV8,
+  V8,
+  type MarketSnapshotV8,
+  type SpotTick,
+  type FillEventV8,
+} from './v8/index.js';
+
 // v7.2.8 REV C.4.2: PnL Accounting + Sell Policy
 import {
   processFill as accountingProcessFill,
@@ -169,11 +186,18 @@ try {
 }
 
 const RUNNER_ID = `local-${os.hostname()}`;
-const RUNNER_VERSION = '7.4.0';  // v7.4.0: Professional-grade real-time position sync - 1s refresh from Polymarket API, drift detection, auto-sync
+const RUNNER_VERSION = '8.0.0';  // v8.0.0: Clean strategy rewrite - state mispricing exploitation
 const RUN_ID = crypto.randomUUID();
 
-// v7 REV C: Initialize MarketStateManager singleton
+// v8.0.0: Strategy selection via env var
+const FEATURE_STRATEGY = process.env.FEATURE_STRATEGY || 'v7';
+const IS_V8_ENABLED = FEATURE_STRATEGY === 'v8';
+
+// v7 REV C: Initialize MarketStateManager singleton (v7 only)
 let marketStateManager: MarketStateManager | null = null;
+
+// v8.0.0: v8 strategy instance (only used when FEATURE_STRATEGY=v8)
+let strategyV8: StrategyV8 | null = null;
 
 // v6.3.1: Track when runner started - only trade on markets that start AFTER this
 const RUNNER_START_TIME_MS = Date.now();
@@ -200,10 +224,35 @@ async function printStartupBanner(): Promise<void> {
   console.log('║        🚀 POLYMARKET LIVE TRADER - LOCAL RUNNER                ║');
   console.log('╠════════════════════════════════════════════════════════════════╣');
   console.log(`║  📋 Runner:    ${RUNNER_VERSION.padEnd(47)}║`);
-  console.log(`║  📋 Strategy:  ${STRATEGY_NAME.padEnd(47)}║`);
-  console.log(`║  📋 Strat Ver: ${STRATEGY_VERSION.padEnd(47)}║`);
+  
+  // v8.0.0: Show strategy selection
+  if (IS_V8_ENABLED) {
+    console.log(`║  📋 Strategy:  ${'v8.0.0 - STATE MISPRICING'.padEnd(47)}║`);
+    console.log(`║  📋 Mode:      ${'CLEAN REWRITE (v7 DISABLED)'.padEnd(47)}║`);
+  } else {
+    console.log(`║  📋 Strategy:  ${STRATEGY_NAME.padEnd(47)}║`);
+    console.log(`║  📋 Strat Ver: ${STRATEGY_VERSION.padEnd(47)}║`);
+  }
   console.log(`║  🔧 Config:    ${CONFIG_VERSION.padEnd(47)}║`);
   console.log('╠════════════════════════════════════════════════════════════════╣');
+  
+  // v8.0.0: Show v8 config when enabled
+  if (IS_V8_ENABLED) {
+    console.log('║  🆕 v8.0.0 STATE MISPRICING STRATEGY:                           ║');
+    console.log(`║     Assets: ${V8.enabledAssets.join(', ')}`.padEnd(66) + '║');
+    console.log(`║     Edge entry min: ${(V8.entry.edgeEntryMin * 100).toFixed(0)}¢`.padEnd(66) + '║');
+    console.log(`║     Base shares: ${V8.entry.baseShares}`.padEnd(66) + '║');
+    console.log(`║     Entry window: ${V8.entry.minSecRemaining}s - ${V8.entry.maxSecRemaining}s`.padEnd(66) + '║');
+    console.log(`║     Correction edge max: ${(V8.correction.edgeCorrectedMax * 100).toFixed(0)}¢`.padEnd(66) + '║');
+    console.log(`║     Hedge deadline: ${V8.hedge.deadlineSecRemaining}s remaining`.padEnd(66) + '║');
+    console.log(`║     Max CPP approx: ${V8.hedge.maxCppApprox.toFixed(2)}`.padEnd(66) + '║');
+    console.log('╠════════════════════════════════════════════════════════════════╣');
+    console.log('║  ⚠️  v7 STRATEGY IS COMPLETELY DISABLED                         ║');
+    console.log('║     No v7 code paths will execute                              ║');
+    console.log('╚════════════════════════════════════════════════════════════════╝');
+    console.log('');
+    return; // Skip v7 config details
+  }
   
   if (cfg) {
     console.log(`║  📦 Source:    ${cfg.source.padEnd(47)}║`);
@@ -1352,10 +1401,76 @@ async function executeHedgeWithRetry(
   return false;
 }
 
+// ============================================================
+// v8.0.0: V8 Strategy Evaluation Helper
+// Converts MarketContext to MarketSnapshotV8 and delegates to v8 strategy
+// ============================================================
+async function evaluateMarketV8(slug: string, ctx: MarketContext): Promise<void> {
+  if (!strategyV8) return;
+
+  const nowMs = Date.now();
+  const endMs = new Date(ctx.market.eventEndTime).getTime();
+  const secRemaining = Math.max(0, Math.floor((endMs - nowMs) / 1000));
+
+  // Skip expired markets
+  if (secRemaining <= 0) return;
+
+  // Get strike price (set at market start)
+  const strike = ctx.strikePrice ?? 0;
+  if (strike <= 0) return; // No strike yet, skip
+
+  // Build MarketSnapshotV8
+  const bookAgeMs = ctx.book.updatedAtMs > 0 ? (nowMs - ctx.book.updatedAtMs) : Infinity;
+
+  const snapshot: MarketSnapshotV8 = {
+    ts: nowMs,
+    marketId: slug,
+    asset: ctx.market.asset,
+    strike,
+    secRemaining,
+    up: {
+      bestBid: ctx.book.up.bid ?? 0,
+      bestAsk: ctx.book.up.ask ?? 1,
+      depthBid: 100, // TODO: Get from orderbook depth
+      depthAsk: 100, // TODO: Get from orderbook depth
+      ageMs: bookAgeMs,
+    },
+    down: {
+      bestBid: ctx.book.down.bid ?? 0,
+      bestAsk: ctx.book.down.ask ?? 1,
+      depthBid: 100, // TODO: Get from orderbook depth
+      depthAsk: 100, // TODO: Get from orderbook depth
+      ageMs: bookAgeMs,
+    },
+    position: {
+      upShares: ctx.position.upShares,
+      downShares: ctx.position.downShares,
+      avgUp: ctx.position.upShares > 0 ? ctx.position.upInvested / ctx.position.upShares : undefined,
+      avgDown: ctx.position.downShares > 0 ? ctx.position.downInvested / ctx.position.downShares : undefined,
+    },
+    eventStartTime: ctx.market.eventStartTime,
+    eventEndTime: ctx.market.eventEndTime,
+  };
+
+  // Call v8 strategy
+  await strategyV8.onTick(snapshot);
+}
+
 
 async function evaluateMarket(slug: string): Promise<void> {
   const ctx = markets.get(slug);
   if (!ctx || ctx.inFlight) return;
+
+  // v8.0.0: If v8 is enabled, delegate to v8 strategy instead of v7
+  if (IS_V8_ENABLED && strategyV8) {
+    ctx.inFlight = true;
+    try {
+      await evaluateMarketV8(slug, ctx);
+    } finally {
+      ctx.inFlight = false;
+    }
+    return;
+  }
 
   ctx.inFlight = true;
 
@@ -2742,6 +2857,121 @@ async function main(): Promise<void> {
   console.log('\n🔄 [v7.4.0] Starting real-time position cache...');
   startPositionCache();
   
+  // v8.0.0: Initialize v8 strategy if enabled
+  if (IS_V8_ENABLED) {
+    console.log('\n🆕 [v8.0.0] Initializing v8 State Mispricing Strategy...');
+    console.log('   ⚠️  v7 strategy is COMPLETELY DISABLED');
+    
+    // Set up telemetry
+    setTelemetry(new ConsoleTelemetryV8());
+    
+    // Create execution adapter that wraps existing order placement
+    const execAdapter = createExecutionAdapter({
+      placeOrder: async (req) => {
+        const ctx = markets.get(req.marketId);
+        if (!ctx) {
+          return { ok: false, reason: 'NO_MARKET_CTX' };
+        }
+        
+        const tokenId = req.token === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
+        
+        // Use placeOrderWithCaps for hard cap enforcement
+        const orderCtx: OrderContext = {
+          marketId: req.marketId,
+          asset: ctx.market.asset,
+          outcome: req.token,
+          currentUpShares: ctx.position.upShares,
+          currentDownShares: ctx.position.downShares,
+          upCost: ctx.position.upInvested,
+          downCost: ctx.position.downInvested,
+          intentType: req.intent,
+          runId: RUN_ID,
+          upAsk: ctx.book.up.ask ?? undefined,
+          downAsk: ctx.book.down.ask ?? undefined,
+          entryPrice: req.price,
+        };
+        
+        const result = await placeOrderWithCaps({
+          tokenId,
+          side: req.side,
+          price: req.price,
+          size: req.size,
+          orderType: 'GTC',
+        }, orderCtx);
+        
+        if (!result.success) {
+          return { ok: false, reason: result.error || 'ORDER_FAILED' };
+        }
+        
+        // Update local position on fill
+        const filledShares = result.status === 'filled' 
+          ? req.size 
+          : (result.filledSize ?? 0);
+          
+        if (filledShares > 0) {
+          const fillPrice = result.avgPrice ?? req.price;
+          if (req.token === 'UP') {
+            ctx.position.upShares += filledShares;
+            ctx.position.upInvested += filledShares * fillPrice;
+          } else {
+            ctx.position.downShares += filledShares;
+            ctx.position.downInvested += filledShares * fillPrice;
+          }
+          
+          // Save trade to database
+          await saveTrade({
+            market_slug: req.marketId,
+            asset: ctx.market.asset,
+            outcome: req.token,
+            shares: filledShares,
+            price: fillPrice,
+            total: filledShares * fillPrice,
+            order_id: result.orderId,
+            status: 'filled',
+            reasoning: `[v8] ${req.intent}`,
+            event_start_time: ctx.market.eventStartTime,
+            event_end_time: ctx.market.eventEndTime,
+            avg_fill_price: fillPrice,
+          });
+          
+          tradeCount++;
+        }
+        
+        return { 
+          ok: true, 
+          orderId: result.orderId,
+          status: result.status as 'placed' | 'filled' | 'partial',
+          filledSize: filledShares,
+          avgPrice: result.avgPrice,
+        };
+      },
+      getOrderbookDepth: async (tokenId) => {
+        const depth = await getOrderbookDepth(tokenId);
+        return {
+          bestBid: depth.topBid ?? 0,
+          bestAsk: depth.topAsk ?? 1,
+          depthBid: depth.bidVolume ?? 0,
+          depthAsk: depth.askVolume ?? 0,
+          ageMs: 0, // Fresh fetch
+        };
+      },
+      cancelOrders: async (marketId, token, intent) => {
+        // TODO: Implement order cancellation for v8
+        console.log(`[v8] Cancel orders: ${marketId} ${token} ${intent}`);
+      },
+      resolveTokenId: (marketId, token) => {
+        const ctx = markets.get(marketId);
+        if (!ctx) return undefined;
+        return token === 'UP' ? ctx.market.upTokenId : ctx.market.downTokenId;
+      },
+    });
+    
+    // Initialize strategy
+    strategyV8 = initV8Strategy(execAdapter, getTelemetry());
+    console.log('   ✅ v8 Strategy initialized');
+    console.log(`   📊 Enabled assets: ${V8.enabledAssets.join(', ')}`);
+  }
+  
   connectToClob();
 
   // Send initial heartbeat
@@ -3193,6 +3423,11 @@ async function main(): Promise<void> {
           source: 'runner_chainlink',
         });
         lastBtcPrice = btcResult.price;
+        
+        // v8.0.0: Update v8 strategy with spot price
+        if (IS_V8_ENABLED && strategyV8) {
+          strategyV8.onSpot({ ts: Date.now(), asset: 'BTC', price: btcResult.price });
+        }
       }
 
       if (ethResult) {
@@ -3207,6 +3442,11 @@ async function main(): Promise<void> {
           source: 'runner_chainlink',
         });
         lastEthPrice = ethResult.price;
+        
+        // v8.0.0: Update v8 strategy with spot price
+        if (IS_V8_ENABLED && strategyV8) {
+          strategyV8.onSpot({ ts: Date.now(), asset: 'ETH', price: ethResult.price });
+        }
       }
 
       // Keep per-market cached spot/strike up to date so SNAPSHOT/FILL logs include context
