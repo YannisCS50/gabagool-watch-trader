@@ -15,6 +15,10 @@ type Action =
   | 'get-markets'
   | 'get-trades'
   | 'save-trade'
+  // V26 trades (pre-market runner)
+  | 'v26-save-trade'
+  | 'v26-update-trade'
+  | 'v26-has-trade'
   | 'heartbeat'
   | 'offline'
   | 'get-pending-orders'
@@ -180,6 +184,94 @@ Deno.serve(async (req) => {
 
         console.log(`[runner-proxy] ✅ Trade saved: ${trade.outcome} ${trade.shares}@${trade.price}`);
         return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // ============================================================
+      // V26 trades (pre-market runner)
+      // ============================================================
+      case 'v26-save-trade': {
+        const trade = data?.trade as Record<string, unknown> | undefined;
+        if (!trade) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing trade data' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const { data: inserted, error } = await supabase
+          .from('v26_trades')
+          .insert(trade)
+          .select('id')
+          .single();
+
+        if (error) {
+          console.error('[runner-proxy] v26-save-trade error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true, id: inserted?.id ?? null }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      case 'v26-update-trade': {
+        const id = data?.id as string | undefined;
+        const updates = data?.updates as Record<string, unknown> | undefined;
+
+        if (!id || !updates) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing id or updates' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const { error } = await supabase.from('v26_trades').update(updates).eq('id', id);
+
+        if (error) {
+          console.error('[runner-proxy] v26-update-trade error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      case 'v26-has-trade': {
+        const marketId = data?.market_id as string | undefined;
+        const asset = data?.asset as string | undefined;
+
+        if (!marketId || !asset) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing market_id or asset' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const { data: rows, error } = await supabase
+          .from('v26_trades')
+          .select('id')
+          .eq('market_id', marketId)
+          .eq('asset', asset)
+          .limit(1);
+
+        if (error) {
+          console.error('[runner-proxy] v26-has-trade error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true, exists: (rows?.length ?? 0) > 0 }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
