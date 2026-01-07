@@ -606,7 +606,6 @@ export default function V26Dashboard() {
                       >
                         <TableCell className="py-2">
                           <div className="font-medium text-sm">{log.market}</div>
-                          <div className="text-xs">🐍</div>
                         </TableCell>
                         <TableCell className="py-2 text-muted-foreground text-sm">{log.time}</TableCell>
                         <TableCell className="py-2 text-right font-mono text-sm">
