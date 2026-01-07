@@ -31,7 +31,7 @@ import { saveV26Trade, updateV26Trade, hasExistingTrade } from './backend.js';
 
 const RUN_ID = `v26-${Date.now()}`;
 const POLL_INTERVAL_MS = 30_000; // Check for new markets every 30s
-const ORDER_TIMEOUT_MS = V26_CONFIG.cancelAfterSec * 1000;
+// Cancel timeout is calculated dynamically based on market start time
 
 // ============================================================
 // STATE
@@ -191,10 +191,15 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
 
     log(`✅ [${market.asset}] Order placed: ${result.orderID}`);
 
-    // Schedule cancellation if not filled
+    // Schedule cancellation: 30s AFTER market start
+    const cancelTime = market.eventStartTime.getTime() + (V26_CONFIG.cancelAfterStartSec * 1000);
+    const msUntilCancel = Math.max(0, cancelTime - Date.now());
+    
+    log(`⏰ [${market.asset}] Cancel scheduled in ${Math.round(msUntilCancel / 1000)}s (30s after market start)`);
+    
     scheduled.cancelTimeout = setTimeout(async () => {
       await checkAndCancelOrder(scheduled);
-    }, ORDER_TIMEOUT_MS);
+    }, msUntilCancel);
 
   } catch (err) {
     logError(`[${market.asset}] Failed to place order`, err);

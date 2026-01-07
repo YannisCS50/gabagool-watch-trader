@@ -24,8 +24,8 @@ export const V26_CONFIG = {
   shares: 10,
   
   // Timing (in seconds relative to market start)
-  placeOrderBeforeStartSec: 15, // Place order 15s before market opens
-  cancelAfterSec: 30, // Cancel if not filled within 30s of market start
+  placeOrderBeforeStartSec: 600, // Place order 10 minutes before market opens
+  cancelAfterStartSec: 30, // Cancel 30s AFTER market start if not filled
   
   // Safety
   maxOrdersPerBar: 1, // Only 1 order per market per asset
