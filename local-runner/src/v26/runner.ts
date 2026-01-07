@@ -10,9 +10,10 @@
 // ============================================================
 
 import { config } from '../config.js';
-import { testConnection, getBalance, placeOrder, cancelOrder, getOrderFillInfo } from '../polymarket.js';
-import { fetchMarkets, sendHeartbeat, saveFillLogs, saveSettlementLogs } from '../backend.js';
+import { testConnection, getBalance, placeOrder, cancelOrder, getOrderFillInfo, getOrderbookDepth } from '../polymarket.js';
+import { fetchMarkets, sendHeartbeat, saveFillLogs, saveSettlementLogs, saveSnapshotLogs, savePriceTicks, saveDecisionSnapshot, PriceTick } from '../backend.js';
 import { enforceVpnOrExit } from '../vpn-check.js';
+import { fetchChainlinkPrice } from '../chain.js';
 import { 
   V26_CONFIG, 
   V26_VERSION, 
@@ -24,7 +25,8 @@ import {
   logV26Status,
 } from './index.js';
 import { saveV26Trade, updateV26Trade, hasExistingTrade, getV26Oracle } from './backend.js';
-import type { FillLog, SettlementLog } from '../logger.js';
+import type { FillLog, SettlementLog, SnapshotLog } from '../logger.js';
+import type { DecisionSnapshot } from '../backend.js';
 
 // ============================================================
 // CONSTANTS
@@ -32,9 +34,17 @@ import type { FillLog, SettlementLog } from '../logger.js';
 
 const RUN_ID = `v26-${Date.now()}`;
 const POLL_INTERVAL_MS = 30_000; // Check for new markets every 30s
+const PRICE_TICK_INTERVAL_MS = 1_000; // Log price every second
+const SNAPSHOT_INTERVAL_MS = 5_000; // Log snapshots every 5 seconds
 // Cancel timeout is calculated dynamically based on market start time
 
 // ============================================================
+// STATE
+// ============================================================
+
+// Price state
+let lastBtcPrice: number | null = null;
+let lastEthPrice: number | null = null;
 // STATE
 // ============================================================
 
@@ -181,6 +191,193 @@ async function logV26Settlement(
     log(`📝 [${market.asset}] Settlement logged: ${winningSide} won, P/L $${pnl.toFixed(2)}`);
   } catch (err) {
     logError(`[${market.asset}] Failed to log settlement`, err);
+  }
+}
+
+// ============================================================
+// PRICE TICK LOGGING
+// ============================================================
+
+async function logPriceTicks(): Promise<void> {
+  try {
+    const [btc, eth] = await Promise.all([
+      fetchChainlinkPrice('BTC'),
+      fetchChainlinkPrice('ETH'),
+    ]);
+
+    const ticks: PriceTick[] = [];
+    const now = new Date().toISOString();
+
+    if (btc !== null) {
+      const delta = lastBtcPrice !== null ? btc - lastBtcPrice : null;
+      const deltaPct = lastBtcPrice !== null && lastBtcPrice > 0 ? (delta! / lastBtcPrice) * 100 : null;
+      ticks.push({ asset: 'BTC', price: btc, delta, delta_percent: deltaPct, source: 'chainlink', created_at: now });
+      lastBtcPrice = btc;
+    }
+
+    if (eth !== null) {
+      const delta = lastEthPrice !== null ? eth - lastEthPrice : null;
+      const deltaPct = lastEthPrice !== null && lastEthPrice > 0 ? (delta! / lastEthPrice) * 100 : null;
+      ticks.push({ asset: 'ETH', price: eth, delta, delta_percent: deltaPct, source: 'chainlink', created_at: now });
+      lastEthPrice = eth;
+    }
+
+    if (ticks.length > 0) {
+      await savePriceTicks(ticks);
+    }
+  } catch (err) {
+    // Price tick logging is non-critical
+  }
+}
+
+// ============================================================
+// SNAPSHOT LOGGING
+// ============================================================
+
+async function logV26Snapshots(): Promise<void> {
+  try {
+    // Get current markets we're tracking
+    const activeMarkets = Array.from(scheduledTrades.values());
+    if (activeMarkets.length === 0) return;
+
+    const now = Date.now();
+    const snapshots: SnapshotLog[] = [];
+
+    for (const { market, trade } of activeMarkets) {
+      const secondsRemaining = Math.max(0, Math.round((market.eventEndTime.getTime() - now) / 1000));
+      
+      // Fetch orderbook for DOWN token
+      let downBid: number | null = null;
+      let downAsk: number | null = null;
+      let downMid: number | null = null;
+      let orderbookReady = false;
+
+      try {
+        const depth = await getOrderbookDepth(market.downTokenId);
+        downBid = depth.topBid;
+        downAsk = depth.topAsk;
+        if (downBid !== null && downAsk !== null) {
+          downMid = (downBid + downAsk) / 2;
+          orderbookReady = depth.hasLiquidity;
+        }
+      } catch {
+        // Orderbook fetch failed
+      }
+
+      // Get spot price for this asset
+      const spotPrice = market.asset === 'BTC' ? lastBtcPrice : lastEthPrice;
+
+      const snapshot: SnapshotLog = {
+        ts: now,
+        iso: new Date(now).toISOString(),
+        marketId: market.slug,
+        asset: market.asset as 'BTC' | 'ETH',
+        secondsRemaining,
+        spotPrice,
+        strikePrice: null, // V26 doesn't track strike until settlement
+        delta: null,
+        btcPrice: lastBtcPrice,
+        ethPrice: lastEthPrice,
+        upBid: null,
+        upAsk: null,
+        upMid: null,
+        downBid,
+        downAsk,
+        downMid,
+        spreadUp: null,
+        spreadDown: downBid !== null && downAsk !== null ? downAsk - downBid : null,
+        combinedAsk: null,
+        combinedMid: null,
+        cheapestAskPlusOtherMid: null,
+        upBestAsk: null,
+        downBestAsk: downAsk,
+        orderbookReady,
+        botState: trade.status === 'filled' ? 'POSITION' : trade.status === 'partial' ? 'PARTIAL' : 'PENDING',
+        upShares: 0,
+        downShares: trade.filledShares,
+        avgUpCost: null,
+        avgDownCost: trade.avgFillPrice ?? trade.price,
+        pairCost: null,
+        skew: null,
+        noLiquidityStreak: 0,
+        adverseStreak: 0,
+      };
+
+      snapshots.push(snapshot);
+    }
+
+    if (snapshots.length > 0) {
+      await saveSnapshotLogs(snapshots);
+    }
+  } catch (err) {
+    // Snapshot logging is non-critical
+  }
+}
+
+// ============================================================
+// DECISION SNAPSHOT LOGGING
+// ============================================================
+
+async function logV26DecisionSnapshot(
+  market: V26Market,
+  trade: V26Trade,
+  intent: string,
+  reasonCode: string,
+  chosenSide: string | null = null
+): Promise<void> {
+  const now = Date.now();
+  const secondsRemaining = Math.max(0, Math.round((market.eventEndTime.getTime() - now) / 1000));
+
+  // Fetch orderbook
+  let downBid: number | null = null;
+  let downAsk: number | null = null;
+  let bookReady = false;
+
+  try {
+    const depth = await getOrderbookDepth(market.downTokenId);
+    downBid = depth.topBid;
+    downAsk = depth.topAsk;
+    bookReady = depth.hasLiquidity;
+  } catch {
+    // Orderbook fetch failed
+  }
+
+  const snapshot: DecisionSnapshot = {
+    ts: now,
+    market_id: market.slug,
+    asset: market.asset as 'BTC' | 'ETH',
+    state: trade.status,
+    intent,
+    reason_code: reasonCode,
+    seconds_remaining: secondsRemaining,
+    up_shares: 0,
+    down_shares: trade.filledShares,
+    paired_shares: 0,
+    unpaired_shares: trade.filledShares,
+    best_bid_up: null,
+    best_ask_up: null,
+    best_bid_down: downBid,
+    best_ask_down: downAsk,
+    book_ready_up: false,
+    book_ready_down: bookReady,
+    chosen_side: chosenSide,
+    guards_evaluated: { v26: true, strategy: V26_NAME },
+    run_id: RUN_ID,
+    correlation_id: trade.orderId ?? null,
+    avg_up: null,
+    avg_down: trade.avgFillPrice ?? trade.price,
+    cpp_paired_only: null,
+    projected_cpp_maker: null,
+    projected_cpp_taker: null,
+    depth_summary_up: null,
+    depth_summary_down: null,
+    window_start: market.eventStartTime.toISOString(),
+  };
+
+  try {
+    await saveDecisionSnapshot(snapshot);
+  } catch (err) {
+    // Decision snapshot logging is non-critical
   }
 }
 
@@ -337,6 +534,8 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
         tradesCount++;
         // Log the fill
         void logV26Fill(market, trade, filledNow, trade.avgFillPrice);
+        // Log decision snapshot for the fill
+        void logV26DecisionSnapshot(market, trade, 'ENTRY', 'IMMEDIATE_FILL', 'DOWN');
       }
     }
 
@@ -412,6 +611,7 @@ async function checkAndCancelOrder(scheduled: ScheduledTrade): Promise<void> {
       if (matchedBefore > previousFilled) {
         tradesCount++;
         void logV26Fill(market, trade, matchedBefore - previousFilled, trade.avgFillPrice);
+        void logV26DecisionSnapshot(market, trade, 'ENTRY', 'PRE_CANCEL_FILL', 'DOWN');
       }
 
       if (trade.id) {
@@ -456,6 +656,7 @@ async function checkAndCancelOrder(scheduled: ScheduledTrade): Promise<void> {
       if (matchedAfter > previousFilled) {
         tradesCount++;
         void logV26Fill(market, trade, matchedAfter - previousFilled, trade.avgFillPrice);
+        void logV26DecisionSnapshot(market, trade, 'ENTRY', 'POST_CANCEL_FILL', 'DOWN');
       }
 
       if (trade.id) {
@@ -712,6 +913,18 @@ async function main(): Promise<void> {
   setInterval(async () => {
     await sendV26Heartbeat();
   }, 30_000);
+
+  // Log price ticks every second
+  log('📊 Starting price tick logging (1s interval)');
+  setInterval(async () => {
+    await logPriceTicks();
+  }, PRICE_TICK_INTERVAL_MS);
+
+  // Log snapshots every 5 seconds
+  log('📸 Starting snapshot logging (5s interval)');
+  setInterval(async () => {
+    await logV26Snapshots();
+  }, SNAPSHOT_INTERVAL_MS);
 
   // Keep process alive
   log('👀 Watching for markets... (Ctrl+C to stop)');
