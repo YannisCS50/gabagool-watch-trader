@@ -337,7 +337,7 @@ serve(async (req) => {
           price: Math.round(price * 100) / 100,
           shares: Math.round(fill.tokenAmount),
           filled_shares: Math.round(fill.tokenAmount),
-          notional: fill.usdcAmount,
+          // notional is a generated column, don't insert it
           fill_matched_at: fillMatchedAt,
           status: 'filled',
         };
