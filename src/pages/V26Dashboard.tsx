@@ -268,7 +268,12 @@ export default function V26Dashboard() {
   useEffect(() => {
     fetchData();
 
-    // Subscribe to realtime updates
+    // Poll every 5 minutes for oracle data updates
+    const pollInterval = setInterval(() => {
+      fetchData();
+    }, 5 * 60 * 1000);
+
+    // Subscribe to realtime updates for new trades
     const channel = supabase
       .channel('v26_trades_realtime')
       .on(
@@ -285,6 +290,7 @@ export default function V26Dashboard() {
       .subscribe();
 
     return () => {
+      clearInterval(pollInterval);
       supabase.removeChannel(channel);
     };
   }, []);
