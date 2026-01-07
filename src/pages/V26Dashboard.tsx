@@ -70,6 +70,7 @@ export default function V26Dashboard() {
     wins: 0,
     losses: 0,
     pending: 0,
+    live: 0,
     winRate: 0,
     totalInvested: 0,
     totalFees: 0,
@@ -113,6 +114,7 @@ export default function V26Dashboard() {
     let totalWins = 0;
     let totalLosses = 0;
     let totalPending = 0;
+    let totalLive = 0;
     let totalFilled = 0;
     let totalInvested = 0;
     let totalFees = 0;
@@ -152,6 +154,7 @@ export default function V26Dashboard() {
         result = 'NOT_BOUGHT';
       } else if (!isEnded) {
         result = 'LIVE';
+        totalLive++;
         totalFilled++;
         totalInvested += cost;
       } else if (tradeResult === 'DOWN') {
@@ -242,6 +245,7 @@ export default function V26Dashboard() {
       wins: totalWins,
       losses: totalLosses,
       pending: totalPending,
+      live: totalLive,
       winRate,
       totalInvested,
       totalFees,
@@ -316,7 +320,11 @@ export default function V26Dashboard() {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">{stats.filledBets}</div>
-              <div className="text-xs text-muted-foreground">{stats.pending} wachten</div>
+              <div className="text-xs text-muted-foreground">
+                {stats.live > 0 && <span className="text-blue-500">{stats.live} live</span>}
+                {stats.live > 0 && stats.pending > 0 && ' · '}
+                {stats.pending > 0 && <span>{stats.pending} wachten</span>}
+              </div>
             </CardContent>
           </Card>
 
