@@ -525,3 +525,109 @@ export async function updateHedgeIntent(
   }
 }
 
+// ============================================
+// v7.5.0: GABAGOOL LOGGING - NEW DECISION LOGS
+// ============================================
+
+import type {
+  DecisionSnapshot,
+  AccountPositionSnapshot,
+  StateReconciliationResult,
+  FillAttribution,
+  HedgeSkipExplained,
+  MtmSnapshot,
+} from './decision-logs.js';
+import type { GabagoolMetricsSnapshot } from './gabagool-metrics.js';
+
+export async function saveDecisionSnapshot(snapshot: DecisionSnapshot): Promise<boolean> {
+  try {
+    const result = await callProxy<{ success: boolean }>('save-decision-snapshot', { snapshot });
+    return result.success;
+  } catch (error) {
+    console.error('❌ saveDecisionSnapshot error:', error);
+    return false;
+  }
+}
+
+export async function saveDecisionSnapshots(snapshots: DecisionSnapshot[]): Promise<boolean> {
+  if (snapshots.length === 0) return true;
+  try {
+    const result = await callProxy<{ success: boolean; count?: number }>('save-decision-snapshots', { snapshots });
+    return result.success;
+  } catch (error) {
+    console.error('❌ saveDecisionSnapshots error:', error);
+    return false;
+  }
+}
+
+export async function saveAccountPositionSnapshot(snapshot: AccountPositionSnapshot): Promise<boolean> {
+  try {
+    const result = await callProxy<{ success: boolean }>('save-account-position-snapshot', { snapshot });
+    return result.success;
+  } catch (error) {
+    console.error('❌ saveAccountPositionSnapshot error:', error);
+    return false;
+  }
+}
+
+export async function saveStateReconciliationResult(result: StateReconciliationResult): Promise<boolean> {
+  try {
+    const response = await callProxy<{ success: boolean }>('save-state-reconciliation', { result });
+    return response.success;
+  } catch (error) {
+    console.error('❌ saveStateReconciliationResult error:', error);
+    return false;
+  }
+}
+
+export async function saveFillAttribution(attribution: FillAttribution): Promise<boolean> {
+  try {
+    const result = await callProxy<{ success: boolean }>('save-fill-attribution', { attribution });
+    return result.success;
+  } catch (error) {
+    console.error('❌ saveFillAttribution error:', error);
+    return false;
+  }
+}
+
+export async function saveHedgeSkipLog(skip: HedgeSkipExplained): Promise<boolean> {
+  try {
+    const result = await callProxy<{ success: boolean }>('save-hedge-skip', { skip });
+    return result.success;
+  } catch (error) {
+    console.error('❌ saveHedgeSkipLog error:', error);
+    return false;
+  }
+}
+
+export async function saveHedgeSkipLogs(skips: HedgeSkipExplained[]): Promise<boolean> {
+  if (skips.length === 0) return true;
+  try {
+    const result = await callProxy<{ success: boolean; count?: number }>('save-hedge-skip-logs', { skips });
+    return result.success;
+  } catch (error) {
+    console.error('❌ saveHedgeSkipLogs error:', error);
+    return false;
+  }
+}
+
+export async function saveMtmSnapshot(snapshot: MtmSnapshot): Promise<boolean> {
+  try {
+    const result = await callProxy<{ success: boolean }>('save-mtm-snapshot', { snapshot });
+    return result.success;
+  } catch (error) {
+    console.error('❌ saveMtmSnapshot error:', error);
+    return false;
+  }
+}
+
+export async function saveGabagoolMetrics(metrics: GabagoolMetricsSnapshot): Promise<boolean> {
+  try {
+    const result = await callProxy<{ success: boolean }>('save-gabagool-metrics', { metrics });
+    return result.success;
+  } catch (error) {
+    console.error('❌ saveGabagoolMetrics error:', error);
+    return false;
+  }
+}
+
