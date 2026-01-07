@@ -42,6 +42,7 @@ interface FillLog {
   order_id: string;
   ts: number; // Unix timestamp in ms
   market_id: string;
+  seconds_remaining: number | null; // Seconds remaining until market close at fill time
 }
 
 interface TradeLog {
@@ -133,7 +134,7 @@ export default function V26Dashboard() {
       orderIds.length
         ? supabase
             .from('fill_logs')
-            .select('order_id, ts, market_id')
+            .select('order_id, ts, market_id, seconds_remaining')
             .in('order_id', orderIds)
         : Promise.resolve({ data: [] as FillLog[] }),
     ]);
@@ -148,13 +149,28 @@ export default function V26Dashboard() {
       }
     }
 
-    // Build lookup: order_id -> earliest fill timestamp (ms)
-    const fillTimeLookup = new Map<string, number>();
+    // Build lookup: order_id -> best fill record.
+    // If an order has multiple fills, we pick the *latest* fill (smallest seconds_remaining).
+    const fillTimeLookup = new Map<string, { ts: number; secondsRemaining: number | null }>();
     if (fillLogsData) {
       for (const f of fillLogsData) {
+        const next = { ts: f.ts, secondsRemaining: f.seconds_remaining ?? null };
         const existing = fillTimeLookup.get(f.order_id);
-        if (!existing || f.ts < existing) {
-          fillTimeLookup.set(f.order_id, f.ts);
+
+        if (!existing) {
+          fillTimeLookup.set(f.order_id, next);
+          continue;
+        }
+
+        if (existing.secondsRemaining !== null && next.secondsRemaining !== null) {
+          if (next.secondsRemaining < existing.secondsRemaining) {
+            fillTimeLookup.set(f.order_id, next);
+          }
+          continue;
+        }
+
+        if (next.ts > existing.ts) {
+          fillTimeLookup.set(f.order_id, next);
         }
       }
     }
@@ -280,20 +296,25 @@ export default function V26Dashboard() {
       const dateStr = format(startTimeET, 'MMMM d');
       const marketTitle = `${trade.asset} Up or Down - ${dateStr}, ${startTimeStr}-${endTimeStr} ET`;
 
-      // Calculate entry offset using fill_logs timestamp (most accurate)
+      // Calculate entry offset using fill_logs (most accurate)
+      // Negative = before open, positive = after open
       const entryOffsetSec = (() => {
+        if (!trade.order_id) return null;
+
+        const fill = fillTimeLookup.get(trade.order_id);
+        if (!fill) return null;
+
         const eventStartMs = new Date(trade.event_start_time).getTime();
 
-        // Priority 1: Use fill_logs timestamp (most accurate - actual fill time from CLOB)
-        if (trade.order_id) {
-          const fillTs = fillTimeLookup.get(trade.order_id);
-          if (fillTs) {
-            return Math.round((fillTs - eventStartMs) / 1000);
-          }
+        // Best: seconds_remaining (directly tied to the market clock)
+        if (fill.secondsRemaining !== null) {
+          const eventEndMs = new Date(trade.event_end_time).getTime();
+          const marketLenSec = Math.round((eventEndMs - eventStartMs) / 1000);
+          return marketLenSec - fill.secondsRemaining;
         }
 
-        // Priority 2: No fill log available, show as unknown for backfilled data
-        return null;
+        // Fallback: timestamp diff
+        return Math.round((fill.ts - eventStartMs) / 1000);
       })();
 
       logs.push({
