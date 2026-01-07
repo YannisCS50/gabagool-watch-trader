@@ -235,12 +235,10 @@ export default function V26Dashboard() {
       }
 
       const startTime = new Date(trade.event_start_time);
-      const timeStr = format(startTime, 'HH:mm');
-      const market = `${trade.asset} DOWN ${timeStr}`;
 
       logs.push({
         id: trade.id,
-        market,
+        market: trade.market_slug,
         asset: trade.asset,
         time: format(startTime, 'dd-MM HH:mm'),
         shares: filledShares,
