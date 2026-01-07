@@ -19,6 +19,7 @@ type Action =
   | 'v26-save-trade'
   | 'v26-update-trade'
   | 'v26-has-trade'
+  | 'v26-get-oracle'
   | 'heartbeat'
   | 'offline'
   | 'get-pending-orders'
@@ -272,6 +273,38 @@ Deno.serve(async (req) => {
         }
 
         return new Response(JSON.stringify({ success: true, exists: (rows?.length ?? 0) > 0 }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      case 'v26-get-oracle': {
+        const marketSlug = data?.market_slug as string | undefined;
+        const asset = data?.asset as string | undefined;
+
+        if (!marketSlug || !asset) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing market_slug or asset' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const { data: row, error } = await supabase
+          .from('strike_prices')
+          .select('market_slug, asset, strike_price, close_price, close_timestamp, quality')
+          .eq('market_slug', marketSlug)
+          .eq('asset', asset)
+          .limit(1)
+          .maybeSingle();
+
+        if (error) {
+          console.error('[runner-proxy] v26-get-oracle error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true, oracle: row ?? null }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }

@@ -9,7 +9,7 @@
 import { config } from '../config.js';
 import type { V26Trade, V26Stats } from './index.js';
 
-async function callRunnerProxy<T>(action: 'v26-save-trade' | 'v26-update-trade' | 'v26-has-trade', data?: Record<string, unknown>): Promise<T> {
+async function callRunnerProxy<T>(action: 'v26-save-trade' | 'v26-update-trade' | 'v26-has-trade' | 'v26-get-oracle', data?: Record<string, unknown>): Promise<T> {
   const response = await fetch(config.backend.url, {
     method: 'POST',
     headers: {
@@ -105,17 +105,26 @@ export async function getRecentV26Trades(_limit = 50): Promise<V26Trade[]> {
 }
 
 /**
- * Check if we already have a trade for this market
+ * Get oracle data for a market (strike + close).
  */
-export async function hasExistingTrade(marketId: string, asset: string): Promise<boolean> {
+export async function getV26Oracle(marketSlug: string, asset: string): Promise<{
+  market_slug: string;
+  asset: string;
+  strike_price: number | null;
+  close_price: number | null;
+  close_timestamp: number | null;
+  quality: string | null;
+} | null> {
   try {
-    const result = await callRunnerProxy<{ success: boolean; exists: boolean }>('v26-has-trade', {
-      market_id: marketId,
+    const result = await callRunnerProxy<{ success: boolean; oracle: any | null }>('v26-get-oracle', {
+      market_slug: marketSlug,
       asset,
     });
-    return result.exists === true;
-  } catch {
-    return false;
+
+    return result.oracle ?? null;
+  } catch (err: any) {
+    console.error(`[V26] Failed to fetch oracle for ${asset} ${marketSlug}:`, err?.message ?? err);
+    return null;
   }
 }
 

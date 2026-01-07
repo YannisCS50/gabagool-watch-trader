@@ -23,7 +23,7 @@ import {
   calculateV26Pnl,
   logV26Status,
 } from './index.js';
-import { saveV26Trade, updateV26Trade, hasExistingTrade } from './backend.js';
+import { saveV26Trade, updateV26Trade, hasExistingTrade, getV26Oracle } from './backend.js';
 
 // ============================================================
 // CONSTANTS
@@ -177,27 +177,43 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
       size: V26_CONFIG.shares,
     });
 
-    if (!result || !result.orderID) {
-      throw new Error('No order ID returned');
+    if (!result?.success || !result.orderId) {
+      throw new Error(result?.error || 'No orderId returned');
     }
 
-    scheduled.orderId = result.orderID;
-    trade.orderId = result.orderID;
+    scheduled.orderId = result.orderId;
+    trade.orderId = result.orderId;
     trade.status = 'placed';
     trade.runId = RUN_ID;
+
+    // If we got immediate fill info, persist it.
+    if (result.status === 'filled' || result.status === 'partial') {
+      const filledNow = typeof result.filledSize === 'number' ? result.filledSize : 0;
+      trade.status = result.status === 'filled' ? 'filled' : 'partial';
+      trade.filledShares = filledNow;
+      trade.avgFillPrice = trade.price;
+    }
 
     // Save to database
     const dbId = await saveV26Trade(trade);
     if (dbId) trade.id = dbId;
 
-    log(`✅ [${market.asset}] Order placed: ${result.orderID}`);
+    log(`✅ [${market.asset}] Order placed: ${result.orderId} (status=${result.status ?? 'unknown'})`);
+
+    // If already filled, we can skip cancellation and go straight to settlement.
+    if (trade.status === 'filled' && trade.filledShares > 0) {
+      scheduleSettlement(market, trade);
+      completedMarkets.add(key);
+      scheduledTrades.delete(key);
+      return;
+    }
 
     // Schedule cancellation: 30s AFTER market start
     const cancelTime = market.eventStartTime.getTime() + (V26_CONFIG.cancelAfterStartSec * 1000);
     const msUntilCancel = Math.max(0, cancelTime - Date.now());
-    
+
     log(`⏰ [${market.asset}] Cancel scheduled in ${Math.round(msUntilCancel / 1000)}s (30s after market start)`);
-    
+
     scheduled.cancelTimeout = setTimeout(async () => {
       await checkAndCancelOrder(scheduled);
     }, msUntilCancel);
@@ -224,7 +240,7 @@ async function checkAndCancelOrder(scheduled: ScheduledTrade): Promise<void> {
 
   try {
     // Try to cancel the order - if it fails, it was likely already filled
-    log(`⏰ [${market.asset}] Attempting to cancel order after ${V26_CONFIG.cancelAfterSec}s`);
+    log(`⏰ [${market.asset}] Attempting to cancel order ${V26_CONFIG.cancelAfterStartSec}s after market start`);
     const cancelResult = await cancelOrder(orderId);
 
     if (cancelResult.success) {
@@ -239,13 +255,17 @@ async function checkAndCancelOrder(scheduled: ScheduledTrade): Promise<void> {
       trade.status = 'filled';
       trade.filledShares = V26_CONFIG.shares;
       trade.avgFillPrice = V26_CONFIG.price;
-      
+
       if (trade.id) {
-        await updateV26Trade(trade.id, { 
+        await updateV26Trade(trade.id, {
           status: 'filled',
           filledShares: trade.filledShares,
           avgFillPrice: trade.avgFillPrice,
         });
+
+        scheduleSettlement(market, trade);
+      } else {
+        log(`⚠️ [${market.asset}] Filled inferred but trade.id missing; cannot schedule settlement update.`);
       }
     }
   } catch (err) {
@@ -254,6 +274,79 @@ async function checkAndCancelOrder(scheduled: ScheduledTrade): Promise<void> {
 
   completedMarkets.add(key);
   scheduledTrades.delete(key);
+}
+
+// ============================================================
+// SETTLEMENT
+// ============================================================
+
+function computeV26Result(strikePrice: number, closePrice: number): 'UP' | 'DOWN' {
+  // Convention: UP if close strictly above strike, otherwise DOWN.
+  // (Edge case close==strike is treated as DOWN)
+  return closePrice > strikePrice ? 'UP' : 'DOWN';
+}
+
+function scheduleSettlement(market: V26Market, trade: V26Trade): void {
+  const bufferMs = 60_000; // give oracle collector time to write close_price
+  const settleAtMs = market.eventEndTime.getTime() + bufferMs;
+  const msUntil = Math.max(5_000, settleAtMs - Date.now());
+
+  log(`🧾 [${market.asset}] Settlement scheduled in ${Math.round(msUntil / 1000)}s (after market end)`);
+
+  setTimeout(() => {
+    void attemptSettlement(market, trade, 0);
+  }, msUntil);
+}
+
+async function attemptSettlement(market: V26Market, trade: V26Trade, attempt: number): Promise<void> {
+  const MAX_ATTEMPTS = 60; // 60 * 30s = 30 minutes
+  const RETRY_MS = 30_000;
+
+  if (!trade.id) {
+    log(`⚠️ [${market.asset}] Cannot settle trade without db id (market=${market.slug})`);
+    return;
+  }
+
+  try {
+    const oracle = await getV26Oracle(market.slug, market.asset);
+    const strike = oracle?.strike_price ?? null;
+    const close = oracle?.close_price ?? null;
+
+    if (strike === null || close === null) {
+      if (attempt >= MAX_ATTEMPTS) {
+        log(`❌ [${market.asset}] Settlement timed out (no strike/close). market=${market.slug}`);
+        return;
+      }
+
+      log(`⏳ [${market.asset}] Waiting for settlement data (attempt ${attempt + 1}/${MAX_ATTEMPTS})`);
+      setTimeout(() => {
+        void attemptSettlement(market, trade, attempt + 1);
+      }, RETRY_MS);
+      return;
+    }
+
+    const result = computeV26Result(strike, close);
+    const settledAt = new Date();
+    const pnl = calculateV26Pnl({ ...trade, result, settledAt });
+
+    await updateV26Trade(trade.id, { result, pnl, settledAt });
+
+    log(
+      `🏁 [${market.asset}] Settled ${market.slug}: strike=${strike.toFixed(2)} close=${close.toFixed(2)} → ${result} | P/L=${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`
+    );
+  } catch (err: any) {
+    const msg = err?.message ?? String(err);
+
+    if (attempt >= MAX_ATTEMPTS) {
+      logError(`[${market.asset}] Settlement failed permanently: ${msg}`);
+      return;
+    }
+
+    log(`⚠️ [${market.asset}] Settlement attempt failed (will retry): ${msg}`);
+    setTimeout(() => {
+      void attemptSettlement(market, trade, attempt + 1);
+    }, RETRY_MS);
+  }
 }
 
 // ============================================================
