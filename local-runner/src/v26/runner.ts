@@ -267,14 +267,19 @@ function scheduleMarket(market: V26Market): void {
   }
 
   const now = Date.now();
-  const placeTime = market.eventStartTime.getTime() - (V26_CONFIG.placeOrderBeforeStartSec * 1000);
-  const msUntilPlace = placeTime - now;
+  const startTime = market.eventStartTime.getTime();
+  const secondsUntilStart = (startTime - now) / 1000;
 
-  if (msUntilPlace < 0) {
-    log(`⚠️ [${market.asset}] Too late to schedule: ${market.slug}`);
+  // Too late: less than minLeadTime before start
+  if (secondsUntilStart < V26_CONFIG.minLeadTimeSec) {
+    log(`⚠️ [${market.asset}] Too late to schedule (${Math.round(secondsUntilStart)}s until start): ${market.slug}`);
     completedMarkets.add(key);
     return;
   }
+
+  // Within window: place immediately if within maxLeadTime, otherwise schedule
+  const placeImmediately = secondsUntilStart <= V26_CONFIG.maxLeadTimeSec;
+  const msUntilPlace = placeImmediately ? 0 : (startTime - (V26_CONFIG.maxLeadTimeSec * 1000)) - now;
 
   const trade: V26Trade = {
     asset: market.asset,
@@ -298,8 +303,12 @@ function scheduleMarket(market: V26Market): void {
 
   scheduledTrades.set(key, scheduled);
 
-  const startTime = market.eventStartTime.toISOString().slice(11, 16);
-  log(`📅 [${market.asset}] Scheduled for ${startTime} (in ${Math.round(msUntilPlace / 1000)}s)`);
+  const startTimeStr = market.eventStartTime.toISOString().slice(11, 16);
+  if (placeImmediately) {
+    log(`📅 [${market.asset}] Placing NOW for ${startTimeStr} (${Math.round(secondsUntilStart)}s until start)`);
+  } else {
+    log(`📅 [${market.asset}] Scheduled for ${startTimeStr} (order in ${Math.round(msUntilPlace / 1000)}s)`);
+  }
 }
 
 // ============================================================
