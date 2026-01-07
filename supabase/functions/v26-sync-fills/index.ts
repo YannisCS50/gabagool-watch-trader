@@ -139,10 +139,19 @@ serve(async (req) => {
 
     // Get wallet address from bot_config
     const configRes = await supabase.from('bot_config').select('polymarket_address').limit(1).single();
+    
+    if (configRes.error) {
+      console.error('[v26-sync-fills] Error fetching bot_config:', configRes.error);
+      return new Response(
+        JSON.stringify({ error: `Failed to fetch bot_config: ${configRes.error.message}` }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+    
     const walletAddress = configRes.data?.polymarket_address;
     
     if (!walletAddress) {
-      console.error('[v26-sync-fills] No polymarket_address in bot_config');
+      console.error('[v26-sync-fills] No polymarket_address in bot_config, data:', JSON.stringify(configRes.data));
       return new Response(
         JSON.stringify({ error: 'No wallet address configured in bot_config' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
