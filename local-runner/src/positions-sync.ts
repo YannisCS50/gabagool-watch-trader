@@ -491,32 +491,13 @@ export function printPositionsReport(result: SyncResult): void {
  * Extract market slug from position data
  */
 function extractMarketSlug(position: PolymarketPosition): string {
-  // Try eventSlug first
-  if (position.eventSlug) {
-    return position.eventSlug;
-  }
-  
-  // Try to extract from market name
-  const market = position.market.toLowerCase();
-  
-  // Handle 15m format: "Bitcoin Up or Down - December 30, 2:00AM-2:15AM ET"
-  // Convert to slug format: btc-updown-15m-{timestamp}
-  if (market.includes('bitcoin') && market.includes('up or down')) {
-    // Try to extract time from market name
-    const timeMatch = market.match(/(\d{1,2}):(\d{2})(am|pm)/i);
-    if (timeMatch) {
-      return `btc-updown-15m-${Date.now()}`; // Fallback, will be updated
-    }
-  }
-  
-  if (market.includes('ethereum') && market.includes('up or down')) {
-    const timeMatch = market.match(/(\d{1,2}):(\d{2})(am|pm)/i);
-    if (timeMatch) {
-      return `eth-updown-15m-${Date.now()}`; // Fallback
-    }
-  }
-  
-  // Create a simple slug from market name
+  // Prefer the API-provided slug (stable and matches runner markets)
+  if (position.eventSlug) return position.eventSlug;
+
+  // Next-best: a stable condition-id based slug (never use Date.now())
+  if (position.conditionId) return `cond-${position.conditionId}`;
+
+  // Last resort: deterministic slug from title
   return position.market
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
@@ -540,20 +521,75 @@ export async function writePositionsToDatabase(
   }
   
   try {
-    // Prepare position records for upsert
-    const records = positions.map(p => ({
-      wallet_address: walletAddress,
-      market_slug: extractMarketSlug(p),
-      outcome: p.outcome,
-      shares: p.size,
-      avg_price: p.avgPrice,
-      current_price: p.curPrice,
-      value: p.currentValue,
-      cost: p.initialValue,
-      pnl: p.cashPnl,
-      pnl_percent: p.percentPnl,
-      token_id: p.asset,
-      synced_at: new Date().toISOString(),
+    // Aggregate by (market_slug, outcome) defensively (Data API can return duplicates)
+    const aggregated = new Map<
+      string,
+      {
+        wallet_address: string;
+        market_slug: string;
+        outcome: string;
+        shares: number;
+        cost: number;
+        value: number;
+        avgPriceNumerator: number;
+        current_price: number;
+        pnl: number;
+        pnl_percent: number;
+        token_id: string;
+      }
+    >();
+
+    for (const p of positions) {
+      const market_slug = extractMarketSlug(p);
+      const key = `${walletAddress}:${market_slug}:${p.outcome}`;
+
+      const shares = p.size;
+      const cost = p.initialValue;
+      const value = p.currentValue;
+
+      const prev = aggregated.get(key);
+      if (!prev) {
+        aggregated.set(key, {
+          wallet_address: walletAddress,
+          market_slug,
+          outcome: p.outcome,
+          shares,
+          cost,
+          value,
+          avgPriceNumerator: (p.avgPrice || 0) * shares,
+          current_price: p.curPrice,
+          pnl: p.cashPnl,
+          pnl_percent: p.percentPnl,
+          token_id: p.asset,
+        });
+      } else {
+        prev.shares += shares;
+        prev.cost += cost;
+        prev.value += value;
+        prev.avgPriceNumerator += (p.avgPrice || 0) * shares;
+        // keep latest-ish fields
+        prev.current_price = p.curPrice || prev.current_price;
+        prev.pnl += p.cashPnl;
+        // percent pnl isn't additive; keep the latest sample
+        prev.pnl_percent = p.percentPnl;
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+
+    const records = Array.from(aggregated.values()).map((r) => ({
+      wallet_address: r.wallet_address,
+      market_slug: r.market_slug,
+      outcome: r.outcome,
+      shares: r.shares,
+      avg_price: r.shares > 0 ? r.avgPriceNumerator / r.shares : 0,
+      current_price: r.current_price,
+      value: r.value,
+      cost: r.cost,
+      pnl: r.pnl,
+      pnl_percent: r.pnl_percent,
+      token_id: r.token_id,
+      synced_at: nowIso,
     }));
     
     // Upsert positions

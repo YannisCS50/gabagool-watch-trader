@@ -106,84 +106,85 @@ let isRefreshing = false;
 
 async function fetchPositionsFromApi(walletAddress: string): Promise<CachedPosition[]> {
   const positions: CachedPosition[] = [];
-  
-  try {
+
+  let cursor: string | null = null;
+  let pageCount = 0;
+  const maxPages = 20;
+
+  while (pageCount < maxPages) {
+    pageCount++;
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), CACHE_CONFIG.fetchTimeoutMs);
-    
-    const response = await fetch(
-      `${DATA_API_URL}/positions?user=${walletAddress}&sizeThreshold=0&limit=500`,
-      {
+
+    try {
+      let url = `${DATA_API_URL}/positions?user=${walletAddress}&sizeThreshold=0&limit=500`;
+      if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
+
+      const response = await fetch(url, {
         method: 'GET',
-        headers: { 'Accept': 'application/json' },
+        headers: { Accept: 'application/json' },
         signal: controller.signal,
-      }
-    );
-    
-    clearTimeout(timeoutId);
-    
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    
-    const data = await response.json();
-    const items: any[] = Array.isArray(data) ? data : (data.positions || []);
-    
-    for (const p of items) {
-      if ((parseFloat(p.size) || 0) <= 0) continue;
-      
-      // Extract outcome from position data
-      const outcomeRaw = (p.outcome || '').toUpperCase();
-      const outcome: 'UP' | 'DOWN' = 
-        outcomeRaw === 'YES' || outcomeRaw === 'UP' ? 'UP' : 'DOWN';
-      
-      // Extract market slug
-      const marketSlug = p.eventSlug || p.slug || extractSlugFromMarket(p.title || p.market || '');
-      
-      positions.push({
-        tokenId: p.asset || '',
-        conditionId: p.conditionId || '',
-        marketSlug,
-        outcome,
-        shares: parseFloat(p.size) || 0,
-        avgPrice: parseFloat(p.avgPrice) || 0,
-        cost: parseFloat(p.initialValue) || 0,
-        currentValue: parseFloat(p.currentValue) || 0,
-        currentPrice: parseFloat(p.curPrice) || 0,
-        pnl: parseFloat(p.cashPnl) || 0,
       });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+
+      const items: any[] = Array.isArray(data) ? data : (data.positions || []);
+      const nextCursor: string | null =
+        Array.isArray(data) ? null : (data.next_cursor || data.nextCursor || null);
+
+      for (const p of items) {
+        const size = parseFloat(p.size) || 0;
+        if (size <= 0) continue;
+
+        // We MUST have a stable market slug. If the API doesn't provide one,
+        // we skip the position instead of fabricating a timestamp-based slug.
+        const marketSlug: string | null = p.eventSlug || p.slug || null;
+        if (!marketSlug) continue;
+
+        const outcomeRaw = String(p.outcome ?? '').toUpperCase();
+        const outcome: 'UP' | 'DOWN' =
+          outcomeRaw === 'YES' || outcomeRaw === 'UP'
+            ? 'UP'
+            : outcomeRaw === 'NO' || outcomeRaw === 'DOWN'
+              ? 'DOWN'
+              : (Number(p.outcomeIndex) === 0 ? 'UP' : 'DOWN');
+
+        const cost = parseFloat(p.initialValue) || 0;
+
+        positions.push({
+          tokenId: p.asset || '',
+          conditionId: p.conditionId || '',
+          marketSlug,
+          outcome,
+          shares: size,
+          avgPrice: parseFloat(p.avgPrice) || (size > 0 ? cost / size : 0),
+          cost,
+          currentValue: parseFloat(p.currentValue) || 0,
+          currentPrice: parseFloat(p.curPrice) || 0,
+          pnl: parseFloat(p.cashPnl) || 0,
+        });
+      }
+
+      // Pagination
+      if (!nextCursor || nextCursor === cursor || items.length === 0) break;
+      cursor = nextCursor;
+    } catch (error: any) {
+      throw new Error(`Position fetch failed: ${error?.message || error}`);
+    } finally {
+      clearTimeout(timeoutId);
     }
-  } catch (error: any) {
-    throw new Error(`Position fetch failed: ${error?.message || error}`);
   }
-  
+
   return positions;
 }
 
-function extractSlugFromMarket(market: string): string {
-  // Try to extract slug from market name for 15m markets
-  const lower = market.toLowerCase();
-  
-  if (lower.includes('bitcoin') && lower.includes('up or down')) {
-    return `btc-updown-15m-${Date.now()}`;
-  }
-  if (lower.includes('ethereum') && lower.includes('up or down')) {
-    return `eth-updown-15m-${Date.now()}`;
-  }
-  if (lower.includes('solana') && lower.includes('up or down')) {
-    return `sol-updown-15m-${Date.now()}`;
-  }
-  if (lower.includes('xrp') && lower.includes('up or down')) {
-    return `xrp-updown-15m-${Date.now()}`;
-  }
-  
-  // Fallback: create slug from market name
-  return market
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 100);
-}
+// Note: We intentionally do NOT implement any "guess slug from title" fallback here.
+// A wrong slug is worse than missing data, because it can trigger false drift halts.
 
 // ============================================================
 // CACHE REFRESH
@@ -197,55 +198,75 @@ async function refreshCache(): Promise<void> {
   
   try {
     const positions = await fetchPositionsFromApi(config.polymarket.address);
-    
-    // Group by market slug
-    const byMarket = new Map<string, { up: CachedPosition | null; down: CachedPosition | null }>();
-    
+
+    // Aggregate by market slug (sum duplicates defensively)
+    const byMarket = new Map<
+      string,
+      {
+        upShares: number;
+        downShares: number;
+        upCost: number;
+        downCost: number;
+        upValue: number;
+        downValue: number;
+      }
+    >();
+
     for (const pos of positions) {
-      // Filter for 15m markets only
+      // Only keep markets we can map into our runner universe
       if (!pos.marketSlug.includes('15m') && !pos.marketSlug.includes('updown')) {
         continue;
       }
-      
+
       if (!byMarket.has(pos.marketSlug)) {
-        byMarket.set(pos.marketSlug, { up: null, down: null });
+        byMarket.set(pos.marketSlug, {
+          upShares: 0,
+          downShares: 0,
+          upCost: 0,
+          downCost: 0,
+          upValue: 0,
+          downValue: 0,
+        });
       }
-      
-      const entry = byMarket.get(pos.marketSlug)!;
+
+      const agg = byMarket.get(pos.marketSlug)!;
       if (pos.outcome === 'UP') {
-        entry.up = pos;
+        agg.upShares += pos.shares;
+        agg.upCost += pos.cost;
+        agg.upValue += pos.currentValue;
       } else {
-        entry.down = pos;
+        agg.downShares += pos.shares;
+        agg.downCost += pos.cost;
+        agg.downValue += pos.currentValue;
       }
     }
-    
+
     // Update cache state
     const nowMs = Date.now();
     const newPositions = new Map<string, MarketPositionCache>();
-    
-    for (const [slug, sides] of byMarket) {
-      // Extract asset from slug (e.g., "btc-updown-15m-123456" -> "BTC")
+
+    for (const [slug, agg] of byMarket) {
       const asset = slug.split('-')[0]?.toUpperCase() || 'UNKNOWN';
-      
+
       newPositions.set(slug, {
         marketSlug: slug,
         asset,
-        upShares: sides.up?.shares || 0,
-        downShares: sides.down?.shares || 0,
-        upCost: sides.up?.cost || 0,
-        downCost: sides.down?.cost || 0,
-        upAvgPrice: sides.up?.avgPrice || 0,
-        downAvgPrice: sides.down?.avgPrice || 0,
+        upShares: agg.upShares,
+        downShares: agg.downShares,
+        upCost: agg.upCost,
+        downCost: agg.downCost,
+        upAvgPrice: agg.upShares > 0 ? agg.upCost / agg.upShares : 0,
+        downAvgPrice: agg.downShares > 0 ? agg.downCost / agg.downShares : 0,
         lastFetchedAtMs: nowMs,
       });
     }
-    
+
     cacheState.positions = newPositions;
     cacheState.allPositions = positions;
     cacheState.lastRefreshAtMs = nowMs;
     cacheState.lastRefreshDurationMs = nowMs - startMs;
     cacheState.refreshCount++;
-    cacheState.errorCount = 0;  // Reset on success
+    cacheState.errorCount = 0; // Reset on success
     cacheState.lastError = null;
     cacheState.isHealthy = true;
     
