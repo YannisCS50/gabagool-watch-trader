@@ -30,6 +30,7 @@ interface V26Trade {
   fill_time_ms: number | null;
   result: string | null;
   pnl: number | null;
+  fill_matched_at: string | null;
 }
 
 interface StrikePrice {
@@ -59,6 +60,7 @@ interface TradeLog {
   pnl: number | null;
   fillTimeMs: number | null;
   filledOffsetSec: number | null; // Seconds before (negative) or after (positive) market open
+  filledSource: 'match' | 'log' | null; // Source of fill time: 'match' = CLOB match_time, 'log' = fill_logs
   strikePrice: number | null;
   closePrice: number | null;
   delta: number | null;
@@ -84,6 +86,7 @@ export default function V26Dashboard() {
   const [trades, setTrades] = useState<TradeLog[]>([]);
   const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
   const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [stats, setStats] = useState({
     totalBets: 0,
@@ -297,24 +300,44 @@ export default function V26Dashboard() {
       const marketTitle = `${trade.asset} Up or Down - ${dateStr}, ${startTimeStr}-${endTimeStr} ET`;
 
       const eventStartMs = new Date(trade.event_start_time).getTime();
+      const eventEndMs = new Date(trade.event_end_time).getTime();
+      const marketLenSec = Math.round((eventEndMs - eventStartMs) / 1000);
 
-      // Calculate filled offset using fill_logs
+      // Calculate filled offset - PRIORITY: fill_matched_at (real CLOB match time)
       // Negative = before open, positive = after open
-      const filledOffsetSec = (() => {
-        if (!trade.order_id) return null;
+      const { filledOffsetSec, filledSource } = (() => {
+        // Priority 1: fill_matched_at from CLOB order details (most accurate)
+        if (trade.fill_matched_at) {
+          const matchMs = new Date(trade.fill_matched_at).getTime();
+          const offset = Math.round((matchMs - eventStartMs) / 1000);
+          // Sanity check: reject absurd values (> market length + 2 minutes)
+          if (Math.abs(offset) <= marketLenSec + 120) {
+            return { filledOffsetSec: offset, filledSource: 'match' as const };
+          }
+        }
+
+        // Priority 2: fill_logs (runner detection time - less accurate)
+        if (!trade.order_id) return { filledOffsetSec: null, filledSource: null };
 
         const fill = fillTimeLookup.get(trade.order_id);
-        if (!fill) return null;
+        if (!fill) return { filledOffsetSec: null, filledSource: null };
 
-        // Best: seconds_remaining (directly tied to the market clock)
+        // Best from logs: seconds_remaining (directly tied to the market clock)
         if (fill.secondsRemaining !== null) {
-          const eventEndMs = new Date(trade.event_end_time).getTime();
-          const marketLenSec = Math.round((eventEndMs - eventStartMs) / 1000);
-          return marketLenSec - fill.secondsRemaining;
+          const offset = marketLenSec - fill.secondsRemaining;
+          // Sanity check
+          if (Math.abs(offset) <= marketLenSec + 120) {
+            return { filledOffsetSec: offset, filledSource: 'log' as const };
+          }
         }
 
         // Fallback: timestamp diff
-        return Math.round((fill.ts - eventStartMs) / 1000);
+        const offset = Math.round((fill.ts - eventStartMs) / 1000);
+        if (Math.abs(offset) <= marketLenSec + 120) {
+          return { filledOffsetSec: offset, filledSource: 'log' as const };
+        }
+
+        return { filledOffsetSec: null, filledSource: null };
       })();
 
       logs.push({
@@ -331,6 +354,7 @@ export default function V26Dashboard() {
         pnl,
         fillTimeMs,
         filledOffsetSec,
+        filledSource,
         strikePrice,
         closePrice,
         delta,
@@ -374,6 +398,24 @@ export default function V26Dashboard() {
       totalPnl,
     });
     setLoading(false);
+  };
+
+  const syncFills = async () => {
+    setSyncing(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('v26-sync-fills');
+      if (error) {
+        console.error('[V26Dashboard] Sync failed:', error);
+      } else {
+        console.log('[V26Dashboard] Sync result:', data);
+        // Refresh data after sync
+        await fetchData();
+      }
+    } catch (err) {
+      console.error('[V26Dashboard] Sync error:', err);
+    } finally {
+      setSyncing(false);
+    }
   };
 
   useEffect(() => {
@@ -497,6 +539,10 @@ export default function V26Dashboard() {
                 <ExternalLink className="h-4 w-4 mr-2" />
                 Polymarket
               </a>
+            </Button>
+            <Button onClick={syncFills} variant="outline" size="sm" disabled={syncing || loading}>
+              <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? 'animate-spin' : ''}`} />
+              Sync Fills
             </Button>
             <Button onClick={fetchData} variant="outline" size="sm" disabled={loading}>
               <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
@@ -732,8 +778,10 @@ export default function V26Dashboard() {
                                   ? 'text-green-500 border-green-500/30' 
                                   : 'text-yellow-500 border-yellow-500/30'
                               }`}
+                              title={log.filledSource === 'match' ? 'CLOB match time' : log.filledSource === 'log' ? 'Runner detection time (may be inaccurate)' : undefined}
                             >
                               {formatEntryOffset(log.filledOffsetSec)}
+                              {log.filledSource === 'log' && <span className="ml-1 opacity-60">*</span>}
                             </Badge>
                           ) : '-'}
                         </TableCell>
