@@ -40,6 +40,7 @@ interface StrikePrice {
 interface TradeLog {
   id: string;
   market: string;
+  marketSlug: string;
   asset: string;
   time: string;
   shares: number;
@@ -54,6 +55,7 @@ interface TradeLog {
   delta: number | null;
   status: string;
   eventEndTime: string;
+  eventStartTime: string;
   createdAt: string;
 }
 
@@ -235,10 +237,18 @@ export default function V26Dashboard() {
       }
 
       const startTime = new Date(trade.event_start_time);
+      const endTime = new Date(trade.event_end_time);
+      
+      // Format: "XRP Up or Down - January 7, 5:15PM-5:30PM ET"
+      const startTimeStr = format(startTime, 'h:mma').replace(':00', '');
+      const endTimeStr = format(endTime, 'h:mma').replace(':00', '');
+      const dateStr = format(startTime, 'MMMM d');
+      const marketTitle = `${trade.asset} Up or Down - ${dateStr}, ${startTimeStr}-${endTimeStr} ET`;
 
       logs.push({
         id: trade.id,
-        market: trade.market_slug,
+        market: marketTitle,
+        marketSlug: trade.market_slug,
         asset: trade.asset,
         time: format(startTime, 'dd-MM HH:mm'),
         shares: filledShares,
@@ -253,6 +263,7 @@ export default function V26Dashboard() {
         delta,
         status: trade.status,
         eventEndTime: trade.event_end_time,
+        eventStartTime: trade.event_start_time,
         createdAt: trade.created_at,
       });
     }
@@ -605,7 +616,17 @@ export default function V26Dashboard() {
                         className={`border-b border-border/30 ${log.result === 'NOT_BOUGHT' ? 'opacity-40' : ''} hover:bg-muted/30 transition-colors`}
                       >
                         <TableCell className="py-2">
-                          <div className="font-medium text-sm">{log.market}</div>
+                          <div className="flex items-center gap-2">
+                            <div className="font-medium text-sm">{log.market}</div>
+                            <a
+                              href={`https://polymarket.com/event/${log.marketSlug}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-muted-foreground hover:text-foreground transition-colors"
+                            >
+                              <ExternalLink className="h-3 w-3" />
+                            </a>
+                          </div>
                         </TableCell>
                         <TableCell className="py-2 text-muted-foreground text-sm">{log.time}</TableCell>
                         <TableCell className="py-2 text-right font-mono text-sm">
