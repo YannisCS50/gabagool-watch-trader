@@ -58,8 +58,7 @@ interface TradeLog {
   result: 'WIN' | 'LOSS' | 'LIVE' | 'PENDING' | 'NOT_BOUGHT';
   pnl: number | null;
   fillTimeMs: number | null;
-  placedOffsetSec: number | null;  // Seconds before (negative) or after (positive) market open
-  filledOffsetSec: number | null;  // Seconds before (negative) or after (positive) market open
+  filledOffsetSec: number | null; // Seconds before (negative) or after (positive) market open
   strikePrice: number | null;
   closePrice: number | null;
   delta: number | null;
@@ -297,12 +296,9 @@ export default function V26Dashboard() {
       const dateStr = format(startTimeET, 'MMMM d');
       const marketTitle = `${trade.asset} Up or Down - ${dateStr}, ${startTimeStr}-${endTimeStr} ET`;
 
-      // Calculate placed offset: created_at minus event_start_time
       const eventStartMs = new Date(trade.event_start_time).getTime();
-      const placedMs = new Date(trade.created_at).getTime();
-      const placedOffsetSec = Math.round((placedMs - eventStartMs) / 1000);
 
-      // Calculate filled offset using fill_logs (most accurate)
+      // Calculate filled offset using fill_logs
       // Negative = before open, positive = after open
       const filledOffsetSec = (() => {
         if (!trade.order_id) return null;
@@ -334,7 +330,6 @@ export default function V26Dashboard() {
         result,
         pnl,
         fillTimeMs,
-        placedOffsetSec,
         filledOffsetSec,
         strikePrice,
         closePrice,
@@ -687,7 +682,6 @@ export default function V26Dashboard() {
                     <TableHead className="text-xs font-medium text-right">Shares</TableHead>
                     <TableHead className="text-xs font-medium text-right">Prijs</TableHead>
                     <TableHead className="text-xs font-medium text-right">Cost</TableHead>
-                    <TableHead className="text-xs font-medium">Placed</TableHead>
                     <TableHead className="text-xs font-medium">Filled</TableHead>
                     <TableHead className="text-xs font-medium">Result</TableHead>
                     <TableHead className="text-xs font-medium text-right">P&L</TableHead>
@@ -696,7 +690,7 @@ export default function V26Dashboard() {
                 <TableBody>
                   {paginatedTrades.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
+                      <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
                         Geen trades gevonden
                       </TableCell>
                     </TableRow>
@@ -728,20 +722,6 @@ export default function V26Dashboard() {
                         </TableCell>
                         <TableCell className="py-2 text-right font-mono text-sm">
                           {log.total > 0 ? `$${log.total.toFixed(2)}` : '-'}
-                        </TableCell>
-                        <TableCell className="py-2">
-                          {log.placedOffsetSec !== null ? (
-                            <Badge 
-                              variant="outline" 
-                              className={`text-xs ${
-                                log.placedOffsetSec < 0 
-                                  ? 'text-blue-500 border-blue-500/30' 
-                                  : 'text-yellow-500 border-yellow-500/30'
-                              }`}
-                            >
-                              {formatEntryOffset(log.placedOffsetSec)}
-                            </Badge>
-                          ) : '-'}
                         </TableCell>
                         <TableCell className="py-2">
                           {log.filledOffsetSec !== null ? (
