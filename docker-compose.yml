@@ -58,8 +58,8 @@ services:
     environment:
       - VPN_REQUIRED=true
       - EXPECTED_VPN_PROVIDER=Mullvad
-      # Optional: mount the env file so the runner can validate duplicate keys at startup
       - ENV_FILE=/runner/secrets/local-runner.env
+      - FEATURE_STRATEGY=v8
     # NOTE: Docker does not allow `dns:` with `network_mode: container:...`.
     # We enforce DNS by mounting a deterministic resolv.conf instead.
     volumes:
