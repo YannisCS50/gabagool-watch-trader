@@ -57,6 +57,19 @@ import {
 import { tryAcquire, forceRelease, getMutexStats, type AcquireResult } from './market-mutex.js';
 import { checkBurstLimit, recordOrderPlacement, clearBurstState, getBurstStats, BURST_LIMITER_CONFIG } from './burst-limiter.js';
 
+// v8.0: Execution-first imports
+import { PriceGuard, PriceGuardConfig, createPriceGuard } from './price-guard.js';
+import { 
+  shouldBypassRateLimiter, 
+  shouldBypassBurstLimiter, 
+  shouldBypassCppGating,
+  startHedgeTracking,
+  recordHedgeFill,
+  getEscalationLevel,
+  type IntentType as HedgeIntentType 
+} from './hedge-priority.js';
+import { KPITracker, recordFill as kpiRecordFill, recordHedgeOutcome, checkKPIs, getKPIStats } from './kpi-tracker.js';
+
 // Rev D.2: CPP Quality imports (SENIOR STRATEGY DIRECTIVE)
 import {
   CppQuality,
@@ -88,6 +101,9 @@ export const HARD_INVARIANT_CONFIG = {
   // Logging throttle
   logThrottleMs: 5000,
 };
+
+// v8.0: Central PriceGuard instance for NO-CROSSING enforcement
+const priceGuard = createPriceGuard();
 
 // ============================================================
 // HALT-ON-BREACH CONFIGURATION (v7.2.7 REV C.4.1)
@@ -947,21 +963,26 @@ export async function placeOrderWithCaps(
   } = ctx;
 
   // ================================================================
-  // STEP 0: CHECK BURST LIMIT (before acquiring mutex)
+  // STEP 0: CHECK BURST LIMIT (v8.0: hedge priority bypass)
   // ================================================================
-  const burstCheck = checkBurstLimit({
-    marketId,
-    asset,
-    side: order.side,
-    runId,
-  });
+  const hedgeIntentType = intentType as HedgeIntentType;
+  const bypassBurst = shouldBypassBurstLimiter(hedgeIntentType);
+  
+  if (!bypassBurst) {
+    const burstCheck = checkBurstLimit({
+      marketId,
+      asset,
+      side: order.side,
+      runId,
+    });
 
-  if (burstCheck.blocked) {
-    return {
-      success: false,
-      error: `BURST_BLOCKED: ${burstCheck.reason}`,
-      failureReason: 'cap_blocked',
-    };
+    if (burstCheck.blocked) {
+      return {
+        success: false,
+        error: `BURST_BLOCKED: ${burstCheck.reason}`,
+        failureReason: 'cap_blocked',
+      };
+    }
   }
 
   // ================================================================
@@ -1022,6 +1043,62 @@ async function placeOrderWithCapsInner(
   // Map side to OrderSide type
   const orderSide: OrderSide = order.side;
   const ledgerSide: LedgerSide = outcome;
+  const hedgeIntentType = intentType as HedgeIntentType;
+
+  // ================================================================
+  // v8.0 STEP 0.5: PRICE GUARD - NO-CROSSING INVARIANT
+  // ================================================================
+  // Must check price BEFORE any order placement
+  const depth = await getOrderbookDepth(order.tokenId);
+  const bestBid = depth.topBid ?? 0;
+  const bestAsk = depth.topAsk ?? 1;
+  const bookAgeMs = Date.now() - (depth as any).fetchedAt || 0;
+  
+  // Determine if this is emergency exit mode (only for SURVIVAL/EMERGENCY_EXIT)
+  const isEmergencyMode = intentType === 'SURVIVAL' || intentType === 'EMERGENCY_EXIT';
+  
+  const priceCheckResult = priceGuard.checkPrice({
+    side: order.side,
+    submittedPrice: order.price,
+    bestBid,
+    bestAsk,
+    bookAgeMs,
+    intent: hedgeIntentType,
+    marketId,
+    emergencyMode: isEmergencyMode,
+  });
+  
+  if (!priceCheckResult.allowed) {
+    saveBotEvent({
+      event_type: 'PRICE_GUARD_BLOCKED',
+      asset,
+      market_id: marketId,
+      ts: startTime,
+      run_id: runId,
+      reason_code: priceCheckResult.reason,
+      data: {
+        side: order.side,
+        submittedPrice: order.price,
+        bestBid,
+        bestAsk,
+        bookAgeMs,
+        intent: intentType,
+        crossingFlag: priceCheckResult.crossingFlag,
+      },
+    }).catch(() => {});
+    
+    return {
+      success: false,
+      error: `PRICE_GUARD_BLOCKED: ${priceCheckResult.reason}`,
+      failureReason: 'cap_blocked',
+    };
+  }
+  
+  // Use adjusted price from PriceGuard if provided
+  const guardedPrice = priceCheckResult.adjustedPrice ?? order.price;
+  
+  // Alias startTime as 'now' for backward compatibility
+  const now = startTime;
 
   // SELL orders: use legacy clamp (never short), skip ledger reservation
   if (order.side === 'SELL') {
@@ -1110,10 +1187,14 @@ async function placeOrderWithCapsInner(
   
   const isHedgeIntent = intentType === 'HEDGE' || intentType === 'hedge' || 
                         intentType === 'FORCE' || intentType === 'SURVIVAL' ||
+                        intentType === 'EMERGENCY_EXIT' ||
                         intentType === 'force_hedge' || intentType === 'panic_hedge';
   
-  if (isHedgeIntent) {
-    // Check if hedge is allowed by activity state
+  // v8.0: Check if CPP gating should be bypassed for hedge priority
+  const bypassCppGating = shouldBypassCppGating(hedgeIntentType);
+  
+  if (isHedgeIntent && !bypassCppGating) {
+    // Check if hedge is allowed by activity state (only if not bypassed)
     const hedgeAllowed = isHedgeAllowedByActivityState({
       marketId,
       asset,
@@ -1141,6 +1222,9 @@ async function placeOrderWithCapsInner(
         failureReason: 'cap_blocked',
       };
     }
+  } else if (isHedgeIntent && bypassCppGating) {
+    // Log that we're bypassing CPP gating for hedge priority
+    console.log(`🚀 [HEDGE_PRIORITY] Bypassing CPP gating for ${intentType} on ${asset}`);
   } else {
     // Entry/accumulate: check if entry is allowed by activity state
     const entryAllowed = isEntryAllowedByActivityState({
@@ -1370,10 +1454,12 @@ async function placeOrderWithCapsInner(
     result = await rawPlaceOrder({
       tokenId: order.tokenId,
       side: order.side,
-      price: order.price,
+      price: guardedPrice, // v8.0: Use PriceGuard-adjusted price
       size: finalSize,
       orderType: order.orderType,
       intent: order.intent,
+      spread: order.spread,
+    });
       spread: order.spread,
     });
   } catch (err: any) {

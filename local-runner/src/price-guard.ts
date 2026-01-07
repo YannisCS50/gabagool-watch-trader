@@ -81,6 +81,27 @@ export interface PriceCheckParams {
   runId?: string;
 }
 
+/**
+ * Simplified interface for hard-invariants integration
+ */
+export interface SimplePriceCheckParams {
+  side: 'BUY' | 'SELL';
+  submittedPrice: number;
+  bestBid: number;
+  bestAsk: number;
+  bookAgeMs: number;
+  intent: string;
+  marketId: string;
+  emergencyMode: boolean;
+}
+
+export interface SimplePriceCheckResult {
+  allowed: boolean;
+  reason?: string;
+  crossingFlag: boolean;
+  adjustedPrice?: number;
+}
+
 export interface BookFreshnessResult {
   fresh: boolean;
   ageMs: number;
@@ -514,5 +535,60 @@ export const PriceGuard = {
   // Config
   CONFIG: PRICE_GUARD_CONFIG,
 };
+
+/**
+ * Factory function to create a PriceGuard instance with simplified interface
+ * Used by hard-invariants.ts for integration
+ */
+export function createPriceGuard(cfg = PRICE_GUARD_CONFIG) {
+  return {
+    checkPrice(params: SimplePriceCheckParams): SimplePriceCheckResult {
+      const book: BookSnapshot = {
+        bestBid: params.bestBid,
+        bestAsk: params.bestAsk,
+        fetchedAt: Date.now() - params.bookAgeMs,
+      };
+      
+      // Check book freshness first
+      const freshness = checkBookFreshness(book, cfg);
+      if (!freshness.fresh) {
+        return {
+          allowed: false,
+          reason: freshness.reason,
+          crossingFlag: false,
+        };
+      }
+      
+      // Check price
+      const result = checkPrice({
+        side: params.side,
+        requestedPrice: params.submittedPrice,
+        book,
+        emergencyMode: params.emergencyMode,
+        marketId: params.marketId,
+        asset: 'UNKNOWN', // Not provided in simple interface
+        intent: params.intent,
+      });
+      
+      if (result.allowed) {
+        return {
+          allowed: true,
+          crossingFlag: false,
+          adjustedPrice: result.safePrice,
+        };
+      } else {
+        return {
+          allowed: false,
+          reason: result.reason,
+          crossingFlag: result.crossingFlag,
+        };
+      }
+    },
+    
+    config: cfg,
+  };
+}
+
+export type PriceGuardConfig = typeof PRICE_GUARD_CONFIG;
 
 export default PriceGuard;
