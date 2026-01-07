@@ -2,18 +2,29 @@ import { config } from './config.js';
 import type { OrderbookDepth } from './polymarket.js';
 
 // ============================================================
-// GPT STRATEGY VERSION 6.0 – ADAPTIVE HEDGER
-// Polymarket 15m Bot
+// GPT STRATEGY VERSION 7.2.8 – REV D.2 SENIOR STRATEGY DIRECTIVE
+// Polymarket 15m Bot - CPP-First Gabagool-Style Market Making
 // ============================================================
 // 
-// Core principle: Buy YES + NO asymmetrically when combined < $1.00
-// Guaranteed profit = min(QtyYES, QtyNO) - (CostYES + CostNO)
+// CORE PRINCIPLE: Behave like a patient market maker, not a nervous trader.
+// If choice is between doing nothing vs locking in bad trade → DO NOTHING.
 // 
-// States: FLAT → ONE_SIDED → HEDGED (winst) / SKEWED / DEEP_DISLOCATION
+// NON-NEGOTIABLE INVARIANTS:
+// 1. CPP DOMINANCE: If projected CPP ≥ 0.99 → DO NOTHING
+// 2. NO EXPENSIVE MINORITY BUYS: Never buy expensive side to reduce skew
+// 3. STATE TRUST GATE: Freeze market if inventory state is untrusted
+// 
+// SUCCESS METRICS (in order):
+// 1. % of paired shares with CPP < 0.99 (PRIMARY)
+// 2. Distribution shift of CPP leftward
+// 3. Reduction in trades with CPP ≥ 1.05
+// 4. Fewer but higher-quality trades
+// 
+// NOT METRICS: Trade count, pairing speed, visual flatness of skew
 // ============================================================
 
-export const STRATEGY_VERSION = '7.1.0';
-export const STRATEGY_NAME = 'GPT Strategy v7.1.0 – Low-Risk Test Mode (Polymarket 15m Bot)';
+export const STRATEGY_VERSION = '7.2.8';
+export const STRATEGY_NAME = 'GPT Strategy v7.2.8 – REV D.2 Senior Directive (CPP-First)';
 
 // ============================================================
 // TYPES & STATE MACHINE (PDF Section: Implementatie & Logica)
@@ -75,21 +86,29 @@ export interface MarketState {
 // ============================================================
 
 export const STRATEGY = {
-  // Trade size settings (in USDC) - v6.1: Micro-sizing (Gabagool-style)
+  // ==========================================================================
+  // REV D.2 SENIOR STRATEGY DIRECTIVE — GABAGOOL-STYLE MARKET MAKING
+  // ==========================================================================
+  // CORE PRINCIPLE: Behave like a patient market maker, not a nervous trader.
+  // If choice is between doing nothing vs locking in bad trade → DO NOTHING.
+  // CPP < 0.99 is the PRIMARY success metric.
+  // ==========================================================================
+  
+  // Trade size settings (in USDC) - Micro-sizing (Gabagool-style)
   tradeSizeUsd: {
-    base: 10,    // v6.1: Reduced from 25 to 10 for micro-sizing
-    min: 5,      // v6.1: Reduced from 20 to 5 for micro-sizing
-    max: 25,     // v6.1: Reduced from 50 to 25 (larger only for extreme edge)
+    base: 10,    // Micro-sizing for incremental accumulation
+    min: 5,      // Small entries, grow only if price improves
+    max: 25,     // Conservative max
   },
   
-  // Edge thresholds - PDF Section
+  // Edge thresholds - REV D.2: Fee-aware edge calculation
   edge: {
-    baseBuffer: 0.015,        // 1.5¢ minimum mispricing required
+    baseBuffer: 0.02,         // 2¢ minimum mispricing required (increased for fees)
     strongEdge: 0.04,         // 4¢+ = strong signal, scale up
-    strongEdgeBuffer: 0.03,   // v6.1: For late entry, require combined ≤ 97¢
-    allowOverpay: 0.01,       // Max 1¢ overpay allowed for fill
+    strongEdgeBuffer: 0.03,   // For late entry, require combined ≤ 97¢
+    allowOverpay: 0.005,      // Max 0.5¢ overpay allowed (tightened from 1¢)
     slippageBuffer: 0.004,    // 0.4¢ for execution slippage
-    deepDislocationThreshold: 0.96, // Combined ≤ $0.96 = DEEP mode
+    deepDislocationThreshold: 0.95, // Combined ≤ $0.95 = DEEP mode (tightened)
   },
   
   // v7.2: Polymarket taker fee structure (15-min crypto markets only)
@@ -100,27 +119,29 @@ export const STRATEGY = {
     minFee: 0.0001,           // Min fee = $0.0001 (precision limit)
   },
   
-  // Timing and lifecycle - v6.1: Gabagool-style entry window
+  // Timing and lifecycle - Gabagool-style patience
   timing: {
     stopNewTradesSec: 30,     // No new positions < 30s remaining
     hedgeTimeoutSec: 12,      // Force hedge after 12s if one-sided
     hedgeMustBySec: 60,       // Must be hedged by 60s remaining
     unwindStartSec: 45,       // Optional: start unwind at 45s
-    // v6.1: Entry Window Discipline (Gabagool-style)
+    // Entry Window Discipline (Gabagool-style)
     entryWindowStartSec: 10,  // Primary entry window start (after market open)
     entryWindowEndSec: 40,    // Primary entry window end
-    // v6.1: Initial Hedge Discipline
+    // Initial Hedge Discipline
     initHedgeTimeoutSec: 3,   // Place initial hedge within 3s of first fill
     initHedgeSizePercent: 0.15, // Initial hedge = 15% of opening shares (10-20%)
-    // v6.1: Paired Quantity Target
+    // Paired Quantity Target
     pairedTargetDeadlineSec: 60, // Must reach paired minimum within 60s
   },
   
-  // Position skew management - PDF Section
+  // Position skew management - REV D.2: Skew is tolerable, bad CPP is not
   skew: {
     target: 0.50,             // Target 50/50 distribution
-    rebalanceThreshold: 0.20, // >20% deviation triggers rebalance
+    rebalanceThreshold: 0.20, // >20% deviation triggers rebalance consideration
     hardCap: 0.70,            // Never >70% of shares on one side
+    // REV D.2: Tolerate skew rather than worsen CPP
+    tolerateSkewOverBadCpp: true,
   },
   
   // Risk limits
@@ -130,12 +151,12 @@ export const STRATEGY = {
     maxSharesPerSide: 500,    // Max shares per side
   },
   
-  // v6.1.1: Paired Quantity & Cost-Per-Paired Controls (HARD INVARIANTS)
+  // REV D.2: CPP-FIRST Controls (replaces v6.1.1 pairedControl)
   pairedControl: {
-    minShares: 20,            // v6.1.1: PAIRED_MIN_SHARES - HARD MINIMUM after deadline
-    costPerPairedStop: 1.05,  // v6.1.1: Stop ALL adds if cost_per_paired > 1.05
-    costPerPairedEmergency: 1.10, // v6.1.1: Emergency unwind if > 1.10
-    survivalWindowSec: 20,    // v6.1.1: Only exception to guardrails - near settlement
+    minShares: 20,            // PAIRED_MIN_SHARES - HARD MINIMUM after deadline
+    costPerPairedStop: 0.99,  // REV D.2: Stop ALL adds if CPP ≥ 0.99 (was 1.05)
+    costPerPairedEmergency: 1.02, // Emergency unwind if CPP ≥ 1.02 (was 1.10)
+    survivalWindowSec: 20,    // Only exception to guardrails - near settlement
   },
   
   // v6.1.2: Micro-Hedge Execution (Gabagool-style pairing)
