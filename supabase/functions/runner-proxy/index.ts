@@ -96,12 +96,15 @@ Deno.serve(async (req) => {
     switch (action) {
       case 'get-markets': {
         // Proxy to get-market-tokens function
+        // Pass v26 flag if provided (for V26 pre-market strategy)
+        const v26Mode = data?.v26 === true;
         const response = await fetch(`${SUPABASE_URL}/functions/v1/get-market-tokens`, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
             'Content-Type': 'application/json',
           },
+          body: JSON.stringify({ v26: v26Mode }),
         });
         const result = await response.json();
         return new Response(JSON.stringify(result), {

@@ -64,9 +64,9 @@ async function callProxy<T>(action: string, data?: Record<string, unknown>): Pro
   return response.json();
 }
 
-export async function fetchMarkets(): Promise<{ success: boolean; markets?: MarketToken[] }> {
+export async function fetchMarkets(options?: { v26?: boolean }): Promise<{ success: boolean; markets?: MarketToken[] }> {
   try {
-    const result = await callProxy<{ success: boolean; markets?: MarketToken[] }>('get-markets');
+    const result = await callProxy<{ success: boolean; markets?: MarketToken[] }>('get-markets', options);
     return result;
   } catch (error) {
     console.error('❌ fetchMarkets error:', error);
