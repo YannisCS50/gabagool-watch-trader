@@ -8,6 +8,7 @@
     "auth:order-smoketest": "node clob_order_auth_smoketest.js",
     "start": "tsx src/index.ts",
     "dev": "tsx watch src/index.ts",
+    "v26": "tsx src/v26/runner.ts",
     "claim:debug": "tsx scripts/claim-debug.ts",
     "claim": "tsx scripts/claim-now.ts",
     "claim:loop": "tsx scripts/claim-loop.ts"
