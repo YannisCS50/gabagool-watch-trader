@@ -135,11 +135,13 @@ serve(async (req) => {
     const rows = parseCSV(csvContent);
     console.log(`[v26-sync-csv] Parsed ${rows.length} rows from CSV`);
 
-    // Filter to Buy actions only (these have real fill times)
+    // Separate by action type
     const buyRows = rows.filter(r => r.action === 'Buy');
-    console.log(`[v26-sync-csv] Found ${buyRows.length} Buy transactions`);
+    const lostRows = rows.filter(r => r.action === 'Lost');
+    const redeemRows = rows.filter(r => r.action === 'Redeem');
+    console.log(`[v26-sync-csv] Found ${buyRows.length} Buy, ${lostRows.length} Lost, ${redeemRows.length} Redeem`);
 
-    // Build lookup: market_slug -> { fillTimestamp, shares, price }
+    // Build lookup: market_slug -> fill info (from Buy)
     interface CsvFill {
       fillTimestampSec: number;
       tokenAmount: number;
@@ -154,7 +156,7 @@ serve(async (req) => {
       const eventStartTime = extractEventStartTime(row.marketName);
       
       if (!asset || !eventStartTime) {
-        console.log(`[v26-sync-csv] Could not parse: ${row.marketName}`);
+        console.log(`[v26-sync-csv] Could not parse Buy: ${row.marketName}`);
         continue;
       }
 
@@ -165,7 +167,6 @@ serve(async (req) => {
 
       const existing = fillLookup.get(marketSlug);
       if (!existing || fillTs > existing.fillTimestampSec) {
-        // Use latest fill for this market
         fillLookup.set(marketSlug, {
           fillTimestampSec: fillTs,
           tokenAmount,
@@ -174,27 +175,86 @@ serve(async (req) => {
           txHash: row.hash,
         });
       } else if (fillTs === existing.fillTimestampSec) {
-        // Same timestamp, aggregate
         existing.tokenAmount += tokenAmount;
         existing.usdcAmount += usdcAmount;
       }
     }
 
-    console.log(`[v26-sync-csv] Built fill lookup for ${fillLookup.size} markets`);
+    // Build lookup: market_slug -> settlement info (from Lost/Redeem)
+    interface CsvSettlement {
+      result: 'won' | 'lost';
+      settledAtSec: number;
+      payout: number; // USDC received (0 for lost)
+      shares: number;
+    }
+    const settlementLookup = new Map<string, CsvSettlement>();
 
-    // Fetch v26_trades that could match
-    const marketSlugs = Array.from(fillLookup.keys());
+    for (const row of lostRows) {
+      const asset = extractAsset(row.marketName);
+      const eventStartTime = extractEventStartTime(row.marketName);
+      if (!asset || !eventStartTime) continue;
+
+      const marketSlug = buildMarketSlug(asset, eventStartTime);
+      const settledTs = parseInt(row.timestamp);
+      const shares = parseFloat(row.tokenAmount);
+      const cost = parseFloat(row.usdcAmount);
+
+      const existing = settlementLookup.get(marketSlug);
+      if (!existing) {
+        settlementLookup.set(marketSlug, {
+          result: 'lost',
+          settledAtSec: settledTs,
+          payout: 0,
+          shares,
+        });
+      } else {
+        // Aggregate if multiple Lost entries
+        existing.shares += shares;
+      }
+    }
+
+    for (const row of redeemRows) {
+      const asset = extractAsset(row.marketName);
+      const eventStartTime = extractEventStartTime(row.marketName);
+      if (!asset || !eventStartTime) continue;
+
+      const marketSlug = buildMarketSlug(asset, eventStartTime);
+      const settledTs = parseInt(row.timestamp);
+      const payout = parseFloat(row.usdcAmount);
+      const shares = parseFloat(row.tokenAmount);
+
+      const existing = settlementLookup.get(marketSlug);
+      if (!existing) {
+        settlementLookup.set(marketSlug, {
+          result: 'won',
+          settledAtSec: settledTs,
+          payout,
+          shares,
+        });
+      } else {
+        // Upgrade lost to won if we also have a redeem (partial hedge)
+        existing.result = 'won';
+        existing.payout += payout;
+        existing.shares += shares;
+      }
+    }
+
+    console.log(`[v26-sync-csv] Fill lookup: ${fillLookup.size} markets, Settlement lookup: ${settlementLookup.size} markets`);
+
+    // Combine all market slugs
+    const allSlugs = new Set([...fillLookup.keys(), ...settlementLookup.keys()]);
+    const marketSlugs = Array.from(allSlugs);
+    
     if (marketSlugs.length === 0) {
       return new Response(
-        JSON.stringify({ success: true, synced: 0, failed: 0, total: 0, message: 'No Buy transactions found' }),
+        JSON.stringify({ success: true, synced: 0, message: 'No transactions found' }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
     const { data: trades, error: fetchError } = await supabase
       .from('v26_trades')
-      .select('id, market_slug, event_start_time, event_end_time, status, filled_shares, fill_matched_at')
-      .in('market_slug', marketSlugs);
+      .select('id, market_slug, event_start_time, event_end_time, status, filled_shares, fill_matched_at, result, settled_at, pnl, notional');
 
     if (fetchError) {
       console.error('[v26-sync-csv] Error fetching trades:', fetchError);
@@ -204,41 +264,40 @@ serve(async (req) => {
       );
     }
 
-    console.log(`[v26-sync-csv] Found ${trades?.length || 0} matching v26_trades`);
+    // Create slug->trade mapping
+    const tradesBySlug = new Map<string, typeof trades[0]>();
+    for (const t of trades || []) {
+      tradesBySlug.set(t.market_slug, t);
+    }
+
+    console.log(`[v26-sync-csv] Loaded ${trades?.length || 0} v26_trades`);
 
     const results: Array<{
       market_slug: string;
+      action: string;
       success: boolean;
       error?: string;
-      fill_matched_at?: string;
-      fill_offset_sec?: number;
+      details?: Record<string, any>;
     }> = [];
 
-    for (const trade of trades || []) {
-      const fill = fillLookup.get(trade.market_slug);
-      if (!fill) {
-        results.push({ market_slug: trade.market_slug, success: false, error: 'No CSV match' });
+    // Process fills (Buy)
+    for (const [slug, fill] of fillLookup) {
+      const trade = tradesBySlug.get(slug);
+      if (!trade) {
+        results.push({ market_slug: slug, action: 'fill', success: false, error: 'No matching v26_trade' });
         continue;
       }
 
-      // Convert fill timestamp (seconds) to ISO
       const fillMatchedAt = new Date(fill.fillTimestampSec * 1000).toISOString();
       const eventStartMs = new Date(trade.event_start_time).getTime();
       const fillOffsetSec = fill.fillTimestampSec - Math.floor(eventStartMs / 1000);
 
-      // Calculate fill_time_ms (time from order placement to fill)
-      // We don't have order placement time in CSV, so we'll use event_start offset
-      const fillTimeMs = fillOffsetSec > 0 ? fillOffsetSec * 1000 : null;
-
       const updateData: Record<string, any> = {
         fill_matched_at: fillMatchedAt,
         filled_shares: Math.round(fill.tokenAmount),
-        status: fill.tokenAmount > 0 ? 'filled' : trade.status,
+        status: 'filled',
+        notional: fill.usdcAmount,
       };
-
-      if (fillTimeMs !== null && fillTimeMs > 0) {
-        updateData.fill_time_ms = fillTimeMs;
-      }
 
       const { error: updateError } = await supabase
         .from('v26_trades')
@@ -246,32 +305,70 @@ serve(async (req) => {
         .eq('id', trade.id);
 
       if (updateError) {
-        console.error(`[v26-sync-csv] Update failed for ${trade.market_slug}:`, updateError);
-        results.push({ market_slug: trade.market_slug, success: false, error: updateError.message });
+        results.push({ market_slug: slug, action: 'fill', success: false, error: updateError.message });
       } else {
-        console.log(
-          `[v26-sync-csv] Updated ${trade.market_slug}: fill_matched_at=${fillMatchedAt}, offset=${fillOffsetSec}s`
-        );
-        results.push({
-          market_slug: trade.market_slug,
-          success: true,
-          fill_matched_at: fillMatchedAt,
-          fill_offset_sec: fillOffsetSec,
+        console.log(`[v26-sync-csv] Fill: ${slug} → offset=${fillOffsetSec}s, shares=${fill.tokenAmount}`);
+        results.push({ 
+          market_slug: slug, 
+          action: 'fill', 
+          success: true, 
+          details: { fill_offset_sec: fillOffsetSec, filled_shares: fill.tokenAmount } 
         });
       }
     }
 
-    const successCount = results.filter(r => r.success).length;
+    // Process settlements (Lost/Redeem)
+    for (const [slug, settlement] of settlementLookup) {
+      const trade = tradesBySlug.get(slug);
+      if (!trade) {
+        results.push({ market_slug: slug, action: 'settlement', success: false, error: 'No matching v26_trade' });
+        continue;
+      }
+
+      const settledAt = new Date(settlement.settledAtSec * 1000).toISOString();
+      
+      // Calculate PnL: payout - cost (notional)
+      const cost = trade.notional || 0;
+      const pnl = settlement.result === 'won' ? settlement.payout - cost : -cost;
+
+      const updateData: Record<string, any> = {
+        result: settlement.result,
+        settled_at: settledAt,
+        pnl: Math.round(pnl * 100) / 100,
+        status: 'settled',
+      };
+
+      const { error: updateError } = await supabase
+        .from('v26_trades')
+        .update(updateData)
+        .eq('id', trade.id);
+
+      if (updateError) {
+        results.push({ market_slug: slug, action: 'settlement', success: false, error: updateError.message });
+      } else {
+        console.log(`[v26-sync-csv] Settlement: ${slug} → ${settlement.result}, pnl=${pnl}`);
+        results.push({ 
+          market_slug: slug, 
+          action: 'settlement', 
+          success: true, 
+          details: { result: settlement.result, pnl, payout: settlement.payout } 
+        });
+      }
+    }
+
+    const fillsSynced = results.filter(r => r.action === 'fill' && r.success).length;
+    const settlementsSynced = results.filter(r => r.action === 'settlement' && r.success).length;
     const failCount = results.filter(r => !r.success).length;
 
     return new Response(
       JSON.stringify({
         success: true,
-        synced: successCount,
+        fills_synced: fillsSynced,
+        settlements_synced: settlementsSynced,
         failed: failCount,
-        total: trades?.length || 0,
         csv_buys: buyRows.length,
-        markets_in_csv: fillLookup.size,
+        csv_lost: lostRows.length,
+        csv_redeem: redeemRows.length,
         results,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
