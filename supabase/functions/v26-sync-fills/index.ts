@@ -105,6 +105,120 @@ async function buildPolyHmacSignature(
   return replaceAll(replaceAll(sig, '+', '-'), '/', '_');
 }
 
+const POLYGON_CHAIN_ID = 137;
+
+/**
+ * Build EIP-712 signature for L1 authentication (derive-api-key)
+ */
+async function buildClobEip712Signature(
+  wallet: ethers.Wallet,
+  chainId: number,
+  timestamp: number,
+  nonce: number
+): Promise<string> {
+  const domain = {
+    name: 'ClobAuthDomain',
+    version: '1',
+    chainId: chainId,
+  };
+
+  const types = {
+    ClobAuth: [
+      { name: 'address', type: 'address' },
+      { name: 'timestamp', type: 'string' },
+      { name: 'nonce', type: 'uint256' },
+      { name: 'message', type: 'string' },
+    ],
+  };
+
+  const value = {
+    address: wallet.address,
+    timestamp: timestamp.toString(),
+    nonce: nonce,
+    message: 'This message attests that I control the given wallet',
+  };
+
+  return await wallet.signTypedData(domain, types, value);
+}
+
+/**
+ * Create L1 Headers for API key derivation
+ */
+async function createL1Headers(
+  wallet: ethers.Wallet,
+  chainId: number,
+  nonce: number = 0
+): Promise<Record<string, string>> {
+  const ts = Math.floor(Date.now() / 1000);
+  const sig = await buildClobEip712Signature(wallet, chainId, ts, nonce);
+
+  return {
+    'POLY_ADDRESS': wallet.address,
+    'POLY_SIGNATURE': sig,
+    'POLY_TIMESTAMP': `${ts}`,
+    'POLY_NONCE': `${nonce}`,
+  };
+}
+
+/**
+ * Derive API credentials from private key using L1 auth
+ */
+async function deriveApiCredentials(privateKey: string): Promise<{
+  apiKey: string;
+  apiSecret: string;
+  passphrase: string;
+}> {
+  console.log('[v26-sync-fills] Deriving API credentials from private key...');
+
+  const wallet = new ethers.Wallet(privateKey);
+  const l1Headers = await createL1Headers(wallet, POLYGON_CHAIN_ID, 0);
+  const headers = { ...l1Headers, 'Content-Type': 'application/json' };
+
+  console.log(`[v26-sync-fills] Created L1 auth headers for ${wallet.address}`);
+
+  // First try to derive existing API key
+  const deriveResponse = await fetch(`${CLOB_BASE_URL}/auth/derive-api-key`, {
+    method: 'GET',
+    headers,
+  });
+
+  const deriveText = await deriveResponse.text();
+  console.log(`[v26-sync-fills] Derive response: ${deriveResponse.status} - ${deriveText.slice(0, 200)}`);
+
+  if (deriveResponse.ok) {
+    const credentials = JSON.parse(deriveText);
+    console.log('[v26-sync-fills] ✅ Successfully derived existing API credentials');
+    return {
+      apiKey: credentials.apiKey,
+      apiSecret: credentials.secret,
+      passphrase: credentials.passphrase,
+    };
+  }
+
+  // If no existing key, create new one
+  console.log('[v26-sync-fills] No existing credentials, creating new API key...');
+  const createResponse = await fetch(`${CLOB_BASE_URL}/auth/api-key`, {
+    method: 'POST',
+    headers,
+  });
+
+  const createText = await createResponse.text();
+  console.log(`[v26-sync-fills] Create response: ${createResponse.status} - ${createText.slice(0, 200)}`);
+
+  if (!createResponse.ok) {
+    throw new Error(`Failed to create API key: ${createResponse.status} - ${createText}`);
+  }
+
+  const newCredentials = JSON.parse(createText);
+  console.log('[v26-sync-fills] ✅ Successfully created new API credentials');
+
+  return {
+    apiKey: newCredentials.apiKey,
+    apiSecret: newCredentials.secret,
+    passphrase: newCredentials.passphrase,
+  };
+}
+
 /**
  * Create L2 Headers for authenticated API requests
  */
@@ -156,39 +270,39 @@ serve(async (req) => {
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    // Get API credentials
-    const apiKey = Deno.env.get('POLYMARKET_API_KEY');
-    const apiSecret = Deno.env.get('POLYMARKET_API_SECRET');
-    const passphrase = Deno.env.get('POLYMARKET_PASSPHRASE');
+    // We need the private key to derive fresh API credentials
     const privateKey = Deno.env.get('POLYMARKET_PRIVATE_KEY');
 
-    if (!apiKey || !apiSecret || !passphrase || !privateKey) {
-      console.error('[v26-sync-fills] Missing Polymarket credentials');
+    if (!privateKey) {
+      console.error('[v26-sync-fills] Missing POLYMARKET_PRIVATE_KEY');
       return new Response(
-        JSON.stringify({ error: 'Missing Polymarket credentials' }),
+        JSON.stringify({ error: 'Missing POLYMARKET_PRIVATE_KEY' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // L2 auth is tied to the address the API key was derived for.
-    // In our setup that's the EOA from POLYMARKET_PRIVATE_KEY.
-    const eoaAddress = new ethers.Wallet(privateKey).address;
+    // Derive fresh API credentials using L1 auth
+    let creds: { key: string; secret: string; passphrase: string };
+    try {
+      const derived = await deriveApiCredentials(privateKey);
+      creds = { key: derived.apiKey, secret: derived.apiSecret, passphrase: derived.passphrase };
+    } catch (err) {
+      console.error('[v26-sync-fills] Failed to derive API credentials:', err);
+      return new Response(
+        JSON.stringify({ error: `Failed to derive API credentials: ${err}` }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
+    // L2 auth is tied to the EOA. But trades are placed via Safe/Proxy address.
+    const wallet = new ethers.Wallet(privateKey);
+    const eoaAddress = wallet.address;
+
+    // Get the funder address (Safe/Proxy) from bot_config
     const configRes = await supabase.from('bot_config').select('polymarket_address').limit(1).single();
-    const configuredAddress = !configRes.error ? (configRes.data?.polymarket_address ?? null) : null;
-    if (configRes.error) {
-      console.warn('[v26-sync-fills] Could not read bot_config.polymarket_address:', configRes.error);
-    }
+    const funderAddress = configRes.data?.polymarket_address || eoaAddress;
 
-    const walletAddress = eoaAddress;
-
-    console.log(`[v26-sync-fills] EOA address: ${eoaAddress}`);
-    if (configuredAddress) {
-      console.log(`[v26-sync-fills] bot_config.polymarket_address: ${configuredAddress}`);
-    }
-    console.log(`[v26-sync-fills] Using POLY_ADDRESS (EOA): ${walletAddress}`);
-
-    const creds = { key: apiKey, secret: apiSecret, passphrase };
+    console.log(`[v26-sync-fills] EOA: ${eoaAddress}, Funder (trades lookup): ${funderAddress}`);
 
     // Fetch trades that need syncing
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -211,139 +325,147 @@ serve(async (req) => {
 
     console.log(`[v26-sync-fills] Found ${trades?.length || 0} trades to sync`);
 
+    // Build a map of order_id -> v26_trade for quick lookup
+    const orderIdToTrade = new Map<string, typeof trades[0]>();
+    for (const t of trades || []) {
+      if (t.order_id) {
+        orderIdToTrade.set(t.order_id.toLowerCase(), t);
+      }
+    }
+
+    // Fetch all trades for this wallet from CLOB (last 7 days)
+    // Use maker param since our orders are maker orders
+    const sevenDaysAgoUnix = Math.floor((Date.now() - 7 * 24 * 60 * 60 * 1000) / 1000);
+    const tradesPath = `/data/trades`;
+
+    // Fetch trades where we are the taker (market orders) - this is how v26 places orders
+    // Use funderAddress (Safe/Proxy) for trade lookup, EOA for L2 auth
+    const tradesUrl = `${CLOB_BASE_URL}${tradesPath}?taker=${encodeURIComponent(funderAddress)}&after=${sevenDaysAgoUnix}`;
+    console.log(`[v26-sync-fills] Fetching CLOB trades (taker) from: ${tradesUrl}`);
+
+    const tradesHeaders = await createL2Headers(eoaAddress, creds, 'GET', tradesPath);
+    const tradesRes = await fetch(tradesUrl, {
+      method: 'GET',
+      headers: {
+        ...tradesHeaders,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!tradesRes.ok) {
+      const errText = await tradesRes.text();
+      console.error(`[v26-sync-fills] Failed to fetch CLOB trades:`, tradesRes.status, errText);
+      return new Response(
+        JSON.stringify({ error: `Failed to fetch CLOB trades: ${tradesRes.status}` }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    const clobTradesRaw = await tradesRes.json();
+    // Ensure it's an array
+    const clobTrades: any[] = Array.isArray(clobTradesRaw) ? clobTradesRaw : [];
+    console.log(`[v26-sync-fills] Got ${clobTrades.length} CLOB trades (taker)`);
+
+    // Build a map of order_id -> { match_time, size } from CLOB trades
+    // CLOB trades have: maker_orders[].order_id (for maker fills)
+    // and taker_order_id (for taker fills)
+    interface MatchInfo {
+      matchTimeMs: number;
+      sizeMatched: number;
+    }
+    const orderMatchInfo = new Map<string, MatchInfo>();
+
+    for (const ct of clobTrades || []) {
+      const matchTimeRaw = ct?.match_time;
+      let matchTimeMs: number | null = null;
+
+      if (matchTimeRaw != null) {
+        const n = Number(matchTimeRaw);
+        if (Number.isFinite(n)) {
+          matchTimeMs = n < 1e12 ? n * 1000 : n;
+        } else {
+          const parsed = Date.parse(String(matchTimeRaw));
+          if (Number.isFinite(parsed)) matchTimeMs = parsed;
+        }
+      }
+
+      if (matchTimeMs === null) continue;
+
+      // Check taker_order_id
+      const takerOrderId = ct?.taker_order_id?.toLowerCase();
+      if (takerOrderId && orderIdToTrade.has(takerOrderId)) {
+        const existing = orderMatchInfo.get(takerOrderId);
+        const size = parseFloat(ct?.size || '0');
+        if (!existing || matchTimeMs > existing.matchTimeMs) {
+          orderMatchInfo.set(takerOrderId, {
+            matchTimeMs,
+            sizeMatched: (existing?.sizeMatched || 0) + size,
+          });
+        } else {
+          existing.sizeMatched += size;
+        }
+      }
+
+      // Check maker_orders
+      const makerOrders = ct?.maker_orders;
+      if (Array.isArray(makerOrders)) {
+        for (const mo of makerOrders) {
+          const moOrderId = mo?.order_id?.toLowerCase();
+          if (moOrderId && orderIdToTrade.has(moOrderId)) {
+            const existing = orderMatchInfo.get(moOrderId);
+            const size = parseFloat(mo?.matched_amount || '0');
+            if (!existing || matchTimeMs > existing.matchTimeMs) {
+              orderMatchInfo.set(moOrderId, {
+                matchTimeMs,
+                sizeMatched: (existing?.sizeMatched || 0) + size,
+              });
+            } else {
+              existing.sizeMatched += size;
+            }
+          }
+        }
+      }
+    }
+
+    console.log(`[v26-sync-fills] Found match info for ${orderMatchInfo.size} orders`);
+
     const results: Array<{ id: string; order_id: string; success: boolean; error?: string; fill_matched_at?: string }> = [];
 
+    // Update v26_trades with match info
     for (const trade of trades || []) {
-      const orderId = trade.order_id;
-      const requestPath = `/data/order/${orderId}`;
+      const orderId = trade.order_id?.toLowerCase();
+      if (!orderId) continue;
 
-      try {
-        const headers = await createL2Headers(walletAddress, creds, 'GET', requestPath);
-        
-        const response = await fetch(`${CLOB_BASE_URL}${requestPath}`, {
-          method: 'GET',
-          headers: {
-            ...headers,
-            'Content-Type': 'application/json',
-          },
+      const matchInfo = orderMatchInfo.get(orderId);
+
+      if (!matchInfo) {
+        // No CLOB trade found for this order - could be unfilled or from different API key
+        results.push({ id: trade.id, order_id: trade.order_id, success: false, error: 'No CLOB match found' });
+        continue;
+      }
+
+      const updateData: Record<string, any> = {
+        fill_matched_at: new Date(matchInfo.matchTimeMs).toISOString(),
+        filled_shares: Math.round(matchInfo.sizeMatched),
+        status: matchInfo.sizeMatched > 0 ? 'filled' : trade.status,
+      };
+
+      const { error: updateError } = await supabase
+        .from('v26_trades')
+        .update(updateData)
+        .eq('id', trade.id);
+
+      if (updateError) {
+        console.error(`[v26-sync-fills] Update failed for ${trade.order_id}:`, updateError);
+        results.push({ id: trade.id, order_id: trade.order_id, success: false, error: updateError.message });
+      } else {
+        console.log(`[v26-sync-fills] Updated ${trade.order_id}: match_at=${updateData.fill_matched_at}, filled=${updateData.filled_shares}`);
+        results.push({
+          id: trade.id,
+          order_id: trade.order_id,
+          success: true,
+          fill_matched_at: updateData.fill_matched_at,
         });
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error(`[v26-sync-fills] Order ${orderId} fetch failed:`, response.status, errorText);
-          results.push({ id: trade.id, order_id: orderId, success: false, error: `HTTP ${response.status}` });
-          continue;
-        }
-
-        const orderRes: GetOrderResponse = await response.json();
-        const order: OpenOrder | null = (orderRes as any)?.order ?? (orderRes as any);
-
-        if (!order?.id) {
-          console.error(`[v26-sync-fills] Unexpected get-order response for ${orderId}:`, JSON.stringify(orderRes).slice(0, 300));
-          results.push({ id: trade.id, order_id: orderId, success: false, error: 'Bad get-order response' });
-          continue;
-        }
-
-        console.log(`[v26-sync-fills] Order ${orderId}:`, JSON.stringify(order).slice(0, 200));
-
-        // Parse size_matched
-        const sizeMatched = parseFloat(order.size_matched || '0');
-        const originalSize = parseFloat(order.original_size || '0');
-
-        // Find the last match time by looking up each associated trade's match_time
-        let lastMatchTimeMs: number | null = null;
-        const associatedTradeIds = Array.isArray(order.associate_trades) ? order.associate_trades : [];
-
-        for (const tradeId of associatedTradeIds) {
-          const tradePath = `/data/trades?id=${encodeURIComponent(tradeId)}`;
-          const tradeHeaders = await createL2Headers(walletAddress, creds, 'GET', tradePath);
-
-          const tRes = await fetch(`${CLOB_BASE_URL}${tradePath}`, {
-            method: 'GET',
-            headers: {
-              ...tradeHeaders,
-              'Content-Type': 'application/json',
-            },
-          });
-
-          if (!tRes.ok) {
-            const tErr = await tRes.text();
-            console.warn(`[v26-sync-fills] Trade ${tradeId} fetch failed:`, tRes.status, tErr);
-            continue;
-          }
-
-          const tradesPayload: any = await tRes.json();
-          const tradeArr: any[] = Array.isArray(tradesPayload) ? tradesPayload : [];
-
-          for (const t of tradeArr) {
-            const raw = t?.match_time;
-            if (raw == null) continue;
-
-            let ms: number | null = null;
-            const n = Number(raw);
-            if (Number.isFinite(n)) {
-              ms = n < 1e12 ? n * 1000 : n;
-            } else {
-              const parsed = Date.parse(String(raw));
-              if (Number.isFinite(parsed)) ms = parsed;
-            }
-
-            if (ms !== null && (lastMatchTimeMs === null || ms > lastMatchTimeMs)) {
-              lastMatchTimeMs = ms;
-            }
-          }
-
-          // small delay to be gentle with rate limiting
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        }
-
-        // Determine new status
-        let newStatus = trade.status;
-        if (sizeMatched >= originalSize && originalSize > 0) {
-          newStatus = 'filled';
-        } else if (sizeMatched > 0) {
-          newStatus = 'partial';
-        } else if (String(order.status).toUpperCase() === 'CANCELLED') {
-          newStatus = 'cancelled';
-        } else if (String(order.status).toUpperCase() === 'EXPIRED') {
-          newStatus = 'expired';
-        }
-
-        // Build update object
-        const updateData: Record<string, any> = {
-          filled_shares: Math.round(sizeMatched),
-          status: newStatus,
-        };
-
-        if (lastMatchTimeMs !== null) {
-          updateData.fill_matched_at = new Date(lastMatchTimeMs).toISOString();
-        }
-
-        // Update the trade
-        const { error: updateError } = await supabase
-          .from('v26_trades')
-          .update(updateData)
-          .eq('id', trade.id);
-
-        if (updateError) {
-          console.error(`[v26-sync-fills] Update failed for ${orderId}:`, updateError);
-          results.push({ id: trade.id, order_id: orderId, success: false, error: updateError.message });
-        } else {
-          console.log(`[v26-sync-fills] Updated ${orderId}: status=${newStatus}, filled=${Math.round(sizeMatched)}, match_at=${updateData.fill_matched_at || 'null'}`);
-          results.push({ 
-            id: trade.id, 
-            order_id: orderId, 
-            success: true, 
-            fill_matched_at: updateData.fill_matched_at 
-          });
-        }
-
-        // Small delay to avoid rate limiting
-        await new Promise(resolve => setTimeout(resolve, 100));
-
-      } catch (err) {
-        console.error(`[v26-sync-fills] Error processing ${orderId}:`, err);
-        results.push({ id: trade.id, order_id: orderId, success: false, error: String(err) });
       }
     }
 
