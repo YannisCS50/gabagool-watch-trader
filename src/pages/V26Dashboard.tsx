@@ -79,19 +79,30 @@ export default function V26Dashboard() {
   const fetchData = async () => {
     setLoading(true);
 
-    const [tradesRes, strikesRes] = await Promise.all([
-      supabase
-        .from('v26_trades')
-        .select('*')
-        .order('event_start_time', { ascending: false })
-        .limit(200),
-      supabase
-        .from('strike_prices')
-        .select('market_slug, strike_price, close_price')
-        .limit(500),
-    ]);
+    // 1) Fetch trades first
+    const tradesRes = await supabase
+      .from('v26_trades')
+      .select('*')
+      .order('event_start_time', { ascending: false })
+      .limit(200);
 
     const tradesData = tradesRes.data as V26Trade[] | null;
+
+    if (!tradesData) {
+      setLoading(false);
+      return;
+    }
+
+    // 2) Fetch only the strike-price rows relevant to those trades
+    const marketSlugs = Array.from(new Set(tradesData.map((t) => t.market_slug))).filter(Boolean);
+
+    const strikesRes = marketSlugs.length
+      ? await supabase
+          .from('strike_prices')
+          .select('market_slug, strike_price, close_price')
+          .in('market_slug', marketSlugs)
+      : { data: [] as StrikePrice[] };
+
     const strikesData = strikesRes.data as StrikePrice[] | null;
 
     if (!tradesData) {
