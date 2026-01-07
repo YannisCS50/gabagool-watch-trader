@@ -625,7 +625,7 @@ export default function V26Dashboard() {
                           <div className="flex items-center gap-2">
                             <div className="font-medium text-sm">{log.market}</div>
                             <a
-                              href={`https://polymarket.com/event/${log.marketSlug}`}
+                              href={`https://polymarket.com/markets/${log.marketSlug}`}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="text-muted-foreground hover:text-foreground transition-colors"
