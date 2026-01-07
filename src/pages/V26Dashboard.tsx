@@ -8,9 +8,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { supabase } from '@/integrations/supabase/client';
 import { format } from 'date-fns';
 
-// Polymarket fee structure
-const MAKER_REBATE = 0.005; // 0.5% rebate for makers
-const TAKER_FEE = 0.01;     // 1% fee for takers
+// No fee tracking - Polymarket rebates are paid daily and not available per-trade via API
 
 interface V26Trade {
   id: string;
@@ -47,14 +45,16 @@ interface TradeLog {
   total: number;            // shares * price
   orderType: 'LIMIT';       // V26 always uses limit orders
   result: 'WIN' | 'LOSS' | 'LIVE' | 'PENDING' | 'NOT_BOUGHT';
-  fee: number;              // estimated fee (negative = rebate)
-  pnl: number | null;       // net profit/loss after fees
+  pnl: number | null;       // net profit/loss
+  // Timing: seconds before/after market open (negative = before)
+  timingSeconds: number | null;
   // Raw data for display
   strikePrice: number | null;
   closePrice: number | null;
   delta: number | null;
   status: string;
   eventEndTime: string;
+  createdAt: string;
 }
 
 const ASSETS = ['ALL', 'BTC', 'ETH', 'SOL', 'XRP'] as const;
@@ -73,9 +73,7 @@ export default function V26Dashboard() {
     live: 0,
     winRate: 0,
     totalInvested: 0,
-    totalFees: 0,
     totalPnl: 0,
-    grossPnl: 0,
   });
 
   const fetchData = async () => {
@@ -117,9 +115,7 @@ export default function V26Dashboard() {
     let totalLive = 0;
     let totalFilled = 0;
     let totalInvested = 0;
-    let totalFees = 0;
     let totalPnl = 0;
-    let grossPnl = 0;
 
     // Group by market_slug to avoid duplicates
     const seen = new Set<string>();
@@ -187,27 +183,21 @@ export default function V26Dashboard() {
         totalInvested += cost;
       }
 
-      // Calculate fees (assume maker for limit orders)
-      const fee = isFilled ? -(cost * MAKER_REBATE) : 0; // negative = rebate
-      totalFees += fee;
-
       // Use runner's P&L if available, otherwise calculate
       let pnl: number | null = null;
-      let gross: number | null = null;
       
       if (tradePnl !== null) {
-        // Use runner's calculated P&L
-        gross = tradePnl;
-        pnl = tradePnl - fee; // add rebate
-        grossPnl += gross;
+        pnl = tradePnl;
         totalPnl += pnl;
       } else if (isFilled && result === 'LOSS') {
-        // LOSS: we lose our cost, but still got rebate on entry
-        gross = -cost;
-        pnl = gross - fee; // -cost - (-rebate) = -cost + rebate
-        grossPnl += gross;
+        pnl = -cost;
         totalPnl += pnl;
       }
+
+      // Calculate timing: seconds between order creation and market open
+      const createdAt = new Date(trade.created_at);
+      const eventStart = new Date(trade.event_start_time);
+      const timingSeconds = isFilled ? Math.round((createdAt.getTime() - eventStart.getTime()) / 1000) : null;
 
       // Format market name
       const startTime = new Date(trade.event_start_time);
@@ -224,13 +214,14 @@ export default function V26Dashboard() {
         total: cost,
         orderType: 'LIMIT',
         result,
-        fee,
         pnl,
+        timingSeconds,
         strikePrice,
         closePrice,
         delta,
         status: trade.status,
         eventEndTime: trade.event_end_time,
+        createdAt: trade.created_at,
       });
     }
 
@@ -248,9 +239,7 @@ export default function V26Dashboard() {
       live: totalLive,
       winRate,
       totalInvested,
-      totalFees,
       totalPnl,
-      grossPnl,
     });
     setLoading(false);
   };
@@ -364,15 +353,12 @@ export default function V26Dashboard() {
           <Card>
             <CardHeader className="pb-2">
               <CardDescription className="flex items-center gap-1">
-                <DollarSign className="h-3 w-3" /> Netto P&L
+                <DollarSign className="h-3 w-3" /> P&L
               </CardDescription>
             </CardHeader>
             <CardContent>
               <div className={`text-2xl font-bold ${stats.totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                 ${stats.totalPnl.toFixed(2)}
-              </div>
-              <div className="text-xs text-muted-foreground">
-                Fees: ${stats.totalFees.toFixed(2)}
               </div>
             </CardContent>
           </Card>
@@ -408,16 +394,15 @@ export default function V26Dashboard() {
                     <TableHead className="text-right">Shares</TableHead>
                     <TableHead className="text-right">Prijs/Share</TableHead>
                     <TableHead className="text-right">Total</TableHead>
-                    <TableHead>Order Type</TableHead>
+                    <TableHead>Timing</TableHead>
                     <TableHead>Result</TableHead>
-                    <TableHead className="text-right">Fee</TableHead>
                     <TableHead className="text-right">P&L</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filtered.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={9} className="text-center py-8 text-muted-foreground">
+                      <TableCell colSpan={8} className="text-center py-8 text-muted-foreground">
                         Geen trades gevonden
                       </TableCell>
                     </TableRow>
@@ -436,16 +421,18 @@ export default function V26Dashboard() {
                           {log.total > 0 ? `$${log.total.toFixed(2)}` : '-'}
                         </TableCell>
                         <TableCell>
-                          <Badge variant="outline">{log.orderType}</Badge>
-                        </TableCell>
-                        <TableCell>{getResultBadge(log)}</TableCell>
-                        <TableCell className="text-right font-mono">
-                          {log.fee !== 0 ? (
-                            <span className={log.fee < 0 ? 'text-green-500' : 'text-red-500'}>
-                              {log.fee < 0 ? '+' : '-'}${Math.abs(log.fee).toFixed(3)}
-                            </span>
+                          {log.timingSeconds !== null ? (
+                            <Badge 
+                              variant="outline" 
+                              className={log.timingSeconds < 0 ? 'text-green-500 border-green-500/30' : 'text-orange-500 border-orange-500/30'}
+                            >
+                              {log.timingSeconds < 0 
+                                ? `${Math.abs(log.timingSeconds)}s vóór` 
+                                : `${log.timingSeconds}s na`}
+                            </Badge>
                           ) : '-'}
                         </TableCell>
+                        <TableCell>{getResultBadge(log)}</TableCell>
                         <TableCell className="text-right font-mono font-bold">
                           {log.pnl !== null ? (
                             <span className={log.pnl >= 0 ? 'text-green-500' : 'text-red-500'}>
@@ -465,23 +452,13 @@ export default function V26Dashboard() {
         {/* Summary Box */}
         <Card className="bg-muted/50">
           <CardContent className="pt-6">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+            <div className="grid grid-cols-2 gap-4 text-sm">
               <div>
                 <span className="text-muted-foreground">Totaal geïnvesteerd:</span>
                 <span className="ml-2 font-bold">${stats.totalInvested.toFixed(2)}</span>
               </div>
               <div>
-                <span className="text-muted-foreground">Bruto P&L:</span>
-                <span className={`ml-2 font-bold ${stats.grossPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                  ${stats.grossPnl.toFixed(2)}
-                </span>
-              </div>
-              <div>
-                <span className="text-muted-foreground">Fees (rebate):</span>
-                <span className="ml-2 font-bold text-green-500">${Math.abs(stats.totalFees).toFixed(2)}</span>
-              </div>
-              <div>
-                <span className="text-muted-foreground">Netto P&L:</span>
+                <span className="text-muted-foreground">P&L:</span>
                 <span className={`ml-2 font-bold ${stats.totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                   ${stats.totalPnl.toFixed(2)}
                 </span>
