@@ -51,6 +51,7 @@ interface TradeLog {
   result: 'WIN' | 'LOSS' | 'LIVE' | 'PENDING' | 'NOT_BOUGHT';
   pnl: number | null;
   fillTimeMs: number | null;
+  entryOffsetSec: number | null; // Seconds before (negative) or after (positive) market open
   strikePrice: number | null;
   closePrice: number | null;
   delta: number | null;
@@ -251,6 +252,11 @@ export default function V26Dashboard() {
       const dateStr = format(startTimeET, 'MMMM d');
       const marketTitle = `${trade.asset} Up or Down - ${dateStr}, ${startTimeStr}-${endTimeStr} ET`;
 
+      // Calculate entry offset: seconds before (negative) or after (positive) market open
+      const createdAtTime = new Date(trade.created_at).getTime();
+      const eventStartTime = new Date(trade.event_start_time).getTime();
+      const entryOffsetSec = Math.round((createdAtTime - eventStartTime) / 1000);
+
       logs.push({
         id: trade.id,
         market: marketTitle,
@@ -264,6 +270,7 @@ export default function V26Dashboard() {
         result,
         pnl,
         fillTimeMs,
+        entryOffsetSec,
         strikePrice,
         closePrice,
         delta,
@@ -362,6 +369,18 @@ export default function V26Dashboard() {
     if (ms === null || ms === 0) return '-';
     if (ms < 1000) return `${ms}ms`;
     return `${(ms / 1000).toFixed(1)}s`;
+  };
+
+  const formatEntryOffset = (sec: number | null) => {
+    if (sec === null) return '-';
+    const absSec = Math.abs(sec);
+    if (absSec < 60) {
+      return sec < 0 ? `${absSec}s voor` : `${absSec}s na`;
+    }
+    const mins = Math.floor(absSec / 60);
+    const secs = Math.round(absSec % 60);
+    const timeStr = secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
+    return sec < 0 ? `${timeStr} voor` : `${timeStr} na`;
   };
 
   const getBestAsset = () => {
@@ -603,7 +622,7 @@ export default function V26Dashboard() {
                     <TableHead className="text-xs font-medium text-right">Shares</TableHead>
                     <TableHead className="text-xs font-medium text-right">Prijs</TableHead>
                     <TableHead className="text-xs font-medium text-right">Cost</TableHead>
-                    <TableHead className="text-xs font-medium">Fill Time</TableHead>
+                    <TableHead className="text-xs font-medium">Entry</TableHead>
                     <TableHead className="text-xs font-medium">Result</TableHead>
                     <TableHead className="text-xs font-medium text-right">P&L</TableHead>
                   </TableRow>
@@ -645,18 +664,16 @@ export default function V26Dashboard() {
                           {log.total > 0 ? `$${log.total.toFixed(2)}` : '-'}
                         </TableCell>
                         <TableCell className="py-2">
-                          {log.fillTimeMs !== null && log.fillTimeMs > 0 ? (
+                          {log.entryOffsetSec !== null ? (
                             <Badge 
                               variant="outline" 
                               className={`text-xs ${
-                                log.fillTimeMs < 2000 
+                                log.entryOffsetSec < 0 
                                   ? 'text-green-500 border-green-500/30' 
-                                  : log.fillTimeMs < 5000 
-                                    ? 'text-yellow-500 border-yellow-500/30' 
-                                    : 'text-red-500 border-red-500/30'
+                                  : 'text-yellow-500 border-yellow-500/30'
                               }`}
                             >
-                              {formatFillTime(log.fillTimeMs)}
+                              {formatEntryOffset(log.entryOffsetSec)}
                             </Badge>
                           ) : '-'}
                         </TableCell>
