@@ -224,7 +224,7 @@ serve(async (req) => {
 
     for (const trade of trades || []) {
       const orderId = trade.order_id;
-      const requestPath = `/data/order?id=${encodeURIComponent(orderId)}`;
+      const requestPath = `/order/${orderId}`;
 
       try {
         const headers = await createL2Headers(walletAddress, creds, 'GET', requestPath);
