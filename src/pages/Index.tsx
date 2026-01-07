@@ -11,6 +11,7 @@ import { MainNav } from '@/components/MainNav';
 import { MobileNav } from '@/components/MobileNav';
 import { DownloadRangeLogsButton } from '@/components/DownloadRangeLogsButton';
 import { DownloadStrategyButton } from '@/components/DownloadStrategyButton';
+import { DownloadOpeningTicksButton } from '@/components/DownloadOpeningTicksButton';
 import { PolymarketScreenshotExtractor } from '@/components/PolymarketScreenshotExtractor';
 import { Button } from '@/components/ui/button';
 import { useTrades } from '@/hooks/useTrades';
@@ -97,6 +98,7 @@ const Index = () => {
               <MainNav />
             </div>
             <div className="flex items-center gap-2">
+              <DownloadOpeningTicksButton />
               <DownloadRangeLogsButton />
               <DownloadStrategyButton />
               <Button
