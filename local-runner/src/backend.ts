@@ -4,6 +4,7 @@ import type { FillLog, SettlementLog, SnapshotLog } from './logger.js';
 interface MarketToken {
   slug: string;
   asset: string;
+  conditionId?: string;  // v7.4.1: Added for position cache slug mapping
   upTokenId: string;
   downTokenId: string;
   eventStartTime: string;

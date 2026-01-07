@@ -144,6 +144,7 @@ import {
 } from './sell-policy.js';
 
 // v7.4.0: Professional-grade real-time position cache
+// v7.4.1: Added slug mapping for correct position matching
 import {
   startPositionCache,
   stopPositionCache,
@@ -155,6 +156,8 @@ import {
   getCacheStats,
   logCacheStatus,
   forceRefresh as forcePositionRefresh,
+  registerMarketForCache,
+  unregisterMarketFromCache,
 } from './position-cache.js';
 
 // Ensure Node prefers IPv4 to avoid hangs on IPv6-only DNS results under some VPN setups.
@@ -297,6 +300,7 @@ let lastEthPrice: number | null = null;
 interface MarketToken {
   slug: string;
   asset: string;
+  conditionId?: string;  // v7.4.1: Added for position cache slug mapping
   upTokenId: string;
   downTokenId: string;
   eventStartTime: string;
@@ -359,6 +363,15 @@ async function fetchMarkets(): Promise<void> {
       tokenToMarket.set(market.upTokenId, { slug: market.slug, side: 'up' });
       tokenToMarket.set(market.downTokenId, { slug: market.slug, side: 'down' });
 
+      // v7.4.1: Register market in position cache for correct slug matching
+      // This ensures the cache maps API positions to the runner's slugs correctly
+      registerMarketForCache(
+        market.slug,
+        market.conditionId || '',
+        market.upTokenId,
+        market.downTokenId
+      );
+
       if (!markets.has(market.slug)) {
         markets.set(market.slug, {
           slug: market.slug,
@@ -403,6 +416,12 @@ async function fetchMarkets(): Promise<void> {
           ledgerClearMarket(slug, ctx.market.asset);
           clearConcurrencyState(slug, ctx.market.asset);
           accountingClearMarket(slug, ctx.market.asset);
+          // v7.4.1: Unregister market from position cache
+          unregisterMarketFromCache(
+            ctx.market.conditionId || '',
+            ctx.market.upTokenId,
+            ctx.market.downTokenId
+          );
         }
         markets.delete(slug);
       }

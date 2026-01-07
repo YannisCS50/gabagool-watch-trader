@@ -13,6 +13,10 @@
  * 4. All position reads go through this cache, never from local tracking
  * 
  * This prevents the bot from making decisions on stale/incorrect position data.
+ * 
+ * CRITICAL FIX (v7.4.1): The runner uses epoch-based slugs like "btc-updown-15m-1767294000"
+ * while the Data API may return different eventSlugs or none at all. We now build a
+ * conditionId → runnerSlug mapping so positions are always matched correctly.
  */
 
 import { config } from './config.js';
@@ -49,7 +53,7 @@ export interface MarketPositionCache {
 }
 
 export interface PositionCacheState {
-  positions: Map<string, MarketPositionCache>;  // keyed by marketSlug
+  positions: Map<string, MarketPositionCache>;  // keyed by marketSlug (runner's slug)
   allPositions: CachedPosition[];
   lastRefreshAtMs: number;
   lastRefreshDurationMs: number;
@@ -70,6 +74,53 @@ export interface PositionDrift {
   driftUp: number;
   driftDown: number;
   reason: string;
+}
+
+// ============================================================
+// SLUG MAPPING (CRITICAL for correct position matching)
+// ============================================================
+// The runner uses epoch-based slugs like "btc-updown-15m-1767294000"
+// The Data API may return different slugs or none at all.
+// This map allows the runner to register its markets so we can match
+// positions by conditionId OR tokenId.
+
+// Maps: conditionId -> runnerSlug
+const conditionIdToSlug = new Map<string, string>();
+// Maps: tokenId -> { slug, side }
+const tokenIdToSlug = new Map<string, { slug: string; side: 'UP' | 'DOWN' }>();
+
+/**
+ * Register a market from the runner so we can match positions correctly.
+ * Call this whenever the runner discovers a new market.
+ */
+export function registerMarketForCache(
+  runnerSlug: string,
+  conditionId: string,
+  upTokenId: string,
+  downTokenId: string
+): void {
+  if (conditionId) {
+    conditionIdToSlug.set(conditionId, runnerSlug);
+  }
+  if (upTokenId) {
+    tokenIdToSlug.set(upTokenId, { slug: runnerSlug, side: 'UP' });
+  }
+  if (downTokenId) {
+    tokenIdToSlug.set(downTokenId, { slug: runnerSlug, side: 'DOWN' });
+  }
+}
+
+/**
+ * Unregister a market when it expires.
+ */
+export function unregisterMarketFromCache(
+  conditionId: string,
+  upTokenId: string,
+  downTokenId: string
+): void {
+  if (conditionId) conditionIdToSlug.delete(conditionId);
+  if (upTokenId) tokenIdToSlug.delete(upTokenId);
+  if (downTokenId) tokenIdToSlug.delete(downTokenId);
 }
 
 // ============================================================
@@ -104,8 +155,21 @@ let isRefreshing = false;
 // FETCH POSITIONS FROM POLYMARKET
 // ============================================================
 
-async function fetchPositionsFromApi(walletAddress: string): Promise<CachedPosition[]> {
-  const positions: CachedPosition[] = [];
+interface RawPosition {
+  tokenId: string;
+  conditionId: string;
+  apiSlug: string | null;  // Slug from API (may differ from runner's slug)
+  outcome: 'UP' | 'DOWN';
+  shares: number;
+  avgPrice: number;
+  cost: number;
+  currentValue: number;
+  currentPrice: number;
+  pnl: number;
+}
+
+async function fetchPositionsFromApi(walletAddress: string): Promise<RawPosition[]> {
+  const positions: RawPosition[] = [];
 
   let cursor: string | null = null;
   let pageCount = 0;
@@ -141,10 +205,9 @@ async function fetchPositionsFromApi(walletAddress: string): Promise<CachedPosit
         const size = parseFloat(p.size) || 0;
         if (size <= 0) continue;
 
-        // We MUST have a stable market slug. If the API doesn't provide one,
-        // we skip the position instead of fabricating a timestamp-based slug.
-        const marketSlug: string | null = p.eventSlug || p.slug || null;
-        if (!marketSlug) continue;
+        const tokenId = p.asset || '';
+        const conditionId = p.conditionId || '';
+        const apiSlug = p.eventSlug || p.slug || null;
 
         const outcomeRaw = String(p.outcome ?? '').toUpperCase();
         const outcome: 'UP' | 'DOWN' =
@@ -157,9 +220,9 @@ async function fetchPositionsFromApi(walletAddress: string): Promise<CachedPosit
         const cost = parseFloat(p.initialValue) || 0;
 
         positions.push({
-          tokenId: p.asset || '',
-          conditionId: p.conditionId || '',
-          marketSlug,
+          tokenId,
+          conditionId,
+          apiSlug,
           outcome,
           shares: size,
           avgPrice: parseFloat(p.avgPrice) || (size > 0 ? cost / size : 0),
@@ -183,8 +246,35 @@ async function fetchPositionsFromApi(walletAddress: string): Promise<CachedPosit
   return positions;
 }
 
-// Note: We intentionally do NOT implement any "guess slug from title" fallback here.
-// A wrong slug is worse than missing data, because it can trigger false drift halts.
+/**
+ * Resolve the runner's slug for a position using our registered mappings.
+ * Priority:
+ * 1. tokenId mapping (most precise - exact match)
+ * 2. conditionId mapping (fallback)
+ * 3. API slug if it matches our pattern (last resort)
+ */
+function resolveRunnerSlug(pos: RawPosition): string | null {
+  // 1. Try tokenId mapping (most accurate)
+  const tokenMatch = tokenIdToSlug.get(pos.tokenId);
+  if (tokenMatch) {
+    return tokenMatch.slug;
+  }
+
+  // 2. Try conditionId mapping
+  const conditionMatch = conditionIdToSlug.get(pos.conditionId);
+  if (conditionMatch) {
+    return conditionMatch;
+  }
+
+  // 3. If API provides a slug that looks like our format, use it
+  // But only for 15m/updown markets we care about
+  if (pos.apiSlug && (pos.apiSlug.includes('15m') || pos.apiSlug.includes('updown'))) {
+    return pos.apiSlug;
+  }
+
+  // No match found - this position is not in our trading universe
+  return null;
+}
 
 // ============================================================
 // CACHE REFRESH
@@ -197,9 +287,9 @@ async function refreshCache(): Promise<void> {
   const startMs = Date.now();
   
   try {
-    const positions = await fetchPositionsFromApi(config.polymarket.address);
+    const rawPositions = await fetchPositionsFromApi(config.polymarket.address);
 
-    // Aggregate by market slug (sum duplicates defensively)
+    // Aggregate by RUNNER's slug (using our slug mapping)
     const byMarket = new Map<
       string,
       {
@@ -212,14 +302,35 @@ async function refreshCache(): Promise<void> {
       }
     >();
 
-    for (const pos of positions) {
-      // Only keep markets we can map into our runner universe
-      if (!pos.marketSlug.includes('15m') && !pos.marketSlug.includes('updown')) {
+    // Also build the CachedPosition array for allPositions
+    const resolvedPositions: CachedPosition[] = [];
+
+    for (const pos of rawPositions) {
+      // Use our slug mapping to get the runner's slug
+      const runnerSlug = resolveRunnerSlug(pos);
+      
+      // Skip positions we can't map to our trading universe
+      if (!runnerSlug) {
         continue;
       }
 
-      if (!byMarket.has(pos.marketSlug)) {
-        byMarket.set(pos.marketSlug, {
+      // Add to resolved positions list
+      resolvedPositions.push({
+        tokenId: pos.tokenId,
+        conditionId: pos.conditionId,
+        marketSlug: runnerSlug,  // Use runner's slug, not API's
+        outcome: pos.outcome,
+        shares: pos.shares,
+        avgPrice: pos.avgPrice,
+        cost: pos.cost,
+        currentValue: pos.currentValue,
+        currentPrice: pos.currentPrice,
+        pnl: pos.pnl,
+      });
+
+      // Aggregate by market
+      if (!byMarket.has(runnerSlug)) {
+        byMarket.set(runnerSlug, {
           upShares: 0,
           downShares: 0,
           upCost: 0,
@@ -229,7 +340,7 @@ async function refreshCache(): Promise<void> {
         });
       }
 
-      const agg = byMarket.get(pos.marketSlug)!;
+      const agg = byMarket.get(runnerSlug)!;
       if (pos.outcome === 'UP') {
         agg.upShares += pos.shares;
         agg.upCost += pos.cost;
@@ -262,7 +373,7 @@ async function refreshCache(): Promise<void> {
     }
 
     cacheState.positions = newPositions;
-    cacheState.allPositions = positions;
+    cacheState.allPositions = resolvedPositions;
     cacheState.lastRefreshAtMs = nowMs;
     cacheState.lastRefreshDurationMs = nowMs - startMs;
     cacheState.refreshCount++;
