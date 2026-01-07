@@ -104,34 +104,40 @@ function formatUsd(value: unknown): string {
 
 async function fetchUpcomingMarkets(): Promise<V26Market[]> {
   try {
-    const markets = await fetchMarkets();
+    const result = await fetchMarkets();
+    
+    if (!result.success || !result.markets) {
+      log('⚠️ No markets returned from backend');
+      return [];
+    }
+
     const now = Date.now();
     const upcoming: V26Market[] = [];
 
-    for (const m of markets) {
+    for (const m of result.markets) {
       // Only enabled assets
       if (!V26_CONFIG.assets.includes(m.asset as any)) continue;
       
       // Must have token IDs
-      if (!m.down_token_id) continue;
+      if (!m.downTokenId) continue;
       
-      const startTime = new Date(m.event_start_time).getTime();
-      const endTime = new Date(m.event_end_time).getTime();
+      const startTime = new Date(m.eventStartTime).getTime();
+      const endTime = new Date(m.eventEndTime).getTime();
       
       // Market must start in the future (with buffer for order placement)
       if (startTime <= now + 10_000) continue;
       
-      // Skip if already processed
-      const key = `${m.id}:${m.asset}`;
+      // Skip if already processed - use slug:asset as key since we don't have id
+      const key = `${m.slug}:${m.asset}`;
       if (completedMarkets.has(key) || scheduledTrades.has(key)) continue;
 
       upcoming.push({
-        id: m.id,
+        id: m.slug, // Use slug as id since MarketToken doesn't have id
         slug: m.slug,
         asset: m.asset,
-        eventStartTime: new Date(m.event_start_time),
-        eventEndTime: new Date(m.event_end_time),
-        downTokenId: m.down_token_id,
+        eventStartTime: new Date(m.eventStartTime),
+        eventEndTime: new Date(m.eventEndTime),
+        downTokenId: m.downTokenId,
       });
     }
 
