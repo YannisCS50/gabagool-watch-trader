@@ -39,17 +39,7 @@ interface StrikePrice {
   close_price: number | null;
 }
 
-interface BotPosition {
-  market_slug: string;
-  outcome: string;
-  shares: number;
-  avg_price: number;
-  cost: number;
-  current_price: number | null;
-  value: number | null;
-  pnl: number | null;
-  pnl_percent: number | null;
-}
+// Not used anymore - using v26_trades directly
 
 interface V26Bet {
   market_slug: string;
@@ -61,11 +51,11 @@ interface V26Bet {
   close_price: number | null;
   delta: number | null;
   result: 'WIN' | 'LOSS' | 'PENDING' | 'NO_FILL';
-  // From bot_positions (real fill data)
-  position_shares: number;
-  position_avg_price: number | null;
-  position_cost: number;
-  position_pnl: number | null;
+  // From v26_trades (filled data)
+  filled_shares: number;
+  avg_fill_price: number | null;
+  notional: number;
+  status: string;
 }
 
 interface V26Stats {
@@ -95,8 +85,8 @@ export default function V26Dashboard() {
   const fetchData = async () => {
     setLoading(true);
 
-    // Fetch trades, strike prices, and bot positions in parallel
-    const [tradesRes, strikesRes, positionsRes] = await Promise.all([
+    // Fetch trades and strike prices in parallel
+    const [tradesRes, strikesRes] = await Promise.all([
       supabase
         .from('v26_trades')
         .select('*')
@@ -107,17 +97,10 @@ export default function V26Dashboard() {
         .select('market_slug, asset, strike_price, close_price')
         .order('created_at', { ascending: false })
         .limit(500),
-      supabase
-        .from('bot_positions')
-        .select('market_slug, outcome, shares, avg_price, cost, current_price, value, pnl, pnl_percent')
-        .eq('outcome', 'DOWN')
-        .order('synced_at', { ascending: false })
-        .limit(500),
     ]);
 
     const tradesData = tradesRes.data;
     const strikesData = strikesRes.data;
-    const positionsData = positionsRes.data;
 
     if (!tradesData) {
       setLoading(false);
@@ -134,16 +117,6 @@ export default function V26Dashboard() {
       }
     }
 
-    // Create position lookup (real fill data from Polymarket)
-    const positionLookup = new Map<string, BotPosition>();
-    if (positionsData) {
-      for (const p of positionsData) {
-        if (!positionLookup.has(p.market_slug)) {
-          positionLookup.set(p.market_slug, p as BotPosition);
-        }
-      }
-    }
-
     // Group trades by market_slug (bet)
     const betMap = new Map<string, V26Bet>();
     
@@ -152,7 +125,6 @@ export default function V26Dashboard() {
       
       if (!betMap.has(key)) {
         const strike = strikeLookup.get(key);
-        const position = positionLookup.get(key);
         const strikePrice = strike?.strike_price ?? null;
         const closePrice = strike?.close_price ?? null;
         const delta = (strikePrice !== null && closePrice !== null) 
@@ -169,19 +141,26 @@ export default function V26Dashboard() {
           close_price: closePrice,
           delta,
           result: 'PENDING',
-          // Use real position data if available
-          position_shares: position?.shares ?? 0,
-          position_avg_price: position?.avg_price ?? null,
-          position_cost: position?.cost ?? 0,
-          position_pnl: position?.pnl ?? null,
+          // From v26_trades
+          filled_shares: trade.filled_shares ?? 0,
+          avg_fill_price: trade.avg_fill_price,
+          notional: trade.notional ?? 0,
+          status: trade.status,
         });
       }
       
       const bet = betMap.get(key)!;
       bet.trades.push(trade);
+      // Sum up filled shares if multiple trades
+      if (trade.filled_shares && trade.filled_shares > 0) {
+        bet.filled_shares = Math.max(bet.filled_shares, trade.filled_shares);
+        bet.avg_fill_price = trade.avg_fill_price;
+        bet.notional = Math.max(bet.notional, trade.notional ?? 0);
+        bet.status = trade.status;
+      }
     }
 
-    // Calculate results for each bet using real position data
+    // Calculate results for each bet
     const betsArray: V26Bet[] = [];
     let totalWins = 0;
     let totalLosses = 0;
@@ -191,36 +170,28 @@ export default function V26Dashboard() {
 
     for (const bet of betMap.values()) {
       const isEnded = new Date(bet.event_end_time) < new Date();
+      const hasFill = bet.filled_shares > 0 || bet.status === 'filled';
       
-      // Use position data for fill status
-      if (bet.position_shares === 0) {
+      if (!hasFill) {
         bet.result = 'NO_FILL';
       } else if (!isEnded) {
-        // Still live
         bet.result = 'PENDING';
         totalPending++;
         totalFilled++;
-      } else if (bet.position_pnl !== null) {
-        // Market ended and we have PnL from position
-        if (bet.position_pnl > 0) {
-          bet.result = 'WIN';
-          totalWins++;
-        } else {
-          bet.result = 'LOSS';
-          totalLosses++;
-        }
-        totalPnl += bet.position_pnl;
-        totalFilled++;
       } else if (bet.delta !== null) {
-        // Fallback: use delta if position PnL not available
+        // Calculate cost from avg_fill_price * filled_shares or notional
+        const cost = bet.notional > 0 ? bet.notional : (bet.avg_fill_price ?? 0.48) * bet.filled_shares;
+        
         if (bet.delta < 0) {
+          // DOWN wins: payout = shares * $1
           bet.result = 'WIN';
-          const pnl = bet.position_shares * 1 - bet.position_cost;
+          const pnl = bet.filled_shares - cost;
           totalPnl += pnl;
           totalWins++;
         } else {
+          // UP wins: loss = cost
           bet.result = 'LOSS';
-          totalPnl -= bet.position_cost;
+          totalPnl -= cost;
           totalLosses++;
         }
         totalFilled++;
@@ -274,17 +245,22 @@ export default function V26Dashboard() {
   }, []);
 
   const getResultBadge = (bet: V26Bet) => {
+    const cost = bet.notional > 0 ? bet.notional : (bet.avg_fill_price ?? 0.48) * bet.filled_shares;
+    const pnl = bet.delta !== null 
+      ? (bet.delta < 0 ? bet.filled_shares - cost : -cost)
+      : null;
+    
     switch (bet.result) {
       case 'WIN':
         return (
           <Badge className="bg-green-500/10 text-green-500 border-green-500/20">
-            ✓ WIN {bet.position_pnl !== null && `+$${bet.position_pnl.toFixed(2)}`}
+            ✓ WIN {pnl !== null && `+$${pnl.toFixed(2)}`}
           </Badge>
         );
       case 'LOSS':
         return (
           <Badge className="bg-red-500/10 text-red-500 border-red-500/20">
-            ✗ LOSS {bet.position_pnl !== null && `-$${Math.abs(bet.position_pnl).toFixed(2)}`}
+            ✗ LOSS {pnl !== null && `-$${Math.abs(pnl).toFixed(2)}`}
           </Badge>
         );
       case 'NO_FILL':
@@ -471,29 +447,27 @@ export default function V26Dashboard() {
                       .filter((bet) => assetFilter === 'ALL' || bet.asset === assetFilter)
                       .map((bet) => {
                         const isEnded = new Date(bet.event_end_time) < new Date();
-                        const hasFill = bet.position_shares > 0;
+                        const hasFill = bet.filled_shares > 0 || bet.status === 'filled';
 
                         // Bet title: "BTC DOWN 16:15"
                         const betTitle = `${bet.asset} DOWN ${format(new Date(bet.event_start_time), 'HH:mm')}`;
 
                         // Determine outcome based on delta
                         const outcomeIsDown = bet.delta !== null && bet.delta < 0;
-                        const outcomeIsUp = bet.delta !== null && bet.delta >= 0;
 
-                        // Calculate P&L
-                        // DOWN wint: shares x $1 payout, dus winst = shares - cost
-                        // UP wint: verlies = cost (alles kwijt)
+                        // Calculate cost and P&L
+                        const cost = bet.notional > 0 ? bet.notional : (bet.avg_fill_price ?? 0.48) * bet.filled_shares;
+                        
                         const calculatePnL = () => {
                           if (!isEnded || !hasFill) return null;
-                          if (bet.position_pnl !== null) return bet.position_pnl;
                           if (bet.delta === null) return null;
                           
                           if (outcomeIsDown) {
                             // DOWN wint: payout = shares x $1
-                            return bet.position_shares - bet.position_cost;
+                            return bet.filled_shares - cost;
                           } else {
                             // UP wint: verlies = cost
-                            return -bet.position_cost;
+                            return -cost;
                           }
                         };
 
@@ -519,10 +493,10 @@ export default function V26Dashboard() {
                               )}
                             </TableCell>
                             <TableCell className="font-mono font-medium">
-                              {hasFill ? bet.position_shares : '-'}
+                              {hasFill ? bet.filled_shares : '-'}
                             </TableCell>
                             <TableCell className="font-mono">
-                              {hasFill ? `$${bet.position_cost.toFixed(2)}` : '-'}
+                              {hasFill ? `$${cost.toFixed(2)}` : '-'}
                             </TableCell>
                             <TableCell>
                               {!isEnded ? (
@@ -552,7 +526,7 @@ export default function V26Dashboard() {
                                 <div className="text-green-500 font-mono font-medium">
                                   +${pnl.toFixed(2)}
                                   <div className="text-xs text-muted-foreground">
-                                    {bet.position_shares} × $1
+                                    {bet.filled_shares} × $1
                                   </div>
                                 </div>
                               ) : (
