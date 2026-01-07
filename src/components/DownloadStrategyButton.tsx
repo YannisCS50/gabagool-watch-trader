@@ -3,94 +3,46 @@ import { Button } from '@/components/ui/button';
 import { FileCode, Loader2 } from 'lucide-react';
 import JSZip from 'jszip';
 
-// Import strategy files as raw text - automatically updated at build time
-// Main entry point
-// @ts-ignore - raw imports
-import indexTs from '../../local-runner/src/index.ts?raw';
-
-// Core strategy modules
-// @ts-ignore - raw imports
-import strategyTs from '../../local-runner/src/strategy.ts?raw';
-// @ts-ignore - raw imports
-import v7PatchTs from '../../local-runner/src/v7-patch.ts?raw';
-// @ts-ignore - raw imports
-import hardInvariantsTs from '../../local-runner/src/hard-invariants.ts?raw';
-
-// API & Infrastructure
-// @ts-ignore - raw imports
-import polymarketTs from '../../local-runner/src/polymarket.ts?raw';
-// @ts-ignore - raw imports
-import hedgeEscalatorTs from '../../local-runner/src/hedge-escalator.ts?raw';
-// @ts-ignore - raw imports
-import inventoryRiskTs from '../../local-runner/src/inventory-risk.ts?raw';
-// @ts-ignore - raw imports
-import orderRateLimiterTs from '../../local-runner/src/order-rate-limiter.ts?raw';
-// @ts-ignore - raw imports
-import marketStateManagerTs from '../../local-runner/src/market-state-manager.ts?raw';
-// @ts-ignore - raw imports
-import positionsSyncTs from '../../local-runner/src/positions-sync.ts?raw';
-
-// Configuration
-// @ts-ignore - raw imports
-import configTs from '../../local-runner/src/config.ts?raw';
-// @ts-ignore - raw imports
-import resolvedConfigTs from '../../local-runner/src/resolved-config.ts?raw';
-
-// Supporting modules
-// @ts-ignore - raw imports
-import fundingTs from '../../local-runner/src/funding.ts?raw';
-// @ts-ignore - raw imports
-import telemetryTs from '../../local-runner/src/telemetry.ts?raw';
-// @ts-ignore - raw imports
-import loggerTs from '../../local-runner/src/logger.ts?raw';
-// @ts-ignore - raw imports
-import chainTs from '../../local-runner/src/chain.ts?raw';
-// @ts-ignore - raw imports
-import backendTs from '../../local-runner/src/backend.ts?raw';
-// @ts-ignore - raw imports
-import authManagerTs from '../../local-runner/src/authManager.ts?raw';
-// @ts-ignore - raw imports
-import redeemerTs from '../../local-runner/src/redeemer.ts?raw';
-// @ts-ignore - raw imports
-import reconcileTs from '../../local-runner/src/reconcile.ts?raw';
-
+// Strategy file list - files will be fetched dynamically
 const STRATEGY_FILES = [
   // Main entry point
-  { name: 'index.ts', content: indexTs, folder: '' },
+  { name: 'index.ts', path: 'local-runner/src/index.ts' },
   
   // Core strategy
-  { name: 'strategy.ts', content: strategyTs, folder: '' },
-  { name: 'v7-patch.ts', content: v7PatchTs, folder: '' },
-  { name: 'hard-invariants.ts', content: hardInvariantsTs, folder: '' },
+  { name: 'strategy.ts', path: 'local-runner/src/strategy.ts' },
+  { name: 'v7-patch.ts', path: 'local-runner/src/v7-patch.ts' },
+  { name: 'hard-invariants.ts', path: 'local-runner/src/hard-invariants.ts' },
   
   // API & Infrastructure
-  { name: 'polymarket.ts', content: polymarketTs, folder: '' },
-  { name: 'hedge-escalator.ts', content: hedgeEscalatorTs, folder: '' },
-  { name: 'inventory-risk.ts', content: inventoryRiskTs, folder: '' },
-  { name: 'order-rate-limiter.ts', content: orderRateLimiterTs, folder: '' },
-  { name: 'market-state-manager.ts', content: marketStateManagerTs, folder: '' },
-  { name: 'positions-sync.ts', content: positionsSyncTs, folder: '' },
+  { name: 'polymarket.ts', path: 'local-runner/src/polymarket.ts' },
+  { name: 'hedge-escalator.ts', path: 'local-runner/src/hedge-escalator.ts' },
+  { name: 'inventory-risk.ts', path: 'local-runner/src/inventory-risk.ts' },
+  { name: 'order-rate-limiter.ts', path: 'local-runner/src/order-rate-limiter.ts' },
+  { name: 'market-state-manager.ts', path: 'local-runner/src/market-state-manager.ts' },
+  { name: 'positions-sync.ts', path: 'local-runner/src/positions-sync.ts' },
   
   // Configuration
-  { name: 'config.ts', content: configTs, folder: '' },
-  { name: 'resolved-config.ts', content: resolvedConfigTs, folder: '' },
+  { name: 'config.ts', path: 'local-runner/src/config.ts' },
+  { name: 'resolved-config.ts', path: 'local-runner/src/resolved-config.ts' },
   
   // Supporting modules
-  { name: 'funding.ts', content: fundingTs, folder: '' },
-  { name: 'telemetry.ts', content: telemetryTs, folder: '' },
-  { name: 'logger.ts', content: loggerTs, folder: '' },
-  { name: 'chain.ts', content: chainTs, folder: '' },
-  { name: 'backend.ts', content: backendTs, folder: '' },
-  { name: 'authManager.ts', content: authManagerTs, folder: '' },
-  { name: 'redeemer.ts', content: redeemerTs, folder: '' },
-  { name: 'reconcile.ts', content: reconcileTs, folder: '' },
+  { name: 'funding.ts', path: 'local-runner/src/funding.ts' },
+  { name: 'telemetry.ts', path: 'local-runner/src/telemetry.ts' },
+  { name: 'logger.ts', path: 'local-runner/src/logger.ts' },
+  { name: 'chain.ts', path: 'local-runner/src/chain.ts' },
+  { name: 'backend.ts', path: 'local-runner/src/backend.ts' },
+  { name: 'authManager.ts', path: 'local-runner/src/authManager.ts' },
+  { name: 'redeemer.ts', path: 'local-runner/src/redeemer.ts' },
+  { name: 'reconcile.ts', path: 'local-runner/src/reconcile.ts' },
 ];
 
 export function DownloadStrategyButton() {
   const [isDownloading, setIsDownloading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const downloadStrategy = async () => {
     setIsDownloading(true);
+    setError(null);
     
     try {
       const zip = new JSZip();
@@ -98,8 +50,29 @@ export function DownloadStrategyButton() {
       
       if (!rootFolder) throw new Error('Failed to create zip folder');
 
+      // Fetch all strategy files in parallel
+      const fileContents = await Promise.all(
+        STRATEGY_FILES.map(async (file) => {
+          try {
+            // Try to fetch the file as raw text
+            const response = await fetch(`/${file.path}`, {
+              headers: { 'Accept': 'text/plain' }
+            });
+            if (!response.ok) {
+              console.warn(`Could not fetch ${file.path}: ${response.status}`);
+              return { name: file.name, content: `// File not available in production build\n// Path: ${file.path}` };
+            }
+            const content = await response.text();
+            return { name: file.name, content };
+          } catch (err) {
+            console.warn(`Error fetching ${file.path}:`, err);
+            return { name: file.name, content: `// File not available\n// Path: ${file.path}` };
+          }
+        })
+      );
+
       // Add all strategy files
-      for (const file of STRATEGY_FILES) {
+      for (const file of fileContents) {
         rootFolder.file(file.name, file.content);
       }
 
@@ -159,6 +132,10 @@ This is the COMPLETE trading bot with all hotfixes and Rev C.4 Hard Invariants a
 ## Build Info
 Generated: ${new Date().toISOString()}
 Version: 7.2.4 REV C.4 (Hard Invariants)
+
+## Note
+Some files may not be available in the production build. 
+To get the complete source, clone the repository or download in development mode.
 `;
       rootFolder.file('README.md', readme);
 
@@ -171,8 +148,9 @@ Version: 7.2.4 REV C.4 (Hard Invariants)
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-    } catch (error) {
-      console.error('Error downloading strategy:', error);
+    } catch (err) {
+      console.error('Error downloading strategy:', err);
+      setError('Download failed');
     } finally {
       setIsDownloading(false);
     }
@@ -185,6 +163,7 @@ Version: 7.2.4 REV C.4 (Hard Invariants)
       variant="outline"
       size="sm"
       className="font-mono text-xs"
+      title={error || undefined}
     >
       {isDownloading ? (
         <Loader2 className="w-3 h-3 mr-2 animate-spin" />
