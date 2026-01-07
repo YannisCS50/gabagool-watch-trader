@@ -2090,9 +2090,94 @@ export type Database = {
         }
         Relationships: []
       }
+      v26_trades: {
+        Row: {
+          asset: string
+          avg_fill_price: number | null
+          created_at: string
+          error_message: string | null
+          event_end_time: string
+          event_start_time: string
+          fill_time_ms: number | null
+          filled_shares: number | null
+          id: string
+          market_id: string
+          market_slug: string
+          notional: number | null
+          order_id: string | null
+          pnl: number | null
+          price: number
+          result: string | null
+          run_id: string | null
+          settled_at: string | null
+          shares: number
+          side: string
+          status: string
+        }
+        Insert: {
+          asset: string
+          avg_fill_price?: number | null
+          created_at?: string
+          error_message?: string | null
+          event_end_time: string
+          event_start_time: string
+          fill_time_ms?: number | null
+          filled_shares?: number | null
+          id?: string
+          market_id: string
+          market_slug: string
+          notional?: number | null
+          order_id?: string | null
+          pnl?: number | null
+          price?: number
+          result?: string | null
+          run_id?: string | null
+          settled_at?: string | null
+          shares?: number
+          side?: string
+          status?: string
+        }
+        Update: {
+          asset?: string
+          avg_fill_price?: number | null
+          created_at?: string
+          error_message?: string | null
+          event_end_time?: string
+          event_start_time?: string
+          fill_time_ms?: number | null
+          filled_shares?: number | null
+          id?: string
+          market_id?: string
+          market_slug?: string
+          notional?: number | null
+          order_id?: string | null
+          pnl?: number | null
+          price?: number
+          result?: string | null
+          run_id?: string | null
+          settled_at?: string | null
+          shares?: number
+          side?: string
+          status?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
-      [_ in never]: never
+      v26_stats: {
+        Row: {
+          filled_trades: number | null
+          last_trade_at: string | null
+          losses: number | null
+          settled_trades: number | null
+          total_invested: number | null
+          total_pnl: number | null
+          total_trades: number | null
+          win_rate_pct: number | null
+          wins: number | null
+        }
+        Relationships: []
+      }
     }
     Functions: {
       cleanup_old_logs: { Args: never; Returns: undefined }

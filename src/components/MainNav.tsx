@@ -19,6 +19,7 @@ import {
   Eye,
   Shield,
   FileCheck,
+  Sparkles,
 } from 'lucide-react';
 
 const analysisItems = [
@@ -100,6 +101,22 @@ export function MainNav() {
             >
               <TrendingUp className="mr-2 h-4 w-4" />
               Live Trading
+            </NavigationMenuLink>
+          </Link>
+        </NavigationMenuItem>
+
+        {/* V26 Strategy */}
+        <NavigationMenuItem>
+          <Link to="/v26">
+            <NavigationMenuLink
+              className={cn(
+                navigationMenuTriggerStyle(),
+                location.pathname === '/v26' && 'bg-accent text-accent-foreground',
+                'bg-gradient-to-r from-primary/10 to-emerald-500/10 border border-primary/20'
+              )}
+            >
+              <Sparkles className="mr-2 h-4 w-4 text-primary" />
+              V26
             </NavigationMenuLink>
           </Link>
         </NavigationMenuItem>
