@@ -1396,15 +1396,17 @@ Deno.serve(async (req) => {
           });
         }
 
+        const deltaUp = typeof result.deltaUpShares === 'number' ? result.deltaUpShares : 0;
+        const deltaDown = typeof result.deltaDownShares === 'number' ? result.deltaDownShares : 0;
         const row = {
           ts: result.ts,
           run_id: result.runId,
           market_id: result.marketId,
-          local_up: result.localUp,
-          local_down: result.localDown,
-          account_up: result.accountUp,
-          account_down: result.accountDown,
-          delta_shares: result.deltaShares,
+          local_up: result.localUpShares,
+          local_down: result.localDownShares,
+          account_up: result.accountUpShares,
+          account_down: result.accountDownShares,
+          delta_shares: Math.abs(deltaUp) + Math.abs(deltaDown),
           delta_invested: result.deltaInvested,
           reconciliation_result: result.reconciliationResult,
           action_taken: result.actionTaken,
@@ -1489,10 +1491,10 @@ Deno.serve(async (req) => {
           asset: skip.asset,
           side_not_hedged: skip.sideNotHedged,
           reason_code: skip.reasonCode,
-          best_bid: skip.bestBid,
-          best_ask: skip.bestAsk,
+          best_bid: skip.bestBidHedgeSide,
+          best_ask: skip.bestAskHedgeSide,
           projected_cpp: skip.projectedCpp,
-          unpaired_shares: skip.unpairedShares,
+          unpaired_shares: skip.sharesUnhedged,
           seconds_remaining: skip.secondsRemaining,
         };
 
@@ -1528,10 +1530,10 @@ Deno.serve(async (req) => {
           asset: s.asset,
           side_not_hedged: s.sideNotHedged,
           reason_code: s.reasonCode,
-          best_bid: s.bestBid,
-          best_ask: s.bestAsk,
+          best_bid: s.bestBidHedgeSide,
+          best_ask: s.bestAskHedgeSide,
           projected_cpp: s.projectedCpp,
-          unpaired_shares: s.unpairedShares,
+          unpaired_shares: s.sharesUnhedged,
           seconds_remaining: s.secondsRemaining,
         }));
 
@@ -1570,7 +1572,7 @@ Deno.serve(async (req) => {
           book_ready_up: snapshot.bookReadyUp,
           book_ready_down: snapshot.bookReadyDown,
           fallback_used: snapshot.fallbackUsed,
-          unrealized_pnl: snapshot.unrealizedPnl,
+          unrealized_pnl: snapshot.unrealizedPnL,
           confidence: snapshot.confidence,
         };
 

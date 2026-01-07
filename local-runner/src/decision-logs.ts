@@ -18,7 +18,15 @@
  */
 
 import { appendJsonl } from './logger.js';
-import { saveBotEvent } from './backend.js';
+import { 
+  saveBotEvent,
+  saveDecisionSnapshot as saveDecisionSnapshotToDb,
+  saveAccountPositionSnapshot as saveAccountPositionSnapshotToDb,
+  saveStateReconciliationResult as saveStateReconciliationResultToDb,
+  saveFillAttribution as saveFillAttributionToDb,
+  saveHedgeSkipLog as saveHedgeSkipLogToDb,
+  saveMtmSnapshot as saveMtmSnapshotToDb,
+} from './backend.js';
 
 // ============================================================
 // 1. DECISION_SNAPSHOT — BEFORE EVERY ORDER
@@ -92,34 +100,8 @@ export interface DecisionSnapshot {
 export function logDecisionSnapshot(data: DecisionSnapshot): void {
   appendJsonl('snapshot', { ...data, logType: 'DECISION_SNAPSHOT' });
   
-  // Also save to Supabase bot_events
-  saveBotEvent({
-    event_type: 'DECISION_SNAPSHOT',
-    asset: data.asset,
-    market_id: data.marketId,
-    ts: data.ts,
-    run_id: data.runId,
-    correlation_id: data.correlationId,
-    reason_code: data.reasonCode,
-    data: {
-      state: data.state,
-      intent: data.intent,
-      chosenSide: data.chosenSide,
-      projectedCppMaker: data.projectedCppMaker,
-      projectedCppTaker: data.projectedCppTaker,
-      cppPairedOnly: data.cppPairedOnly,
-      upShares: data.upShares,
-      downShares: data.downShares,
-      pairedShares: data.pairedShares,
-      unpairedShares: data.unpairedShares,
-      bookReadyUp: data.bookReadyUp,
-      bookReadyDown: data.bookReadyDown,
-      guardsEvaluated: data.guardsEvaluated,
-      orderSide: data.orderSide,
-      orderQty: data.orderQty,
-      orderPrice: data.orderPrice,
-    },
-  }).catch(() => {});
+  // Save to dedicated decision_snapshots table
+  saveDecisionSnapshotToDb(data).catch(() => {});
 }
 
 // ============================================================
@@ -152,22 +134,8 @@ export interface AccountPositionSnapshot {
 export function logAccountPositionSnapshot(data: AccountPositionSnapshot): void {
   appendJsonl('snapshot', { ...data, logType: 'ACCOUNT_POSITION_SNAPSHOT' });
   
-  saveBotEvent({
-    event_type: 'ACCOUNT_POSITION_SNAPSHOT',
-    asset: data.asset,
-    market_id: data.marketId,
-    ts: data.ts,
-    run_id: data.runId,
-    data: {
-      accountUpShares: data.accountUpShares,
-      accountDownShares: data.accountDownShares,
-      accountAvgUp: data.accountAvgUp,
-      accountAvgDown: data.accountAvgDown,
-      walletAddress: data.walletAddress,
-      walletType: data.walletType,
-      sourceEndpoint: data.sourceEndpoint,
-    },
-  }).catch(() => {});
+  // Save to dedicated account_position_snapshots table
+  saveAccountPositionSnapshotToDb(data).catch(() => {});
 }
 
 // ============================================================
@@ -218,23 +186,8 @@ export function logStateReconciliation(data: StateReconciliationResult): void {
     console.log(`   Action: ${data.actionTaken}`);
   }
   
-  saveBotEvent({
-    event_type: 'STATE_RECONCILIATION_RESULT',
-    asset: data.asset,
-    market_id: data.marketId,
-    ts: data.ts,
-    run_id: data.runId,
-    reason_code: data.reconciliationResult,
-    data: {
-      localUpShares: data.localUpShares,
-      localDownShares: data.localDownShares,
-      accountUpShares: data.accountUpShares,
-      accountDownShares: data.accountDownShares,
-      deltaUpShares: data.deltaUpShares,
-      deltaDownShares: data.deltaDownShares,
-      actionTaken: data.actionTaken,
-    },
-  }).catch(() => {});
+  // Save to dedicated state_reconciliation_results table
+  saveStateReconciliationResultToDb(data).catch(() => {});
 }
 
 // ============================================================
@@ -288,26 +241,8 @@ export function logFillAttribution(data: FillAttribution): void {
     console.log(`   CPP now: ${data.updatedCppGross.toFixed(4)} (gross) / ${data.updatedCppNetExpected?.toFixed(4) ?? 'N/A'} (net)`);
   }
   
-  saveBotEvent({
-    event_type: 'FILL_ATTRIBUTION',
-    asset: data.asset,
-    market_id: data.marketId,
-    ts: data.ts,
-    run_id: data.runId,
-    correlation_id: data.correlationId,
-    data: {
-      orderId: data.orderId,
-      side: data.side,
-      price: data.price,
-      size: data.size,
-      intent: data.intent,
-      liquidity: data.liquidity,
-      feePaid: data.feePaid,
-      fillCostNet: data.fillCostNet,
-      updatedCppGross: data.updatedCppGross,
-      updatedCppNetExpected: data.updatedCppNetExpected,
-    },
-  }).catch(() => {});
+  // Save to dedicated fill_attributions table
+  saveFillAttributionToDb(data).catch(() => {});
 }
 
 // ============================================================
@@ -366,26 +301,8 @@ export function logHedgeSkipExplained(data: HedgeSkipExplained): void {
   }
   console.log(`   Time remaining: ${data.secondsRemaining}s | State: ${data.botState} | Activity: ${data.cppActivityState}`);
   
-  saveBotEvent({
-    event_type: 'HEDGE_SKIP_EXPLAINED',
-    asset: data.asset,
-    market_id: data.marketId,
-    ts: data.ts,
-    run_id: data.runId,
-    correlation_id: data.correlationId,
-    reason_code: data.reasonCode,
-    data: {
-      sideNotHedged: data.sideNotHedged,
-      sharesUnhedged: data.sharesUnhedged,
-      reasonDetails: data.reasonDetails,
-      bestAskHedgeSide: data.bestAskHedgeSide,
-      projectedCpp: data.projectedCpp,
-      currentCpp: data.currentCpp,
-      secondsRemaining: data.secondsRemaining,
-      botState: data.botState,
-      cppActivityState: data.cppActivityState,
-    },
-  }).catch(() => {});
+  // Save to dedicated hedge_skip_logs table
+  saveHedgeSkipLogToDb(data).catch(() => {});
 }
 
 // ============================================================
@@ -446,21 +363,8 @@ export function logMarkToMarket(data: MarkToMarketSnapshot): void {
     console.log(`   ⚠️ Fallback used: ${data.fallbackUsed} (${data.fallbackAge}s old)`);
   }
   
-  saveBotEvent({
-    event_type: 'MARK_TO_MARKET_SNAPSHOT',
-    asset: data.asset,
-    market_id: data.marketId,
-    ts: data.ts,
-    run_id: data.runId,
-    data: {
-      upMid: data.upMid,
-      downMid: data.downMid,
-      combinedMid: data.combinedMid,
-      unrealizedPnL: data.unrealizedPnL,
-      confidence: data.confidence,
-      fallbackUsed: data.fallbackUsed,
-    },
-  }).catch(() => {});
+  // Save to dedicated mtm_snapshots table
+  saveMtmSnapshotToDb(data).catch(() => {});
 }
 
 // ============================================================
@@ -480,6 +384,9 @@ export function generateCorrelationId(prefix: string = 'corr'): string {
 // ============================================================
 // EXPORTED TYPES (for use in strategy)
 // ============================================================
+
+// Alias for backend compatibility
+export type MtmSnapshot = MarkToMarketSnapshot;
 
 export type {
   DecisionSnapshot,
