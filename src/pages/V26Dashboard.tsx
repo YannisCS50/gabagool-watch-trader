@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
   ArrowLeft, RefreshCw, TrendingUp, TrendingDown, DollarSign, Target, Percent,
-  Clock, Zap, BarChart3, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight
+  Clock, Zap, BarChart3, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ExternalLink
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -383,13 +383,32 @@ export default function V26Dashboard() {
             </Button>
             <div>
               <h1 className="text-2xl md:text-3xl font-bold">V26 Trade Log</h1>
-              <p className="text-sm text-muted-foreground">DOWN @ $0.48 LIMIT orders</p>
+              <div className="flex items-center gap-2">
+                <span className="text-sm">🐍</span>
+                <p className="text-sm text-muted-foreground">DOWN @ $0.48 LIMIT orders</p>
+              </div>
             </div>
           </div>
-          <Button onClick={fetchData} variant="outline" size="sm" disabled={loading}>
-            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button 
+              variant="outline" 
+              size="sm" 
+              asChild
+            >
+              <a 
+                href="https://polymarket.com/profile?tab=portfolio" 
+                target="_blank" 
+                rel="noopener noreferrer"
+              >
+                <ExternalLink className="h-4 w-4 mr-2" />
+                Polymarket
+              </a>
+            </Button>
+            <Button onClick={fetchData} variant="outline" size="sm" disabled={loading}>
+              <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
+          </div>
         </div>
 
         {/* Main KPIs - Row 1 */}
