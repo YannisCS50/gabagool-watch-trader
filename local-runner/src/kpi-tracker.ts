@@ -403,6 +403,25 @@ export function resetKPIState(): void {
   consecutiveBreachWindows = 0;
 }
 
+/**
+ * Get KPI stats summary (for external reporting)
+ */
+export function getKPIStats(): {
+  mode: TradingMode;
+  fillCount: number;
+  hedgeRecordCount: number;
+  lastCheck: KPISnapshot | null;
+  consecutiveBreaches: number;
+} {
+  return {
+    mode: currentMode,
+    fillCount: fillRecords.length,
+    hedgeRecordCount: hedgeRecords.length,
+    lastCheck: lastKPICheck,
+    consecutiveBreaches: consecutiveBreachWindows,
+  };
+}
+
 // ============================================================
 // EXPORTS
 // ============================================================
@@ -421,6 +440,7 @@ export const KPITracker = {
   areEntriesAllowed,
   areHedgesAllowed,
   getLastKPISnapshot,
+  getKPIStats,
   
   // Control
   forceHalt,

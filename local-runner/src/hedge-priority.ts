@@ -50,6 +50,9 @@ export const HEDGE_PRIORITY_CONFIG = {
 
 export type HedgeIntent = 'HEDGE' | 'HEDGE_URGENT' | 'SURVIVAL' | 'EMERGENCY_EXIT';
 
+// Type alias for hard-invariants integration
+export type IntentType = string;
+
 export interface HedgeState {
   marketId: string;
   asset: string;
@@ -465,6 +468,18 @@ export function shouldBypassCppGating(intent: string): boolean {
   return isHedgePriorityIntent(intent);
 }
 
+/**
+ * Get escalation level name based on seconds since entry
+ */
+export function getEscalationLevel(secsSinceEntry: number): HedgeIntent {
+  const cfg = HEDGE_PRIORITY_CONFIG.escalation;
+  
+  if (secsSinceEntry <= cfg.normalHedgeMaxSec) return 'HEDGE';
+  if (secsSinceEntry <= cfg.urgentHedgeMaxSec) return 'HEDGE_URGENT';
+  if (secsSinceEntry <= cfg.survivalModeMaxSec) return 'SURVIVAL';
+  return 'EMERGENCY_EXIT';
+}
+
 // ============================================================
 // EXPORTS
 // ============================================================
@@ -481,6 +496,7 @@ export const HedgePriority = {
   // Decision logic
   getHedgeDecision,
   calculateHedgePrice,
+  getEscalationLevel,
   
   // Bypass checks
   isHedgePriorityIntent,

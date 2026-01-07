@@ -691,43 +691,22 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
     };
   }
 
-  // v6.0.1: Context-aware price improvement
-  // A) ENTRY: alleen improve als topSize < desiredShares * 1.2 of spread > 0.03
-  // B) HEDGE: improvement toegestaan (need fills)
-  // C) FORCE/SURVIVAL: improvement toegestaan tot cap
-  let priceImprovement = 0;
+  // ================================================================
+  // v8.0: PRICE IMPROVEMENT REMOVED - PriceGuard enforces NO-CROSSING
+  // ================================================================
+  // Price improvement has been moved to hard-invariants.ts PriceGuard.
+  // The order.price arriving here is already validated/adjusted by PriceGuard.
+  // DO NOT apply further adjustments that could cause crossing the spread.
+  
   const intent = order.intent || 'ENTRY';
-  const spread = order.spread ?? 0;
-
-  if (intent === 'ENTRY') {
-    // Only improve for entry if:
-    // - Book is thin (askVolume < desiredShares * 1.2)
-    // - OR spread is wide (> 3¢)
-    const isThinBook = depth.askVolume < order.size * 1.2;
-    const isWideSpread = spread > 0.03;
-    if (isThinBook || isWideSpread) {
-      priceImprovement = order.price > 0.50 ? 0.02 : 0.01;
-    }
-    // else: no improvement - preserve edge on quiet books
-  } else {
-    // HEDGE / FORCE / SURVIVAL: always improve to ensure fill
-    priceImprovement = order.price > 0.50 ? 0.02 : 0.01;
-    if (intent === 'SURVIVAL') {
-      priceImprovement = 0.03; // More aggressive in survival mode
-    }
-  }
-
-  // IMPORTANT: Price improvement direction depends on side.
-  // - BUY: raise price to cross/fill faster
-  // - SELL: lower price to cross/fill faster
-  const adjustedPrice = order.side === 'BUY'
-    ? Math.min(order.price + priceImprovement, 0.99)
-    : Math.max(order.price - priceImprovement, 0.01);
-
-  const deltaCents = Math.round((adjustedPrice - order.price) * 100);
-
+  const adjustedPrice = order.price; // Use price as-is (already guarded)
+  
+  // Log the order with NO-CROSSING compliance info
   console.log(
-    `📤 Placing order: ${order.side} ${order.size} @ ${(order.price * 100).toFixed(0)}¢ → ${(adjustedPrice * 100).toFixed(0)}¢ (${deltaCents >= 0 ? '+' : ''}${deltaCents}¢ ${intent})`
+    `📤 Placing order: ${order.side} ${order.size} @ ${(adjustedPrice * 100).toFixed(0)}¢ (${intent}, NO_CROSSING enforced)`
+  );
+  console.log(
+    `   📊 Book: bestBid=${depth.topBid?.toFixed(2) ?? 'null'} bestAsk=${depth.topAsk?.toFixed(2) ?? 'null'}`
   );
 
   // Check if orderbook exists and has liquidity before placing order
