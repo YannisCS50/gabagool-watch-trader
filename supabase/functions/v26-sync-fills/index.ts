@@ -134,19 +134,17 @@ async function createL2Headers(
   };
 }
 
-interface AssociateTrade {
-  match_time: number;
-  price?: string;
-  size?: string;
-}
-
-interface ClobOrderResponse {
+interface OpenOrder {
   id: string;
   status: string;
   original_size: string;
   size_matched: string;
-  associate_trades?: AssociateTrade[];
+  associate_trades?: string[];
 }
+
+type GetOrderResponse = {
+  order?: OpenOrder;
+} | OpenOrder;
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -172,30 +170,23 @@ serve(async (req) => {
       );
     }
 
-    // Resolve correct funder address for L2 auth.
-    // NOTE: Using the EOA address can cause 401; Polymarket often expects Safe/Proxy address.
+    // L2 auth is tied to the address the API key was derived for.
+    // In our setup that's the EOA from POLYMARKET_PRIVATE_KEY.
     const eoaAddress = new ethers.Wallet(privateKey).address;
 
-    let configuredAddress: string | null = null;
     const configRes = await supabase.from('bot_config').select('polymarket_address').limit(1).single();
-    if (!configRes.error) {
-      configuredAddress = configRes.data?.polymarket_address ?? null;
-    } else {
+    const configuredAddress = !configRes.error ? (configRes.data?.polymarket_address ?? null) : null;
+    if (configRes.error) {
       console.warn('[v26-sync-fills] Could not read bot_config.polymarket_address:', configRes.error);
     }
 
-    let walletAddress = eoaAddress;
-    try {
-      walletAddress = await resolvePolymarketFunderAddress(eoaAddress);
-    } catch (err) {
-      console.warn('[v26-sync-fills] Failed to resolve funder (Safe/Proxy). Falling back to EOA:', err);
-    }
+    const walletAddress = eoaAddress;
 
     console.log(`[v26-sync-fills] EOA address: ${eoaAddress}`);
     if (configuredAddress) {
       console.log(`[v26-sync-fills] bot_config.polymarket_address: ${configuredAddress}`);
     }
-    console.log(`[v26-sync-fills] Using POLY_ADDRESS (funder): ${walletAddress}`);
+    console.log(`[v26-sync-fills] Using POLY_ADDRESS (EOA): ${walletAddress}`);
 
     const creds = { key: apiKey, secret: apiSecret, passphrase };
 
@@ -224,7 +215,7 @@ serve(async (req) => {
 
     for (const trade of trades || []) {
       const orderId = trade.order_id;
-      const requestPath = `/order/${orderId}`;
+      const requestPath = `/data/order/${orderId}`;
 
       try {
         const headers = await createL2Headers(walletAddress, creds, 'GET', requestPath);
@@ -244,25 +235,66 @@ serve(async (req) => {
           continue;
         }
 
-        const orderData: ClobOrderResponse = await response.json();
-        console.log(`[v26-sync-fills] Order ${orderId}:`, JSON.stringify(orderData).slice(0, 200));
+        const orderRes: GetOrderResponse = await response.json();
+        const order: OpenOrder | null = (orderRes as any)?.order ?? (orderRes as any);
+
+        if (!order?.id) {
+          console.error(`[v26-sync-fills] Unexpected get-order response for ${orderId}:`, JSON.stringify(orderRes).slice(0, 300));
+          results.push({ id: trade.id, order_id: orderId, success: false, error: 'Bad get-order response' });
+          continue;
+        }
+
+        console.log(`[v26-sync-fills] Order ${orderId}:`, JSON.stringify(order).slice(0, 200));
 
         // Parse size_matched
-        const sizeMatched = parseFloat(orderData.size_matched || '0');
-        const originalSize = parseFloat(orderData.original_size || '0');
+        const sizeMatched = parseFloat(order.size_matched || '0');
+        const originalSize = parseFloat(order.original_size || '0');
 
-        // Find the last match time (max of all match_times)
+        // Find the last match time by looking up each associated trade's match_time
         let lastMatchTimeMs: number | null = null;
-        if (orderData.associate_trades && orderData.associate_trades.length > 0) {
-          for (const at of orderData.associate_trades) {
-            if (at.match_time) {
-              // Normalize: if < 1e12, it's seconds, otherwise ms
-              const matchMs = at.match_time < 1e12 ? at.match_time * 1000 : at.match_time;
-              if (lastMatchTimeMs === null || matchMs > lastMatchTimeMs) {
-                lastMatchTimeMs = matchMs;
-              }
+        const associatedTradeIds = Array.isArray(order.associate_trades) ? order.associate_trades : [];
+
+        for (const tradeId of associatedTradeIds) {
+          const tradePath = `/data/trades?id=${encodeURIComponent(tradeId)}`;
+          const tradeHeaders = await createL2Headers(walletAddress, creds, 'GET', tradePath);
+
+          const tRes = await fetch(`${CLOB_BASE_URL}${tradePath}`, {
+            method: 'GET',
+            headers: {
+              ...tradeHeaders,
+              'Content-Type': 'application/json',
+            },
+          });
+
+          if (!tRes.ok) {
+            const tErr = await tRes.text();
+            console.warn(`[v26-sync-fills] Trade ${tradeId} fetch failed:`, tRes.status, tErr);
+            continue;
+          }
+
+          const tradesPayload: any = await tRes.json();
+          const tradeArr: any[] = Array.isArray(tradesPayload) ? tradesPayload : [];
+
+          for (const t of tradeArr) {
+            const raw = t?.match_time;
+            if (raw == null) continue;
+
+            let ms: number | null = null;
+            const n = Number(raw);
+            if (Number.isFinite(n)) {
+              ms = n < 1e12 ? n * 1000 : n;
+            } else {
+              const parsed = Date.parse(String(raw));
+              if (Number.isFinite(parsed)) ms = parsed;
+            }
+
+            if (ms !== null && (lastMatchTimeMs === null || ms > lastMatchTimeMs)) {
+              lastMatchTimeMs = ms;
             }
           }
+
+          // small delay to be gentle with rate limiting
+          await new Promise((resolve) => setTimeout(resolve, 50));
         }
 
         // Determine new status
@@ -271,9 +303,9 @@ serve(async (req) => {
           newStatus = 'filled';
         } else if (sizeMatched > 0) {
           newStatus = 'partial';
-        } else if (orderData.status === 'CANCELLED') {
+        } else if (String(order.status).toUpperCase() === 'CANCELLED') {
           newStatus = 'cancelled';
-        } else if (orderData.status === 'EXPIRED') {
+        } else if (String(order.status).toUpperCase() === 'EXPIRED') {
           newStatus = 'expired';
         }
 
