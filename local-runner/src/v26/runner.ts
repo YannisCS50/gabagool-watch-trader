@@ -10,7 +10,7 @@
 // ============================================================
 
 import { config } from '../config.js';
-import { testConnection, getBalance, placeOrder, cancelOrder, getOpenOrders } from '../polymarket.js';
+import { testConnection, getBalance, placeOrder, cancelOrder } from '../polymarket.js';
 import { fetchMarkets } from '../backend.js';
 import { enforceVpnOrExit } from '../vpn-check.js';
 import { 
@@ -175,23 +175,21 @@ async function checkAndCancelOrder(scheduled: ScheduledTrade): Promise<void> {
   }
 
   try {
-    // Check if order is still open
-    const openOrders = await getOpenOrders();
-    const stillOpen = openOrders?.find((o: any) => o.id === orderId);
+    // Try to cancel the order - if it fails, it was likely already filled
+    log(`⏰ [${market.asset}] Attempting to cancel order after ${V26_CONFIG.cancelAfterSec}s`);
+    const cancelResult = await cancelOrder(orderId);
 
-    if (stillOpen) {
-      log(`⏰ [${market.asset}] Cancelling unfilled order after ${V26_CONFIG.cancelAfterSec}s`);
-      await cancelOrder(orderId);
-      
+    if (cancelResult.success) {
+      log(`✓ [${market.asset}] Order cancelled (was not filled)`);
       trade.status = 'cancelled';
       if (trade.id) {
         await updateV26Trade(trade.id, { status: 'cancelled' });
       }
     } else {
-      // Order was filled (or partially filled)
-      log(`✓ [${market.asset}] Order no longer open (likely filled)`);
+      // Cancel failed - order was likely already filled
+      log(`✓ [${market.asset}] Cancel failed (order likely filled): ${cancelResult.error}`);
       trade.status = 'filled';
-      trade.filledShares = V26_CONFIG.shares; // Assume full fill for now
+      trade.filledShares = V26_CONFIG.shares;
       trade.avgFillPrice = V26_CONFIG.price;
       
       if (trade.id) {
