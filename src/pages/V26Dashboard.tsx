@@ -459,12 +459,11 @@ export default function V26Dashboard() {
                   <TableHeader>
                     <TableRow>
                       <TableHead>Bet</TableHead>
+                      <TableHead>Gekocht?</TableHead>
                       <TableHead>Shares</TableHead>
-                      <TableHead>Price</TableHead>
-                      <TableHead>Total</TableHead>
-                      <TableHead>Delta</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Result</TableHead>
+                      <TableHead>Cost</TableHead>
+                      <TableHead>Resultaat</TableHead>
+                      <TableHead>P&L</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -472,79 +471,33 @@ export default function V26Dashboard() {
                       .filter((bet) => assetFilter === 'ALL' || bet.asset === assetFilter)
                       .map((bet) => {
                         const isEnded = new Date(bet.event_end_time) < new Date();
-                        const hasOrder = bet.trades.some(t => t.order_id);
-                        
-                        // Status logic - use position_shares for fill status
-                        let status: 'placed' | 'open' | 'closed' = 'placed';
-                        if (bet.position_shares > 0 && !isEnded) {
-                          status = 'open';
-                        } else if (isEnded) {
-                          status = 'closed';
-                        } else if (hasOrder) {
-                          status = 'placed';
-                        }
+                        const hasFill = bet.position_shares > 0;
 
                         // Bet title: "BTC DOWN 16:15"
                         const betTitle = `${bet.asset} DOWN ${format(new Date(bet.event_start_time), 'HH:mm')}`;
 
-                        const getStatusBadge = () => {
-                          switch (status) {
-                            case 'placed':
-                              return <Badge className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20">Placed</Badge>;
-                            case 'open':
-                              return <Badge className="bg-blue-500/10 text-blue-500 border-blue-500/20">🔴 Open</Badge>;
-                            case 'closed':
-                              return <Badge variant="outline">Closed</Badge>;
+                        // Determine outcome based on delta
+                        const outcomeIsDown = bet.delta !== null && bet.delta < 0;
+                        const outcomeIsUp = bet.delta !== null && bet.delta >= 0;
+
+                        // Calculate P&L
+                        // DOWN wint: shares x $1 payout, dus winst = shares - cost
+                        // UP wint: verlies = cost (alles kwijt)
+                        const calculatePnL = () => {
+                          if (!isEnded || !hasFill) return null;
+                          if (bet.position_pnl !== null) return bet.position_pnl;
+                          if (bet.delta === null) return null;
+                          
+                          if (outcomeIsDown) {
+                            // DOWN wint: payout = shares x $1
+                            return bet.position_shares - bet.position_cost;
+                          } else {
+                            // UP wint: verlies = cost
+                            return -bet.position_cost;
                           }
                         };
 
-                        const getResultDisplay = () => {
-                          // Not closed yet
-                          if (status !== 'closed') {
-                            return <span className="text-muted-foreground">-</span>;
-                          }
-                          // Closed but no fill (from positions)
-                          if (bet.position_shares === 0) {
-                            return <Badge variant="outline" className="text-muted-foreground">No Fill</Badge>;
-                          }
-                          // Use position PnL if available
-                          if (bet.position_pnl !== null) {
-                            if (bet.position_pnl > 0) {
-                              return (
-                                <Badge className="bg-green-500/10 text-green-500 border-green-500/20">
-                                  ✓ Win +${bet.position_pnl.toFixed(2)}
-                                </Badge>
-                              );
-                            } else {
-                              return (
-                                <Badge className="bg-red-500/10 text-red-500 border-red-500/20">
-                                  ✗ Loss -${Math.abs(bet.position_pnl).toFixed(2)}
-                                </Badge>
-                              );
-                            }
-                          }
-                          // Fallback to delta if position PnL not available
-                          if (bet.delta !== null) {
-                            const estimatedPnl = bet.delta < 0 
-                              ? bet.position_shares - bet.position_cost 
-                              : -bet.position_cost;
-                            if (bet.delta < 0) {
-                              return (
-                                <Badge className="bg-green-500/10 text-green-500 border-green-500/20">
-                                  ✓ Win +${estimatedPnl.toFixed(2)}
-                                </Badge>
-                              );
-                            } else {
-                              return (
-                                <Badge className="bg-red-500/10 text-red-500 border-red-500/20">
-                                  ✗ Loss -${Math.abs(estimatedPnl).toFixed(2)}
-                                </Badge>
-                              );
-                            }
-                          }
-                          // Filled, closed, but no oracle data yet
-                          return <Badge className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20">⏳ Oracle</Badge>;
-                        };
+                        const pnl = calculatePnL();
 
                         return (
                           <TableRow key={bet.market_slug}>
@@ -555,29 +508,62 @@ export default function V26Dashboard() {
                               </div>
                             </TableCell>
                             <TableCell>
-                              {bet.position_shares > 0 ? (
-                                <span className="font-medium">{bet.position_shares}</span>
+                              {hasFill ? (
+                                <Badge className="bg-green-500/10 text-green-500 border-green-500/20">
+                                  ✓ Ja
+                                </Badge>
                               ) : (
-                                <span className="text-muted-foreground">0</span>
+                                <Badge variant="outline" className="text-muted-foreground">
+                                  Nee
+                                </Badge>
                               )}
-                            </TableCell>
-                            <TableCell className="font-mono">
-                              ${(bet.position_avg_price ?? 0.48).toFixed(2)}
                             </TableCell>
                             <TableCell className="font-mono font-medium">
-                              ${bet.position_cost.toFixed(2)}
+                              {hasFill ? bet.position_shares : '-'}
+                            </TableCell>
+                            <TableCell className="font-mono">
+                              {hasFill ? `$${bet.position_cost.toFixed(2)}` : '-'}
                             </TableCell>
                             <TableCell>
-                              {bet.delta !== null ? (
-                                <span className={`font-mono ${bet.delta < 0 ? 'text-green-500' : 'text-red-500'}`}>
-                                  {bet.delta >= 0 ? '+' : ''}{bet.delta.toFixed(2)}
-                                </span>
+                              {!isEnded ? (
+                                <Badge className="bg-blue-500/10 text-blue-500 border-blue-500/20">
+                                  🔴 Live
+                                </Badge>
+                              ) : bet.delta === null ? (
+                                <Badge className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20">
+                                  ⏳ Wachten
+                                </Badge>
+                              ) : outcomeIsDown ? (
+                                <Badge className="bg-green-500/10 text-green-500 border-green-500/20">
+                                  ↓ DOWN
+                                </Badge>
                               ) : (
-                                <span className="text-muted-foreground">-</span>
+                                <Badge className="bg-red-500/10 text-red-500 border-red-500/20">
+                                  ↑ UP
+                                </Badge>
                               )}
                             </TableCell>
-                            <TableCell>{getStatusBadge()}</TableCell>
-                            <TableCell>{getResultDisplay()}</TableCell>
+                            <TableCell>
+                              {!isEnded || !hasFill ? (
+                                <span className="text-muted-foreground">-</span>
+                              ) : pnl === null ? (
+                                <span className="text-muted-foreground">⏳</span>
+                              ) : pnl > 0 ? (
+                                <div className="text-green-500 font-mono font-medium">
+                                  +${pnl.toFixed(2)}
+                                  <div className="text-xs text-muted-foreground">
+                                    {bet.position_shares} × $1
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="text-red-500 font-mono font-medium">
+                                  -${Math.abs(pnl).toFixed(2)}
+                                  <div className="text-xs text-muted-foreground">
+                                    verlies: cost
+                                  </div>
+                                </div>
+                              )}
+                            </TableCell>
                           </TableRow>
                         );
                       })}
