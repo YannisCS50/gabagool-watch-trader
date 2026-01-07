@@ -256,7 +256,7 @@ export default function V26Dashboard() {
         market: marketTitle,
         marketSlug: trade.market_slug,
         asset: trade.asset,
-        time: format(startTimeET, 'dd-MM HH:mm'),
+        time: format(startTimeUTC, 'dd-MM HH:mm'),
         shares: filledShares,
         pricePerShare: avgPrice,
         total: cost,
