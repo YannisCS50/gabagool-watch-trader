@@ -1,7 +1,7 @@
 /**
  * polymarket_15m_bot.ts
  * --------------------------------------------------------------------------
- * Polymarket 15m Hedge/Arbitrage Bot v5.2.4 — Always Hedge Edition
+ * Polymarket 15m Hedge/Arbitrage Bot v5.2.5 — GABAGOOL OBSERVABILITY EDITION
  *
  * v4.5 Changes (CRITICAL MODE-SWITCH FIX):
  * - HIGH_DELTA_CRITICAL MODE: IF delta > 0.8% AND secondsRemaining < 120:
@@ -45,7 +45,20 @@
  * - Exposure protection: no accumulate when one-sided
  */
 
-// v5.2.3: STRICT 50/50 HARD CAP - All hedge operations capped at 50 shares per side
+// v5.2.5: GABAGOOL OBSERVABILITY - Complete decision logging
+import { 
+  logDecisionSnapshot, 
+  logFillAttribution, 
+  logHedgeSkipExplained, 
+  logMarkToMarket,
+  generateCorrelationId,
+  type DecisionSnapshot,
+  type FillAttribution,
+  type HedgeSkipExplained,
+  type MarkToMarketSnapshot,
+  type GuardEvaluation,
+} from './decision-logs.js';
+
 export type Side = "UP" | "DOWN";
 export type BotState = "FLAT" | "ONE_SIDED" | "HEDGED" | "SKEWED" | "UNWIND" | "DEEP_DISLOCATION";
 export type RegimeTag = "NORMAL" | "DEEP" | "UNWIND";
@@ -752,17 +765,23 @@ export class Polymarket15mArbBot {
   /**
    * Feed ALL fills here. Hedging correctness depends on this.
    * v5.2.2: Pending hedge capped at 50 shares per side
+   * v5.2.5: GABAGOOL - logs FillAttribution for complete audit trail
    */
-  onFill(fill: FillEvent) {
+  onFill(fill: FillEvent, intentType: 'ENTRY' | 'HEDGE' | 'ACCUMULATE' | 'REBAL' | 'UNWIND' = 'ENTRY', correlationId?: string) {
     if (fill.marketId !== this.marketId) return;
 
     const MAX_SHARES_PER_SIDE = 50; // v5.2.2: HARD CAP
+    const now = Date.now();
 
     this.metrics.fills += 1;
     this.metrics.fillQty += fill.fillQty;
 
     this.inventory.lastFillTs = fill.ts;
     if (this.inventory.firstFillTs === undefined) this.inventory.firstFillTs = fill.ts;
+
+    // Store pre-fill averages for attribution
+    const preFillAvgUp = avgCost(this.inventory, "UP");
+    const preFillAvgDown = avgCost(this.inventory, "DOWN");
 
     if (fill.side === "UP") {
       this.inventory.upShares += fill.fillQty;
@@ -803,6 +822,53 @@ export class Polymarket15mArbBot {
     const skew = Math.max(uf, 1 - uf);
     this.maxSkewDuringTrade = Math.max(this.maxSkewDuringTrade, skew);
     this.metrics.maxSkewDuringTrade = this.maxSkewDuringTrade;
+
+    // v5.2.5: GABAGOOL - Log fill attribution
+    const fillCostGross = fill.fillQty * fill.fillPrice;
+    const liquidity = local?.tag === "HEDGE" ? 'TAKER' : 'MAKER';  // Hedge = aggressive = taker
+    const feePaid = liquidity === 'TAKER' ? fillCostGross * 0.002 : 0; // 0.2% taker fee
+    const rebateExpected = liquidity === 'MAKER' ? fillCostGross * 0.001 : 0; // 0.1% maker rebate
+    const fillCostNet = fillCostGross + feePaid - rebateExpected;
+
+    const updatedAvgUp = avgCost(this.inventory, "UP");
+    const updatedAvgDown = avgCost(this.inventory, "DOWN");
+    const updatedCppGross = (this.inventory.upShares > 0 && this.inventory.downShares > 0) 
+      ? updatedAvgUp + updatedAvgDown 
+      : null;
+
+    const fillAttribution: FillAttribution = {
+      ts: now,
+      iso: new Date(now).toISOString(),
+      marketId: this.marketId,
+      asset: this.marketId.includes('btc') ? 'BTC' : 'ETH',
+      runId: this.runId,
+      correlationId,
+      orderId: fill.orderId,
+      clientOrderId: local?.id ?? null,
+      exchangeOrderId: fill.orderId,
+      side: fill.side,
+      price: fill.fillPrice,
+      size: fill.fillQty,
+      intent: intentType,
+      liquidity,
+      feePaid,
+      rebateExpected,
+      fillCostGross,
+      fillCostNet,
+      updatedAvgUp,
+      updatedAvgDown,
+      updatedCppGross,
+      updatedCppNetExpected: updatedCppGross !== null ? updatedCppGross + feePaid : null,
+    };
+
+    logFillAttribution(fillAttribution);
+  }
+
+  // v5.2.5: Run ID for correlation
+  private runId?: string;
+  
+  setRunId(runId: string): void {
+    this.runId = runId;
   }
 
   /**
@@ -896,6 +962,75 @@ export class Polymarket15mArbBot {
 
     this.metrics.noLiquidityStreakMax = Math.max(this.metrics.noLiquidityStreakMax, this.noLiquidityStreak);
     this.metrics.adverseStreakMax = Math.max(this.metrics.adverseStreakMax, this.adverseStreak);
+
+    // v5.2.5: GABAGOOL - Log MTM snapshot every 10 decisions
+    if (this.metrics.decisions % 10 === 0 && (this.inventory.upShares > 0 || this.inventory.downShares > 0)) {
+      this.logMtmSnapshot(snap);
+    }
+  }
+
+  /**
+   * v5.2.5: Log mark-to-market snapshot with honest PnL calculation
+   */
+  private logMtmSnapshot(snap: MarketSnapshot): void {
+    const now = Date.now();
+    const inv = this.inventory;
+    
+    const bookReadyUp = snap.upTop.askSize >= this.cfg.limits.minTopDepthShares && snap.upTop.bidSize > 0;
+    const bookReadyDown = snap.downTop.askSize >= this.cfg.limits.minTopDepthShares && snap.downTop.bidSize > 0;
+    
+    const upMid = bookReadyUp ? snap.upTop.mid : null;
+    const downMid = bookReadyDown ? snap.downTop.mid : null;
+    const combinedMid = (upMid !== null && downMid !== null) ? upMid + downMid : null;
+    
+    // Calculate unrealized PnL
+    let unrealizedPnL: number | null = null;
+    if (upMid !== null && downMid !== null) {
+      const currentValue = inv.upShares * upMid + inv.downShares * downMid;
+      const totalCost = inv.upCost + inv.downCost;
+      unrealizedPnL = currentValue - totalCost;
+    }
+    
+    // Determine confidence
+    let confidence: 'HIGH' | 'MEDIUM' | 'LOW' | 'UNKNOWN' = 'UNKNOWN';
+    let confidenceReason = '';
+    if (bookReadyUp && bookReadyDown) {
+      confidence = 'HIGH';
+      confidenceReason = 'Both books ready';
+    } else if (bookReadyUp || bookReadyDown) {
+      confidence = 'MEDIUM';
+      confidenceReason = bookReadyUp ? 'DOWN book not ready' : 'UP book not ready';
+    } else if (upMid !== null || downMid !== null) {
+      confidence = 'LOW';
+      confidenceReason = 'Using stale prices';
+    } else {
+      confidenceReason = 'No price data available';
+    }
+
+    const mtmSnapshot: MarkToMarketSnapshot = {
+      ts: now,
+      iso: new Date(now).toISOString(),
+      marketId: this.marketId,
+      asset: this.marketId.includes('btc') ? 'BTC' : 'ETH',
+      runId: this.runId,
+      upMid,
+      downMid,
+      combinedMid,
+      bookReadyUp,
+      bookReadyDown,
+      fallbackUsed: (upMid === null || downMid === null) ? 'LAST_KNOWN' : 'NONE',
+      fallbackAge: null,
+      upShares: inv.upShares,
+      downShares: inv.downShares,
+      upCost: inv.upCost,
+      downCost: inv.downCost,
+      unrealizedPnL,
+      realizedPnL: null, // Would need settlement data
+      confidence,
+      confidenceReason,
+    };
+
+    logMarkToMarket(mtmSnapshot);
   }
 
   /**
@@ -1220,6 +1355,33 @@ export class Polymarket15mArbBot {
     const intents: OrderIntent[] = [];
     const inv = this.inventory;
     const currentPairCost = pairCost(inv);
+    const now = Date.now();
+
+    // Helper to log hedge skips with full context
+    const logHedgeSkip = (reasonCode: 'BOOK_NOT_READY' | 'PROJECTED_CPP_TOO_HIGH' | 'NO_LIQUIDITY' | 'HOLD_ONLY_ACTIVE' | 'BURST_LIMITER' | 'INSUFFICIENT_BALANCE' | 'PAIRING_TIMEOUT' | 'ASYMMETRIC_SETTLEMENT_OK' | 'ALREADY_HEDGED' | 'MARKET_FROZEN' | 'OTHER', details: string, sideNotHedged: 'UP' | 'DOWN') => {
+      const hedgeSkip: HedgeSkipExplained = {
+        ts: now,
+        iso: new Date(now).toISOString(),
+        marketId: this.marketId,
+        asset: this.marketId.includes('btc') ? 'BTC' : 'ETH',
+        runId: this.runId,
+        sideNotHedged,
+        sharesUnhedged: sideNotHedged === 'UP' ? inv.downShares - inv.upShares : inv.upShares - inv.downShares,
+        reasonCode,
+        reasonDetails: details,
+        bestAskHedgeSide: sideNotHedged === 'UP' ? snap.upTop.ask : snap.downTop.ask,
+        bestBidHedgeSide: sideNotHedged === 'UP' ? snap.upTop.bid : snap.downTop.bid,
+        projectedCpp: Number.isFinite(currentPairCost) ? currentPairCost : null,
+        currentCpp: Number.isFinite(currentPairCost) ? currentPairCost : null,
+        secondsRemaining: snap.secondsRemaining,
+        botState: this.state,
+        cppActivityState: 'NORMAL',
+      };
+      logHedgeSkipExplained(hedgeSkip);
+    };
+
+    // Determine which side needs hedging for logging
+    const sideNeedingHedge: 'UP' | 'DOWN' = inv.upShares < inv.downShares ? 'UP' : 'DOWN';
 
     // v4.3: ASYMMETRIC SETTLEMENT - if pairCost is locked below threshold, no more hedges needed
     if (Number.isFinite(currentPairCost) && currentPairCost <= this.cfg.profit.asymmetricSettlementThreshold) {
@@ -1229,6 +1391,7 @@ export class Polymarket15mArbBot {
         upShares: inv.upShares,
         downShares: inv.downShares
       });
+      logHedgeSkip('ASYMMETRIC_SETTLEMENT_OK', `PairCost ${currentPairCost.toFixed(4)} <= ${this.cfg.profit.asymmetricSettlementThreshold} threshold`, sideNeedingHedge);
       // Clear pending hedges - we don't need symmetry
       this.pendingHedge.up = 0;
       this.pendingHedge.down = 0;
@@ -1241,6 +1404,7 @@ export class Polymarket15mArbBot {
       const shouldHedgeInDeep = this.shouldHedgeInDeepRegime(snap);
       if (!shouldHedgeInDeep) {
         // Queue hedge for later but don't execute now
+        logHedgeSkip('HOLD_ONLY_ACTIVE', 'DEEP_DISLOCATION mode - waiting for conditions to normalize', sideNeedingHedge);
         return intents;
       }
       // If we should hedge, calculate pending based on current imbalance
@@ -1257,7 +1421,10 @@ export class Polymarket15mArbBot {
     // v5.2.2: Cap pending hedges to never exceed 50 per side
     const wantUp = Math.min(Math.floor(this.pendingHedge.up), MAX_SHARES_PER_SIDE - inv.upShares);
     const wantDown = Math.min(Math.floor(this.pendingHedge.down), MAX_SHARES_PER_SIDE - inv.downShares);
-    if (wantUp <= 0 && wantDown <= 0) return intents;
+    if (wantUp <= 0 && wantDown <= 0) {
+      // Already hedged - no skip log needed
+      return intents;
+    }
 
     // v4.3: Determine hedge mode - RISK allows overpay
     const isRiskHedge = (
@@ -1640,6 +1807,68 @@ export class Polymarket15mArbBot {
 
     if (intent.qty <= 0 || intent.limitPrice <= 0 || intent.limitPrice >= 1) return;
 
+    // v5.2.5: Generate correlation ID for this decision chain
+    const correlationId = generateCorrelationId('dec');
+
+    // v5.2.5: GABAGOOL - Log decision snapshot BEFORE placing order
+    const inv = this.inventory;
+    const pairedShares = Math.min(inv.upShares, inv.downShares);
+    const unpairedShares = Math.abs(inv.upShares - inv.downShares);
+    const currentCpp = pairCost(inv);
+    
+    const guards: GuardEvaluation[] = [
+      { guardName: 'maxPendingOrders', threshold: this.cfg.limits.maxPendingOrders, value: this.openOrders.size, passed: true },
+      { guardName: 'sideCooldown', threshold: this.cooldownUntilBySide[intent.side], value: now, passed: now >= this.cooldownUntilBySide[intent.side] },
+      { guardName: 'qtyValid', threshold: '> 0', value: intent.qty, passed: intent.qty > 0 },
+      { guardName: 'priceValid', threshold: '0 < p < 1', value: intent.limitPrice, passed: intent.limitPrice > 0 && intent.limitPrice < 1 },
+    ];
+
+    const decisionSnapshot: DecisionSnapshot = {
+      ts: now,
+      iso: new Date(now).toISOString(),
+      marketId: this.marketId,
+      asset: this.marketId.includes('btc') ? 'BTC' : 'ETH',
+      windowStart: '', // Would need event start time
+      secondsRemaining: snap.secondsRemaining,
+      correlationId,
+      runId: this.runId,
+      state: this.state === 'FLAT' ? 'FLAT' : 
+             this.state === 'ONE_SIDED' ? 'ONE_SIDED' : 
+             this.state === 'HEDGED' ? 'PAIRING' : 'SKEWED',
+      intent: intent.tag === 'ENTRY' ? 'ENTRY' : 
+              intent.tag === 'HEDGE' ? 'HEDGE' : 
+              intent.tag === 'REBAL' ? 'MICRO_ADD' : 'ENTRY',
+      chosenSide: intent.side,
+      reasonCode: intent.reason.split(' ')[0] || 'UNKNOWN',
+      projectedCppMaker: Number.isFinite(currentCpp) ? currentCpp : null,
+      projectedCppTaker: Number.isFinite(currentCpp) ? currentCpp + 0.002 : null,
+      cppPairedOnly: pairedShares > 0 ? currentCpp : null,
+      avgUp: avgCost(inv, 'UP') || null,
+      avgDown: avgCost(inv, 'DOWN') || null,
+      upShares: inv.upShares,
+      downShares: inv.downShares,
+      pairedShares,
+      unpairedShares,
+      bestBidUp: snap.upTop.bid,
+      bestAskUp: snap.upTop.ask,
+      bestBidDown: snap.downTop.bid,
+      bestAskDown: snap.downTop.ask,
+      depthSummaryUp: `${snap.upTop.askSize}@${snap.upTop.ask.toFixed(2)}`,
+      depthSummaryDown: `${snap.downTop.askSize}@${snap.downTop.ask.toFixed(2)}`,
+      bookReadyUp: snap.upTop.askSize >= this.cfg.limits.minTopDepthShares,
+      bookReadyDown: snap.downTop.askSize >= this.cfg.limits.minTopDepthShares,
+      spotPrice: snap.spotPrice ?? null,
+      strikePrice: snap.strikePrice ?? null,
+      delta: this.currentDeltaPct,
+      guardsEvaluated: guards,
+      orderSide: intent.side,
+      orderQty: intent.qty,
+      orderPrice: intent.limitPrice,
+      orderTag: intent.tag,
+    };
+
+    logDecisionSnapshot(decisionSnapshot);
+
     const res = await this.api.placeLimitOrder({
       marketId: this.marketId,
       side: intent.side,
@@ -1670,6 +1899,7 @@ export class Polymarket15mArbBot {
 
     this.log("ORDER_PLACED", {
       marketId: this.marketId,
+      correlationId,
       state: this.state,
       regime: this.currentRegime,
       intent: intent,
