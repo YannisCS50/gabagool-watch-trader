@@ -62,6 +62,42 @@ function logError(msg: string, err?: any): void {
   console.error(`[${ts}] ❌ ${msg}`, err || '');
 }
 
+
+// ============================================================
+// HELPERS
+// ============================================================
+
+function normalizeUsdAmount(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'bigint') return Number(value);
+
+  if (typeof value === 'string') {
+    const n = Number(value.replace(/,/g, ''));
+    return Number.isFinite(n) ? n : null;
+  }
+
+  if (value && typeof value === 'object') {
+    const v: any = value;
+
+    if (typeof v.toNumber === 'function') {
+      const n = v.toNumber();
+      return typeof n === 'number' && Number.isFinite(n) ? n : null;
+    }
+
+    if (typeof v.toString === 'function') {
+      const n = Number(v.toString());
+      return Number.isFinite(n) ? n : null;
+    }
+  }
+
+  return null;
+}
+
+function formatUsd(value: unknown): string {
+  const n = normalizeUsdAmount(value);
+  return n === null ? 'unknown' : n.toFixed(2);
+}
+
 // ============================================================
 // MARKET FETCHING
 // ============================================================
@@ -269,14 +305,14 @@ async function pollMarkets(): Promise<void> {
 
 async function printStatus(): Promise<void> {
   const balance = await getBalance();
-  
+
   console.log('');
   console.log('═══════════════════════════════════════════════════════════════');
   console.log(`  📊 V26 STATUS @ ${new Date().toISOString().slice(11, 19)}`);
   console.log('═══════════════════════════════════════════════════════════════');
   console.log(`  Scheduled: ${scheduledTrades.size} markets`);
   console.log(`  Completed: ${completedMarkets.size} markets`);
-  console.log(`  Balance:   $${balance?.toFixed(2) ?? 'unknown'}`);
+  console.log(`  Balance:   $${formatUsd(balance)}`);
   console.log('═══════════════════════════════════════════════════════════════');
   console.log('');
 }
@@ -319,8 +355,7 @@ async function main(): Promise<void> {
 
   // Get initial balance
   const balance = await getBalance();
-  const balanceNum = typeof balance === 'string' ? parseFloat(balance) : balance;
-  log(`💰 Balance: $${balanceNum ? balanceNum.toFixed(2) : 'unknown'}`);
+  log(`💰 Balance: $${formatUsd(balance)}`);
 
   // Start polling loop
   log('🚀 Starting V26 strategy...');
