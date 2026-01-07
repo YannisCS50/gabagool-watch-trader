@@ -270,39 +270,7 @@ serve(async (req) => {
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    // We need the private key to derive fresh API credentials
-    const privateKey = Deno.env.get('POLYMARKET_PRIVATE_KEY');
-
-    if (!privateKey) {
-      console.error('[v26-sync-fills] Missing POLYMARKET_PRIVATE_KEY');
-      return new Response(
-        JSON.stringify({ error: 'Missing POLYMARKET_PRIVATE_KEY' }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    // Derive fresh API credentials using L1 auth
-    let creds: { key: string; secret: string; passphrase: string };
-    try {
-      const derived = await deriveApiCredentials(privateKey);
-      creds = { key: derived.apiKey, secret: derived.apiSecret, passphrase: derived.passphrase };
-    } catch (err) {
-      console.error('[v26-sync-fills] Failed to derive API credentials:', err);
-      return new Response(
-        JSON.stringify({ error: `Failed to derive API credentials: ${err}` }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    // L2 auth is tied to the EOA. But trades are placed via Safe/Proxy address.
-    const wallet = new ethers.Wallet(privateKey);
-    const eoaAddress = wallet.address;
-
-    // Get the funder address (Safe/Proxy) from bot_config
-    const configRes = await supabase.from('bot_config').select('polymarket_address').limit(1).single();
-    const funderAddress = configRes.data?.polymarket_address || eoaAddress;
-
-    console.log(`[v26-sync-fills] EOA: ${eoaAddress}, Funder (trades lookup): ${funderAddress}`);
+    console.log('[v26-sync-fills] Using fill_logs as source of truth for fill_matched_at');
 
     // Fetch trades that need syncing
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -334,12 +302,19 @@ serve(async (req) => {
 
     // Get all order_ids to look up in fill_logs
     const orderIds = trades.map(t => t.order_id).filter(Boolean) as string[];
-    
+    const orderIdsDistinct = Array.from(new Set(orderIds));
+
+    console.log(
+      `[v26-sync-fills] Looking up fill_logs for ${orderIdsDistinct.length} distinct order_ids (sample): ${orderIdsDistinct
+        .slice(0, 5)
+        .join(', ')}`
+    );
+
     // Fetch matching fill_logs entries
     const { data: fillLogs, error: fillError } = await supabase
       .from('fill_logs')
       .select('order_id, ts, iso, fill_qty, fill_price')
-      .in('order_id', orderIds);
+      .in('order_id', orderIdsDistinct);
 
     if (fillError) {
       console.error('[v26-sync-fills] Error fetching fill_logs:', fillError);
@@ -385,6 +360,25 @@ serve(async (req) => {
 
     console.log(`[v26-sync-fills] Aggregated fill info for ${orderFillInfo.size} orders`);
 
+    const missingTradesAll = trades.filter(t => {
+      const id = (t.order_id || '').toLowerCase();
+      return !id || !orderFillInfo.has(id);
+    });
+
+    if (missingTradesAll.length > 0) {
+      const missingSample = missingTradesAll.slice(0, 10).map(t => ({
+        id: t.id,
+        order_id: t.order_id,
+        status: t.status,
+        filled_shares: t.filled_shares,
+        fill_matched_at: t.fill_matched_at,
+      }));
+      console.log(
+        `[v26-sync-fills] Missing fill_logs match for ${missingTradesAll.length} orders (sample up to 10):`,
+        missingSample
+      );
+    }
+
     const results: Array<{ id: string; order_id: string; success: boolean; error?: string; fill_matched_at?: string }> = [];
 
     // Update v26_trades with fill info from fill_logs
@@ -420,7 +414,9 @@ serve(async (req) => {
         console.error(`[v26-sync-fills] Update failed for ${trade.order_id}:`, updateError);
         results.push({ id: trade.id, order_id: trade.order_id!, success: false, error: updateError.message });
       } else {
-        console.log(`[v26-sync-fills] Updated ${trade.order_id}: fill_matched_at=${fillMatchedAt}, filled=${updateData.filled_shares}`);
+        console.log(
+          `[v26-sync-fills] Updated ${trade.order_id}: fill_matched_at=${fillMatchedAt} (src_ts=${fillInfo.matchTimeMs}, src_iso=${fillInfo.iso}), filled=${updateData.filled_shares}`
+        );
         results.push({
           id: trade.id,
           order_id: trade.order_id!,
@@ -434,12 +430,18 @@ serve(async (req) => {
     const failCount = results.filter(r => !r.success).length;
 
     return new Response(
-      JSON.stringify({ 
-        success: true, 
-        synced: successCount, 
+      JSON.stringify({
+        success: true,
+        synced: successCount,
         failed: failCount,
         total: trades.length,
-        results 
+        diagnostics: {
+          order_ids_distinct: orderIdsDistinct.length,
+          fill_logs_rows: fillLogs?.length || 0,
+          fill_logs_orders_aggregated: orderFillInfo.size,
+          missing_fill_logs_matches: missingTradesAll.length,
+        },
+        results,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
