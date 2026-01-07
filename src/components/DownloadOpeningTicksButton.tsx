@@ -36,6 +36,7 @@ export function DownloadOpeningTicksButton() {
         .from("market_history")
         .select("slug, asset, result, event_start_time, event_end_time")
         .not("result", "is", null)
+        .neq("result", "UNKNOWN")
         .order("event_end_time", { ascending: false });
 
       if (marketsError) throw marketsError;
@@ -47,13 +48,12 @@ export function DownloadOpeningTicksButton() {
       toast.info(`Found ${markets.length} markets with results, fetching ticks...`);
 
       // 2. For each market, get the first 30 seconds of ticks (seconds_remaining >= 870)
-      // 15 min = 900 sec, so first 30 sec = 870-900
       const allMarketTicks: {
         market: MarketResult;
         ticks: TickData[];
       }[] = [];
 
-      // Process in batches to avoid rate limits
+      // Process in batches
       const batchSize = 10;
       for (let i = 0; i < markets.length; i += batchSize) {
         const batch = markets.slice(i, i + batchSize);
@@ -77,109 +77,125 @@ export function DownloadOpeningTicksButton() {
         const batchResults = await Promise.all(batchPromises);
         allMarketTicks.push(...batchResults.filter((r): r is NonNullable<typeof r> => r !== null));
         
-        // Progress update
         toast.info(`Processed ${Math.min(i + batchSize, markets.length)}/${markets.length} markets...`);
       }
 
-      // 3. Format as CSV
-      const csvLines: string[] = [];
+      // 3. Format in human-readable style like the user's example
+      const lines: string[] = [];
       
-      // Header
-      csvLines.push([
-        "asset",
-        "market_id", 
-        "event_start",
-        "event_end",
-        "result",
-        "second_offset",
-        "timestamp",
-        "up_bid",
-        "up_ask",
-        "up_mid",
-        "down_bid",
-        "down_ask",
-        "down_mid"
-      ].join(","));
+      // Group by asset
+      const byAsset = new Map<string, typeof allMarketTicks>();
+      for (const item of allMarketTicks) {
+        const asset = item.market.asset;
+        if (!byAsset.has(asset)) byAsset.set(asset, []);
+        byAsset.get(asset)!.push(item);
+      }
 
-      // Data rows - grouped by market
+      for (const [asset, marketItems] of byAsset) {
+        lines.push(`\n${"=".repeat(60)}`);
+        lines.push(`${asset} MARKETS`);
+        lines.push(`${"=".repeat(60)}\n`);
+
+        // Sort by event time
+        marketItems.sort((a, b) => 
+          new Date(a.market.event_start_time).getTime() - new Date(b.market.event_start_time).getTime()
+        );
+
+        for (const { market, ticks } of marketItems) {
+          if (ticks.length === 0) continue;
+
+          // Format: "ETH: Wo 7 Jan 10:00-10:15"
+          const start = new Date(market.event_start_time);
+          const end = new Date(market.event_end_time);
+          const dayNames = ['Zo', 'Ma', 'Di', 'Wo', 'Do', 'Vr', 'Za'];
+          const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Aug', 'Sep', 'Okt', 'Nov', 'Dec'];
+          
+          const dayName = dayNames[start.getDay()];
+          const day = start.getDate();
+          const month = monthNames[start.getMonth()];
+          const startTime = `${start.getHours().toString().padStart(2, '0')}:${start.getMinutes().toString().padStart(2, '0')}`;
+          const endTime = `${end.getHours().toString().padStart(2, '0')}:${end.getMinutes().toString().padStart(2, '0')}`;
+
+          lines.push(`\n${asset}: ${dayName} ${day} ${month} ${startTime}-${endTime}`);
+          lines.push("-".repeat(40));
+          lines.push("Time       | UP    | DOWN  | Sec");
+          lines.push("-".repeat(40));
+
+          // Sort ticks by seconds_remaining descending (start of market first)
+          const sortedTicks = [...ticks].sort((a, b) => b.seconds_remaining - a.seconds_remaining);
+
+          for (const tick of sortedTicks) {
+            const tickTime = new Date(tick.iso);
+            const timeStr = `${tickTime.getHours().toString().padStart(2, '0')}:${tickTime.getMinutes().toString().padStart(2, '0')}:${tickTime.getSeconds().toString().padStart(2, '0')}`;
+            
+            // Calculate mid prices in cents
+            const upMid = tick.up_bid && tick.up_ask 
+              ? Math.round((tick.up_bid + tick.up_ask) / 2 * 100) 
+              : null;
+            const downMid = tick.down_bid && tick.down_ask 
+              ? Math.round((tick.down_bid + tick.down_ask) / 2 * 100) 
+              : null;
+
+            const upStr = upMid !== null ? `${upMid}¢`.padEnd(5) : "  -  ";
+            const downStr = downMid !== null ? `${downMid}¢`.padEnd(5) : "  -  ";
+            const secOffset = 900 - tick.seconds_remaining;
+
+            lines.push(`${timeStr}  | ${upStr} | ${downStr} | ${secOffset}s`);
+          }
+
+          lines.push(`\nRESULT: ${market.result}`);
+          lines.push(`Ticks: ${ticks.length}`);
+        }
+      }
+
+      // 4. Also create CSV for analysis
+      const csvLines: string[] = [];
+      csvLines.push("asset,market_id,event_start,event_end,result,time,second_offset,up_mid_cents,down_mid_cents");
+      
       for (const { market, ticks } of allMarketTicks) {
-        if (ticks.length === 0) continue;
-
-        // Sort ticks by seconds_remaining descending (900 = start, 870 = 30sec in)
         const sortedTicks = [...ticks].sort((a, b) => b.seconds_remaining - a.seconds_remaining);
-
         for (const tick of sortedTicks) {
-          const secondOffset = 900 - tick.seconds_remaining; // 0 = start, 30 = 30 seconds in
-          const upMid = tick.up_bid && tick.up_ask ? ((tick.up_bid + tick.up_ask) / 2).toFixed(2) : "";
-          const downMid = tick.down_bid && tick.down_ask ? ((tick.down_bid + tick.down_ask) / 2).toFixed(2) : "";
+          const upMid = tick.up_bid && tick.up_ask 
+            ? Math.round((tick.up_bid + tick.up_ask) / 2 * 100) 
+            : "";
+          const downMid = tick.down_bid && tick.down_ask 
+            ? Math.round((tick.down_bid + tick.down_ask) / 2 * 100) 
+            : "";
+          const secOffset = 900 - tick.seconds_remaining;
 
           csvLines.push([
             market.asset,
             market.slug,
             market.event_start_time,
             market.event_end_time,
-            market.result || "UNKNOWN",
-            secondOffset.toString(),
+            market.result || "",
             tick.iso,
-            tick.up_bid?.toString() || "",
-            tick.up_ask?.toString() || "",
-            upMid,
-            tick.down_bid?.toString() || "",
-            tick.down_ask?.toString() || "",
-            downMid
+            secOffset.toString(),
+            upMid.toString(),
+            downMid.toString()
           ].join(","));
         }
       }
 
-      // 4. Also create a summary view
-      const summaryLines: string[] = [];
-      summaryLines.push("asset,market_id,event_start,event_end,result,tick_count,first_up_mid,first_down_mid,last_up_mid,last_down_mid");
-      
-      for (const { market, ticks } of allMarketTicks) {
-        if (ticks.length === 0) continue;
-        
-        const sortedTicks = [...ticks].sort((a, b) => b.seconds_remaining - a.seconds_remaining);
-        const first = sortedTicks[0];
-        const last = sortedTicks[sortedTicks.length - 1];
-        
-        const firstUpMid = first.up_bid && first.up_ask ? ((first.up_bid + first.up_ask) / 2).toFixed(2) : "";
-        const firstDownMid = first.down_bid && first.down_ask ? ((first.down_bid + first.down_ask) / 2).toFixed(2) : "";
-        const lastUpMid = last.up_bid && last.up_ask ? ((last.up_bid + last.up_ask) / 2).toFixed(2) : "";
-        const lastDownMid = last.down_bid && last.down_ask ? ((last.down_bid + last.down_ask) / 2).toFixed(2) : "";
-
-        summaryLines.push([
-          market.asset,
-          market.slug,
-          market.event_start_time,
-          market.event_end_time,
-          market.result || "UNKNOWN",
-          ticks.length.toString(),
-          firstUpMid,
-          firstDownMid,
-          lastUpMid,
-          lastDownMid
-        ].join(","));
-      }
-
       // 5. Download both files
+      const textContent = lines.join("\n");
       const csvContent = csvLines.join("\n");
-      const summaryContent = summaryLines.join("\n");
       
-      // Download detailed ticks
-      const blob1 = new Blob([csvContent], { type: "text/csv" });
+      // Download readable text file
+      const blob1 = new Blob([textContent], { type: "text/plain" });
       const url1 = URL.createObjectURL(blob1);
       const a1 = document.createElement("a");
       a1.href = url1;
-      a1.download = `opening_ticks_first_30s_${new Date().toISOString().split("T")[0]}.csv`;
+      a1.download = `opening_ticks_readable_${new Date().toISOString().split("T")[0]}.txt`;
       a1.click();
       URL.revokeObjectURL(url1);
 
-      // Download summary
-      const blob2 = new Blob([summaryContent], { type: "text/csv" });
+      // Download CSV
+      const blob2 = new Blob([csvContent], { type: "text/csv" });
       const url2 = URL.createObjectURL(blob2);
       const a2 = document.createElement("a");
       a2.href = url2;
-      a2.download = `opening_ticks_summary_${new Date().toISOString().split("T")[0]}.csv`;
+      a2.download = `opening_ticks_${new Date().toISOString().split("T")[0]}.csv`;
       a2.click();
       URL.revokeObjectURL(url2);
 
