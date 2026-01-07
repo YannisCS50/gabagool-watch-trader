@@ -1113,6 +1113,46 @@ export async function cancelOrder(orderId: string): Promise<{ success: boolean; 
   }
 }
 
+export async function getOrderFillInfo(orderId: string): Promise<{
+  success: boolean;
+  status: 'filled' | 'partial' | 'open' | 'unknown';
+  originalSize?: number;
+  filledSize?: number;
+  error?: string;
+}> {
+  if (!orderId) {
+    return { success: false, status: 'unknown', error: 'No order ID provided' };
+  }
+
+  try {
+    const client = await getClient();
+    const details: any = await client.getOrder(orderId);
+
+    const originalSize = parseFloat(details?.original_size || details?.originalSize || '0');
+    const filledSize = parseFloat(details?.size_matched || details?.sizeMatched || '0');
+    const orderStatus = details?.status;
+
+    let status: 'filled' | 'partial' | 'open' | 'unknown' = 'unknown';
+    if (originalSize > 0 && filledSize >= originalSize) {
+      status = 'filled';
+    } else if (filledSize > 0) {
+      status = 'partial';
+    } else if (orderStatus === 'live') {
+      status = 'open';
+    }
+
+    return {
+      success: true,
+      status,
+      originalSize: Number.isFinite(originalSize) ? originalSize : 0,
+      filledSize: Number.isFinite(filledSize) ? filledSize : 0,
+    };
+  } catch (error: any) {
+    const msg = error?.message || String(error);
+    return { success: false, status: 'unknown', error: msg };
+  }
+}
+
 // Invalidate balance cache (call after trades)
 export function invalidateBalanceCache(): void {
   balanceCache = null;

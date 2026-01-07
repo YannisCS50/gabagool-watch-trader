@@ -10,7 +10,7 @@
 // ============================================================
 
 import { config } from '../config.js';
-import { testConnection, getBalance, placeOrder, cancelOrder } from '../polymarket.js';
+import { testConnection, getBalance, placeOrder, cancelOrder, getOrderFillInfo } from '../polymarket.js';
 import { fetchMarkets } from '../backend.js';
 import { enforceVpnOrExit } from '../vpn-check.js';
 import { 
@@ -239,33 +239,70 @@ async function checkAndCancelOrder(scheduled: ScheduledTrade): Promise<void> {
   }
 
   try {
-    // Try to cancel the order - if it fails, it was likely already filled
-    log(`⏰ [${market.asset}] Attempting to cancel order ${V26_CONFIG.cancelAfterStartSec}s after market start`);
-    const cancelResult = await cancelOrder(orderId);
+    log(`⏰ [${market.asset}] Checking fill status before cancel...`);
 
-    if (cancelResult.success) {
-      log(`✓ [${market.asset}] Order cancelled (was not filled)`);
-      trade.status = 'cancelled';
-      if (trade.id) {
-        await updateV26Trade(trade.id, { status: 'cancelled' });
-      }
-    } else {
-      // Cancel failed - order was likely already filled
-      log(`✓ [${market.asset}] Cancel failed (order likely filled): ${cancelResult.error}`);
-      trade.status = 'filled';
-      trade.filledShares = V26_CONFIG.shares;
-      trade.avgFillPrice = V26_CONFIG.price;
+    const before = await getOrderFillInfo(orderId);
+    const matchedBefore = before.success ? (before.filledSize ?? 0) : 0;
+
+    if (before.success && matchedBefore > 0) {
+      trade.filledShares = matchedBefore;
+      trade.avgFillPrice = trade.avgFillPrice ?? trade.price;
+      trade.status = before.status === 'partial' ? 'partial' : before.status === 'filled' ? 'filled' : 'partial';
 
       if (trade.id) {
         await updateV26Trade(trade.id, {
-          status: 'filled',
+          status: trade.status,
           filledShares: trade.filledShares,
           avgFillPrice: trade.avgFillPrice,
         });
+      }
 
+      if (before.status === 'filled') {
+        log(`✓ [${market.asset}] Already filled (${matchedBefore}/${before.originalSize ?? V26_CONFIG.shares}); skipping cancel.`);
         scheduleSettlement(market, trade);
+        completedMarkets.add(key);
+        scheduledTrades.delete(key);
+        return;
+      }
+
+      log(`✓ [${market.asset}] Partial fill detected (${matchedBefore}/${before.originalSize ?? V26_CONFIG.shares}); will cancel remainder.`);
+    }
+
+    // Try to cancel any remainder
+    log(`⏰ [${market.asset}] Attempting to cancel order ${V26_CONFIG.cancelAfterStartSec}s after market start`);
+    const cancelResult = await cancelOrder(orderId);
+
+    // Re-check after cancel (it may have filled between calls)
+    const after = await getOrderFillInfo(orderId);
+    const matchedAfter = after.success ? (after.filledSize ?? 0) : matchedBefore;
+
+    if (after.success && matchedAfter > 0) {
+      trade.filledShares = matchedAfter;
+      trade.avgFillPrice = trade.avgFillPrice ?? trade.price;
+      trade.status = after.status === 'filled' ? 'filled' : 'partial';
+
+      if (trade.id) {
+        await updateV26Trade(trade.id, {
+          status: trade.status,
+          filledShares: trade.filledShares,
+          avgFillPrice: trade.avgFillPrice,
+        });
+      }
+
+      log(`✓ [${market.asset}] Post-cancel fill status: ${trade.status} (${matchedAfter}/${after.originalSize ?? V26_CONFIG.shares})`);
+
+      // If fully filled, settle. If partial, we still settle the partial position.
+      scheduleSettlement(market, trade);
+    } else {
+      if (cancelResult.success) {
+        log(`✓ [${market.asset}] Order cancelled (no fills detected)`);
+        trade.status = 'cancelled';
+        if (trade.id) {
+          await updateV26Trade(trade.id, { status: 'cancelled' });
+        }
       } else {
-        log(`⚠️ [${market.asset}] Filled inferred but trade.id missing; cannot schedule settlement update.`);
+        // Cancel failed and we couldn't confirm fills: keep it conservative.
+        log(`⚠️ [${market.asset}] Cancel failed and fill status unknown: ${cancelResult.error}`);
       }
     }
   } catch (err) {
