@@ -43,6 +43,7 @@ interface ScheduledTrade {
   placeTimeout?: NodeJS.Timeout;
   cancelTimeout?: NodeJS.Timeout;
   orderId?: string;
+  placedAtMs?: number;
 }
 
 const scheduledTrades = new Map<string, ScheduledTrade>();
@@ -189,6 +190,7 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
     // Simplified: just proceed since we have our slot reserved
 
     // STEP 4: Place the actual order
+    const placedAtMs = Date.now();
     const result = await placeOrder({
       tokenId: market.downTokenId,
       side: 'BUY',
@@ -198,14 +200,15 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
 
     if (!result?.success || !result.orderId) {
       // Order failed - update DB record
-      await updateV26Trade(trade.id, { 
-        status: 'cancelled', 
-        error_message: result?.error || 'No orderId returned' 
+      await updateV26Trade(trade.id, {
+        status: 'cancelled',
+        errorMessage: result?.error || 'No orderId returned',
       });
       throw new Error(result?.error || 'No orderId returned');
     }
 
     scheduled.orderId = result.orderId;
+    scheduled.placedAtMs = placedAtMs;
     trade.orderId = result.orderId;
     trade.status = 'placed';
 
@@ -215,14 +218,19 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
       trade.status = result.status === 'filled' ? 'filled' : 'partial';
       trade.filledShares = filledNow;
       trade.avgFillPrice = trade.price;
+
+      if (filledNow > 0) {
+        trade.fillTimeMs = Math.max(0, Date.now() - placedAtMs);
+      }
     }
 
     // Update DB with order details
     await updateV26Trade(trade.id, {
-      order_id: trade.orderId,
+      orderId: trade.orderId,
       status: trade.status,
-      filled_shares: trade.filledShares,
-      avg_fill_price: trade.avgFillPrice,
+      filledShares: trade.filledShares,
+      avgFillPrice: trade.avgFillPrice,
+      fillTimeMs: trade.fillTimeMs,
     });
 
     log(`✅ [${market.asset}] Order placed: ${result.orderId} (status=${result.status ?? 'unknown'})`);
@@ -279,11 +287,16 @@ async function checkAndCancelOrder(scheduled: ScheduledTrade): Promise<void> {
       trade.avgFillPrice = trade.avgFillPrice ?? trade.price;
       trade.status = before.status === 'partial' ? 'partial' : before.status === 'filled' ? 'filled' : 'partial';
 
+      if (scheduled.placedAtMs && trade.fillTimeMs === undefined) {
+        trade.fillTimeMs = Math.max(0, Date.now() - scheduled.placedAtMs);
+      }
+
       if (trade.id) {
         await updateV26Trade(trade.id, {
           status: trade.status,
           filledShares: trade.filledShares,
           avgFillPrice: trade.avgFillPrice,
+          fillTimeMs: trade.fillTimeMs,
         });
       }
 
@@ -311,11 +324,16 @@ async function checkAndCancelOrder(scheduled: ScheduledTrade): Promise<void> {
       trade.avgFillPrice = trade.avgFillPrice ?? trade.price;
       trade.status = after.status === 'filled' ? 'filled' : 'partial';
 
+      if (scheduled.placedAtMs && trade.fillTimeMs === undefined) {
+        trade.fillTimeMs = Math.max(0, Date.now() - scheduled.placedAtMs);
+      }
+
       if (trade.id) {
         await updateV26Trade(trade.id, {
           status: trade.status,
           filledShares: trade.filledShares,
           avgFillPrice: trade.avgFillPrice,
+          fillTimeMs: trade.fillTimeMs,
         });
       }
 
