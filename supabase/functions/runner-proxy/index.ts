@@ -40,7 +40,17 @@ type Action =
   | 'save-funding-snapshot'
   // v6.3.0: Skew Explainability
   | 'save-hedge-intent'
-  | 'update-hedge-intent';
+  | 'update-hedge-intent'
+  // v7.5.0: Gabagool Decision Logs
+  | 'save-decision-snapshot'
+  | 'save-decision-snapshots'
+  | 'save-account-position-snapshot'
+  | 'save-state-reconciliation'
+  | 'save-fill-attribution'
+  | 'save-hedge-skip'
+  | 'save-hedge-skip-logs'
+  | 'save-mtm-snapshot'
+  | 'save-gabagool-metrics';
 
 interface RequestBody {
   action: Action;
@@ -1222,6 +1232,396 @@ Deno.serve(async (req) => {
         }
 
         console.log(`[runner-proxy] 🔄 Hedge intent updated: ${correlationId} -> ${update.status}`);
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // v7.5.0: Gabagool Decision Logs - Decision Snapshot
+      case 'save-decision-snapshot': {
+        const snapshot = data?.snapshot as Record<string, unknown> | undefined;
+        if (!snapshot) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing snapshot' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const row = {
+          ts: snapshot.ts,
+          run_id: snapshot.runId,
+          correlation_id: snapshot.correlationId,
+          market_id: snapshot.marketId,
+          asset: snapshot.asset,
+          window_start: snapshot.windowStart,
+          seconds_remaining: snapshot.secondsRemaining,
+          state: snapshot.state,
+          intent: snapshot.intent,
+          chosen_side: snapshot.chosenSide,
+          reason_code: snapshot.reasonCode,
+          projected_cpp_maker: snapshot.projectedCppMaker,
+          projected_cpp_taker: snapshot.projectedCppTaker,
+          cpp_paired_only: snapshot.cppPairedOnly,
+          avg_up: snapshot.avgUp,
+          avg_down: snapshot.avgDown,
+          up_shares: snapshot.upShares,
+          down_shares: snapshot.downShares,
+          paired_shares: snapshot.pairedShares,
+          unpaired_shares: snapshot.unpairedShares,
+          best_bid_up: snapshot.bestBidUp,
+          best_ask_up: snapshot.bestAskUp,
+          best_bid_down: snapshot.bestBidDown,
+          best_ask_down: snapshot.bestAskDown,
+          depth_summary_up: snapshot.depthSummaryUp,
+          depth_summary_down: snapshot.depthSummaryDown,
+          book_ready_up: snapshot.bookReadyUp,
+          book_ready_down: snapshot.bookReadyDown,
+          guards_evaluated: snapshot.guardsEvaluated,
+        };
+
+        const { error } = await supabase.from('decision_snapshots').insert(row);
+        if (error) {
+          console.error('[runner-proxy] save-decision-snapshot error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] 📝 Decision snapshot: ${snapshot.intent} ${snapshot.chosenSide} reason=${snapshot.reasonCode}`);
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      case 'save-decision-snapshots': {
+        const snapshots = data?.snapshots as Array<Record<string, unknown>> | undefined;
+        if (!snapshots || snapshots.length === 0) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing snapshots' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const rows = snapshots.map(s => ({
+          ts: s.ts,
+          run_id: s.runId,
+          correlation_id: s.correlationId,
+          market_id: s.marketId,
+          asset: s.asset,
+          window_start: s.windowStart,
+          seconds_remaining: s.secondsRemaining,
+          state: s.state,
+          intent: s.intent,
+          chosen_side: s.chosenSide,
+          reason_code: s.reasonCode,
+          projected_cpp_maker: s.projectedCppMaker,
+          projected_cpp_taker: s.projectedCppTaker,
+          cpp_paired_only: s.cppPairedOnly,
+          avg_up: s.avgUp,
+          avg_down: s.avgDown,
+          up_shares: s.upShares,
+          down_shares: s.downShares,
+          paired_shares: s.pairedShares,
+          unpaired_shares: s.unpairedShares,
+          best_bid_up: s.bestBidUp,
+          best_ask_up: s.bestAskUp,
+          best_bid_down: s.bestBidDown,
+          best_ask_down: s.bestAskDown,
+          depth_summary_up: s.depthSummaryUp,
+          depth_summary_down: s.depthSummaryDown,
+          book_ready_up: s.bookReadyUp,
+          book_ready_down: s.bookReadyDown,
+          guards_evaluated: s.guardsEvaluated,
+        }));
+
+        const { error } = await supabase.from('decision_snapshots').insert(rows);
+        if (error) {
+          console.error('[runner-proxy] save-decision-snapshots error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true, count: rows.length }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Account Position Snapshot (canonical truth)
+      case 'save-account-position-snapshot': {
+        const snapshot = data?.snapshot as Record<string, unknown> | undefined;
+        if (!snapshot) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing snapshot' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const row = {
+          ts: snapshot.ts,
+          run_id: snapshot.runId,
+          market_id: snapshot.marketId,
+          account_up_shares: snapshot.accountUpShares,
+          account_down_shares: snapshot.accountDownShares,
+          account_avg_up: snapshot.accountAvgUp,
+          account_avg_down: snapshot.accountAvgDown,
+          wallet_address: snapshot.walletAddress,
+          source_endpoint: snapshot.sourceEndpoint,
+          source_version: snapshot.sourceVersion,
+        };
+
+        const { error } = await supabase.from('account_position_snapshots').insert(row);
+        if (error) {
+          console.error('[runner-proxy] save-account-position-snapshot error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // State Reconciliation Result
+      case 'save-state-reconciliation': {
+        const result = data?.result as Record<string, unknown> | undefined;
+        if (!result) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing result' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const row = {
+          ts: result.ts,
+          run_id: result.runId,
+          market_id: result.marketId,
+          local_up: result.localUp,
+          local_down: result.localDown,
+          account_up: result.accountUp,
+          account_down: result.accountDown,
+          delta_shares: result.deltaShares,
+          delta_invested: result.deltaInvested,
+          reconciliation_result: result.reconciliationResult,
+          action_taken: result.actionTaken,
+        };
+
+        const { error } = await supabase.from('state_reconciliation_results').insert(row);
+        if (error) {
+          console.error('[runner-proxy] save-state-reconciliation error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] 🔄 Reconciliation: ${result.reconciliationResult} delta=${result.deltaShares}`);
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Fill Attribution (economic truth per fill)
+      case 'save-fill-attribution': {
+        const attribution = data?.attribution as Record<string, unknown> | undefined;
+        if (!attribution) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing attribution' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const row = {
+          ts: attribution.ts,
+          run_id: attribution.runId,
+          correlation_id: attribution.correlationId,
+          order_id: attribution.orderId,
+          market_id: attribution.marketId,
+          asset: attribution.asset,
+          side: attribution.side,
+          price: attribution.price,
+          size: attribution.size,
+          liquidity: attribution.liquidity,
+          fee_paid: attribution.feePaid,
+          rebate_expected: attribution.rebateExpected,
+          fill_cost_gross: attribution.fillCostGross,
+          fill_cost_net: attribution.fillCostNet,
+          updated_avg_up: attribution.updatedAvgUp,
+          updated_avg_down: attribution.updatedAvgDown,
+          updated_cpp_gross: attribution.updatedCppGross,
+          updated_cpp_net_expected: attribution.updatedCppNetExpected,
+        };
+
+        const { error } = await supabase.from('fill_attributions').insert(row);
+        if (error) {
+          console.error('[runner-proxy] save-fill-attribution error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] 💰 Fill attribution: ${attribution.side} ${attribution.size}@${attribution.price} ${attribution.liquidity}`);
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Hedge Skip Log (why NOT hedged)
+      case 'save-hedge-skip': {
+        const skip = data?.skip as Record<string, unknown> | undefined;
+        if (!skip) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing skip data' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const row = {
+          ts: skip.ts,
+          run_id: skip.runId,
+          correlation_id: skip.correlationId,
+          market_id: skip.marketId,
+          asset: skip.asset,
+          side_not_hedged: skip.sideNotHedged,
+          reason_code: skip.reasonCode,
+          best_bid: skip.bestBid,
+          best_ask: skip.bestAsk,
+          projected_cpp: skip.projectedCpp,
+          unpaired_shares: skip.unpairedShares,
+          seconds_remaining: skip.secondsRemaining,
+        };
+
+        const { error } = await supabase.from('hedge_skip_logs').insert(row);
+        if (error) {
+          console.error('[runner-proxy] save-hedge-skip error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] ⏭️ Hedge skip: ${skip.sideNotHedged} reason=${skip.reasonCode}`);
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      case 'save-hedge-skip-logs': {
+        const skips = data?.skips as Array<Record<string, unknown>> | undefined;
+        if (!skips || skips.length === 0) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing skips' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const rows = skips.map(s => ({
+          ts: s.ts,
+          run_id: s.runId,
+          correlation_id: s.correlationId,
+          market_id: s.marketId,
+          asset: s.asset,
+          side_not_hedged: s.sideNotHedged,
+          reason_code: s.reasonCode,
+          best_bid: s.bestBid,
+          best_ask: s.bestAsk,
+          projected_cpp: s.projectedCpp,
+          unpaired_shares: s.unpairedShares,
+          seconds_remaining: s.secondsRemaining,
+        }));
+
+        const { error } = await supabase.from('hedge_skip_logs').insert(rows);
+        if (error) {
+          console.error('[runner-proxy] save-hedge-skip-logs error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true, count: rows.length }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // MTM Snapshot (honest PnL)
+      case 'save-mtm-snapshot': {
+        const snapshot = data?.snapshot as Record<string, unknown> | undefined;
+        if (!snapshot) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing snapshot' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const row = {
+          ts: snapshot.ts,
+          run_id: snapshot.runId,
+          market_id: snapshot.marketId,
+          asset: snapshot.asset,
+          up_mid: snapshot.upMid,
+          down_mid: snapshot.downMid,
+          combined_mid: snapshot.combinedMid,
+          book_ready_up: snapshot.bookReadyUp,
+          book_ready_down: snapshot.bookReadyDown,
+          fallback_used: snapshot.fallbackUsed,
+          unrealized_pnl: snapshot.unrealizedPnl,
+          confidence: snapshot.confidence,
+        };
+
+        const { error } = await supabase.from('mtm_snapshots').insert(row);
+        if (error) {
+          console.error('[runner-proxy] save-mtm-snapshot error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // Gabagool Metrics
+      case 'save-gabagool-metrics': {
+        const metrics = data?.metrics as Record<string, unknown> | undefined;
+        if (!metrics) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing metrics' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const row = {
+          ts: metrics.ts,
+          run_id: metrics.runId,
+          total_paired_shares: metrics.totalPairedShares,
+          paired_cpp_under_100_shares: metrics.pairedCppUnder100Shares,
+          paired_cpp_under_100_pct: metrics.pairedCppUnder100Pct,
+          cpp_distribution: metrics.cppDistribution,
+          high_cpp_trade_count: metrics.highCppTradeCount,
+          maker_fills: metrics.makerFills,
+          taker_fills: metrics.takerFills,
+          maker_fill_ratio: metrics.makerFillRatio,
+          invariant_status: metrics.invariantStatus,
+        };
+
+        const { error } = await supabase.from('gabagool_metrics').insert(row);
+        if (error) {
+          console.error('[runner-proxy] save-gabagool-metrics error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] 📊 Gabagool metrics: ${metrics.pairedCppUnder100Pct}% CPP<1.00, maker=${metrics.makerFillRatio}`);
         return new Response(JSON.stringify({ success: true }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
