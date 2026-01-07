@@ -32,6 +32,28 @@ interface V26Trade {
   error_message: string | null;
 }
 
+interface StrikePrice {
+  market_slug: string;
+  asset: string;
+  strike_price: number;
+  close_price: number | null;
+}
+
+interface V26Bet {
+  market_slug: string;
+  asset: string;
+  event_start_time: string;
+  event_end_time: string;
+  trades: V26Trade[];
+  strike_price: number | null;
+  close_price: number | null;
+  delta: number | null;
+  result: 'WIN' | 'LOSS' | 'PENDING' | 'NO_FILL';
+  total_filled_shares: number;
+  total_invested: number;
+  pnl: number | null;
+}
+
 interface V26Stats {
   total_trades: number;
   filled_trades: number;
@@ -46,34 +68,135 @@ interface V26Stats {
 
 export default function V26Dashboard() {
   const navigate = useNavigate();
-  const [trades, setTrades] = useState<V26Trade[]>([]);
-  const [stats, setStats] = useState<V26Stats | null>(null);
+  const [bets, setBets] = useState<V26Bet[]>([]);
+  const [stats, setStats] = useState<{ total: number; filled: number; wins: number; losses: number; pending: number; totalPnl: number }>({
+    total: 0, filled: 0, wins: 0, losses: 0, pending: 0, totalPnl: 0
+  });
   const [loading, setLoading] = useState(true);
 
   const fetchData = async () => {
     setLoading(true);
-    
-    // Fetch stats
-    const { data: statsData } = await supabase
-      .from('v26_stats')
-      .select('*')
-      .single();
-    
-    if (statsData) {
-      setStats(statsData as V26Stats);
-    }
 
-    // Fetch recent trades
+    // Fetch trades
     const { data: tradesData } = await supabase
       .from('v26_trades')
       .select('*')
       .order('created_at', { ascending: false })
-      .limit(100);
+      .limit(200);
 
-    if (tradesData) {
-      setTrades(tradesData as V26Trade[]);
+    // Fetch strike prices
+    const { data: strikesData } = await supabase
+      .from('strike_prices')
+      .select('market_slug, asset, strike_price, close_price')
+      .order('created_at', { ascending: false })
+      .limit(500);
+
+    if (!tradesData) {
+      setLoading(false);
+      return;
     }
 
+    // Create strike price lookup
+    const strikeLookup = new Map<string, StrikePrice>();
+    if (strikesData) {
+      for (const s of strikesData) {
+        const key = `${s.market_slug}`;
+        if (!strikeLookup.has(key)) {
+          strikeLookup.set(key, s as StrikePrice);
+        }
+      }
+    }
+
+    // Group trades by market_slug (bet)
+    const betMap = new Map<string, V26Bet>();
+    
+    for (const trade of tradesData as V26Trade[]) {
+      const key = trade.market_slug;
+      
+      if (!betMap.has(key)) {
+        const strike = strikeLookup.get(key);
+        const strikePrice = strike?.strike_price ?? null;
+        const closePrice = strike?.close_price ?? null;
+        const delta = (strikePrice !== null && closePrice !== null) 
+          ? closePrice - strikePrice 
+          : null;
+        
+        betMap.set(key, {
+          market_slug: trade.market_slug,
+          asset: trade.asset,
+          event_start_time: trade.event_start_time,
+          event_end_time: trade.event_end_time,
+          trades: [],
+          strike_price: strikePrice,
+          close_price: closePrice,
+          delta,
+          result: 'PENDING',
+          total_filled_shares: 0,
+          total_invested: 0,
+          pnl: null,
+        });
+      }
+      
+      const bet = betMap.get(key)!;
+      bet.trades.push(trade);
+      bet.total_filled_shares += trade.filled_shares ?? 0;
+      bet.total_invested += (trade.filled_shares ?? 0) * (trade.avg_fill_price ?? trade.price);
+    }
+
+    // Calculate results for each bet
+    const betsArray: V26Bet[] = [];
+    let totalWins = 0;
+    let totalLosses = 0;
+    let totalPending = 0;
+    let totalFilled = 0;
+    let totalPnl = 0;
+
+    for (const bet of betMap.values()) {
+      // Determine result based on delta
+      if (bet.total_filled_shares === 0) {
+        bet.result = 'NO_FILL';
+      } else if (bet.delta === null) {
+        // Market not settled yet
+        const isEnded = new Date(bet.event_end_time) < new Date();
+        bet.result = isEnded ? 'PENDING' : 'PENDING';
+        totalPending++;
+        totalFilled++;
+      } else {
+        // We bought DOWN, so:
+        // - delta < 0 (price went down) → DOWN wins → WIN
+        // - delta > 0 (price went up) → UP wins → LOSS
+        // - delta = 0 → depends on exact rules, treat as LOSS for safety
+        if (bet.delta < 0) {
+          bet.result = 'WIN';
+          // WIN: we get $1 per share
+          bet.pnl = bet.total_filled_shares * 1 - bet.total_invested;
+          totalWins++;
+          totalPnl += bet.pnl;
+        } else {
+          bet.result = 'LOSS';
+          // LOSS: we get $0 per share
+          bet.pnl = 0 - bet.total_invested;
+          totalLosses++;
+          totalPnl += bet.pnl;
+        }
+        totalFilled++;
+      }
+      
+      betsArray.push(bet);
+    }
+
+    // Sort by event time descending
+    betsArray.sort((a, b) => new Date(b.event_start_time).getTime() - new Date(a.event_start_time).getTime());
+
+    setBets(betsArray);
+    setStats({
+      total: betsArray.length,
+      filled: totalFilled,
+      wins: totalWins,
+      losses: totalLosses,
+      pending: totalPending,
+      totalPnl,
+    });
     setLoading(false);
   };
 
@@ -101,60 +224,35 @@ export default function V26Dashboard() {
     };
   }, []);
 
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case 'filled':
-        return <Badge className="bg-green-500/10 text-green-500 border-green-500/20">Filled</Badge>;
-      case 'pending':
-        return <Badge className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20">Pending</Badge>;
-      case 'placed':
-        return <Badge className="bg-blue-500/10 text-blue-500 border-blue-500/20">Placed</Badge>;
-      case 'cancelled':
-        return <Badge className="bg-muted text-muted-foreground">Cancelled</Badge>;
-      case 'expired':
-        return <Badge className="bg-muted text-muted-foreground">Expired</Badge>;
+  const getResultBadge = (bet: V26Bet) => {
+    switch (bet.result) {
+      case 'WIN':
+        return (
+          <Badge className="bg-green-500/10 text-green-500 border-green-500/20">
+            ✓ WIN {bet.pnl !== null && `+$${bet.pnl.toFixed(2)}`}
+          </Badge>
+        );
+      case 'LOSS':
+        return (
+          <Badge className="bg-red-500/10 text-red-500 border-red-500/20">
+            ✗ LOSS {bet.pnl !== null && `-$${Math.abs(bet.pnl).toFixed(2)}`}
+          </Badge>
+        );
+      case 'NO_FILL':
+        return <Badge variant="outline" className="text-muted-foreground">No Fill</Badge>;
+      case 'PENDING':
       default:
-        return <Badge variant="outline">{status}</Badge>;
+        const isEnded = new Date(bet.event_end_time) < new Date();
+        if (isEnded) {
+          return <Badge className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20">⏳ Awaiting Oracle</Badge>;
+        }
+        return <Badge className="bg-blue-500/10 text-blue-500 border-blue-500/20">🔴 Live</Badge>;
     }
   };
 
-  const getResultBadge = (trade: V26Trade) => {
-    const { result, pnl, status, event_end_time, filled_shares, side } = trade;
-    const isMarketEnded = new Date(event_end_time) < new Date();
-    
-    // Not filled = no P/L possible
-    if (filled_shares === 0 || status === 'cancelled' || status === 'expired') {
-      if (isMarketEnded) {
-        return <Badge variant="outline" className="text-muted-foreground">No Fill</Badge>;
-      }
-      return <Badge variant="outline" className="text-muted-foreground">Waiting...</Badge>;
-    }
-    
-    // Filled but not settled yet
-    if (!result) {
-      if (isMarketEnded) {
-        return <Badge className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20">⏳ Needs Settlement</Badge>;
-      }
-      return <Badge className="bg-blue-500/10 text-blue-500 border-blue-500/20">Live</Badge>;
-    }
-    
-    // Settled with result - WIN if our side matches the result
-    // If we bought DOWN and result is DOWN → WIN (token worth $1)
-    // If we bought DOWN and result is UP → LOSS (token worth $0)
-    // If we bought UP and result is UP → WIN
-    // If we bought UP and result is DOWN → LOSS
-    const isWin = side === result;
-    const pnlFormatted = pnl !== null ? `${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}` : '';
-    
-    return (
-      <Badge className={isWin 
-        ? "bg-green-500/10 text-green-500 border-green-500/20" 
-        : "bg-red-500/10 text-red-500 border-red-500/20"
-      }>
-        {isWin ? '✓ WIN' : '✗ LOSS'} {pnlFormatted}
-      </Badge>
-    );
-  };
+  const winRate = stats.wins + stats.losses > 0 
+    ? (stats.wins / (stats.wins + stats.losses) * 100).toFixed(1) 
+    : '0';
 
   return (
     <div className="min-h-screen bg-background p-6">
@@ -206,11 +304,11 @@ export default function V26Dashboard() {
             <CardHeader className="pb-2">
               <CardDescription className="flex items-center gap-1">
                 <Activity className="h-3 w-3" />
-                Total Trades
+                Total Bets
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{stats?.total_trades ?? 0}</div>
+              <div className="text-2xl font-bold">{stats.total}</div>
             </CardContent>
           </Card>
 
@@ -222,7 +320,7 @@ export default function V26Dashboard() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">{stats?.filled_trades ?? 0}</div>
+              <div className="text-2xl font-bold">{stats.filled}</div>
             </CardContent>
           </Card>
 
@@ -234,7 +332,7 @@ export default function V26Dashboard() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-green-500">{stats?.wins ?? 0}</div>
+              <div className="text-2xl font-bold text-green-500">{stats.wins}</div>
             </CardContent>
           </Card>
 
@@ -246,7 +344,7 @@ export default function V26Dashboard() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-red-500">{stats?.losses ?? 0}</div>
+              <div className="text-2xl font-bold text-red-500">{stats.losses}</div>
             </CardContent>
           </Card>
 
@@ -258,9 +356,7 @@ export default function V26Dashboard() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold">
-                {stats?.win_rate_pct?.toFixed(1) ?? '0'}%
-              </div>
+              <div className="text-2xl font-bold">{winRate}%</div>
             </CardContent>
           </Card>
 
@@ -272,70 +368,93 @@ export default function V26Dashboard() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <div className={`text-2xl font-bold ${(stats?.total_pnl ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                ${(stats?.total_pnl ?? 0).toFixed(2)}
+              <div className={`text-2xl font-bold ${stats.totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                ${stats.totalPnl.toFixed(2)}
               </div>
             </CardContent>
           </Card>
         </div>
 
-        {/* Trades Table */}
+        {/* Bets Table */}
         <Card>
           <CardHeader>
-            <CardTitle>Recent Trades</CardTitle>
+            <CardTitle>Bets</CardTitle>
             <CardDescription>
-              Last 100 V26 trades
+              Per market/event - showing strike, close, delta and result
             </CardDescription>
           </CardHeader>
           <CardContent>
-            {trades.length === 0 ? (
+            {bets.length === 0 ? (
               <div className="text-center py-12 text-muted-foreground">
                 <Clock className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                <p>No V26 trades yet</p>
-                <p className="text-sm">Trades will appear here when the strategy starts running</p>
+                <p>No V26 bets yet</p>
+                <p className="text-sm">Bets will appear here when the strategy starts running</p>
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Time</TableHead>
+                      <TableHead>Event Time</TableHead>
                       <TableHead>Asset</TableHead>
-                      <TableHead>Market</TableHead>
-                      <TableHead>Price</TableHead>
-                      <TableHead>Shares</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Fill</TableHead>
+                      <TableHead>Strike</TableHead>
+                      <TableHead>Close</TableHead>
+                      <TableHead>Delta</TableHead>
+                      <TableHead>Filled</TableHead>
+                      <TableHead>Invested</TableHead>
+                      <TableHead>Order</TableHead>
                       <TableHead>Result</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {trades.map((trade) => (
-                      <TableRow key={trade.id}>
-                        <TableCell className="whitespace-nowrap">
-                          {format(new Date(trade.created_at), 'MMM d HH:mm')}
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant="outline">{trade.asset}</Badge>
-                        </TableCell>
-                        <TableCell className="max-w-[200px] truncate text-xs text-muted-foreground">
-                          {trade.market_slug}
-                        </TableCell>
-                        <TableCell>${trade.price.toFixed(2)}</TableCell>
-                        <TableCell>{trade.shares}</TableCell>
-                        <TableCell>{getStatusBadge(trade.status)}</TableCell>
-                        <TableCell>
-                          {trade.filled_shares > 0 ? (
-                            <span className="text-green-500">
-                              {trade.filled_shares} @ ${trade.avg_fill_price?.toFixed(3) ?? trade.price.toFixed(2)}
-                            </span>
-                          ) : (
-                            <span className="text-muted-foreground">-</span>
-                          )}
-                        </TableCell>
-                        <TableCell>{getResultBadge(trade)}</TableCell>
-                      </TableRow>
-                    ))}
+                    {bets.map((bet) => {
+                      const firstOrder = bet.trades.find(t => t.order_id);
+                      return (
+                        <TableRow key={bet.market_slug}>
+                          <TableCell className="whitespace-nowrap">
+                            {format(new Date(bet.event_start_time), 'MMM d HH:mm')}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant="outline">{bet.asset}</Badge>
+                          </TableCell>
+                          <TableCell className="font-mono">
+                            {bet.strike_price !== null 
+                              ? `$${bet.strike_price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                              : '-'}
+                          </TableCell>
+                          <TableCell className="font-mono">
+                            {bet.close_price !== null 
+                              ? `$${bet.close_price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                              : '-'}
+                          </TableCell>
+                          <TableCell>
+                            {bet.delta !== null ? (
+                              <span className={bet.delta < 0 ? 'text-green-500' : 'text-red-500'}>
+                                {bet.delta >= 0 ? '+' : ''}{bet.delta.toFixed(2)}
+                              </span>
+                            ) : (
+                              <span className="text-muted-foreground">-</span>
+                            )}
+                          </TableCell>
+                          <TableCell>
+                            {bet.total_filled_shares > 0 ? (
+                              <span className="text-green-500">{bet.total_filled_shares}</span>
+                            ) : (
+                              <span className="text-muted-foreground">0</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="font-mono">
+                            ${bet.total_invested.toFixed(2)}
+                          </TableCell>
+                          <TableCell className="text-xs text-muted-foreground max-w-[100px] truncate">
+                            {firstOrder?.order_id 
+                              ? `${firstOrder.order_id.slice(0, 10)}...`
+                              : '-'}
+                          </TableCell>
+                          <TableCell>{getResultBadge(bet)}</TableCell>
+                        </TableRow>
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </div>
