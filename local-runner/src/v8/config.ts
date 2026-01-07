@@ -25,7 +25,7 @@ export const V8 = {
   // Fair price surface configuration
   surface: {
     ewmaAlpha: 0.15,                   // EWMA recency weight
-    minSamplesToTrade: 50,             // Minimum samples per bucket before trusting
+    minSamplesToTrade: 10,             // Reduced from 50 for faster startup testing
     maxFairUpAgeMs: 10 * 60 * 1000,    // 10 minutes max age
   },
   
