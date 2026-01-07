@@ -11,7 +11,7 @@
 
 import { config } from '../config.js';
 import { testConnection, getBalance, placeOrder, cancelOrder, getOrderFillInfo } from '../polymarket.js';
-import { fetchMarkets } from '../backend.js';
+import { fetchMarkets, sendHeartbeat, saveFillLogs, saveSettlementLogs } from '../backend.js';
 import { enforceVpnOrExit } from '../vpn-check.js';
 import { 
   V26_CONFIG, 
@@ -24,6 +24,7 @@ import {
   logV26Status,
 } from './index.js';
 import { saveV26Trade, updateV26Trade, hasExistingTrade, getV26Oracle } from './backend.js';
+import type { FillLog, SettlementLog } from '../logger.js';
 
 // ============================================================
 // CONSTANTS
@@ -97,6 +98,118 @@ function normalizeUsdAmount(value: unknown): number | null {
 function formatUsd(value: unknown): string {
   const n = normalizeUsdAmount(value);
   return n === null ? 'unknown' : n.toFixed(2);
+}
+
+// ============================================================
+// FILL & SETTLEMENT LOGGING
+// ============================================================
+
+async function logV26Fill(market: V26Market, trade: V26Trade, fillQty: number, fillPrice: number): Promise<void> {
+  const now = Date.now();
+  const secondsRemaining = Math.max(0, Math.round((market.eventEndTime.getTime() - now) / 1000));
+  
+  const fillLog: FillLog = {
+    ts: now,
+    iso: new Date(now).toISOString(),
+    marketId: market.slug,
+    asset: market.asset as 'BTC' | 'ETH',
+    side: 'DOWN',
+    orderId: trade.orderId ?? null,
+    clientOrderId: null,
+    fillQty,
+    fillPrice,
+    fillNotional: fillQty * fillPrice,
+    intent: 'ENTRY',
+    secondsRemaining,
+    spotPrice: null,
+    strikePrice: null,
+    delta: null,
+    btcPrice: null,
+    ethPrice: null,
+    upBestAsk: null,
+    downBestAsk: null,
+    upBestBid: null,
+    downBestBid: null,
+    hedgeLagMs: null,
+  };
+
+  try {
+    await saveFillLogs([fillLog]);
+    log(`📝 [${market.asset}] Fill logged: ${fillQty} shares @ $${fillPrice.toFixed(2)}`);
+  } catch (err) {
+    logError(`[${market.asset}] Failed to log fill`, err);
+  }
+}
+
+async function logV26Settlement(
+  market: V26Market,
+  trade: V26Trade,
+  winningSide: 'UP' | 'DOWN',
+  pnl: number
+): Promise<void> {
+  const now = Date.now();
+  
+  const settlementLog: SettlementLog = {
+    ts: now,
+    iso: new Date(now).toISOString(),
+    marketId: market.slug,
+    asset: market.asset as 'BTC' | 'ETH',
+    openTs: trade.fillTimeMs ? (now - trade.fillTimeMs) : null,
+    closeTs: now,
+    finalUpShares: 0,
+    finalDownShares: trade.filledShares,
+    avgUpCost: null,
+    avgDownCost: trade.avgFillPrice ?? trade.price,
+    pairCost: null,  // V26 is single-sided, no pair
+    realizedPnL: pnl,
+    winningSide,
+    maxDelta: null,
+    minDelta: null,
+    timeInLow: 0,
+    timeInMid: 0,
+    timeInHigh: 0,
+    countDislocation95: 0,
+    countDislocation97: 0,
+    last180sDislocation95: 0,
+    theoreticalPnL: winningSide === 'DOWN' ? (1 - (trade.avgFillPrice ?? trade.price)) * trade.filledShares : -(trade.avgFillPrice ?? trade.price) * trade.filledShares,
+    fees: null,
+    totalPayoutUsd: winningSide === 'DOWN' ? trade.filledShares : 0,
+  };
+
+  try {
+    await saveSettlementLogs([settlementLog]);
+    log(`📝 [${market.asset}] Settlement logged: ${winningSide} won, P/L $${pnl.toFixed(2)}`);
+  } catch (err) {
+    logError(`[${market.asset}] Failed to log settlement`, err);
+  }
+}
+
+// ============================================================
+// HEARTBEAT
+// ============================================================
+
+let tradesCount = 0;
+
+async function sendV26Heartbeat(): Promise<void> {
+  try {
+    const balance = await getBalance();
+    const balanceNum = normalizeUsdAmount(balance) ?? 0;
+
+    await sendHeartbeat({
+      runner_id: RUN_ID,
+      runner_type: 'v26',
+      last_heartbeat: new Date().toISOString(),
+      status: 'online',
+      markets_count: scheduledTrades.size,
+      positions_count: 0,
+      trades_count: tradesCount,
+      balance: balanceNum,
+      version: V26_VERSION,
+    });
+  } catch (err) {
+    // Heartbeat failures are non-critical
+    logError('Heartbeat failed', err);
+  }
 }
 
 // ============================================================
@@ -221,6 +334,9 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
 
       if (filledNow > 0) {
         trade.fillTimeMs = Math.max(0, Date.now() - placedAtMs);
+        tradesCount++;
+        // Log the fill
+        void logV26Fill(market, trade, filledNow, trade.avgFillPrice);
       }
     }
 
@@ -283,12 +399,19 @@ async function checkAndCancelOrder(scheduled: ScheduledTrade): Promise<void> {
     const matchedBefore = before.success ? (before.filledSize ?? 0) : 0;
 
     if (before.success && matchedBefore > 0) {
+      const previousFilled = trade.filledShares;
       trade.filledShares = matchedBefore;
       trade.avgFillPrice = trade.avgFillPrice ?? trade.price;
       trade.status = before.status === 'partial' ? 'partial' : before.status === 'filled' ? 'filled' : 'partial';
 
       if (scheduled.placedAtMs && trade.fillTimeMs === undefined) {
         trade.fillTimeMs = Math.max(0, Date.now() - scheduled.placedAtMs);
+      }
+
+      // Log fill if this is a new fill detection
+      if (matchedBefore > previousFilled) {
+        tradesCount++;
+        void logV26Fill(market, trade, matchedBefore - previousFilled, trade.avgFillPrice);
       }
 
       if (trade.id) {
@@ -320,12 +443,19 @@ async function checkAndCancelOrder(scheduled: ScheduledTrade): Promise<void> {
     const matchedAfter = after.success ? (after.filledSize ?? 0) : matchedBefore;
 
     if (after.success && matchedAfter > 0) {
+      const previousFilled = trade.filledShares;
       trade.filledShares = matchedAfter;
       trade.avgFillPrice = trade.avgFillPrice ?? trade.price;
       trade.status = after.status === 'filled' ? 'filled' : 'partial';
 
       if (scheduled.placedAtMs && trade.fillTimeMs === undefined) {
         trade.fillTimeMs = Math.max(0, Date.now() - scheduled.placedAtMs);
+      }
+
+      // Log fill if this is a new fill detection
+      if (matchedAfter > previousFilled) {
+        tradesCount++;
+        void logV26Fill(market, trade, matchedAfter - previousFilled, trade.avgFillPrice);
       }
 
       if (trade.id) {
@@ -415,6 +545,9 @@ async function attemptSettlement(market: V26Market, trade: V26Trade, attempt: nu
     const pnl = calculateV26Pnl({ ...trade, result, settledAt });
 
     await updateV26Trade(trade.id, { result, pnl, settledAt });
+
+    // Log settlement
+    void logV26Settlement(market, trade, result, pnl);
 
     log(
       `🏁 [${market.asset}] Settled ${market.slug}: strike=${strike.toFixed(2)} close=${close.toFixed(2)} → ${result} | P/L=${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}`
@@ -573,6 +706,12 @@ async function main(): Promise<void> {
   setInterval(async () => {
     await printStatus();
   }, 5 * 60 * 1000);
+
+  // Send heartbeat every 30 seconds
+  await sendV26Heartbeat();
+  setInterval(async () => {
+    await sendV26Heartbeat();
+  }, 30_000);
 
   // Keep process alive
   log('👀 Watching for markets... (Ctrl+C to stop)');
