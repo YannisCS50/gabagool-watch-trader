@@ -583,7 +583,10 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
   }
 }
 
-async function checkAndCancelOrder(scheduled: ScheduledTrade): Promise<void> {
+async function checkAndCancelOrder(scheduled: ScheduledTrade, attempt: number = 0): Promise<void> {
+  const MAX_CANCEL_ATTEMPTS = 10; // Retry up to 10 times (30 seconds total)
+  const CANCEL_RETRY_DELAY_MS = 3000; // 3 seconds between retries
+  
   const { market, trade, orderId } = scheduled;
   const key = `${market.id}:${market.asset}`;
 
@@ -594,7 +597,7 @@ async function checkAndCancelOrder(scheduled: ScheduledTrade): Promise<void> {
   }
 
   try {
-    log(`⏰ [${market.asset}] Checking fill status before cancel...`);
+    log(`⏰ [${market.asset}] Checking fill status before cancel (attempt ${attempt + 1}/${MAX_CANCEL_ATTEMPTS})...`);
 
     const before = await getOrderFillInfo(orderId);
     const matchedBefore = before.success ? (before.filledSize ?? 0) : 0;
@@ -682,12 +685,38 @@ async function checkAndCancelOrder(scheduled: ScheduledTrade): Promise<void> {
           await updateV26Trade(trade.id, { status: 'cancelled' });
         }
       } else {
-        // Cancel failed and we couldn't confirm fills: keep it conservative.
-        log(`⚠️ [${market.asset}] Cancel failed and fill status unknown: ${cancelResult.error}`);
+        // Cancel failed - RETRY if we haven't exceeded max attempts
+        if (attempt < MAX_CANCEL_ATTEMPTS - 1) {
+          log(`⚠️ [${market.asset}] Cancel failed (${cancelResult.error}), retrying in ${CANCEL_RETRY_DELAY_MS / 1000}s... (attempt ${attempt + 1}/${MAX_CANCEL_ATTEMPTS})`);
+          setTimeout(() => {
+            void checkAndCancelOrder(scheduled, attempt + 1);
+          }, CANCEL_RETRY_DELAY_MS);
+          return; // Don't mark as completed yet, we're retrying
+        } else {
+          // All retries exhausted - log error and mark as error state
+          logError(`[${market.asset}] CRITICAL: Failed to cancel order after ${MAX_CANCEL_ATTEMPTS} attempts! Order may still be open: ${orderId}`);
+          trade.status = 'error';
+          trade.errorMessage = `Cancel failed after ${MAX_CANCEL_ATTEMPTS} attempts: ${cancelResult.error}`;
+          if (trade.id) {
+            await updateV26Trade(trade.id, { 
+              status: 'error', 
+              errorMessage: trade.errorMessage 
+            });
+          }
+        }
       }
     }
   } catch (err) {
     logError(`[${market.asset}] Error checking/cancelling order`, err);
+    
+    // Retry on exception too
+    if (attempt < MAX_CANCEL_ATTEMPTS - 1) {
+      log(`⚠️ [${market.asset}] Exception during cancel, retrying in ${CANCEL_RETRY_DELAY_MS / 1000}s...`);
+      setTimeout(() => {
+        void checkAndCancelOrder(scheduled, attempt + 1);
+      }, CANCEL_RETRY_DELAY_MS);
+      return;
+    }
   }
 
   completedMarkets.add(key);
