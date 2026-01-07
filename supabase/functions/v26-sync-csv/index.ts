@@ -148,6 +148,9 @@ serve(async (req) => {
       usdcAmount: number;
       tokenName: string;
       txHash: string;
+      asset: string;
+      eventStartTime: string;
+      eventEndTime: string;
     }
     const fillLookup = new Map<string, CsvFill>();
 
@@ -159,6 +162,10 @@ serve(async (req) => {
         console.log(`[v26-sync-csv] Could not parse Buy: ${row.marketName}`);
         continue;
       }
+
+      // Calculate event end time (15 min after start)
+      const startMs = new Date(eventStartTime).getTime();
+      const eventEndTime = new Date(startMs + 15 * 60 * 1000).toISOString();
 
       const marketSlug = buildMarketSlug(asset, eventStartTime);
       const fillTs = parseInt(row.timestamp);
@@ -173,6 +180,9 @@ serve(async (req) => {
           usdcAmount,
           tokenName: row.tokenName,
           txHash: row.hash,
+          asset,
+          eventStartTime,
+          eventEndTime,
         });
       } else if (fillTs === existing.fillTimestampSec) {
         existing.tokenAmount += tokenAmount;
@@ -280,46 +290,105 @@ serve(async (req) => {
       details?: Record<string, any>;
     }> = [];
 
-    // Process fills (Buy)
+    // Process fills (Buy) - UPDATE existing or INSERT new
     for (const [slug, fill] of fillLookup) {
       const trade = tradesBySlug.get(slug);
-      if (!trade) {
-        results.push({ market_slug: slug, action: 'fill', success: false, error: 'No matching v26_trade' });
-        continue;
-      }
-
       const fillMatchedAt = new Date(fill.fillTimestampSec * 1000).toISOString();
-      const eventStartMs = new Date(trade.event_start_time).getTime();
+      const eventStartMs = new Date(fill.eventStartTime).getTime();
       const fillOffsetSec = fill.fillTimestampSec - Math.floor(eventStartMs / 1000);
 
-      const updateData: Record<string, any> = {
-        fill_matched_at: fillMatchedAt,
-        filled_shares: Math.round(fill.tokenAmount),
-        status: 'filled',
-        notional: fill.usdcAmount,
-      };
+      if (trade) {
+        // UPDATE existing trade
+        const updateData: Record<string, any> = {
+          fill_matched_at: fillMatchedAt,
+          filled_shares: Math.round(fill.tokenAmount),
+          status: 'filled',
+          notional: fill.usdcAmount,
+        };
 
-      const { error: updateError } = await supabase
-        .from('v26_trades')
-        .update(updateData)
-        .eq('id', trade.id);
+        const { error: updateError } = await supabase
+          .from('v26_trades')
+          .update(updateData)
+          .eq('id', trade.id);
 
-      if (updateError) {
-        results.push({ market_slug: slug, action: 'fill', success: false, error: updateError.message });
+        if (updateError) {
+          results.push({ market_slug: slug, action: 'fill_update', success: false, error: updateError.message });
+        } else {
+          console.log(`[v26-sync-csv] Fill UPDATE: ${slug} → offset=${fillOffsetSec}s, shares=${fill.tokenAmount}`);
+          results.push({ 
+            market_slug: slug, 
+            action: 'fill_update', 
+            success: true, 
+            details: { fill_offset_sec: fillOffsetSec, filled_shares: fill.tokenAmount } 
+          });
+        }
       } else {
-        console.log(`[v26-sync-csv] Fill: ${slug} → offset=${fillOffsetSec}s, shares=${fill.tokenAmount}`);
-        results.push({ 
-          market_slug: slug, 
-          action: 'fill', 
-          success: true, 
-          details: { fill_offset_sec: fillOffsetSec, filled_shares: fill.tokenAmount } 
-        });
+        // INSERT new trade from CSV
+        const side = fill.tokenName === 'Up' ? 'UP' : 'DOWN';
+        const price = fill.usdcAmount / fill.tokenAmount;
+
+        const insertData = {
+          market_slug: slug,
+          asset: fill.asset,
+          event_start_time: fill.eventStartTime,
+          event_end_time: fill.eventEndTime,
+          market_id: slug, // Use slug as market_id placeholder
+          side,
+          price: Math.round(price * 100) / 100,
+          shares: Math.round(fill.tokenAmount),
+          filled_shares: Math.round(fill.tokenAmount),
+          notional: fill.usdcAmount,
+          fill_matched_at: fillMatchedAt,
+          status: 'filled',
+        };
+
+        const { error: insertError } = await supabase
+          .from('v26_trades')
+          .insert(insertData);
+
+        if (insertError) {
+          console.error(`[v26-sync-csv] Insert failed for ${slug}:`, insertError);
+          results.push({ market_slug: slug, action: 'fill_insert', success: false, error: insertError.message });
+        } else {
+          console.log(`[v26-sync-csv] Fill INSERT: ${slug} → ${side} ${fill.tokenAmount} shares @ ${price.toFixed(2)}`);
+          results.push({ 
+            market_slug: slug, 
+            action: 'fill_insert', 
+            success: true, 
+            details: { side, shares: fill.tokenAmount, price, fill_offset_sec: fillOffsetSec } 
+          });
+          // Add to tradesBySlug so settlement can find it
+          tradesBySlug.set(slug, { 
+            id: '', // Will be fetched if needed
+            market_slug: slug, 
+            event_start_time: fill.eventStartTime, 
+            event_end_time: fill.eventEndTime, 
+            status: 'filled', 
+            filled_shares: fill.tokenAmount, 
+            fill_matched_at: fillMatchedAt, 
+            result: null, 
+            settled_at: null, 
+            pnl: null, 
+            notional: fill.usdcAmount 
+          } as any);
+        }
       }
+    }
+
+    // Re-fetch trades to get IDs of newly inserted ones
+    const { data: updatedTrades } = await supabase
+      .from('v26_trades')
+      .select('id, market_slug, notional')
+      .in('market_slug', marketSlugs);
+    
+    const updatedTradesBySlug = new Map<string, { id: string; notional: number | null }>();
+    for (const t of updatedTrades || []) {
+      updatedTradesBySlug.set(t.market_slug, { id: t.id, notional: t.notional });
     }
 
     // Process settlements (Lost/Redeem)
     for (const [slug, settlement] of settlementLookup) {
-      const trade = tradesBySlug.get(slug);
+      const trade = updatedTradesBySlug.get(slug);
       if (!trade) {
         results.push({ market_slug: slug, action: 'settlement', success: false, error: 'No matching v26_trade' });
         continue;
@@ -356,14 +425,16 @@ serve(async (req) => {
       }
     }
 
-    const fillsSynced = results.filter(r => r.action === 'fill' && r.success).length;
+    const fillsUpdated = results.filter(r => r.action === 'fill_update' && r.success).length;
+    const fillsInserted = results.filter(r => r.action === 'fill_insert' && r.success).length;
     const settlementsSynced = results.filter(r => r.action === 'settlement' && r.success).length;
     const failCount = results.filter(r => !r.success).length;
 
     return new Response(
       JSON.stringify({
         success: true,
-        fills_synced: fillsSynced,
+        fills_updated: fillsUpdated,
+        fills_inserted: fillsInserted,
         settlements_synced: settlementsSynced,
         failed: failCount,
         csv_buys: buyRows.length,
