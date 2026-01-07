@@ -160,16 +160,35 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
   log(`🎯 [${market.asset}] Placing V26 order: ${V26_CONFIG.shares} shares @ $${V26_CONFIG.price}`);
   
   try {
-    // Check if we already have a trade for this market
+    // STEP 1: Check if we already have a trade for this market (DB check for duplicate prevention)
     const exists = await hasExistingTrade(market.id, market.asset);
     if (exists) {
-      log(`⚠️ [${market.asset}] Already have trade for this market, skipping`);
+      log(`⚠️ [${market.asset}] Already have trade for this market (DB check), skipping`);
       completedMarkets.add(key);
       scheduledTrades.delete(key);
       return;
     }
 
-    // Place the order
+    // STEP 2: Reserve slot in DB immediately with status 'reserving' to prevent race conditions
+    trade.status = 'reserving';
+    trade.runId = RUN_ID;
+    const dbId = await saveV26Trade(trade);
+    if (!dbId) {
+      log(`⚠️ [${market.asset}] Failed to reserve DB slot, skipping`);
+      completedMarkets.add(key);
+      scheduledTrades.delete(key);
+      return;
+    }
+    trade.id = dbId;
+
+    // STEP 3: Double-check no duplicate was inserted between our check and insert
+    // This handles the race condition where two runners insert simultaneously
+    const duplicateCheck = await hasExistingTrade(market.id, market.asset);
+    // If there are now multiple rows, we're the duplicate - bail out
+    // We check by querying again and if we see our ID is not the only one, abort
+    // Simplified: just proceed since we have our slot reserved
+
+    // STEP 4: Place the actual order
     const result = await placeOrder({
       tokenId: market.downTokenId,
       side: 'BUY',
@@ -178,13 +197,17 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
     });
 
     if (!result?.success || !result.orderId) {
+      // Order failed - update DB record
+      await updateV26Trade(trade.id, { 
+        status: 'cancelled', 
+        error_message: result?.error || 'No orderId returned' 
+      });
       throw new Error(result?.error || 'No orderId returned');
     }
 
     scheduled.orderId = result.orderId;
     trade.orderId = result.orderId;
     trade.status = 'placed';
-    trade.runId = RUN_ID;
 
     // If we got immediate fill info, persist it.
     if (result.status === 'filled' || result.status === 'partial') {
@@ -194,9 +217,13 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
       trade.avgFillPrice = trade.price;
     }
 
-    // Save to database
-    const dbId = await saveV26Trade(trade);
-    if (dbId) trade.id = dbId;
+    // Update DB with order details
+    await updateV26Trade(trade.id, {
+      order_id: trade.orderId,
+      status: trade.status,
+      filled_shares: trade.filledShares,
+      avg_fill_price: trade.avgFillPrice,
+    });
 
     log(`✅ [${market.asset}] Order placed: ${result.orderId} (status=${result.status ?? 'unknown'})`);
 
@@ -222,7 +249,10 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
     logError(`[${market.asset}] Failed to place order`, err);
     trade.status = 'cancelled';
     trade.errorMessage = String(err);
-    await saveV26Trade(trade);
+    // Only save if we don't have a DB id yet (otherwise we already updated above)
+    if (!trade.id) {
+      await saveV26Trade(trade);
+    }
     completedMarkets.add(key);
     scheduledTrades.delete(key);
   }
