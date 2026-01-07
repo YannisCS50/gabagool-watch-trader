@@ -65,3 +65,6 @@ verify_jwt = false
 
 [functions.v26-sync-fills]
 verify_jwt = false
+
+[functions.v26-sync-csv]
+verify_jwt = false

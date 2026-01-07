@@ -1,8 +1,9 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
   ArrowLeft, RefreshCw, TrendingUp, TrendingDown, DollarSign, Target, Percent,
-  Clock, Zap, BarChart3, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ExternalLink
+  Clock, Zap, BarChart3, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ExternalLink,
+  Upload
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -87,7 +88,9 @@ export default function V26Dashboard() {
   const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [uploadingSyncing, setUploadingSyncing] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [stats, setStats] = useState({
     totalBets: 0,
     filledBets: 0,
@@ -418,6 +421,36 @@ export default function V26Dashboard() {
     }
   };
 
+  const handleCsvUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setUploadingSyncing(true);
+    try {
+      const csvContent = await file.text();
+      console.log('[V26Dashboard] Uploading CSV with', csvContent.split('\n').length, 'lines');
+
+      const { data, error } = await supabase.functions.invoke('v26-sync-csv', {
+        body: { csv: csvContent },
+      });
+
+      if (error) {
+        console.error('[V26Dashboard] CSV sync failed:', error);
+      } else {
+        console.log('[V26Dashboard] CSV sync result:', data);
+        await fetchData();
+      }
+    } catch (err) {
+      console.error('[V26Dashboard] CSV sync error:', err);
+    } finally {
+      setUploadingSyncing(false);
+      // Reset file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
+
   useEffect(() => {
     fetchData();
     const interval = setInterval(fetchData, 5 * 60 * 1000);
@@ -539,6 +572,22 @@ export default function V26Dashboard() {
                 <ExternalLink className="h-4 w-4 mr-2" />
                 Polymarket
               </a>
+            </Button>
+            <input
+              type="file"
+              accept=".csv"
+              onChange={handleCsvUpload}
+              ref={fileInputRef}
+              className="hidden"
+            />
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={uploadingSyncing || loading}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <Upload className={`h-4 w-4 mr-2 ${uploadingSyncing ? 'animate-pulse' : ''}`} />
+              {uploadingSyncing ? 'Syncing...' : 'CSV Upload'}
             </Button>
             <Button onClick={syncFills} variant="outline" size="sm" disabled={syncing || loading}>
               <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? 'animate-spin' : ''}`} />
