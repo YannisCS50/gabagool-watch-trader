@@ -395,63 +395,105 @@ export default function V26Dashboard() {
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Event Time</TableHead>
-                      <TableHead>Asset</TableHead>
-                      <TableHead>Strike</TableHead>
-                      <TableHead>Close</TableHead>
+                      <TableHead>Bet</TableHead>
+                      <TableHead>Time</TableHead>
+                      <TableHead>Shares</TableHead>
+                      <TableHead>Price</TableHead>
+                      <TableHead>Total</TableHead>
                       <TableHead>Delta</TableHead>
-                      <TableHead>Filled</TableHead>
-                      <TableHead>Invested</TableHead>
-                      <TableHead>Order</TableHead>
+                      <TableHead>Status</TableHead>
                       <TableHead>Result</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {bets.map((bet) => {
-                      const firstOrder = bet.trades.find(t => t.order_id);
+                      const filledTrade = bet.trades.find(t => t.filled_shares > 0);
+                      const avgPrice = filledTrade?.avg_fill_price ?? filledTrade?.price ?? 0.48;
+                      const isEnded = new Date(bet.event_end_time) < new Date();
+                      const hasOrder = bet.trades.some(t => t.order_id);
+                      
+                      // Status logic
+                      let status: 'placed' | 'open' | 'closed' = 'placed';
+                      if (bet.total_filled_shares > 0 && !isEnded) {
+                        status = 'open';
+                      } else if (isEnded) {
+                        status = 'closed';
+                      } else if (hasOrder) {
+                        status = 'placed';
+                      }
+
+                      const getStatusBadge = () => {
+                        switch (status) {
+                          case 'placed':
+                            return <Badge className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20">Placed</Badge>;
+                          case 'open':
+                            return <Badge className="bg-blue-500/10 text-blue-500 border-blue-500/20">🔴 Open</Badge>;
+                          case 'closed':
+                            return <Badge variant="outline">Closed</Badge>;
+                        }
+                      };
+
+                      const getResultDisplay = () => {
+                        if (status !== 'closed') {
+                          return <span className="text-muted-foreground">-</span>;
+                        }
+                        if (bet.total_filled_shares === 0) {
+                          return <Badge variant="outline" className="text-muted-foreground">No Fill</Badge>;
+                        }
+                        if (bet.delta === null) {
+                          return <Badge className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20">⏳ Oracle</Badge>;
+                        }
+                        // delta < 0 = price went down = DOWN wins = WIN
+                        if (bet.delta < 0) {
+                          return (
+                            <Badge className="bg-green-500/10 text-green-500 border-green-500/20">
+                              ✓ Win {bet.pnl !== null && `+$${bet.pnl.toFixed(2)}`}
+                            </Badge>
+                          );
+                        } else {
+                          return (
+                            <Badge className="bg-red-500/10 text-red-500 border-red-500/20">
+                              ✗ Loss {bet.pnl !== null && `-$${Math.abs(bet.pnl).toFixed(2)}`}
+                            </Badge>
+                          );
+                        }
+                      };
+
                       return (
                         <TableRow key={bet.market_slug}>
+                          <TableCell>
+                            <div className="flex items-center gap-2">
+                              <Badge variant="outline">{bet.asset}</Badge>
+                              <span className="text-xs text-muted-foreground">DOWN</span>
+                            </div>
+                          </TableCell>
                           <TableCell className="whitespace-nowrap">
                             {format(new Date(bet.event_start_time), 'MMM d HH:mm')}
                           </TableCell>
                           <TableCell>
-                            <Badge variant="outline">{bet.asset}</Badge>
+                            {bet.total_filled_shares > 0 ? (
+                              <span className="font-medium">{bet.total_filled_shares}</span>
+                            ) : (
+                              <span className="text-muted-foreground">0</span>
+                            )}
                           </TableCell>
                           <TableCell className="font-mono">
-                            {bet.strike_price !== null 
-                              ? `$${bet.strike_price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                              : '-'}
+                            ${avgPrice.toFixed(2)}
                           </TableCell>
-                          <TableCell className="font-mono">
-                            {bet.close_price !== null 
-                              ? `$${bet.close_price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                              : '-'}
+                          <TableCell className="font-mono font-medium">
+                            ${bet.total_invested.toFixed(2)}
                           </TableCell>
                           <TableCell>
                             {bet.delta !== null ? (
-                              <span className={bet.delta < 0 ? 'text-green-500' : 'text-red-500'}>
+                              <span className={`font-mono ${bet.delta < 0 ? 'text-green-500' : 'text-red-500'}`}>
                                 {bet.delta >= 0 ? '+' : ''}{bet.delta.toFixed(2)}
                               </span>
                             ) : (
                               <span className="text-muted-foreground">-</span>
                             )}
                           </TableCell>
-                          <TableCell>
-                            {bet.total_filled_shares > 0 ? (
-                              <span className="text-green-500">{bet.total_filled_shares}</span>
-                            ) : (
-                              <span className="text-muted-foreground">0</span>
-                            )}
-                          </TableCell>
-                          <TableCell className="font-mono">
-                            ${bet.total_invested.toFixed(2)}
-                          </TableCell>
-                          <TableCell className="text-xs text-muted-foreground max-w-[100px] truncate">
-                            {firstOrder?.order_id 
-                              ? `${firstOrder.order_id.slice(0, 10)}...`
-                              : '-'}
-                          </TableCell>
-                          <TableCell>{getResultBadge(bet)}</TableCell>
+                          <TableCell>{getStatusBadge()}</TableCell>
+                          <TableCell>{getResultDisplay()}</TableCell>
                         </TableRow>
                       );
                     })}
