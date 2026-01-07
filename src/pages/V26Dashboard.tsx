@@ -252,10 +252,23 @@ export default function V26Dashboard() {
       const dateStr = format(startTimeET, 'MMMM d');
       const marketTitle = `${trade.asset} Up or Down - ${dateStr}, ${startTimeStr}-${endTimeStr} ET`;
 
-      // Calculate entry offset: seconds before (negative) or after (positive) market open
-      const createdAtTime = new Date(trade.created_at).getTime();
-      const eventStartTime = new Date(trade.event_start_time).getTime();
-      const entryOffsetSec = Math.round((createdAtTime - eventStartTime) / 1000);
+      const entryOffsetSec = (() => {
+        // Backfilled/imported rows often have unreliable timestamps (batch insert time).
+        // If we don't have a real order id, show it as unknown.
+        if (!trade.order_id) return null;
+
+        const createdAtTime = new Date(trade.created_at).getTime();
+        const eventStartTime = new Date(trade.event_start_time).getTime();
+
+        // Prefer bot-provided fill_time_ms; in practice this represents the distance to market open.
+        if (trade.fill_time_ms !== null && trade.fill_time_ms > 0) {
+          const sec = Math.round(trade.fill_time_ms / 1000);
+          const isBeforeOpen = createdAtTime < eventStartTime;
+          return isBeforeOpen ? -sec : sec;
+        }
+
+        return Math.round((createdAtTime - eventStartTime) / 1000);
+      })();
 
       logs.push({
         id: trade.id,
@@ -375,12 +388,12 @@ export default function V26Dashboard() {
     if (sec === null) return '-';
     const absSec = Math.abs(sec);
     if (absSec < 60) {
-      return sec < 0 ? `${absSec}s voor` : `${absSec}s na`;
+      return sec < 0 ? `${absSec}s voor open` : `${absSec}s na open`;
     }
     const mins = Math.floor(absSec / 60);
     const secs = Math.round(absSec % 60);
     const timeStr = secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
-    return sec < 0 ? `${timeStr} voor` : `${timeStr} na`;
+    return sec < 0 ? `${timeStr} voor open` : `${timeStr} na open`;
   };
 
   const getBestAsset = () => {
