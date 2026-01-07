@@ -1,6 +1,7 @@
 import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { ethers } from "https://esm.sh/ethers@6.13.1";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -8,6 +9,40 @@ const corsHeaders = {
 };
 
 const CLOB_BASE_URL = 'https://clob.polymarket.com';
+
+// Onchain: resolve correct Polymarket "funder" address (Safe/Proxy) for L2 auth
+const POLYGON_RPC_URL = 'https://polygon-rpc.com';
+const CTF_EXCHANGE_ADDRESS = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
+const EXCHANGE_ABI = [
+  'function getPolyProxyWalletAddress(address _addr) view returns (address)',
+  'function getSafeAddress(address _addr) view returns (address)',
+];
+
+async function resolvePolymarketFunderAddress(eoaAddress: string): Promise<string> {
+  const provider = new ethers.JsonRpcProvider(POLYGON_RPC_URL);
+  const exchangeContract = new ethers.Contract(CTF_EXCHANGE_ADDRESS, EXCHANGE_ABI, provider);
+
+  const [safeAddressRaw, proxyAddressRaw] = await Promise.all([
+    exchangeContract.getSafeAddress(eoaAddress),
+    exchangeContract.getPolyProxyWalletAddress(eoaAddress),
+  ]);
+
+  const safeAddress = ethers.getAddress(safeAddressRaw);
+  const proxyAddress = ethers.getAddress(proxyAddressRaw);
+
+  const [safeCode, proxyCode] = await Promise.all([
+    provider.getCode(safeAddress),
+    provider.getCode(proxyAddress),
+  ]);
+
+  const safeDeployed = safeCode !== '0x';
+  const proxyDeployed = proxyCode !== '0x';
+
+  // Prefer deployed Safe, otherwise deployed Proxy. If neither deployed yet, use deterministic Safe.
+  if (safeDeployed) return safeAddress;
+  if (proxyDeployed) return proxyAddress;
+  return safeAddress;
+}
 
 // Helper: replaceAll for URL-safe base64
 function replaceAll(s: string, search: string, replace: string): string {
@@ -137,28 +172,30 @@ serve(async (req) => {
       );
     }
 
-    // Get wallet address from bot_config
+    // Resolve correct funder address for L2 auth.
+    // NOTE: Using the EOA address can cause 401; Polymarket often expects Safe/Proxy address.
+    const eoaAddress = new ethers.Wallet(privateKey).address;
+
+    let configuredAddress: string | null = null;
     const configRes = await supabase.from('bot_config').select('polymarket_address').limit(1).single();
-    
-    if (configRes.error) {
-      console.error('[v26-sync-fills] Error fetching bot_config:', configRes.error);
-      return new Response(
-        JSON.stringify({ error: `Failed to fetch bot_config: ${configRes.error.message}` }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+    if (!configRes.error) {
+      configuredAddress = configRes.data?.polymarket_address ?? null;
+    } else {
+      console.warn('[v26-sync-fills] Could not read bot_config.polymarket_address:', configRes.error);
     }
-    
-    const walletAddress = configRes.data?.polymarket_address;
-    
-    if (!walletAddress) {
-      console.error('[v26-sync-fills] No polymarket_address in bot_config, data:', JSON.stringify(configRes.data));
-      return new Response(
-        JSON.stringify({ error: 'No wallet address configured in bot_config' }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+
+    let walletAddress = eoaAddress;
+    try {
+      walletAddress = await resolvePolymarketFunderAddress(eoaAddress);
+    } catch (err) {
+      console.warn('[v26-sync-fills] Failed to resolve funder (Safe/Proxy). Falling back to EOA:', err);
     }
-    
-    console.log(`[v26-sync-fills] Using wallet address: ${walletAddress}`);
+
+    console.log(`[v26-sync-fills] EOA address: ${eoaAddress}`);
+    if (configuredAddress) {
+      console.log(`[v26-sync-fills] bot_config.polymarket_address: ${configuredAddress}`);
+    }
+    console.log(`[v26-sync-fills] Using POLY_ADDRESS (funder): ${walletAddress}`);
 
     const creds = { key: apiKey, secret: apiSecret, passphrase };
 
@@ -187,7 +224,7 @@ serve(async (req) => {
 
     for (const trade of trades || []) {
       const orderId = trade.order_id;
-      const requestPath = `/order/${orderId}`;
+      const requestPath = `/data/order?id=${encodeURIComponent(orderId)}`;
 
       try {
         const headers = await createL2Headers(walletAddress, creds, 'GET', requestPath);
