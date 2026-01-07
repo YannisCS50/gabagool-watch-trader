@@ -14,6 +14,51 @@ export type Database = {
   }
   public: {
     Tables: {
+      account_position_snapshots: {
+        Row: {
+          account_avg_down: number | null
+          account_avg_up: number | null
+          account_down_shares: number
+          account_up_shares: number
+          created_at: string
+          id: string
+          market_id: string
+          run_id: string | null
+          source_endpoint: string | null
+          source_version: string | null
+          ts: number
+          wallet_address: string | null
+        }
+        Insert: {
+          account_avg_down?: number | null
+          account_avg_up?: number | null
+          account_down_shares?: number
+          account_up_shares?: number
+          created_at?: string
+          id?: string
+          market_id: string
+          run_id?: string | null
+          source_endpoint?: string | null
+          source_version?: string | null
+          ts: number
+          wallet_address?: string | null
+        }
+        Update: {
+          account_avg_down?: number | null
+          account_avg_up?: number | null
+          account_down_shares?: number
+          account_up_shares?: number
+          created_at?: string
+          id?: string
+          market_id?: string
+          run_id?: string | null
+          source_endpoint?: string | null
+          source_version?: string | null
+          ts?: number
+          wallet_address?: string | null
+        }
+        Relationships: []
+      }
       bot_config: {
         Row: {
           backend_url: string | null
@@ -221,6 +266,177 @@ export type Database = {
         }
         Relationships: []
       }
+      decision_snapshots: {
+        Row: {
+          asset: string
+          avg_down: number | null
+          avg_up: number | null
+          best_ask_down: number | null
+          best_ask_up: number | null
+          best_bid_down: number | null
+          best_bid_up: number | null
+          book_ready_down: boolean
+          book_ready_up: boolean
+          chosen_side: string | null
+          correlation_id: string | null
+          cpp_paired_only: number | null
+          created_at: string
+          depth_summary_down: Json | null
+          depth_summary_up: Json | null
+          down_shares: number
+          guards_evaluated: Json
+          id: string
+          intent: string
+          market_id: string
+          paired_shares: number
+          projected_cpp_maker: number | null
+          projected_cpp_taker: number | null
+          reason_code: string
+          run_id: string | null
+          seconds_remaining: number
+          state: string
+          ts: number
+          unpaired_shares: number
+          up_shares: number
+          window_start: string | null
+        }
+        Insert: {
+          asset: string
+          avg_down?: number | null
+          avg_up?: number | null
+          best_ask_down?: number | null
+          best_ask_up?: number | null
+          best_bid_down?: number | null
+          best_bid_up?: number | null
+          book_ready_down?: boolean
+          book_ready_up?: boolean
+          chosen_side?: string | null
+          correlation_id?: string | null
+          cpp_paired_only?: number | null
+          created_at?: string
+          depth_summary_down?: Json | null
+          depth_summary_up?: Json | null
+          down_shares?: number
+          guards_evaluated?: Json
+          id?: string
+          intent: string
+          market_id: string
+          paired_shares?: number
+          projected_cpp_maker?: number | null
+          projected_cpp_taker?: number | null
+          reason_code: string
+          run_id?: string | null
+          seconds_remaining: number
+          state: string
+          ts: number
+          unpaired_shares?: number
+          up_shares?: number
+          window_start?: string | null
+        }
+        Update: {
+          asset?: string
+          avg_down?: number | null
+          avg_up?: number | null
+          best_ask_down?: number | null
+          best_ask_up?: number | null
+          best_bid_down?: number | null
+          best_bid_up?: number | null
+          book_ready_down?: boolean
+          book_ready_up?: boolean
+          chosen_side?: string | null
+          correlation_id?: string | null
+          cpp_paired_only?: number | null
+          created_at?: string
+          depth_summary_down?: Json | null
+          depth_summary_up?: Json | null
+          down_shares?: number
+          guards_evaluated?: Json
+          id?: string
+          intent?: string
+          market_id?: string
+          paired_shares?: number
+          projected_cpp_maker?: number | null
+          projected_cpp_taker?: number | null
+          reason_code?: string
+          run_id?: string | null
+          seconds_remaining?: number
+          state?: string
+          ts?: number
+          unpaired_shares?: number
+          up_shares?: number
+          window_start?: string | null
+        }
+        Relationships: []
+      }
+      fill_attributions: {
+        Row: {
+          asset: string
+          correlation_id: string | null
+          created_at: string
+          fee_paid: number
+          fill_cost_gross: number
+          fill_cost_net: number
+          id: string
+          liquidity: string
+          market_id: string
+          order_id: string
+          price: number
+          rebate_expected: number
+          run_id: string | null
+          side: string
+          size: number
+          ts: number
+          updated_avg_down: number | null
+          updated_avg_up: number | null
+          updated_cpp_gross: number | null
+          updated_cpp_net_expected: number | null
+        }
+        Insert: {
+          asset: string
+          correlation_id?: string | null
+          created_at?: string
+          fee_paid?: number
+          fill_cost_gross: number
+          fill_cost_net: number
+          id?: string
+          liquidity: string
+          market_id: string
+          order_id: string
+          price: number
+          rebate_expected?: number
+          run_id?: string | null
+          side: string
+          size: number
+          ts: number
+          updated_avg_down?: number | null
+          updated_avg_up?: number | null
+          updated_cpp_gross?: number | null
+          updated_cpp_net_expected?: number | null
+        }
+        Update: {
+          asset?: string
+          correlation_id?: string | null
+          created_at?: string
+          fee_paid?: number
+          fill_cost_gross?: number
+          fill_cost_net?: number
+          id?: string
+          liquidity?: string
+          market_id?: string
+          order_id?: string
+          price?: number
+          rebate_expected?: number
+          run_id?: string | null
+          side?: string
+          size?: number
+          ts?: number
+          updated_avg_down?: number | null
+          updated_avg_up?: number | null
+          updated_cpp_gross?: number | null
+          updated_cpp_net_expected?: number | null
+        }
+        Relationships: []
+      }
       fill_logs: {
         Row: {
           asset: string
@@ -328,6 +544,54 @@ export type Database = {
           reserved_total?: number
           spendable?: number | null
           trigger_type?: string | null
+          ts?: number
+        }
+        Relationships: []
+      }
+      gabagool_metrics: {
+        Row: {
+          cpp_distribution: Json | null
+          created_at: string
+          high_cpp_trade_count: number
+          id: string
+          invariant_status: Json | null
+          maker_fill_ratio: number | null
+          maker_fills: number
+          paired_cpp_under_100_pct: number | null
+          paired_cpp_under_100_shares: number
+          run_id: string | null
+          taker_fills: number
+          total_paired_shares: number
+          ts: number
+        }
+        Insert: {
+          cpp_distribution?: Json | null
+          created_at?: string
+          high_cpp_trade_count?: number
+          id?: string
+          invariant_status?: Json | null
+          maker_fill_ratio?: number | null
+          maker_fills?: number
+          paired_cpp_under_100_pct?: number | null
+          paired_cpp_under_100_shares?: number
+          run_id?: string | null
+          taker_fills?: number
+          total_paired_shares?: number
+          ts: number
+        }
+        Update: {
+          cpp_distribution?: Json | null
+          created_at?: string
+          high_cpp_trade_count?: number
+          id?: string
+          invariant_status?: Json | null
+          maker_fill_ratio?: number | null
+          maker_fills?: number
+          paired_cpp_under_100_pct?: number | null
+          paired_cpp_under_100_shares?: number
+          run_id?: string | null
+          taker_fills?: number
+          total_paired_shares?: number
           ts?: number
         }
         Relationships: []
@@ -452,6 +716,57 @@ export type Database = {
           side?: string
           status?: string
           ts?: number
+        }
+        Relationships: []
+      }
+      hedge_skip_logs: {
+        Row: {
+          asset: string
+          best_ask: number | null
+          best_bid: number | null
+          correlation_id: string | null
+          created_at: string
+          id: string
+          market_id: string
+          projected_cpp: number | null
+          reason_code: string
+          run_id: string | null
+          seconds_remaining: number | null
+          side_not_hedged: string
+          ts: number
+          unpaired_shares: number | null
+        }
+        Insert: {
+          asset: string
+          best_ask?: number | null
+          best_bid?: number | null
+          correlation_id?: string | null
+          created_at?: string
+          id?: string
+          market_id: string
+          projected_cpp?: number | null
+          reason_code: string
+          run_id?: string | null
+          seconds_remaining?: number | null
+          side_not_hedged: string
+          ts: number
+          unpaired_shares?: number | null
+        }
+        Update: {
+          asset?: string
+          best_ask?: number | null
+          best_bid?: number | null
+          correlation_id?: string | null
+          created_at?: string
+          id?: string
+          market_id?: string
+          projected_cpp?: number | null
+          reason_code?: string
+          run_id?: string | null
+          seconds_remaining?: number | null
+          side_not_hedged?: string
+          ts?: number
+          unpaired_shares?: number | null
         }
         Relationships: []
       }
@@ -734,6 +1049,57 @@ export type Database = {
           up_price_at_close?: number | null
           up_token_id?: string | null
           updated_at?: string
+        }
+        Relationships: []
+      }
+      mtm_snapshots: {
+        Row: {
+          asset: string
+          book_ready_down: boolean
+          book_ready_up: boolean
+          combined_mid: number | null
+          confidence: string
+          created_at: string
+          down_mid: number | null
+          fallback_used: string | null
+          id: string
+          market_id: string
+          run_id: string | null
+          ts: number
+          unrealized_pnl: number | null
+          up_mid: number | null
+        }
+        Insert: {
+          asset: string
+          book_ready_down?: boolean
+          book_ready_up?: boolean
+          combined_mid?: number | null
+          confidence?: string
+          created_at?: string
+          down_mid?: number | null
+          fallback_used?: string | null
+          id?: string
+          market_id: string
+          run_id?: string | null
+          ts: number
+          unrealized_pnl?: number | null
+          up_mid?: number | null
+        }
+        Update: {
+          asset?: string
+          book_ready_down?: boolean
+          book_ready_up?: boolean
+          combined_mid?: number | null
+          confidence?: string
+          created_at?: string
+          down_mid?: number | null
+          fallback_used?: string | null
+          id?: string
+          market_id?: string
+          run_id?: string | null
+          ts?: number
+          unrealized_pnl?: number | null
+          up_mid?: number | null
         }
         Relationships: []
       }
@@ -1541,6 +1907,54 @@ export type Database = {
           up_bid?: number | null
           up_mid?: number | null
           up_shares?: number
+        }
+        Relationships: []
+      }
+      state_reconciliation_results: {
+        Row: {
+          account_down: number
+          account_up: number
+          action_taken: string | null
+          created_at: string
+          delta_invested: number | null
+          delta_shares: number
+          id: string
+          local_down: number
+          local_up: number
+          market_id: string
+          reconciliation_result: string
+          run_id: string | null
+          ts: number
+        }
+        Insert: {
+          account_down?: number
+          account_up?: number
+          action_taken?: string | null
+          created_at?: string
+          delta_invested?: number | null
+          delta_shares?: number
+          id?: string
+          local_down?: number
+          local_up?: number
+          market_id: string
+          reconciliation_result: string
+          run_id?: string | null
+          ts: number
+        }
+        Update: {
+          account_down?: number
+          account_up?: number
+          action_taken?: string | null
+          created_at?: string
+          delta_invested?: number | null
+          delta_shares?: number
+          id?: string
+          local_down?: number
+          local_up?: number
+          market_id?: string
+          reconciliation_result?: string
+          run_id?: string | null
+          ts?: number
         }
         Relationships: []
       }
