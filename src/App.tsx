@@ -15,6 +15,7 @@ import DataLogging from "./pages/DataLogging";
 import Observability from "./pages/Observability";
 import BotHealth from "./pages/BotHealth";
 import Reconcile from "./pages/Reconcile";
+import V26Dashboard from "./pages/V26Dashboard";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -44,6 +45,7 @@ const App = () => (
           <Route path="/observability" element={<Observability />} />
           <Route path="/bot-health" element={<BotHealth />} />
           <Route path="/reconcile" element={<Reconcile />} />
+          <Route path="/v26" element={<V26Dashboard />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>
