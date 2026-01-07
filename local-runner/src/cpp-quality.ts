@@ -1,18 +1,26 @@
 /**
- * cpp-quality.ts - Rev D.1 CPP-First Inventory Strategy
- * =========================================================
+ * cpp-quality.ts - Rev D.2 SENIOR STRATEGY DIRECTIVE — CPP-FIRST INVARIANTS
+ * ==========================================================================
  * 
- * CONTEXT: Losses are caused by structurally bad CPP, not by skew or low pairing rate.
+ * CORE PRINCIPLE: Eliminate structural loss ("CPP leakage") by enforcing hard 
+ * economic invariants. The bot must NEVER:
+ * - Buy guaranteed-negative-EV pairs (CPP ≥ 0.99)
+ * - "Fix" skew by worsening CPP
+ * - Take actions based on unreliable inventory state
+ * - Trade just to appear active
  * 
- * GOAL: PREVENT bad trades from being entered or expanded.
+ * The strategy must converge toward:
+ * - Gabagool22-style patience
+ * - Maker-first accumulation
+ * - Hedge quality over hedge speed
+ * - CPP < 0.99 as the PRIMARY success metric
  * 
- * Core philosophy:
- * - Inventory-based pair arbitrage
- * - Maker-first, patient execution
- * - No SELL for skew correction
- * - No force-hedging
- * - Tolerate skew and time risk
- * - CPP quality is the primary invariant
+ * NON-NEGOTIABLE INVARIANTS:
+ * 1. CPP DOMINANCE: If projected CPP ≥ 0.99 → DO NOTHING
+ * 2. NO EXPENSIVE MINORITY BUYS: Never buy expensive side to reduce skew
+ * 3. STATE TRUST GATE: Freeze market if inventory state is untrusted
+ * 
+ * This is a STRATEGIC correction, not a tuning exercise.
  * 
  * PRIORITIES:
  * 1. Pre-entry CPP feasibility (maker-based)
@@ -23,9 +31,9 @@
  * 6. Observability metrics
  * 
  * NON-GOALS:
- * - No SELL for skew correction
+ * - No SELL for skew correction (default = HOLD)
  * - No forced pairing via taker orders
- * - No absolute leg price caps
+ * - No trading just to appear active
  */
 
 import { saveBotEvent } from './backend.js';
@@ -35,28 +43,44 @@ import { saveBotEvent } from './backend.js';
 // ============================================================
 
 export const CPP_QUALITY_CONFIG = {
-  // PRIORITY 1: Pre-entry CPP feasibility (MAKER-based)
-  entryCppMax: 0.98,             // projectedCPP_maker must be <= this
+  // ==========================================================================
+  // REV D.2 SENIOR STRATEGY DIRECTIVE — CPP-FIRST INVARIANTS
+  // ==========================================================================
+  // CORE PRINCIPLE: If projected CPP ≥ 0.99, DO NOTHING. No exceptions.
+  // Holding imperfect skew is ALWAYS preferable to locking in negative EV.
+  // ==========================================================================
+  
+  // INVARIANT 1 — CPP DOMINANCE (HARD GATE)
+  // If projected CPP (gross, incl. worst-case fees) ≥ 0.99 → DO NOTHING
+  entryCppMax: 0.99,             // projectedCPP_maker must be < this (was 0.98)
   
   // PRIORITY 2: Combination-based price guard
-  maxCombinedCppSoft: 0.98,      // soft limit - allow only micro sizing
-  maxCombinedCppHard: 1.00,      // hard limit - block completely
+  maxCombinedCppSoft: 0.97,      // soft limit - allow only micro sizing (tightened)
+  maxCombinedCppHard: 0.99,      // hard limit - block completely (was 1.00)
   
   // PRIORITY 3: CPP activity state thresholds
-  cppNormalMax: 1.00,            // cpp < 1.00 = NORMAL
-  cppHedgeOnlyMax: 1.02,         // 1.00 <= cpp < 1.02 = HEDGE_ONLY
-                                 // cpp >= 1.02 = HOLD_ONLY
+  cppNormalMax: 0.99,            // cpp < 0.99 = NORMAL (was 1.00)
+  cppHedgeOnlyMax: 1.01,         // 0.99 <= cpp < 1.01 = HEDGE_ONLY (was 1.02)
+                                 // cpp >= 1.01 = HOLD_ONLY (no trading, wait expiry)
   
-  // PRIORITY 4: Hedge & accumulate
+  // PRIORITY 4: Hedge & accumulate (Gabagool-style patience)
   hedgeChunkShares: { min: 3, max: 5 },      // Maker-first hedge chunks
   hedgeRestTimeMs: { min: 30000, max: 60000 }, // Orders may rest 30-60 seconds
   
-  // PRIORITY 5: Entry sizing
+  // PRIORITY 5: Entry sizing (micro-accumulation)
   initialEntryShares: { min: 5, max: 10 },
-  maxCppForAdds: 0.98,           // Only allow adds if cpp < this
+  maxCppForAdds: 0.97,           // Only allow adds if cpp < this (tightened from 0.98)
   
   // Maker price estimation (spread offset from mid)
   makerSpreadOffset: 0.01,       // Assume maker can get 1¢ better than ask
+  
+  // INVARIANT 2 — NO EXPENSIVE MINORITY BUYS
+  // Bot must NEVER buy the more expensive side solely to reduce skew
+  blockExpensiveMinorityBuys: true,
+  expensiveSideThreshold: 0.55,  // If minority side ask > 55¢, block buying it
+  
+  // INVARIANT 3 — STATE TRUST GATE (placeholder for inventory sync checks)
+  requireTrustedState: true,
   
   // Logging
   logThrottleMs: 5000,
@@ -855,6 +879,79 @@ export function isAccumulateAllowed(params: {
   };
 }
 
+// ============================================================
+// REV D.2: INVARIANT 2 — NO EXPENSIVE MINORITY BUYS
+// ============================================================
+
+/**
+ * INVARIANT 2: The bot must NEVER buy the more expensive side solely to reduce skew.
+ * 
+ * Example: UP = 0.15, DOWN = 0.85
+ * → Buying DOWN is forbidden, even if skewed toward UP.
+ * 
+ * Skew may persist. Loss must not be locked in.
+ */
+export function isExpensiveMinorityBuyBlocked(params: {
+  marketId: string;
+  asset: string;
+  buySide: Side;
+  buyPrice: number;
+  upAsk: number;
+  downAsk: number;
+  upShares: number;
+  downShares: number;
+  runId?: string;
+  cfg?: typeof CPP_QUALITY_CONFIG;
+}): { blocked: boolean; reason: string } {
+  const { 
+    marketId, asset, buySide, buyPrice, upAsk, downAsk, 
+    upShares, downShares, runId, cfg = CPP_QUALITY_CONFIG 
+  } = params;
+  
+  // Only check if this config is enabled
+  if (!cfg.blockExpensiveMinorityBuys) {
+    return { blocked: false, reason: 'EXPENSIVE_MINORITY_CHECK_DISABLED' };
+  }
+  
+  const sideAnalysis = analyzeSides(upShares, downShares);
+  
+  // If buying minority side AND it's expensive → BLOCK
+  if (buySide === sideAnalysis.minoritySide) {
+    const minorityAsk = buySide === 'UP' ? upAsk : downAsk;
+    
+    if (minorityAsk > cfg.expensiveSideThreshold) {
+      const now = Date.now();
+      console.log(`🚫 [CPP_QUALITY] EXPENSIVE_MINORITY_BUY_BLOCKED: ${asset} ${marketId.slice(0, 8)}`);
+      console.log(`   Cannot buy ${buySide} at ${minorityAsk.toFixed(4)} > threshold ${cfg.expensiveSideThreshold}`);
+      console.log(`   This would worsen CPP. Skew must persist.`);
+      
+      saveBotEvent({
+        event_type: 'EXPENSIVE_MINORITY_BUY_BLOCKED',
+        asset,
+        market_id: marketId,
+        ts: now,
+        run_id: runId,
+        reason_code: 'INVARIANT_2_VIOLATION',
+        data: {
+          buy_side: buySide,
+          minority_side: sideAnalysis.minoritySide,
+          minority_ask: minorityAsk,
+          threshold: cfg.expensiveSideThreshold,
+          up_shares: upShares,
+          down_shares: downShares,
+        },
+      }).catch(() => {});
+      
+      return {
+        blocked: true,
+        reason: `EXPENSIVE_MINORITY_BLOCKED: ${buySide} ask=${minorityAsk.toFixed(4)} > ${cfg.expensiveSideThreshold}`,
+      };
+    }
+  }
+  
+  return { blocked: false, reason: 'MINORITY_BUY_OK' };
+}
+
 /**
  * Check if adding to position is allowed (for initial sizing adds).
  * Only if cpp < maxCppForAdds AND projected CPP still <= entryCppMax.
@@ -1066,6 +1163,9 @@ export const CppQuality = {
   getActivityState: getCppActivityState,
   isEntryAllowed: isEntryAllowedByActivityState,
   isHedgeAllowed: isHedgeAllowedByActivityState,
+  
+  // REV D.2: Invariant 2 - No expensive minority buys
+  isExpensiveMinorityBuyBlocked,
   
   // Priority 4: Hedge & accumulate
   getHedgeTarget,

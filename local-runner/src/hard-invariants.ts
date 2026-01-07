@@ -1,36 +1,34 @@
 /**
- * hard-invariants.ts - v7.2.7 REV C.4.1 HARD INVARIANTS + CONCURRENCY SAFETY
- * ==========================================================================
- * Implements ABSOLUTE guards that MUST hold for every order:
+ * hard-invariants.ts - v7.2.8 REV D.2 SENIOR STRATEGY DIRECTIVE
+ * ==============================================================
+ * Implements ABSOLUTE guards that MUST hold for every order.
  * 
+ * CORE PRINCIPLE: Behave like a patient market maker, not a nervous trader.
+ * If the choice is between doing nothing vs locking in a bad trade → DO NOTHING.
+ * 
+ * NON-NEGOTIABLE INVARIANTS:
+ * 
+ * INVARIANT 1 — CPP DOMINANCE
+ * If projected CPP (gross, incl. worst-case fees) ≥ 0.99 → DO NOTHING
+ * No exceptions. Holding imperfect skew is ALWAYS preferable to locking in negative EV.
+ * 
+ * INVARIANT 2 — NO EXPENSIVE MINORITY BUYS
+ * The bot must NEVER buy the more expensive side solely to reduce skew.
+ * Example: UP = 0.15, DOWN = 0.85 → Buying DOWN is forbidden, even if skewed.
+ * Skew may persist. Loss must not be locked in.
+ * 
+ * INVARIANT 3 — STATE TRUST GATE
+ * If inventory state is not trusted (cache vs account mismatch, unresolved drift,
+ * missing fills) → Market is FROZEN (observe-only).
+ * Trading on wrong state is worse than not trading.
+ * 
+ * Additional guards:
  * A) HARD POSITION CAP ENFORCEMENT via ExposureLedger
- *    - EFFECTIVE EXPOSURE = position + open + pending shares
- *    - effectiveUp <= maxSharesPerSide (100)
- *    - effectiveDown <= maxSharesPerSide (100)
- *    - total <= maxTotalSharesPerMarket (200)
- * 
  * B) ONE-SIDED FREEZE ADDS
- *    - After first fill creates ONE_SIDED, no more BUY on dominant side
- *    - Only HEDGE or SELL/UNWIND allowed
- * 
  * C) CPP METRICS: PAIRED-ONLY
- *    - cppPairedOnlyCents = avgUpPriceCents + avgDownPriceCents
- *    - No CPP-based emergency when paired=0
- * 
  * D) SINGLE ORDER GATEWAY
- *    - ALL order placements MUST go through placeOrderWithCaps()
- *    - This function is the ONLY allowed entry point
- *    - Direct placeOrder() calls are FORBIDDEN
- * 
  * E) EXPOSURE LEDGER (v7.2.6)
- *    - Tracks position, open orders, and pending orders per market/side
- *    - Cap checks use EFFECTIVE EXPOSURE to prevent race conditions
- *    - Ledger updated on: place, ack, fill, cancel, reject
- * 
  * F) CONCURRENCY SAFETY (v7.2.7 REV C.4.1)
- *    - Per-market mutex to prevent concurrent order placement
- *    - Burst limiter (max 6 orders/min, min 2s interval)
- *    - Halt on invariant breach (cancel orders + suspend market)
  * 
  * These invariants are checked IMMEDIATELY BEFORE any order placement.
  * NO CODE PATH MAY BYPASS THESE CHECKS.
@@ -59,7 +57,7 @@ import {
 import { tryAcquire, forceRelease, getMutexStats, type AcquireResult } from './market-mutex.js';
 import { checkBurstLimit, recordOrderPlacement, clearBurstState, getBurstStats, BURST_LIMITER_CONFIG } from './burst-limiter.js';
 
-// Rev D: CPP Quality imports
+// Rev D.2: CPP Quality imports (SENIOR STRATEGY DIRECTIVE)
 import {
   CppQuality,
   checkCppFeasibility,
@@ -67,8 +65,11 @@ import {
   getCppActivityState,
   isEntryAllowedByActivityState,
   isHedgeAllowedByActivityState,
+  isExpensiveMinorityBuyBlocked,
+  analyzeSides,
   CPP_QUALITY_CONFIG,
   type CppActivityState,
+  type Side as CppSide,
 } from './cpp-quality.js';
 
 // ============================================================
@@ -1216,7 +1217,7 @@ async function placeOrderWithCapsInner(
         asset,
         side: outcome,
         currentAvgPrice,
-        oppositeSideAsk,
+        hedgePrice: oppositeSideAsk,
         runId,
       });
       
@@ -1234,6 +1235,40 @@ async function placeOrderWithCapsInner(
         return {
           success: false,
           error: `COMBINATION_GUARD_BLOCKED: ${combinationCheck.reason}`,
+          failureReason: 'cap_blocked',
+        };
+      }
+    }
+    
+    // Rev D.2 INVARIANT 2: No expensive minority buys
+    // Block buying the minority side if it's too expensive (would worsen CPP)
+    if (hasOrderbookData) {
+      const expensiveCheck = isExpensiveMinorityBuyBlocked({
+        marketId,
+        asset,
+        buySide: outcome,
+        buyPrice: ctx.entryPrice!,
+        upAsk: ctx.upAsk!,
+        downAsk: ctx.downAsk!,
+        upShares: currentUpShares,
+        downShares: currentDownShares,
+        runId,
+      });
+      
+      if (expensiveCheck.blocked) {
+        logOrderAttempt({
+          marketId,
+          asset,
+          side: ledgerSide,
+          reqQty: order.size,
+          decision: 'block',
+          reason: expensiveCheck.reason,
+          runId,
+        });
+        
+        return {
+          success: false,
+          error: `INVARIANT_2_BLOCKED: ${expensiveCheck.reason}`,
           failureReason: 'cap_blocked',
         };
       }
