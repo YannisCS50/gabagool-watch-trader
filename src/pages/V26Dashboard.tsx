@@ -1120,146 +1120,68 @@ export default function V26Dashboard() {
           })}
         </div>
 
-        {/* Timing Analysis: Before vs After Open */}
+        {/* Timing Analysis: Before vs After Open - Compact */}
         <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base flex items-center gap-2">
-              <Clock className="h-4 w-4" /> Timing Analysis: Vóór vs. Ná Open
-            </CardTitle>
-            <CardDescription>
-              Vergelijking van win rate voor trades die vóór market open gevuld zijn vs. ná open
-            </CardDescription>
+          <CardHeader className="pb-2 pt-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <Clock className="h-3.5 w-3.5" /> Timing: Vóór vs. Ná Open
+              </CardTitle>
+              {timingAnalysis.pValue !== null && (
+                <Badge 
+                  variant="outline" 
+                  className={`text-xs ${timingAnalysis.pValue < 0.05 ? 'bg-green-500/10 text-green-500 border-green-500/20' : timingAnalysis.pValue < 0.1 ? 'bg-yellow-500/10 text-yellow-500 border-yellow-500/20' : ''}`}
+                >
+                  p={timingAnalysis.pValue < 0.001 ? '<0.001' : timingAnalysis.pValue.toFixed(3)}
+                  {timingAnalysis.pValue < 0.01 ? ' ★★★' : timingAnalysis.pValue < 0.05 ? ' ★★' : timingAnalysis.pValue < 0.1 ? ' ★' : ''}
+                </Badge>
+              )}
+            </div>
           </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-2 gap-4">
+          <CardContent className="pt-0 pb-3">
+            <div className="grid grid-cols-2 gap-2">
               {/* Before Open */}
-              <div className={`rounded-lg p-4 border-2 ${timingAnalysis.beforeOpen.winRate >= timingAnalysis.afterOpen.winRate && timingAnalysis.beforeOpen.count >= 3 ? 'border-green-500/50 bg-green-500/5' : 'border-muted bg-muted/30'}`}>
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <span className="text-lg">⏪</span>
-                    <span className="font-bold">Vóór Open</span>
-                  </div>
+              <div className={`rounded-md p-2 border ${timingAnalysis.beforeOpen.winRate >= timingAnalysis.afterOpen.winRate && timingAnalysis.beforeOpen.count >= 3 ? 'border-green-500/40 bg-green-500/5' : 'border-muted bg-muted/20'}`}>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-medium">⏪ Vóór Open</span>
                   {timingAnalysis.beforeOpen.winRate >= timingAnalysis.afterOpen.winRate && timingAnalysis.beforeOpen.count >= 3 && (
-                    <Badge className="bg-green-500/10 text-green-500 border-green-500/20">Best</Badge>
+                    <span className="text-[10px] text-green-500">Best</span>
                   )}
                 </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <span className="text-xs text-muted-foreground">Win Rate</span>
-                    <div className={`text-2xl font-bold ${timingAnalysis.beforeOpen.winRate >= 50 ? 'text-green-500' : 'text-red-500'}`}>
-                      {timingAnalysis.beforeOpen.winRate.toFixed(1)}%
-                    </div>
-                  </div>
-                  <div>
-                    <span className="text-xs text-muted-foreground">Trades</span>
-                    <div className="text-2xl font-bold">
-                      {timingAnalysis.beforeOpen.count}
-                    </div>
-                  </div>
-                  <div>
-                    <span className="text-xs text-muted-foreground">Record</span>
-                    <div className="font-mono">
-                      <span className="text-green-500">{timingAnalysis.beforeOpen.wins}W</span>
-                      <span className="text-muted-foreground"> / </span>
-                      <span className="text-red-500">{timingAnalysis.beforeOpen.losses}L</span>
-                    </div>
-                  </div>
-                  <div>
-                    <span className="text-xs text-muted-foreground">P&L</span>
-                    <div className={`font-mono font-bold ${timingAnalysis.beforeOpen.pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                      {timingAnalysis.beforeOpen.pnl >= 0 ? '+' : ''}${timingAnalysis.beforeOpen.pnl.toFixed(2)}
-                    </div>
-                  </div>
+                <div className="flex items-baseline gap-2">
+                  <span className={`text-lg font-bold ${timingAnalysis.beforeOpen.winRate >= 50 ? 'text-green-500' : 'text-red-500'}`}>
+                    {timingAnalysis.beforeOpen.winRate.toFixed(0)}%
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {timingAnalysis.beforeOpen.wins}W/{timingAnalysis.beforeOpen.losses}L
+                  </span>
+                  <span className={`text-xs font-mono ${timingAnalysis.beforeOpen.pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                    {timingAnalysis.beforeOpen.pnl >= 0 ? '+' : ''}${timingAnalysis.beforeOpen.pnl.toFixed(0)}
+                  </span>
                 </div>
               </div>
 
               {/* After Open */}
-              <div className={`rounded-lg p-4 border-2 ${timingAnalysis.afterOpen.winRate > timingAnalysis.beforeOpen.winRate && timingAnalysis.afterOpen.count >= 3 ? 'border-green-500/50 bg-green-500/5' : 'border-muted bg-muted/30'}`}>
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <span className="text-lg">⏩</span>
-                    <span className="font-bold">Ná Open</span>
-                  </div>
+              <div className={`rounded-md p-2 border ${timingAnalysis.afterOpen.winRate > timingAnalysis.beforeOpen.winRate && timingAnalysis.afterOpen.count >= 3 ? 'border-green-500/40 bg-green-500/5' : 'border-muted bg-muted/20'}`}>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-medium">⏩ Ná Open</span>
                   {timingAnalysis.afterOpen.winRate > timingAnalysis.beforeOpen.winRate && timingAnalysis.afterOpen.count >= 3 && (
-                    <Badge className="bg-green-500/10 text-green-500 border-green-500/20">Best</Badge>
+                    <span className="text-[10px] text-green-500">Best</span>
                   )}
                 </div>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <span className="text-xs text-muted-foreground">Win Rate</span>
-                    <div className={`text-2xl font-bold ${timingAnalysis.afterOpen.winRate >= 50 ? 'text-green-500' : 'text-red-500'}`}>
-                      {timingAnalysis.afterOpen.winRate.toFixed(1)}%
-                    </div>
-                  </div>
-                  <div>
-                    <span className="text-xs text-muted-foreground">Trades</span>
-                    <div className="text-2xl font-bold">
-                      {timingAnalysis.afterOpen.count}
-                    </div>
-                  </div>
-                  <div>
-                    <span className="text-xs text-muted-foreground">Record</span>
-                    <div className="font-mono">
-                      <span className="text-green-500">{timingAnalysis.afterOpen.wins}W</span>
-                      <span className="text-muted-foreground"> / </span>
-                      <span className="text-red-500">{timingAnalysis.afterOpen.losses}L</span>
-                    </div>
-                  </div>
-                  <div>
-                    <span className="text-xs text-muted-foreground">P&L</span>
-                    <div className={`font-mono font-bold ${timingAnalysis.afterOpen.pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                      {timingAnalysis.afterOpen.pnl >= 0 ? '+' : ''}${timingAnalysis.afterOpen.pnl.toFixed(2)}
-                    </div>
-                  </div>
+                <div className="flex items-baseline gap-2">
+                  <span className={`text-lg font-bold ${timingAnalysis.afterOpen.winRate >= 50 ? 'text-green-500' : 'text-red-500'}`}>
+                    {timingAnalysis.afterOpen.winRate.toFixed(0)}%
+                  </span>
+                  <span className="text-xs text-muted-foreground">
+                    {timingAnalysis.afterOpen.wins}W/{timingAnalysis.afterOpen.losses}L
+                  </span>
+                  <span className={`text-xs font-mono ${timingAnalysis.afterOpen.pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                    {timingAnalysis.afterOpen.pnl >= 0 ? '+' : ''}${timingAnalysis.afterOpen.pnl.toFixed(0)}
+                  </span>
                 </div>
               </div>
             </div>
-            
-            {/* P-value and significance indicator */}
-            {timingAnalysis.pValue !== null && (
-              <div className="mt-4 flex items-center justify-center gap-3 p-3 bg-muted/30 rounded-lg">
-                <div className="text-center">
-                  <span className="text-xs text-muted-foreground">p-waarde (two-tailed z-test)</span>
-                  <div className={`text-lg font-mono font-bold ${timingAnalysis.pValue < 0.05 ? 'text-green-500' : timingAnalysis.pValue < 0.1 ? 'text-yellow-500' : 'text-muted-foreground'}`}>
-                    {timingAnalysis.pValue < 0.001 ? '< 0.001' : timingAnalysis.pValue.toFixed(3)}
-                  </div>
-                </div>
-                <div className="h-8 w-px bg-border" />
-                <div className="text-center">
-                  <span className="text-xs text-muted-foreground">Significantie</span>
-                  <div className="flex items-center gap-1">
-                    {timingAnalysis.pValue < 0.01 ? (
-                      <Badge className="bg-green-500/10 text-green-500 border-green-500/20">★★★ p &lt; 0.01</Badge>
-                    ) : timingAnalysis.pValue < 0.05 ? (
-                      <Badge className="bg-green-500/10 text-green-500 border-green-500/20">★★ p &lt; 0.05</Badge>
-                    ) : timingAnalysis.pValue < 0.1 ? (
-                      <Badge className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20">★ p &lt; 0.1</Badge>
-                    ) : (
-                      <Badge variant="outline" className="text-muted-foreground">Niet significant</Badge>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-            
-            {/* Insight summary */}
-            {(timingAnalysis.beforeOpen.count >= 3 || timingAnalysis.afterOpen.count >= 3) && (
-              <div className="mt-4 p-3 bg-muted/30 rounded-lg text-sm">
-                {timingAnalysis.pValue !== null && timingAnalysis.pValue < 0.05 ? (
-                  timingAnalysis.beforeOpen.winRate > timingAnalysis.afterOpen.winRate ? (
-                    <p>📊 <strong>Statistisch significant!</strong> Trades vóór open hebben een significant hogere win rate (+{(timingAnalysis.beforeOpen.winRate - timingAnalysis.afterOpen.winRate).toFixed(1)}%, p={timingAnalysis.pValue.toFixed(3)}). Overweeg om eerder te kopen.</p>
-                  ) : (
-                    <p>📊 <strong>Statistisch significant!</strong> Trades ná open hebben een significant hogere win rate (+{(timingAnalysis.afterOpen.winRate - timingAnalysis.beforeOpen.winRate).toFixed(1)}%, p={timingAnalysis.pValue.toFixed(3)}). De huidige timing werkt goed.</p>
-                  )
-                ) : timingAnalysis.beforeOpen.winRate > timingAnalysis.afterOpen.winRate && timingAnalysis.beforeOpen.count >= 3 ? (
-                  <p>📊 <strong>Inzicht:</strong> Trades vóór open hebben een hogere win rate (+{(timingAnalysis.beforeOpen.winRate - timingAnalysis.afterOpen.winRate).toFixed(1)}%), maar niet statistisch significant{timingAnalysis.pValue !== null ? ` (p=${timingAnalysis.pValue.toFixed(3)})` : ''}. Meer data nodig.</p>
-                ) : timingAnalysis.afterOpen.winRate > timingAnalysis.beforeOpen.winRate && timingAnalysis.afterOpen.count >= 3 ? (
-                  <p>📊 <strong>Inzicht:</strong> Trades ná open hebben een hogere win rate (+{(timingAnalysis.afterOpen.winRate - timingAnalysis.beforeOpen.winRate).toFixed(1)}%), maar niet statistisch significant{timingAnalysis.pValue !== null ? ` (p=${timingAnalysis.pValue.toFixed(3)})` : ''}. Meer data nodig.</p>
-                ) : (
-                  <p>📊 <strong>Inzicht:</strong> Geen significant verschil tussen vóór en ná open ({timingAnalysis.beforeOpen.count + timingAnalysis.afterOpen.count} trades geanalyseerd).</p>
-                )}
-              </div>
-            )}
           </CardContent>
         </Card>
 
