@@ -514,7 +514,7 @@ export default function V26Dashboard() {
         market: marketTitle,
         marketSlug: trade.market_slug,
         asset: trade.asset,
-        time: format(startTimeUTC, 'dd-MM HH:mm'),
+        time: format(startTimeET, 'dd-MM h:mma').replace(':00', '') + ' ET',
         shares: filledShares,
         pricePerShare: avgPrice,
         total: cost,
