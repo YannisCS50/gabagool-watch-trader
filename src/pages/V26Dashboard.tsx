@@ -394,14 +394,10 @@ export default function V26Dashboard() {
         }
       }
 
-      let pnl: number | null = null;
+      // Use stored pnl from database - don't estimate
+      let pnl: number | null = tradePnl;
       
-      if (tradePnl !== null) {
-        pnl = tradePnl;
-        totalPnl += pnl;
-        perAsset[trade.asset].pnl += pnl;
-      } else if (isFilled && result === 'LOSS') {
-        pnl = -cost;
+      if (pnl !== null) {
         totalPnl += pnl;
         perAsset[trade.asset].pnl += pnl;
       }
