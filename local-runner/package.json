@@ -4,6 +4,7 @@
   "description": "Local/VPS runner for Polymarket live trading - bypasses Cloudflare blocks",
   "type": "module",
   "scripts": {
+    "start": "tsx src/v26/runner.ts",
     "auth:check": "node clob_auth_check.js",
     "auth:order-smoketest": "node clob_order_auth_smoketest.js",
     "v26": "tsx src/v26/runner.ts",
