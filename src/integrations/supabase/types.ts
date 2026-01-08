@@ -2090,6 +2090,39 @@ export type Database = {
         }
         Relationships: []
       }
+      v26_asset_config: {
+        Row: {
+          asset: string
+          created_at: string
+          enabled: boolean
+          id: string
+          price: number
+          shares: number
+          side: string
+          updated_at: string
+        }
+        Insert: {
+          asset: string
+          created_at?: string
+          enabled?: boolean
+          id?: string
+          price?: number
+          shares?: number
+          side?: string
+          updated_at?: string
+        }
+        Update: {
+          asset?: string
+          created_at?: string
+          enabled?: boolean
+          id?: string
+          price?: number
+          shares?: number
+          side?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       v26_config: {
         Row: {
           assets: string[]

@@ -34,7 +34,7 @@ export const V26_CONFIG = {
 };
 
 // Re-export config loader
-export { runtimeConfig, loadV26Config, getV26Config, checkAndReloadConfig, getConfigVersion } from './config-loader.js';
+export { runtimeConfig, loadV26Config, getV26Config, checkAndReloadConfig, getConfigVersion, getAssetConfig, getEnabledAssets } from './config-loader.js';
 
 // Types
 export interface V26Market {
