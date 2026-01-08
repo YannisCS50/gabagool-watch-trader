@@ -3,14 +3,15 @@ import { useNavigate } from 'react-router-dom';
 import { 
   ArrowLeft, RefreshCw, TrendingUp, TrendingDown, DollarSign, Target, Percent,
   Clock, Zap, BarChart3, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ExternalLink,
-  Upload, CheckCircle2, XCircle, Flame, Activity
+  Upload, CheckCircle2, XCircle, Flame, Activity, Wifi, WifiOff
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { supabase } from '@/integrations/supabase/client';
-import { format } from 'date-fns';
+import { format, formatDistanceToNow } from 'date-fns';
+import { nl } from 'date-fns/locale';
 import { toZonedTime } from 'date-fns-tz';
 
 interface V26Trade {
@@ -126,6 +127,19 @@ export default function V26Dashboard() {
     beforeOpen: { wins: 0, losses: 0, winRate: 0, count: 0, pnl: 0 },
     afterOpen: { wins: 0, losses: 0, winRate: 0, count: 0, pnl: 0 },
     pValue: null as number | null,
+  });
+  const [runnerStatus, setRunnerStatus] = useState<{
+    isOnline: boolean;
+    lastHeartbeat: string | null;
+    runnerId: string | null;
+    marketsCount: number;
+    version: string | null;
+  }>({
+    isOnline: false,
+    lastHeartbeat: null,
+    runnerId: null,
+    marketsCount: 0,
+    version: null,
   });
 
   // Two-proportion z-test for comparing win rates
@@ -642,18 +656,55 @@ export default function V26Dashboard() {
     }
   };
 
+  const fetchRunnerStatus = async () => {
+    const { data, error } = await supabase
+      .from('runner_heartbeats')
+      .select('*')
+      .eq('runner_type', 'v26')
+      .order('last_heartbeat', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (data && !error) {
+      const lastHeartbeat = new Date(data.last_heartbeat);
+      const now = new Date();
+      const diffMs = now.getTime() - lastHeartbeat.getTime();
+      const isOnline = diffMs < 60000; // Online if heartbeat within last 60 seconds
+      
+      setRunnerStatus({
+        isOnline,
+        lastHeartbeat: data.last_heartbeat,
+        runnerId: data.runner_id,
+        marketsCount: data.markets_count || 0,
+        version: data.version,
+      });
+    } else {
+      setRunnerStatus({
+        isOnline: false,
+        lastHeartbeat: null,
+        runnerId: null,
+        marketsCount: 0,
+        version: null,
+      });
+    }
+  };
+
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 5 * 60 * 1000);
+    fetchRunnerStatus();
+    const dataInterval = setInterval(fetchData, 5 * 60 * 1000);
+    const statusInterval = setInterval(fetchRunnerStatus, 10000); // Check status every 10s
     
     const channel = supabase
       .channel('v26_realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'v26_trades' }, fetchData)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'strike_prices' }, fetchData)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'runner_heartbeats' }, fetchRunnerStatus)
       .subscribe();
 
     return () => {
-      clearInterval(interval);
+      clearInterval(dataInterval);
+      clearInterval(statusInterval);
       supabase.removeChannel(channel);
     };
   }, []);
@@ -750,6 +801,32 @@ export default function V26Dashboard() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {/* Runner Status Indicator */}
+            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${
+              runnerStatus.isOnline 
+                ? 'bg-green-500/10 text-green-500 border border-green-500/20' 
+                : 'bg-red-500/10 text-red-500 border border-red-500/20'
+            }`}>
+              {runnerStatus.isOnline ? (
+                <>
+                  <Wifi className="h-4 w-4" />
+                  <span>Online</span>
+                  {runnerStatus.marketsCount > 0 && (
+                    <span className="text-xs opacity-70">({runnerStatus.marketsCount} markets)</span>
+                  )}
+                </>
+              ) : (
+                <>
+                  <WifiOff className="h-4 w-4" />
+                  <span>Offline</span>
+                  {runnerStatus.lastHeartbeat && (
+                    <span className="text-xs opacity-70">
+                      ({formatDistanceToNow(new Date(runnerStatus.lastHeartbeat), { addSuffix: true, locale: nl })})
+                    </span>
+                  )}
+                </>
+              )}
+            </div>
             <Button 
               variant="outline" 
               size="sm" 
