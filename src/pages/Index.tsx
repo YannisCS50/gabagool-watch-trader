@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
-import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, AlertCircle } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, AlertCircle, Zap, ArrowRight } from 'lucide-react';
 import { StatCard } from '@/components/StatCard';
 import { TradesTable } from '@/components/TradesTable';
 import { LiveOpenPositions } from '@/components/StrategyAnalysis';
@@ -121,6 +122,31 @@ const Index = () => {
 
       {/* Main Content */}
       <main className="container mx-auto px-4 py-6 space-y-6">
+        {/* V26 Strategy Dashboard Link */}
+        <Link to="/v26" className="block">
+          <div className="relative overflow-hidden rounded-xl border border-primary/30 bg-gradient-to-r from-primary/10 via-primary/5 to-transparent p-4 hover:border-primary/50 hover:from-primary/20 transition-all group cursor-pointer">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-primary/20 flex items-center justify-center">
+                  <Zap className="w-5 h-5 text-primary" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-lg flex items-center gap-2">
+                    V26 Pre-Market Strategy
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-primary/20 text-primary font-mono">
+                      NEW
+                    </span>
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    Automated DOWN-only pre-market trading bot dashboard
+                  </p>
+                </div>
+              </div>
+              <ArrowRight className="w-5 h-5 text-primary group-hover:translate-x-1 transition-transform" />
+            </div>
+          </div>
+        </Link>
+
         {/* Live Runner Status Widget */}
         <LiveRunnerStatus />
 
