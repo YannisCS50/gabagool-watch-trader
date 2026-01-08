@@ -778,6 +778,22 @@ export default function V26Dashboard() {
   useEffect(() => {
     fetchData();
     fetchRunnerStatus();
+    
+    // Auto-sync fills every 2 minutes (silently in background)
+    const autoSync = async () => {
+      try {
+        console.log('[V26Dashboard] Auto-syncing fills...');
+        await supabase.functions.invoke('v26-sync-fills');
+        await fetchData(); // Refresh after sync
+      } catch (err) {
+        console.error('[V26Dashboard] Auto-sync error:', err);
+      }
+    };
+    
+    // Initial sync after 10 seconds, then every 2 minutes
+    const initialSyncTimeout = setTimeout(autoSync, 10 * 1000);
+    const syncInterval = setInterval(autoSync, 2 * 60 * 1000);
+    
     const dataInterval = setInterval(fetchData, 5 * 60 * 1000);
     const statusInterval = setInterval(fetchRunnerStatus, 10000); // Check status every 10s
     
@@ -789,6 +805,8 @@ export default function V26Dashboard() {
       .subscribe();
 
     return () => {
+      clearTimeout(initialSyncTimeout);
+      clearInterval(syncInterval);
       clearInterval(dataInterval);
       clearInterval(statusInterval);
       supabase.removeChannel(channel);
