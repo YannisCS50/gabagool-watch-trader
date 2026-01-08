@@ -14,6 +14,7 @@ export interface V26DbConfig {
   max_lead_time_sec: number;
   min_lead_time_sec: number;
   cancel_after_start_sec: number;
+  config_version: number;
   updated_at: string;
 }
 
@@ -27,7 +28,11 @@ export const runtimeConfig = {
   maxLeadTimeSec: V26_CONFIG.maxLeadTimeSec,
   minLeadTimeSec: V26_CONFIG.minLeadTimeSec,
   cancelAfterStartSec: V26_CONFIG.cancelAfterStartSec,
+  configVersion: 0,
 };
+
+// Track current version for hot-reload detection
+let currentConfigVersion = 0;
 
 /**
  * Fetch config from database via runner-proxy
@@ -72,7 +77,7 @@ export async function fetchV26Config(): Promise<V26DbConfig | null> {
 /**
  * Load config from database and update runtime config
  */
-export async function loadV26Config(): Promise<void> {
+export async function loadV26Config(): Promise<boolean> {
   const dbConfig = await fetchV26Config();
 
   if (dbConfig) {
@@ -84,6 +89,8 @@ export async function loadV26Config(): Promise<void> {
     runtimeConfig.maxLeadTimeSec = dbConfig.max_lead_time_sec;
     runtimeConfig.minLeadTimeSec = dbConfig.min_lead_time_sec;
     runtimeConfig.cancelAfterStartSec = dbConfig.cancel_after_start_sec;
+    runtimeConfig.configVersion = dbConfig.config_version;
+    currentConfigVersion = dbConfig.config_version;
 
     console.log('[V26 Config] Loaded from database:');
     console.log(`  - Enabled: ${runtimeConfig.enabled}`);
@@ -92,9 +99,48 @@ export async function loadV26Config(): Promise<void> {
     console.log(`  - Price: $${runtimeConfig.price}`);
     console.log(`  - Assets: ${runtimeConfig.assets.join(', ')}`);
     console.log(`  - Timing: place ${runtimeConfig.maxLeadTimeSec}s-${runtimeConfig.minLeadTimeSec}s before, cancel ${runtimeConfig.cancelAfterStartSec}s after`);
+    console.log(`  - Config Version: ${runtimeConfig.configVersion}`);
+    return true;
   } else {
     console.log('[V26 Config] Using hardcoded defaults');
+    return false;
   }
+}
+
+/**
+ * Check if config has changed and reload if needed
+ * Returns true if config was reloaded
+ */
+export async function checkAndReloadConfig(): Promise<boolean> {
+  const dbConfig = await fetchV26Config();
+  
+  if (!dbConfig) return false;
+  
+  // Check if version changed
+  if (dbConfig.config_version === currentConfigVersion) {
+    return false; // No change
+  }
+
+  // Version changed - reload!
+  console.log('');
+  console.log('🔄 ═══════════════════════════════════════════════════════════');
+  console.log(`   CONFIG CHANGED! v${currentConfigVersion} → v${dbConfig.config_version}`);
+  console.log('═══════════════════════════════════════════════════════════════');
+  
+  await loadV26Config();
+  
+  console.log('');
+  console.log('╔══════════════════════════════════════════════════════════════╗');
+  console.log('║  📊 NEW ACTIVE CONFIGURATION                                  ║');
+  console.log('╠══════════════════════════════════════════════════════════════╣');
+  console.log(`║  Enabled:  ${runtimeConfig.enabled ? 'YES ✅' : 'NO ❌'}`.padEnd(66) + '║');
+  console.log(`║  Side:     ${runtimeConfig.side} @ $${runtimeConfig.price}`.padEnd(66) + '║');
+  console.log(`║  Shares:   ${runtimeConfig.shares} per trade`.padEnd(66) + '║');
+  console.log(`║  Assets:   ${runtimeConfig.assets.join(', ')}`.padEnd(66) + '║');
+  console.log('╚══════════════════════════════════════════════════════════════╝');
+  console.log('');
+  
+  return true;
 }
 
 /**
@@ -102,4 +148,11 @@ export async function loadV26Config(): Promise<void> {
  */
 export function getV26Config() {
   return runtimeConfig;
+}
+
+/**
+ * Get current config version
+ */
+export function getConfigVersion(): number {
+  return currentConfigVersion;
 }

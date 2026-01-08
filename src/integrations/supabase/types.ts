@@ -2094,6 +2094,7 @@ export type Database = {
         Row: {
           assets: string[]
           cancel_after_start_sec: number
+          config_version: number
           created_at: string
           enabled: boolean
           id: string
@@ -2107,6 +2108,7 @@ export type Database = {
         Insert: {
           assets?: string[]
           cancel_after_start_sec?: number
+          config_version?: number
           created_at?: string
           enabled?: boolean
           id?: string
@@ -2120,6 +2122,7 @@ export type Database = {
         Update: {
           assets?: string[]
           cancel_after_start_sec?: number
+          config_version?: number
           created_at?: string
           enabled?: boolean
           id?: string
