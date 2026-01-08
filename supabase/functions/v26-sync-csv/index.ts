@@ -172,8 +172,9 @@ serve(async (req) => {
       const tokenAmount = parseFloat(row.tokenAmount);
       const usdcAmount = parseFloat(row.usdcAmount);
 
+      // Always aggregate all fills for the same market (not just same timestamp)
       const existing = fillLookup.get(marketSlug);
-      if (!existing || fillTs > existing.fillTimestampSec) {
+      if (!existing) {
         fillLookup.set(marketSlug, {
           fillTimestampSec: fillTs,
           tokenAmount,
@@ -184,9 +185,14 @@ serve(async (req) => {
           eventStartTime,
           eventEndTime,
         });
-      } else if (fillTs === existing.fillTimestampSec) {
+      } else {
+        // Aggregate: add shares and usdc, keep latest timestamp
         existing.tokenAmount += tokenAmount;
         existing.usdcAmount += usdcAmount;
+        if (fillTs > existing.fillTimestampSec) {
+          existing.fillTimestampSec = fillTs;
+          existing.txHash = row.hash;
+        }
       }
     }
 
@@ -298,12 +304,13 @@ serve(async (req) => {
       const fillOffsetSec = fill.fillTimestampSec - Math.floor(eventStartMs / 1000);
 
       if (trade) {
-        // UPDATE existing trade
+        // UPDATE existing trade (notional is a generated column, don't update it)
+        const avgFillPrice = fill.usdcAmount / fill.tokenAmount;
         const updateData: Record<string, any> = {
           fill_matched_at: fillMatchedAt,
           filled_shares: Math.round(fill.tokenAmount),
+          avg_fill_price: Math.round(avgFillPrice * 100) / 100,
           status: 'filled',
-          notional: fill.usdcAmount,
         };
 
         const { error: updateError } = await supabase
