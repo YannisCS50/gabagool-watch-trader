@@ -125,7 +125,49 @@ export default function V26Dashboard() {
   const [timingAnalysis, setTimingAnalysis] = useState({
     beforeOpen: { wins: 0, losses: 0, winRate: 0, count: 0, pnl: 0 },
     afterOpen: { wins: 0, losses: 0, winRate: 0, count: 0, pnl: 0 },
+    pValue: null as number | null,
   });
+
+  // Two-proportion z-test for comparing win rates
+  const calculatePValue = (
+    wins1: number, n1: number, 
+    wins2: number, n2: number
+  ): number | null => {
+    if (n1 < 2 || n2 < 2) return null;
+    
+    const p1 = wins1 / n1;
+    const p2 = wins2 / n2;
+    const pPooled = (wins1 + wins2) / (n1 + n2);
+    
+    // Pooled standard error
+    const se = Math.sqrt(pPooled * (1 - pPooled) * (1/n1 + 1/n2));
+    if (se === 0) return null;
+    
+    // Z-score
+    const z = (p1 - p2) / se;
+    
+    // Two-tailed p-value using normal CDF approximation
+    const pValue = 2 * (1 - normalCDF(Math.abs(z)));
+    return pValue;
+  };
+
+  // Standard normal CDF approximation (Abramowitz and Stegun)
+  const normalCDF = (x: number): number => {
+    const a1 = 0.254829592;
+    const a2 = -0.284496736;
+    const a3 = 1.421413741;
+    const a4 = -1.453152027;
+    const a5 = 1.061405429;
+    const p = 0.3275911;
+    
+    const sign = x < 0 ? -1 : 1;
+    x = Math.abs(x) / Math.sqrt(2);
+    
+    const t = 1.0 / (1.0 + p * x);
+    const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+    
+    return 0.5 * (1.0 + sign * y);
+  };
 
   const fetchData = async () => {
     setLoading(true);
@@ -455,6 +497,14 @@ export default function V26Dashboard() {
     afterOpenStats.winRate = afterOpenStats.wins + afterOpenStats.losses > 0 
       ? (afterOpenStats.wins / (afterOpenStats.wins + afterOpenStats.losses)) * 100 
       : 0;
+    
+    // Calculate p-value for timing difference
+    const timingPValue = calculatePValue(
+      beforeOpenStats.wins, 
+      beforeOpenStats.wins + beforeOpenStats.losses,
+      afterOpenStats.wins, 
+      afterOpenStats.wins + afterOpenStats.losses
+    );
 
     // Calculate streaks
     let currentStreak = 0;
@@ -515,7 +565,7 @@ export default function V26Dashboard() {
     setTrades(logs);
     setAssetStats(perAsset);
     setFillTimeStats(fillTimeStatsCalc);
-    setTimingAnalysis({ beforeOpen: beforeOpenStats, afterOpen: afterOpenStats });
+    setTimingAnalysis({ beforeOpen: beforeOpenStats, afterOpen: afterOpenStats, pValue: timingPValue });
     setStats({
       totalBets: logs.length,
       filledBets: totalFilled,
@@ -1165,13 +1215,46 @@ export default function V26Dashboard() {
               </div>
             </div>
             
+            {/* P-value and significance indicator */}
+            {timingAnalysis.pValue !== null && (
+              <div className="mt-4 flex items-center justify-center gap-3 p-3 bg-muted/30 rounded-lg">
+                <div className="text-center">
+                  <span className="text-xs text-muted-foreground">p-waarde (two-tailed z-test)</span>
+                  <div className={`text-lg font-mono font-bold ${timingAnalysis.pValue < 0.05 ? 'text-green-500' : timingAnalysis.pValue < 0.1 ? 'text-yellow-500' : 'text-muted-foreground'}`}>
+                    {timingAnalysis.pValue < 0.001 ? '< 0.001' : timingAnalysis.pValue.toFixed(3)}
+                  </div>
+                </div>
+                <div className="h-8 w-px bg-border" />
+                <div className="text-center">
+                  <span className="text-xs text-muted-foreground">Significantie</span>
+                  <div className="flex items-center gap-1">
+                    {timingAnalysis.pValue < 0.01 ? (
+                      <Badge className="bg-green-500/10 text-green-500 border-green-500/20">★★★ p &lt; 0.01</Badge>
+                    ) : timingAnalysis.pValue < 0.05 ? (
+                      <Badge className="bg-green-500/10 text-green-500 border-green-500/20">★★ p &lt; 0.05</Badge>
+                    ) : timingAnalysis.pValue < 0.1 ? (
+                      <Badge className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20">★ p &lt; 0.1</Badge>
+                    ) : (
+                      <Badge variant="outline" className="text-muted-foreground">Niet significant</Badge>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+            
             {/* Insight summary */}
             {(timingAnalysis.beforeOpen.count >= 3 || timingAnalysis.afterOpen.count >= 3) && (
               <div className="mt-4 p-3 bg-muted/30 rounded-lg text-sm">
-                {timingAnalysis.beforeOpen.winRate > timingAnalysis.afterOpen.winRate && timingAnalysis.beforeOpen.count >= 3 ? (
-                  <p>📊 <strong>Inzicht:</strong> Trades vóór market open hebben een hogere win rate (+{(timingAnalysis.beforeOpen.winRate - timingAnalysis.afterOpen.winRate).toFixed(1)}%). Overweeg om eerder te kopen.</p>
+                {timingAnalysis.pValue !== null && timingAnalysis.pValue < 0.05 ? (
+                  timingAnalysis.beforeOpen.winRate > timingAnalysis.afterOpen.winRate ? (
+                    <p>📊 <strong>Statistisch significant!</strong> Trades vóór open hebben een significant hogere win rate (+{(timingAnalysis.beforeOpen.winRate - timingAnalysis.afterOpen.winRate).toFixed(1)}%, p={timingAnalysis.pValue.toFixed(3)}). Overweeg om eerder te kopen.</p>
+                  ) : (
+                    <p>📊 <strong>Statistisch significant!</strong> Trades ná open hebben een significant hogere win rate (+{(timingAnalysis.afterOpen.winRate - timingAnalysis.beforeOpen.winRate).toFixed(1)}%, p={timingAnalysis.pValue.toFixed(3)}). De huidige timing werkt goed.</p>
+                  )
+                ) : timingAnalysis.beforeOpen.winRate > timingAnalysis.afterOpen.winRate && timingAnalysis.beforeOpen.count >= 3 ? (
+                  <p>📊 <strong>Inzicht:</strong> Trades vóór open hebben een hogere win rate (+{(timingAnalysis.beforeOpen.winRate - timingAnalysis.afterOpen.winRate).toFixed(1)}%), maar niet statistisch significant{timingAnalysis.pValue !== null ? ` (p=${timingAnalysis.pValue.toFixed(3)})` : ''}. Meer data nodig.</p>
                 ) : timingAnalysis.afterOpen.winRate > timingAnalysis.beforeOpen.winRate && timingAnalysis.afterOpen.count >= 3 ? (
-                  <p>📊 <strong>Inzicht:</strong> Trades ná market open hebben een hogere win rate (+{(timingAnalysis.afterOpen.winRate - timingAnalysis.beforeOpen.winRate).toFixed(1)}%). De huidige timing werkt goed.</p>
+                  <p>📊 <strong>Inzicht:</strong> Trades ná open hebben een hogere win rate (+{(timingAnalysis.afterOpen.winRate - timingAnalysis.beforeOpen.winRate).toFixed(1)}%), maar niet statistisch significant{timingAnalysis.pValue !== null ? ` (p=${timingAnalysis.pValue.toFixed(3)})` : ''}. Meer data nodig.</p>
                 ) : (
                   <p>📊 <strong>Inzicht:</strong> Geen significant verschil tussen vóór en ná open ({timingAnalysis.beforeOpen.count + timingAnalysis.afterOpen.count} trades geanalyseerd).</p>
                 )}
