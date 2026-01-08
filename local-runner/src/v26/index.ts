@@ -13,7 +13,7 @@
 export const V26_VERSION = '26.0.0';
 export const V26_NAME = 'Loveable V26 - Pre-Market DOWN Trader';
 
-// Configuration
+// Default Configuration (can be overridden by database)
 export const V26_CONFIG = {
   // Which assets to trade
   assets: ['BTC', 'ETH', 'SOL', 'XRP'] as const,
@@ -33,6 +33,9 @@ export const V26_CONFIG = {
   enabled: true,
 };
 
+// Re-export config loader
+export { runtimeConfig, loadV26Config, getV26Config } from './config-loader.js';
+
 // Types
 export interface V26Market {
   id: string;
@@ -41,6 +44,7 @@ export interface V26Market {
   eventStartTime: Date;
   eventEndTime: Date;
   downTokenId: string;
+  upTokenId?: string;
 }
 
 export interface V26Trade {
@@ -51,7 +55,7 @@ export interface V26Trade {
   eventStartTime: Date;
   eventEndTime: Date;
   orderId?: string;
-  side: 'DOWN';
+  side: 'UP' | 'DOWN';
   price: number;
   shares: number;
   status: 'pending' | 'placed' | 'filled' | 'partial' | 'cancelled' | 'expired';

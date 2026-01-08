@@ -2090,6 +2090,48 @@ export type Database = {
         }
         Relationships: []
       }
+      v26_config: {
+        Row: {
+          assets: string[]
+          cancel_after_start_sec: number
+          created_at: string
+          enabled: boolean
+          id: string
+          max_lead_time_sec: number
+          min_lead_time_sec: number
+          price: number
+          shares: number
+          side: string
+          updated_at: string
+        }
+        Insert: {
+          assets?: string[]
+          cancel_after_start_sec?: number
+          created_at?: string
+          enabled?: boolean
+          id?: string
+          max_lead_time_sec?: number
+          min_lead_time_sec?: number
+          price?: number
+          shares?: number
+          side?: string
+          updated_at?: string
+        }
+        Update: {
+          assets?: string[]
+          cancel_after_start_sec?: number
+          created_at?: string
+          enabled?: boolean
+          id?: string
+          max_lead_time_sec?: number
+          min_lead_time_sec?: number
+          price?: number
+          shares?: number
+          side?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       v26_trades: {
         Row: {
           asset: string

@@ -23,6 +23,8 @@ import {
   isMarketEligible,
   calculateV26Pnl,
   logV26Status,
+  loadV26Config,
+  getV26Config,
 } from './index.js';
 import { saveV26Trade, updateV26Trade, hasExistingTrade, getV26Oracle } from './backend.js';
 import type { FillLog, SettlementLog, SnapshotLog } from '../logger.js';
@@ -429,12 +431,14 @@ async function fetchUpcomingMarkets(): Promise<V26Market[]> {
     const now = Date.now();
     const upcoming: V26Market[] = [];
 
+    const cfg = getV26Config();
     for (const m of result.markets) {
-      // Only enabled assets
-      if (!V26_CONFIG.assets.includes(m.asset as any)) continue;
+      // Only enabled assets (from dynamic config)
+      if (!cfg.assets.includes(m.asset)) continue;
       
-      // Must have token IDs
-      if (!m.downTokenId) continue;
+      // Must have token IDs (for configured side)
+      const neededToken = cfg.side === 'DOWN' ? m.downTokenId : m.upTokenId;
+      if (!neededToken) continue;
       
       const startTime = new Date(m.eventStartTime).getTime();
       const endTime = new Date(m.eventEndTime).getTime();
@@ -453,6 +457,7 @@ async function fetchUpcomingMarkets(): Promise<V26Market[]> {
         eventStartTime: new Date(m.eventStartTime),
         eventEndTime: new Date(m.eventEndTime),
         downTokenId: m.downTokenId,
+        upTokenId: m.upTokenId,
       });
     }
 
@@ -471,7 +476,8 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
   const { market, trade } = scheduled;
   const key = `${market.id}:${market.asset}`;
   
-  log(`🎯 [${market.asset}] Placing V26 order: ${V26_CONFIG.shares} shares @ $${V26_CONFIG.price}`);
+  const cfg = getV26Config();
+  log(`🎯 [${market.asset}] Placing V26 order: ${cfg.shares} shares @ $${cfg.price} (${cfg.side})`);
   
   try {
     // STEP 1: Check if we already have a trade for this market (DB check for duplicate prevention)
@@ -504,11 +510,13 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
 
     // STEP 4: Place the actual order
     const placedAtMs = Date.now();
+    // Get the correct token based on configured side
+    const tokenId = cfg.side === 'DOWN' ? market.downTokenId : market.upTokenId;
     const result = await placeOrder({
-      tokenId: market.downTokenId,
+      tokenId,
       side: 'BUY',
-      price: V26_CONFIG.price,
-      size: V26_CONFIG.shares,
+      price: cfg.price,
+      size: cfg.shares,
     });
 
     if (!result?.success || !result.orderId) {
@@ -538,7 +546,7 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
         // Log the fill
         void logV26Fill(market, trade, filledNow, trade.avgFillPrice);
         // Log decision snapshot for the fill
-        void logV26DecisionSnapshot(market, trade, 'ENTRY', 'IMMEDIATE_FILL', 'DOWN');
+        void logV26DecisionSnapshot(market, trade, 'ENTRY', 'IMMEDIATE_FILL', cfg.side);
       }
     }
 
@@ -561,11 +569,11 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
       return;
     }
 
-    // Schedule cancellation: 30s AFTER market start
-    const cancelTime = market.eventStartTime.getTime() + (V26_CONFIG.cancelAfterStartSec * 1000);
+    // Schedule cancellation: X seconds AFTER market start (from config)
+    const cancelTime = market.eventStartTime.getTime() + (cfg.cancelAfterStartSec * 1000);
     const msUntilCancel = Math.max(0, cancelTime - Date.now());
 
-    log(`⏰ [${market.asset}] Cancel scheduled in ${Math.round(msUntilCancel / 1000)}s (30s after market start)`);
+    log(`⏰ [${market.asset}] Cancel scheduled in ${Math.round(msUntilCancel / 1000)}s (${cfg.cancelAfterStartSec}s after market start)`);
 
     scheduled.cancelTimeout = setTimeout(async () => {
       await checkAndCancelOrder(scheduled);
@@ -811,20 +819,21 @@ function scheduleMarket(market: V26Market): void {
     return;
   }
 
+  const cfg = getV26Config();
   const now = Date.now();
   const startTime = market.eventStartTime.getTime();
   const secondsUntilStart = (startTime - now) / 1000;
 
   // Too late: less than minLeadTime before start
-  if (secondsUntilStart < V26_CONFIG.minLeadTimeSec) {
+  if (secondsUntilStart < cfg.minLeadTimeSec) {
     log(`⚠️ [${market.asset}] Too late to schedule (${Math.round(secondsUntilStart)}s until start): ${market.slug}`);
     completedMarkets.add(key);
     return;
   }
 
   // Within window: place immediately if within maxLeadTime, otherwise schedule
-  const placeImmediately = secondsUntilStart <= V26_CONFIG.maxLeadTimeSec;
-  const msUntilPlace = placeImmediately ? 0 : (startTime - (V26_CONFIG.maxLeadTimeSec * 1000)) - now;
+  const placeImmediately = secondsUntilStart <= cfg.maxLeadTimeSec;
+  const msUntilPlace = placeImmediately ? 0 : (startTime - (cfg.maxLeadTimeSec * 1000)) - now;
 
   const trade: V26Trade = {
     asset: market.asset,
@@ -832,9 +841,9 @@ function scheduleMarket(market: V26Market): void {
     marketSlug: market.slug,
     eventStartTime: market.eventStartTime,
     eventEndTime: market.eventEndTime,
-    side: 'DOWN',
-    price: V26_CONFIG.price,
-    shares: V26_CONFIG.shares,
+    side: cfg.side,
+    price: cfg.price,
+    shares: cfg.shares,
     status: 'pending',
     filledShares: 0,
     runId: RUN_ID,
@@ -850,9 +859,9 @@ function scheduleMarket(market: V26Market): void {
 
   const startTimeStr = market.eventStartTime.toISOString().slice(11, 16);
   if (placeImmediately) {
-    log(`📅 [${market.asset}] Placing NOW for ${startTimeStr} (${Math.round(secondsUntilStart)}s until start)`);
+    log(`📅 [${market.asset}] Placing NOW for ${startTimeStr} (${Math.round(secondsUntilStart)}s until start) - ${cfg.side} @ $${cfg.price}`);
   } else {
-    log(`📅 [${market.asset}] Scheduled for ${startTimeStr} (order in ${Math.round(msUntilPlace / 1000)}s)`);
+    log(`📅 [${market.asset}] Scheduled for ${startTimeStr} (order in ${Math.round(msUntilPlace / 1000)}s) - ${cfg.side} @ $${cfg.price}`);
   }
 }
 
@@ -900,9 +909,10 @@ async function pollFillsForOpenOrders(): Promise<void> {
         tradesCount++;
 
         // Log the fill immediately!
-        log(`🔄 [${market.asset}] Fill detected via polling: +${newFillQty} shares (total: ${newFilledShares}/${V26_CONFIG.shares})`);
+        const cfg = getV26Config();
+        log(`🔄 [${market.asset}] Fill detected via polling: +${newFillQty} shares (total: ${newFilledShares}/${cfg.shares})`);
         void logV26Fill(market, trade, newFillQty, trade.avgFillPrice);
-        void logV26DecisionSnapshot(market, trade, 'ENTRY', 'POLL_FILL_DETECTED', 'DOWN');
+        void logV26DecisionSnapshot(market, trade, 'ENTRY', 'POLL_FILL_DETECTED', cfg.side);
 
         // Update DB
         if (trade.id) {
@@ -969,18 +979,34 @@ async function printStatus(): Promise<void> {
 async function main(): Promise<void> {
   console.log('');
   console.log('╔══════════════════════════════════════════════════════════════╗');
-  console.log('║        🎯 V26 LOVEABLE - PRE-MARKET DOWN TRADER              ║');
+  console.log('║        🎯 V26 LOVEABLE - PRE-MARKET TRADER                   ║');
   console.log('╠══════════════════════════════════════════════════════════════╣');
   console.log(`║  Version:  ${V26_VERSION.padEnd(49)}║`);
   console.log(`║  Strategy: ${V26_NAME.slice(0, 49).padEnd(49)}║`);
   console.log(`║  Run ID:   ${RUN_ID.padEnd(49)}║`);
-  console.log('╠══════════════════════════════════════════════════════════════╣');
-  console.log(`║  Side:     DOWN @ $${V26_CONFIG.price}`.padEnd(66) + '║');
-  console.log(`║  Shares:   ${V26_CONFIG.shares} per trade`.padEnd(66) + '║');
-  console.log(`║  Assets:   ${V26_CONFIG.assets.join(', ')}`.padEnd(66) + '║');
-  console.log(`║  Timeout:  ${V26_CONFIG.cancelAfterSec}s after market start`.padEnd(66) + '║');
   console.log('╚══════════════════════════════════════════════════════════════╝');
   console.log('');
+
+  // Load config from database (with fallback to hardcoded defaults)
+  log('📋 Loading config from database...');
+  await loadV26Config();
+  const cfg = getV26Config();
+  
+  console.log('╔══════════════════════════════════════════════════════════════╗');
+  console.log('║  📊 ACTIVE CONFIGURATION                                      ║');
+  console.log('╠══════════════════════════════════════════════════════════════╣');
+  console.log(`║  Enabled:  ${cfg.enabled ? 'YES ✅' : 'NO ❌'}`.padEnd(66) + '║');
+  console.log(`║  Side:     ${cfg.side} @ $${cfg.price}`.padEnd(66) + '║');
+  console.log(`║  Shares:   ${cfg.shares} per trade`.padEnd(66) + '║');
+  console.log(`║  Assets:   ${cfg.assets.join(', ')}`.padEnd(66) + '║');
+  console.log(`║  Timing:   Place ${cfg.maxLeadTimeSec}s-${cfg.minLeadTimeSec}s before, cancel ${cfg.cancelAfterStartSec}s after`.padEnd(66) + '║');
+  console.log('╚══════════════════════════════════════════════════════════════╝');
+  console.log('');
+
+  if (!cfg.enabled) {
+    log('⚠️ Strategy is DISABLED in config. Exiting.');
+    process.exit(0);
+  }
 
   // VPN check
   if (config.vpn.required) {
