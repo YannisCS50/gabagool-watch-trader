@@ -187,23 +187,26 @@ async function fetchOrderFromClob(
   creds: { key: string; secret: string; passphrase: string }
 ): Promise<ClobOrder | null> {
   try {
-    const requestPath = `/order/${orderId}`;
+    // Correct endpoint per docs: GET /data/order/{order_hash}
+    const requestPath = `/data/order/${orderId}`;
     const headers = await createL2Headers(funderAddress, creds, 'GET', requestPath);
-    
+
     const response = await fetch(`${CLOB_BASE_URL}${requestPath}`, {
       method: 'GET',
       headers: { ...headers, 'Content-Type': 'application/json' },
     });
-    
+
     if (!response.ok) {
       const text = await response.text();
-      console.log(`[v26-sync-fills] CLOB order ${orderId.slice(0, 10)}... returned ${response.status}: ${text.slice(0, 100)}`);
+      console.log(
+        `[v26-sync-fills] CLOB order ${orderId.slice(0, 10)}... returned ${response.status}: ${text.slice(0, 120)}`
+      );
       return null;
     }
-    
+
     const data = await response.json();
     // Response might be { order: {...} } or directly the order object
-    return data.order || data;
+    return (data?.order || data) as ClobOrder;
   } catch (error) {
     console.error(`[v26-sync-fills] Error fetching order ${orderId}:`, error);
     return null;
@@ -266,56 +269,92 @@ function extractFillInfo(order: ClobOrder): {
   return { status, filledShares: sizeMatched, avgFillPrice, matchedAt };
 }
 
-// Fetch public trades from Polymarket API for a given wallet + market
-async function fetchPublicTrades(
-  walletAddress: string,
-  marketSlug: string
-): Promise<Array<{ price: string; size: string; side: string; timestamp: string; outcome: string }>> {
+interface ClobTrade {
+  id: string;
+  market: string;
+  price: string;
+  size: string;
+  side: string; // buy | sell
+  outcome: string;
+  match_time: string; // ISO timestamp
+}
+
+async function fetchTradesFromClob(params: {
+  funderAddress: string;
+  creds: { key: string; secret: string; passphrase: string };
+  maker?: string;
+  taker?: string;
+  market: string;
+  after: number; // unix seconds
+  before: number; // unix seconds
+}): Promise<ClobTrade[]> {
   try {
-    // Use the Polymarket public trades endpoint (gamma API)
-    const url = `https://gamma-api.polymarket.com/trades?maker=${walletAddress}&limit=100`;
-    const response = await fetch(url);
-    
+    const qs = new URLSearchParams();
+    if (params.maker) qs.set('maker', params.maker);
+    if (params.taker) qs.set('taker', params.taker);
+    qs.set('market', params.market);
+    qs.set('after', String(params.after));
+    qs.set('before', String(params.before));
+
+    const requestPath = `/data/trades?${qs.toString()}`;
+    const headers = await createL2Headers(params.funderAddress, params.creds, 'GET', requestPath);
+
+    const response = await fetch(`${CLOB_BASE_URL}${requestPath}`, {
+      method: 'GET',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+    });
+
     if (!response.ok) {
-      console.log(`[v26-sync-fills] Public trades API returned ${response.status}`);
+      const text = await response.text();
+      console.log(`[v26-sync-fills] CLOB trades returned ${response.status}: ${text.slice(0, 120)}`);
       return [];
     }
-    
+
     const data = await response.json();
-    
-    // Filter trades for this specific market
-    const marketTrades = (data || []).filter((trade: { market: string }) => 
-      trade.market?.toLowerCase().includes(marketSlug.toLowerCase().replace(/-/g, ''))
-    );
-    
-    return marketTrades;
+    return Array.isArray(data) ? (data as ClobTrade[]) : ((data?.trades as ClobTrade[]) || []);
   } catch (error) {
-    console.error(`[v26-sync-fills] Error fetching public trades:`, error);
+    console.error('[v26-sync-fills] Error fetching trades:', error);
     return [];
   }
 }
 
-// Check fills via user activity endpoint (works for any wallet)
-async function fetchUserActivity(
-  walletAddress: string,
-  tokenId: string
-): Promise<Array<{ size: string; price: string; side: string; timestamp: number }>> {
-  try {
-    const url = `https://clob.polymarket.com/activity?user=${walletAddress}&asset_id=${tokenId}&limit=50`;
-    const response = await fetch(url, {
-      headers: { 'Content-Type': 'application/json' }
-    });
-    
-    if (!response.ok) {
-      return [];
+function aggregateTradesForOutcome(trades: ClobTrade[], wantedOutcome: string): {
+  filledSharesRaw: number;
+  filledShares: number;
+  avgFillPrice: number | null;
+  matchedAt: string | null;
+} {
+  const wanted = (wantedOutcome || '').trim().toUpperCase();
+  let totalShares = 0;
+  let totalValue = 0;
+  let latest: Date | null = null;
+
+  for (const t of trades) {
+    const outcome = (t.outcome || '').trim().toUpperCase();
+    if (outcome !== wanted) continue;
+
+    const size = parseFloat(t.size) || 0;
+    const price = parseFloat(t.price) || 0;
+
+    totalShares += size;
+    totalValue += size * price;
+
+    if (t.match_time) {
+      const mt = new Date(t.match_time);
+      if (!latest || mt > latest) latest = mt;
     }
-    
-    const data = await response.json();
-    return data?.activity || [];
-  } catch (error) {
-    console.error(`[v26-sync-fills] Error fetching user activity:`, error);
-    return [];
   }
+
+  const avgFillPrice = totalShares > 0 ? totalValue / totalShares : null;
+  // v26_trades.filled_shares is an integer column; round to nearest share.
+  const filledShares = Math.round(totalShares);
+
+  return {
+    filledSharesRaw: totalShares,
+    filledShares,
+    avgFillPrice,
+    matchedAt: latest ? latest.toISOString() : null,
+  };
 }
 
 serve(async (req) => {
