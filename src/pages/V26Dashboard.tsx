@@ -183,12 +183,16 @@ export default function V26Dashboard() {
     return 0.5 * (1.0 + sign * y);
   };
 
+  // V26 went live on January 7, 2026 at 16:00 ET (21:00 UTC)
+  const V26_GO_LIVE_DATE = '2026-01-07T21:00:00+00:00';
+
   const fetchData = async () => {
     setLoading(true);
 
     const tradesRes = await supabase
       .from('v26_trades')
       .select('*')
+      .gte('created_at', V26_GO_LIVE_DATE)
       .order('event_start_time', { ascending: false })
       .limit(500);
 
