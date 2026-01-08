@@ -328,7 +328,7 @@ export default function V26Dashboard() {
         totalFilled++;
         totalInvested += cost;
         perAsset[trade.asset].invested += cost;
-      } else if (tradeResult === 'DOWN') {
+      } else if (tradeResult === 'DOWN' || tradeResult === 'won') {
         result = 'WIN';
         totalWins++;
         totalFilled++;
@@ -336,7 +336,7 @@ export default function V26Dashboard() {
         perAsset[trade.asset].wins++;
         perAsset[trade.asset].invested += cost;
         settledResults.push('WIN');
-      } else if (tradeResult === 'UP') {
+      } else if (tradeResult === 'UP' || tradeResult === 'lost') {
         result = 'LOSS';
         totalLosses++;
         totalFilled++;
