@@ -51,11 +51,14 @@ let currentConfigVersion = 0;
  * Fetch config from database via runner-proxy
  */
 export async function fetchV26Config(): Promise<{ global: V26DbConfig; assets: V26AssetConfig[] } | null> {
-  const runnerProxyUrl = process.env.RUNNER_PROXY_URL;
-  const runnerSecret = process.env.RUNNER_SECRET;
+  // Hardcoded fallback for Lovable Cloud backend
+  const DEFAULT_PROXY_URL = 'https://iuzpdjplasndyvbzhlzd.supabase.co/functions/v1/runner-proxy';
+  
+  const runnerProxyUrl = process.env.RUNNER_PROXY_URL || DEFAULT_PROXY_URL;
+  const runnerSecret = process.env.RUNNER_SECRET || process.env.RUNNER_SHARED_SECRET;
 
-  if (!runnerProxyUrl || !runnerSecret) {
-    console.log('[V26 Config] No RUNNER_PROXY_URL or RUNNER_SECRET, using defaults');
+  if (!runnerSecret) {
+    console.log('[V26 Config] No RUNNER_SECRET or RUNNER_SHARED_SECRET found, using defaults');
     return null;
   }
 
