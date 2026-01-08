@@ -347,27 +347,36 @@ export default function V26Dashboard() {
       } else {
         const sideUpper = (trade.side ?? '').toUpperCase();
         const resultUpper = (tradeResult ?? '').toUpperCase();
-        const resultLower = (tradeResult ?? '').toLowerCase();
-        const hasResult = tradeResult !== null && tradeResult !== '';
 
-        // If backend already computed win/loss, trust it (even if status is still 'filled')
-        if (resultLower === 'won' || resultUpper === 'WIN') {
-          settleWin();
-        } else if (resultLower === 'lost' || resultUpper === 'LOSS') {
-          settleLoss();
+        // PRIORITY 1: Use PnL if available (most reliable source of truth)
+        if (tradePnl !== null) {
+          if (tradePnl > 0) settleWin();
+          else if (tradePnl < 0) settleLoss();
+          else {
+            // pnl === 0 is ambiguous, treat as pending unless market ended
+            if (isEnded) {
+              result = 'PENDING';
+              totalPending++;
+              addFilledAccounting();
+            } else {
+              result = 'LIVE';
+              totalLive++;
+              addFilledAccounting();
+            }
+          }
         }
-        // If backend stored the *winning side* (UP/DOWN), compare with our side
-        else if (resultUpper === 'UP' || resultUpper === 'DOWN') {
-          if (sideUpper && sideUpper === resultUpper) settleWin();
-          else settleLoss();
-        }
-        // Market not ended yet and no result -> LIVE
+        // PRIORITY 2: Market not ended yet -> LIVE
         else if (!isEnded) {
           result = 'LIVE';
           totalLive++;
           addFilledAccounting();
         }
-        // Fallback: infer winner from close-vs-strike delta, then compare with our side
+        // PRIORITY 3: Backend stored market winning side (UP/DOWN)
+        else if (resultUpper === 'UP' || resultUpper === 'DOWN') {
+          if (sideUpper && sideUpper === resultUpper) settleWin();
+          else settleLoss();
+        }
+        // PRIORITY 4: Fallback - infer winner from close-vs-strike delta
         else if (delta !== null) {
           if (delta === 0) {
             result = 'PENDING';
