@@ -1,6 +1,7 @@
-import { useMemo } from 'react';
+import { useMemo, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, AlertCircle, Zap, ArrowRight } from 'lucide-react';
+import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, AlertCircle, Zap, ArrowRight, CheckCircle2 } from 'lucide-react';
+import { supabase } from '@/integrations/supabase/client';
 import { StatCard } from '@/components/StatCard';
 import { TradesTable } from '@/components/TradesTable';
 import { LiveOpenPositions } from '@/components/StrategyAnalysis';
@@ -20,6 +21,31 @@ import { format } from 'date-fns';
 
 const Index = () => {
   const { trades, stats, positions, isLoading, scrape, isScraping } = useTrades('gabagool22');
+  const [v26Online, setV26Online] = useState(false);
+  const [v26TradesCount, setV26TradesCount] = useState(0);
+
+  // Fetch V26 runner status
+  useEffect(() => {
+    const fetchV26Status = async () => {
+      const { data } = await supabase
+        .from('runner_heartbeats')
+        .select('last_heartbeat, trades_count')
+        .eq('runner_type', 'v26')
+        .order('last_heartbeat', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      
+      if (data) {
+        const isOnline = new Date(data.last_heartbeat).getTime() > Date.now() - 60000;
+        setV26Online(isOnline);
+        setV26TradesCount(data.trades_count || 0);
+      }
+    };
+
+    fetchV26Status();
+    const interval = setInterval(fetchV26Status, 10000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Calculate arbitrage success rate client-side (same logic as StrategyDeepDive)
   const arbitrageWinRate = useMemo(() => {
@@ -124,25 +150,41 @@ const Index = () => {
       <main className="container mx-auto px-4 py-6 space-y-6">
         {/* V26 Strategy Dashboard Link */}
         <Link to="/v26" className="block">
-          <div className="relative overflow-hidden rounded-xl border border-primary/30 bg-gradient-to-r from-primary/10 via-primary/5 to-transparent p-4 hover:border-primary/50 hover:from-primary/20 transition-all group cursor-pointer">
+          <div className={`relative overflow-hidden rounded-xl border p-4 hover:border-primary/50 transition-all group cursor-pointer ${
+            v26Online 
+              ? 'border-emerald-500/30 bg-gradient-to-r from-emerald-500/10 via-emerald-500/5 to-transparent hover:from-emerald-500/20' 
+              : 'border-border/50 bg-gradient-to-r from-muted/30 via-muted/10 to-transparent'
+          }`}>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-lg bg-primary/20 flex items-center justify-center">
-                  <Zap className="w-5 h-5 text-primary" />
+                <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+                  v26Online ? 'bg-emerald-500/20' : 'bg-muted/50'
+                }`}>
+                  <Zap className={`w-5 h-5 ${v26Online ? 'text-emerald-400' : 'text-muted-foreground'}`} />
                 </div>
                 <div>
                   <h3 className="font-semibold text-lg flex items-center gap-2">
                     V26 Pre-Market Strategy
-                    <span className="text-xs px-2 py-0.5 rounded-full bg-primary/20 text-primary font-mono">
-                      NEW
-                    </span>
+                    {v26Online ? (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 font-mono flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" />
+                        ONLINE
+                      </span>
+                    ) : (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-destructive/20 text-destructive font-mono flex items-center gap-1">
+                        <AlertCircle className="w-3 h-3" />
+                        OFFLINE
+                      </span>
+                    )}
                   </h3>
                   <p className="text-sm text-muted-foreground">
-                    Automated DOWN-only pre-market trading bot dashboard
+                    Automated DOWN-only pre-market trading • {v26TradesCount} trades
                   </p>
                 </div>
               </div>
-              <ArrowRight className="w-5 h-5 text-primary group-hover:translate-x-1 transition-transform" />
+              <ArrowRight className={`w-5 h-5 group-hover:translate-x-1 transition-transform ${
+                v26Online ? 'text-emerald-400' : 'text-muted-foreground'
+              }`} />
             </div>
           </div>
         </Link>
