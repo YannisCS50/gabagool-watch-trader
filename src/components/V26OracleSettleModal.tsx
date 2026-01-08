@@ -34,12 +34,16 @@ export function V26OracleSettleModal({ open, onOpenChange, onSettled }: V26Oracl
 
   const fetchUnsettledTrades = async () => {
     setLoading(true);
+    
+    // Only show trades older than 45 minutes
+    const cutoffTime = new Date(Date.now() - 45 * 60 * 1000).toISOString();
+    
     const { data, error } = await supabase
       .from('v26_trades')
       .select('id, asset, market_slug, side, filled_shares, avg_fill_price, event_start_time, event_end_time, created_at')
       .eq('status', 'filled')
       .is('result', null)
-      .lt('event_end_time', new Date().toISOString()) // Only show trades where market has closed
+      .lt('event_end_time', cutoffTime)
       .order('event_end_time', { ascending: true });
 
     if (!error && data) {
