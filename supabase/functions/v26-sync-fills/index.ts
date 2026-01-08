@@ -266,6 +266,58 @@ function extractFillInfo(order: ClobOrder): {
   return { status, filledShares: sizeMatched, avgFillPrice, matchedAt };
 }
 
+// Fetch public trades from Polymarket API for a given wallet + market
+async function fetchPublicTrades(
+  walletAddress: string,
+  marketSlug: string
+): Promise<Array<{ price: string; size: string; side: string; timestamp: string; outcome: string }>> {
+  try {
+    // Use the Polymarket public trades endpoint (gamma API)
+    const url = `https://gamma-api.polymarket.com/trades?maker=${walletAddress}&limit=100`;
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      console.log(`[v26-sync-fills] Public trades API returned ${response.status}`);
+      return [];
+    }
+    
+    const data = await response.json();
+    
+    // Filter trades for this specific market
+    const marketTrades = (data || []).filter((trade: { market: string }) => 
+      trade.market?.toLowerCase().includes(marketSlug.toLowerCase().replace(/-/g, ''))
+    );
+    
+    return marketTrades;
+  } catch (error) {
+    console.error(`[v26-sync-fills] Error fetching public trades:`, error);
+    return [];
+  }
+}
+
+// Check fills via user activity endpoint (works for any wallet)
+async function fetchUserActivity(
+  walletAddress: string,
+  tokenId: string
+): Promise<Array<{ size: string; price: string; side: string; timestamp: number }>> {
+  try {
+    const url = `https://clob.polymarket.com/activity?user=${walletAddress}&asset_id=${tokenId}&limit=50`;
+    const response = await fetch(url, {
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+    if (!response.ok) {
+      return [];
+    }
+    
+    const data = await response.json();
+    return data?.activity || [];
+  } catch (error) {
+    console.error(`[v26-sync-fills] Error fetching user activity:`, error);
+    return [];
+  }
+}
+
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
@@ -285,9 +337,82 @@ serve(async (req) => {
       console.log('[v26-sync-fills] No POLYMARKET_PRIVATE_KEY - falling back to fill_logs only');
     }
 
+    // Get wallet address from bot_config
+    const { data: botConfig } = await supabase
+      .from('bot_config')
+      .select('polymarket_address')
+      .single();
+    
+    const walletAddress = botConfig?.polymarket_address;
+    console.log(`[v26-sync-fills] Using wallet: ${walletAddress?.slice(0, 10)}...`);
+
     // Fetch trades that need syncing (last 7 days, missing fill data or not final status)
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     
+    // STRATEGY 0: First sync trades WITHOUT order_id that are past their end time + 30 minutes
+    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    
+    const { data: noOrderIdTrades } = await supabase
+      .from('v26_trades')
+      .select('id, market_id, market_slug, side, shares, event_start_time, event_end_time, status, filled_shares')
+      .is('order_id', null)
+      .eq('status', 'placed')
+      .lt('event_end_time', thirtyMinutesAgo)
+      .gte('event_start_time', sevenDaysAgo)
+      .limit(20);
+    
+    console.log(`[v26-sync-fills] Found ${noOrderIdTrades?.length || 0} trades without order_id to check via fill_logs`);
+    
+    // For trades without order_id, check fill_logs by market_id + time window
+    for (const trade of noOrderIdTrades || []) {
+      const startTime = new Date(trade.event_start_time).getTime();
+      const endTime = new Date(trade.event_end_time).getTime();
+      
+      // Look for fills in this market during the event window
+      const { data: fills } = await supabase
+        .from('fill_logs')
+        .select('fill_qty, fill_price, ts, side')
+        .eq('market_id', trade.market_id)
+        .eq('side', trade.side === 'DOWN' ? 'SELL' : 'BUY')
+        .gte('ts', startTime - 60000) // 1 min before
+        .lte('ts', endTime + 60000);  // 1 min after
+      
+      if (fills && fills.length > 0) {
+        let totalShares = 0;
+        let totalValue = 0;
+        
+        for (const fill of fills) {
+          const qty = Number(fill.fill_qty) || 0;
+          const price = Number(fill.fill_price) || 0;
+          totalShares += qty;
+          totalValue += qty * price;
+        }
+        
+        const avgPrice = totalShares > 0 ? totalValue / totalShares : 0.48;
+        
+        console.log(`[v26-sync-fills] ✓ Found ${fills.length} fills for ${trade.market_slug} → ${totalShares} shares @ ${avgPrice.toFixed(3)}`);
+        
+        await supabase
+          .from('v26_trades')
+          .update({
+            status: 'filled',
+            filled_shares: totalShares,
+            avg_fill_price: avgPrice,
+            fill_matched_at: new Date().toISOString()
+          })
+          .eq('id', trade.id);
+      } else {
+        // No fills found - mark as cancelled
+        console.log(`[v26-sync-fills] ✗ No fills found for ${trade.market_slug} - marking as cancelled`);
+        
+        await supabase
+          .from('v26_trades')
+          .update({ status: 'cancelled' })
+          .eq('id', trade.id);
+      }
+    }
+    
+    // Continue with existing logic for trades WITH order_id
     const { data: trades, error: fetchError } = await supabase
       .from('v26_trades')
       .select('id, order_id, market_slug, event_start_time, event_end_time, status, filled_shares, avg_fill_price, fill_matched_at')
@@ -303,10 +428,22 @@ serve(async (req) => {
       });
     }
 
-    console.log(`[v26-sync-fills] Found ${trades?.length || 0} trades to sync`);
+    console.log(`[v26-sync-fills] Found ${trades?.length || 0} trades with order_id to sync`);
 
-    if (!trades || trades.length === 0) {
+    if ((!trades || trades.length === 0) && (!noOrderIdTrades || noOrderIdTrades.length === 0)) {
       return new Response(JSON.stringify({ success: true, synced: 0, failed: 0, source: 'none' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
+    }
+    
+    if (!trades || trades.length === 0) {
+      return new Response(JSON.stringify({ 
+        success: true, 
+        synced: noOrderIdTrades?.length || 0, 
+        failed: 0, 
+        source: 'fill_logs_by_market',
+        noOrderIdSynced: noOrderIdTrades?.length || 0
+      }), {
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       });
     }
