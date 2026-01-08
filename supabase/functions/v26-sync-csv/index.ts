@@ -234,10 +234,17 @@ serve(async (req) => {
       const eventStartTime = extractEventStartTime(row.marketName);
       if (!asset || !eventStartTime) continue;
 
-      const marketSlug = buildMarketSlug(asset, eventStartTime);
-      const settledTs = parseInt(row.timestamp);
       const payout = parseFloat(row.usdcAmount);
       const shares = parseFloat(row.tokenAmount);
+
+      // IGNORE bogus redeems with 0 payout and 0 shares (duplicate tx rows)
+      if (payout === 0 && shares === 0) {
+        console.log(`[v26-sync-csv] Ignoring 0/0 Redeem for: ${row.marketName}`);
+        continue;
+      }
+
+      const marketSlug = buildMarketSlug(asset, eventStartTime);
+      const settledTs = parseInt(row.timestamp);
 
       const existing = settlementLookup.get(marketSlug);
       if (!existing) {
@@ -382,15 +389,15 @@ serve(async (req) => {
       }
     }
 
-    // Re-fetch trades to get IDs of newly inserted ones
+    // Re-fetch trades to get IDs and side of newly inserted ones
     const { data: updatedTrades } = await supabase
       .from('v26_trades')
-      .select('id, market_slug, notional')
+      .select('id, market_slug, notional, side')
       .in('market_slug', marketSlugs);
     
-    const updatedTradesBySlug = new Map<string, { id: string; notional: number | null }>();
+    const updatedTradesBySlug = new Map<string, { id: string; notional: number | null; side: string | null }>();
     for (const t of updatedTrades || []) {
-      updatedTradesBySlug.set(t.market_slug, { id: t.id, notional: t.notional });
+      updatedTradesBySlug.set(t.market_slug, { id: t.id, notional: t.notional, side: t.side });
     }
 
     // Process settlements (Lost/Redeem)
@@ -407,8 +414,20 @@ serve(async (req) => {
       const cost = trade.notional || 0;
       const pnl = settlement.result === 'won' ? settlement.payout - cost : -cost;
 
+      // Normalize result to market winning side (UP/DOWN) instead of won/lost
+      // This makes reasoning consistent: if our side matches result, we won
+      const tradeSide = (trade.side || '').toUpperCase();
+      let marketWinner: string;
+      if (settlement.result === 'won') {
+        // We won, so market winner = our side
+        marketWinner = tradeSide || 'UP'; // fallback shouldn't happen
+      } else {
+        // We lost, so market winner = opposite of our side
+        marketWinner = tradeSide === 'UP' ? 'DOWN' : 'UP';
+      }
+
       const updateData: Record<string, any> = {
-        result: settlement.result,
+        result: marketWinner, // Store UP/DOWN instead of won/lost
         settled_at: settledAt,
         pnl: Math.round(pnl * 100) / 100,
         status: 'settled',
@@ -422,12 +441,12 @@ serve(async (req) => {
       if (updateError) {
         results.push({ market_slug: slug, action: 'settlement', success: false, error: updateError.message });
       } else {
-        console.log(`[v26-sync-csv] Settlement: ${slug} → ${settlement.result}, pnl=${pnl}`);
+        console.log(`[v26-sync-csv] Settlement: ${slug} → winner=${marketWinner} (was ${settlement.result}), pnl=${pnl}`);
         results.push({ 
           market_slug: slug, 
           action: 'settlement', 
           success: true, 
-          details: { result: settlement.result, pnl, payout: settlement.payout } 
+          details: { result: marketWinner, pnl, payout: settlement.payout, original_outcome: settlement.result } 
         });
       }
     }
