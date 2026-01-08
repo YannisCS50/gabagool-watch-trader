@@ -439,8 +439,18 @@ export default function V26Dashboard() {
         }
       }
 
-      // Use stored pnl from database - don't estimate
+      // Use stored pnl from database, or calculate if result is known
       let pnl: number | null = tradePnl;
+      
+      // If pnl is null but we have a settled result, calculate it
+      // WIN: shares × $1 - cost, LOSS: $0 - cost
+      if (pnl === null && (result === 'WIN' || result === 'LOSS') && filledShares > 0) {
+        if (result === 'WIN') {
+          pnl = filledShares * 1.0 - cost; // Get $1 per share
+        } else {
+          pnl = 0 - cost; // Shares worth $0
+        }
+      }
       
       if (pnl !== null) {
         totalPnl += pnl;
