@@ -319,52 +319,67 @@ export default function V26Dashboard() {
       const tradePnl = trade.pnl;
 
       let result: TradeLog['result'];
-      
+
+      const addFilledAccounting = () => {
+        totalFilled++;
+        totalInvested += cost;
+        perAsset[trade.asset].invested += cost;
+      };
+
+      const settleWin = () => {
+        result = 'WIN';
+        totalWins++;
+        perAsset[trade.asset].wins++;
+        settledResults.push('WIN');
+        addFilledAccounting();
+      };
+
+      const settleLoss = () => {
+        result = 'LOSS';
+        totalLosses++;
+        perAsset[trade.asset].losses++;
+        settledResults.push('LOSS');
+        addFilledAccounting();
+      };
+
       if (!isFilled) {
         result = 'NOT_BOUGHT';
       } else if (!isEnded) {
         result = 'LIVE';
         totalLive++;
-        totalFilled++;
-        totalInvested += cost;
-        perAsset[trade.asset].invested += cost;
-      } else if (tradeResult === 'DOWN' || tradeResult === 'won') {
-        result = 'WIN';
-        totalWins++;
-        totalFilled++;
-        totalInvested += cost;
-        perAsset[trade.asset].wins++;
-        perAsset[trade.asset].invested += cost;
-        settledResults.push('WIN');
-      } else if (tradeResult === 'UP' || tradeResult === 'lost') {
-        result = 'LOSS';
-        totalLosses++;
-        totalFilled++;
-        totalInvested += cost;
-        perAsset[trade.asset].losses++;
-        perAsset[trade.asset].invested += cost;
-        settledResults.push('LOSS');
-      } else if (delta !== null) {
-        if (delta < 0) {
-          result = 'WIN';
-          totalWins++;
-          perAsset[trade.asset].wins++;
-          settledResults.push('WIN');
-        } else {
-          result = 'LOSS';
-          totalLosses++;
-          perAsset[trade.asset].losses++;
-          settledResults.push('LOSS');
-        }
-        totalFilled++;
-        totalInvested += cost;
-        perAsset[trade.asset].invested += cost;
+        addFilledAccounting();
       } else {
-        result = 'PENDING';
-        totalPending++;
-        totalFilled++;
-        totalInvested += cost;
-        perAsset[trade.asset].invested += cost;
+        const sideUpper = (trade.side ?? '').toUpperCase();
+        const resultUpper = (tradeResult ?? '').toUpperCase();
+        const resultLower = (tradeResult ?? '').toLowerCase();
+
+        // If backend already computed win/loss, trust it
+        if (resultLower === 'won' || resultUpper === 'WIN') {
+          settleWin();
+        } else if (resultLower === 'lost' || resultUpper === 'LOSS') {
+          settleLoss();
+        }
+        // If backend stored the *winning side* (UP/DOWN), compare with our side
+        else if (resultUpper === 'UP' || resultUpper === 'DOWN') {
+          if (sideUpper && sideUpper === resultUpper) settleWin();
+          else settleLoss();
+        }
+        // Fallback: infer winner from close-vs-strike delta, then compare with our side
+        else if (delta !== null) {
+          if (delta === 0) {
+            result = 'PENDING';
+            totalPending++;
+            addFilledAccounting();
+          } else {
+            const winningSide = delta < 0 ? 'DOWN' : 'UP';
+            if (sideUpper && sideUpper === winningSide) settleWin();
+            else settleLoss();
+          }
+        } else {
+          result = 'PENDING';
+          totalPending++;
+          addFilledAccounting();
+        }
       }
 
       let pnl: number | null = null;
