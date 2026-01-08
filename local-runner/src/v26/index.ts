@@ -10,28 +10,13 @@
 // Expected: 50/50 win rate, profit from fill-rate edge at $0.48
 // ============================================================
 
+import { V26_CONFIG } from './defaults.js';
+
 export const V26_VERSION = '26.0.0';
 export const V26_NAME = 'Loveable V26 - Pre-Market DOWN Trader';
 
 // Default Configuration (can be overridden by database)
-export const V26_CONFIG = {
-  // Which assets to trade
-  assets: ['BTC', 'ETH', 'SOL', 'XRP'] as const,
-  
-  // Order parameters
-  side: 'DOWN' as const,
-  price: 0.48,
-  shares: 10,
-  
-  // Timing (in seconds relative to market start)
-  maxLeadTimeSec: 600, // Place order up to 10 minutes before market opens
-  minLeadTimeSec: 60,  // Must place at least 1 minute before start (after this = too late)
-  cancelAfterStartSec: 30, // Cancel 30s AFTER market start if not filled
-  
-  // Safety
-  maxOrdersPerBar: 1, // Only 1 order per market per asset
-  enabled: true,
-};
+export { V26_CONFIG };
 
 // Re-export config loader
 export { runtimeConfig, loadV26Config, getV26Config, checkAndReloadConfig, getConfigVersion, getAssetConfig, getEnabledAssets } from './config-loader.js';
