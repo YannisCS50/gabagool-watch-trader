@@ -43,11 +43,14 @@ export interface GuardEvaluation {
   passed: boolean;
 }
 
+// v8.1.0: Extended asset types to include SOL and XRP for V26 strategy
+export type DecisionAssetType = 'BTC' | 'ETH' | 'SOL' | 'XRP';
+
 export interface DecisionSnapshot {
   ts: number;
   iso: string;
   marketId: string;
-  asset: 'BTC' | 'ETH';
+  asset: DecisionAssetType;
   windowStart: string;           // ISO timestamp of market window start
   secondsRemaining: number;
   correlationId?: string;        // Links decision → order → fill
@@ -390,6 +393,7 @@ export type MtmSnapshot = MarkToMarketSnapshot;
 
 export type {
   DecisionSnapshot,
+  DecisionAssetType,
   AccountPositionSnapshot,
   StateReconciliationResult,
   FillAttribution,

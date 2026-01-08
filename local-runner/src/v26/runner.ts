@@ -120,7 +120,7 @@ function formatUsd(value: unknown): string {
 // FILL & SETTLEMENT LOGGING
 // ============================================================
 
-async function logV26Fill(market: V26Market, trade: V26Trade, fillQty: number, fillPrice: number): Promise<void> {
+async function logV26Fill(market: V26Market, trade: V26Trade, fillQty: number, fillPrice: number, side: 'UP' | 'DOWN' = 'DOWN'): Promise<void> {
   const now = Date.now();
   const secondsRemaining = Math.max(0, Math.round((market.eventEndTime.getTime() - now) / 1000));
   
@@ -128,8 +128,8 @@ async function logV26Fill(market: V26Market, trade: V26Trade, fillQty: number, f
     ts: now,
     iso: new Date(now).toISOString(),
     marketId: market.slug,
-    asset: market.asset as 'BTC' | 'ETH',
-    side: 'DOWN',
+    asset: market.asset as FillLog['asset'],
+    side,
     orderId: trade.orderId ?? null,
     clientOrderId: null,
     fillQty,
@@ -151,7 +151,7 @@ async function logV26Fill(market: V26Market, trade: V26Trade, fillQty: number, f
 
   try {
     await saveFillLogs([fillLog]);
-    log(`📝 [${market.asset}] Fill logged: ${fillQty} shares @ $${fillPrice.toFixed(2)}`);
+    log(`📝 [${market.asset}] Fill logged: ${fillQty} shares @ $${fillPrice.toFixed(2)} (${side})`);
   } catch (err) {
     logError(`[${market.asset}] Failed to log fill`, err);
   }
@@ -169,7 +169,7 @@ async function logV26Settlement(
     ts: now,
     iso: new Date(now).toISOString(),
     marketId: market.slug,
-    asset: market.asset as 'BTC' | 'ETH',
+    asset: market.asset as SettlementLog['asset'],
     openTs: trade.fillTimeMs ? (now - trade.fillTimeMs) : null,
     closeTs: now,
     finalUpShares: 0,
@@ -279,7 +279,7 @@ async function logV26Snapshots(): Promise<void> {
         ts: now,
         iso: new Date(now).toISOString(),
         marketId: market.slug,
-        asset: market.asset as 'BTC' | 'ETH',
+        asset: market.asset as SnapshotLog['asset'],
         secondsRemaining,
         spotPrice,
         strikePrice: null, // V26 doesn't track strike until settlement
@@ -353,7 +353,7 @@ async function logV26DecisionSnapshot(
   const snapshot: DecisionSnapshot = {
     ts: now,
     market_id: market.slug,
-    asset: market.asset as 'BTC' | 'ETH',
+    asset: market.asset as DecisionSnapshot['asset'],
     state: trade.status,
     intent,
     reason_code: reasonCode,
@@ -563,8 +563,8 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
       if (filledNow > 0) {
         trade.fillTimeMs = Math.max(0, Date.now() - placedAtMs);
         tradesCount++;
-        // Log the fill
-        void logV26Fill(market, trade, filledNow, trade.avgFillPrice);
+        // Log the fill with correct side
+        void logV26Fill(market, trade, filledNow, trade.avgFillPrice, assetCfg.side as 'UP' | 'DOWN');
         // Log decision snapshot for the fill
         void logV26DecisionSnapshot(market, trade, 'ENTRY', 'IMMEDIATE_FILL', assetCfg.side);
       }
@@ -643,9 +643,10 @@ async function checkAndCancelOrder(scheduled: ScheduledTrade, attempt: number = 
 
       // Log fill if this is a new fill detection
       if (matchedBefore > previousFilled) {
+        const assetCfgPreCancel = getAssetConfig(market.asset);
         tradesCount++;
-        void logV26Fill(market, trade, matchedBefore - previousFilled, trade.avgFillPrice);
-        void logV26DecisionSnapshot(market, trade, 'ENTRY', 'PRE_CANCEL_FILL', 'DOWN');
+        void logV26Fill(market, trade, matchedBefore - previousFilled, trade.avgFillPrice, assetCfgPreCancel?.side as 'UP' | 'DOWN' ?? 'DOWN');
+        void logV26DecisionSnapshot(market, trade, 'ENTRY', 'PRE_CANCEL_FILL', assetCfgPreCancel?.side ?? 'DOWN');
       }
 
       if (trade.id) {
@@ -688,9 +689,10 @@ async function checkAndCancelOrder(scheduled: ScheduledTrade, attempt: number = 
 
       // Log fill if this is a new fill detection
       if (matchedAfter > previousFilled) {
+        const assetCfgPostCancel = getAssetConfig(market.asset);
         tradesCount++;
-        void logV26Fill(market, trade, matchedAfter - previousFilled, trade.avgFillPrice);
-        void logV26DecisionSnapshot(market, trade, 'ENTRY', 'POST_CANCEL_FILL', 'DOWN');
+        void logV26Fill(market, trade, matchedAfter - previousFilled, trade.avgFillPrice, assetCfgPostCancel?.side as 'UP' | 'DOWN' ?? 'DOWN');
+        void logV26DecisionSnapshot(market, trade, 'ENTRY', 'POST_CANCEL_FILL', assetCfgPostCancel?.side ?? 'DOWN');
       }
 
       if (trade.id) {
@@ -939,7 +941,7 @@ async function pollFillsForOpenOrders(): Promise<void> {
         // Log the fill immediately!
         const assetCfgForLog = getAssetConfig(market.asset);
         log(`🔄 [${market.asset}] Fill detected via polling: +${newFillQty} shares (total: ${newFilledShares}/${assetCfgForLog?.shares ?? '?'})`);
-        void logV26Fill(market, trade, newFillQty, trade.avgFillPrice);
+        void logV26Fill(market, trade, newFillQty, trade.avgFillPrice, assetCfgForLog?.side as 'UP' | 'DOWN' ?? 'DOWN');
         void logV26DecisionSnapshot(market, trade, 'ENTRY', 'POLL_FILL_DETECTED', assetCfgForLog?.side ?? 'DOWN');
 
         // Update DB
