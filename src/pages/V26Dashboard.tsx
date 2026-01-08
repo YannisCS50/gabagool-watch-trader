@@ -5,6 +5,7 @@ import {
   Clock, Zap, BarChart3, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ExternalLink,
   Upload, CheckCircle2, XCircle, Flame, Activity, Wifi, WifiOff
 } from 'lucide-react';
+import { DownloadV26LogicButton } from '@/components/DownloadV26LogicButton';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -892,6 +893,7 @@ export default function V26Dashboard() {
               <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
               Refresh
             </Button>
+            <DownloadV26LogicButton />
           </div>
         </div>
 
