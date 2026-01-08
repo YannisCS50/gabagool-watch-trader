@@ -191,6 +191,8 @@ export function getScheduledCount(): number {
 
 /**
  * Calculate PnL for a settled trade
+ * WIN (result matches side): payout = shares × $1, PnL = payout - cost
+ * LOSS (result doesn't match): payout = shares × $0, PnL = -cost
  */
 export function calculateV26Pnl(trade: V26Trade): number {
   if (!trade.result || trade.filledShares === 0) {
@@ -198,13 +200,15 @@ export function calculateV26Pnl(trade: V26Trade): number {
   }
   
   const cost = trade.filledShares * (trade.avgFillPrice ?? trade.price);
+  const isWin = trade.result === trade.side;
   
-  if (trade.result === 'DOWN') {
+  if (isWin) {
     // WIN: Get $1 per share
-    return trade.filledShares - cost;
+    const payout = trade.filledShares * 1;
+    return payout - cost;
   } else {
     // LOSS: Shares worth $0
-    return -cost;
+    return 0 - cost;
   }
 }
 
