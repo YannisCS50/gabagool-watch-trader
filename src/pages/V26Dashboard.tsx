@@ -61,7 +61,7 @@ interface TradeLog {
   pricePerShare: number;
   total: number;
   orderType: 'LIMIT';
-  result: 'WIN' | 'LOSS' | 'LIVE' | 'PENDING' | 'NOT_BOUGHT';
+  result: 'WIN' | 'LOSS' | 'LIVE' | 'PENDING' | 'NOT_BOUGHT' | 'NO_FILL' | 'FAILED';
   resultSource: 'PNL' | 'RESULT' | 'DELTA' | 'LIVE' | 'NOT_FILLED' | 'UNKNOWN'; // Source of result decision
   pnl: number | null;
   expectedPayout: number | null; // What we'd get if we win ($1 * shares)
@@ -359,10 +359,15 @@ export default function V26Dashboard() {
       // Build log identifier for debugging
       const logId = `[${trade.asset}-${format(new Date(trade.event_start_time), 'HH:mm')}]`;
 
-      if (!isFilled) {
+      if (!trade.order_id) {
         result = 'NOT_BOUGHT';
         resultSource = 'NOT_FILLED';
-        console.log(`${logId} Status = NOT_BOUGHT (no fill)`);
+        console.log(`${logId} Status = NOT_PLACED (no order_id)`);
+      } else if (!isFilled) {
+        // Order was placed but we got 0 fills (or the runner marked it as error)
+        result = (trade.status ?? '').toLowerCase() === 'error' ? 'FAILED' : 'NO_FILL';
+        resultSource = 'NOT_FILLED';
+        console.log(`${logId} Status = ${result} (order placed, 0 fill)`);
       } else {
         const sideUpper = (trade.side ?? '').toUpperCase();
         const resultUpper = (tradeResult ?? '').toUpperCase();
@@ -841,7 +846,19 @@ export default function V26Dashboard() {
       case 'NOT_BOUGHT':
         return (
           <Badge variant="outline" className="text-muted-foreground text-xs opacity-50">
-            ❌ Niet gekocht
+            ⛔ Niet geplaatst
+          </Badge>
+        );
+      case 'NO_FILL':
+        return (
+          <Badge variant="outline" className="text-muted-foreground text-xs">
+            ⏳ Niet gevuld
+          </Badge>
+        );
+      case 'FAILED':
+        return (
+          <Badge variant="destructive" className="text-xs">
+            ⚠️ Mislukt
           </Badge>
         );
       case 'LIVE':
@@ -1456,7 +1473,7 @@ export default function V26Dashboard() {
                     paginatedTrades.map((log) => (
                       <TableRow 
                         key={log.id} 
-                        className={`border-b border-border/30 ${log.result === 'NOT_BOUGHT' ? 'opacity-40' : ''} hover:bg-muted/30 transition-colors`}
+                        className={`border-b border-border/30 ${(log.result === 'NOT_BOUGHT' || log.result === 'NO_FILL' || log.result === 'FAILED') ? 'opacity-40' : ''} hover:bg-muted/30 transition-colors`}
                         title={`Side: ${log.side} | Expected: $${log.expectedPayout?.toFixed(2) ?? '0'} | Source: ${log.resultSource}`}
                       >
                         <TableCell className="py-2">
