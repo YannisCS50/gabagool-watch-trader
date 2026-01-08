@@ -3,10 +3,11 @@ import { useNavigate } from 'react-router-dom';
 import { 
   ArrowLeft, RefreshCw, TrendingUp, TrendingDown, DollarSign, Target, Percent,
   Clock, Zap, BarChart3, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ExternalLink,
-  Upload, CheckCircle2, XCircle, Flame, Activity, Wifi, WifiOff
+  Upload, CheckCircle2, XCircle, Flame, Activity, Wifi, WifiOff, Gavel
 } from 'lucide-react';
 import { DownloadV26LogicButton } from '@/components/DownloadV26LogicButton';
 import { V26StrategyModal } from '@/components/V26StrategyModal';
+import { V26OracleSettleModal } from '@/components/V26OracleSettleModal';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -146,6 +147,7 @@ export default function V26Dashboard() {
     marketsCount: 0,
     version: null,
   });
+  const [oracleModalOpen, setOracleModalOpen] = useState(false);
 
   // Two-proportion z-test for comparing win rates
   const calculatePValue = (
@@ -974,10 +976,21 @@ export default function V26Dashboard() {
               <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
               Refresh
             </Button>
+            <Button onClick={() => setOracleModalOpen(true)} variant="outline" size="sm">
+              <Gavel className="h-4 w-4 mr-2" />
+              Settle
+            </Button>
             <DownloadV26LogicButton />
             <V26StrategyModal />
           </div>
         </div>
+
+        {/* Oracle Settlement Modal */}
+        <V26OracleSettleModal 
+          open={oracleModalOpen} 
+          onOpenChange={setOracleModalOpen}
+          onSettled={fetchData}
+        />
 
         {/* Main KPIs - Row 1 */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
