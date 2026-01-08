@@ -1776,24 +1776,33 @@ Deno.serve(async (req) => {
         });
       }
 
-      // V26 Config
+      // V26 Config - includes per-asset configurations
       case 'get-v26-config': {
-        const { data: configData, error } = await supabase
-          .from('v26_config')
-          .select('*')
-          .limit(1)
-          .single();
+        // Fetch global config and per-asset configs in parallel
+        const [globalRes, assetRes] = await Promise.all([
+          supabase.from('v26_config').select('*').limit(1).single(),
+          supabase.from('v26_asset_config').select('*').order('asset'),
+        ]);
 
-        if (error) {
-          console.error('[runner-proxy] get-v26-config error:', error);
-          return new Response(JSON.stringify({ success: false, error: error.message }), {
+        if (globalRes.error) {
+          console.error('[runner-proxy] get-v26-config error:', globalRes.error);
+          return new Response(JSON.stringify({ success: false, error: globalRes.error.message }), {
             status: 500,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
 
-        console.log(`[runner-proxy] 📋 V26 Config: shares=${configData?.shares}, price=${configData?.price}, side=${configData?.side}`);
-        return new Response(JSON.stringify({ success: true, data: configData }), {
+        const assetConfigs = assetRes.data || [];
+        console.log(`[runner-proxy] 📋 V26 Config: enabled=${globalRes.data?.enabled}, assets=${assetConfigs.length}`);
+        for (const ac of assetConfigs) {
+          console.log(`  - ${ac.asset}: ${ac.enabled ? '✅' : '❌'} ${ac.side} ${ac.shares}@$${ac.price}`);
+        }
+        
+        return new Response(JSON.stringify({ 
+          success: true, 
+          data: globalRes.data,
+          assetConfigs: assetConfigs,
+        }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
