@@ -6,6 +6,7 @@ import {
   Upload, CheckCircle2, XCircle, Flame, Activity, Wifi, WifiOff
 } from 'lucide-react';
 import { DownloadV26LogicButton } from '@/components/DownloadV26LogicButton';
+import { V26StrategyModal } from '@/components/V26StrategyModal';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -894,6 +895,7 @@ export default function V26Dashboard() {
               Refresh
             </Button>
             <DownloadV26LogicButton />
+            <V26StrategyModal />
           </div>
         </div>
 

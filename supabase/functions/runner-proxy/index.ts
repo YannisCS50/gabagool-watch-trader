@@ -55,7 +55,8 @@ type Action =
   | 'save-hedge-skip'
   | 'save-hedge-skip-logs'
   | 'save-mtm-snapshot'
-  | 'save-gabagool-metrics';
+  | 'save-gabagool-metrics'
+  | 'get-v26-config';
 
 interface RequestBody {
   action: Action;
@@ -1771,6 +1772,28 @@ Deno.serve(async (req) => {
 
         console.log(`[runner-proxy] 📊 Gabagool metrics: ${metrics.pairedCppUnder100Pct}% CPP<1.00, maker=${metrics.makerFillRatio}`);
         return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // V26 Config
+      case 'get-v26-config': {
+        const { data: configData, error } = await supabase
+          .from('v26_config')
+          .select('*')
+          .limit(1)
+          .single();
+
+        if (error) {
+          console.error('[runner-proxy] get-v26-config error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] 📋 V26 Config: shares=${configData?.shares}, price=${configData?.price}, side=${configData?.side}`);
+        return new Response(JSON.stringify({ success: true, data: configData }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
