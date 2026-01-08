@@ -390,30 +390,34 @@ export default function V26Dashboard() {
         if (trade.fill_matched_at) {
           const matchMs = new Date(trade.fill_matched_at).getTime();
           const offset = Math.round((matchMs - eventStartMs) / 1000);
-          // Sanity check: reject absurd values (> market length + 2 minutes)
-          if (Math.abs(offset) <= marketLenSec + 120) {
+          // Sanity check: offset should be within reasonable bounds
+          // Pre-open fills can be up to ~10 min early, post-open up to market length
+          if (offset >= -600 && offset <= marketLenSec) {
             return { filledOffsetSec: offset, filledSource: 'match' as const };
           }
         }
 
-        // Priority 2: fill_logs (runner detection time - less accurate)
+        // Priority 2: fill_logs using seconds_remaining 
+        // seconds_remaining = seconds until market CLOSE at fill time
+        // So offset from start = marketLenSec - seconds_remaining
         if (!trade.order_id) return { filledOffsetSec: null, filledSource: null };
 
         const fill = fillTimeLookup.get(trade.order_id);
         if (!fill) return { filledOffsetSec: null, filledSource: null };
 
-        // Best from logs: seconds_remaining (directly tied to the market clock)
         if (fill.secondsRemaining !== null) {
+          // Only use if seconds_remaining makes sense for this market length
+          // Pre-open fills have seconds_remaining > marketLenSec
           const offset = marketLenSec - fill.secondsRemaining;
-          // Sanity check
-          if (Math.abs(offset) <= marketLenSec + 120) {
+          // Valid range: up to 10 min early, up to market length after
+          if (offset >= -600 && offset <= marketLenSec) {
             return { filledOffsetSec: offset, filledSource: 'log' as const };
           }
         }
 
-        // Fallback: timestamp diff
+        // Fallback: direct timestamp comparison
         const offset = Math.round((fill.ts - eventStartMs) / 1000);
-        if (Math.abs(offset) <= marketLenSec + 120) {
+        if (offset >= -600 && offset <= marketLenSec) {
           return { filledOffsetSec: offset, filledSource: 'log' as const };
         }
 
