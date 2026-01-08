@@ -570,33 +570,49 @@ Deno.serve(async (req) => {
       }
 
       // v7.4.0: Fetch stale placed orders for cleanup
+      // v7.4.1: Support separate TTLs for entry vs hedge orders
       case 'get-stale-orders': {
-        const ttlMs = (data?.ttl_ms as number) ?? 20_000; // Default 20 seconds
+        const entryTtlMs = (data?.ttl_ms as number) ?? 30_000; // Default 30 seconds for entry
+        const hedgeTtlMs = (data?.hedge_ttl_ms as number) ?? 15_000; // Default 15 seconds for hedge
         
-        const cutoffTime = new Date(Date.now() - ttlMs).toISOString();
+        const entryCutoff = new Date(Date.now() - entryTtlMs).toISOString();
+        const hedgeCutoff = new Date(Date.now() - hedgeTtlMs).toISOString();
         
-        // Fetch placed orders that have an exchange order_id and are stale
-        // Simple approach: just get all placed orders older than TTL
-        const { data: staleOrders, error } = await supabase
+        // Fetch stale entry orders
+        const { data: entryOrders, error: entryError } = await supabase
           .from('order_queue')
           .select('id, market_slug, asset, outcome, shares, price, order_id, intent_type, created_at, executed_at')
           .eq('status', 'placed')
           .not('order_id', 'is', null)
-          .lt('executed_at', cutoffTime)
+          .or('intent_type.is.null,intent_type.neq.HEDGE')
+          .lt('executed_at', entryCutoff)
           .order('executed_at', { ascending: true })
           .limit(20);
 
-        if (error) {
+        // Fetch stale hedge orders (more aggressive TTL)
+        const { data: hedgeOrders, error: hedgeError } = await supabase
+          .from('order_queue')
+          .select('id, market_slug, asset, outcome, shares, price, order_id, intent_type, created_at, executed_at')
+          .eq('status', 'placed')
+          .eq('intent_type', 'HEDGE')
+          .not('order_id', 'is', null)
+          .lt('executed_at', hedgeCutoff)
+          .order('executed_at', { ascending: true })
+          .limit(20);
+
+        if (entryError || hedgeError) {
+          const error = entryError || hedgeError;
           console.error('[runner-proxy] get-stale-orders error:', error);
-          return new Response(JSON.stringify({ success: false, error: error.message }), {
+          return new Response(JSON.stringify({ success: false, error: error!.message }), {
             status: 500,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
 
-        console.log(`[runner-proxy] 🕐 Found ${staleOrders?.length ?? 0} stale placed orders`);
+        const staleOrders = [...(entryOrders || []), ...(hedgeOrders || [])];
+        console.log(`[runner-proxy] 🕐 Found ${staleOrders.length} stale orders (${entryOrders?.length || 0} entry, ${hedgeOrders?.length || 0} hedge)`);
 
-        return new Response(JSON.stringify({ success: true, orders: staleOrders || [] }), {
+        return new Response(JSON.stringify({ success: true, orders: staleOrders }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }

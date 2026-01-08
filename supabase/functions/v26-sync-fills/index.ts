@@ -3,14 +3,26 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { ethers } from "https://esm.sh/ethers@6.13.1";
 
+/**
+ * v26-sync-fills: Robust fill synchronization
+ * 
+ * This function syncs trade data by:
+ * 1. Querying Polymarket CLOB API directly for order status
+ * 2. Updating v26_trades with correct fill data (matched_at, filled_shares, avg_price)
+ * 3. Falling back to fill_logs if CLOB API fails
+ * 
+ * Run periodically (every 5-15 min) to catch any missed fills.
+ */
+
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
 const CLOB_BASE_URL = 'https://clob.polymarket.com';
+const POLYGON_CHAIN_ID = 137;
 
-// Onchain: resolve correct Polymarket "funder" address (Safe/Proxy) for L2 auth
+// Resolve Polymarket funder address
 const POLYGON_RPC_URL = 'https://polygon-rpc.com';
 const CTF_EXCHANGE_ADDRESS = '0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E';
 const EXCHANGE_ABI = [
@@ -21,40 +33,24 @@ const EXCHANGE_ABI = [
 async function resolvePolymarketFunderAddress(eoaAddress: string): Promise<string> {
   const provider = new ethers.JsonRpcProvider(POLYGON_RPC_URL);
   const exchangeContract = new ethers.Contract(CTF_EXCHANGE_ADDRESS, EXCHANGE_ABI, provider);
-
   const [safeAddressRaw, proxyAddressRaw] = await Promise.all([
     exchangeContract.getSafeAddress(eoaAddress),
     exchangeContract.getPolyProxyWalletAddress(eoaAddress),
   ]);
-
   const safeAddress = ethers.getAddress(safeAddressRaw);
   const proxyAddress = ethers.getAddress(proxyAddressRaw);
-
   const [safeCode, proxyCode] = await Promise.all([
     provider.getCode(safeAddress),
     provider.getCode(proxyAddress),
   ]);
-
-  const safeDeployed = safeCode !== '0x';
-  const proxyDeployed = proxyCode !== '0x';
-
-  // Prefer deployed Safe, otherwise deployed Proxy. If neither deployed yet, use deterministic Safe.
-  if (safeDeployed) return safeAddress;
-  if (proxyDeployed) return proxyAddress;
+  if (safeCode !== '0x') return safeAddress;
+  if (proxyCode !== '0x') return proxyAddress;
   return safeAddress;
 }
 
-// Helper: replaceAll for URL-safe base64
-function replaceAll(s: string, search: string, replace: string): string {
-  return s.split(search).join(replace);
-}
-
-// Helper: base64 to ArrayBuffer
+// Base64 helpers
 function base64ToArrayBuffer(base64: string): ArrayBuffer {
-  const sanitizedBase64 = base64
-    .replace(/-/g, '+')
-    .replace(/_/g, '/')
-    .replace(/[^A-Za-z0-9+/=]/g, '');
+  const sanitizedBase64 = base64.replace(/-/g, '+').replace(/_/g, '/').replace(/[^A-Za-z0-9+/=]/g, '');
   const binaryString = atob(sanitizedBase64);
   const bytes = new Uint8Array(binaryString.length);
   for (let i = 0; i < binaryString.length; i++) {
@@ -63,7 +59,6 @@ function base64ToArrayBuffer(base64: string): ArrayBuffer {
   return bytes.buffer as ArrayBuffer;
 }
 
-// Helper: ArrayBuffer to base64
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   let binary = '';
@@ -73,9 +68,7 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   return btoa(binary);
 }
 
-/**
- * Builds the canonical Polymarket CLOB HMAC signature
- */
+// HMAC signature for L2 auth
 async function buildPolyHmacSignature(
   secret: string,
   timestamp: number,
@@ -84,44 +77,23 @@ async function buildPolyHmacSignature(
   body?: string
 ): Promise<string> {
   let message = timestamp + method + requestPath;
-  if (body !== undefined) {
-    message += body;
-  }
-
+  if (body !== undefined) message += body;
   const keyData = base64ToArrayBuffer(secret);
-  const cryptoKey = await crypto.subtle.importKey(
-    'raw',
-    keyData,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-
+  const cryptoKey = await crypto.subtle.importKey('raw', keyData, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
   const messageBuffer = new TextEncoder().encode(message);
   const signatureBuffer = await crypto.subtle.sign('HMAC', cryptoKey, messageBuffer);
   const sig = arrayBufferToBase64(signatureBuffer);
-
-  // URL-safe base64 encoding
-  return replaceAll(replaceAll(sig, '+', '-'), '/', '_');
+  return sig.split('+').join('-').split('/').join('_');
 }
 
-const POLYGON_CHAIN_ID = 137;
-
-/**
- * Build EIP-712 signature for L1 authentication (derive-api-key)
- */
+// EIP-712 signature for L1 auth
 async function buildClobEip712Signature(
   wallet: ethers.Wallet,
   chainId: number,
   timestamp: number,
   nonce: number
 ): Promise<string> {
-  const domain = {
-    name: 'ClobAuthDomain',
-    version: '1',
-    chainId: chainId,
-  };
-
+  const domain = { name: 'ClobAuthDomain', version: '1', chainId };
   const types = {
     ClobAuth: [
       { name: 'address', type: 'address' },
@@ -130,28 +102,19 @@ async function buildClobEip712Signature(
       { name: 'message', type: 'string' },
     ],
   };
-
   const value = {
     address: wallet.address,
     timestamp: timestamp.toString(),
-    nonce: nonce,
+    nonce,
     message: 'This message attests that I control the given wallet',
   };
-
   return await wallet.signTypedData(domain, types, value);
 }
 
-/**
- * Create L1 Headers for API key derivation
- */
-async function createL1Headers(
-  wallet: ethers.Wallet,
-  chainId: number,
-  nonce: number = 0
-): Promise<Record<string, string>> {
+// L1 Headers for API key derivation
+async function createL1Headers(wallet: ethers.Wallet, chainId: number, nonce = 0): Promise<Record<string, string>> {
   const ts = Math.floor(Date.now() / 1000);
   const sig = await buildClobEip712Signature(wallet, chainId, ts, nonce);
-
   return {
     'POLY_ADDRESS': wallet.address,
     'POLY_SIGNATURE': sig,
@@ -160,68 +123,29 @@ async function createL1Headers(
   };
 }
 
-/**
- * Derive API credentials from private key using L1 auth
- */
-async function deriveApiCredentials(privateKey: string): Promise<{
-  apiKey: string;
-  apiSecret: string;
-  passphrase: string;
-}> {
-  console.log('[v26-sync-fills] Deriving API credentials from private key...');
-
+// Derive API credentials from private key
+async function deriveApiCredentials(privateKey: string): Promise<{ apiKey: string; apiSecret: string; passphrase: string }> {
   const wallet = new ethers.Wallet(privateKey);
   const l1Headers = await createL1Headers(wallet, POLYGON_CHAIN_ID, 0);
   const headers = { ...l1Headers, 'Content-Type': 'application/json' };
 
-  console.log(`[v26-sync-fills] Created L1 auth headers for ${wallet.address}`);
-
-  // First try to derive existing API key
-  const deriveResponse = await fetch(`${CLOB_BASE_URL}/auth/derive-api-key`, {
-    method: 'GET',
-    headers,
-  });
-
+  const deriveResponse = await fetch(`${CLOB_BASE_URL}/auth/derive-api-key`, { method: 'GET', headers });
   const deriveText = await deriveResponse.text();
-  console.log(`[v26-sync-fills] Derive response: ${deriveResponse.status} - ${deriveText.slice(0, 200)}`);
 
   if (deriveResponse.ok) {
     const credentials = JSON.parse(deriveText);
-    console.log('[v26-sync-fills] ✅ Successfully derived existing API credentials');
-    return {
-      apiKey: credentials.apiKey,
-      apiSecret: credentials.secret,
-      passphrase: credentials.passphrase,
-    };
+    return { apiKey: credentials.apiKey, apiSecret: credentials.secret, passphrase: credentials.passphrase };
   }
 
-  // If no existing key, create new one
-  console.log('[v26-sync-fills] No existing credentials, creating new API key...');
-  const createResponse = await fetch(`${CLOB_BASE_URL}/auth/api-key`, {
-    method: 'POST',
-    headers,
-  });
-
+  // Create new key if none exists
+  const createResponse = await fetch(`${CLOB_BASE_URL}/auth/api-key`, { method: 'POST', headers });
   const createText = await createResponse.text();
-  console.log(`[v26-sync-fills] Create response: ${createResponse.status} - ${createText.slice(0, 200)}`);
-
-  if (!createResponse.ok) {
-    throw new Error(`Failed to create API key: ${createResponse.status} - ${createText}`);
-  }
-
+  if (!createResponse.ok) throw new Error(`Failed to create API key: ${createResponse.status} - ${createText}`);
   const newCredentials = JSON.parse(createText);
-  console.log('[v26-sync-fills] ✅ Successfully created new API credentials');
-
-  return {
-    apiKey: newCredentials.apiKey,
-    apiSecret: newCredentials.secret,
-    passphrase: newCredentials.passphrase,
-  };
+  return { apiKey: newCredentials.apiKey, apiSecret: newCredentials.secret, passphrase: newCredentials.passphrase };
 }
 
-/**
- * Create L2 Headers for authenticated API requests
- */
+// L2 Headers for authenticated requests
 async function createL2Headers(
   address: string,
   creds: { key: string; secret: string; passphrase: string },
@@ -230,15 +154,7 @@ async function createL2Headers(
   body?: string
 ): Promise<Record<string, string>> {
   const ts = Math.floor(Date.now() / 1000);
-
-  const sig = await buildPolyHmacSignature(
-    creds.secret,
-    ts,
-    method,
-    requestPath,
-    body
-  );
-
+  const sig = await buildPolyHmacSignature(creds.secret, ts, method, requestPath, body);
   return {
     'POLY_ADDRESS': address,
     'POLY_SIGNATURE': sig,
@@ -248,17 +164,107 @@ async function createL2Headers(
   };
 }
 
-interface OpenOrder {
+// CLOB order response types
+interface ClobOrder {
   id: string;
-  status: string;
+  status: 'OPEN' | 'MATCHED' | 'CANCELLED' | 'EXPIRED' | 'LIVE';
   original_size: string;
   size_matched: string;
-  associate_trades?: string[];
+  price: string;
+  associate_trades?: Array<{
+    id: string;
+    price: string;
+    size: string;
+    match_time: string; // ISO timestamp
+  }>;
+  created_at?: string;
 }
 
-type GetOrderResponse = {
-  order?: OpenOrder;
-} | OpenOrder;
+// Fetch single order from CLOB API
+async function fetchOrderFromClob(
+  orderId: string,
+  funderAddress: string,
+  creds: { key: string; secret: string; passphrase: string }
+): Promise<ClobOrder | null> {
+  try {
+    const requestPath = `/order/${orderId}`;
+    const headers = await createL2Headers(funderAddress, creds, 'GET', requestPath);
+    
+    const response = await fetch(`${CLOB_BASE_URL}${requestPath}`, {
+      method: 'GET',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+    });
+    
+    if (!response.ok) {
+      const text = await response.text();
+      console.log(`[v26-sync-fills] CLOB order ${orderId.slice(0, 10)}... returned ${response.status}: ${text.slice(0, 100)}`);
+      return null;
+    }
+    
+    const data = await response.json();
+    // Response might be { order: {...} } or directly the order object
+    return data.order || data;
+  } catch (error) {
+    console.error(`[v26-sync-fills] Error fetching order ${orderId}:`, error);
+    return null;
+  }
+}
+
+// Extract fill info from CLOB order
+function extractFillInfo(order: ClobOrder): {
+  status: 'filled' | 'cancelled' | 'open' | 'partial';
+  filledShares: number;
+  avgFillPrice: number | null;
+  matchedAt: string | null;
+} {
+  const originalSize = parseFloat(order.original_size) || 0;
+  const sizeMatched = parseFloat(order.size_matched) || 0;
+  
+  // Determine status
+  let status: 'filled' | 'cancelled' | 'open' | 'partial';
+  if (order.status === 'CANCELLED' || order.status === 'EXPIRED') {
+    status = sizeMatched > 0 ? 'partial' : 'cancelled';
+  } else if (order.status === 'MATCHED' || sizeMatched >= originalSize * 0.99) {
+    status = 'filled';
+  } else if (sizeMatched > 0) {
+    status = 'partial';
+  } else {
+    status = 'open';
+  }
+  
+  // Calculate avg fill price from associate_trades
+  let avgFillPrice: number | null = null;
+  let matchedAt: string | null = null;
+  
+  if (order.associate_trades && order.associate_trades.length > 0) {
+    let totalValue = 0;
+    let totalSize = 0;
+    let latestMatchTime: Date | null = null;
+    
+    for (const trade of order.associate_trades) {
+      const price = parseFloat(trade.price) || 0;
+      const size = parseFloat(trade.size) || 0;
+      totalValue += price * size;
+      totalSize += size;
+      
+      if (trade.match_time) {
+        const matchTime = new Date(trade.match_time);
+        if (!latestMatchTime || matchTime > latestMatchTime) {
+          latestMatchTime = matchTime;
+        }
+      }
+    }
+    
+    if (totalSize > 0) {
+      avgFillPrice = totalValue / totalSize;
+    }
+    if (latestMatchTime) {
+      matchedAt = latestMatchTime.toISOString();
+    }
+  }
+  
+  return { status, filledShares: sizeMatched, avgFillPrice, matchedAt };
+}
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -268,189 +274,215 @@ serve(async (req) => {
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const privateKey = Deno.env.get('POLYMARKET_PRIVATE_KEY');
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    console.log('[v26-sync-fills] Using fill_logs as source of truth for fill_matched_at');
+    console.log('[v26-sync-fills] Starting robust fill sync...');
+    
+    // Check for required secrets
+    const useClobApi = !!privateKey;
+    if (!useClobApi) {
+      console.log('[v26-sync-fills] No POLYMARKET_PRIVATE_KEY - falling back to fill_logs only');
+    }
 
-    // Fetch trades that need syncing
+    // Fetch trades that need syncing (last 7 days, missing fill data or not final status)
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
     
     const { data: trades, error: fetchError } = await supabase
       .from('v26_trades')
-      .select('id, order_id, event_start_time, event_end_time, status, filled_shares, fill_matched_at')
+      .select('id, order_id, market_slug, event_start_time, event_end_time, status, filled_shares, avg_fill_price, fill_matched_at')
       .not('order_id', 'is', null)
       .gte('event_start_time', sevenDaysAgo)
-      .or('fill_matched_at.is.null,status.in.(placed,open,partial),filled_shares.eq.0')
-      .limit(100);
+      .or('fill_matched_at.is.null,status.in.(placed,open,partial,processing),filled_shares.eq.0')
+      .limit(50);
 
     if (fetchError) {
       console.error('[v26-sync-fills] Error fetching trades:', fetchError);
-      return new Response(
-        JSON.stringify({ error: fetchError.message }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return new Response(JSON.stringify({ error: fetchError.message }), {
+        status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
     }
 
     console.log(`[v26-sync-fills] Found ${trades?.length || 0} trades to sync`);
 
     if (!trades || trades.length === 0) {
-      return new Response(
-        JSON.stringify({ success: true, synced: 0, failed: 0, total: 0, results: [] }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return new Response(JSON.stringify({ success: true, synced: 0, failed: 0, source: 'none' }), {
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      });
     }
 
-    // Get all order_ids to look up in fill_logs
-    const orderIds = trades.map(t => t.order_id).filter(Boolean) as string[];
-    const orderIdsDistinct = Array.from(new Set(orderIds));
+    const results: Array<{
+      id: string;
+      order_id: string;
+      success: boolean;
+      source: 'clob' | 'fill_logs' | null;
+      status?: string;
+      error?: string;
+    }> = [];
 
-    console.log(
-      `[v26-sync-fills] Looking up fill_logs for ${orderIdsDistinct.length} distinct order_ids (sample): ${orderIdsDistinct
-        .slice(0, 5)
-        .join(', ')}`
-    );
-
-    // Fetch matching fill_logs entries
-    const { data: fillLogs, error: fillError } = await supabase
-      .from('fill_logs')
-      .select('order_id, ts, iso, fill_qty, fill_price')
-      .in('order_id', orderIdsDistinct);
-
-    if (fillError) {
-      console.error('[v26-sync-fills] Error fetching fill_logs:', fillError);
-      return new Response(
-        JSON.stringify({ error: fillError.message }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    console.log(`[v26-sync-fills] Found ${fillLogs?.length || 0} matching fill_logs entries`);
-
-    // Build a map of order_id -> fill info (aggregate if multiple fills per order)
-    interface FillInfo {
-      matchTimeMs: number;
-      iso: string;
-      totalShares: number;
-    }
-    const orderFillInfo = new Map<string, FillInfo>();
-
-    for (const fl of fillLogs || []) {
-      const orderId = fl.order_id?.toLowerCase();
-      if (!orderId) continue;
-
-      const ts = Number(fl.ts);
-      const shares = Number(fl.fill_qty) || 0;
-      const existing = orderFillInfo.get(orderId);
-
-      if (!existing) {
-        orderFillInfo.set(orderId, {
-          matchTimeMs: ts,
-          iso: fl.iso,
-          totalShares: shares,
-        });
-      } else {
-        // Use latest timestamp, aggregate shares
-        if (ts > existing.matchTimeMs) {
-          existing.matchTimeMs = ts;
-          existing.iso = fl.iso;
+    // Strategy 1: Use CLOB API for RECENT orders only (last 4 hours)
+    // Polymarket deletes order data after a few hours, so older orders will 404
+    const fourHoursAgo = Date.now() - 4 * 60 * 60 * 1000;
+    const recentTrades = trades.filter(t => new Date(t.event_end_time).getTime() > fourHoursAgo);
+    const olderTrades = trades.filter(t => new Date(t.event_end_time).getTime() <= fourHoursAgo);
+    
+    console.log(`[v26-sync-fills] Split: ${recentTrades.length} recent (CLOB eligible), ${olderTrades.length} older (fill_logs only)`);
+    
+    if (useClobApi && recentTrades.length > 0) {
+      console.log('[v26-sync-fills] Using CLOB API for recent orders...');
+      
+      try {
+        const wallet = new ethers.Wallet(privateKey!);
+        const funderAddress = await resolvePolymarketFunderAddress(wallet.address);
+        const creds = await deriveApiCredentials(privateKey!);
+        const credsForL2 = { key: creds.apiKey, secret: creds.apiSecret, passphrase: creds.passphrase };
+        
+        console.log(`[v26-sync-fills] Authenticated as ${funderAddress.slice(0, 10)}...`);
+        
+        // Process only recent trades via CLOB
+        for (const trade of recentTrades) {
+          if (!trade.order_id) continue;
+          
+          // Rate limit: small delay between requests
+          await new Promise(r => setTimeout(r, 100));
+          
+          const clobOrder = await fetchOrderFromClob(trade.order_id, funderAddress, credsForL2);
+          
+          if (!clobOrder) {
+            // Don't mark as failed - will try fill_logs fallback
+            console.log(`[v26-sync-fills] CLOB 404 for ${trade.order_id.slice(0, 10)}... - will try fill_logs`);
+            continue;
+          }
+          
+          const fillInfo = extractFillInfo(clobOrder);
+          
+          // Determine if we should update
+          const needsUpdate = 
+            fillInfo.status !== trade.status ||
+            fillInfo.filledShares !== trade.filled_shares ||
+            (fillInfo.matchedAt && !trade.fill_matched_at);
+          
+          if (!needsUpdate) {
+            results.push({ id: trade.id, order_id: trade.order_id, success: true, source: 'clob', status: fillInfo.status });
+            continue;
+          }
+          
+          // Build update data
+          const updateData: Record<string, unknown> = { status: fillInfo.status };
+          
+          if (fillInfo.filledShares > 0) {
+            updateData.filled_shares = fillInfo.filledShares;
+          }
+          if (fillInfo.avgFillPrice !== null) {
+            updateData.avg_fill_price = fillInfo.avgFillPrice;
+          }
+          if (fillInfo.matchedAt) {
+            updateData.fill_matched_at = fillInfo.matchedAt;
+          }
+          
+          const { error: updateError } = await supabase
+            .from('v26_trades')
+            .update(updateData)
+            .eq('id', trade.id);
+          
+          if (updateError) {
+            results.push({ id: trade.id, order_id: trade.order_id, success: false, source: 'clob', error: updateError.message });
+          } else {
+            console.log(`[v26-sync-fills] ✓ ${trade.order_id.slice(0, 10)}... → ${fillInfo.status} (${fillInfo.filledShares} shares @ ${fillInfo.avgFillPrice?.toFixed(2) || '?'})`);
+            results.push({ id: trade.id, order_id: trade.order_id, success: true, source: 'clob', status: fillInfo.status });
+          }
         }
-        existing.totalShares += shares;
+      } catch (clobError) {
+        console.error('[v26-sync-fills] CLOB API error, falling back to fill_logs:', clobError);
+        // Fall through to fill_logs strategy
       }
     }
-
-    console.log(`[v26-sync-fills] Aggregated fill info for ${orderFillInfo.size} orders`);
-
-    const missingTradesAll = trades.filter(t => {
-      const id = (t.order_id || '').toLowerCase();
-      return !id || !orderFillInfo.has(id);
-    });
-
-    if (missingTradesAll.length > 0) {
-      const missingSample = missingTradesAll.slice(0, 10).map(t => ({
-        id: t.id,
-        order_id: t.order_id,
-        status: t.status,
-        filled_shares: t.filled_shares,
-        fill_matched_at: t.fill_matched_at,
-      }));
-      console.log(
-        `[v26-sync-fills] Missing fill_logs match for ${missingTradesAll.length} orders (sample up to 10):`,
-        missingSample
-      );
-    }
-
-    const results: Array<{ id: string; order_id: string; success: boolean; error?: string; fill_matched_at?: string }> = [];
-
-    // Update v26_trades with fill info from fill_logs
-    for (const trade of trades) {
-      const orderId = trade.order_id?.toLowerCase();
-      if (!orderId) {
-        results.push({ id: trade.id, order_id: trade.order_id || '', success: false, error: 'No order_id' });
-        continue;
+    
+    // Strategy 2: Fallback to fill_logs for any trades not yet processed
+    const processedIds = new Set(results.map(r => r.id));
+    const remainingTrades = trades.filter(t => !processedIds.has(t.id));
+    
+    if (remainingTrades.length > 0) {
+      console.log(`[v26-sync-fills] Using fill_logs fallback for ${remainingTrades.length} trades`);
+      
+      const orderIds = remainingTrades.map(t => t.order_id).filter(Boolean) as string[];
+      
+      const { data: fillLogs } = await supabase
+        .from('fill_logs')
+        .select('order_id, ts, iso, fill_qty, fill_price')
+        .in('order_id', orderIds);
+      
+      // Aggregate fill_logs by order_id
+      const fillMap = new Map<string, { ts: number; totalShares: number; totalValue: number }>();
+      for (const fl of fillLogs || []) {
+        const orderId = fl.order_id?.toLowerCase();
+        if (!orderId) continue;
+        const ts = Number(fl.ts) || 0;
+        const shares = Number(fl.fill_qty) || 0;
+        const price = Number(fl.fill_price) || 0;
+        const existing = fillMap.get(orderId);
+        if (!existing) {
+          fillMap.set(orderId, { ts, totalShares: shares, totalValue: shares * price });
+        } else {
+          if (ts > existing.ts) existing.ts = ts;
+          existing.totalShares += shares;
+          existing.totalValue += shares * price;
+        }
       }
-
-      const fillInfo = orderFillInfo.get(orderId);
-
-      if (!fillInfo) {
-        results.push({ id: trade.id, order_id: trade.order_id!, success: false, error: 'No fill_logs match' });
-        continue;
-      }
-
-      // Convert timestamp (ms) to ISO string
-      const fillMatchedAt = new Date(fillInfo.matchTimeMs).toISOString();
-
-      const updateData: Record<string, any> = {
-        fill_matched_at: fillMatchedAt,
-        filled_shares: Math.round(fillInfo.totalShares),
-        status: fillInfo.totalShares > 0 ? 'filled' : trade.status,
-      };
-
-      const { error: updateError } = await supabase
-        .from('v26_trades')
-        .update(updateData)
-        .eq('id', trade.id);
-
-      if (updateError) {
-        console.error(`[v26-sync-fills] Update failed for ${trade.order_id}:`, updateError);
-        results.push({ id: trade.id, order_id: trade.order_id!, success: false, error: updateError.message });
-      } else {
-        console.log(
-          `[v26-sync-fills] Updated ${trade.order_id}: fill_matched_at=${fillMatchedAt} (src_ts=${fillInfo.matchTimeMs}, src_iso=${fillInfo.iso}), filled=${updateData.filled_shares}`
-        );
-        results.push({
-          id: trade.id,
-          order_id: trade.order_id!,
-          success: true,
-          fill_matched_at: fillMatchedAt,
-        });
+      
+      for (const trade of remainingTrades) {
+        const orderId = trade.order_id?.toLowerCase();
+        if (!orderId) {
+          results.push({ id: trade.id, order_id: trade.order_id || '', success: false, source: null, error: 'No order_id' });
+          continue;
+        }
+        
+        const fill = fillMap.get(orderId);
+        if (!fill) {
+          results.push({ id: trade.id, order_id: trade.order_id!, success: false, source: 'fill_logs', error: 'No fill_logs match' });
+          continue;
+        }
+        
+        const avgPrice = fill.totalShares > 0 ? fill.totalValue / fill.totalShares : null;
+        const matchedAt = new Date(fill.ts).toISOString();
+        
+        const { error: updateError } = await supabase
+          .from('v26_trades')
+          .update({
+            filled_shares: fill.totalShares,
+            avg_fill_price: avgPrice,
+            fill_matched_at: matchedAt,
+            status: fill.totalShares > 0 ? 'filled' : trade.status,
+          })
+          .eq('id', trade.id);
+        
+        if (updateError) {
+          results.push({ id: trade.id, order_id: trade.order_id!, success: false, source: 'fill_logs', error: updateError.message });
+        } else {
+          console.log(`[v26-sync-fills] ✓ ${trade.order_id!.slice(0, 10)}... → filled via fill_logs`);
+          results.push({ id: trade.id, order_id: trade.order_id!, success: true, source: 'fill_logs', status: 'filled' });
+        }
       }
     }
 
     const successCount = results.filter(r => r.success).length;
     const failCount = results.filter(r => !r.success).length;
 
-    return new Response(
-      JSON.stringify({
-        success: true,
-        synced: successCount,
-        failed: failCount,
-        total: trades.length,
-        diagnostics: {
-          order_ids_distinct: orderIdsDistinct.length,
-          fill_logs_rows: fillLogs?.length || 0,
-          fill_logs_orders_aggregated: orderFillInfo.size,
-          missing_fill_logs_matches: missingTradesAll.length,
-        },
-        results,
-      }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    console.log(`[v26-sync-fills] Done: ${successCount} synced, ${failCount} failed`);
+
+    return new Response(JSON.stringify({
+      success: true,
+      synced: successCount,
+      failed: failCount,
+      total: trades.length,
+      usedClobApi: useClobApi,
+      results,
+    }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
   } catch (error) {
     console.error('[v26-sync-fills] Unexpected error:', error);
-    return new Response(
-      JSON.stringify({ error: String(error) }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    return new Response(JSON.stringify({ error: String(error) }), {
+      status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    });
   }
 });
