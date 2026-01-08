@@ -41,7 +41,7 @@ const RUN_ID = `v26-${Date.now()}`;
 const POLL_INTERVAL_MS = 30_000; // Check for new markets every 30s
 const PRICE_TICK_INTERVAL_MS = 1_000; // Log price every second
 const SNAPSHOT_INTERVAL_MS = 5_000; // Log snapshots every 5 seconds
-const FILL_POLL_INTERVAL_MS = 5_000; // Poll fills every 5 seconds for open orders
+const FILL_POLL_INTERVAL_MS = 2_000; // Poll fills every 2 seconds for open orders
 // Cancel timeout is calculated dynamically based on market start time
 
 // ============================================================
@@ -1094,8 +1094,8 @@ async function main(): Promise<void> {
     await logV26Snapshots();
   }, SNAPSHOT_INTERVAL_MS);
 
-  // Poll fills for open orders every 5 seconds
-  log('🔄 Starting fill polling (5s interval)');
+  // Poll fills for open orders every 2 seconds
+  log('🔄 Starting fill polling (2s interval)');
   setInterval(async () => {
     await pollFillsForOpenOrders();
   }, FILL_POLL_INTERVAL_MS);
