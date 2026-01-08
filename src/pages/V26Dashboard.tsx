@@ -101,6 +101,10 @@ export default function V26Dashboard() {
     winRate: 0,
     totalInvested: 0,
     totalPnl: 0,
+    avgProfitPerBet: 0,
+    avgProfitPerHour: 0,
+    totalHours: 0,
+    roi: 0,
   });
   const [assetStats, setAssetStats] = useState<Record<string, AssetStats>>({});
   const [fillTimeStats, setFillTimeStats] = useState({
@@ -386,6 +390,26 @@ export default function V26Dashboard() {
       count: fillTimes.length,
     };
 
+    // Calculate avg profit per bet (only settled trades)
+    const settledBets = totalWins + totalLosses;
+    const avgProfitPerBet = settledBets > 0 ? totalPnl / settledBets : 0;
+
+    // Calculate avg profit per hour (based on trading time range)
+    let totalHours = 0;
+    let avgProfitPerHour = 0;
+    if (logs.length >= 2) {
+      const sortedLogs = [...logs].sort((a, b) => 
+        new Date(a.eventStartTime).getTime() - new Date(b.eventStartTime).getTime()
+      );
+      const firstTrade = new Date(sortedLogs[0].eventStartTime);
+      const lastTrade = new Date(sortedLogs[sortedLogs.length - 1].eventEndTime);
+      totalHours = (lastTrade.getTime() - firstTrade.getTime()) / (1000 * 60 * 60);
+      avgProfitPerHour = totalHours > 0 ? totalPnl / totalHours : 0;
+    }
+
+    // Calculate ROI
+    const roi = totalInvested > 0 ? (totalPnl / totalInvested) * 100 : 0;
+
     setTrades(logs);
     setAssetStats(perAsset);
     setFillTimeStats(fillTimeStatsCalc);
@@ -399,6 +423,10 @@ export default function V26Dashboard() {
       winRate,
       totalInvested,
       totalPnl,
+      avgProfitPerBet,
+      avgProfitPerHour,
+      totalHours,
+      roi,
     });
     setLoading(false);
   };
@@ -695,6 +723,79 @@ export default function V26Dashboard() {
               </div>
               <div className="text-xs text-muted-foreground mt-1">
                 {worstAsset.winRate.toFixed(0)}% win rate
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="pt-4 pb-3">
+              <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
+                <DollarSign className="h-3 w-3" /> Invested
+              </div>
+              <div className="text-xl font-bold font-mono">
+                ${stats.totalInvested.toFixed(2)}
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">
+                ROI: <span className={stats.roi >= 0 ? 'text-green-500' : 'text-red-500'}>{stats.roi.toFixed(1)}%</span>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Profit Stats - Row 3 */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <Card className={`bg-gradient-to-br ${stats.avgProfitPerBet >= 0 ? 'from-green-500/5 to-green-500/10 border-green-500/20' : 'from-red-500/5 to-red-500/10 border-red-500/20'}`}>
+            <CardContent className="pt-4 pb-3">
+              <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
+                <Target className="h-3 w-3" /> Avg Profit / Bet
+              </div>
+              <div className={`text-xl font-bold font-mono ${stats.avgProfitPerBet >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                {stats.avgProfitPerBet >= 0 ? '+' : ''}${stats.avgProfitPerBet.toFixed(2)}
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">
+                Over {stats.wins + stats.losses} settled bets
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className={`bg-gradient-to-br ${stats.avgProfitPerHour >= 0 ? 'from-green-500/5 to-green-500/10 border-green-500/20' : 'from-red-500/5 to-red-500/10 border-red-500/20'}`}>
+            <CardContent className="pt-4 pb-3">
+              <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
+                <Clock className="h-3 w-3" /> Avg Profit / Hour
+              </div>
+              <div className={`text-xl font-bold font-mono ${stats.avgProfitPerHour >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                {stats.avgProfitPerHour >= 0 ? '+' : ''}${stats.avgProfitPerHour.toFixed(2)}
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">
+                Over {stats.totalHours.toFixed(1)} hours
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="pt-4 pb-3">
+              <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
+                <BarChart3 className="h-3 w-3" /> Avg Bet Size
+              </div>
+              <div className="text-xl font-bold font-mono">
+                ${stats.filledBets > 0 ? (stats.totalInvested / stats.filledBets).toFixed(2) : '0.00'}
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">
+                {stats.filledBets} filled orders
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="pt-4 pb-3">
+              <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
+                <Zap className="h-3 w-3" /> Expected Value
+              </div>
+              <div className={`text-xl font-bold font-mono ${stats.avgProfitPerBet >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                {stats.avgProfitPerBet >= 0 ? '+' : ''}{((stats.avgProfitPerBet / (stats.filledBets > 0 ? stats.totalInvested / stats.filledBets : 1)) * 100).toFixed(1)}%
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">
+                Per bet EV
               </div>
             </CardContent>
           </Card>
