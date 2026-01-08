@@ -58,12 +58,15 @@ export function appendJsonl(logType: LogType, data: object): void {
 // ---------- Snapshot Log Schema ----------
 // v6.0.0: Extended with additional price context for enrichment
 // v6.5.0: Extended with inventory risk metrics
+// v8.1.0: Extended asset types to include SOL and XRP
+
+export type SnapshotAssetType = 'BTC' | 'ETH' | 'SOL' | 'XRP';
 
 export interface SnapshotLog {
   ts: number;                    // epoch ms
   iso: string;                   // ISO timestamp
   marketId: string;
-  asset: 'BTC' | 'ETH';
+  asset: SnapshotAssetType;
   secondsRemaining: number;
   
   // Price context (v6.0.0 - ensure these are ALWAYS populated)
@@ -122,11 +125,14 @@ export function logSnapshot(data: SnapshotLog): void {
 // ---------- Fill Log Schema ----------
 
 // v6.0.0: Extended FillLog with additional context for enrichment
+// v8.1.0: Extended asset types to include SOL and XRP for V26 strategy
+export type AssetType = 'BTC' | 'ETH' | 'SOL' | 'XRP';
+
 export interface FillLog {
   ts: number;
   iso: string;
   marketId: string;
-  asset: 'BTC' | 'ETH';
+  asset: AssetType;
   side: 'UP' | 'DOWN';
   orderId: string | null;
   clientOrderId: string | null;
@@ -160,12 +166,13 @@ export function logFill(data: FillLog): void {
 
 // ---------- Settlement Summary Log Schema ----------
 // v6.5.0: Extended with market aggregation data
+// v8.1.0: Extended asset types to include SOL and XRP
 
 export interface SettlementLog {
   ts: number;
   iso: string;
   marketId: string;
-  asset: 'BTC' | 'ETH';
+  asset: AssetType;
   openTs: number | null;         // First fill timestamp
   closeTs: number;               // Settlement timestamp
   finalUpShares: number;
