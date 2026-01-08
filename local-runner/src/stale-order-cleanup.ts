@@ -9,16 +9,16 @@ import { fetchStalePlacedOrders, updateOrder, saveBotEvent, StalePlacedOrder } f
 import { cancelOrder } from './polymarket.js';
 import { onCancelOpen } from './exposure-ledger.js';
 
-// Configuration
+// Configuration - more aggressive cleanup
 export const STALE_CLEANUP_CONFIG = {
-  // How often to check for stale orders (ms)
-  intervalMs: 3_000,
-  // TTL for entry-type orders
-  entryTtlMs: 20_000,
-  // TTL for hedge-type orders (more aggressive)
-  hedgeTtlMs: 10_000,
+  // How often to check for stale orders (ms) - check every 2 seconds
+  intervalMs: 2_000,
+  // TTL for entry-type orders (30 sec = user's expectation)
+  entryTtlMs: 30_000,
+  // TTL for hedge-type orders (more aggressive - 15 sec)
+  hedgeTtlMs: 15_000,
   // Max cancel attempts per order
-  maxCancelAttempts: 3,
+  maxCancelAttempts: 5,
   // Enable cleanup
   enabled: true,
 };
