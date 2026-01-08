@@ -2,7 +2,7 @@
 // V26 CONFIG LOADER - Fetches config from database
 // ============================================================
 
-import { V26_CONFIG } from './index.js';
+import { V26_CONFIG } from './defaults.js';
 
 export interface V26DbConfig {
   id: string;
