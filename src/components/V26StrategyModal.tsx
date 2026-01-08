@@ -83,6 +83,10 @@ export function V26StrategyModal() {
     if (!config) return;
 
     setSaving(true);
+    
+    // Increment config_version to trigger runner reload
+    const newVersion = ((config as any).config_version || 1) + 1;
+    
     const { error } = await supabase
       .from('v26_config')
       .update({
@@ -94,6 +98,7 @@ export function V26StrategyModal() {
         max_lead_time_sec: maxLeadTimeSec,
         min_lead_time_sec: minLeadTimeSec,
         cancel_after_start_sec: cancelAfterStartSec,
+        config_version: newVersion,
       })
       .eq('id', config.id);
 
@@ -101,7 +106,7 @@ export function V26StrategyModal() {
       console.error('Failed to save config:', error);
       toast.error('Opslaan mislukt');
     } else {
-      toast.success('Strategie instellingen opgeslagen! Runner pikt dit op bij volgende poll.');
+      toast.success('✅ Opgeslagen! Runner herlaadt config binnen 10 seconden.');
       setOpen(false);
     }
     setSaving(false);

@@ -25,6 +25,7 @@ import {
   logV26Status,
   loadV26Config,
   getV26Config,
+  checkAndReloadConfig,
 } from './index.js';
 import { saveV26Trade, updateV26Trade, hasExistingTrade, getV26Oracle } from './backend.js';
 import type { FillLog, SettlementLog, SnapshotLog } from '../logger.js';
@@ -1069,6 +1070,12 @@ async function main(): Promise<void> {
   setInterval(async () => {
     await pollFillsForOpenOrders();
   }, FILL_POLL_INTERVAL_MS);
+
+  // Check for config changes every 10 seconds
+  log('⚙️ Starting config hot-reload (10s interval)');
+  setInterval(async () => {
+    await checkAndReloadConfig();
+  }, 10_000);
 
   // Keep process alive
   log('👀 Watching for markets... (Ctrl+C to stop)');
