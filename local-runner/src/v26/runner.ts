@@ -36,6 +36,7 @@ const RUN_ID = `v26-${Date.now()}`;
 const POLL_INTERVAL_MS = 30_000; // Check for new markets every 30s
 const PRICE_TICK_INTERVAL_MS = 1_000; // Log price every second
 const SNAPSHOT_INTERVAL_MS = 5_000; // Log snapshots every 5 seconds
+const FILL_POLL_INTERVAL_MS = 5_000; // Poll fills every 5 seconds for open orders
 // Cancel timeout is calculated dynamically based on market start time
 
 // ============================================================
@@ -856,6 +857,86 @@ function scheduleMarket(market: V26Market): void {
 }
 
 // ============================================================
+// FILL POLLING - CHECK OPEN ORDERS FOR FILLS
+// ============================================================
+
+async function pollFillsForOpenOrders(): Promise<void> {
+  // Check all scheduled trades that have an orderId but aren't fully filled
+  for (const [key, scheduled] of scheduledTrades) {
+    const { market, trade, orderId, placedAtMs } = scheduled;
+    
+    // Skip if no order placed yet or already fully filled
+    if (!orderId || trade.status === 'filled' || trade.status === 'cancelled' || trade.status === 'error') {
+      continue;
+    }
+
+    try {
+      const fillInfo = await getOrderFillInfo(orderId);
+      
+      if (!fillInfo.success) {
+        continue;
+      }
+
+      const newFilledShares = fillInfo.filledSize ?? 0;
+      const previousFilled = trade.filledShares;
+
+      // Only log if we have NEW fills since last check
+      if (newFilledShares > previousFilled) {
+        const newFillQty = newFilledShares - previousFilled;
+        trade.filledShares = newFilledShares;
+        trade.avgFillPrice = trade.avgFillPrice ?? trade.price;
+        
+        if (placedAtMs && trade.fillTimeMs === undefined) {
+          trade.fillTimeMs = Math.max(0, Date.now() - placedAtMs);
+        }
+
+        // Update status
+        if (fillInfo.status === 'filled') {
+          trade.status = 'filled';
+        } else if (newFilledShares > 0) {
+          trade.status = 'partial';
+        }
+
+        tradesCount++;
+
+        // Log the fill immediately!
+        log(`🔄 [${market.asset}] Fill detected via polling: +${newFillQty} shares (total: ${newFilledShares}/${V26_CONFIG.shares})`);
+        void logV26Fill(market, trade, newFillQty, trade.avgFillPrice);
+        void logV26DecisionSnapshot(market, trade, 'ENTRY', 'POLL_FILL_DETECTED', 'DOWN');
+
+        // Update DB
+        if (trade.id) {
+          await updateV26Trade(trade.id, {
+            status: trade.status,
+            filledShares: trade.filledShares,
+            avgFillPrice: trade.avgFillPrice,
+            fillTimeMs: trade.fillTimeMs,
+          });
+        }
+
+        // If fully filled, schedule settlement and clean up
+        if (trade.status === 'filled') {
+          log(`✓ [${market.asset}] Order fully filled via polling - scheduling settlement`);
+          
+          // Clear the cancel timeout since we're done
+          if (scheduled.cancelTimeout) {
+            clearTimeout(scheduled.cancelTimeout);
+            scheduled.cancelTimeout = undefined;
+          }
+          
+          scheduleSettlement(market, trade);
+          completedMarkets.add(key);
+          scheduledTrades.delete(key);
+        }
+      }
+    } catch (err) {
+      // Non-critical, just continue polling
+      logError(`[${market.asset}] Fill poll error`, err);
+    }
+  }
+}
+
+// ============================================================
 // MAIN LOOP
 // ============================================================
 
@@ -956,6 +1037,12 @@ async function main(): Promise<void> {
   setInterval(async () => {
     await logV26Snapshots();
   }, SNAPSHOT_INTERVAL_MS);
+
+  // Poll fills for open orders every 5 seconds
+  log('🔄 Starting fill polling (5s interval)');
+  setInterval(async () => {
+    await pollFillsForOpenOrders();
+  }, FILL_POLL_INTERVAL_MS);
 
   // Keep process alive
   log('👀 Watching for markets... (Ctrl+C to stop)');
