@@ -61,7 +61,9 @@ interface TradeLog {
   total: number;
   orderType: 'LIMIT';
   result: 'WIN' | 'LOSS' | 'LIVE' | 'PENDING' | 'NOT_BOUGHT';
+  resultSource: 'PNL' | 'RESULT' | 'DELTA' | 'LIVE' | 'NOT_FILLED' | 'UNKNOWN'; // Source of result decision
   pnl: number | null;
+  expectedPayout: number | null; // What we'd get if we win ($1 * shares)
   fillTimeMs: number | null;
   filledOffsetSec: number | null; // Seconds before (negative) or after (positive) market open
   filledSource: 'match' | 'log' | null; // Source of fill time: 'match' = CLOB match_time, 'log' = fill_logs
@@ -72,6 +74,7 @@ interface TradeLog {
   eventEndTime: string;
   eventStartTime: string;
   createdAt: string;
+  side: string; // UP or DOWN
 }
 
 interface AssetStats {
@@ -325,6 +328,7 @@ export default function V26Dashboard() {
       const tradePnl = trade.pnl;
 
       let result: TradeLog['result'];
+      let resultSource: TradeLog['resultSource'] = 'UNKNOWN';
 
       const addFilledAccounting = () => {
         totalFilled++;
@@ -332,71 +336,106 @@ export default function V26Dashboard() {
         perAsset[trade.asset].invested += cost;
       };
 
-      const settleWin = () => {
+      const settleWin = (source: TradeLog['resultSource']) => {
         result = 'WIN';
+        resultSource = source;
         totalWins++;
         perAsset[trade.asset].wins++;
         settledResults.push('WIN');
         addFilledAccounting();
       };
 
-      const settleLoss = () => {
+      const settleLoss = (source: TradeLog['resultSource']) => {
         result = 'LOSS';
+        resultSource = source;
         totalLosses++;
         perAsset[trade.asset].losses++;
         settledResults.push('LOSS');
         addFilledAccounting();
       };
 
+      // Build log identifier for debugging
+      const logId = `[${trade.asset}-${format(new Date(trade.event_start_time), 'HH:mm')}]`;
+
       if (!isFilled) {
         result = 'NOT_BOUGHT';
+        resultSource = 'NOT_FILLED';
+        console.log(`${logId} Status = NOT_BOUGHT (no fill)`);
       } else {
         const sideUpper = (trade.side ?? '').toUpperCase();
         const resultUpper = (tradeResult ?? '').toUpperCase();
 
         // PRIORITY 1: Use PnL if available (most reliable source of truth)
-        if (tradePnl !== null) {
-          if (tradePnl > 0) settleWin();
-          else if (tradePnl < 0) settleLoss();
-          else {
-            // pnl === 0 is ambiguous, treat as pending unless market ended
-            if (isEnded) {
-              result = 'PENDING';
-              totalPending++;
-              addFilledAccounting();
-            } else {
-              result = 'LIVE';
-              totalLive++;
-              addFilledAccounting();
-            }
+        if (tradePnl !== null && tradePnl !== 0) {
+          if (tradePnl > 0) {
+            settleWin('PNL');
+            console.log(`${logId} Result = WIN via pnl ($${tradePnl.toFixed(2)})`);
+          } else {
+            settleLoss('PNL');
+            console.log(`${logId} Result = LOSS via pnl ($${tradePnl.toFixed(2)})`);
           }
         }
         // PRIORITY 2: Market not ended yet -> LIVE
         else if (!isEnded) {
           result = 'LIVE';
+          resultSource = 'LIVE';
           totalLive++;
           addFilledAccounting();
+          console.log(`${logId} Status = LIVE (market not ended)`);
         }
-        // PRIORITY 3: Backend stored market winning side (UP/DOWN)
+        // PRIORITY 3: pnl = 0 and market ended - ambiguous, check other sources
+        else if (tradePnl === 0) {
+          // pnl = 0 could mean tie or data issue - check result/delta
+          if (resultUpper === 'UP' || resultUpper === 'DOWN') {
+            if (sideUpper && sideUpper === resultUpper) {
+              settleWin('RESULT');
+              console.log(`${logId} Result = WIN via result (pnl=0 but result=${resultUpper})`);
+            } else {
+              settleLoss('RESULT');
+              console.log(`${logId} Result = LOSS via result (pnl=0 but result=${resultUpper})`);
+            }
+          } else {
+            result = 'PENDING';
+            resultSource = 'UNKNOWN';
+            totalPending++;
+            addFilledAccounting();
+            console.log(`${logId} Status = PENDING (pnl=0, no result data)`);
+          }
+        }
+        // PRIORITY 4: Backend stored market winning side (UP/DOWN)
         else if (resultUpper === 'UP' || resultUpper === 'DOWN') {
-          if (sideUpper && sideUpper === resultUpper) settleWin();
-          else settleLoss();
+          if (sideUpper && sideUpper === resultUpper) {
+            settleWin('RESULT');
+            console.log(`${logId} Result = WIN via result (${sideUpper} === ${resultUpper})`);
+          } else {
+            settleLoss('RESULT');
+            console.log(`${logId} Result = LOSS via result (${sideUpper} !== ${resultUpper})`);
+          }
         }
-        // PRIORITY 4: Fallback - infer winner from close-vs-strike delta
+        // PRIORITY 5: Fallback - infer winner from close-vs-strike delta
         else if (delta !== null) {
           if (delta === 0) {
             result = 'PENDING';
+            resultSource = 'UNKNOWN';
             totalPending++;
             addFilledAccounting();
+            console.log(`${logId} Status = PENDING (delta=0, ambiguous)`);
           } else {
             const winningSide = delta < 0 ? 'DOWN' : 'UP';
-            if (sideUpper && sideUpper === winningSide) settleWin();
-            else settleLoss();
+            if (sideUpper && sideUpper === winningSide) {
+              settleWin('DELTA');
+              console.log(`${logId} Result = WIN via delta fallback (delta=${delta.toFixed(2)} → ${winningSide})`);
+            } else {
+              settleLoss('DELTA');
+              console.log(`${logId} Result = LOSS via delta fallback (delta=${delta.toFixed(2)} → ${winningSide})`);
+            }
           }
         } else {
           result = 'PENDING';
+          resultSource = 'UNKNOWN';
           totalPending++;
           addFilledAccounting();
+          console.log(`${logId} Status = PENDING (no pnl, no result, no delta)`);
         }
       }
 
@@ -467,6 +506,9 @@ export default function V26Dashboard() {
         return { filledOffsetSec: null, filledSource: null };
       })();
 
+      // Calculate expected payout (what we'd get if we win)
+      const expectedPayout = filledShares > 0 ? filledShares * 1.0 : null; // $1 per share if win
+
       logs.push({
         id: trade.id,
         market: marketTitle,
@@ -478,7 +520,9 @@ export default function V26Dashboard() {
         total: cost,
         orderType: 'LIMIT',
         result,
+        resultSource,
         pnl,
+        expectedPayout,
         fillTimeMs,
         filledOffsetSec,
         filledSource,
@@ -489,6 +533,7 @@ export default function V26Dashboard() {
         eventEndTime: trade.event_end_time,
         eventStartTime: trade.event_start_time,
         createdAt: trade.created_at,
+        side: trade.side ?? 'DOWN',
       });
     }
 
@@ -757,17 +802,42 @@ export default function V26Dashboard() {
   );
 
   const getResultBadge = (log: TradeLog) => {
+    // Format source indicator
+    const sourceLabel = log.resultSource !== 'UNKNOWN' && log.resultSource !== 'NOT_FILLED' && log.resultSource !== 'LIVE'
+      ? ` (${log.resultSource.toLowerCase()})`
+      : '';
+    
     switch (log.result) {
       case 'NOT_BOUGHT':
-        return <Badge variant="outline" className="text-muted-foreground text-xs">❌ Niet gekocht</Badge>;
+        return (
+          <Badge variant="outline" className="text-muted-foreground text-xs opacity-50">
+            ❌ Niet gekocht
+          </Badge>
+        );
       case 'LIVE':
-        return <Badge className="bg-blue-500/10 text-blue-500 border-blue-500/20 text-xs">🔴 Live</Badge>;
+        return (
+          <Badge className="bg-blue-500/10 text-blue-500 border-blue-500/20 text-xs animate-pulse">
+            🔴 Live
+          </Badge>
+        );
       case 'PENDING':
-        return <Badge className="bg-yellow-500/10 text-yellow-500 border-yellow-500/20 text-xs">⏳ Oracle</Badge>;
+        return (
+          <Badge className="bg-orange-500/10 text-orange-500 border-orange-500/20 text-xs">
+            ⏳ Wacht op oracle
+          </Badge>
+        );
       case 'WIN':
-        return <Badge className="bg-green-500/10 text-green-500 border-green-500/20 text-xs">✓ WIN</Badge>;
+        return (
+          <Badge className="bg-green-500/10 text-green-500 border-green-500/20 text-xs" title={`Bron: ${log.resultSource}`}>
+            ✓ WIN{sourceLabel}
+          </Badge>
+        );
       case 'LOSS':
-        return <Badge className="bg-red-500/10 text-red-500 border-red-500/20 text-xs">✗ LOSS</Badge>;
+        return (
+          <Badge className="bg-red-500/10 text-red-500 border-red-500/20 text-xs" title={`Bron: ${log.resultSource}`}>
+            ✗ LOSS{sourceLabel}
+          </Badge>
+        );
     }
   };
 
@@ -1346,10 +1416,16 @@ export default function V26Dashboard() {
                       <TableRow 
                         key={log.id} 
                         className={`border-b border-border/30 ${log.result === 'NOT_BOUGHT' ? 'opacity-40' : ''} hover:bg-muted/30 transition-colors`}
+                        title={`Side: ${log.side} | Expected: $${log.expectedPayout?.toFixed(2) ?? '0'} | Source: ${log.resultSource}`}
                       >
                         <TableCell className="py-2">
                           <div className="flex items-center gap-2">
-                            <div className="font-medium text-sm">{log.market}</div>
+                            <div className="flex flex-col">
+                              <span className="font-medium text-sm">{log.market}</span>
+                              <span className="text-xs text-muted-foreground">
+                                {log.side} @ ${log.pricePerShare.toFixed(2)} · {log.shares > 0 ? `${log.shares} shares` : 'no fill'}
+                              </span>
+                            </div>
                             <a
                               href={`https://polymarket.com/event/${log.asset.toLowerCase()}-updown-15m-${Math.floor(new Date(log.eventStartTime).getTime() / 1000)}`}
                               target="_blank"
@@ -1391,6 +1467,10 @@ export default function V26Dashboard() {
                           {log.pnl !== null ? (
                             <span className={log.pnl >= 0 ? 'text-green-500' : 'text-red-500'}>
                               {log.pnl >= 0 ? '+' : ''}${log.pnl.toFixed(2)}
+                            </span>
+                          ) : log.result === 'LIVE' && log.expectedPayout ? (
+                            <span className="text-muted-foreground text-xs">
+                              (max +${(log.expectedPayout - log.total).toFixed(2)})
                             </span>
                           ) : '-'}
                         </TableCell>
