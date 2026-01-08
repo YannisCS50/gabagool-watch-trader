@@ -484,6 +484,9 @@ async function fetchUpcomingMarkets(): Promise<V26Market[]> {
 async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
   const { market, trade } = scheduled;
   const key = `${market.id}:${market.asset}`;
+
+  // Global runtime config (timers etc.)
+  const cfg = getV26Config();
   
   // Get per-asset config
   const assetCfg = getAssetConfig(market.asset);
