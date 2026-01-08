@@ -470,32 +470,12 @@ export default function V26Dashboard() {
     const settledBets = totalWins + totalLosses;
     const avgProfitPerBet = settledBets > 0 ? totalPnl / settledBets : 0;
 
-    // Calculate avg profit per hour based on ACTIVE runner time
-    let totalHours = 0;
-    let avgProfitPerHour = 0;
-    
-    // Fetch runner heartbeats to calculate active hours
-    const heartbeatsRes = await supabase
-      .from('runner_heartbeats')
-      .select('created_at, last_heartbeat')
-      .eq('runner_type', 'v26')
-      .order('created_at', { ascending: true });
-    
-    if (heartbeatsRes.data && heartbeatsRes.data.length > 0) {
-      // Each heartbeat represents ~30s of activity (heartbeat interval)
-      // Count unique active 30-second windows
-      const activeMinutes = new Set<string>();
-      
-      for (const hb of heartbeatsRes.data) {
-        const ts = new Date(hb.last_heartbeat || hb.created_at);
-        // Round to nearest minute for deduplication
-        const minuteKey = `${ts.getFullYear()}-${ts.getMonth()}-${ts.getDate()}-${ts.getHours()}-${ts.getMinutes()}`;
-        activeMinutes.add(minuteKey);
-      }
-      
-      totalHours = activeMinutes.size / 60; // Convert minutes to hours
-      avgProfitPerHour = totalHours > 0 ? totalPnl / totalHours : 0;
-    }
+    // Calculate avg profit per hour = bets/hour * fill rate * avg profit per bet
+    // Bets per hour: 4 assets * 4 markets per hour (15min each) = 16
+    const betsPerHour = 16;
+    const fillRateDecimal = fillRate / 100;
+    const avgProfitPerHour = betsPerHour * fillRateDecimal * avgProfitPerBet;
+    const totalHours = 0; // Not needed with new formula
 
     // Calculate ROI
     const roi = totalInvested > 0 ? (totalPnl / totalInvested) * 100 : 0;
