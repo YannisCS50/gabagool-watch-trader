@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { 
   ArrowLeft, RefreshCw, TrendingUp, TrendingDown, DollarSign, Target, Percent,
   Clock, Zap, BarChart3, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ExternalLink,
-  Upload
+  Upload, CheckCircle2, XCircle, Flame, Activity
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -77,6 +77,9 @@ interface AssetStats {
   winRate: number;
   pnl: number;
   invested: number;
+  placed: number;
+  filled: number;
+  fillRate: number;
 }
 
 const ASSETS = ['ALL', 'BTC', 'ETH', 'SOL', 'XRP'] as const;
@@ -105,6 +108,12 @@ export default function V26Dashboard() {
     avgProfitPerHour: 0,
     totalHours: 0,
     roi: 0,
+    fillRate: 0,
+    avgEntryOffset: 0,
+    currentStreak: 0,
+    maxWinStreak: 0,
+    maxLossStreak: 0,
+    profitFactor: 0,
   });
   const [assetStats, setAssetStats] = useState<Record<string, AssetStats>>({});
   const [fillTimeStats, setFillTimeStats] = useState({
@@ -196,20 +205,29 @@ export default function V26Dashboard() {
 
     // Per-asset stats
     const perAsset: Record<string, AssetStats> = {
-      BTC: { wins: 0, losses: 0, winRate: 0, pnl: 0, invested: 0 },
-      ETH: { wins: 0, losses: 0, winRate: 0, pnl: 0, invested: 0 },
-      SOL: { wins: 0, losses: 0, winRate: 0, pnl: 0, invested: 0 },
-      XRP: { wins: 0, losses: 0, winRate: 0, pnl: 0, invested: 0 },
+      BTC: { wins: 0, losses: 0, winRate: 0, pnl: 0, invested: 0, placed: 0, filled: 0, fillRate: 0 },
+      ETH: { wins: 0, losses: 0, winRate: 0, pnl: 0, invested: 0, placed: 0, filled: 0, fillRate: 0 },
+      SOL: { wins: 0, losses: 0, winRate: 0, pnl: 0, invested: 0, placed: 0, filled: 0, fillRate: 0 },
+      XRP: { wins: 0, losses: 0, winRate: 0, pnl: 0, invested: 0, placed: 0, filled: 0, fillRate: 0 },
     };
 
     // Fill time tracking
     const fillTimes: number[] = [];
+    const entryOffsets: number[] = [];
+    
+    // For streaks calculation
+    const settledResults: ('WIN' | 'LOSS')[] = [];
 
     const seen = new Set<string>();
 
     for (const trade of tradesData) {
       if (seen.has(trade.market_slug)) continue;
       seen.add(trade.market_slug);
+
+      // Track placed orders per asset
+      if (perAsset[trade.asset]) {
+        perAsset[trade.asset].placed++;
+      }
 
       const strike = strikeLookup.get(trade.market_slug);
       const strikePrice = strike?.strike_price ?? null;
@@ -223,6 +241,11 @@ export default function V26Dashboard() {
       const isEnded = eventEnd < now;
       const isFilled = trade.status === 'filled' || trade.filled_shares > 0;
       const filledShares = trade.filled_shares || 0;
+      
+      // Track filled orders per asset
+      if (isFilled && perAsset[trade.asset]) {
+        perAsset[trade.asset].filled++;
+      }
       const avgPrice = trade.avg_fill_price ?? trade.price;
       const cost = filledShares * avgPrice;
       const fillTimeMs = trade.fill_time_ms;
@@ -252,6 +275,7 @@ export default function V26Dashboard() {
         totalInvested += cost;
         perAsset[trade.asset].wins++;
         perAsset[trade.asset].invested += cost;
+        settledResults.push('WIN');
       } else if (tradeResult === 'UP') {
         result = 'LOSS';
         totalLosses++;
@@ -259,15 +283,18 @@ export default function V26Dashboard() {
         totalInvested += cost;
         perAsset[trade.asset].losses++;
         perAsset[trade.asset].invested += cost;
+        settledResults.push('LOSS');
       } else if (delta !== null) {
         if (delta < 0) {
           result = 'WIN';
           totalWins++;
           perAsset[trade.asset].wins++;
+          settledResults.push('WIN');
         } else {
           result = 'LOSS';
           totalLosses++;
           perAsset[trade.asset].losses++;
+          settledResults.push('LOSS');
         }
         totalFilled++;
         totalInvested += cost;
@@ -372,10 +399,11 @@ export default function V26Dashboard() {
       });
     }
 
-    // Calculate win rates per asset
+    // Calculate win rates and fill rates per asset
     for (const asset of ['BTC', 'ETH', 'SOL', 'XRP']) {
       const a = perAsset[asset];
       a.winRate = a.wins + a.losses > 0 ? (a.wins / (a.wins + a.losses)) * 100 : 0;
+      a.fillRate = a.placed > 0 ? (a.filled / a.placed) * 100 : 0;
     }
 
     const winRate = totalWins + totalLosses > 0 
@@ -389,6 +417,54 @@ export default function V26Dashboard() {
       worstMs: fillTimes.length > 0 ? Math.max(...fillTimes) : 0,
       count: fillTimes.length,
     };
+
+    // Calculate avg entry offset from fill_logs
+    const validOffsets = logs.filter(l => l.filledOffsetSec !== null).map(l => l.filledOffsetSec as number);
+    const avgEntryOffset = validOffsets.length > 0 
+      ? validOffsets.reduce((a, b) => a + b, 0) / validOffsets.length 
+      : 0;
+
+    // Calculate streaks
+    let currentStreak = 0;
+    let maxWinStreak = 0;
+    let maxLossStreak = 0;
+    let tempWinStreak = 0;
+    let tempLossStreak = 0;
+
+    for (const result of settledResults) {
+      if (result === 'WIN') {
+        tempWinStreak++;
+        tempLossStreak = 0;
+        if (tempWinStreak > maxWinStreak) maxWinStreak = tempWinStreak;
+      } else {
+        tempLossStreak++;
+        tempWinStreak = 0;
+        if (tempLossStreak > maxLossStreak) maxLossStreak = tempLossStreak;
+      }
+    }
+
+    // Current streak (from most recent)
+    if (settledResults.length > 0) {
+      const lastResult = settledResults[settledResults.length - 1];
+      let streak = 0;
+      for (let i = settledResults.length - 1; i >= 0; i--) {
+        if (settledResults[i] === lastResult) {
+          streak++;
+        } else {
+          break;
+        }
+      }
+      currentStreak = lastResult === 'WIN' ? streak : -streak;
+    }
+
+    // Calculate profit factor (gross profit / gross loss)
+    const grossProfit = logs.filter(l => l.pnl !== null && l.pnl > 0).reduce((sum, l) => sum + (l.pnl || 0), 0);
+    const grossLoss = Math.abs(logs.filter(l => l.pnl !== null && l.pnl < 0).reduce((sum, l) => sum + (l.pnl || 0), 0));
+    const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : 0;
+
+    // Calculate fill rate
+    const totalPlaced = logs.length;
+    const fillRate = totalPlaced > 0 ? (totalFilled / totalPlaced) * 100 : 0;
 
     // Calculate avg profit per bet (only settled trades)
     const settledBets = totalWins + totalLosses;
@@ -427,6 +503,12 @@ export default function V26Dashboard() {
       avgProfitPerHour,
       totalHours,
       roi,
+      fillRate,
+      avgEntryOffset,
+      currentStreak,
+      maxWinStreak,
+      maxLossStreak,
+      profitFactor,
     });
     setLoading(false);
   };
@@ -799,23 +881,138 @@ export default function V26Dashboard() {
               </div>
             </CardContent>
           </Card>
+        </div>
+
+        {/* Execution & Risk Stats - Row 4 */}
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+          <Card className="bg-gradient-to-br from-blue-500/5 to-blue-500/10 border-blue-500/20">
+            <CardContent className="pt-4 pb-3">
+              <div className="flex items-center gap-2 text-blue-500/70 text-xs mb-1">
+                <CheckCircle2 className="h-3 w-3" /> Fill Rate
+              </div>
+              <div className="text-xl font-bold text-blue-500">
+                {stats.fillRate.toFixed(1)}%
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">
+                {stats.filledBets}/{stats.totalBets} orders
+              </div>
+            </CardContent>
+          </Card>
 
           <Card>
             <CardContent className="pt-4 pb-3">
               <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
-                <Clock className="h-3 w-3" /> Invested
+                <Clock className="h-3 w-3" /> Avg Entry
               </div>
               <div className="text-xl font-bold font-mono">
-                ${stats.totalInvested.toFixed(0)}
+                {stats.avgEntryOffset >= 0 ? '+' : ''}{stats.avgEntryOffset.toFixed(0)}s
               </div>
               <div className="text-xs text-muted-foreground mt-1">
-                ~${(stats.totalInvested / Math.max(stats.filledBets, 1)).toFixed(2)} avg
+                {stats.avgEntryOffset >= 0 ? 'na' : 'voor'} open
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className={stats.currentStreak > 0 ? 'bg-gradient-to-br from-green-500/5 to-green-500/10 border-green-500/20' : stats.currentStreak < 0 ? 'bg-gradient-to-br from-red-500/5 to-red-500/10 border-red-500/20' : ''}>
+            <CardContent className="pt-4 pb-3">
+              <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
+                <Flame className="h-3 w-3" /> Current Streak
+              </div>
+              <div className={`text-xl font-bold ${stats.currentStreak > 0 ? 'text-green-500' : stats.currentStreak < 0 ? 'text-red-500' : ''}`}>
+                {stats.currentStreak > 0 ? `🔥 ${stats.currentStreak}W` : stats.currentStreak < 0 ? `❄️ ${Math.abs(stats.currentStreak)}L` : '-'}
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">
+                Max: {stats.maxWinStreak}W / {stats.maxLossStreak}L
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="pt-4 pb-3">
+              <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
+                <Activity className="h-3 w-3" /> Profit Factor
+              </div>
+              <div className={`text-xl font-bold ${stats.profitFactor >= 1 ? 'text-green-500' : 'text-red-500'}`}>
+                {stats.profitFactor === Infinity ? '∞' : stats.profitFactor.toFixed(2)}
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">
+                {stats.profitFactor >= 1.5 ? 'Excellent' : stats.profitFactor >= 1 ? 'Profitable' : 'Needs work'}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="pt-4 pb-3">
+              <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
+                <Target className="h-3 w-3" /> Win $ / Loss $
+              </div>
+              <div className="text-xl font-bold font-mono">
+                {stats.wins > 0 && stats.losses > 0 
+                  ? (((stats.totalPnl + Math.abs(stats.losses * (stats.totalInvested / stats.filledBets))) / stats.wins) / 
+                     (Math.abs(stats.totalInvested / stats.filledBets))).toFixed(2)
+                  : '-'}
+              </div>
+              <div className="text-xs text-muted-foreground mt-1">
+                Risk/Reward ratio
               </div>
             </CardContent>
           </Card>
         </div>
 
-        {/* Asset Performance Cards */}
+        {/* Asset Performance Cards - Enhanced */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base flex items-center gap-2">
+              <BarChart3 className="h-4 w-4" /> Performance per Asset
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {['BTC', 'ETH', 'SOL', 'XRP'].map(asset => {
+                const a = assetStats[asset];
+                if (!a) return null;
+                return (
+                  <div key={asset} className="bg-muted/30 rounded-lg p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold">{asset}</span>
+                      <Badge variant="outline" className={a.fillRate >= 80 ? 'border-green-500/30 text-green-500' : a.fillRate >= 50 ? 'border-yellow-500/30 text-yellow-500' : 'border-red-500/30 text-red-500'}>
+                        {a.fillRate.toFixed(0)}% fill
+                      </Badge>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div>
+                        <span className="text-muted-foreground">Win Rate</span>
+                        <div className={`font-mono font-bold ${a.winRate >= 50 ? 'text-green-500' : 'text-red-500'}`}>
+                          {a.winRate.toFixed(0)}%
+                        </div>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">P&L</span>
+                        <div className={`font-mono font-bold ${a.pnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                          {a.pnl >= 0 ? '+' : ''}${a.pnl.toFixed(2)}
+                        </div>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">Record</span>
+                        <div className="font-mono">
+                          <span className="text-green-500">{a.wins}W</span>
+                          <span className="text-muted-foreground"> / </span>
+                          <span className="text-red-500">{a.losses}L</span>
+                        </div>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">Invested</span>
+                        <div className="font-mono">
+                          ${a.invested.toFixed(0)}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </CardContent>
+        </Card>
         <div className="grid grid-cols-4 gap-2">
           {['BTC', 'ETH', 'SOL', 'XRP'].map((asset) => {
             const s = assetStats[asset] || { wins: 0, losses: 0, winRate: 0, pnl: 0 };
