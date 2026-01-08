@@ -344,16 +344,13 @@ export default function V26Dashboard() {
 
       if (!isFilled) {
         result = 'NOT_BOUGHT';
-      } else if (!isEnded) {
-        result = 'LIVE';
-        totalLive++;
-        addFilledAccounting();
       } else {
         const sideUpper = (trade.side ?? '').toUpperCase();
         const resultUpper = (tradeResult ?? '').toUpperCase();
         const resultLower = (tradeResult ?? '').toLowerCase();
+        const hasResult = tradeResult !== null && tradeResult !== '';
 
-        // If backend already computed win/loss, trust it
+        // If backend already computed win/loss, trust it (even if status is still 'filled')
         if (resultLower === 'won' || resultUpper === 'WIN') {
           settleWin();
         } else if (resultLower === 'lost' || resultUpper === 'LOSS') {
@@ -363,6 +360,12 @@ export default function V26Dashboard() {
         else if (resultUpper === 'UP' || resultUpper === 'DOWN') {
           if (sideUpper && sideUpper === resultUpper) settleWin();
           else settleLoss();
+        }
+        // Market not ended yet and no result -> LIVE
+        else if (!isEnded) {
+          result = 'LIVE';
+          totalLive++;
+          addFilledAccounting();
         }
         // Fallback: infer winner from close-vs-strike delta, then compare with our side
         else if (delta !== null) {
