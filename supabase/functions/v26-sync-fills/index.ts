@@ -189,6 +189,29 @@ async function fetchOrderFromClob(
   try {
     // Correct endpoint per docs: GET /data/order/{order_hash}
     const requestPath = `/data/order/${orderId}`;
+
+    // 1) Try without auth headers first (public endpoints often work; avoids "bad key" breaking reads)
+    {
+      const response = await fetch(`${CLOB_BASE_URL}${requestPath}`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        return (data?.order || data) as ClobOrder;
+      }
+
+      // If not authorized, fall through to authenticated call
+      if (response.status !== 401 && response.status !== 403) {
+        const text = await response.text();
+        console.log(
+          `[v26-sync-fills] Public CLOB order ${orderId.slice(0, 10)}... returned ${response.status}: ${text.slice(0, 120)}`
+        );
+      }
+    }
+
+    // 2) Authenticated request (requires valid API key derived from POLYMARKET_PRIVATE_KEY)
     const headers = await createL2Headers(funderAddress, creds, 'GET', requestPath);
 
     const response = await fetch(`${CLOB_BASE_URL}${requestPath}`, {
@@ -221,35 +244,37 @@ function extractFillInfo(order: ClobOrder): {
   matchedAt: string | null;
 } {
   const originalSize = parseFloat(order.original_size) || 0;
-  const sizeMatched = parseFloat(order.size_matched) || 0;
-  
+  const sizeMatchedRaw = parseFloat(order.size_matched) || 0;
+  // v26_trades.filled_shares is an integer column; normalize here.
+  const sizeMatched = Math.round(sizeMatchedRaw);
+
   // Determine status
   let status: 'filled' | 'cancelled' | 'open' | 'partial';
   if (order.status === 'CANCELLED' || order.status === 'EXPIRED') {
     status = sizeMatched > 0 ? 'partial' : 'cancelled';
-  } else if (order.status === 'MATCHED' || sizeMatched >= originalSize * 0.99) {
+  } else if (order.status === 'MATCHED' || sizeMatchedRaw >= originalSize * 0.99) {
     status = 'filled';
-  } else if (sizeMatched > 0) {
+  } else if (sizeMatchedRaw > 0) {
     status = 'partial';
   } else {
     status = 'open';
   }
-  
+
   // Calculate avg fill price from associate_trades
   let avgFillPrice: number | null = null;
   let matchedAt: string | null = null;
-  
+
   if (order.associate_trades && order.associate_trades.length > 0) {
     let totalValue = 0;
     let totalSize = 0;
     let latestMatchTime: Date | null = null;
-    
+
     for (const trade of order.associate_trades) {
       const price = parseFloat(trade.price) || 0;
       const size = parseFloat(trade.size) || 0;
       totalValue += price * size;
       totalSize += size;
-      
+
       if (trade.match_time) {
         const matchTime = new Date(trade.match_time);
         if (!latestMatchTime || matchTime > latestMatchTime) {
@@ -257,7 +282,7 @@ function extractFillInfo(order: ClobOrder): {
         }
       }
     }
-    
+
     if (totalSize > 0) {
       avgFillPrice = totalValue / totalSize;
     }
@@ -265,7 +290,7 @@ function extractFillInfo(order: ClobOrder): {
       matchedAt = latestMatchTime.toISOString();
     }
   }
-  
+
   return { status, filledShares: sizeMatched, avgFillPrice, matchedAt };
 }
 
@@ -412,38 +437,47 @@ serve(async (req) => {
         .from('fill_logs')
         .select('fill_qty, fill_price, ts, side')
         .eq('market_id', trade.market_id)
-        .eq('side', trade.side === 'DOWN' ? 'SELL' : 'BUY')
+        // NOTE: fill_logs.side for this runner is UP/DOWN (not BUY/SELL)
+        .eq('side', trade.side)
         .gte('ts', startTime - 60000) // 1 min before
         .lte('ts', endTime + 60000);  // 1 min after
-      
+
       if (fills && fills.length > 0) {
-        let totalShares = 0;
+        let totalSharesRaw = 0;
         let totalValue = 0;
-        
+        let latestTs = 0;
+
         for (const fill of fills) {
           const qty = Number(fill.fill_qty) || 0;
           const price = Number(fill.fill_price) || 0;
-          totalShares += qty;
+          const ts = Number(fill.ts) || 0;
+
+          totalSharesRaw += qty;
           totalValue += qty * price;
+          if (ts > latestTs) latestTs = ts;
         }
-        
-        const avgPrice = totalShares > 0 ? totalValue / totalShares : 0.48;
-        
-        console.log(`[v26-sync-fills] ✓ Found ${fills.length} fills for ${trade.market_slug} → ${totalShares} shares @ ${avgPrice.toFixed(3)}`);
-        
+
+        const filledShares = Math.round(totalSharesRaw);
+        const avgPrice = totalSharesRaw > 0 ? totalValue / totalSharesRaw : 0.48;
+        const matchedAt = latestTs ? new Date(latestTs).toISOString() : new Date().toISOString();
+
+        console.log(
+          `[v26-sync-fills] ✓ Found ${fills.length} fills for ${trade.market_slug} → ${filledShares} shares (raw ${totalSharesRaw.toFixed(6)}) @ ${avgPrice.toFixed(3)}`
+        );
+
         await supabase
           .from('v26_trades')
           .update({
             status: 'filled',
-            filled_shares: totalShares,
+            filled_shares: filledShares,
             avg_fill_price: avgPrice,
-            fill_matched_at: new Date().toISOString()
+            fill_matched_at: matchedAt,
           })
           .eq('id', trade.id);
       } else {
         // No fills found - mark as cancelled
         console.log(`[v26-sync-fills] ✗ No fills found for ${trade.market_slug} - marking as cancelled`);
-        
+
         await supabase
           .from('v26_trades')
           .update({ status: 'cancelled' })
@@ -621,14 +655,15 @@ serve(async (req) => {
         
         const avgPrice = fill.totalShares > 0 ? fill.totalValue / fill.totalShares : null;
         const matchedAt = new Date(fill.ts).toISOString();
-        
+        const filledShares = Math.round(fill.totalShares);
+
         const { error: updateError } = await supabase
           .from('v26_trades')
           .update({
-            filled_shares: fill.totalShares,
+            filled_shares: filledShares,
             avg_fill_price: avgPrice,
             fill_matched_at: matchedAt,
-            status: fill.totalShares > 0 ? 'filled' : trade.status,
+            status: filledShares > 0 ? 'filled' : trade.status,
           })
           .eq('id', trade.id);
         
