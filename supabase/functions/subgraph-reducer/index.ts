@@ -1,13 +1,13 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 /**
- * CANONICAL ACCOUNTING REDUCER v2
+ * CANONICAL ACCOUNTING REDUCER v3
  * 
- * COMPLETE HISTORICAL INGESTION - No time limits, no pagination truncation
+ * BATCHED PROCESSING - Resumable, resource-efficient
  * 
- * Pipeline: Subgraph Events → Normalized Cashflows → Position Reducer → Database State
- * 
- * This is the ONLY place where PnL is computed. The dashboard reads from database only.
+ * - Fetches max 10 pages per invocation to avoid timeout
+ * - Stores cursor for resumable ingestion
+ * - Multiple invocations complete full history
  */
 
 const corsHeaders = {
@@ -17,8 +17,7 @@ const corsHeaders = {
 
 const DATA_API_BASE = 'https://data-api.polymarket.com';
 const PAGE_SIZE = 500;
-// NO MAX_PAGES LIMIT - fetch until genesis
-// NO MAX_AGE_DAYS - fetch complete history
+const MAX_PAGES_PER_RUN = 10; // Limit per invocation to avoid resource exhaustion
 
 interface Activity {
   proxyWallet: string;
@@ -40,49 +39,20 @@ interface Activity {
   logIndex?: number;
 }
 
-interface Position {
+interface IngestState {
   wallet: string;
-  market_id: string;
-  outcome: 'UP' | 'DOWN';
-  shares_held: number;
-  total_cost_usd: number;
-  realized_pnl: number;
-  state: 'OPEN' | 'CLAIMED' | 'LOST' | 'SOLD';
+  next_offset: number;
+  is_complete: boolean;
+  total_events_ingested: number;
 }
 
-interface MarketState {
-  wallet: string;
-  market_id: string;
-  market_slug: string | null;
-  state: 'OPEN' | 'SETTLED';
-  resolved_outcome: 'UP' | 'DOWN' | 'SPLIT' | null;
-  total_cost: number;
-  total_payout: number;
-  realized_pnl: number;
-  has_buy: boolean;
-  has_sell: boolean;
-  has_redeem: boolean;
-  is_claimed: boolean;
-  is_lost: boolean;
-}
-
-interface DailyAggregate {
-  date: string;
-  realized_pnl: number;
-  volume_traded: number;
-  buy_count: number;
-  sell_count: number;
-  redeem_count: number;
-  markets: Set<string>;
-}
-
-// REST helper with batch support
+// REST helper
 async function executeRest(
   table: string,
-  operation: 'upsert' | 'insert' | 'delete',
+  operation: 'upsert' | 'insert' | 'delete' | 'select',
   data?: unknown,
   options?: { onConflict?: string; filter?: string }
-): Promise<void> {
+): Promise<unknown> {
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
@@ -95,12 +65,14 @@ async function executeRest(
     'Prefer': 'return=minimal',
   };
 
-  if (operation === 'upsert' && options?.onConflict) {
+  if (operation === 'select') {
+    method = 'GET';
+    if (options?.filter) url += `?${options.filter}`;
+    delete headers['Prefer'];
+  } else if (operation === 'upsert' && options?.onConflict) {
     headers['Prefer'] = `resolution=merge-duplicates,return=minimal`;
     url += `?on_conflict=${options.onConflict}`;
-  }
-
-  if (operation === 'delete') {
+  } else if (operation === 'delete') {
     method = 'DELETE';
     if (options?.filter) url += `?${options.filter}`;
   }
@@ -108,97 +80,62 @@ async function executeRest(
   const response = await fetch(url, {
     method,
     headers,
-    body: operation !== 'delete' ? JSON.stringify(data) : undefined,
+    body: operation !== 'delete' && operation !== 'select' ? JSON.stringify(data) : undefined,
   });
+
+  if (operation === 'select') {
+    return await response.json();
+  }
 
   if (!response.ok) {
     const text = await response.text();
     console.error(`[reducer] REST error for ${table}:`, text);
   }
+  return null;
 }
 
-// Batch insert helper for large datasets
-async function batchUpsert(table: string, records: unknown[], onConflict: string, batchSize = 100): Promise<void> {
+// Batch upsert
+async function batchUpsert(table: string, records: unknown[], onConflict: string, batchSize = 50): Promise<void> {
   for (let i = 0; i < records.length; i += batchSize) {
     const batch = records.slice(i, i + batchSize);
     await executeRest(table, 'upsert', batch, { onConflict });
   }
 }
 
-/**
- * Fetch COMPLETE activity history from Polymarket - NO LIMITS
- * Continues until no more events exist
- */
-async function fetchCompleteActivity(wallet: string): Promise<Activity[]> {
-  const all: Activity[] = [];
-  let offset = 0;
-  let page = 0;
-
-  console.log(`[reducer] Fetching COMPLETE history for ${wallet.slice(0, 10)}...`);
-
-  while (true) {
-    const url = `${DATA_API_BASE}/activity?user=${wallet}&limit=${PAGE_SIZE}&offset=${offset}`;
-    
-    try {
-      const resp = await fetch(url);
-      if (!resp.ok) {
-        console.error(`[reducer] API error at offset ${offset}: ${resp.status}`);
-        break;
-      }
-
-      const data = await resp.json() as Activity[];
-      if (!data?.length) {
-        console.log(`[reducer] No more events at offset ${offset}`);
-        break;
-      }
-
-      all.push(...data);
-      page++;
-      
-      console.log(`[reducer] Page ${page}: +${data.length} events (total: ${all.length})`);
-
-      if (data.length < PAGE_SIZE) {
-        console.log(`[reducer] Reached end of history at page ${page}`);
-        break;
-      }
-
-      offset += PAGE_SIZE;
-      
-      // Small delay to avoid rate limiting
-      if (page % 5 === 0) {
-        await new Promise(r => setTimeout(r, 100));
-      }
-    } catch (err) {
-      console.error(`[reducer] Fetch error at offset ${offset}:`, err);
-      break;
-    }
-  }
-
-  // Sort by timestamp ascending (oldest first)
-  all.sort((a, b) => a.timestamp - b.timestamp);
-  
-  console.log(`[reducer] Complete history: ${all.length} events`);
-  if (all.length > 0) {
-    const oldest = new Date(all[0].timestamp * 1000).toISOString();
-    const newest = new Date(all[all.length - 1].timestamp * 1000).toISOString();
-    console.log(`[reducer] Range: ${oldest} to ${newest}`);
-  }
-  
-  return all;
+// Get ingest state
+async function getIngestState(wallet: string): Promise<IngestState | null> {
+  const data = await executeRest('subgraph_ingest_state', 'select', null, {
+    filter: `wallet=eq.${wallet.toLowerCase()}&select=wallet,next_offset,is_complete,total_events_ingested`
+  }) as IngestState[];
+  return data?.[0] || null;
 }
 
-// Fetch current positions
-async function fetchPositions(wallet: string): Promise<{ conditionId: string; outcomeIndex: number; size: number; avgPrice: number }[]> {
+// Fetch batch of activities with offset
+async function fetchActivityBatch(wallet: string, offset: number): Promise<{ activities: Activity[]; hasMore: boolean }> {
+  const url = `${DATA_API_BASE}/activity?user=${wallet}&limit=${PAGE_SIZE}&offset=${offset}`;
+  
   try {
-    const resp = await fetch(`${DATA_API_BASE}/positions?user=${wallet}`);
-    if (!resp.ok) return [];
-    return await resp.json() || [];
-  } catch {
-    return [];
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      console.error(`[reducer] API error at offset ${offset}: ${resp.status}`);
+      return { activities: [], hasMore: false };
+    }
+
+    const data = await resp.json() as Activity[];
+    if (!data?.length) {
+      return { activities: [], hasMore: false };
+    }
+
+    return { 
+      activities: data, 
+      hasMore: data.length === PAGE_SIZE 
+    };
+  } catch (err) {
+    console.error(`[reducer] Fetch error at offset ${offset}:`, err);
+    return { activities: [], hasMore: false };
   }
 }
 
-// Map activity to event type
 function mapEventType(a: Activity): 'BUY' | 'SELL' | 'REDEEM' | 'TRANSFER' | 'MERGE' | 'SPLIT' {
   const t = a.type?.toUpperCase() || '';
   if (t === 'TRADE') return a.side?.toUpperCase() === 'SELL' ? 'SELL' : 'BUY';
@@ -208,193 +145,256 @@ function mapEventType(a: Activity): 'BUY' | 'SELL' | 'REDEEM' | 'TRANSFER' | 'ME
   return 'TRANSFER';
 }
 
-// Get UTC date string from timestamp
 function toUTCDate(ts: number): string {
   return new Date(ts * 1000).toISOString().split('T')[0];
 }
 
-// Create unique event ID
 function createEventId(a: Activity): string {
-  // Use tx_hash + logIndex if available, otherwise use timestamp-based
   const logIdx = a.logIndex ?? a.timestamp;
   return `${a.transactionHash}:${a.conditionId}:${a.outcomeIndex}:${logIdx}`;
 }
 
-// MAIN REDUCER
-async function runReducer(wallet: string): Promise<{
+// BATCHED INGESTION - stores raw events only
+async function ingestBatch(wallet: string): Promise<{
   eventsIngested: number;
-  marketsProcessed: number;
-  realizedPnl: number;
-  settledMarkets: number;
-  claimedMarkets: number;
-  lostMarkets: number;
-  oldestEvent: string | null;
-  newestEvent: string | null;
-  daysWithActivity: number;
+  isComplete: boolean;
+  nextOffset: number;
+  message: string;
 }> {
   const walletLower = wallet.toLowerCase();
-
-  // 1. Fetch COMPLETE history - no limits
-  const activities = await fetchCompleteActivity(wallet);
-  if (!activities.length) {
-    return { 
-      eventsIngested: 0, marketsProcessed: 0, realizedPnl: 0, 
-      settledMarkets: 0, claimedMarkets: 0, lostMarkets: 0,
-      oldestEvent: null, newestEvent: null, daysWithActivity: 0
+  
+  // Get current state
+  const state = await getIngestState(walletLower);
+  let offset = state?.next_offset || 0;
+  const previousTotal = state?.total_events_ingested || 0;
+  
+  if (state?.is_complete) {
+    console.log(`[reducer] Ingestion already complete for ${walletLower}`);
+    return {
+      eventsIngested: 0,
+      isComplete: true,
+      nextOffset: offset,
+      message: 'Ingestion already complete. Running reducer...'
     };
   }
 
-  const oldestTs = activities[0].timestamp;
-  const newestTs = activities[activities.length - 1].timestamp;
-  const oldestEvent = new Date(oldestTs * 1000).toISOString();
-  const newestEvent = new Date(newestTs * 1000).toISOString();
-
-  // 2. Store raw events
-  const rawEvents = activities.map(a => ({
-    id: createEventId(a),
-    tx_hash: a.transactionHash,
-    event_type: mapEventType(a),
-    market_id: a.conditionId,
-    outcome: a.outcomeIndex === 0 ? 'UP' : 'DOWN',
-    shares: a.size || 0,
-    price: a.price || 0,
-    amount_usd: a.usdcSize || (a.price * a.size) || 0,
-    fee_usd: a.feesPaid,
-    wallet: walletLower,
-    timestamp: new Date(a.timestamp * 1000).toISOString(),
-    raw_json: a,
-  }));
-
-  await batchUpsert('raw_subgraph_events', rawEvents, 'id');
-  console.log(`[reducer] Stored ${rawEvents.length} raw events`);
-
-  // 3. Create normalized cashflows AND timeseries
-  const cashflows: unknown[] = [];
-  const timeseriesRecords: unknown[] = [];
-  const dailyMap = new Map<string, DailyAggregate>();
-
-  for (const a of activities) {
-    const type = mapEventType(a);
-    const shares = a.size || 0;
-    const price = a.price || 0;
-    const usdcSize = a.usdcSize || (price * shares);
-    const fee = a.feesPaid || 0;
-    const eventId = createEventId(a);
-    const ts = new Date(a.timestamp * 1000).toISOString();
-    const date = toUTCDate(a.timestamp);
-
-    let direction: 'IN' | 'OUT';
-    let category: 'BUY' | 'SELL' | 'REDEEM' | 'FEE' | 'LOSS' | 'TRANSFER';
-    let amount: number;
-
-    switch (type) {
-      case 'BUY':
-        direction = 'OUT';
-        category = 'BUY';
-        amount = usdcSize + fee;
-        break;
-      case 'SELL':
-        direction = 'IN';
-        category = 'SELL';
-        amount = usdcSize - fee;
-        break;
-      case 'REDEEM':
-        direction = 'IN';
-        category = 'REDEEM';
-        amount = usdcSize > 0 ? usdcSize : shares;
-        break;
-      default:
-        direction = 'IN';
-        category = 'TRANSFER';
-        amount = usdcSize;
+  console.log(`[reducer] Starting batch ingestion from offset ${offset}`);
+  
+  let totalIngested = 0;
+  let isComplete = false;
+  
+  // Fetch up to MAX_PAGES_PER_RUN pages
+  for (let page = 0; page < MAX_PAGES_PER_RUN; page++) {
+    const { activities, hasMore } = await fetchActivityBatch(wallet, offset);
+    
+    if (!activities.length) {
+      isComplete = true;
+      break;
     }
 
-    // Cashflow ledger entry
-    cashflows.push({
-      id: `${eventId}:${type}`,
+    // Store raw events
+    const rawEvents = activities.map(a => ({
+      id: createEventId(a),
+      tx_hash: a.transactionHash,
+      event_type: mapEventType(a),
       market_id: a.conditionId,
       outcome: a.outcomeIndex === 0 ? 'UP' : 'DOWN',
-      direction,
-      category,
-      amount_usd: amount,
-      shares_delta: type === 'BUY' ? shares : (type === 'SELL' || type === 'REDEEM' ? -shares : 0),
+      shares: a.size || 0,
+      price: a.price || 0,
+      amount_usd: a.usdcSize || (a.price * a.size) || 0,
+      fee_usd: a.feesPaid,
       wallet: walletLower,
-      timestamp: ts,
-      source_event_id: eventId,
+      timestamp: new Date(a.timestamp * 1000).toISOString(),
+      raw_json: a,
+    }));
+
+    await batchUpsert('raw_subgraph_events', rawEvents, 'id');
+    
+    // Store cashflows
+    const cashflows = activities.map(a => {
+      const type = mapEventType(a);
+      const shares = a.size || 0;
+      const price = a.price || 0;
+      const usdcSize = a.usdcSize || (price * shares);
+      const fee = a.feesPaid || 0;
+      const eventId = createEventId(a);
+      const ts = new Date(a.timestamp * 1000).toISOString();
+
+      let direction: 'IN' | 'OUT';
+      let category: string;
+      let amount: number;
+
+      switch (type) {
+        case 'BUY':
+          direction = 'OUT';
+          category = 'BUY';
+          amount = usdcSize + fee;
+          break;
+        case 'SELL':
+          direction = 'IN';
+          category = 'SELL';
+          amount = usdcSize - fee;
+          break;
+        case 'REDEEM':
+          direction = 'IN';
+          category = 'REDEEM';
+          amount = usdcSize > 0 ? usdcSize : shares;
+          break;
+        default:
+          direction = 'IN';
+          category = 'TRANSFER';
+          amount = usdcSize;
+      }
+
+      return {
+        id: `${eventId}:${type}`,
+        market_id: a.conditionId,
+        outcome: a.outcomeIndex === 0 ? 'UP' : 'DOWN',
+        direction,
+        category,
+        amount_usd: amount,
+        shares_delta: type === 'BUY' ? shares : (type === 'SELL' || type === 'REDEEM' ? -shares : 0),
+        wallet: walletLower,
+        timestamp: ts,
+        source_event_id: eventId,
+      };
     });
 
-    // Timeseries entry
-    timeseriesRecords.push({
-      ts,
-      date,
-      market_id: a.conditionId,
-      outcome: a.outcomeIndex === 0 ? 'UP' : 'DOWN',
-      category,
-      amount_usd: direction === 'OUT' ? -amount : amount,
-      shares_delta: type === 'BUY' ? shares : (type === 'SELL' || type === 'REDEEM' ? -shares : 0),
-      wallet: walletLower,
-      source_event_id: eventId,
-    });
+    await batchUpsert('cashflow_ledger', cashflows, 'id');
 
-    // Aggregate daily stats
-    if (!dailyMap.has(date)) {
-      dailyMap.set(date, {
+    // Store timeseries
+    const timeseries = activities.map(a => {
+      const type = mapEventType(a);
+      const shares = a.size || 0;
+      const price = a.price || 0;
+      const usdcSize = a.usdcSize || (price * shares);
+      const fee = a.feesPaid || 0;
+      const eventId = createEventId(a);
+      const ts = new Date(a.timestamp * 1000).toISOString();
+      const date = toUTCDate(a.timestamp);
+      const isOut = type === 'BUY';
+      const amount = type === 'BUY' ? (usdcSize + fee) : (type === 'SELL' ? (usdcSize - fee) : (usdcSize > 0 ? usdcSize : shares));
+
+      return {
+        ts,
         date,
-        realized_pnl: 0,
-        volume_traded: 0,
-        buy_count: 0,
-        sell_count: 0,
-        redeem_count: 0,
-        markets: new Set(),
-      });
-    }
-    const day = dailyMap.get(date)!;
-    day.markets.add(a.conditionId);
-    if (type === 'BUY') {
-      day.buy_count++;
-      day.volume_traded += amount;
-    } else if (type === 'SELL') {
-      day.sell_count++;
-      day.volume_traded += amount;
-    } else if (type === 'REDEEM') {
-      day.redeem_count++;
+        market_id: a.conditionId,
+        outcome: a.outcomeIndex === 0 ? 'UP' : 'DOWN',
+        category: type === 'TRANSFER' ? 'TRANSFER' : type,
+        amount_usd: isOut ? -amount : amount,
+        shares_delta: type === 'BUY' ? shares : (type === 'SELL' || type === 'REDEEM' ? -shares : 0),
+        wallet: walletLower,
+        source_event_id: eventId,
+      };
+    });
+
+    await batchUpsert('account_cashflow_timeseries', timeseries, 'wallet,source_event_id');
+
+    totalIngested += activities.length;
+    offset += PAGE_SIZE;
+    
+    console.log(`[reducer] Page ${page + 1}: +${activities.length} events (total this run: ${totalIngested})`);
+    
+    if (!hasMore) {
+      isComplete = true;
+      break;
     }
   }
 
-  await batchUpsert('cashflow_ledger', cashflows, 'id');
-  console.log(`[reducer] Stored ${cashflows.length} cashflows`);
+  // Update ingest state
+  const ingestStateRecord = {
+    wallet: walletLower,
+    next_offset: offset,
+    is_complete: isComplete,
+    total_events_ingested: previousTotal + totalIngested,
+    last_sync_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
 
-  await batchUpsert('account_cashflow_timeseries', timeseriesRecords, 'wallet,source_event_id');
-  console.log(`[reducer] Stored ${timeseriesRecords.length} timeseries entries`);
+  await executeRest('subgraph_ingest_state', 'upsert', [ingestStateRecord], { onConflict: 'wallet' });
 
-  // 4. Group by market and REDUCE to positions + market state
-  const byMarket = new Map<string, Activity[]>();
-  for (const a of activities) {
-    if (!a.conditionId) continue;
-    if (!byMarket.has(a.conditionId)) byMarket.set(a.conditionId, []);
-    byMarket.get(a.conditionId)!.push(a);
+  return {
+    eventsIngested: totalIngested,
+    isComplete,
+    nextOffset: offset,
+    message: isComplete 
+      ? `Ingestion complete! ${previousTotal + totalIngested} total events.`
+      : `Ingested ${totalIngested} events. ${previousTotal + totalIngested} total. Run again to continue.`
+  };
+}
+
+// REDUCER - runs after ingestion is complete
+async function runReducer(wallet: string): Promise<{
+  marketsProcessed: number;
+  realizedPnl: number;
+  claimedMarkets: number;
+  lostMarkets: number;
+  daysWithActivity: number;
+}> {
+  const walletLower = wallet.toLowerCase();
+  
+  // Fetch all raw events from database
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+  
+  const eventsResp = await fetch(
+    `${supabaseUrl}/rest/v1/raw_subgraph_events?wallet=eq.${walletLower}&order=timestamp.asc&limit=10000`,
+    {
+      headers: {
+        'apikey': supabaseKey,
+        'Authorization': `Bearer ${supabaseKey}`,
+      },
+    }
+  );
+  
+  const events = await eventsResp.json() as {
+    id: string;
+    market_id: string;
+    outcome: string;
+    event_type: string;
+    shares: number;
+    price: number;
+    amount_usd: number;
+    fee_usd: number | null;
+    timestamp: string;
+    raw_json: Activity;
+  }[];
+
+  if (!events?.length) {
+    return { marketsProcessed: 0, realizedPnl: 0, claimedMarkets: 0, lostMarkets: 0, daysWithActivity: 0 };
+  }
+
+  console.log(`[reducer] Processing ${events.length} events from database`);
+
+  // Group by market
+  const byMarket = new Map<string, typeof events>();
+  for (const e of events) {
+    if (!e.market_id) continue;
+    if (!byMarket.has(e.market_id)) byMarket.set(e.market_id, []);
+    byMarket.get(e.market_id)!.push(e);
   }
 
   // Fetch current positions from API
-  const currentPositions = await fetchPositions(wallet);
-  const currentPosMap = new Map<string, number>();
-  for (const p of currentPositions) {
-    currentPosMap.set(`${p.conditionId}:${p.outcomeIndex}`, p.size);
-  }
+  let currentPosMap = new Map<string, number>();
+  try {
+    const posResp = await fetch(`${DATA_API_BASE}/positions?user=${wallet}`);
+    if (posResp.ok) {
+      const positions = await posResp.json() as { conditionId: string; outcomeIndex: number; size: number }[];
+      for (const p of positions) {
+        currentPosMap.set(`${p.conditionId}:${p.outcomeIndex}`, p.size);
+      }
+    }
+  } catch { /* ignore */ }
 
-  const positions: Position[] = [];
-  const marketStates: MarketState[] = [];
+  const positionRecords: unknown[] = [];
+  const marketRecords: unknown[] = [];
+  const dailyPnlMap = new Map<string, { realized: number; volume: number; buys: number; sells: number; redeems: number; markets: Set<string> }>();
+  
   let totalRealizedPnl = 0;
-  let settledCount = 0;
   let claimedCount = 0;
   let lostCount = 0;
 
-  // Track PnL per day per market for daily aggregation
-  const dailyPnlMap = new Map<string, number>();
-
-  for (const [marketId, events] of byMarket) {
-    events.sort((a, b) => a.timestamp - b.timestamp);
-
+  for (const [marketId, marketEvents] of byMarket) {
     let upShares = 0, downShares = 0;
     let upCost = 0, downCost = 0;
     let upRealized = 0, downRealized = 0;
@@ -404,18 +404,27 @@ async function runReducer(wallet: string): Promise<{
     let redeemOutcome: 'UP' | 'DOWN' | null = null;
     let redeemPayout = 0;
 
-    for (const e of events) {
-      const type = mapEventType(e);
-      const outcome = e.outcomeIndex === 0 ? 'UP' : 'DOWN';
-      const shares = e.size || 0;
+    for (const e of marketEvents) {
+      const type = e.event_type as 'BUY' | 'SELL' | 'REDEEM';
+      const outcome = e.outcome as 'UP' | 'DOWN';
+      const shares = e.shares || 0;
       const price = e.price || 0;
       const cost = shares * price;
-      const date = toUTCDate(e.timestamp);
+      const date = e.timestamp.split('T')[0];
 
-      if (!marketSlug && e.slug) marketSlug = e.slug;
+      if (!marketSlug && e.raw_json?.slug) marketSlug = e.raw_json.slug;
+
+      // Initialize daily record
+      if (!dailyPnlMap.has(date)) {
+        dailyPnlMap.set(date, { realized: 0, volume: 0, buys: 0, sells: 0, redeems: 0, markets: new Set() });
+      }
+      const day = dailyPnlMap.get(date)!;
+      day.markets.add(marketId);
 
       if (type === 'BUY') {
         hasBuy = true;
+        day.buys++;
+        day.volume += e.amount_usd;
         if (outcome === 'UP') {
           upCost += cost;
           upShares += shares;
@@ -425,6 +434,8 @@ async function runReducer(wallet: string): Promise<{
         }
       } else if (type === 'SELL') {
         hasSell = true;
+        day.sells++;
+        day.volume += e.amount_usd;
         if (outcome === 'UP' && upShares > 0) {
           const avgCost = upCost / upShares;
           const soldShares = Math.min(shares, upShares);
@@ -434,8 +445,7 @@ async function runReducer(wallet: string): Promise<{
           upRealized += pnl;
           upShares -= soldShares;
           upCost = upShares > 0 ? upShares * avgCost : 0;
-          // Track daily PnL
-          dailyPnlMap.set(date, (dailyPnlMap.get(date) || 0) + pnl);
+          day.realized += pnl;
         } else if (outcome === 'DOWN' && downShares > 0) {
           const avgCost = downCost / downShares;
           const soldShares = Math.min(shares, downShares);
@@ -445,12 +455,13 @@ async function runReducer(wallet: string): Promise<{
           downRealized += pnl;
           downShares -= soldShares;
           downCost = downShares > 0 ? downShares * avgCost : 0;
-          dailyPnlMap.set(date, (dailyPnlMap.get(date) || 0) + pnl);
+          day.realized += pnl;
         }
       } else if (type === 'REDEEM') {
         hasRedeem = true;
+        day.redeems++;
         redeemOutcome = outcome;
-        const payout = e.usdcSize > 0 ? e.usdcSize : shares;
+        const payout = e.amount_usd > 0 ? e.amount_usd : shares;
         redeemPayout += payout;
 
         let pnl = 0;
@@ -465,7 +476,7 @@ async function runReducer(wallet: string): Promise<{
           downShares = 0;
           downCost = 0;
         }
-        dailyPnlMap.set(date, (dailyPnlMap.get(date) || 0) + pnl);
+        day.realized += pnl;
       }
     }
 
@@ -474,7 +485,7 @@ async function runReducer(wallet: string): Promise<{
     const hasOpenPosition = currentUp > 0 || currentDown > 0;
 
     let marketState: 'OPEN' | 'SETTLED' = 'OPEN';
-    let resolvedOutcome: 'UP' | 'DOWN' | 'SPLIT' | null = null;
+    let resolvedOutcome: 'UP' | 'DOWN' | null = null;
 
     if (hasRedeem) {
       isClaimed = true;
@@ -486,24 +497,17 @@ async function runReducer(wallet: string): Promise<{
     } else if (!hasOpenPosition && !hasRedeem && (upCost > 0 || downCost > 0)) {
       isLost = true;
       marketState = 'SETTLED';
-      const lostPnl = -(upCost + downCost);
       upRealized -= upCost;
       downRealized -= downCost;
       lostCount++;
-      // Track as loss on last event date
-      const lastEvent = events[events.length - 1];
-      const lastDate = toUTCDate(lastEvent.timestamp);
-      dailyPnlMap.set(lastDate, (dailyPnlMap.get(lastDate) || 0) + lostPnl);
     }
 
-    if (marketState === 'SETTLED') settledCount++;
-
-    const totalCost = upCost + downCost;
     const totalRealized = upRealized + downRealized;
     totalRealizedPnl += totalRealized;
 
     if (upShares > 0 || upCost > 0 || upRealized !== 0) {
-      positions.push({
+      positionRecords.push({
+        id: `${walletLower}:${marketId}:UP`,
         wallet: walletLower,
         market_id: marketId,
         outcome: 'UP',
@@ -511,11 +515,13 @@ async function runReducer(wallet: string): Promise<{
         total_cost_usd: upCost,
         realized_pnl: upRealized,
         state: isClaimed ? 'CLAIMED' : (isLost ? 'LOST' : (hasSell && upShares === 0 ? 'SOLD' : 'OPEN')),
+        updated_at: new Date().toISOString(),
       });
     }
 
     if (downShares > 0 || downCost > 0 || downRealized !== 0) {
-      positions.push({
+      positionRecords.push({
+        id: `${walletLower}:${marketId}:DOWN`,
         wallet: walletLower,
         market_id: marketId,
         outcome: 'DOWN',
@@ -523,16 +529,18 @@ async function runReducer(wallet: string): Promise<{
         total_cost_usd: downCost,
         realized_pnl: downRealized,
         state: isClaimed ? 'CLAIMED' : (isLost ? 'LOST' : (hasSell && downShares === 0 ? 'SOLD' : 'OPEN')),
+        updated_at: new Date().toISOString(),
       });
     }
 
-    marketStates.push({
+    marketRecords.push({
+      id: `${walletLower}:${marketId}`,
       wallet: walletLower,
       market_id: marketId,
       market_slug: marketSlug,
       state: marketState,
       resolved_outcome: resolvedOutcome,
-      total_cost: totalCost,
+      total_cost: upCost + downCost,
       total_payout: redeemPayout,
       realized_pnl: totalRealized,
       has_buy: hasBuy,
@@ -540,135 +548,72 @@ async function runReducer(wallet: string): Promise<{
       has_redeem: hasRedeem,
       is_claimed: isClaimed,
       is_lost: isLost,
+      updated_at: new Date().toISOString(),
     });
   }
 
-  // 5. Store canonical positions
-  const positionRecords = positions.map(p => ({
-    id: `${p.wallet}:${p.market_id}:${p.outcome}`,
-    wallet: p.wallet,
-    market_id: p.market_id,
-    outcome: p.outcome,
-    shares_held: p.shares_held,
-    total_cost_usd: p.total_cost_usd,
-    realized_pnl: p.realized_pnl,
-    state: p.state,
-    updated_at: new Date().toISOString(),
-  }));
-
+  // Store positions and markets
   if (positionRecords.length > 0) {
     await batchUpsert('canonical_positions', positionRecords, 'id');
     console.log(`[reducer] Stored ${positionRecords.length} positions`);
   }
-
-  // 6. Store market lifecycle
-  const marketRecords = marketStates.map(m => ({
-    id: `${m.wallet}:${m.market_id}`,
-    wallet: m.wallet,
-    market_id: m.market_id,
-    market_slug: m.market_slug,
-    state: m.state,
-    resolved_outcome: m.resolved_outcome,
-    total_cost: m.total_cost,
-    total_payout: m.total_payout,
-    realized_pnl: m.realized_pnl,
-    has_buy: m.has_buy,
-    has_sell: m.has_sell,
-    has_redeem: m.has_redeem,
-    is_claimed: m.is_claimed,
-    is_lost: m.is_lost,
-    updated_at: new Date().toISOString(),
-  }));
 
   if (marketRecords.length > 0) {
     await batchUpsert('market_lifecycle', marketRecords, 'id');
     console.log(`[reducer] Stored ${marketRecords.length} market states`);
   }
 
-  // 7. Update daily PnL table
-  const dailyPnlRecords = Array.from(dailyMap.entries()).map(([date, day]) => ({
+  // Store daily PnL
+  const dailyRecords = Array.from(dailyPnlMap.entries()).map(([date, day]) => ({
     date,
     wallet: walletLower,
-    realized_pnl: dailyPnlMap.get(date) || 0,
+    realized_pnl: day.realized,
     unrealized_pnl: 0,
-    total_pnl: dailyPnlMap.get(date) || 0,
-    volume_traded: day.volume_traded,
+    total_pnl: day.realized,
+    volume_traded: day.volume,
     markets_active: day.markets.size,
-    buy_count: day.buy_count,
-    sell_count: day.sell_count,
-    redeem_count: day.redeem_count,
+    buy_count: day.buys,
+    sell_count: day.sells,
+    redeem_count: day.redeems,
     updated_at: new Date().toISOString(),
   }));
 
-  if (dailyPnlRecords.length > 0) {
-    await batchUpsert('daily_pnl', dailyPnlRecords, 'wallet,date');
-    console.log(`[reducer] Stored ${dailyPnlRecords.length} daily PnL records`);
+  if (dailyRecords.length > 0) {
+    await batchUpsert('daily_pnl', dailyRecords, 'wallet,date');
+    console.log(`[reducer] Stored ${dailyRecords.length} daily PnL records`);
   }
 
-  // 8. Update account PnL summary
-  const totalVolume = Array.from(dailyMap.values()).reduce((s, d) => s + d.volume_traded, 0);
-  const accountSummary = {
+  // Get date range
+  const dates = events.map(e => e.timestamp);
+  const oldestEvent = dates[0];
+  const newestEvent = dates[dates.length - 1];
+
+  // Update account summary
+  const totalVolume = Array.from(dailyPnlMap.values()).reduce((s, d) => s + d.volume, 0);
+  await executeRest('account_pnl_summary', 'upsert', [{
     wallet: walletLower,
     total_realized_pnl: totalRealizedPnl,
     total_unrealized_pnl: 0,
     total_pnl: totalRealizedPnl,
     first_trade_ts: oldestEvent,
     last_trade_ts: newestEvent,
-    total_trades: activities.length,
-    total_markets: marketStates.length,
+    total_trades: events.length,
+    total_markets: marketRecords.length,
     total_volume: totalVolume,
     claimed_markets: claimedCount,
     lost_markets: lostCount,
-    open_markets: marketStates.filter(m => m.state === 'OPEN').length,
+    open_markets: marketRecords.filter((m: any) => m.state === 'OPEN').length,
     updated_at: new Date().toISOString(),
-  };
+  }], { onConflict: 'wallet' });
 
-  await executeRest('account_pnl_summary', 'upsert', [accountSummary], { onConflict: 'wallet' });
   console.log(`[reducer] Updated account summary: PnL=$${totalRealizedPnl.toFixed(2)}`);
 
-  // 9. Update ingest state
-  const ingestState = {
-    wallet: walletLower,
-    oldest_event_ts: oldestEvent,
-    newest_event_ts: newestEvent,
-    total_events_ingested: activities.length,
-    last_sync_at: new Date().toISOString(),
-    is_complete: true,
-    updated_at: new Date().toISOString(),
-  };
-
-  await executeRest('subgraph_ingest_state', 'upsert', [ingestState], { onConflict: 'wallet' });
-
-  // 10. Store PnL snapshot
-  const snapshot = {
-    id: `${walletLower}:${Date.now()}`,
-    wallet: walletLower,
-    ts: new Date().toISOString(),
-    realized_pnl: totalRealizedPnl,
-    unrealized_pnl: 0,
-    total_pnl: totalRealizedPnl,
-    total_markets: marketStates.length,
-    settled_markets: settledCount,
-    open_markets: marketStates.length - settledCount,
-    claimed_markets: claimedCount,
-    lost_markets: lostCount,
-    total_cost: marketStates.reduce((s, m) => s + m.total_cost, 0),
-    total_fees: 0,
-  };
-
-  await executeRest('pnl_snapshots', 'insert', [snapshot]);
-  console.log(`[reducer] Created PnL snapshot`);
-
   return {
-    eventsIngested: activities.length,
-    marketsProcessed: marketStates.length,
+    marketsProcessed: marketRecords.length,
     realizedPnl: totalRealizedPnl,
-    settledMarkets: settledCount,
     claimedMarkets: claimedCount,
     lostMarkets: lostCount,
-    oldestEvent,
-    newestEvent,
-    daysWithActivity: dailyMap.size,
+    daysWithActivity: dailyPnlMap.size,
   };
 }
 
@@ -678,7 +623,6 @@ serve(async (req) => {
   }
 
   try {
-    // Get wallet from bot_config
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
@@ -699,14 +643,25 @@ serve(async (req) => {
       );
     }
 
-    console.log(`[reducer] Starting COMPLETE historical ingestion for ${wallet}`);
-    const result = await runReducer(wallet);
+    // Phase 1: Ingest batch
+    console.log(`[reducer] Starting batched ingestion for ${wallet}`);
+    const ingestResult = await ingestBatch(wallet);
+    
+    // Phase 2: If complete, run reducer
+    let reducerResult = null;
+    if (ingestResult.isComplete) {
+      console.log(`[reducer] Ingestion complete, running reducer`);
+      reducerResult = await runReducer(wallet);
+    }
 
     return new Response(
       JSON.stringify({ 
-        success: true, 
-        ...result,
-        message: `Ingested ${result.eventsIngested} events across ${result.daysWithActivity} days. Realized PnL: $${result.realizedPnl.toFixed(2)}`
+        success: true,
+        ingestion: ingestResult,
+        reducer: reducerResult,
+        message: ingestResult.isComplete 
+          ? `Complete! ${reducerResult?.marketsProcessed} markets, PnL: $${reducerResult?.realizedPnl?.toFixed(2)}`
+          : ingestResult.message
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
