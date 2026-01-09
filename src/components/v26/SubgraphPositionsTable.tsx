@@ -61,8 +61,13 @@ export function SubgraphPositionsTable() {
             <TableBody>
               {!positions || positions.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
-                    No positions found. Click "Sync Now" to fetch from subgraph.
+                  <TableCell colSpan={6} className="text-center py-8">
+                    <div className="space-y-2">
+                      <div className="text-muted-foreground">No positions found</div>
+                      <div className="text-xs text-muted-foreground">
+                        This wallet may have no open positions, or sync hasn't run yet.
+                      </div>
+                    </div>
                   </TableCell>
                 </TableRow>
               ) : (

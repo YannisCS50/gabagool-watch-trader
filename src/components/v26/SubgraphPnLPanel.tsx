@@ -84,8 +84,21 @@ export function SubgraphPnLPanel() {
       <Card className="border-border/50">
         <CardHeader>
           <CardTitle className="text-lg">Subgraph PnL (Canonical)</CardTitle>
-          <CardDescription>No PnL data available. Click "Sync Now" to fetch from subgraph.</CardDescription>
+          <CardDescription className="text-sm text-muted-foreground">
+            No PnL data available yet.
+          </CardDescription>
         </CardHeader>
+        <CardContent>
+          <div className="text-center py-6 space-y-2">
+            <AlertTriangle className="h-8 w-8 mx-auto text-yellow-500/50" />
+            <div className="text-sm text-muted-foreground">
+              PnL will be computed after fills are synced from the Polymarket Data API.
+            </div>
+            <div className="text-xs text-muted-foreground">
+              Use the "Sync Now" button in the Health Panel above to trigger a sync.
+            </div>
+          </div>
+        </CardContent>
       </Card>
     );
   }
