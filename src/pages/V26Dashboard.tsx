@@ -317,7 +317,7 @@ export default function V26Dashboard() {
       if (isFilled && perAsset[trade.asset]) {
         perAsset[trade.asset].filled++;
       }
-      const avgPrice = trade.avg_fill_price ?? trade.price;
+      const avgPrice = trade.avg_fill_price ?? trade.price ?? 0;
       const cost = filledShares * avgPrice;
       const fillTimeMs = trade.fill_time_ms;
 
@@ -1471,7 +1471,7 @@ export default function V26Dashboard() {
                     </TableRow>
                   ) : (
                     paginatedTrades.map((log) => (
-                      <TableRow 
+                        <TableRow 
                         key={log.id} 
                         className={`border-b border-border/30 ${(log.result === 'NOT_BOUGHT' || log.result === 'NO_FILL' || log.result === 'FAILED') ? 'opacity-40' : ''} hover:bg-muted/30 transition-colors`}
                         title={`Side: ${log.side} | Expected: $${log.expectedPayout?.toFixed(2) ?? '0'} | Source: ${log.resultSource}`}
@@ -1481,7 +1481,7 @@ export default function V26Dashboard() {
                             <div className="flex flex-col">
                               <span className="font-medium text-sm">{log.market}</span>
                               <span className="text-xs text-muted-foreground">
-                                {log.side} @ ${log.pricePerShare.toFixed(2)} · {log.shares > 0 ? `${log.shares} shares` : 'no fill'}
+                                {log.side} @ ${(log.pricePerShare ?? 0).toFixed(2)} · {log.shares > 0 ? `${log.shares} shares` : 'no fill'}
                               </span>
                             </div>
                             <a
@@ -1499,10 +1499,10 @@ export default function V26Dashboard() {
                           {log.shares > 0 ? log.shares : '-'}
                         </TableCell>
                         <TableCell className="py-2 text-right font-mono text-sm">
-                          {log.shares > 0 ? `$${log.pricePerShare.toFixed(2)}` : '-'}
+                          {log.shares > 0 ? `$${(log.pricePerShare ?? 0).toFixed(2)}` : '-'}
                         </TableCell>
                         <TableCell className="py-2 text-right font-mono text-sm">
-                          {log.total > 0 ? `$${log.total.toFixed(2)}` : '-'}
+                          {log.total > 0 ? `$${(log.total ?? 0).toFixed(2)}` : '-'}
                         </TableCell>
                         <TableCell className="py-2">
                           {log.filledOffsetSec !== null ? (
