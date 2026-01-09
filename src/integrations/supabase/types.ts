@@ -1394,6 +1394,66 @@ export type Database = {
         }
         Relationships: []
       }
+      polymarket_cashflows: {
+        Row: {
+          amount_usd: number
+          condition_id: string | null
+          created_at: string | null
+          fee_known: boolean | null
+          fee_usd: number | null
+          id: string
+          ingested_at: string | null
+          market_id: string | null
+          outcome_side: string | null
+          price: number | null
+          raw_json: Json | null
+          shares: number | null
+          source: string
+          token_id: string | null
+          ts: string
+          type: string
+          wallet: string
+        }
+        Insert: {
+          amount_usd?: number
+          condition_id?: string | null
+          created_at?: string | null
+          fee_known?: boolean | null
+          fee_usd?: number | null
+          id: string
+          ingested_at?: string | null
+          market_id?: string | null
+          outcome_side?: string | null
+          price?: number | null
+          raw_json?: Json | null
+          shares?: number | null
+          source: string
+          token_id?: string | null
+          ts: string
+          type: string
+          wallet: string
+        }
+        Update: {
+          amount_usd?: number
+          condition_id?: string | null
+          created_at?: string | null
+          fee_known?: boolean | null
+          fee_usd?: number | null
+          id?: string
+          ingested_at?: string | null
+          market_id?: string | null
+          outcome_side?: string | null
+          price?: number | null
+          raw_json?: Json | null
+          shares?: number | null
+          source?: string
+          token_id?: string | null
+          ts?: string
+          type?: string
+          wallet?: string
+        }
+        Relationships: []
+      }
       position_snapshots: {
         Row: {
           avg_price: number
@@ -2091,6 +2151,12 @@ export type Database = {
           mark_timestamp: string | null
           market_id: string
           market_slug: string | null
+          missing_payout_reason: string | null
+          payout_amount_usd: number | null
+          payout_ingested: boolean | null
+          payout_source: string | null
+          payout_ts: string | null
+          payout_tx_hash: string | null
           realized_confidence: string | null
           realized_pnl_usd: number | null
           settled_at: string | null
@@ -2121,6 +2187,12 @@ export type Database = {
           mark_timestamp?: string | null
           market_id: string
           market_slug?: string | null
+          missing_payout_reason?: string | null
+          payout_amount_usd?: number | null
+          payout_ingested?: boolean | null
+          payout_source?: string | null
+          payout_ts?: string | null
+          payout_tx_hash?: string | null
           realized_confidence?: string | null
           realized_pnl_usd?: number | null
           settled_at?: string | null
@@ -2151,6 +2223,12 @@ export type Database = {
           mark_timestamp?: string | null
           market_id?: string
           market_slug?: string | null
+          missing_payout_reason?: string | null
+          payout_amount_usd?: number | null
+          payout_ingested?: boolean | null
+          payout_source?: string | null
+          payout_ts?: string | null
+          payout_tx_hash?: string | null
           realized_confidence?: string | null
           realized_pnl_usd?: number | null
           settled_at?: string | null
@@ -2339,6 +2417,9 @@ export type Database = {
           last_error: string | null
           last_sync_at: string | null
           last_timestamp: string | null
+          payout_error: string | null
+          payout_records_synced: number | null
+          payout_sync_at: string | null
           records_synced: number | null
           updated_at: string | null
           wallet: string
@@ -2351,6 +2432,9 @@ export type Database = {
           last_error?: string | null
           last_sync_at?: string | null
           last_timestamp?: string | null
+          payout_error?: string | null
+          payout_records_synced?: number | null
+          payout_sync_at?: string | null
           records_synced?: number | null
           updated_at?: string | null
           wallet: string
@@ -2363,6 +2447,9 @@ export type Database = {
           last_error?: string | null
           last_sync_at?: string | null
           last_timestamp?: string | null
+          payout_error?: string | null
+          payout_records_synced?: number | null
+          payout_sync_at?: string | null
           records_synced?: number | null
           updated_at?: string | null
           wallet?: string
