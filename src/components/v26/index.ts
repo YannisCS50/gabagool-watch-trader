@@ -1,4 +1,5 @@
 export { SubgraphSyncStatus } from './SubgraphSyncStatus';
+export { SubgraphHealthPanel } from './SubgraphHealthPanel';
 export { SubgraphPnLPanel } from './SubgraphPnLPanel';
 export { SubgraphFillsTable } from './SubgraphFillsTable';
 export { SubgraphPositionsTable } from './SubgraphPositionsTable';

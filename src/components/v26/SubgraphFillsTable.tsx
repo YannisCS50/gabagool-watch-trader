@@ -66,8 +66,18 @@ export function SubgraphFillsTable() {
               <TableBody>
                 {!displayedFills || displayedFills.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
-                      No fills found. Click "Sync Now" to fetch from subgraph.
+                    <TableCell colSpan={10} className="text-center py-8">
+                      <div className="space-y-2">
+                        <div className="text-muted-foreground">No fills ingested yet</div>
+                        <div className="text-xs text-muted-foreground">
+                          Check the Health Panel above for diagnostics. Common issues:
+                        </div>
+                        <ul className="text-xs text-muted-foreground list-disc list-inside">
+                          <li>Wallet address not configured or incorrect format</li>
+                          <li>Sync hasn't run yet (click "Sync Now")</li>
+                          <li>Wallet has no trading activity on Polymarket</li>
+                        </ul>
+                      </div>
                     </TableCell>
                   </TableRow>
                 ) : (
