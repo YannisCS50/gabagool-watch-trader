@@ -13,8 +13,8 @@ interface UnsettledTrade {
   asset: string;
   market_slug: string;
   side: string;
-  filled_shares: number;
-  avg_fill_price: number;
+  filled_shares: number | null;
+  avg_fill_price: number | null;
   event_start_time: string;
   event_end_time: string;
   created_at: string;
@@ -67,8 +67,9 @@ export function V26OracleSettleModal({ open, onOpenChange, onSettled }: V26Oracl
     setSettling(true);
     
     const didWin = currentTrade.side === winningOutcome;
-    const shares = currentTrade.filled_shares;
-    const cost = shares * currentTrade.avg_fill_price;
+    const shares = currentTrade.filled_shares ?? 0;
+    const avgPrice = currentTrade.avg_fill_price ?? 0;
+    const cost = shares * avgPrice;
     const payout = didWin ? shares : 0;
     const pnl = payout - cost;
 
@@ -190,9 +191,9 @@ export function V26OracleSettleModal({ open, onOpenChange, onSettled }: V26Oracl
                   </div>
                   <div>
                     <span className="text-muted-foreground">Position</span>
-                    <div className="font-mono">{currentTrade.filled_shares} @ ${currentTrade.avg_fill_price.toFixed(2)}</div>
+                    <div className="font-mono">{currentTrade.filled_shares ?? 0} @ ${(currentTrade.avg_fill_price ?? 0).toFixed(2)}</div>
                     <div className="font-mono text-xs text-muted-foreground">
-                      Cost: ${(currentTrade.filled_shares * currentTrade.avg_fill_price).toFixed(2)}
+                      Cost: ${((currentTrade.filled_shares ?? 0) * (currentTrade.avg_fill_price ?? 0)).toFixed(2)}
                     </div>
                   </div>
                 </div>
@@ -222,10 +223,10 @@ export function V26OracleSettleModal({ open, onOpenChange, onSettled }: V26Oracl
                     <ArrowUp className="h-5 w-5 text-green-500 mb-1" />
                     <span className="text-green-500 font-bold">UP won</span>
                     {currentTrade.side === 'UP' && (
-                      <span className="text-xs text-green-500/70">+${(currentTrade.filled_shares * (1 - currentTrade.avg_fill_price)).toFixed(2)}</span>
+                      <span className="text-xs text-green-500/70">+${((currentTrade.filled_shares ?? 0) * (1 - (currentTrade.avg_fill_price ?? 0))).toFixed(2)}</span>
                     )}
                     {currentTrade.side === 'DOWN' && (
-                      <span className="text-xs text-red-500/70">-${(currentTrade.filled_shares * currentTrade.avg_fill_price).toFixed(2)}</span>
+                      <span className="text-xs text-red-500/70">-${((currentTrade.filled_shares ?? 0) * (currentTrade.avg_fill_price ?? 0)).toFixed(2)}</span>
                     )}
                   </div>
                 )}
@@ -245,10 +246,10 @@ export function V26OracleSettleModal({ open, onOpenChange, onSettled }: V26Oracl
                     <ArrowDown className="h-5 w-5 text-red-500 mb-1" />
                     <span className="text-red-500 font-bold">DOWN won</span>
                     {currentTrade.side === 'DOWN' && (
-                      <span className="text-xs text-green-500/70">+${(currentTrade.filled_shares * (1 - currentTrade.avg_fill_price)).toFixed(2)}</span>
+                      <span className="text-xs text-green-500/70">+${((currentTrade.filled_shares ?? 0) * (1 - (currentTrade.avg_fill_price ?? 0))).toFixed(2)}</span>
                     )}
                     {currentTrade.side === 'UP' && (
-                      <span className="text-xs text-red-500/70">-${(currentTrade.filled_shares * currentTrade.avg_fill_price).toFixed(2)}</span>
+                      <span className="text-xs text-red-500/70">-${((currentTrade.filled_shares ?? 0) * (currentTrade.avg_fill_price ?? 0)).toFixed(2)}</span>
                     )}
                   </div>
                 )}
