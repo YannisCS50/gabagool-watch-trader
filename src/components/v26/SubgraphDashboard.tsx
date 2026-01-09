@@ -4,6 +4,7 @@ import { SubgraphFillsTable } from './SubgraphFillsTable';
 import { SubgraphPositionsTable } from './SubgraphPositionsTable';
 import { SubgraphReconciliationPanel } from './SubgraphReconciliationPanel';
 import { CashflowDiagnostics } from './CashflowDiagnostics';
+import { CanonicalPnLDashboard } from './CanonicalPnLDashboard';
 import { useBotWallet } from '@/hooks/useSubgraphData';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { AlertCircle } from 'lucide-react';
@@ -56,9 +57,13 @@ export function SubgraphDashboard() {
     <div className="space-y-4">
       <SubgraphHealthPanel />
       
+      {/* CANONICAL PnL Dashboard - reads from database only */}
+      <CanonicalPnLDashboard />
+      
       {/* Cashflow Diagnostics - shows event type breakdown */}
       <CashflowDiagnostics />
 
+      {/* Legacy PnL Panel for comparison */}
       <SubgraphPnLPanel />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
