@@ -23,8 +23,8 @@ const DATA_API_BASE = 'https://data-api.polymarket.com';
 const GAMMA_API_BASE = 'https://gamma-api.polymarket.com';
 
 const PAGE_SIZE = 500;
-const MAX_PAGES = 10;
-const MAX_AGE_DAYS = 90;
+const MAX_PAGES = 100;  // Increased to fetch more history
+const MAX_AGE_DAYS = 365; // Full year of history
 
 interface PolymarketActivity {
   proxyWallet: string;
