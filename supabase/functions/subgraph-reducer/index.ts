@@ -1,13 +1,9 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 /**
- * CANONICAL ACCOUNTING REDUCER v3
+ * CANONICAL ACCOUNTING REDUCER v4
  * 
- * BATCHED PROCESSING - Resumable, resource-efficient
- * 
- * - Fetches max 10 pages per invocation to avoid timeout
- * - Stores cursor for resumable ingestion
- * - Multiple invocations complete full history
+ * FULL SYNC - Fetches complete history in one run
  */
 
 const corsHeaders = {
@@ -17,7 +13,6 @@ const corsHeaders = {
 
 const DATA_API_BASE = 'https://data-api.polymarket.com';
 const PAGE_SIZE = 500;
-const MAX_PAGES_PER_RUN = 10; // Limit per invocation to avoid resource exhaustion
 
 interface Activity {
   proxyWallet: string;
@@ -178,13 +173,13 @@ async function ingestBatch(wallet: string): Promise<{
     };
   }
 
-  console.log(`[reducer] Starting batch ingestion from offset ${offset}`);
+  console.log(`[reducer] Starting full ingestion from offset ${offset}`);
   
   let totalIngested = 0;
   let isComplete = false;
   
-  // Fetch up to MAX_PAGES_PER_RUN pages
-  for (let page = 0; page < MAX_PAGES_PER_RUN; page++) {
+  // Fetch ALL pages until no more data
+  while (true) {
     const { activities, hasMore } = await fetchActivityBatch(wallet, offset);
     
     if (!activities.length) {
@@ -293,7 +288,7 @@ async function ingestBatch(wallet: string): Promise<{
     totalIngested += activities.length;
     offset += PAGE_SIZE;
     
-    console.log(`[reducer] Page ${page + 1}: +${activities.length} events (total this run: ${totalIngested})`);
+    console.log(`[reducer] Fetched ${totalIngested} events so far...`);
     
     if (!hasMore) {
       isComplete = true;
