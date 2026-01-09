@@ -195,8 +195,8 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
     return 0.5 * (1.0 + sign * y);
   };
 
-  // V26 went live on January 7, 2026 at 16:00 ET (21:00 UTC)
-  const V26_GO_LIVE_DATE = '2026-01-07T21:00:00+00:00';
+  // V26 went live on January 7, 2026 at 9:30 AM ET (14:30 UTC)
+  const V26_GO_LIVE_DATE = '2026-01-07T14:30:00+00:00';
 
   const fetchData = async () => {
     setLoading(true);
