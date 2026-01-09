@@ -1474,6 +1474,78 @@ export type Database = {
         }
         Relationships: []
       }
+      order_queue_archive: {
+        Row: {
+          archived_at: string | null
+          asset: string
+          avg_fill_price: number | null
+          correlation_id: string | null
+          created_at: string | null
+          error_message: string | null
+          event_end_time: string | null
+          event_start_time: string | null
+          executed_at: string | null
+          id: string
+          intent_type: string | null
+          market_slug: string
+          order_id: string | null
+          order_type: string | null
+          outcome: string
+          price: number
+          reasoning: string | null
+          run_id: string | null
+          shares: number
+          status: string | null
+          token_id: string
+        }
+        Insert: {
+          archived_at?: string | null
+          asset: string
+          avg_fill_price?: number | null
+          correlation_id?: string | null
+          created_at?: string | null
+          error_message?: string | null
+          event_end_time?: string | null
+          event_start_time?: string | null
+          executed_at?: string | null
+          id: string
+          intent_type?: string | null
+          market_slug: string
+          order_id?: string | null
+          order_type?: string | null
+          outcome: string
+          price: number
+          reasoning?: string | null
+          run_id?: string | null
+          shares: number
+          status?: string | null
+          token_id: string
+        }
+        Update: {
+          archived_at?: string | null
+          asset?: string
+          avg_fill_price?: number | null
+          correlation_id?: string | null
+          created_at?: string | null
+          error_message?: string | null
+          event_end_time?: string | null
+          event_start_time?: string | null
+          executed_at?: string | null
+          id?: string
+          intent_type?: string | null
+          market_slug?: string
+          order_id?: string | null
+          order_type?: string | null
+          outcome?: string
+          price?: number
+          reasoning?: string | null
+          run_id?: string | null
+          shares?: number
+          status?: string | null
+          token_id?: string
+        }
+        Relationships: []
+      }
       orders: {
         Row: {
           asset: string
