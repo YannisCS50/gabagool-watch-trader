@@ -5,6 +5,7 @@ import { SubgraphPositionsTable } from './SubgraphPositionsTable';
 import { SubgraphReconciliationPanel } from './SubgraphReconciliationPanel';
 import { CashflowDiagnostics } from './CashflowDiagnostics';
 import { CanonicalPnLDashboard } from './CanonicalPnLDashboard';
+import { MarketLifecycleTable } from './MarketLifecycleTable';
 import { useBotWallet } from '@/hooks/useSubgraphData';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { AlertCircle } from 'lucide-react';
@@ -71,6 +72,8 @@ export function SubgraphDashboard() {
         <SubgraphReconciliationPanel />
       </div>
 
+      <MarketLifecycleTable />
+      
       <SubgraphFillsTable />
     </div>
   );
