@@ -220,6 +220,10 @@ serve(async (req) => {
       // Group API trades by slug + side
       const apiTradesByKey = new Map<string, DataApiTrade[]>();
 
+      // Log sample API slugs for debugging
+      const sampleApiSlugs = apiTrades.slice(0, 10).map(at => at.slug);
+      console.log(`[v26-sync-fills] Sample API slugs: ${JSON.stringify(sampleApiSlugs)}`);
+
       for (const at of apiTrades) {
         const slug = normalizeConditionId(at.slug);
         const side = mapOutcomeToSide(at.outcome, at.outcomeIndex);
@@ -231,6 +235,10 @@ serve(async (req) => {
         apiTradesByKey.get(key)!.push(at);
       }
 
+      // Log sample v26 slugs for debugging
+      const sampleV26Slugs = trades.slice(0, 10).map(t => t.market_slug);
+      console.log(`[v26-sync-fills] Sample v26 slugs: ${JSON.stringify(sampleV26Slugs)}`);
+
       // Match and update each v26_trade
       for (const t of trades) {
         const slug = normalizeConditionId(t.market_slug);
@@ -240,6 +248,10 @@ serve(async (req) => {
         const matchingApiTrades = apiTradesByKey.get(key) || [];
 
         if (matchingApiTrades.length === 0) {
+          // Log first few misses for debugging
+          if (results.length < 5) {
+            console.log(`[v26-sync-fills] No match for key="${key}"`);
+          }
           continue;
         }
 
