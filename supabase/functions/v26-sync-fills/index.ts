@@ -103,26 +103,27 @@ async function fetchAllTradesFromDataApi(
 }
 
 /**
- * Extract market_id (conditionId) from v26_trades.market_id field
- * V26 stores condition IDs directly in market_id
+ * Normalize a string key used for matching markets.
  */
-function normalizeConditionId(conditionId: string): string {
-  return (conditionId || '').toLowerCase().trim();
+function normalizeConditionId(value: string): string {
+  return (value || '').toLowerCase().trim();
 }
 
 /**
- * Map outcome string to UP/DOWN
- * Data API returns "Yes" or "No" - for Up/Down markets:
- * - outcomeIndex 0 = "Yes" = UP
- * - outcomeIndex 1 = "No" = DOWN
+ * Map outcome to UP/DOWN.
+ * Data API fields vary by market; prefer outcome text, then fall back to outcomeIndex.
  */
 function mapOutcomeToSide(outcome: string, outcomeIndex: number): 'UP' | 'DOWN' {
-  // For updown markets, outcomeIndex 0 is typically "Up" (Yes), 1 is "Down" (No)
+  const lower = (outcome || '').toLowerCase();
+
+  // Prefer explicit text when available
+  if (lower.includes('down')) return 'DOWN';
+  if (lower.includes('up')) return 'UP';
+  if (lower === 'no') return 'DOWN';
+  if (lower === 'yes') return 'UP';
+
+  // Fallback: common up/down outcomeIndex convention (but not guaranteed)
   if (outcomeIndex === 0) return 'UP';
-  if (outcomeIndex === 1) return 'DOWN';
-  // Fallback based on outcome string
-  const lower = outcome.toLowerCase();
-  if (lower.includes('up') || lower === 'yes') return 'UP';
   return 'DOWN';
 }
 
@@ -180,18 +181,18 @@ serve(async (req) => {
       );
     }
 
-    // Build lookup: conditionId -> array of v26_trades
+    // Build lookup: market_slug -> array of v26_trades
     const tradesByCondition = new Map<string, V26Trade[]>();
     for (const t of trades) {
-      const cid = normalizeConditionId(t.market_id);
-      if (!tradesByCondition.has(cid)) {
-        tradesByCondition.set(cid, []);
+      const key = normalizeConditionId(t.market_slug);
+      if (!tradesByCondition.has(key)) {
+        tradesByCondition.set(key, []);
       }
-      tradesByCondition.get(cid)!.push(t);
+      tradesByCondition.get(key)!.push(t);
     }
 
     const allConditionIds = Array.from(tradesByCondition.keys());
-    console.log(`[v26-sync-fills] Looking for ${allConditionIds.length} unique conditionIds`);
+    console.log(`[v26-sync-fills] Looking for ${allConditionIds.length} unique market slugs`);
 
     // Fetch trades from Data API
     let apiTrades: DataApiTrade[] = [];
@@ -216,13 +217,13 @@ serve(async (req) => {
 
     // Process trades using Data API data
     if (!dataApiFailed && apiTrades.length > 0) {
-      // Group API trades by conditionId + side
+      // Group API trades by slug + side
       const apiTradesByKey = new Map<string, DataApiTrade[]>();
 
       for (const at of apiTrades) {
-        const cid = normalizeConditionId(at.conditionId);
+        const slug = normalizeConditionId(at.slug);
         const side = mapOutcomeToSide(at.outcome, at.outcomeIndex);
-        const key = `${cid}:${side}`;
+        const key = `${slug}:${side}`;
 
         if (!apiTradesByKey.has(key)) {
           apiTradesByKey.set(key, []);
@@ -232,25 +233,24 @@ serve(async (req) => {
 
       // Match and update each v26_trade
       for (const t of trades) {
-        const cid = normalizeConditionId(t.market_id);
+        const slug = normalizeConditionId(t.market_slug);
         const side = (t.side || '').toUpperCase();
-        const key = `${cid}:${side}`;
+        const key = `${slug}:${side}`;
 
         const matchingApiTrades = apiTradesByKey.get(key) || [];
 
         if (matchingApiTrades.length === 0) {
-          // No matching trades found - check if we should use fill_logs fallback
           continue;
         }
 
-        // Filter API trades to those within the event window
-        const eventStartMs = new Date(t.event_start_time).getTime();
+        // Filter API trades to those that happened before market end.
+        // Up/Down markets can be traded well before the event starts, so we do NOT enforce a strict lower bound.
         const eventEndMs = new Date(t.event_end_time).getTime();
 
         const relevantTrades = matchingApiTrades.filter((at) => {
           const tradeMs = at.timestamp * 1000;
-          // Allow trades from 10 min before market open to market end + 1 min
-          return tradeMs >= eventStartMs - 600000 && tradeMs <= eventEndMs + 60000;
+          // Allow trades up to 1h after market end (clock skew / indexing delay)
+          return tradeMs <= eventEndMs + 60 * 60 * 1000;
         });
 
         if (relevantTrades.length === 0) {
