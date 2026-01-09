@@ -1,17 +1,13 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 /**
- * CANONICAL ACCOUNTING REDUCER
+ * CANONICAL ACCOUNTING REDUCER v2
+ * 
+ * COMPLETE HISTORICAL INGESTION - No time limits, no pagination truncation
  * 
  * Pipeline: Subgraph Events → Normalized Cashflows → Position Reducer → Database State
  * 
  * This is the ONLY place where PnL is computed. The dashboard reads from database only.
- * 
- * Reducer Rules:
- * - BUY: increase shares_held, increase total_cost_usd
- * - SELL: decrease shares_held, realize PnL on sold shares
- * - REDEEM (win): payout = shares × 1.0, realize payout - cost, state = CLAIMED
- * - REDEEM (loss): realize -cost, state = LOST
  */
 
 const corsHeaders = {
@@ -21,8 +17,8 @@ const corsHeaders = {
 
 const DATA_API_BASE = 'https://data-api.polymarket.com';
 const PAGE_SIZE = 500;
-const MAX_PAGES = 10;
-const MAX_AGE_DAYS = 90;
+// NO MAX_PAGES LIMIT - fetch until genesis
+// NO MAX_AGE_DAYS - fetch complete history
 
 interface Activity {
   proxyWallet: string;
@@ -40,6 +36,8 @@ interface Activity {
   slug: string;
   outcome: string;
   feesPaid?: number;
+  blockNumber?: number;
+  logIndex?: number;
 }
 
 interface Position {
@@ -68,7 +66,17 @@ interface MarketState {
   is_lost: boolean;
 }
 
-// REST helper
+interface DailyAggregate {
+  date: string;
+  realized_pnl: number;
+  volume_traded: number;
+  buy_count: number;
+  sell_count: number;
+  redeem_count: number;
+  markets: Set<string>;
+}
+
+// REST helper with batch support
 async function executeRest(
   table: string,
   operation: 'upsert' | 'insert' | 'delete',
@@ -109,32 +117,73 @@ async function executeRest(
   }
 }
 
-// Fetch ALL activity from Polymarket
-async function fetchActivity(wallet: string): Promise<Activity[]> {
+// Batch insert helper for large datasets
+async function batchUpsert(table: string, records: unknown[], onConflict: string, batchSize = 100): Promise<void> {
+  for (let i = 0; i < records.length; i += batchSize) {
+    const batch = records.slice(i, i + batchSize);
+    await executeRest(table, 'upsert', batch, { onConflict });
+  }
+}
+
+/**
+ * Fetch COMPLETE activity history from Polymarket - NO LIMITS
+ * Continues until no more events exist
+ */
+async function fetchCompleteActivity(wallet: string): Promise<Activity[]> {
   const all: Activity[] = [];
   let offset = 0;
-  let pages = 0;
-  const cutoff = Math.floor(Date.now() / 1000) - (MAX_AGE_DAYS * 24 * 60 * 60);
+  let page = 0;
 
-  console.log(`[reducer] Fetching activity for ${wallet.slice(0, 10)}...`);
+  console.log(`[reducer] Fetching COMPLETE history for ${wallet.slice(0, 10)}...`);
 
-  while (pages < MAX_PAGES) {
+  while (true) {
     const url = `${DATA_API_BASE}/activity?user=${wallet}&limit=${PAGE_SIZE}&offset=${offset}`;
-    const resp = await fetch(url);
-    if (!resp.ok) break;
+    
+    try {
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        console.error(`[reducer] API error at offset ${offset}: ${resp.status}`);
+        break;
+      }
 
-    const data = await resp.json() as Activity[];
-    if (!data?.length) break;
+      const data = await resp.json() as Activity[];
+      if (!data?.length) {
+        console.log(`[reducer] No more events at offset ${offset}`);
+        break;
+      }
 
-    const recent = data.filter(a => a.timestamp >= cutoff);
-    all.push(...recent);
-    pages++;
+      all.push(...data);
+      page++;
+      
+      console.log(`[reducer] Page ${page}: +${data.length} events (total: ${all.length})`);
 
-    if (data.length < PAGE_SIZE || Math.min(...data.map(a => a.timestamp)) < cutoff) break;
-    offset += PAGE_SIZE;
+      if (data.length < PAGE_SIZE) {
+        console.log(`[reducer] Reached end of history at page ${page}`);
+        break;
+      }
+
+      offset += PAGE_SIZE;
+      
+      // Small delay to avoid rate limiting
+      if (page % 5 === 0) {
+        await new Promise(r => setTimeout(r, 100));
+      }
+    } catch (err) {
+      console.error(`[reducer] Fetch error at offset ${offset}:`, err);
+      break;
+    }
   }
 
-  console.log(`[reducer] Fetched ${all.length} activities`);
+  // Sort by timestamp ascending (oldest first)
+  all.sort((a, b) => a.timestamp - b.timestamp);
+  
+  console.log(`[reducer] Complete history: ${all.length} events`);
+  if (all.length > 0) {
+    const oldest = new Date(all[0].timestamp * 1000).toISOString();
+    const newest = new Date(all[all.length - 1].timestamp * 1000).toISOString();
+    console.log(`[reducer] Range: ${oldest} to ${newest}`);
+  }
+  
   return all;
 }
 
@@ -159,6 +208,18 @@ function mapEventType(a: Activity): 'BUY' | 'SELL' | 'REDEEM' | 'TRANSFER' | 'ME
   return 'TRANSFER';
 }
 
+// Get UTC date string from timestamp
+function toUTCDate(ts: number): string {
+  return new Date(ts * 1000).toISOString().split('T')[0];
+}
+
+// Create unique event ID
+function createEventId(a: Activity): string {
+  // Use tx_hash + logIndex if available, otherwise use timestamp-based
+  const logIdx = a.logIndex ?? a.timestamp;
+  return `${a.transactionHash}:${a.conditionId}:${a.outcomeIndex}:${logIdx}`;
+}
+
 // MAIN REDUCER
 async function runReducer(wallet: string): Promise<{
   eventsIngested: number;
@@ -167,18 +228,30 @@ async function runReducer(wallet: string): Promise<{
   settledMarkets: number;
   claimedMarkets: number;
   lostMarkets: number;
+  oldestEvent: string | null;
+  newestEvent: string | null;
+  daysWithActivity: number;
 }> {
   const walletLower = wallet.toLowerCase();
 
-  // 1. Fetch all activity
-  const activities = await fetchActivity(wallet);
+  // 1. Fetch COMPLETE history - no limits
+  const activities = await fetchCompleteActivity(wallet);
   if (!activities.length) {
-    return { eventsIngested: 0, marketsProcessed: 0, realizedPnl: 0, settledMarkets: 0, claimedMarkets: 0, lostMarkets: 0 };
+    return { 
+      eventsIngested: 0, marketsProcessed: 0, realizedPnl: 0, 
+      settledMarkets: 0, claimedMarkets: 0, lostMarkets: 0,
+      oldestEvent: null, newestEvent: null, daysWithActivity: 0
+    };
   }
+
+  const oldestTs = activities[0].timestamp;
+  const newestTs = activities[activities.length - 1].timestamp;
+  const oldestEvent = new Date(oldestTs * 1000).toISOString();
+  const newestEvent = new Date(newestTs * 1000).toISOString();
 
   // 2. Store raw events
   const rawEvents = activities.map(a => ({
-    id: `${a.transactionHash}:${a.conditionId}:${a.outcomeIndex}:${a.timestamp}`,
+    id: createEventId(a),
     tx_hash: a.transactionHash,
     event_type: mapEventType(a),
     market_id: a.conditionId,
@@ -192,16 +265,23 @@ async function runReducer(wallet: string): Promise<{
     raw_json: a,
   }));
 
-  await executeRest('raw_subgraph_events', 'upsert', rawEvents, { onConflict: 'id' });
+  await batchUpsert('raw_subgraph_events', rawEvents, 'id');
   console.log(`[reducer] Stored ${rawEvents.length} raw events`);
 
-  // 3. Create normalized cashflows
-  const cashflows = activities.map(a => {
+  // 3. Create normalized cashflows AND timeseries
+  const cashflows: unknown[] = [];
+  const timeseriesRecords: unknown[] = [];
+  const dailyMap = new Map<string, DailyAggregate>();
+
+  for (const a of activities) {
     const type = mapEventType(a);
     const shares = a.size || 0;
     const price = a.price || 0;
     const usdcSize = a.usdcSize || (price * shares);
     const fee = a.feesPaid || 0;
+    const eventId = createEventId(a);
+    const ts = new Date(a.timestamp * 1000).toISOString();
+    const date = toUTCDate(a.timestamp);
 
     let direction: 'IN' | 'OUT';
     let category: 'BUY' | 'SELL' | 'REDEEM' | 'FEE' | 'LOSS' | 'TRANSFER';
@@ -221,7 +301,6 @@ async function runReducer(wallet: string): Promise<{
       case 'REDEEM':
         direction = 'IN';
         category = 'REDEEM';
-        // Infer payout from shares if usdcSize is 0 (binary: 1.0 per share)
         amount = usdcSize > 0 ? usdcSize : shares;
         break;
       default:
@@ -230,8 +309,9 @@ async function runReducer(wallet: string): Promise<{
         amount = usdcSize;
     }
 
-    return {
-      id: `${a.transactionHash}:${a.conditionId}:${a.outcomeIndex}:${a.timestamp}:${type}`,
+    // Cashflow ledger entry
+    cashflows.push({
+      id: `${eventId}:${type}`,
       market_id: a.conditionId,
       outcome: a.outcomeIndex === 0 ? 'UP' : 'DOWN',
       direction,
@@ -239,13 +319,53 @@ async function runReducer(wallet: string): Promise<{
       amount_usd: amount,
       shares_delta: type === 'BUY' ? shares : (type === 'SELL' || type === 'REDEEM' ? -shares : 0),
       wallet: walletLower,
-      timestamp: new Date(a.timestamp * 1000).toISOString(),
-      source_event_id: `${a.transactionHash}:${a.conditionId}:${a.outcomeIndex}:${a.timestamp}`,
-    };
-  });
+      timestamp: ts,
+      source_event_id: eventId,
+    });
 
-  await executeRest('cashflow_ledger', 'upsert', cashflows, { onConflict: 'id' });
+    // Timeseries entry
+    timeseriesRecords.push({
+      ts,
+      date,
+      market_id: a.conditionId,
+      outcome: a.outcomeIndex === 0 ? 'UP' : 'DOWN',
+      category,
+      amount_usd: direction === 'OUT' ? -amount : amount,
+      shares_delta: type === 'BUY' ? shares : (type === 'SELL' || type === 'REDEEM' ? -shares : 0),
+      wallet: walletLower,
+      source_event_id: eventId,
+    });
+
+    // Aggregate daily stats
+    if (!dailyMap.has(date)) {
+      dailyMap.set(date, {
+        date,
+        realized_pnl: 0,
+        volume_traded: 0,
+        buy_count: 0,
+        sell_count: 0,
+        redeem_count: 0,
+        markets: new Set(),
+      });
+    }
+    const day = dailyMap.get(date)!;
+    day.markets.add(a.conditionId);
+    if (type === 'BUY') {
+      day.buy_count++;
+      day.volume_traded += amount;
+    } else if (type === 'SELL') {
+      day.sell_count++;
+      day.volume_traded += amount;
+    } else if (type === 'REDEEM') {
+      day.redeem_count++;
+    }
+  }
+
+  await batchUpsert('cashflow_ledger', cashflows, 'id');
   console.log(`[reducer] Stored ${cashflows.length} cashflows`);
+
+  await batchUpsert('account_cashflow_timeseries', timeseriesRecords, 'wallet,source_event_id');
+  console.log(`[reducer] Stored ${timeseriesRecords.length} timeseries entries`);
 
   // 4. Group by market and REDUCE to positions + market state
   const byMarket = new Map<string, Activity[]>();
@@ -269,11 +389,12 @@ async function runReducer(wallet: string): Promise<{
   let claimedCount = 0;
   let lostCount = 0;
 
+  // Track PnL per day per market for daily aggregation
+  const dailyPnlMap = new Map<string, number>();
+
   for (const [marketId, events] of byMarket) {
-    // Sort by timestamp
     events.sort((a, b) => a.timestamp - b.timestamp);
 
-    // Track state
     let upShares = 0, downShares = 0;
     let upCost = 0, downCost = 0;
     let upRealized = 0, downRealized = 0;
@@ -289,6 +410,7 @@ async function runReducer(wallet: string): Promise<{
       const shares = e.size || 0;
       const price = e.price || 0;
       const cost = shares * price;
+      const date = toUTCDate(e.timestamp);
 
       if (!marketSlug && e.slug) marketSlug = e.slug;
 
@@ -303,74 +425,75 @@ async function runReducer(wallet: string): Promise<{
         }
       } else if (type === 'SELL') {
         hasSell = true;
-        // Realize PnL on sold shares
         if (outcome === 'UP' && upShares > 0) {
           const avgCost = upCost / upShares;
           const soldShares = Math.min(shares, upShares);
           const costBasis = soldShares * avgCost;
           const proceeds = soldShares * price;
-          upRealized += proceeds - costBasis;
+          const pnl = proceeds - costBasis;
+          upRealized += pnl;
           upShares -= soldShares;
           upCost = upShares > 0 ? upShares * avgCost : 0;
+          // Track daily PnL
+          dailyPnlMap.set(date, (dailyPnlMap.get(date) || 0) + pnl);
         } else if (outcome === 'DOWN' && downShares > 0) {
           const avgCost = downCost / downShares;
           const soldShares = Math.min(shares, downShares);
           const costBasis = soldShares * avgCost;
           const proceeds = soldShares * price;
-          downRealized += proceeds - costBasis;
+          const pnl = proceeds - costBasis;
+          downRealized += pnl;
           downShares -= soldShares;
           downCost = downShares > 0 ? downShares * avgCost : 0;
+          dailyPnlMap.set(date, (dailyPnlMap.get(date) || 0) + pnl);
         }
       } else if (type === 'REDEEM') {
         hasRedeem = true;
         redeemOutcome = outcome;
-        // Payout: use usdcSize if available, else infer from shares × 1.0
         const payout = e.usdcSize > 0 ? e.usdcSize : shares;
         redeemPayout += payout;
 
-        // Realize based on which side was redeemed
+        let pnl = 0;
         if (outcome === 'UP') {
-          const costBasis = upCost;
-          upRealized += payout - costBasis;
+          pnl = payout - upCost;
+          upRealized += pnl;
           upShares = 0;
           upCost = 0;
         } else {
-          const costBasis = downCost;
-          downRealized += payout - costBasis;
+          pnl = payout - downCost;
+          downRealized += pnl;
           downShares = 0;
           downCost = 0;
         }
+        dailyPnlMap.set(date, (dailyPnlMap.get(date) || 0) + pnl);
       }
     }
 
-    // Check current positions from API
     const currentUp = currentPosMap.get(`${marketId}:0`) || 0;
     const currentDown = currentPosMap.get(`${marketId}:1`) || 0;
     const hasOpenPosition = currentUp > 0 || currentDown > 0;
 
-    // Determine lifecycle state
     let marketState: 'OPEN' | 'SETTLED' = 'OPEN';
     let resolvedOutcome: 'UP' | 'DOWN' | 'SPLIT' | null = null;
 
     if (hasRedeem) {
-      // CLAIMED: We have redemption
       isClaimed = true;
       marketState = 'SETTLED';
       resolvedOutcome = redeemOutcome;
       claimedCount++;
     } else if (hasSell && !hasOpenPosition && upShares === 0 && downShares === 0) {
-      // SOLD: Closed via selling
       marketState = 'SETTLED';
     } else if (!hasOpenPosition && !hasRedeem && (upCost > 0 || downCost > 0)) {
-      // Position closed but no REDEEM - check if LOST
-      // We can only determine LOST if we have resolution data
-      // For now, mark as potentially lost
       isLost = true;
       marketState = 'SETTLED';
-      // Realize the loss: -remaining cost basis
+      const lostPnl = -(upCost + downCost);
       upRealized -= upCost;
       downRealized -= downCost;
       lostCount++;
+      // Track as loss on last event date
+      const lastEvent = events[events.length - 1];
+      const lastDate = toUTCDate(lastEvent.timestamp);
+      dailyPnlMap.set(lastDate, (dailyPnlMap.get(lastDate) || 0) + lostPnl);
     }
 
     if (marketState === 'SETTLED') settledCount++;
@@ -379,7 +502,6 @@ async function runReducer(wallet: string): Promise<{
     const totalRealized = upRealized + downRealized;
     totalRealizedPnl += totalRealized;
 
-    // Store positions
     if (upShares > 0 || upCost > 0 || upRealized !== 0) {
       positions.push({
         wallet: walletLower,
@@ -404,7 +526,6 @@ async function runReducer(wallet: string): Promise<{
       });
     }
 
-    // Store market lifecycle
     marketStates.push({
       wallet: walletLower,
       market_id: marketId,
@@ -436,7 +557,7 @@ async function runReducer(wallet: string): Promise<{
   }));
 
   if (positionRecords.length > 0) {
-    await executeRest('canonical_positions', 'upsert', positionRecords, { onConflict: 'id' });
+    await batchUpsert('canonical_positions', positionRecords, 'id');
     console.log(`[reducer] Stored ${positionRecords.length} positions`);
   }
 
@@ -460,11 +581,65 @@ async function runReducer(wallet: string): Promise<{
   }));
 
   if (marketRecords.length > 0) {
-    await executeRest('market_lifecycle', 'upsert', marketRecords, { onConflict: 'id' });
+    await batchUpsert('market_lifecycle', marketRecords, 'id');
     console.log(`[reducer] Stored ${marketRecords.length} market states`);
   }
 
-  // 7. Store PnL snapshot
+  // 7. Update daily PnL table
+  const dailyPnlRecords = Array.from(dailyMap.entries()).map(([date, day]) => ({
+    date,
+    wallet: walletLower,
+    realized_pnl: dailyPnlMap.get(date) || 0,
+    unrealized_pnl: 0,
+    total_pnl: dailyPnlMap.get(date) || 0,
+    volume_traded: day.volume_traded,
+    markets_active: day.markets.size,
+    buy_count: day.buy_count,
+    sell_count: day.sell_count,
+    redeem_count: day.redeem_count,
+    updated_at: new Date().toISOString(),
+  }));
+
+  if (dailyPnlRecords.length > 0) {
+    await batchUpsert('daily_pnl', dailyPnlRecords, 'wallet,date');
+    console.log(`[reducer] Stored ${dailyPnlRecords.length} daily PnL records`);
+  }
+
+  // 8. Update account PnL summary
+  const totalVolume = Array.from(dailyMap.values()).reduce((s, d) => s + d.volume_traded, 0);
+  const accountSummary = {
+    wallet: walletLower,
+    total_realized_pnl: totalRealizedPnl,
+    total_unrealized_pnl: 0,
+    total_pnl: totalRealizedPnl,
+    first_trade_ts: oldestEvent,
+    last_trade_ts: newestEvent,
+    total_trades: activities.length,
+    total_markets: marketStates.length,
+    total_volume: totalVolume,
+    claimed_markets: claimedCount,
+    lost_markets: lostCount,
+    open_markets: marketStates.filter(m => m.state === 'OPEN').length,
+    updated_at: new Date().toISOString(),
+  };
+
+  await executeRest('account_pnl_summary', 'upsert', [accountSummary], { onConflict: 'wallet' });
+  console.log(`[reducer] Updated account summary: PnL=$${totalRealizedPnl.toFixed(2)}`);
+
+  // 9. Update ingest state
+  const ingestState = {
+    wallet: walletLower,
+    oldest_event_ts: oldestEvent,
+    newest_event_ts: newestEvent,
+    total_events_ingested: activities.length,
+    last_sync_at: new Date().toISOString(),
+    is_complete: true,
+    updated_at: new Date().toISOString(),
+  };
+
+  await executeRest('subgraph_ingest_state', 'upsert', [ingestState], { onConflict: 'wallet' });
+
+  // 10. Store PnL snapshot
   const snapshot = {
     id: `${walletLower}:${Date.now()}`,
     wallet: walletLower,
@@ -482,7 +657,7 @@ async function runReducer(wallet: string): Promise<{
   };
 
   await executeRest('pnl_snapshots', 'insert', [snapshot]);
-  console.log(`[reducer] Created PnL snapshot: realized=$${totalRealizedPnl.toFixed(2)}`);
+  console.log(`[reducer] Created PnL snapshot`);
 
   return {
     eventsIngested: activities.length,
@@ -491,6 +666,9 @@ async function runReducer(wallet: string): Promise<{
     settledMarkets: settledCount,
     claimedMarkets: claimedCount,
     lostMarkets: lostCount,
+    oldestEvent,
+    newestEvent,
+    daysWithActivity: dailyMap.size,
   };
 }
 
@@ -500,41 +678,43 @@ serve(async (req) => {
   }
 
   try {
+    // Get wallet from bot_config
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
-    // Get wallet from bot_config
-    const configRes = await fetch(`${supabaseUrl}/rest/v1/bot_config?select=polymarket_address&limit=1`, {
+    const configResp = await fetch(`${supabaseUrl}/rest/v1/bot_config?select=polymarket_address&limit=1`, {
       headers: {
         'apikey': supabaseKey,
         'Authorization': `Bearer ${supabaseKey}`,
       },
     });
 
-    const configs = await configRes.json();
+    const configs = await configResp.json();
     const wallet = configs?.[0]?.polymarket_address;
 
     if (!wallet) {
       return new Response(
-        JSON.stringify({ error: 'No wallet configured' }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
+        JSON.stringify({ error: 'No wallet configured in bot_config' }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    console.log(`[reducer] Starting canonical accounting sync for ${wallet.slice(0, 10)}...`);
-
+    console.log(`[reducer] Starting COMPLETE historical ingestion for ${wallet}`);
     const result = await runReducer(wallet);
 
-    console.log(`[reducer] Complete:`, JSON.stringify(result));
-
-    return new Response(JSON.stringify({ success: true, ...result }), {
-      headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-    });
-  } catch (error) {
-    console.error('[reducer] Fatal error:', error);
     return new Response(
-      JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 }
+      JSON.stringify({ 
+        success: true, 
+        ...result,
+        message: `Ingested ${result.eventsIngested} events across ${result.daysWithActivity} days. Realized PnL: $${result.realizedPnl.toFixed(2)}`
+      }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+  } catch (error) {
+    console.error('[reducer] Error:', error);
+    return new Response(
+      JSON.stringify({ error: String(error) }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
 });
