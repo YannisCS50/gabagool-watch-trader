@@ -3,14 +3,16 @@ import { useNavigate } from 'react-router-dom';
 import { 
   ArrowLeft, RefreshCw, TrendingUp, TrendingDown, DollarSign, Target, Percent,
   Clock, Zap, BarChart3, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ExternalLink,
-  Upload, CheckCircle2, XCircle, Flame, Activity, Wifi, WifiOff, Gavel
+  Upload, CheckCircle2, XCircle, Flame, Activity, Wifi, WifiOff, Gavel, Database
 } from 'lucide-react';
 import { DownloadV26LogicButton } from '@/components/DownloadV26LogicButton';
 import { V26StrategyModal } from '@/components/V26StrategyModal';
 import { V26OracleSettleModal } from '@/components/V26OracleSettleModal';
+import { SubgraphDashboard } from '@/components/v26';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { supabase } from '@/integrations/supabase/client';
 import { format, formatDistanceToNow } from 'date-fns';
@@ -148,6 +150,7 @@ export default function V26Dashboard() {
     version: null,
   });
   const [oracleModalOpen, setOracleModalOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<'local' | 'subgraph'>('local');
 
   // Two-proportion z-test for comparing win rates
   const calculatePValue = (
@@ -1028,6 +1031,27 @@ export default function V26Dashboard() {
           onSettled={fetchData}
         />
 
+        {/* Tabs for Local vs Subgraph data */}
+        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'local' | 'subgraph')} className="w-full">
+          <TabsList className="grid w-full max-w-md grid-cols-2">
+            <TabsTrigger value="local" className="flex items-center gap-2">
+              <Activity className="h-4 w-4" />
+              Local Bot Logs
+            </TabsTrigger>
+            <TabsTrigger value="subgraph" className="flex items-center gap-2">
+              <Database className="h-4 w-4" />
+              Subgraph (Canonical)
+            </TabsTrigger>
+          </TabsList>
+
+          {/* Subgraph Tab Content */}
+          <TabsContent value="subgraph" className="mt-4">
+            <SubgraphDashboard />
+          </TabsContent>
+
+          {/* Local Tab Content */}
+          <TabsContent value="local" className="mt-4 space-y-4">
+
         {/* Main KPIs - Row 1 */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
           <Card className="bg-gradient-to-br from-card to-muted/30">
@@ -1616,6 +1640,8 @@ export default function V26Dashboard() {
             )}
           </CardContent>
         </Card>
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   );
