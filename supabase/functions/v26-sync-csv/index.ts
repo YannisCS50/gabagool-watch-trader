@@ -8,11 +8,16 @@ const corsHeaders = {
 
 // Parse CSV content into rows
 function parseCSV(content: string): Record<string, string>[] {
-  const lines = content.trim().split('\n');
+  const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+  const lines = normalized
+    .split('\n')
+    .map((l) => l.trimEnd())
+    .filter((l) => l.trim().length > 0);
+
   if (lines.length < 2) return [];
 
   // Parse header (handle BOM)
-  const headerLine = lines[0].replace(/^\uFEFF/, '');
+  const headerLine = lines[0].replace(/^\uFEFF/, '').trim();
   const headers = parseCSVLine(headerLine);
 
   const rows: Record<string, string>[] = [];
