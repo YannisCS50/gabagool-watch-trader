@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { 
   ArrowLeft, RefreshCw, TrendingUp, TrendingDown, DollarSign, Target, Percent,
   Clock, Zap, BarChart3, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ExternalLink,
-  Upload, CheckCircle2, XCircle, Flame, Activity, Wifi, WifiOff, Gavel, Database
+  Upload, CheckCircle2, XCircle, Flame, Activity, Wifi, WifiOff, Gavel, Database, Download
 } from 'lucide-react';
 import { DownloadV26LogicButton } from '@/components/DownloadV26LogicButton';
 import { V26StrategyModal } from '@/components/V26StrategyModal';
@@ -1472,8 +1472,67 @@ export default function V26Dashboard() {
               </Button>
             ))}
           </div>
-          <div className="text-sm text-muted-foreground">
-            {filtered.length} trades · Pagina {currentPage} van {Math.max(totalPages, 1)}
+          <div className="flex items-center gap-3">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                const headers = [
+                  'Market Slug',
+                  'Asset',
+                  'Side',
+                  'Shares',
+                  'Price',
+                  'Cost',
+                  'Status',
+                  'Result',
+                  'PnL',
+                  'Strike Price',
+                  'Close Price',
+                  'Delta',
+                  'Fill Time (ms)',
+                  'Filled Offset (sec)',
+                  'Event Start',
+                  'Event End',
+                  'Created At'
+                ];
+                const rows = filtered.map(t => [
+                  t.marketSlug,
+                  t.asset,
+                  t.side,
+                  t.shares.toFixed(4),
+                  t.pricePerShare.toFixed(4),
+                  t.total.toFixed(4),
+                  t.status,
+                  t.result,
+                  t.pnl?.toFixed(4) ?? '',
+                  t.strikePrice?.toFixed(2) ?? '',
+                  t.closePrice?.toFixed(2) ?? '',
+                  t.delta?.toFixed(2) ?? '',
+                  t.fillTimeMs?.toString() ?? '',
+                  t.filledOffsetSec?.toString() ?? '',
+                  t.eventStartTime,
+                  t.eventEndTime,
+                  t.createdAt
+                ]);
+                const csvContent = [
+                  headers.join(','),
+                  ...rows.map(r => r.map(cell => `"${cell}"`).join(','))
+                ].join('\n');
+                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = `v26-local-trades-${format(new Date(), 'yyyy-MM-dd-HHmmss')}.csv`;
+                link.click();
+              }}
+              disabled={filtered.length === 0}
+            >
+              <Download className="h-4 w-4 mr-2" />
+              Export CSV
+            </Button>
+            <div className="text-sm text-muted-foreground">
+              {filtered.length} trades · Pagina {currentPage} van {Math.max(totalPages, 1)}
+            </div>
           </div>
         </div>
 
