@@ -71,3 +71,9 @@ verify_jwt = false
 
 [functions.v26-auto-settle]
 verify_jwt = false
+
+[functions.fetch-full-history]
+verify_jwt = false
+
+[functions.fetch-onchain-pnl]
+verify_jwt = false
