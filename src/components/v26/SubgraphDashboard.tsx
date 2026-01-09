@@ -3,6 +3,7 @@ import { SubgraphPnLPanel } from './SubgraphPnLPanel';
 import { SubgraphFillsTable } from './SubgraphFillsTable';
 import { SubgraphPositionsTable } from './SubgraphPositionsTable';
 import { SubgraphReconciliationPanel } from './SubgraphReconciliationPanel';
+import { CashflowDiagnostics } from './CashflowDiagnostics';
 import { useBotWallet } from '@/hooks/useSubgraphData';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { AlertCircle } from 'lucide-react';
@@ -10,7 +11,6 @@ import { AlertCircle } from 'lucide-react';
 export function SubgraphDashboard() {
   const { data: wallet, isLoading: walletLoading, error: walletError } = useBotWallet();
 
-  // Show wallet loading/error state
   if (walletLoading) {
     return (
       <div className="space-y-4">
@@ -46,7 +46,6 @@ export function SubgraphDashboard() {
           <AlertTitle>No Wallet Configured</AlertTitle>
           <AlertDescription>
             Please configure a Polymarket wallet address in bot_config to enable subgraph data sync.
-            The wallet address should be set in the `polymarket_address` column.
           </AlertDescription>
         </Alert>
       </div>
@@ -55,19 +54,18 @@ export function SubgraphDashboard() {
 
   return (
     <div className="space-y-4">
-      {/* Health Panel - Always visible, shows sync status and diagnostics */}
       <SubgraphHealthPanel />
+      
+      {/* Cashflow Diagnostics - shows event type breakdown */}
+      <CashflowDiagnostics />
 
-      {/* PnL Panel */}
       <SubgraphPnLPanel />
 
-      {/* Two-column layout for Positions and Reconciliation */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <SubgraphPositionsTable />
         <SubgraphReconciliationPanel />
       </div>
 
-      {/* Fills Table */}
       <SubgraphFillsTable />
     </div>
   );
