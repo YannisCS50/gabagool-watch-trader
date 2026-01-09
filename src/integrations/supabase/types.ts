@@ -1171,6 +1171,84 @@ export type Database = {
         }
         Relationships: []
       }
+      live_trade_results_archive: {
+        Row: {
+          archived_at: string | null
+          asset: string
+          claim_status: string | null
+          claim_tx_hash: string | null
+          claim_usdc: number | null
+          claimed_at: string | null
+          created_at: string | null
+          down_avg_price: number | null
+          down_cost: number | null
+          down_shares: number | null
+          event_end_time: string | null
+          id: string
+          market_slug: string
+          payout: number | null
+          profit_loss: number | null
+          profit_loss_percent: number | null
+          result: string | null
+          settled_at: string | null
+          total_invested: number | null
+          up_avg_price: number | null
+          up_cost: number | null
+          up_shares: number | null
+          wallet_address: string | null
+        }
+        Insert: {
+          archived_at?: string | null
+          asset: string
+          claim_status?: string | null
+          claim_tx_hash?: string | null
+          claim_usdc?: number | null
+          claimed_at?: string | null
+          created_at?: string | null
+          down_avg_price?: number | null
+          down_cost?: number | null
+          down_shares?: number | null
+          event_end_time?: string | null
+          id: string
+          market_slug: string
+          payout?: number | null
+          profit_loss?: number | null
+          profit_loss_percent?: number | null
+          result?: string | null
+          settled_at?: string | null
+          total_invested?: number | null
+          up_avg_price?: number | null
+          up_cost?: number | null
+          up_shares?: number | null
+          wallet_address?: string | null
+        }
+        Update: {
+          archived_at?: string | null
+          asset?: string
+          claim_status?: string | null
+          claim_tx_hash?: string | null
+          claim_usdc?: number | null
+          claimed_at?: string | null
+          created_at?: string | null
+          down_avg_price?: number | null
+          down_cost?: number | null
+          down_shares?: number | null
+          event_end_time?: string | null
+          id?: string
+          market_slug?: string
+          payout?: number | null
+          profit_loss?: number | null
+          profit_loss_percent?: number | null
+          result?: string | null
+          settled_at?: string | null
+          total_invested?: number | null
+          up_avg_price?: number | null
+          up_cost?: number | null
+          up_shares?: number | null
+          wallet_address?: string | null
+        }
+        Relationships: []
+      }
       live_trades: {
         Row: {
           arbitrage_edge: number | null
@@ -1212,6 +1290,69 @@ export type Database = {
         }
         Update: {
           arbitrage_edge?: number | null
+          asset?: string
+          avg_fill_price?: number | null
+          created_at?: string | null
+          estimated_slippage?: number | null
+          event_end_time?: string | null
+          event_start_time?: string | null
+          id?: string
+          market_slug?: string
+          order_id?: string | null
+          outcome?: string
+          price?: number
+          reasoning?: string | null
+          shares?: number
+          status?: string | null
+          total?: number
+          wallet_address?: string | null
+        }
+        Relationships: []
+      }
+      live_trades_archive: {
+        Row: {
+          arbitrage_edge: number | null
+          archived_at: string | null
+          asset: string
+          avg_fill_price: number | null
+          created_at: string | null
+          estimated_slippage: number | null
+          event_end_time: string | null
+          event_start_time: string | null
+          id: string
+          market_slug: string
+          order_id: string | null
+          outcome: string
+          price: number
+          reasoning: string | null
+          shares: number
+          status: string | null
+          total: number
+          wallet_address: string | null
+        }
+        Insert: {
+          arbitrage_edge?: number | null
+          archived_at?: string | null
+          asset: string
+          avg_fill_price?: number | null
+          created_at?: string | null
+          estimated_slippage?: number | null
+          event_end_time?: string | null
+          event_start_time?: string | null
+          id: string
+          market_slug: string
+          order_id?: string | null
+          outcome: string
+          price: number
+          reasoning?: string | null
+          shares: number
+          status?: string | null
+          total: number
+          wallet_address?: string | null
+        }
+        Update: {
+          arbitrage_edge?: number | null
+          archived_at?: string | null
           asset?: string
           avg_fill_price?: number | null
           created_at?: string | null
