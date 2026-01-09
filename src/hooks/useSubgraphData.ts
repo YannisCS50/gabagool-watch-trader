@@ -268,19 +268,24 @@ export function useSubgraphSync() {
 }
 
 /**
- * Get wallet from bot_config
+ * Get active wallet used for subgraph sync.
+ *
+ * Source of truth: backend health endpoint (matches what ingestion uses).
  */
 export function useBotWallet() {
   return useQuery({
     queryKey: ['bot-wallet'],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('bot_config')
-        .select('polymarket_address')
-        .single();
-
+      const { data, error } = await supabase.functions.invoke('subgraph-health');
       if (error) throw error;
-      return data?.polymarket_address || null;
+
+      const report = data as any;
+      const wallet: string | null =
+        report?.wallet?.addressLowercase ?? report?.wallet?.address ?? null;
+
+      return wallet;
     },
+    staleTime: 10_000,
+    refetchInterval: 30_000,
   });
 }
