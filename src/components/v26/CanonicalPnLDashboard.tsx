@@ -60,10 +60,11 @@ function MarketRow({ market }: { market: MarketPnl }) {
           {market.market_slug || market.market_id.slice(0, 12) + '...'}
         </span>
         <MarketLifecycleBadge
-          bought={market.has_buy}
-          sold={market.has_sell}
-          claimed={market.is_claimed}
-          lost={market.is_lost}
+          lifecycleBought={market.has_buy}
+          lifecycleSold={market.has_sell}
+          lifecycleClaimed={market.is_claimed}
+          lifecycleLost={market.is_lost}
+          size="sm"
         />
       </div>
       <div className="flex items-center gap-2">
