@@ -50,35 +50,56 @@ interface V26Trade {
 }
 
 /**
- * Fetch trades from Polymarket Data API (public, no auth)
+ * Fetch ALL trades from Polymarket Data API using pagination
  */
-async function fetchTradesFromDataApi(
+async function fetchAllTradesFromDataApi(
   walletAddress: string,
-  options: { limit?: number; side?: 'BUY' | 'SELL'; offset?: number } = {}
+  side: 'BUY' | 'SELL' = 'BUY'
 ): Promise<DataApiTrade[]> {
-  const { limit = 500, side = 'BUY', offset = 0 } = options;
+  const allTrades: DataApiTrade[] = [];
+  const pageSize = 500;
+  let offset = 0;
+  let hasMore = true;
 
-  const url = new URL(`${DATA_API_BASE}/trades`);
-  url.searchParams.set('user', walletAddress.toLowerCase());
-  url.searchParams.set('side', side);
-  url.searchParams.set('limit', String(limit));
-  url.searchParams.set('offset', String(offset));
+  while (hasMore) {
+    const url = new URL(`${DATA_API_BASE}/trades`);
+    url.searchParams.set('user', walletAddress.toLowerCase());
+    url.searchParams.set('side', side);
+    url.searchParams.set('limit', String(pageSize));
+    url.searchParams.set('offset', String(offset));
 
-  console.log(`[v26-sync-fills] Fetching trades from ${url.toString().replace(walletAddress.toLowerCase(), walletAddress.slice(0, 10) + '...')}`);
+    console.log(`[v26-sync-fills] Fetching trades offset=${offset}...`);
 
-  const response = await fetch(url.toString(), {
-    method: 'GET',
-    headers: { 'Content-Type': 'application/json' },
-  });
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+    });
 
-  if (!response.ok) {
-    const text = await response.text();
-    console.error(`[v26-sync-fills] Data API returned ${response.status}: ${text.slice(0, 200)}`);
-    throw new Error(`Data API error ${response.status}`);
+    if (!response.ok) {
+      const text = await response.text();
+      console.error(`[v26-sync-fills] Data API returned ${response.status}: ${text.slice(0, 200)}`);
+      throw new Error(`Data API error ${response.status}`);
+    }
+
+    const data = await response.json();
+    const trades = Array.isArray(data) ? data : [];
+    
+    allTrades.push(...trades);
+    console.log(`[v26-sync-fills] Got ${trades.length} trades (total: ${allTrades.length})`);
+
+    if (trades.length < pageSize) {
+      hasMore = false;
+    } else {
+      offset += pageSize;
+      // Safety limit to prevent infinite loops
+      if (offset > 10000) {
+        console.log('[v26-sync-fills] Reached 10k trade limit, stopping pagination');
+        hasMore = false;
+      }
+    }
   }
 
-  const data = await response.json();
-  return Array.isArray(data) ? data : [];
+  return allTrades;
 }
 
 /**
@@ -134,15 +155,13 @@ serve(async (req) => {
 
     console.log(`[v26-sync-fills] Using wallet: ${walletAddress.slice(0, 10)}...`);
 
-    // Fetch trades needing sync (last 7 days, missing fill data or not final status)
-    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-
+    // Fetch ALL trades needing sync (no date limit - get everything since v26 started)
     const { data: trades, error: fetchError } = await supabase
       .from('v26_trades')
       .select('id, market_id, market_slug, side, shares, event_start_time, event_end_time, status, filled_shares, avg_fill_price, fill_matched_at')
-      .gte('event_start_time', sevenDaysAgo)
       .or('fill_matched_at.is.null,status.in.(placed,open,partial,processing),filled_shares.eq.0')
-      .limit(100);
+      .order('event_start_time', { ascending: false })
+      .limit(500);
 
     if (fetchError) {
       console.error('[v26-sync-fills] Error fetching trades:', fetchError);
@@ -179,9 +198,9 @@ serve(async (req) => {
     let dataApiFailed = false;
 
     try {
-      // Fetch last 1000 trades (should cover past week for V26)
-      apiTrades = await fetchTradesFromDataApi(walletAddress, { limit: 1000, side: 'BUY' });
-      console.log(`[v26-sync-fills] Data API returned ${apiTrades.length} trades`);
+      // Fetch ALL trades using pagination
+      apiTrades = await fetchAllTradesFromDataApi(walletAddress, 'BUY');
+      console.log(`[v26-sync-fills] Data API returned ${apiTrades.length} total trades`);
     } catch (err) {
       console.error('[v26-sync-fills] Data API failed:', err);
       dataApiFailed = true;
