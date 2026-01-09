@@ -2,18 +2,20 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 /**
- * Polymarket Data Sync Service - Cashflow-Based PnL
+ * Polymarket Data Sync Service - Cashflow-Based PnL with Lifecycle States
  * 
  * Fetches canonical data from Polymarket Data API:
  * - Activity: trades (BUY/SELL), redemptions, claims, merges, splits
  * - Positions: current position state
+ * - Market Resolution: winning outcome for resolved markets (to derive "Lost")
  * 
  * Creates cashflow records for accurate PnL tracking:
  * - FILL_BUY: cost outflow
  * - FILL_SELL: proceeds inflow
  * - REDEEM/CLAIM: settlement payout inflow
+ * - SETTLEMENT_LOSS: synthetic closure for losing positions (payout = 0)
  * 
- * Stores in polymarket_cashflows + subgraph_* tables.
+ * Lifecycle states: Bought, Sold, Claimed, Lost
  */
 
 const corsHeaders = {
@@ -22,23 +24,24 @@ const corsHeaders = {
 };
 
 const DATA_API_BASE = 'https://data-api.polymarket.com';
+const GAMMA_API_BASE = 'https://gamma-api.polymarket.com';
 
 // Config
 const PAGE_SIZE = 500;
 const MAX_PAGES = 10;
-const MAX_AGE_DAYS = 60; // Extended to capture more payouts
+const MAX_AGE_DAYS = 60;
 
 interface PolymarketActivity {
   proxyWallet: string;
   timestamp: number;
   conditionId: string;
-  type: string; // TRADE, REDEEM, MERGE, SPLIT, etc.
+  type: string;
   size: number;
   usdcSize: number;
   transactionHash: string;
   price: number;
   asset: string;
-  side: string; // BUY, SELL
+  side: string;
   outcomeIndex: number;
   title: string;
   slug: string;
@@ -59,8 +62,12 @@ interface PolymarketPosition {
   outcome: string;
 }
 
-// deno-lint-ignore no-explicit-any
-type SupabaseClient = any;
+interface MarketResolution {
+  conditionId: string;
+  isResolved: boolean;
+  winningOutcome: string | null;
+  payoutNumerators?: number[];
+}
 
 /**
  * Fetch ALL user activity from Polymarket Data API (not just trades)
@@ -84,27 +91,20 @@ async function fetchAllActivity(wallet: string): Promise<PolymarketActivity[]> {
 
     const data = await response.json() as PolymarketActivity[];
     
-    if (!data || data.length === 0) {
-      break;
-    }
+    if (!data || data.length === 0) break;
     
-    // Keep ALL activity types within time window (TRADE, REDEEM, MERGE, SPLIT, etc.)
     const recentActivity = data.filter(a => a.timestamp >= cutoffTime);
     allActivity.push(...recentActivity);
     
     pagesLoaded++;
     
     const oldestInBatch = Math.min(...data.map(a => a.timestamp));
-    if (oldestInBatch < cutoffTime || data.length < PAGE_SIZE) {
-      console.log(`[subgraph-sync] Reached cutoff or end of data`);
-      break;
-    }
+    if (oldestInBatch < cutoffTime || data.length < PAGE_SIZE) break;
     
     offset += PAGE_SIZE;
     console.log(`[subgraph-sync] Page ${pagesLoaded}/${MAX_PAGES}: ${recentActivity.length} activities (total: ${allActivity.length})`);
   }
 
-  // Log activity type breakdown
   const typeBreakdown = allActivity.reduce((acc, a) => {
     acc[a.type] = (acc[a.type] || 0) + 1;
     return acc;
@@ -122,7 +122,6 @@ async function fetchPositions(wallet: string): Promise<PolymarketPosition[]> {
 
   try {
     const url = `${DATA_API_BASE}/positions?user=${wallet}`;
-    
     const response = await fetch(url);
     if (!response.ok) {
       console.error(`[subgraph-sync] Positions API error: ${response.status}`);
@@ -130,11 +129,7 @@ async function fetchPositions(wallet: string): Promise<PolymarketPosition[]> {
     }
 
     const data = await response.json();
-    
-    if (!data || !Array.isArray(data)) {
-      console.log(`[subgraph-sync] No positions data or unexpected format`);
-      return [];
-    }
+    if (!data || !Array.isArray(data)) return [];
 
     console.log(`[subgraph-sync] Fetched ${data.length} positions`);
     return data as PolymarketPosition[];
@@ -142,6 +137,70 @@ async function fetchPositions(wallet: string): Promise<PolymarketPosition[]> {
     console.error(`[subgraph-sync] Error fetching positions:`, error);
     return [];
   }
+}
+
+/**
+ * Fetch market resolution status from Gamma API
+ */
+async function fetchMarketResolution(conditionIds: string[]): Promise<Map<string, MarketResolution>> {
+  const resolutions = new Map<string, MarketResolution>();
+  
+  if (conditionIds.length === 0) return resolutions;
+  
+  console.log(`[subgraph-sync] Fetching resolution for ${conditionIds.length} markets...`);
+  
+  // Fetch in batches
+  const batchSize = 20;
+  for (let i = 0; i < conditionIds.length; i += batchSize) {
+    const batch = conditionIds.slice(i, i + batchSize);
+    
+    await Promise.all(batch.map(async (conditionId) => {
+      try {
+        // Try Gamma API for market info
+        const url = `${GAMMA_API_BASE}/markets?condition_id=${conditionId}`;
+        const response = await fetch(url);
+        
+        if (response.ok) {
+          const markets = await response.json();
+          if (Array.isArray(markets) && markets.length > 0) {
+            const market = markets[0];
+            const isResolved = market.closed === true || market.resolved === true;
+            let winningOutcome: string | null = null;
+            let payoutNumerators: number[] = [];
+            
+            if (isResolved && market.payoutNumerators) {
+              payoutNumerators = market.payoutNumerators.map(Number);
+              // Determine winning outcome: index with payout > 0
+              if (payoutNumerators[0] > 0 && payoutNumerators[1] === 0) {
+                winningOutcome = 'UP';
+              } else if (payoutNumerators[1] > 0 && payoutNumerators[0] === 0) {
+                winningOutcome = 'DOWN';
+              } else if (payoutNumerators[0] > 0 && payoutNumerators[1] > 0) {
+                winningOutcome = 'SPLIT'; // Both outcomes paid (rare)
+              }
+            }
+            
+            resolutions.set(conditionId, {
+              conditionId,
+              isResolved,
+              winningOutcome,
+              payoutNumerators,
+            });
+          }
+        }
+      } catch (error) {
+        console.error(`[subgraph-sync] Error fetching resolution for ${conditionId}:`, error);
+      }
+    }));
+    
+    // Small delay between batches
+    if (i + batchSize < conditionIds.length) {
+      await new Promise(r => setTimeout(r, 100));
+    }
+  }
+  
+  console.log(`[subgraph-sync] Fetched resolution for ${resolutions.size} markets`);
+  return resolutions;
 }
 
 /**
@@ -172,9 +231,7 @@ async function executeRest(
 
   if (operation === 'delete') {
     method = 'DELETE';
-    if (options?.filter) {
-      url += `?${options.filter}`;
-    }
+    if (options?.filter) url += `?${options.filter}`;
   }
 
   const response = await fetch(url, {
@@ -205,7 +262,6 @@ function mapActivityToCashflowType(activity: PolymarketActivity): string {
   if (typeUpper === 'SPLIT') return 'SPLIT';
   if (typeUpper === 'TRANSFER') return 'TRANSFER';
   
-  // Default to unknown type as TRANSFER
   return 'TRANSFER';
 }
 
@@ -220,21 +276,16 @@ function computeCashflowAmount(activity: PolymarketActivity, type: string): numb
 
   switch (type) {
     case 'FILL_BUY':
-      // Buying: cash goes out (negative)
       return -(usdcSize + fee);
     case 'FILL_SELL':
-      // Selling: cash comes in (positive, minus fee)
       return usdcSize - fee;
     case 'REDEEM':
     case 'CLAIM':
     case 'SETTLEMENT_PAYOUT':
-      // Payout: cash comes in (positive)
       return usdcSize;
     case 'MERGE':
-      // Merge: usually cash neutral or small positive
       return usdcSize;
     case 'SPLIT':
-      // Split: usually cash outflow
       return -usdcSize;
     default:
       return 0;
@@ -256,7 +307,6 @@ async function ingestActivityAsCashflows(
   let cashflowsIngested = 0;
   const batchSize = 100;
 
-  // Separate by type for different tables
   const trades = activities.filter(a => a.type === 'TRADE');
   const payouts = activities.filter(a => ['REDEEM', 'REDEMPTION', 'CLAIM', 'MERGE', 'SPLIT'].includes(a.type?.toUpperCase() || ''));
 
@@ -355,6 +405,28 @@ async function ingestPositions(wallet: string, positions: PolymarketPosition[]):
 }
 
 /**
+ * Store market resolution data
+ */
+async function storeMarketResolutions(resolutions: Map<string, MarketResolution>): Promise<void> {
+  if (resolutions.size === 0) return;
+  
+  const records = Array.from(resolutions.values()).map(r => ({
+    id: r.conditionId,
+    condition_id: r.conditionId,
+    is_resolved: r.isResolved,
+    winning_outcome: r.winningOutcome,
+    payout_per_share_up: r.payoutNumerators?.[0] ?? 0,
+    payout_per_share_down: r.payoutNumerators?.[1] ?? 0,
+    resolution_source: 'DATA_API',
+    raw_json: r,
+    updated_at: new Date().toISOString(),
+  }));
+  
+  await executeRest('polymarket_market_resolution', 'upsert', records, { onConflict: 'id' });
+  console.log(`[subgraph-sync] Stored ${records.length} market resolutions`);
+}
+
+/**
  * Update sync state
  */
 async function updateSyncState(
@@ -383,15 +455,22 @@ async function updateSyncState(
 }
 
 /**
- * Compute PnL using CASHFLOW-BASED method
+ * Compute PnL using CASHFLOW-BASED method with LIFECYCLE STATES
  * 
- * realizedPnL = sum of all cashflows for a market
- * unrealizedPnL = markValue - remainingCostBasis (for open positions)
+ * Lifecycle states:
+ * - Bought: has any FILL_BUY
+ * - Sold: has any FILL_SELL
+ * - Claimed: has REDEEM/CLAIM/PAYOUT event (payout > 0)
+ * - Lost: market resolved, held losing side, position is 0, no payout event (payout = 0)
  */
-async function computeCashflowPnl(wallet: string): Promise<void> {
+async function computeCashflowPnl(
+  wallet: string, 
+  resolutions: Map<string, MarketResolution>
+): Promise<{ syntheticClosures: number }> {
   const walletLower = wallet.toLowerCase();
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+  let syntheticClosures = 0;
 
   // Get all cashflows for wallet
   const cashflowsRes = await fetch(
@@ -407,7 +486,7 @@ async function computeCashflowPnl(wallet: string): Promise<void> {
   const cashflows = await cashflowsRes.json();
   if (!cashflows || cashflows.length === 0) {
     console.log(`[subgraph-sync] No cashflows to compute PnL`);
-    return;
+    return { syntheticClosures: 0 };
   }
 
   console.log(`[subgraph-sync] Computing cashflow-based PnL for ${cashflows.length} cashflows...`);
@@ -444,7 +523,12 @@ async function computeCashflowPnl(wallet: string): Promise<void> {
 
   // Compute PnL per market
   for (const [marketId, mCashflows] of marketCashflows) {
-    // Sum all cashflows for realized PnL
+    // Lifecycle detection
+    let hasBuy = false;
+    let hasSell = false;
+    let hasClaim = false;
+    
+    // PnL computation
     let realizedPnl = 0;
     let upShares = 0;
     let downShares = 0;
@@ -457,6 +541,7 @@ async function computeCashflowPnl(wallet: string): Promise<void> {
     let payoutTxHash: string | null = null;
     let payoutTs: string | null = null;
     let marketSlug: string | null = null;
+    let heldOutcomeSide: string | null = null;
 
     for (const cf of mCashflows) {
       const type = cf.type;
@@ -478,14 +563,18 @@ async function computeCashflowPnl(wallet: string): Promise<void> {
 
       // Track position for cost basis
       if (type === 'FILL_BUY') {
+        hasBuy = true;
         if (side === 'UP') {
           upCost += shares * price;
           upShares += shares;
+          heldOutcomeSide = 'UP';
         } else {
           downCost += shares * price;
           downShares += shares;
+          heldOutcomeSide = 'DOWN';
         }
       } else if (type === 'FILL_SELL') {
+        hasSell = true;
         if (side === 'UP' && upShares > 0) {
           const avgCost = upCost / upShares;
           const sellShares = Math.min(shares, upShares);
@@ -502,16 +591,14 @@ async function computeCashflowPnl(wallet: string): Promise<void> {
           downCost = downShares > 0 ? (downCost - costBasis) : 0;
         }
       } else if (type === 'REDEEM' || type === 'CLAIM' || type === 'SETTLEMENT_PAYOUT') {
-        // Payout event: add to realized PnL
+        hasClaim = true;
         hasPayouts = true;
         payoutAmount += amount;
         payoutTxHash = cf.raw_json?.transactionHash || payoutTxHash;
         payoutTs = cf.ts || payoutTs;
         
-        // Payout closes the position - realize remaining cost basis as loss or profit
         if (side === 'UP' && upShares > 0) {
-          // Redeeming UP shares: we receive the payout, our cost basis is gone
-          realizedPnl += amount; // payout amount is already positive
+          realizedPnl += amount;
           upShares = 0;
           upCost = 0;
         } else if (side === 'DOWN' && downShares > 0) {
@@ -519,16 +606,20 @@ async function computeCashflowPnl(wallet: string): Promise<void> {
           downShares = 0;
           downCost = 0;
         } else {
-          // General payout not tied to a specific side
           realizedPnl += amount;
         }
       } else if (type === 'MERGE') {
-        // Merge: convert both sides to USDC
-        realizedPnl += amount; // amount reflects the merge value
+        hasClaim = true;
+        hasPayouts = true;
+        realizedPnl += amount;
         upShares = 0;
         downShares = 0;
         upCost = 0;
         downCost = 0;
+      } else if (type === 'SETTLEMENT_LOSS') {
+        // Synthetic closure - already realized loss
+        hasPayouts = true;
+        realizedPnl += amount; // amount is 0 or negative
       }
     }
 
@@ -552,32 +643,111 @@ async function computeCashflowPnl(wallet: string): Promise<void> {
           const markValue = posShares * Number(currentPrice);
           const costBasis = posShares * avgCost;
           unrealizedPnl = (unrealizedPnl || 0) + (markValue - costBasis);
-          unrealizedConfidence = 'MEDIUM'; // Mark price from API
+          unrealizedConfidence = 'MEDIUM';
           
-          if (pos.outcome_side === 'UP') {
-            markPriceUp = Number(currentPrice);
-          } else {
-            markPriceDown = Number(currentPrice);
-          }
+          if (pos.outcome_side === 'UP') markPriceUp = Number(currentPrice);
+          else markPriceDown = Number(currentPrice);
         }
       }
     }
 
-    // Determine confidence
+    // Determine confidence and lifecycle
     let realizedConfidence: 'HIGH' | 'MEDIUM' | 'LOW' = 'HIGH';
     let overallConfidence: 'HIGH' | 'MEDIUM' | 'LOW' = 'HIGH';
     let missingPayoutReason: string | null = null;
+    let isLost = false;
+    let syntheticClosureCreated = false;
+    let syntheticClosureReason: string | null = null;
+    let resolutionWinningOutcome: string | null = null;
 
     if (feesUnknownCount > 0) {
       realizedConfidence = 'MEDIUM';
       overallConfidence = 'MEDIUM';
     }
 
-    // If market appears settled (no open position) but no payout events, mark as incomplete
-    if (!hasPayouts && marketPositions.length === 0 && (upCost > 0 || downCost > 0)) {
+    // Check resolution to derive "Lost" state
+    const resolution = resolutions.get(marketId);
+    if (resolution) {
+      resolutionWinningOutcome = resolution.winningOutcome;
+      
+      // If market is resolved, no payout events, position is 0, and we held the losing side
+      if (resolution.isResolved && !hasPayouts && marketPositions.length === 0 && (upCost > 0 || downCost > 0)) {
+        // Determine if we held the losing side
+        const heldUp = upCost > 0;
+        const heldDown = downCost > 0;
+        const wonUp = resolution.winningOutcome === 'UP';
+        const wonDown = resolution.winningOutcome === 'DOWN';
+        
+        const lostOnUp = heldUp && wonDown;
+        const lostOnDown = heldDown && wonUp;
+        
+        if (lostOnUp || lostOnDown) {
+          // This is a LOSS - create synthetic closure
+          isLost = true;
+          syntheticClosureCreated = true;
+          syntheticClosureReason = `resolved_${resolution.winningOutcome?.toLowerCase()}_won`;
+          
+          // Realize the loss: cost basis is gone
+          const lostCost = lostOnUp ? upCost : downCost;
+          realizedPnl -= lostCost;
+          hasPayouts = true; // Mark as having closure
+          isSettled = true;
+          
+          // Create synthetic cashflow for the loss
+          const syntheticId = `synthetic_loss:${walletLower}:${marketId}`;
+          const syntheticCashflow = {
+            id: syntheticId,
+            wallet: walletLower,
+            ts: new Date().toISOString(),
+            type: 'SETTLEMENT_LOSS',
+            market_id: marketId,
+            condition_id: marketId,
+            token_id: null,
+            outcome_side: lostOnUp ? 'UP' : 'DOWN',
+            amount_usd: 0, // Payout is 0 for losses
+            shares: lostOnUp ? upShares : downShares,
+            price: 0,
+            fee_usd: 0,
+            fee_known: true,
+            source: 'DATA_API',
+            raw_json: { 
+              reason: 'synthetic_loss_closure',
+              winning_outcome: resolution.winningOutcome,
+              lost_cost: lostCost,
+            },
+            ingested_at: new Date().toISOString(),
+          };
+          
+          await executeRest('polymarket_cashflows', 'upsert', [syntheticCashflow], { onConflict: 'id' });
+          syntheticClosures++;
+          
+          console.log(`[subgraph-sync] Created synthetic LOSS closure for ${marketSlug || marketId}: -$${lostCost.toFixed(2)}`);
+        } else if ((heldUp && wonUp) || (heldDown && wonDown)) {
+          // We held the winning side but no payout event - mark as incomplete
+          realizedConfidence = 'LOW';
+          overallConfidence = 'LOW';
+          missingPayoutReason = `Won but no payout event: held ${heldUp ? 'UP' : 'DOWN'}, won ${resolution.winningOutcome}`;
+        }
+      }
+    } else if (!hasPayouts && marketPositions.length === 0 && (upCost > 0 || downCost > 0)) {
+      // No resolution data and no payout - mark as incomplete
       realizedConfidence = 'LOW';
       overallConfidence = 'LOW';
-      missingPayoutReason = 'No payout events ingested for closed position';
+      missingPayoutReason = 'No payout events and no resolution data for closed position';
+    }
+
+    // Determine primary lifecycle state
+    let lifecycleState: string;
+    if (isLost) {
+      lifecycleState = 'LOST';
+    } else if (hasClaim) {
+      lifecycleState = 'CLAIMED';
+    } else if (hasSell && marketPositions.length === 0) {
+      lifecycleState = 'SOLD';
+    } else if (hasBuy) {
+      lifecycleState = 'BOUGHT';
+    } else {
+      lifecycleState = 'UNKNOWN';
     }
 
     const avgUp = upShares > 0 ? upCost / upShares : null;
@@ -602,7 +772,7 @@ async function computeCashflowPnl(wallet: string): Promise<void> {
       fees_known_usd: feesKnown,
       fees_unknown_count: feesUnknownCount,
       is_settled: isSettled,
-      settlement_outcome: hasPayouts ? (payoutAmount > 0 ? 'WIN' : 'LOSS') : null,
+      settlement_outcome: isLost ? 'LOSS' : (hasPayouts && payoutAmount > 0 ? 'WIN' : null),
       settlement_payout: hasPayouts ? payoutAmount : null,
       payout_ingested: hasPayouts,
       payout_amount_usd: hasPayouts ? payoutAmount : null,
@@ -614,6 +784,16 @@ async function computeCashflowPnl(wallet: string): Promise<void> {
       mark_price_down: markPriceDown,
       mark_source: markPriceUp || markPriceDown ? 'DATA_API' : null,
       mark_timestamp: new Date().toISOString(),
+      // Lifecycle states
+      lifecycle_bought: hasBuy,
+      lifecycle_sold: hasSell,
+      lifecycle_claimed: hasClaim,
+      lifecycle_lost: isLost,
+      lifecycle_state: lifecycleState,
+      resolution_winning_outcome: resolutionWinningOutcome,
+      resolution_fetched_at: resolution ? new Date().toISOString() : null,
+      synthetic_closure_created: syntheticClosureCreated,
+      synthetic_closure_reason: syntheticClosureReason,
       updated_at: new Date().toISOString(),
     };
 
@@ -641,6 +821,10 @@ async function computeCashflowPnl(wallet: string): Promise<void> {
     let openCount = 0;
     let payoutsIngestedCount = 0;
     let missingPayoutsCount = 0;
+    let marketsBought = 0;
+    let marketsSold = 0;
+    let marketsClaimed = 0;
+    let marketsLost = 0;
 
     for (const m of marketPnls) {
       totalRealized += Number(m.realized_pnl_usd) || 0;
@@ -651,6 +835,10 @@ async function computeCashflowPnl(wallet: string): Promise<void> {
       else openCount++;
       if (m.payout_ingested) payoutsIngestedCount++;
       if (m.missing_payout_reason) missingPayoutsCount++;
+      if (m.lifecycle_bought) marketsBought++;
+      if (m.lifecycle_sold) marketsSold++;
+      if (m.lifecycle_claimed) marketsClaimed++;
+      if (m.lifecycle_lost) marketsLost++;
     }
 
     let overallConfidence: 'HIGH' | 'MEDIUM' | 'LOW' = 'HIGH';
@@ -665,12 +853,18 @@ async function computeCashflowPnl(wallet: string): Promise<void> {
       total_fees_known: totalFeesKnown,
       total_fees_unknown_count: totalFeesUnknownCount,
       total_fills: cashflows.filter((cf: { type: string }) => cf.type.startsWith('FILL_')).length,
-      total_payouts: cashflows.filter((cf: { type: string }) => ['REDEEM', 'CLAIM', 'SETTLEMENT_PAYOUT', 'MERGE'].includes(cf.type)).length,
+      total_payouts: cashflows.filter((cf: { type: string }) => ['REDEEM', 'CLAIM', 'SETTLEMENT_PAYOUT', 'MERGE', 'SETTLEMENT_LOSS'].includes(cf.type)).length,
       total_markets: marketPnls.length,
       settled_markets: settledCount,
       open_markets: openCount,
       payouts_ingested_count: payoutsIngestedCount,
       missing_payouts_count: missingPayoutsCount,
+      markets_bought: marketsBought,
+      markets_sold: marketsSold,
+      markets_claimed: marketsClaimed,
+      markets_lost: marketsLost,
+      synthetic_closures_count: syntheticClosures,
+      resolution_fetch_count: resolutions.size,
       realized_confidence: missingPayoutsCount > 0 ? 'LOW' : (totalFeesUnknownCount > 0 ? 'MEDIUM' : 'HIGH'),
       unrealized_confidence: openCount > 0 ? 'MEDIUM' : 'HIGH',
       overall_confidence: overallConfidence,
@@ -679,8 +873,10 @@ async function computeCashflowPnl(wallet: string): Promise<void> {
     };
 
     await executeRest('subgraph_pnl_summary', 'upsert', summaryRecord, { onConflict: 'wallet' });
-    console.log(`[subgraph-sync] PnL Summary: realized=$${totalRealized.toFixed(2)}, unrealized=$${(totalUnrealized || 0).toFixed(2)}, markets=${marketPnls.length}, payouts=${payoutsIngestedCount}, missing=${missingPayoutsCount}`);
+    console.log(`[subgraph-sync] PnL Summary: realized=$${totalRealized.toFixed(2)}, unrealized=$${(totalUnrealized || 0).toFixed(2)}, markets=${marketPnls.length}, claimed=${marketsClaimed}, lost=${marketsLost}, syntheticClosures=${syntheticClosures}`);
   }
+
+  return { syntheticClosures };
 }
 
 serve(async (req) => {
@@ -708,18 +904,21 @@ serve(async (req) => {
     }
 
     const wallet = config.polymarket_address;
-    console.log(`[subgraph-sync] Starting CASHFLOW-BASED sync for wallet: ${wallet.slice(0, 10)}...`);
+    console.log(`[subgraph-sync] Starting CASHFLOW-BASED sync with LIFECYCLE for wallet: ${wallet.slice(0, 10)}...`);
 
     let fillsIngested = 0;
     let payoutsIngested = 0;
     let cashflowsIngested = 0;
     let positionsIngested = 0;
+    let syntheticClosures = 0;
+    let resolutionsFetched = 0;
     let fillsError: string | undefined;
     let positionsError: string | undefined;
 
     // Fetch ALL activity (trades + payouts)
+    let activities: PolymarketActivity[] = [];
     try {
-      const activities = await fetchAllActivity(wallet);
+      activities = await fetchAllActivity(wallet);
       const result = await ingestActivityAsCashflows(wallet, activities);
       fillsIngested = result.fillsIngested;
       payoutsIngested = result.payoutsIngested;
@@ -742,9 +941,21 @@ serve(async (req) => {
       await updateSyncState('positions', wallet, 0, positionsError);
     }
 
-    // Compute cashflow-based PnL
+    // Fetch market resolutions for markets that might need "Lost" derivation
+    const marketIds = [...new Set(activities.map(a => a.conditionId).filter(Boolean))];
+    let resolutions = new Map<string, MarketResolution>();
     try {
-      await computeCashflowPnl(wallet);
+      resolutions = await fetchMarketResolution(marketIds);
+      resolutionsFetched = resolutions.size;
+      await storeMarketResolutions(resolutions);
+    } catch (error) {
+      console.error('[subgraph-sync] Resolution fetch error:', error);
+    }
+
+    // Compute cashflow-based PnL with lifecycle states
+    try {
+      const result = await computeCashflowPnl(wallet, resolutions);
+      syntheticClosures = result.syntheticClosures;
     } catch (error) {
       console.error('[subgraph-sync] PnL computation error:', error);
     }
@@ -756,6 +967,8 @@ serve(async (req) => {
       payouts: payoutsIngested,
       cashflows: cashflowsIngested,
       positions: positionsIngested,
+      resolutions: resolutionsFetched,
+      syntheticClosures,
       errors: {
         fills: fillsError,
         positions: positionsError,

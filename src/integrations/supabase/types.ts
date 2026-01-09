@@ -1454,6 +1454,54 @@ export type Database = {
         }
         Relationships: []
       }
+      polymarket_market_resolution: {
+        Row: {
+          condition_id: string
+          created_at: string | null
+          id: string
+          is_resolved: boolean | null
+          market_slug: string | null
+          payout_per_share_down: number | null
+          payout_per_share_up: number | null
+          raw_json: Json | null
+          resolution_source: string | null
+          resolved_at: string | null
+          updated_at: string | null
+          winning_outcome: string | null
+          winning_token_id: string | null
+        }
+        Insert: {
+          condition_id: string
+          created_at?: string | null
+          id: string
+          is_resolved?: boolean | null
+          market_slug?: string | null
+          payout_per_share_down?: number | null
+          payout_per_share_up?: number | null
+          raw_json?: Json | null
+          resolution_source?: string | null
+          resolved_at?: string | null
+          updated_at?: string | null
+          winning_outcome?: string | null
+          winning_token_id?: string | null
+        }
+        Update: {
+          condition_id?: string
+          created_at?: string | null
+          id?: string
+          is_resolved?: boolean | null
+          market_slug?: string | null
+          payout_per_share_down?: number | null
+          payout_per_share_up?: number | null
+          raw_json?: Json | null
+          resolution_source?: string | null
+          resolved_at?: string | null
+          updated_at?: string | null
+          winning_outcome?: string | null
+          winning_token_id?: string | null
+        }
+        Relationships: []
+      }
       position_snapshots: {
         Row: {
           avg_price: number
@@ -2145,6 +2193,11 @@ export type Database = {
           id: string
           is_settled: boolean | null
           last_reconciled_at: string | null
+          lifecycle_bought: boolean | null
+          lifecycle_claimed: boolean | null
+          lifecycle_lost: boolean | null
+          lifecycle_sold: boolean | null
+          lifecycle_state: string | null
           mark_price_down: number | null
           mark_price_up: number | null
           mark_source: string | null
@@ -2159,9 +2212,13 @@ export type Database = {
           payout_tx_hash: string | null
           realized_confidence: string | null
           realized_pnl_usd: number | null
+          resolution_fetched_at: string | null
+          resolution_winning_outcome: string | null
           settled_at: string | null
           settlement_outcome: string | null
           settlement_payout: number | null
+          synthetic_closure_created: boolean | null
+          synthetic_closure_reason: string | null
           total_cost: number | null
           unrealized_confidence: string | null
           unrealized_pnl_usd: number | null
@@ -2181,6 +2238,11 @@ export type Database = {
           id: string
           is_settled?: boolean | null
           last_reconciled_at?: string | null
+          lifecycle_bought?: boolean | null
+          lifecycle_claimed?: boolean | null
+          lifecycle_lost?: boolean | null
+          lifecycle_sold?: boolean | null
+          lifecycle_state?: string | null
           mark_price_down?: number | null
           mark_price_up?: number | null
           mark_source?: string | null
@@ -2195,9 +2257,13 @@ export type Database = {
           payout_tx_hash?: string | null
           realized_confidence?: string | null
           realized_pnl_usd?: number | null
+          resolution_fetched_at?: string | null
+          resolution_winning_outcome?: string | null
           settled_at?: string | null
           settlement_outcome?: string | null
           settlement_payout?: number | null
+          synthetic_closure_created?: boolean | null
+          synthetic_closure_reason?: string | null
           total_cost?: number | null
           unrealized_confidence?: string | null
           unrealized_pnl_usd?: number | null
@@ -2217,6 +2283,11 @@ export type Database = {
           id?: string
           is_settled?: boolean | null
           last_reconciled_at?: string | null
+          lifecycle_bought?: boolean | null
+          lifecycle_claimed?: boolean | null
+          lifecycle_lost?: boolean | null
+          lifecycle_sold?: boolean | null
+          lifecycle_state?: string | null
           mark_price_down?: number | null
           mark_price_up?: number | null
           mark_source?: string | null
@@ -2231,9 +2302,13 @@ export type Database = {
           payout_tx_hash?: string | null
           realized_confidence?: string | null
           realized_pnl_usd?: number | null
+          resolution_fetched_at?: string | null
+          resolution_winning_outcome?: string | null
           settled_at?: string | null
           settlement_outcome?: string | null
           settlement_payout?: number | null
+          synthetic_closure_created?: boolean | null
+          synthetic_closure_reason?: string | null
           total_cost?: number | null
           unrealized_confidence?: string | null
           unrealized_pnl_usd?: number | null
@@ -2249,10 +2324,16 @@ export type Database = {
           first_trade_at: string | null
           last_reconciled_at: string | null
           last_trade_at: string | null
+          markets_bought: number | null
+          markets_claimed: number | null
+          markets_lost: number | null
+          markets_sold: number | null
           open_markets: number | null
           overall_confidence: string | null
           realized_confidence: string | null
+          resolution_fetch_count: number | null
           settled_markets: number | null
+          synthetic_closures_count: number | null
           total_fees_known: number | null
           total_fees_unknown_count: number | null
           total_fills: number | null
@@ -2269,10 +2350,16 @@ export type Database = {
           first_trade_at?: string | null
           last_reconciled_at?: string | null
           last_trade_at?: string | null
+          markets_bought?: number | null
+          markets_claimed?: number | null
+          markets_lost?: number | null
+          markets_sold?: number | null
           open_markets?: number | null
           overall_confidence?: string | null
           realized_confidence?: string | null
+          resolution_fetch_count?: number | null
           settled_markets?: number | null
+          synthetic_closures_count?: number | null
           total_fees_known?: number | null
           total_fees_unknown_count?: number | null
           total_fills?: number | null
@@ -2289,10 +2376,16 @@ export type Database = {
           first_trade_at?: string | null
           last_reconciled_at?: string | null
           last_trade_at?: string | null
+          markets_bought?: number | null
+          markets_claimed?: number | null
+          markets_lost?: number | null
+          markets_sold?: number | null
           open_markets?: number | null
           overall_confidence?: string | null
           realized_confidence?: string | null
+          resolution_fetch_count?: number | null
           settled_markets?: number | null
+          synthetic_closures_count?: number | null
           total_fees_known?: number | null
           total_fees_unknown_count?: number | null
           total_fills?: number | null

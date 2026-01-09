@@ -154,6 +154,25 @@ export function CashflowDiagnostics() {
         {/* PnL Completeness */}
         {pnlSummary && (
           <div className="border-t pt-4">
+            <h4 className="text-sm font-medium mb-2">Lifecycle States</h4>
+            <div className="grid grid-cols-4 gap-2 text-sm mb-4">
+              <div className="p-2 bg-blue-50 dark:bg-blue-900/20 rounded text-center">
+                <div className="text-lg font-bold text-blue-700 dark:text-blue-400">{(pnlSummary as Record<string, unknown>).markets_bought as number || 0}</div>
+                <div className="text-xs text-blue-600 dark:text-blue-500">Bought</div>
+              </div>
+              <div className="p-2 bg-purple-50 dark:bg-purple-900/20 rounded text-center">
+                <div className="text-lg font-bold text-purple-700 dark:text-purple-400">{(pnlSummary as Record<string, unknown>).markets_sold as number || 0}</div>
+                <div className="text-xs text-purple-600 dark:text-purple-500">Sold</div>
+              </div>
+              <div className="p-2 bg-green-50 dark:bg-green-900/20 rounded text-center">
+                <div className="text-lg font-bold text-green-700 dark:text-green-400">{(pnlSummary as Record<string, unknown>).markets_claimed as number || 0}</div>
+                <div className="text-xs text-green-600 dark:text-green-500">Claimed</div>
+              </div>
+              <div className="p-2 bg-red-50 dark:bg-red-900/20 rounded text-center">
+                <div className="text-lg font-bold text-red-700 dark:text-red-400">{(pnlSummary as Record<string, unknown>).markets_lost as number || 0}</div>
+                <div className="text-xs text-red-600 dark:text-red-500">Lost</div>
+              </div>
+            </div>
             <h4 className="text-sm font-medium mb-2">PnL Completeness</h4>
             <div className="grid grid-cols-2 gap-4 text-sm">
               <div>
@@ -165,8 +184,8 @@ export function CashflowDiagnostics() {
                 <span className="ml-2 font-medium">{pnlSummary.settled_markets || 0}</span>
               </div>
               <div>
-                <span className="text-muted-foreground">Payouts Ingested:</span>
-                <span className="ml-2 font-medium">{(pnlSummary as Record<string, unknown>).payouts_ingested_count as number || 0}</span>
+                <span className="text-muted-foreground">Synthetic Closures:</span>
+                <span className="ml-2 font-medium">{(pnlSummary as Record<string, unknown>).synthetic_closures_count as number || 0}</span>
               </div>
               <div>
                 <span className="text-muted-foreground">Missing Payouts:</span>
