@@ -2006,6 +2006,369 @@ export type Database = {
         }
         Relationships: []
       }
+      subgraph_fills: {
+        Row: {
+          block_number: number | null
+          created_at: string | null
+          fee_known: boolean | null
+          fee_usd: number | null
+          id: string
+          ingested_at: string | null
+          liquidity: string | null
+          log_index: number | null
+          market_id: string | null
+          notional: number
+          outcome_side: string | null
+          price: number
+          raw_json: Json | null
+          side: string
+          size: number
+          timestamp: string
+          token_id: string | null
+          tx_hash: string | null
+          wallet: string
+        }
+        Insert: {
+          block_number?: number | null
+          created_at?: string | null
+          fee_known?: boolean | null
+          fee_usd?: number | null
+          id: string
+          ingested_at?: string | null
+          liquidity?: string | null
+          log_index?: number | null
+          market_id?: string | null
+          notional: number
+          outcome_side?: string | null
+          price: number
+          raw_json?: Json | null
+          side: string
+          size: number
+          timestamp: string
+          token_id?: string | null
+          tx_hash?: string | null
+          wallet: string
+        }
+        Update: {
+          block_number?: number | null
+          created_at?: string | null
+          fee_known?: boolean | null
+          fee_usd?: number | null
+          id?: string
+          ingested_at?: string | null
+          liquidity?: string | null
+          log_index?: number | null
+          market_id?: string | null
+          notional?: number
+          outcome_side?: string | null
+          price?: number
+          raw_json?: Json | null
+          side?: string
+          size?: number
+          timestamp?: string
+          token_id?: string | null
+          tx_hash?: string | null
+          wallet?: string
+        }
+        Relationships: []
+      }
+      subgraph_pnl_markets: {
+        Row: {
+          avg_down_cost: number | null
+          avg_up_cost: number | null
+          confidence: string | null
+          created_at: string | null
+          down_shares: number | null
+          drift_flags: Json | null
+          fees_known_usd: number | null
+          fees_unknown_count: number | null
+          id: string
+          is_settled: boolean | null
+          last_reconciled_at: string | null
+          mark_price_down: number | null
+          mark_price_up: number | null
+          mark_source: string | null
+          mark_timestamp: string | null
+          market_id: string
+          market_slug: string | null
+          realized_confidence: string | null
+          realized_pnl_usd: number | null
+          settled_at: string | null
+          settlement_outcome: string | null
+          settlement_payout: number | null
+          total_cost: number | null
+          unrealized_confidence: string | null
+          unrealized_pnl_usd: number | null
+          up_shares: number | null
+          updated_at: string | null
+          wallet: string
+        }
+        Insert: {
+          avg_down_cost?: number | null
+          avg_up_cost?: number | null
+          confidence?: string | null
+          created_at?: string | null
+          down_shares?: number | null
+          drift_flags?: Json | null
+          fees_known_usd?: number | null
+          fees_unknown_count?: number | null
+          id: string
+          is_settled?: boolean | null
+          last_reconciled_at?: string | null
+          mark_price_down?: number | null
+          mark_price_up?: number | null
+          mark_source?: string | null
+          mark_timestamp?: string | null
+          market_id: string
+          market_slug?: string | null
+          realized_confidence?: string | null
+          realized_pnl_usd?: number | null
+          settled_at?: string | null
+          settlement_outcome?: string | null
+          settlement_payout?: number | null
+          total_cost?: number | null
+          unrealized_confidence?: string | null
+          unrealized_pnl_usd?: number | null
+          up_shares?: number | null
+          updated_at?: string | null
+          wallet: string
+        }
+        Update: {
+          avg_down_cost?: number | null
+          avg_up_cost?: number | null
+          confidence?: string | null
+          created_at?: string | null
+          down_shares?: number | null
+          drift_flags?: Json | null
+          fees_known_usd?: number | null
+          fees_unknown_count?: number | null
+          id?: string
+          is_settled?: boolean | null
+          last_reconciled_at?: string | null
+          mark_price_down?: number | null
+          mark_price_up?: number | null
+          mark_source?: string | null
+          mark_timestamp?: string | null
+          market_id?: string
+          market_slug?: string | null
+          realized_confidence?: string | null
+          realized_pnl_usd?: number | null
+          settled_at?: string | null
+          settlement_outcome?: string | null
+          settlement_payout?: number | null
+          total_cost?: number | null
+          unrealized_confidence?: string | null
+          unrealized_pnl_usd?: number | null
+          up_shares?: number | null
+          updated_at?: string | null
+          wallet?: string
+        }
+        Relationships: []
+      }
+      subgraph_pnl_summary: {
+        Row: {
+          drift_count: number | null
+          first_trade_at: string | null
+          last_reconciled_at: string | null
+          last_trade_at: string | null
+          open_markets: number | null
+          overall_confidence: string | null
+          realized_confidence: string | null
+          settled_markets: number | null
+          total_fees_known: number | null
+          total_fees_unknown_count: number | null
+          total_fills: number | null
+          total_markets: number | null
+          total_pnl: number | null
+          total_realized_pnl: number | null
+          total_unrealized_pnl: number | null
+          unrealized_confidence: string | null
+          updated_at: string | null
+          wallet: string
+        }
+        Insert: {
+          drift_count?: number | null
+          first_trade_at?: string | null
+          last_reconciled_at?: string | null
+          last_trade_at?: string | null
+          open_markets?: number | null
+          overall_confidence?: string | null
+          realized_confidence?: string | null
+          settled_markets?: number | null
+          total_fees_known?: number | null
+          total_fees_unknown_count?: number | null
+          total_fills?: number | null
+          total_markets?: number | null
+          total_pnl?: number | null
+          total_realized_pnl?: number | null
+          total_unrealized_pnl?: number | null
+          unrealized_confidence?: string | null
+          updated_at?: string | null
+          wallet: string
+        }
+        Update: {
+          drift_count?: number | null
+          first_trade_at?: string | null
+          last_reconciled_at?: string | null
+          last_trade_at?: string | null
+          open_markets?: number | null
+          overall_confidence?: string | null
+          realized_confidence?: string | null
+          settled_markets?: number | null
+          total_fees_known?: number | null
+          total_fees_unknown_count?: number | null
+          total_fills?: number | null
+          total_markets?: number | null
+          total_pnl?: number | null
+          total_realized_pnl?: number | null
+          total_unrealized_pnl?: number | null
+          unrealized_confidence?: string | null
+          updated_at?: string | null
+          wallet?: string
+        }
+        Relationships: []
+      }
+      subgraph_positions: {
+        Row: {
+          avg_cost: number | null
+          created_at: string | null
+          id: string
+          market_id: string | null
+          outcome_side: string | null
+          raw_json: Json | null
+          shares: number
+          snapshot_id: string | null
+          timestamp: string
+          token_id: string
+          updated_at: string | null
+          wallet: string
+        }
+        Insert: {
+          avg_cost?: number | null
+          created_at?: string | null
+          id: string
+          market_id?: string | null
+          outcome_side?: string | null
+          raw_json?: Json | null
+          shares: number
+          snapshot_id?: string | null
+          timestamp: string
+          token_id: string
+          updated_at?: string | null
+          wallet: string
+        }
+        Update: {
+          avg_cost?: number | null
+          created_at?: string | null
+          id?: string
+          market_id?: string | null
+          outcome_side?: string | null
+          raw_json?: Json | null
+          shares?: number
+          snapshot_id?: string | null
+          timestamp?: string
+          token_id?: string
+          updated_at?: string | null
+          wallet?: string
+        }
+        Relationships: []
+      }
+      subgraph_reconciliation: {
+        Row: {
+          created_at: string | null
+          delta_shares_down: number | null
+          delta_shares_up: number | null
+          id: string
+          local_shares_down: number | null
+          local_shares_up: number | null
+          local_source: string | null
+          market_id: string | null
+          notes: string | null
+          severity: string
+          status: string | null
+          subgraph_shares_down: number | null
+          subgraph_shares_up: number | null
+          subgraph_source: string | null
+          timestamp: string | null
+          wallet: string
+        }
+        Insert: {
+          created_at?: string | null
+          delta_shares_down?: number | null
+          delta_shares_up?: number | null
+          id?: string
+          local_shares_down?: number | null
+          local_shares_up?: number | null
+          local_source?: string | null
+          market_id?: string | null
+          notes?: string | null
+          severity: string
+          status?: string | null
+          subgraph_shares_down?: number | null
+          subgraph_shares_up?: number | null
+          subgraph_source?: string | null
+          timestamp?: string | null
+          wallet: string
+        }
+        Update: {
+          created_at?: string | null
+          delta_shares_down?: number | null
+          delta_shares_up?: number | null
+          id?: string
+          local_shares_down?: number | null
+          local_shares_up?: number | null
+          local_source?: string | null
+          market_id?: string | null
+          notes?: string | null
+          severity?: string
+          status?: string | null
+          subgraph_shares_down?: number | null
+          subgraph_shares_up?: number | null
+          subgraph_source?: string | null
+          timestamp?: string | null
+          wallet?: string
+        }
+        Relationships: []
+      }
+      subgraph_sync_state: {
+        Row: {
+          created_at: string | null
+          errors_count: number | null
+          id: string
+          last_block_number: number | null
+          last_error: string | null
+          last_sync_at: string | null
+          last_timestamp: string | null
+          records_synced: number | null
+          updated_at: string | null
+          wallet: string
+        }
+        Insert: {
+          created_at?: string | null
+          errors_count?: number | null
+          id: string
+          last_block_number?: number | null
+          last_error?: string | null
+          last_sync_at?: string | null
+          last_timestamp?: string | null
+          records_synced?: number | null
+          updated_at?: string | null
+          wallet: string
+        }
+        Update: {
+          created_at?: string | null
+          errors_count?: number | null
+          id?: string
+          last_block_number?: number | null
+          last_error?: string | null
+          last_sync_at?: string | null
+          last_timestamp?: string | null
+          records_synced?: number | null
+          updated_at?: string | null
+          wallet?: string
+        }
+        Relationships: []
+      }
       trader_stats: {
         Row: {
           active_since: string | null
