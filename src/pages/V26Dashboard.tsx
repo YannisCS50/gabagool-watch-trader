@@ -92,12 +92,14 @@ interface AssetStats {
 }
 
 const ASSETS = ['ALL', 'BTC', 'ETH', 'SOL', 'XRP'] as const;
+const STATUSES = ['ALL', 'WIN', 'LOSS', 'LIVE', 'PENDING', 'NO_FILL', 'NOT_BOUGHT', 'FAILED'] as const;
 const PAGE_SIZE = 20;
 
 export default function V26Dashboard() {
   const navigate = useNavigate();
   const [trades, setTrades] = useState<TradeLog[]>([]);
-  const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
+const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
+  const [statusFilter, setStatusFilter] = useState<typeof STATUSES[number]>('ALL');
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [uploadingSyncing, setUploadingSyncing] = useState(false);
@@ -832,14 +834,18 @@ export default function V26Dashboard() {
   // Reset page when filter changes
   useEffect(() => {
     setCurrentPage(1);
-  }, [assetFilter]);
+  }, [assetFilter, statusFilter]);
 
-  const filtered = useMemo(() => 
-    assetFilter === 'ALL' 
-      ? trades 
-      : trades.filter(t => t.asset === assetFilter),
-    [trades, assetFilter]
-  );
+  const filtered = useMemo(() => {
+    let result = trades;
+    if (assetFilter !== 'ALL') {
+      result = result.filter(t => t.asset === assetFilter);
+    }
+    if (statusFilter !== 'ALL') {
+      result = result.filter(t => t.result === statusFilter);
+    }
+    return result;
+  }, [trades, assetFilter, statusFilter]);
 
   const totalPages = Math.ceil(filtered.length / PAGE_SIZE);
   const paginatedTrades = useMemo(() => 
@@ -1458,19 +1464,34 @@ export default function V26Dashboard() {
         </Card>
 
 
-        <div className="flex items-center justify-between">
-          <div className="flex gap-1">
-            {ASSETS.map((asset) => (
-              <Button
-                key={asset}
-                variant={assetFilter === asset ? 'default' : 'outline'}
-                size="sm"
-                onClick={() => setAssetFilter(asset)}
-                className="text-xs px-3"
-              >
-                {asset}
-              </Button>
-            ))}
+        <div className="flex items-center justify-between flex-wrap gap-2">
+          <div className="flex items-center gap-4 flex-wrap">
+            <div className="flex gap-1">
+              {ASSETS.map((asset) => (
+                <Button
+                  key={asset}
+                  variant={assetFilter === asset ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setAssetFilter(asset)}
+                  className="text-xs px-3"
+                >
+                  {asset}
+                </Button>
+              ))}
+            </div>
+            <div className="flex gap-1">
+              {STATUSES.map((status) => (
+                <Button
+                  key={status}
+                  variant={statusFilter === status ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setStatusFilter(status)}
+                  className="text-xs px-2"
+                >
+                  {status === 'ALL' ? 'Alle' : status === 'NO_FILL' ? 'Niet gevuld' : status === 'NOT_BOUGHT' ? 'Niet geplaatst' : status}
+                </Button>
+              ))}
+            </div>
           </div>
           <div className="flex items-center gap-3">
             <Button
