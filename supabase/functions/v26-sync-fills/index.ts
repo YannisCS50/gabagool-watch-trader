@@ -51,26 +51,56 @@ interface V26Trade {
 }
 
 /**
- * Fetch trades for a specific market slug from Polymarket Data API
+ * Fetch trades for a specific user from Polymarket Data API.
+ *
+ * IMPORTANT:
+ * - The /trades endpoint supports filtering by `user` (wallet address).
+ * - `takerOnly` defaults to true; we set it to false so maker fills are included.
  */
-async function fetchTradesForSlug(slug: string): Promise<DataApiTrade[]> {
-  const url = new URL(`${DATA_API_BASE}/trades`);
-  url.searchParams.set('slug', slug);
-  url.searchParams.set('side', 'BUY');
-  url.searchParams.set('limit', '500');
+async function fetchTradesForUser(wallet: string): Promise<DataApiTrade[]> {
+  const limit = 10000; // API supports up to 10k
+  let offset = 0;
+  const all: DataApiTrade[] = [];
 
-  const response = await fetch(url.toString(), {
-    method: 'GET',
-    headers: { 'Content-Type': 'application/json' },
-  });
+  while (true) {
+    const url = new URL(`${DATA_API_BASE}/trades`);
+    url.searchParams.set('user', wallet);
+    url.searchParams.set('side', 'BUY');
+    url.searchParams.set('takerOnly', 'false');
+    url.searchParams.set('limit', String(limit));
+    url.searchParams.set('offset', String(offset));
 
-  if (!response.ok) {
-    console.error(`[v26-sync-fills] Data API error for ${slug}: ${response.status}`);
-    return [];
+    const response = await fetch(url.toString(), {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    if (!response.ok) {
+      console.error(`[v26-sync-fills] Data API error for user=${wallet.slice(0, 10)}...: ${response.status}`);
+      return all;
+    }
+
+    const data = await response.json().catch(() => null);
+
+    // Defensive parsing: docs say the response is an array, but some gateways wrap in { data: [...] }
+    const batch: DataApiTrade[] = Array.isArray(data)
+      ? data
+      : Array.isArray((data as any)?.data)
+        ? (data as any).data
+        : [];
+
+    all.push(...batch);
+
+    // Stop when the API returns fewer than we asked for
+    if (batch.length < limit) break;
+
+    offset += limit;
+
+    // Safety valve to prevent runaway loops on unexpected API behavior
+    if (offset >= 50000) break;
   }
 
-  const data = await response.json();
-  return Array.isArray(data) ? data : [];
+  return all;
 }
 
 /**
@@ -157,47 +187,17 @@ serve(async (req) => {
       error?: string;
     }> = [];
 
-    // Get unique slugs from our trades
-    const uniqueSlugs = [...new Set(trades.map(t => t.market_slug))];
-    console.log(`[v26-sync-fills] Fetching Data API trades for ${uniqueSlugs.length} unique slugs...`);
+    // Build a set of the slugs we care about
+    const uniqueSlugs = [...new Set(trades.map((t) => t.market_slug))];
+    const wantedSlugSet = new Set(uniqueSlugs.map(normalizeConditionId));
 
-    // Fetch trades for each slug and filter by wallet
-    const allApiTrades: DataApiTrade[] = [];
-    const walletLower = walletAddress.toLowerCase();
-    const walletPrefix = walletLower.slice(2, 12); // First 10 chars after 0x
-    
-    for (let i = 0; i < uniqueSlugs.length; i++) {
-      const slug = uniqueSlugs[i];
-      try {
-        const slugTrades = await fetchTradesForSlug(slug);
-        
-        // Filter to only trades from our wallet
-        const ourTrades = slugTrades.filter(t => {
-          const proxyLower = (t.proxyWallet || '').toLowerCase();
-          const nameLower = (t.name || '').toLowerCase();
-          
-          // Check if proxyWallet or name contains our wallet prefix
-          return proxyLower.includes(walletPrefix) || 
-                 nameLower.includes(walletPrefix) ||
-                 nameLower.startsWith(walletLower);
-        });
-        
-        allApiTrades.push(...ourTrades);
-        
-        if (ourTrades.length > 0) {
-          console.log(`[v26-sync-fills] Found ${ourTrades.length} trades for ${slug}`);
-        }
-      } catch (err) {
-        console.error(`[v26-sync-fills] Error fetching slug ${slug}:`, err);
-      }
-      
-      // Small delay to avoid rate limiting
-      if (i > 0 && i % 10 === 0) {
-        await new Promise(r => setTimeout(r, 100));
-      }
-    }
+    console.log(`[v26-sync-fills] Fetching Data API trades for wallet (wanted slugs: ${uniqueSlugs.length})...`);
 
-    console.log(`[v26-sync-fills] Total trades from Data API: ${allApiTrades.length}`);
+    // Fetch user trades once, then filter down to the slugs we need
+    const userTrades = await fetchTradesForUser(walletAddress);
+    const allApiTrades = userTrades.filter((t) => wantedSlugSet.has(normalizeConditionId(t.slug)));
+
+    console.log(`[v26-sync-fills] Total trades from Data API (after slug filter): ${allApiTrades.length}`);
 
     // Group API trades by slug + side
     const apiTradesByKey = new Map<string, DataApiTrade[]>();
