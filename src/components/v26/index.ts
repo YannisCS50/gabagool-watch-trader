@@ -5,3 +5,6 @@ export { SubgraphFillsTable } from './SubgraphFillsTable';
 export { SubgraphPositionsTable } from './SubgraphPositionsTable';
 export { SubgraphReconciliationPanel } from './SubgraphReconciliationPanel';
 export { SubgraphDashboard } from './SubgraphDashboard';
+export { CanonicalPnLDashboard } from './CanonicalPnLDashboard';
+export { MarketLifecycleBadge, MarketLifecycleChips } from './MarketLifecycleBadge';
+export { CashflowDiagnostics } from './CashflowDiagnostics';
