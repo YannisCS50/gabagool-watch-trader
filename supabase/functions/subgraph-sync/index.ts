@@ -2,10 +2,10 @@ import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 /**
- * Polymarket Subgraph Sync Service
+ * Polymarket Data Sync Service
  * 
- * Fetches canonical fills and positions from Goldsky subgraphs:
- * - Activity: executed trades
+ * Fetches canonical fills and positions from Polymarket Data API:
+ * - Activity: executed trades  
  * - Positions: current position state
  * 
  * Stores in subgraph_* tables for 100% truthful PnL tracking.
@@ -16,197 +16,141 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Subgraph endpoints (Goldsky)
-const ACTIVITY_SUBGRAPH = 'https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/subgraphs/activity-subgraph/0.0.4/gn';
-const POSITIONS_SUBGRAPH = 'https://api.goldsky.com/api/public/project_cl6mb8i9h0003e201j6li0diw/subgraphs/positions-subgraph/0.0.7/gn';
+// Polymarket Data API endpoints
+const DATA_API_BASE = 'https://data-api.polymarket.com';
 
 // Config
 const PAGE_SIZE = 500;
-const OVERLAP_SEC = 900; // 15 min overlap for late indexing
 
-interface SubgraphFill {
-  id: string;
-  user: string;
-  timestamp: string;
-  blockNumber?: string;
-  transactionHash?: string;
-  logIndex?: string;
-  conditionId?: string;
-  tokenId?: string;
-  outcome?: string;
-  side: string;
-  price: string;
-  size: string;
-  feeAmount?: string;
-  type?: string; // MAKER/TAKER
+interface PolymarketActivity {
+  proxyWallet: string;
+  timestamp: number;
+  conditionId: string;
+  type: string; // TRADE, REDEEM, etc.
+  size: number;
+  usdcSize: number;
+  transactionHash: string;
+  price: number;
+  asset: string;
+  side: string; // BUY, SELL
+  outcomeIndex: number;
+  title: string;
+  slug: string;
+  outcome: string; // Yes, No
 }
 
-interface SubgraphPosition {
-  id: string;
-  user: string;
-  conditionId?: string;
-  tokenId: string;
-  outcome?: string;
-  balance: string;
+interface PolymarketPosition {
+  conditionId: string;
+  outcomeIndex: number;
+  size: number;
+  avgPrice: number;
+  currentPrice: number;
+  pnl: number;
+  pnlPercent: number;
+  title: string;
+  slug: string;
+  outcome: string;
 }
 
 // deno-lint-ignore no-explicit-any
 type SupabaseClient = any;
 
 /**
- * Execute GraphQL query against subgraph
+ * Fetch user activity from Polymarket Data API
  */
-async function querySubgraph(endpoint: string, query: string, variables: Record<string, unknown> = {}): Promise<unknown> {
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, variables }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Subgraph error: ${response.status}`);
-  }
-
-  const result = await response.json();
-  if (result.errors) {
-    console.error('[subgraph-sync] GraphQL errors:', result.errors);
-    throw new Error(`GraphQL error: ${result.errors[0]?.message}`);
-  }
-
-  return result.data;
-}
-
-/**
- * Fetch all fills for a wallet from Activity subgraph
- */
-async function fetchFills(wallet: string, sinceTimestamp?: number): Promise<SubgraphFill[]> {
-  const allFills: SubgraphFill[] = [];
-  let lastId = '';
+async function fetchActivity(wallet: string): Promise<PolymarketActivity[]> {
+  const allActivity: PolymarketActivity[] = [];
+  let offset = 0;
   let hasMore = true;
 
-  const sinceTs = sinceTimestamp ? String(sinceTimestamp) : '0';
+  console.log(`[subgraph-sync] Fetching activity for wallet ${wallet.slice(0, 10)}...`);
 
   while (hasMore) {
-    const query = `
-      query GetFills($user: String!, $since: String!, $lastId: String!, $first: Int!) {
-        trades(
-          where: { 
-            user: $user, 
-            timestamp_gte: $since,
-            id_gt: $lastId
-          }
-          orderBy: id
-          orderDirection: asc
-          first: $first
-        ) {
-          id
-          user
-          timestamp
-          blockNumber
-          transactionHash
-          logIndex
-          conditionId
-          tokenId
-          outcome
-          side
-          price
-          size
-          feeAmount
-          type
-        }
-      }
-    `;
-
-    const data = await querySubgraph(ACTIVITY_SUBGRAPH, query, {
-      user: wallet.toLowerCase(),
-      since: sinceTs,
-      lastId,
-      first: PAGE_SIZE,
-    }) as { trades: SubgraphFill[] };
-
-    const fills = data.trades || [];
-    allFills.push(...fills);
-
-    if (fills.length < PAGE_SIZE) {
-      hasMore = false;
-    } else {
-      lastId = fills[fills.length - 1].id;
+    const url = `${DATA_API_BASE}/activity?user=${wallet}&limit=${PAGE_SIZE}&offset=${offset}`;
+    
+    const response = await fetch(url);
+    if (!response.ok) {
+      console.error(`[subgraph-sync] Activity API error: ${response.status}`);
+      break;
     }
 
-    console.log(`[subgraph-sync] Fetched ${fills.length} fills (total: ${allFills.length})`);
+    const data = await response.json() as PolymarketActivity[];
+    
+    if (!data || data.length === 0) {
+      hasMore = false;
+    } else {
+      // Filter to only TRADE activities
+      const trades = data.filter(a => a.type === 'TRADE');
+      allActivity.push(...trades);
+      
+      if (data.length < PAGE_SIZE) {
+        hasMore = false;
+      } else {
+        offset += PAGE_SIZE;
+      }
+      
+      console.log(`[subgraph-sync] Fetched ${data.length} activities, ${trades.length} trades (total: ${allActivity.length})`);
+    }
   }
 
-  return allFills;
+  return allActivity;
 }
 
 /**
- * Fetch current positions for a wallet from Positions subgraph
+ * Fetch user positions from Polymarket Data API (via profile endpoint)
  */
-async function fetchPositions(wallet: string): Promise<SubgraphPosition[]> {
-  const allPositions: SubgraphPosition[] = [];
-  let lastId = '';
-  let hasMore = true;
+async function fetchPositions(wallet: string): Promise<PolymarketPosition[]> {
+  console.log(`[subgraph-sync] Fetching positions for wallet ${wallet.slice(0, 10)}...`);
 
-  while (hasMore) {
-    const query = `
-      query GetPositions($user: String!, $lastId: String!, $first: Int!) {
-        userBalances(
-          where: { 
-            user: $user,
-            balance_gt: "0",
-            id_gt: $lastId
-          }
-          orderBy: id
-          orderDirection: asc
-          first: $first
-        ) {
-          id
-          user
-          conditionId
-          tokenId
-          outcome
-          balance
-        }
-      }
-    `;
-
-    const data = await querySubgraph(POSITIONS_SUBGRAPH, query, {
-      user: wallet.toLowerCase(),
-      lastId,
-      first: PAGE_SIZE,
-    }) as { userBalances: SubgraphPosition[] };
-
-    const positions = data.userBalances || [];
-    allPositions.push(...positions);
-
-    if (positions.length < PAGE_SIZE) {
-      hasMore = false;
-    } else {
-      lastId = positions[positions.length - 1].id;
+  try {
+    // Use the profile positions endpoint
+    const url = `${DATA_API_BASE}/positions?user=${wallet}`;
+    
+    const response = await fetch(url);
+    if (!response.ok) {
+      console.error(`[subgraph-sync] Positions API error: ${response.status}`);
+      return [];
     }
 
-    console.log(`[subgraph-sync] Fetched ${positions.length} positions (total: ${allPositions.length})`);
-  }
+    const data = await response.json();
+    
+    if (!data || !Array.isArray(data)) {
+      console.log(`[subgraph-sync] No positions data or unexpected format`);
+      return [];
+    }
 
-  return allPositions;
+    console.log(`[subgraph-sync] Fetched ${data.length} positions`);
+    return data as PolymarketPosition[];
+  } catch (error) {
+    console.error(`[subgraph-sync] Error fetching positions:`, error);
+    return [];
+  }
 }
 
 /**
- * Map outcome string to UP/DOWN
+ * Map outcome string to UP/DOWN based on asset context
  */
-function mapOutcome(outcome: string | undefined): string | null {
+function mapOutcome(outcome: string | undefined, asset?: string): string | null {
   if (!outcome) return null;
   const lower = outcome.toLowerCase();
-  if (lower.includes('up') || lower === 'yes') return 'UP';
-  if (lower.includes('down') || lower === 'no') return 'DOWN';
+  
+  // For crypto price markets, Yes = Up, No = Down
+  if (lower === 'yes' || lower.includes('up')) return 'UP';
+  if (lower === 'no' || lower.includes('down')) return 'DOWN';
+  
+  // Fallback: outcomeIndex 0 = Yes/Up, 1 = No/Down
   return null;
 }
 
 /**
- * Execute raw SQL via RPC (workaround for new tables not in types)
+ * Execute REST API operation
  */
-async function executeRaw(supabase: SupabaseClient, table: string, operation: 'upsert' | 'insert' | 'delete', data: unknown, options?: { onConflict?: string }): Promise<void> {
-  // Use REST API directly for tables not in generated types
+async function executeRest(
+  table: string, 
+  operation: 'upsert' | 'insert' | 'delete', 
+  data?: unknown, 
+  options?: { onConflict?: string; filter?: string }
+): Promise<void> {
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
   
@@ -226,6 +170,9 @@ async function executeRaw(supabase: SupabaseClient, table: string, operation: 'u
 
   if (operation === 'delete') {
     method = 'DELETE';
+    if (options?.filter) {
+      url += `?${options.filter}`;
+    }
   }
 
   const response = await fetch(url, {
@@ -241,79 +188,71 @@ async function executeRaw(supabase: SupabaseClient, table: string, operation: 'u
 }
 
 /**
- * Ingest fills into database (idempotent)
+ * Ingest activity as fills into database (idempotent)
  */
-async function ingestFills(supabase: SupabaseClient, wallet: string, fills: SubgraphFill[]): Promise<number> {
-  if (fills.length === 0) return 0;
+async function ingestFills(wallet: string, activities: PolymarketActivity[]): Promise<number> {
+  if (activities.length === 0) return 0;
 
   let ingested = 0;
-
-  // Process in batches
   const batchSize = 100;
-  for (let i = 0; i < fills.length; i += batchSize) {
-    const batch = fills.slice(i, i + batchSize);
+
+  for (let i = 0; i < activities.length; i += batchSize) {
+    const batch = activities.slice(i, i + batchSize);
     
-    const records = batch.map(f => ({
-      id: f.id,
+    const records = batch.map(a => ({
+      id: `${a.transactionHash}:${a.conditionId}:${a.outcomeIndex}:${a.timestamp}`,
       wallet: wallet.toLowerCase(),
-      block_number: f.blockNumber ? parseInt(f.blockNumber) : null,
-      tx_hash: f.transactionHash || null,
-      log_index: f.logIndex ? parseInt(f.logIndex) : null,
-      timestamp: new Date(parseInt(f.timestamp) * 1000).toISOString(),
-      market_id: f.conditionId || null,
-      token_id: f.tokenId || null,
-      outcome_side: mapOutcome(f.outcome),
-      side: f.side?.toUpperCase() || 'BUY',
-      price: parseFloat(f.price) || 0,
-      size: parseFloat(f.size) || 0,
-      notional: (parseFloat(f.price) || 0) * (parseFloat(f.size) || 0),
-      liquidity: f.type?.toUpperCase() || null,
-      fee_usd: f.feeAmount ? parseFloat(f.feeAmount) : null,
-      fee_known: f.feeAmount !== undefined && f.feeAmount !== null,
-      raw_json: f,
+      block_number: null,
+      tx_hash: a.transactionHash || null,
+      log_index: null,
+      timestamp: new Date(a.timestamp * 1000).toISOString(),
+      market_id: a.conditionId || null,
+      token_id: null,
+      outcome_side: a.outcomeIndex === 0 ? 'UP' : 'DOWN',
+      side: a.side?.toUpperCase() || 'BUY',
+      price: a.price || 0,
+      size: a.size || 0,
+      notional: a.usdcSize || (a.price * a.size) || 0,
+      liquidity: null,
+      fee_usd: null,
+      fee_known: false,
+      raw_json: a,
       ingested_at: new Date().toISOString(),
     }));
 
-    await executeRaw(supabase, 'subgraph_fills', 'upsert', records, { onConflict: 'id' });
+    await executeRest('subgraph_fills', 'upsert', records, { onConflict: 'id' });
     ingested += batch.length;
   }
 
+  console.log(`[subgraph-sync] Ingested ${ingested} fills`);
   return ingested;
 }
 
 /**
  * Ingest positions into database (replace all)
  */
-async function ingestPositions(supabase: SupabaseClient, wallet: string, positions: SubgraphPosition[]): Promise<number> {
+async function ingestPositions(wallet: string, positions: PolymarketPosition[]): Promise<number> {
   const walletLower = wallet.toLowerCase();
   
-  // Delete old positions for this wallet via REST
-  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-  const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-  
-  await fetch(`${supabaseUrl}/rest/v1/subgraph_positions?wallet=eq.${walletLower}`, {
-    method: 'DELETE',
-    headers: {
-      'apikey': supabaseKey,
-      'Authorization': `Bearer ${supabaseKey}`,
-    },
-  });
+  // Delete old positions for this wallet
+  await executeRest('subgraph_positions', 'delete', undefined, { filter: `wallet=eq.${walletLower}` });
 
   if (positions.length === 0) return 0;
 
   const records = positions.map(p => ({
-    id: `${walletLower}:${p.tokenId}`,
+    id: `${walletLower}:${p.conditionId}:${p.outcomeIndex}`,
     wallet: walletLower,
     timestamp: new Date().toISOString(),
     market_id: p.conditionId || null,
-    token_id: p.tokenId,
-    outcome_side: mapOutcome(p.outcome),
-    shares: parseFloat(p.balance) || 0,
+    token_id: null,
+    outcome_side: p.outcomeIndex === 0 ? 'UP' : 'DOWN',
+    shares: p.size || 0,
+    avg_cost: p.avgPrice || null,
     raw_json: p,
-    updated_at: new Date().toISOString(),
   }));
 
-  await executeRaw(supabase, 'subgraph_positions', 'insert', records);
+  await executeRest('subgraph_positions', 'insert', records);
+  console.log(`[subgraph-sync] Ingested ${positions.length} positions`);
   return positions.length;
 }
 
@@ -321,20 +260,18 @@ async function ingestPositions(supabase: SupabaseClient, wallet: string, positio
  * Update sync state
  */
 async function updateSyncState(
-  supabase: SupabaseClient, 
   type: string, 
   wallet: string, 
   recordsCount: number,
   error?: string
 ) {
-  await executeRaw(supabase, 'subgraph_sync_state', 'upsert', {
+  await executeRest('subgraph_sync_state', 'upsert', {
     id: `${type}:${wallet.toLowerCase()}`,
     wallet: wallet.toLowerCase(),
     last_sync_at: new Date().toISOString(),
     records_synced: recordsCount,
     last_error: error || null,
     errors_count: error ? 1 : 0,
-    updated_at: new Date().toISOString(),
   }, { onConflict: 'id' });
 }
 
@@ -358,7 +295,12 @@ async function computeMarketPnl(wallet: string): Promise<void> {
   );
 
   const fills = await fillsRes.json();
-  if (!fills || fills.length === 0) return;
+  if (!fills || fills.length === 0) {
+    console.log(`[subgraph-sync] No fills to compute PnL`);
+    return;
+  }
+
+  console.log(`[subgraph-sync] Computing PnL for ${fills.length} fills...`);
 
   // Group fills by market
   const marketFills = new Map<string, typeof fills>();
@@ -436,10 +378,14 @@ async function computeMarketPnl(wallet: string): Promise<void> {
       confidence = 'MEDIUM';
     }
 
+    // Get market slug from raw_json
+    const marketSlug = mFills[0]?.raw_json?.slug || null;
+
     const record = {
       id: `${walletLower}:${marketId}`,
       wallet: walletLower,
       market_id: marketId,
+      market_slug: marketSlug,
       up_shares: upShares,
       down_shares: downShares,
       avg_up_cost: avgUp,
@@ -454,16 +400,7 @@ async function computeMarketPnl(wallet: string): Promise<void> {
       updated_at: new Date().toISOString(),
     };
 
-    await fetch(`${supabaseUrl}/rest/v1/subgraph_pnl_markets?on_conflict=id`, {
-      method: 'POST',
-      headers: {
-        'apikey': supabaseKey,
-        'Authorization': `Bearer ${supabaseKey}`,
-        'Content-Type': 'application/json',
-        'Prefer': 'resolution=merge-duplicates,return=minimal',
-      },
-      body: JSON.stringify(record),
-    });
+    await executeRest('subgraph_pnl_markets', 'upsert', record, { onConflict: 'id' });
   }
 
   // Update wallet summary
@@ -505,21 +442,11 @@ async function computeMarketPnl(wallet: string): Promise<void> {
       realized_confidence: totalFeesUnknownCount > 0 ? 'MEDIUM' : 'HIGH',
       unrealized_confidence: 'LOW',
       overall_confidence: totalFeesUnknownCount > 0 ? 'MEDIUM' : 'HIGH',
-      first_trade_at: fills[0]?.timestamp,
-      last_trade_at: fills[fills.length - 1]?.timestamp,
       updated_at: new Date().toISOString(),
     };
 
-    await fetch(`${supabaseUrl}/rest/v1/subgraph_pnl_summary?on_conflict=wallet`, {
-      method: 'POST',
-      headers: {
-        'apikey': supabaseKey,
-        'Authorization': `Bearer ${supabaseKey}`,
-        'Content-Type': 'application/json',
-        'Prefer': 'resolution=merge-duplicates,return=minimal',
-      },
-      body: JSON.stringify(summaryRecord),
-    });
+    await executeRest('subgraph_pnl_summary', 'upsert', summaryRecord, { onConflict: 'wallet' });
+    console.log(`[subgraph-sync] Updated PnL summary: ${totalRealized.toFixed(2)} realized across ${marketPnls.length} markets`);
   }
 }
 
@@ -534,69 +461,51 @@ serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseKey);
 
     // Get wallet from bot_config
-    const { data: config } = await supabase
+    const { data: config, error: configError } = await supabase
       .from('bot_config')
       .select('polymarket_address')
       .single();
 
-    const wallet = config?.polymarket_address;
-    if (!wallet) {
+    if (configError || !config?.polymarket_address) {
+      console.error('[subgraph-sync] No wallet configured:', configError);
       return new Response(
-        JSON.stringify({ error: 'No wallet configured' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        JSON.stringify({ error: 'No wallet configured in bot_config' }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 400 }
       );
     }
 
+    const wallet = config.polymarket_address;
     console.log(`[subgraph-sync] Starting sync for wallet: ${wallet.slice(0, 10)}...`);
 
-    // Get last sync timestamp for incremental sync
-    const syncStateRes = await fetch(
-      `${supabaseUrl}/rest/v1/subgraph_sync_state?id=eq.activity:${wallet.toLowerCase()}`,
-      {
-        headers: {
-          'apikey': supabaseKey,
-          'Authorization': `Bearer ${supabaseKey}`,
-        },
-      }
-    );
-
-    const syncStateData = await syncStateRes.json();
-    const syncState = syncStateData?.[0];
-
-    const sinceTimestamp = syncState?.last_timestamp 
-      ? Math.floor(new Date(syncState.last_timestamp).getTime() / 1000) - OVERLAP_SEC
-      : undefined;
-
-    // Fetch and ingest fills
-    let fillsCount = 0;
-    let positionsCount = 0;
-    let error: string | undefined;
+    // Fetch from Polymarket Data API
+    console.log('[subgraph-sync] Fetching activity from Polymarket Data API...');
+    let fillsIngested = 0;
+    let positionsIngested = 0;
+    let fillsError: string | undefined;
+    let positionsError: string | undefined;
 
     try {
-      console.log('[subgraph-sync] Fetching fills from Activity subgraph...');
-      const fills = await fetchFills(wallet, sinceTimestamp);
-      fillsCount = await ingestFills(supabase, wallet, fills);
-      await updateSyncState(supabase, 'activity', wallet, fillsCount);
-      console.log(`[subgraph-sync] Ingested ${fillsCount} fills`);
-    } catch (e) {
-      error = String(e);
-      console.error('[subgraph-sync] Error fetching fills:', e);
-      await updateSyncState(supabase, 'activity', wallet, 0, error);
+      const activities = await fetchActivity(wallet);
+      fillsIngested = await ingestFills(wallet, activities);
+      await updateSyncState('fills', wallet, fillsIngested);
+    } catch (error) {
+      fillsError = error instanceof Error ? error.message : String(error);
+      console.error('[subgraph-sync] Error fetching/ingesting fills:', fillsError);
+      await updateSyncState('fills', wallet, 0, fillsError);
     }
 
+    console.log('[subgraph-sync] Fetching positions from Polymarket Data API...');
     try {
-      console.log('[subgraph-sync] Fetching positions from Positions subgraph...');
       const positions = await fetchPositions(wallet);
-      positionsCount = await ingestPositions(supabase, wallet, positions);
-      await updateSyncState(supabase, 'positions', wallet, positionsCount);
-      console.log(`[subgraph-sync] Ingested ${positionsCount} positions`);
-    } catch (e) {
-      error = String(e);
-      console.error('[subgraph-sync] Error fetching positions:', e);
-      await updateSyncState(supabase, 'positions', wallet, 0, error);
+      positionsIngested = await ingestPositions(wallet, positions);
+      await updateSyncState('positions', wallet, positionsIngested);
+    } catch (error) {
+      positionsError = error instanceof Error ? error.message : String(error);
+      console.error('[subgraph-sync] Error fetching/ingesting positions:', positionsError);
+      await updateSyncState('positions', wallet, 0, positionsError);
     }
 
-    // Compute PnL
+    // Compute market PnL
     console.log('[subgraph-sync] Computing market PnL...');
     await computeMarketPnl(wallet);
 
@@ -606,17 +515,18 @@ serve(async (req) => {
       JSON.stringify({
         success: true,
         wallet,
-        fills_synced: fillsCount,
-        positions_synced: positionsCount,
-        error,
+        fills_ingested: fillsIngested,
+        positions_ingested: positionsIngested,
+        fills_error: fillsError || null,
+        positions_error: positionsError || null,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   } catch (error) {
-    console.error('[subgraph-sync] Unexpected error:', error);
+    console.error('[subgraph-sync] Fatal error:', error);
     return new Response(
-      JSON.stringify({ error: String(error) }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      JSON.stringify({ error: error instanceof Error ? error.message : 'Unknown error' }),
+      { headers: { ...corsHeaders, 'Content-Type': 'application/json' }, status: 500 }
     );
   }
 });
