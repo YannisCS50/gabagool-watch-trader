@@ -278,17 +278,17 @@ serve(async (req) => {
       console.log(`[v26-sync-fills] Using fill_logs fallback for ${remainingTrades.length} trades`);
 
       for (const t of remainingTrades) {
-        const startTime = new Date(t.event_start_time).getTime();
         const endTime = new Date(t.event_end_time).getTime();
 
-        // Look for fills in this market during the event window
+        // Look for fills for this market.
+        // NOTE: v26 opening fills often happen BEFORE event_start_time, so we do not time-bound this query.
         const { data: fills } = await supabase
           .from('fill_logs')
           .select('fill_qty, fill_price, ts, side')
           .eq('market_id', t.market_id)
           .eq('side', t.side)
-          .gte('ts', startTime - 60000)
-          .lte('ts', endTime + 60000);
+          .order('ts', { ascending: false })
+          .limit(200);
 
         if (fills && fills.length > 0) {
           let totalSharesRaw = 0;
@@ -305,15 +305,17 @@ serve(async (req) => {
             if (ts > latestTs) latestTs = ts;
           }
 
-          const filledShares = Math.round(totalSharesRaw);
           const avgPrice = totalSharesRaw > 0 ? totalValue / totalSharesRaw : 0.48;
           const matchedAt = latestTs ? new Date(latestTs).toISOString() : new Date().toISOString();
+
+          const targetShares = Number(t.shares) || 0;
+          const newStatus = totalSharesRaw >= targetShares - 1e-6 ? 'filled' : 'partial';
 
           const { error: updateError } = await supabase
             .from('v26_trades')
             .update({
-              status: 'filled',
-              filled_shares: filledShares,
+              status: newStatus,
+              filled_shares: totalSharesRaw,
               avg_fill_price: avgPrice,
               fill_matched_at: matchedAt,
             })
@@ -322,7 +324,7 @@ serve(async (req) => {
           if (updateError) {
             results.push({ id: t.id, market_slug: t.market_slug, success: false, source: 'fill_logs', error: updateError.message });
           } else {
-            console.log(`[v26-sync-fills] ✓ ${t.market_slug} → ${filledShares} shares @ ${avgPrice.toFixed(3)} via fill_logs`);
+            console.log(`[v26-sync-fills] ✓ ${t.market_slug} → ${totalSharesRaw.toFixed(4)} shares @ ${avgPrice.toFixed(3)} via fill_logs`);
             results.push({ id: t.id, market_slug: t.market_slug, success: true, source: 'fill_logs' });
           }
         } else {
