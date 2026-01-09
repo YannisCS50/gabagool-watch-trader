@@ -788,20 +788,28 @@ export default function V26Dashboard() {
     fetchData();
     fetchRunnerStatus();
     
-    // Auto-sync fills every 2 minutes (silently in background)
-    const autoSync = async () => {
+    // Auto-sync fills AND auto-settle every 2 minutes (silently in background)
+    const autoSyncAndSettle = async () => {
       try {
         console.log('[V26Dashboard] Auto-syncing fills...');
         await supabase.functions.invoke('v26-sync-fills');
-        await fetchData(); // Refresh after sync
+        
+        // Auto-settle after sync
+        console.log('[V26Dashboard] Auto-settling trades...');
+        const settleRes = await supabase.functions.invoke('v26-auto-settle');
+        if (settleRes.data?.settled > 0) {
+          console.log(`[V26Dashboard] Auto-settled ${settleRes.data.settled} trades`);
+        }
+        
+        await fetchData(); // Refresh after sync + settle
       } catch (err) {
-        console.error('[V26Dashboard] Auto-sync error:', err);
+        console.error('[V26Dashboard] Auto-sync/settle error:', err);
       }
     };
     
     // Initial sync after 10 seconds, then every 2 minutes
-    const initialSyncTimeout = setTimeout(autoSync, 10 * 1000);
-    const syncInterval = setInterval(autoSync, 2 * 60 * 1000);
+    const initialSyncTimeout = setTimeout(autoSyncAndSettle, 10 * 1000);
+    const syncInterval = setInterval(autoSyncAndSettle, 2 * 60 * 1000);
     
     const dataInterval = setInterval(fetchData, 5 * 60 * 1000);
     const statusInterval = setInterval(fetchRunnerStatus, 10000); // Check status every 10s
