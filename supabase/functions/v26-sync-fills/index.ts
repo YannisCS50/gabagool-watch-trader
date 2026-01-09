@@ -5,8 +5,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
  * v26-sync-fills: Robust fill synchronization via Polymarket Data API
  *
  * Uses the public data-api.polymarket.com endpoint (no auth required) to:
- * 1. Fetch recent trades for the bot's wallet
- * 2. Match them to v26_trades by conditionId/outcome/timestamp
+ * 1. Fetch recent trades for each market slug
+ * 2. Filter by wallet address (using proxyWallet or name field)
  * 3. Update filled_shares, avg_fill_price, fill_matched_at
  *
  * Falls back to fill_logs if Data API fails.
@@ -22,24 +22,25 @@ const DATA_API_BASE = 'https://data-api.polymarket.com';
 interface DataApiTrade {
   proxyWallet: string;
   side: 'BUY' | 'SELL';
-  asset: string; // token ID
+  asset: string;
   conditionId: string;
   size: number;
   price: number;
-  timestamp: number; // Unix seconds
+  timestamp: number;
   title: string;
   slug: string;
   eventSlug: string;
-  outcome: string; // "Yes" or "No"
+  outcome: string;
   outcomeIndex: number;
   transactionHash: string;
+  name?: string;
 }
 
 interface V26Trade {
   id: string;
   market_id: string;
   market_slug: string;
-  side: string; // UP or DOWN
+  side: string;
   shares: number;
   event_start_time: string;
   event_end_time: string;
@@ -50,56 +51,26 @@ interface V26Trade {
 }
 
 /**
- * Fetch ALL trades from Polymarket Data API using pagination
+ * Fetch trades for a specific market slug from Polymarket Data API
  */
-async function fetchAllTradesFromDataApi(
-  walletAddress: string,
-  side: 'BUY' | 'SELL' = 'BUY'
-): Promise<DataApiTrade[]> {
-  const allTrades: DataApiTrade[] = [];
-  const pageSize = 500;
-  let offset = 0;
-  let hasMore = true;
+async function fetchTradesForSlug(slug: string): Promise<DataApiTrade[]> {
+  const url = new URL(`${DATA_API_BASE}/trades`);
+  url.searchParams.set('slug', slug);
+  url.searchParams.set('side', 'BUY');
+  url.searchParams.set('limit', '500');
 
-  while (hasMore) {
-    const url = new URL(`${DATA_API_BASE}/trades`);
-    url.searchParams.set('user', walletAddress.toLowerCase());
-    url.searchParams.set('side', side);
-    url.searchParams.set('limit', String(pageSize));
-    url.searchParams.set('offset', String(offset));
+  const response = await fetch(url.toString(), {
+    method: 'GET',
+    headers: { 'Content-Type': 'application/json' },
+  });
 
-    console.log(`[v26-sync-fills] Fetching trades offset=${offset}...`);
-
-    const response = await fetch(url.toString(), {
-      method: 'GET',
-      headers: { 'Content-Type': 'application/json' },
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      console.error(`[v26-sync-fills] Data API returned ${response.status}: ${text.slice(0, 200)}`);
-      throw new Error(`Data API error ${response.status}`);
-    }
-
-    const data = await response.json();
-    const trades = Array.isArray(data) ? data : [];
-    
-    allTrades.push(...trades);
-    console.log(`[v26-sync-fills] Got ${trades.length} trades (total: ${allTrades.length})`);
-
-    if (trades.length < pageSize) {
-      hasMore = false;
-    } else {
-      offset += pageSize;
-      // Safety limit to prevent infinite loops
-      if (offset > 10000) {
-        console.log('[v26-sync-fills] Reached 10k trade limit, stopping pagination');
-        hasMore = false;
-      }
-    }
+  if (!response.ok) {
+    console.error(`[v26-sync-fills] Data API error for ${slug}: ${response.status}`);
+    return [];
   }
 
-  return allTrades;
+  const data = await response.json();
+  return Array.isArray(data) ? data : [];
 }
 
 /**
@@ -111,18 +82,15 @@ function normalizeConditionId(value: string): string {
 
 /**
  * Map outcome to UP/DOWN.
- * Data API fields vary by market; prefer outcome text, then fall back to outcomeIndex.
  */
 function mapOutcomeToSide(outcome: string, outcomeIndex: number): 'UP' | 'DOWN' {
   const lower = (outcome || '').toLowerCase();
 
-  // Prefer explicit text when available
   if (lower.includes('down')) return 'DOWN';
   if (lower.includes('up')) return 'UP';
   if (lower === 'no') return 'DOWN';
   if (lower === 'yes') return 'UP';
 
-  // Fallback: common up/down outcomeIndex convention (but not guaranteed)
   if (outcomeIndex === 0) return 'UP';
   return 'DOWN';
 }
@@ -156,7 +124,7 @@ serve(async (req) => {
 
     console.log(`[v26-sync-fills] Using wallet: ${walletAddress.slice(0, 10)}...`);
 
-    // Fetch ALL trades needing sync (no date limit - get everything since v26 started)
+    // Fetch ALL trades needing sync
     const { data: trades, error: fetchError } = await supabase
       .from('v26_trades')
       .select('id, market_id, market_slug, side, shares, event_start_time, event_end_time, status, filled_shares, avg_fill_price, fill_matched_at')
@@ -181,32 +149,6 @@ serve(async (req) => {
       );
     }
 
-    // Build lookup: market_slug -> array of v26_trades
-    const tradesByCondition = new Map<string, V26Trade[]>();
-    for (const t of trades) {
-      const key = normalizeConditionId(t.market_slug);
-      if (!tradesByCondition.has(key)) {
-        tradesByCondition.set(key, []);
-      }
-      tradesByCondition.get(key)!.push(t);
-    }
-
-    const allConditionIds = Array.from(tradesByCondition.keys());
-    console.log(`[v26-sync-fills] Looking for ${allConditionIds.length} unique market slugs`);
-
-    // Fetch trades from Data API
-    let apiTrades: DataApiTrade[] = [];
-    let dataApiFailed = false;
-
-    try {
-      // Fetch ALL trades using pagination
-      apiTrades = await fetchAllTradesFromDataApi(walletAddress, 'BUY');
-      console.log(`[v26-sync-fills] Data API returned ${apiTrades.length} total trades`);
-    } catch (err) {
-      console.error('[v26-sync-fills] Data API failed:', err);
-      dataApiFailed = true;
-    }
-
     const results: Array<{
       id: string;
       market_slug: string;
@@ -215,93 +157,115 @@ serve(async (req) => {
       error?: string;
     }> = [];
 
-    // Process trades using Data API data
-    if (!dataApiFailed && apiTrades.length > 0) {
-      // Group API trades by slug + side
-      const apiTradesByKey = new Map<string, DataApiTrade[]>();
+    // Get unique slugs from our trades
+    const uniqueSlugs = [...new Set(trades.map(t => t.market_slug))];
+    console.log(`[v26-sync-fills] Fetching Data API trades for ${uniqueSlugs.length} unique slugs...`);
 
-      // Log sample API slugs for debugging
-      const sampleApiSlugs = apiTrades.slice(0, 10).map(at => at.slug);
-      console.log(`[v26-sync-fills] Sample API slugs: ${JSON.stringify(sampleApiSlugs)}`);
-
-      for (const at of apiTrades) {
-        const slug = normalizeConditionId(at.slug);
-        const side = mapOutcomeToSide(at.outcome, at.outcomeIndex);
-        const key = `${slug}:${side}`;
-
-        if (!apiTradesByKey.has(key)) {
-          apiTradesByKey.set(key, []);
+    // Fetch trades for each slug and filter by wallet
+    const allApiTrades: DataApiTrade[] = [];
+    const walletLower = walletAddress.toLowerCase();
+    const walletPrefix = walletLower.slice(2, 12); // First 10 chars after 0x
+    
+    for (let i = 0; i < uniqueSlugs.length; i++) {
+      const slug = uniqueSlugs[i];
+      try {
+        const slugTrades = await fetchTradesForSlug(slug);
+        
+        // Filter to only trades from our wallet
+        const ourTrades = slugTrades.filter(t => {
+          const proxyLower = (t.proxyWallet || '').toLowerCase();
+          const nameLower = (t.name || '').toLowerCase();
+          
+          // Check if proxyWallet or name contains our wallet prefix
+          return proxyLower.includes(walletPrefix) || 
+                 nameLower.includes(walletPrefix) ||
+                 nameLower.startsWith(walletLower);
+        });
+        
+        allApiTrades.push(...ourTrades);
+        
+        if (ourTrades.length > 0) {
+          console.log(`[v26-sync-fills] Found ${ourTrades.length} trades for ${slug}`);
         }
-        apiTradesByKey.get(key)!.push(at);
+      } catch (err) {
+        console.error(`[v26-sync-fills] Error fetching slug ${slug}:`, err);
+      }
+      
+      // Small delay to avoid rate limiting
+      if (i > 0 && i % 10 === 0) {
+        await new Promise(r => setTimeout(r, 100));
+      }
+    }
+
+    console.log(`[v26-sync-fills] Total trades from Data API: ${allApiTrades.length}`);
+
+    // Group API trades by slug + side
+    const apiTradesByKey = new Map<string, DataApiTrade[]>();
+    for (const at of allApiTrades) {
+      const slug = normalizeConditionId(at.slug);
+      const side = mapOutcomeToSide(at.outcome, at.outcomeIndex);
+      const key = `${slug}:${side}`;
+      if (!apiTradesByKey.has(key)) {
+        apiTradesByKey.set(key, []);
+      }
+      apiTradesByKey.get(key)!.push(at);
+    }
+
+    // Match and update each v26_trade
+    for (const t of trades) {
+      const slug = normalizeConditionId(t.market_slug);
+      const side = (t.side || '').toUpperCase();
+      const key = `${slug}:${side}`;
+
+      const matchingApiTrades = apiTradesByKey.get(key) || [];
+
+      if (matchingApiTrades.length === 0) {
+        continue;
       }
 
-      // Log sample v26 slugs for debugging
-      const sampleV26Slugs = trades.slice(0, 10).map(t => t.market_slug);
-      console.log(`[v26-sync-fills] Sample v26 slugs: ${JSON.stringify(sampleV26Slugs)}`);
+      // Filter API trades to those that happened before market end
+      const eventEndMs = new Date(t.event_end_time).getTime();
+      const relevantTrades = matchingApiTrades.filter((at) => {
+        const tradeMs = at.timestamp * 1000;
+        return tradeMs <= eventEndMs + 60 * 60 * 1000;
+      });
 
-      // Match and update each v26_trade
-      for (const t of trades) {
-        const slug = normalizeConditionId(t.market_slug);
-        const side = (t.side || '').toUpperCase();
-        const key = `${slug}:${side}`;
+      if (relevantTrades.length === 0) {
+        continue;
+      }
 
-        const matchingApiTrades = apiTradesByKey.get(key) || [];
+      // Aggregate fills
+      let totalShares = 0;
+      let totalValue = 0;
+      let latestTs = 0;
 
-        if (matchingApiTrades.length === 0) {
-          // Log first few misses for debugging
-          if (results.length < 5) {
-            console.log(`[v26-sync-fills] No match for key="${key}"`);
-          }
-          continue;
-        }
+      for (const at of relevantTrades) {
+        totalShares += at.size;
+        totalValue += at.size * at.price;
+        if (at.timestamp > latestTs) latestTs = at.timestamp;
+      }
 
-        // Filter API trades to those that happened before market end.
-        // Up/Down markets can be traded well before the event starts, so we do NOT enforce a strict lower bound.
-        const eventEndMs = new Date(t.event_end_time).getTime();
+      const filledShares = Math.round(totalShares);
+      const avgPrice = totalShares > 0 ? totalValue / totalShares : null;
+      const matchedAt = latestTs > 0 ? new Date(latestTs * 1000).toISOString() : null;
 
-        const relevantTrades = matchingApiTrades.filter((at) => {
-          const tradeMs = at.timestamp * 1000;
-          // Allow trades up to 1h after market end (clock skew / indexing delay)
-          return tradeMs <= eventEndMs + 60 * 60 * 1000;
-        });
+      // Only update if we found fills
+      if (filledShares > 0) {
+        const { error: updateError } = await supabase
+          .from('v26_trades')
+          .update({
+            filled_shares: filledShares,
+            avg_fill_price: avgPrice,
+            fill_matched_at: matchedAt,
+            status: 'filled',
+          })
+          .eq('id', t.id);
 
-        if (relevantTrades.length === 0) {
-          continue;
-        }
-
-        // Aggregate fills
-        let totalShares = 0;
-        let totalValue = 0;
-        let latestTs = 0;
-
-        for (const at of relevantTrades) {
-          totalShares += at.size;
-          totalValue += at.size * at.price;
-          if (at.timestamp > latestTs) latestTs = at.timestamp;
-        }
-
-        const filledShares = Math.round(totalShares);
-        const avgPrice = totalShares > 0 ? totalValue / totalShares : null;
-        const matchedAt = latestTs > 0 ? new Date(latestTs * 1000).toISOString() : null;
-
-        // Only update if we found fills
-        if (filledShares > 0) {
-          const { error: updateError } = await supabase
-            .from('v26_trades')
-            .update({
-              filled_shares: filledShares,
-              avg_fill_price: avgPrice,
-              fill_matched_at: matchedAt,
-              status: 'filled',
-            })
-            .eq('id', t.id);
-
-          if (updateError) {
-            results.push({ id: t.id, market_slug: t.market_slug, success: false, source: 'data_api', error: updateError.message });
-          } else {
-            console.log(`[v26-sync-fills] ✓ ${t.market_slug} → ${filledShares} shares @ ${avgPrice?.toFixed(3) || '?'} via Data API`);
-            results.push({ id: t.id, market_slug: t.market_slug, success: true, source: 'data_api' });
-          }
+        if (updateError) {
+          results.push({ id: t.id, market_slug: t.market_slug, success: false, source: 'data_api', error: updateError.message });
+        } else {
+          console.log(`[v26-sync-fills] ✓ ${t.market_slug} → ${filledShares} shares @ ${avgPrice?.toFixed(3) || '?'} via Data API`);
+          results.push({ id: t.id, market_slug: t.market_slug, success: true, source: 'data_api' });
         }
       }
     }
@@ -323,8 +287,8 @@ serve(async (req) => {
           .select('fill_qty, fill_price, ts, side')
           .eq('market_id', t.market_id)
           .eq('side', t.side)
-          .gte('ts', startTime - 60000) // 1 min before
-          .lte('ts', endTime + 60000); // 1 min after
+          .gte('ts', startTime - 60000)
+          .lte('ts', endTime + 60000);
 
         if (fills && fills.length > 0) {
           let totalSharesRaw = 0;
@@ -362,7 +326,7 @@ serve(async (req) => {
             results.push({ id: t.id, market_slug: t.market_slug, success: true, source: 'fill_logs' });
           }
         } else {
-          // Check if market has ended - if so, mark as cancelled (no fills)
+          // Check if market has ended - if so, mark as cancelled
           const now = Date.now();
           const thirtyMinutesAfterEnd = endTime + 30 * 60 * 1000;
 
@@ -386,7 +350,6 @@ serve(async (req) => {
         synced: successCount,
         failed: failCount,
         total: trades.length,
-        dataApiUsed: !dataApiFailed,
         results,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
