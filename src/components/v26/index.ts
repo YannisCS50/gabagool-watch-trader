@@ -8,3 +8,6 @@ export { SubgraphDashboard } from './SubgraphDashboard';
 export { CanonicalPnLDashboard } from './CanonicalPnLDashboard';
 export { MarketLifecycleBadge, MarketLifecycleChips } from './MarketLifecycleBadge';
 export { CashflowDiagnostics } from './CashflowDiagnostics';
+export { DailyPnLChart } from './DailyPnLChart';
+export { DailyPnLTable } from './DailyPnLTable';
+export { AccountPnLSummary } from './AccountPnLSummary';

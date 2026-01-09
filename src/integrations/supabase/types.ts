@@ -14,6 +14,102 @@ export type Database = {
   }
   public: {
     Tables: {
+      account_cashflow_timeseries: {
+        Row: {
+          amount_usd: number
+          category: string
+          created_at: string | null
+          date: string
+          id: string
+          market_id: string
+          outcome: string | null
+          shares_delta: number
+          source_event_id: string | null
+          ts: string
+          wallet: string
+        }
+        Insert: {
+          amount_usd?: number
+          category: string
+          created_at?: string | null
+          date: string
+          id?: string
+          market_id: string
+          outcome?: string | null
+          shares_delta?: number
+          source_event_id?: string | null
+          ts: string
+          wallet: string
+        }
+        Update: {
+          amount_usd?: number
+          category?: string
+          created_at?: string | null
+          date?: string
+          id?: string
+          market_id?: string
+          outcome?: string | null
+          shares_delta?: number
+          source_event_id?: string | null
+          ts?: string
+          wallet?: string
+        }
+        Relationships: []
+      }
+      account_pnl_summary: {
+        Row: {
+          claimed_markets: number
+          created_at: string | null
+          first_trade_ts: string | null
+          id: string
+          last_trade_ts: string | null
+          lost_markets: number
+          open_markets: number
+          total_markets: number
+          total_pnl: number
+          total_realized_pnl: number
+          total_trades: number
+          total_unrealized_pnl: number
+          total_volume: number
+          updated_at: string | null
+          wallet: string
+        }
+        Insert: {
+          claimed_markets?: number
+          created_at?: string | null
+          first_trade_ts?: string | null
+          id?: string
+          last_trade_ts?: string | null
+          lost_markets?: number
+          open_markets?: number
+          total_markets?: number
+          total_pnl?: number
+          total_realized_pnl?: number
+          total_trades?: number
+          total_unrealized_pnl?: number
+          total_volume?: number
+          updated_at?: string | null
+          wallet: string
+        }
+        Update: {
+          claimed_markets?: number
+          created_at?: string | null
+          first_trade_ts?: string | null
+          id?: string
+          last_trade_ts?: string | null
+          lost_markets?: number
+          open_markets?: number
+          total_markets?: number
+          total_pnl?: number
+          total_realized_pnl?: number
+          total_trades?: number
+          total_unrealized_pnl?: number
+          total_volume?: number
+          updated_at?: string | null
+          wallet?: string
+        }
+        Relationships: []
+      }
       account_position_snapshots: {
         Row: {
           account_avg_down: number | null
@@ -361,6 +457,54 @@ export type Database = {
           usdc_received?: number
           wallet_address?: string
           wallet_type?: string | null
+        }
+        Relationships: []
+      }
+      daily_pnl: {
+        Row: {
+          buy_count: number
+          created_at: string | null
+          date: string
+          id: string
+          markets_active: number
+          realized_pnl: number
+          redeem_count: number
+          sell_count: number
+          total_pnl: number
+          unrealized_pnl: number
+          updated_at: string | null
+          volume_traded: number
+          wallet: string
+        }
+        Insert: {
+          buy_count?: number
+          created_at?: string | null
+          date: string
+          id?: string
+          markets_active?: number
+          realized_pnl?: number
+          redeem_count?: number
+          sell_count?: number
+          total_pnl?: number
+          unrealized_pnl?: number
+          updated_at?: string | null
+          volume_traded?: number
+          wallet: string
+        }
+        Update: {
+          buy_count?: number
+          created_at?: string | null
+          date?: string
+          id?: string
+          markets_active?: number
+          realized_pnl?: number
+          redeem_count?: number
+          sell_count?: number
+          total_pnl?: number
+          unrealized_pnl?: number
+          updated_at?: string | null
+          volume_traded?: number
+          wallet?: string
         }
         Relationships: []
       }
@@ -2440,6 +2584,42 @@ export type Database = {
         }
         Relationships: []
       }
+      subgraph_ingest_state: {
+        Row: {
+          created_at: string | null
+          id: string
+          is_complete: boolean
+          last_sync_at: string | null
+          newest_event_ts: string | null
+          oldest_event_ts: string | null
+          total_events_ingested: number
+          updated_at: string | null
+          wallet: string
+        }
+        Insert: {
+          created_at?: string | null
+          id?: string
+          is_complete?: boolean
+          last_sync_at?: string | null
+          newest_event_ts?: string | null
+          oldest_event_ts?: string | null
+          total_events_ingested?: number
+          updated_at?: string | null
+          wallet: string
+        }
+        Update: {
+          created_at?: string | null
+          id?: string
+          is_complete?: boolean
+          last_sync_at?: string | null
+          newest_event_ts?: string | null
+          oldest_event_ts?: string | null
+          total_events_ingested?: number
+          updated_at?: string | null
+          wallet?: string
+        }
+        Relationships: []
+      }
       subgraph_pnl_markets: {
         Row: {
           avg_down_cost: number | null
@@ -3051,6 +3231,20 @@ export type Database = {
       }
     }
     Views: {
+      v_daily_pnl_cumulative: {
+        Row: {
+          cumulative_realized_pnl: number | null
+          cumulative_total_pnl: number | null
+          date: string | null
+          markets_active: number | null
+          realized_pnl: number | null
+          total_pnl: number | null
+          unrealized_pnl: number | null
+          volume_traded: number | null
+          wallet: string | null
+        }
+        Relationships: []
+      }
       v_dashboard_pnl_summary: {
         Row: {
           claimed_markets: number | null
