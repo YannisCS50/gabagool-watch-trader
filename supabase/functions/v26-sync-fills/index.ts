@@ -49,9 +49,20 @@ async function resolvePolymarketFunderAddress(eoaAddress: string): Promise<strin
 }
 
 // Base64 helpers
+function normalizeToBase64(input: string): string {
+  let s = (input || '').trim();
+  // Convert base64url -> base64
+  s = s.replace(/-/g, '+').replace(/_/g, '/');
+  // Pad to a multiple of 4
+  const pad = s.length % 4;
+  if (pad === 2) s += '==';
+  else if (pad === 3) s += '=';
+  return s;
+}
+
 function base64ToArrayBuffer(base64: string): ArrayBuffer {
-  const sanitizedBase64 = base64.replace(/-/g, '+').replace(/_/g, '/').replace(/[^A-Za-z0-9+/=]/g, '');
-  const binaryString = atob(sanitizedBase64);
+  const normalized = normalizeToBase64(base64).replace(/[^A-Za-z0-9+/=]/g, '');
+  const binaryString = atob(normalized);
   const bytes = new Uint8Array(binaryString.length);
   for (let i = 0; i < binaryString.length; i++) {
     bytes[i] = binaryString.charCodeAt(i);
@@ -129,20 +140,32 @@ async function deriveApiCredentials(privateKey: string): Promise<{ apiKey: strin
   const l1Headers = await createL1Headers(wallet, POLYGON_CHAIN_ID, 0);
   const headers = { ...l1Headers, 'Content-Type': 'application/json' };
 
+  const parseCreds = (rawText: string) => {
+    const c = JSON.parse(rawText);
+    const apiKey = c?.apiKey ?? c?.key;
+    const secretRaw = c?.secret ?? c?.apiSecret ?? c?.api_secret;
+    const passphrase = c?.passphrase;
+
+    if (!apiKey || !secretRaw || !passphrase) {
+      throw new Error('derive/create returned invalid response (missing apiKey/secret/passphrase)');
+    }
+
+    return {
+      apiKey: String(apiKey),
+      apiSecret: normalizeToBase64(String(secretRaw)),
+      passphrase: String(passphrase),
+    };
+  };
+
   const deriveResponse = await fetch(`${CLOB_BASE_URL}/auth/derive-api-key`, { method: 'GET', headers });
   const deriveText = await deriveResponse.text();
-
-  if (deriveResponse.ok) {
-    const credentials = JSON.parse(deriveText);
-    return { apiKey: credentials.apiKey, apiSecret: credentials.secret, passphrase: credentials.passphrase };
-  }
+  if (deriveResponse.ok) return parseCreds(deriveText);
 
   // Create new key if none exists
   const createResponse = await fetch(`${CLOB_BASE_URL}/auth/api-key`, { method: 'POST', headers });
   const createText = await createResponse.text();
   if (!createResponse.ok) throw new Error(`Failed to create API key: ${createResponse.status} - ${createText}`);
-  const newCredentials = JSON.parse(createText);
-  return { apiKey: newCredentials.apiKey, apiSecret: newCredentials.secret, passphrase: newCredentials.passphrase };
+  return parseCreds(createText);
 }
 
 // L2 Headers for authenticated requests
@@ -390,15 +413,28 @@ serve(async (req) => {
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+
+    // CLOB API creds (preferred for proxy/safe wallets)
+    const apiKeyEnv = Deno.env.get('POLYMARKET_API_KEY');
+    const apiSecretEnv = Deno.env.get('POLYMARKET_API_SECRET');
+    const passphraseEnv = Deno.env.get('POLYMARKET_PASSPHRASE');
+    const hasApiCreds = !!(apiKeyEnv && apiSecretEnv && passphraseEnv);
+
+    // Private key is optional if POLYMARKET_API_* is set and bot_config has the wallet address
     const privateKey = Deno.env.get('POLYMARKET_PRIVATE_KEY');
+
     const supabase = createClient(supabaseUrl, supabaseKey);
 
     console.log('[v26-sync-fills] Starting robust fill sync...');
-    
+
     // Check for required secrets
-    const useClobApi = !!privateKey;
+    const useClobApi = hasApiCreds || !!privateKey;
     if (!useClobApi) {
-      console.log('[v26-sync-fills] No POLYMARKET_PRIVATE_KEY - falling back to fill_logs only');
+      console.log('[v26-sync-fills] No POLYMARKET_API_* creds and no POLYMARKET_PRIVATE_KEY - falling back to fill_logs only');
+    } else if (hasApiCreds) {
+      console.log('[v26-sync-fills] Using POLYMARKET_API_* credentials for CLOB reads');
+    } else {
+      console.log('[v26-sync-fills] Using POLYMARKET_PRIVATE_KEY-derived credentials for CLOB reads');
     }
 
     // Get wallet address from bot_config
@@ -406,7 +442,7 @@ serve(async (req) => {
       .from('bot_config')
       .select('polymarket_address')
       .single();
-    
+
     const walletAddress = botConfig?.polymarket_address;
     console.log(`[v26-sync-fills] Using wallet: ${walletAddress?.slice(0, 10)}...`);
 
@@ -542,13 +578,25 @@ serve(async (req) => {
       console.log('[v26-sync-fills] Using CLOB API for recent orders...');
       
       try {
-        const wallet = new ethers.Wallet(privateKey!);
-        const funderAddress = await resolvePolymarketFunderAddress(wallet.address);
-        const creds = await deriveApiCredentials(privateKey!);
-        const credsForL2 = { key: creds.apiKey, secret: creds.apiSecret, passphrase: creds.passphrase };
-        
+        const eoaAddress = walletAddress || (privateKey ? new ethers.Wallet(privateKey).address : null);
+        if (!eoaAddress) {
+          throw new Error('Missing bot_config.polymarket_address and POLYMARKET_PRIVATE_KEY; cannot resolve CLOB auth address');
+        }
+
+        const funderAddress = await resolvePolymarketFunderAddress(eoaAddress);
+
+        let credsForL2: { key: string; secret: string; passphrase: string };
+        if (hasApiCreds) {
+          credsForL2 = { key: apiKeyEnv!, secret: apiSecretEnv!, passphrase: passphraseEnv! };
+        } else if (privateKey) {
+          const creds = await deriveApiCredentials(privateKey);
+          credsForL2 = { key: creds.apiKey, secret: creds.apiSecret, passphrase: creds.passphrase };
+        } else {
+          throw new Error('Missing POLYMARKET_API_* credentials and POLYMARKET_PRIVATE_KEY');
+        }
+
         console.log(`[v26-sync-fills] Authenticated as ${funderAddress.slice(0, 10)}...`);
-        
+
         // Process only recent trades via CLOB
         for (const trade of recentTrades) {
           if (!trade.order_id) continue;
