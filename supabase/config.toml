@@ -68,3 +68,6 @@ verify_jwt = false
 
 [functions.v26-sync-csv]
 verify_jwt = false
+
+[functions.v26-auto-settle]
+verify_jwt = false
