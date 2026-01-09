@@ -223,11 +223,15 @@ serve(async (req) => {
         continue;
       }
 
-      // Filter API trades to those that happened before market end
+      // Filter API trades to those that happened within the market window
+      // Market starts at event_start_time - 15min (pre-market) and ends at event_end_time
+      const eventStartMs = new Date(t.event_start_time).getTime();
       const eventEndMs = new Date(t.event_end_time).getTime();
+      const windowStartMs = eventStartMs - 15 * 60 * 1000; // 15 min before market start
+      
       const relevantTrades = matchingApiTrades.filter((at) => {
         const tradeMs = at.timestamp * 1000;
-        return tradeMs <= eventEndMs + 60 * 60 * 1000;
+        return tradeMs >= windowStartMs && tradeMs <= eventEndMs;
       });
 
       if (relevantTrades.length === 0) {
@@ -245,7 +249,9 @@ serve(async (req) => {
         if (at.timestamp > latestTs) latestTs = at.timestamp;
       }
 
-      const filledShares = Math.round(totalShares);
+      // IMPORTANT: Cap filled_shares at the order size to prevent over-counting
+      const targetShares = Number(t.shares) || 30;
+      const filledShares = Math.min(Math.round(totalShares), targetShares);
       const avgPrice = totalShares > 0 ? totalValue / totalShares : null;
       const matchedAt = latestTs > 0 ? new Date(latestTs * 1000).toISOString() : null;
 
@@ -257,14 +263,14 @@ serve(async (req) => {
             filled_shares: filledShares,
             avg_fill_price: avgPrice,
             fill_matched_at: matchedAt,
-            status: 'filled',
+            status: filledShares >= targetShares ? 'filled' : 'partial',
           })
           .eq('id', t.id);
 
         if (updateError) {
           results.push({ id: t.id, market_slug: t.market_slug, success: false, source: 'data_api', error: updateError.message });
         } else {
-          console.log(`[v26-sync-fills] ✓ ${t.market_slug} → ${filledShares} shares @ ${avgPrice?.toFixed(3) || '?'} via Data API`);
+          console.log(`[v26-sync-fills] ✓ ${t.market_slug} → ${filledShares}/${targetShares} shares @ ${avgPrice?.toFixed(3) || '?'} via Data API`);
           results.push({ id: t.id, market_slug: t.market_slug, success: true, source: 'data_api' });
         }
       }
@@ -308,14 +314,16 @@ serve(async (req) => {
           const avgPrice = totalSharesRaw > 0 ? totalValue / totalSharesRaw : 0.48;
           const matchedAt = latestTs ? new Date(latestTs).toISOString() : new Date().toISOString();
 
-          const targetShares = Number(t.shares) || 0;
-          const newStatus = totalSharesRaw >= targetShares - 1e-6 ? 'filled' : 'partial';
+          const targetShares = Number(t.shares) || 30;
+          // Cap filled_shares at target to prevent over-counting
+          const filledShares = Math.min(totalSharesRaw, targetShares);
+          const newStatus = filledShares >= targetShares - 1e-6 ? 'filled' : 'partial';
 
           const { error: updateError } = await supabase
             .from('v26_trades')
             .update({
               status: newStatus,
-              filled_shares: totalSharesRaw,
+              filled_shares: filledShares,
               avg_fill_price: avgPrice,
               fill_matched_at: matchedAt,
             })
