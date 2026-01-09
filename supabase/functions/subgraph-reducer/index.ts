@@ -398,6 +398,9 @@ async function runReducer(wallet: string): Promise<{
     let marketSlug: string | null = null;
     let redeemOutcome: 'UP' | 'DOWN' | null = null;
     let redeemPayout = 0;
+    
+    // Track TOTAL cost for market summary (never reset)
+    let totalUpCostSpent = 0, totalDownCostSpent = 0;
 
     for (const e of marketEvents) {
       const type = e.event_type as 'BUY' | 'SELL' | 'REDEEM';
@@ -423,9 +426,11 @@ async function runReducer(wallet: string): Promise<{
         if (outcome === 'UP') {
           upCost += cost;
           upShares += shares;
+          totalUpCostSpent += cost; // Track total spent
         } else {
           downCost += cost;
           downShares += shares;
+          totalDownCostSpent += cost; // Track total spent
         }
       } else if (type === 'SELL') {
         hasSell = true;
@@ -459,6 +464,7 @@ async function runReducer(wallet: string): Promise<{
         const payout = e.amount_usd > 0 ? e.amount_usd : shares;
         redeemPayout += payout;
 
+        // P&L = payout - remaining cost basis for this outcome
         let pnl = 0;
         if (outcome === 'UP') {
           pnl = payout - upCost;
@@ -535,7 +541,7 @@ async function runReducer(wallet: string): Promise<{
       market_slug: marketSlug,
       state: marketState,
       resolved_outcome: resolvedOutcome,
-      total_cost: upCost + downCost,
+      total_cost: totalUpCostSpent + totalDownCostSpent, // Use TOTAL cost spent, not remaining
       total_payout: redeemPayout,
       realized_pnl: totalRealized,
       has_buy: hasBuy,
