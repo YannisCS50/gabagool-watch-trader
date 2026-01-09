@@ -203,6 +203,104 @@ export type Database = {
         }
         Relationships: []
       }
+      canonical_positions: {
+        Row: {
+          avg_cost: number | null
+          created_at: string | null
+          id: string
+          last_fill_at: string | null
+          market_id: string
+          outcome: string
+          realized_pnl: number
+          shares_held: number
+          state: string
+          total_cost_usd: number
+          unrealized_pnl: number | null
+          updated_at: string | null
+          wallet: string
+        }
+        Insert: {
+          avg_cost?: number | null
+          created_at?: string | null
+          id: string
+          last_fill_at?: string | null
+          market_id: string
+          outcome: string
+          realized_pnl?: number
+          shares_held?: number
+          state?: string
+          total_cost_usd?: number
+          unrealized_pnl?: number | null
+          updated_at?: string | null
+          wallet: string
+        }
+        Update: {
+          avg_cost?: number | null
+          created_at?: string | null
+          id?: string
+          last_fill_at?: string | null
+          market_id?: string
+          outcome?: string
+          realized_pnl?: number
+          shares_held?: number
+          state?: string
+          total_cost_usd?: number
+          unrealized_pnl?: number | null
+          updated_at?: string | null
+          wallet?: string
+        }
+        Relationships: []
+      }
+      cashflow_ledger: {
+        Row: {
+          amount_usd: number
+          category: string
+          created_at: string | null
+          direction: string
+          id: string
+          market_id: string
+          outcome: string | null
+          shares_delta: number
+          source_event_id: string | null
+          timestamp: string
+          wallet: string
+        }
+        Insert: {
+          amount_usd?: number
+          category: string
+          created_at?: string | null
+          direction: string
+          id: string
+          market_id: string
+          outcome?: string | null
+          shares_delta?: number
+          source_event_id?: string | null
+          timestamp: string
+          wallet: string
+        }
+        Update: {
+          amount_usd?: number
+          category?: string
+          created_at?: string | null
+          direction?: string
+          id?: string
+          market_id?: string
+          outcome?: string | null
+          shares_delta?: number
+          source_event_id?: string | null
+          timestamp?: string
+          wallet?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "cashflow_ledger_source_event_id_fkey"
+            columns: ["source_event_id"]
+            isOneToOne: false
+            referencedRelation: "raw_subgraph_events"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       claim_logs: {
         Row: {
           block_number: number | null
@@ -1052,6 +1150,66 @@ export type Database = {
         }
         Relationships: []
       }
+      market_lifecycle: {
+        Row: {
+          created_at: string | null
+          has_buy: boolean | null
+          has_redeem: boolean | null
+          has_sell: boolean | null
+          id: string
+          is_claimed: boolean | null
+          is_lost: boolean | null
+          market_id: string
+          market_slug: string | null
+          realized_pnl: number
+          resolved_outcome: string | null
+          settlement_ts: string | null
+          state: string
+          total_cost: number
+          total_payout: number
+          updated_at: string | null
+          wallet: string
+        }
+        Insert: {
+          created_at?: string | null
+          has_buy?: boolean | null
+          has_redeem?: boolean | null
+          has_sell?: boolean | null
+          id: string
+          is_claimed?: boolean | null
+          is_lost?: boolean | null
+          market_id: string
+          market_slug?: string | null
+          realized_pnl?: number
+          resolved_outcome?: string | null
+          settlement_ts?: string | null
+          state?: string
+          total_cost?: number
+          total_payout?: number
+          updated_at?: string | null
+          wallet: string
+        }
+        Update: {
+          created_at?: string | null
+          has_buy?: boolean | null
+          has_redeem?: boolean | null
+          has_sell?: boolean | null
+          id?: string
+          is_claimed?: boolean | null
+          is_lost?: boolean | null
+          market_id?: string
+          market_slug?: string | null
+          realized_pnl?: number
+          resolved_outcome?: string | null
+          settlement_ts?: string | null
+          state?: string
+          total_cost?: number
+          total_payout?: number
+          updated_at?: string | null
+          wallet?: string
+        }
+        Relationships: []
+      }
       mtm_snapshots: {
         Row: {
           asset: string
@@ -1394,6 +1552,57 @@ export type Database = {
         }
         Relationships: []
       }
+      pnl_snapshots: {
+        Row: {
+          claimed_markets: number
+          created_at: string | null
+          id: string
+          lost_markets: number
+          open_markets: number
+          realized_pnl: number
+          settled_markets: number
+          total_cost: number
+          total_fees: number
+          total_markets: number
+          total_pnl: number
+          ts: string
+          unrealized_pnl: number
+          wallet: string
+        }
+        Insert: {
+          claimed_markets?: number
+          created_at?: string | null
+          id: string
+          lost_markets?: number
+          open_markets?: number
+          realized_pnl?: number
+          settled_markets?: number
+          total_cost?: number
+          total_fees?: number
+          total_markets?: number
+          total_pnl?: number
+          ts?: string
+          unrealized_pnl?: number
+          wallet: string
+        }
+        Update: {
+          claimed_markets?: number
+          created_at?: string | null
+          id?: string
+          lost_markets?: number
+          open_markets?: number
+          realized_pnl?: number
+          settled_markets?: number
+          total_cost?: number
+          total_fees?: number
+          total_markets?: number
+          total_pnl?: number
+          ts?: string
+          unrealized_pnl?: number
+          wallet?: string
+        }
+        Relationships: []
+      }
       polymarket_cashflows: {
         Row: {
           amount_usd: number
@@ -1625,6 +1834,57 @@ export type Database = {
           id?: string
           price?: number
           source?: string | null
+        }
+        Relationships: []
+      }
+      raw_subgraph_events: {
+        Row: {
+          amount_usd: number
+          created_at: string | null
+          event_type: string
+          fee_usd: number | null
+          id: string
+          ingested_at: string | null
+          market_id: string
+          outcome: string | null
+          price: number | null
+          raw_json: Json | null
+          shares: number
+          timestamp: string
+          tx_hash: string | null
+          wallet: string
+        }
+        Insert: {
+          amount_usd?: number
+          created_at?: string | null
+          event_type: string
+          fee_usd?: number | null
+          id: string
+          ingested_at?: string | null
+          market_id: string
+          outcome?: string | null
+          price?: number | null
+          raw_json?: Json | null
+          shares?: number
+          timestamp: string
+          tx_hash?: string | null
+          wallet: string
+        }
+        Update: {
+          amount_usd?: number
+          created_at?: string | null
+          event_type?: string
+          fee_usd?: number | null
+          id?: string
+          ingested_at?: string | null
+          market_id?: string
+          outcome?: string | null
+          price?: number | null
+          raw_json?: Json | null
+          shares?: number
+          timestamp?: string
+          tx_hash?: string | null
+          wallet?: string
         }
         Relationships: []
       }
@@ -2791,6 +3051,49 @@ export type Database = {
       }
     }
     Views: {
+      v_dashboard_pnl_summary: {
+        Row: {
+          claimed_markets: number | null
+          last_updated: string | null
+          lost_markets: number | null
+          markets_bought: number | null
+          markets_sold: number | null
+          open_markets: number | null
+          settled_markets: number | null
+          total_cost: number | null
+          total_markets: number | null
+          total_payout: number | null
+          total_realized_pnl: number | null
+          wallet: string | null
+        }
+        Relationships: []
+      }
+      v_market_pnl: {
+        Row: {
+          avg_down_cost: number | null
+          avg_up_cost: number | null
+          confidence: string | null
+          down_shares: number | null
+          has_buy: boolean | null
+          has_redeem: boolean | null
+          has_sell: boolean | null
+          id: string | null
+          is_claimed: boolean | null
+          is_lost: boolean | null
+          market_id: string | null
+          market_slug: string | null
+          realized_pnl: number | null
+          resolved_outcome: string | null
+          settlement_ts: string | null
+          state: string | null
+          total_cost: number | null
+          total_payout: number | null
+          up_shares: number | null
+          updated_at: string | null
+          wallet: string | null
+        }
+        Relationships: []
+      }
       v26_stats: {
         Row: {
           filled_trades: number | null
