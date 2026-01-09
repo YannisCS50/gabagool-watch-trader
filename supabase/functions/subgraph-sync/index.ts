@@ -21,6 +21,8 @@ const DATA_API_BASE = 'https://data-api.polymarket.com';
 
 // Config
 const PAGE_SIZE = 500;
+const MAX_PAGES = 10; // Limit to prevent CPU timeout (10 * 500 = 5000 max records)
+const MAX_AGE_DAYS = 30; // Only fetch last 30 days
 
 interface PolymarketActivity {
   proxyWallet: string;
@@ -61,11 +63,12 @@ type SupabaseClient = any;
 async function fetchActivity(wallet: string): Promise<PolymarketActivity[]> {
   const allActivity: PolymarketActivity[] = [];
   let offset = 0;
-  let hasMore = true;
+  let pagesLoaded = 0;
+  const cutoffTime = Math.floor(Date.now() / 1000) - (MAX_AGE_DAYS * 24 * 60 * 60);
 
-  console.log(`[subgraph-sync] Fetching activity for wallet ${wallet.slice(0, 10)}...`);
+  console.log(`[subgraph-sync] Fetching recent activity (last ${MAX_AGE_DAYS} days, max ${MAX_PAGES} pages)...`);
 
-  while (hasMore) {
+  while (pagesLoaded < MAX_PAGES) {
     const url = `${DATA_API_BASE}/activity?user=${wallet}&limit=${PAGE_SIZE}&offset=${offset}`;
     
     const response = await fetch(url);
@@ -77,22 +80,27 @@ async function fetchActivity(wallet: string): Promise<PolymarketActivity[]> {
     const data = await response.json() as PolymarketActivity[];
     
     if (!data || data.length === 0) {
-      hasMore = false;
-    } else {
-      // Filter to only TRADE activities
-      const trades = data.filter(a => a.type === 'TRADE');
-      allActivity.push(...trades);
-      
-      if (data.length < PAGE_SIZE) {
-        hasMore = false;
-      } else {
-        offset += PAGE_SIZE;
-      }
-      
-      console.log(`[subgraph-sync] Fetched ${data.length} activities, ${trades.length} trades (total: ${allActivity.length})`);
+      break;
     }
+    
+    // Filter to TRADE activities within time window
+    const recentTrades = data.filter(a => a.type === 'TRADE' && a.timestamp >= cutoffTime);
+    allActivity.push(...recentTrades);
+    
+    pagesLoaded++;
+    
+    // Stop if we've gone past our time window or no more data
+    const oldestInBatch = Math.min(...data.map(a => a.timestamp));
+    if (oldestInBatch < cutoffTime || data.length < PAGE_SIZE) {
+      console.log(`[subgraph-sync] Reached cutoff or end of data`);
+      break;
+    }
+    
+    offset += PAGE_SIZE;
+    console.log(`[subgraph-sync] Page ${pagesLoaded}/${MAX_PAGES}: ${recentTrades.length} trades (total: ${allActivity.length})`);
   }
 
+  console.log(`[subgraph-sync] Fetched ${allActivity.length} trades in ${pagesLoaded} pages`);
   return allActivity;
 }
 
