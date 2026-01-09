@@ -1517,30 +1517,36 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
                   'Event End',
                   'Created At'
                 ];
+                // European format: comma as decimal separator
+                const toEU = (val: number | null | undefined, decimals: number = 4): string => {
+                  if (val === null || val === undefined) return '';
+                  return val.toFixed(decimals).replace('.', ',');
+                };
                 const rows = filtered.map(t => [
                   t.marketSlug,
                   t.asset,
                   t.side,
-                  t.shares.toFixed(4),
-                  t.pricePerShare.toFixed(4),
-                  t.total.toFixed(4),
+                  toEU(t.shares, 4),
+                  toEU(t.pricePerShare, 4),
+                  toEU(t.total, 4),
                   t.status,
                   t.result,
-                  t.pnl?.toFixed(4) ?? '',
-                  t.strikePrice?.toFixed(2) ?? '',
-                  t.closePrice?.toFixed(2) ?? '',
-                  t.delta?.toFixed(2) ?? '',
+                  toEU(t.pnl, 4),
+                  toEU(t.strikePrice, 2),
+                  toEU(t.closePrice, 2),
+                  toEU(t.delta, 2),
                   t.fillTimeMs?.toString() ?? '',
                   t.filledOffsetSec?.toString() ?? '',
                   t.eventStartTime,
                   t.eventEndTime,
                   t.createdAt
                 ]);
+                // Use semicolon as delimiter for European Excel compatibility
                 const csvContent = [
-                  headers.join(','),
-                  ...rows.map(r => r.map(cell => `"${cell}"`).join(','))
+                  headers.join(';'),
+                  ...rows.map(r => r.map(cell => `"${cell}"`).join(';'))
                 ].join('\n');
-                const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
                 const link = document.createElement('a');
                 link.href = URL.createObjectURL(blob);
                 link.download = `v26-local-trades-${format(new Date(), 'yyyy-MM-dd-HHmmss')}.csv`;
