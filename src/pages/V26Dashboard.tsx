@@ -203,8 +203,7 @@ export default function V26Dashboard() {
       .from('v26_trades')
       .select('*')
       .gte('created_at', V26_GO_LIVE_DATE)
-      .order('event_start_time', { ascending: false })
-      .limit(2000);
+      .order('event_start_time', { ascending: false });
 
     const tradesData = tradesRes.data as V26Trade[] | null;
 
