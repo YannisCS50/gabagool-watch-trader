@@ -359,10 +359,11 @@ export default function V26Dashboard() {
       // Build log identifier for debugging
       const logId = `[${trade.asset}-${format(new Date(trade.event_start_time), 'HH:mm')}]`;
 
-      if (!trade.order_id) {
+      if (!isFilled && !trade.order_id) {
+        // No order placed and no fills
         result = 'NOT_BOUGHT';
         resultSource = 'NOT_FILLED';
-        console.log(`${logId} Status = NOT_PLACED (no order_id)`);
+        console.log(`${logId} Status = NOT_PLACED (no order_id, no fills)`);
       } else if (!isFilled) {
         // Order was placed but we got 0 fills (or the runner marked it as error)
         result = (trade.status ?? '').toLowerCase() === 'error' ? 'FAILED' : 'NO_FILL';
