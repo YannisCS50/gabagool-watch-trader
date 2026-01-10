@@ -23,47 +23,53 @@ interface ParsedRow {
 // Parse European number format (e.g., "4.800.000.106.683.760" should be "0.48")
 function parseEuropeanNumber(value: string): number | null {
   if (!value || value.trim() === '') return null;
-  
+
   const cleaned = value.trim();
-  
+
   // Check if it's a normal number (has at most one decimal separator)
   const dotCount = (cleaned.match(/\./g) || []).length;
-  
+
   if (dotCount <= 1) {
-    // Normal number format
     const num = parseFloat(cleaned);
-    return isNaN(num) ? null : num;
+    return Number.isFinite(num) ? num : null;
   }
-  
-  // European format with thousands separators
-  // "4.800.000.106.683.760" -> these are malformed, try to detect pattern
-  // The pattern seems to be: real value has periods as thousands separators
-  // E.g., "-14.399.999.999.999.900" should be "-14.4" or similar
-  
-  // Strategy: Take the first part before too many digits
+
+  // Heuristic: values like "48.000.000.000.000.000" are corrupted formatting.
+  // We interpret them as "48.0" (or "4.8", "15.6") using the first digit after the first dot.
   const parts = cleaned.split('.');
   if (parts.length >= 2) {
-    // Try to reconstruct: first part is integer, second part is first decimals
-    // But the data seems really corrupted, so let's use a heuristic
     const firstPart = parts[0];
     const isNegative = firstPart.startsWith('-');
     const absFirst = isNegative ? firstPart.slice(1) : firstPart;
-    
-    // If first part is small (1-2 digits), it's likely the integer part
-    // and second part starts the decimals
-    if (absFirst.length <= 2 && parts.length >= 2) {
-      // Assume format like "15.600.000.000.000.000" = 15.6
-      // or "-14.399.999.999.999.900" = -14.4
-      const intPart = parseInt(firstPart);
-      const decimalStart = parts[1].charAt(0); // First digit after first period
+
+    if (absFirst.length <= 2) {
+      const intPart = parseInt(firstPart, 10);
+      const decimalStart = parts[1].charAt(0);
       const num = parseFloat(`${intPart}.${decimalStart}`);
-      return isNaN(num) ? null : num;
+      return Number.isFinite(num) ? num : null;
     }
   }
-  
-  // Fallback: just try parsing directly
+
+  // Fallback: remove dots and parse
   const fallback = parseFloat(cleaned.replace(/\./g, ''));
-  return isNaN(fallback) ? null : fallback;
+  return Number.isFinite(fallback) ? fallback : null;
+}
+
+function normalizeUnitPrice(value: number | null): number | null {
+  if (value === null || !Number.isFinite(value)) return null;
+
+  const sign = value < 0 ? -1 : 1;
+  let v = Math.abs(value);
+
+  // Unit prices must be in [0, 1]. Some CSVs come in as 4.8 or 48.0 due to formatting.
+  // Bring them back into range by shifting the decimal left.
+  let guard = 0;
+  while (v > 1 && guard < 6) {
+    v = v / 10;
+    guard++;
+  }
+
+  return sign * v;
 }
 
 function parseCsvLine(line: string): string[] {
@@ -107,7 +113,7 @@ function parseCsv(content: string): ParsedRow[] {
       real_result: real_result?.trim().toUpperCase() || '',
       side: side?.trim().toUpperCase() || '',
       filled_shares: parseFloat(filled_shares) || 0,
-      avg_fill_price: parseEuropeanNumber(avg_fill_price) ?? 0,
+      avg_fill_price: normalizeUnitPrice(parseEuropeanNumber(avg_fill_price)) ?? 0,
       event_start_time: event_start_time?.trim() || '',
       event_end_time: event_end_time?.trim() || '',
       pnl: parseEuropeanNumber(pnl),
