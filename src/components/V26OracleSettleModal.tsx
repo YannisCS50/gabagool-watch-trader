@@ -38,11 +38,13 @@ export function V26OracleSettleModal({ open, onOpenChange, onSettled }: V26Oracl
     // Only show trades older than 45 minutes
     const cutoffTime = new Date(Date.now() - 45 * 60 * 1000).toISOString();
     
+    // Include filled and partial trades that have shares to settle
     const { data, error } = await supabase
       .from('v26_trades')
-      .select('id, asset, market_slug, side, filled_shares, avg_fill_price, event_start_time, event_end_time, created_at')
-      .eq('status', 'filled')
+      .select('id, asset, market_slug, side, filled_shares, avg_fill_price, event_start_time, event_end_time, created_at, status')
+      .in('status', ['filled', 'partial', 'error', 'cancelled'])
       .is('result', null)
+      .gt('filled_shares', 0) // Only trades that have filled shares
       .lt('event_end_time', cutoffTime)
       .order('event_end_time', { ascending: true });
 
