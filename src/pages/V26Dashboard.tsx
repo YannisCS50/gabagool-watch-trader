@@ -437,22 +437,16 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
           }
         }
         // PRIORITY 5: Fallback - infer winner from close-vs-strike delta
+        // Per Polymarket rules: UP if close >= strike, DOWN if close < strike
+        // delta = close - strike, so delta >= 0 means UP, delta < 0 means DOWN
         else if (delta !== null) {
-          if (delta === 0) {
-            result = 'PENDING';
-            resultSource = 'UNKNOWN';
-            totalPending++;
-            addFilledAccounting();
-            debugLog(`${logId} Status = PENDING (delta=0, ambiguous)`);
+          const winningSide = delta < 0 ? 'DOWN' : 'UP';
+          if (sideUpper && sideUpper === winningSide) {
+            settleWin('DELTA');
+            debugLog(`${logId} Result = WIN via delta fallback (delta=${delta.toFixed(2)} → ${winningSide})`);
           } else {
-            const winningSide = delta < 0 ? 'DOWN' : 'UP';
-            if (sideUpper && sideUpper === winningSide) {
-              settleWin('DELTA');
-              debugLog(`${logId} Result = WIN via delta fallback (delta=${delta.toFixed(2)} → ${winningSide})`);
-            } else {
-              settleLoss('DELTA');
-              debugLog(`${logId} Result = LOSS via delta fallback (delta=${delta.toFixed(2)} → ${winningSide})`);
-            }
+            settleLoss('DELTA');
+            debugLog(`${logId} Result = LOSS via delta fallback (delta=${delta.toFixed(2)} → ${winningSide})`);
           }
         } else {
           result = 'PENDING';
