@@ -17,18 +17,24 @@ function startOfHourUTC(date: Date): Date {
   return d;
 }
 
-// Helper: start of day in UTC
+// Helper: start of day in UTC from a local date
+// The Calendar returns a local midnight date, so we need to treat it as "that calendar day"
+// and convert to UTC boundaries properly
 function startOfDayUTC(date: Date): Date {
-  const d = new Date(date);
-  d.setUTCHours(0, 0, 0, 0);
-  return d;
+  // Get the year, month, day from the date as displayed in local time
+  const year = date.getFullYear();
+  const month = date.getMonth();
+  const day = date.getDate();
+  // Create a new UTC date at midnight for that calendar day
+  return new Date(Date.UTC(year, month, day, 0, 0, 0, 0));
 }
 
-// Helper: end of day in UTC
+// Helper: end of day in UTC from a local date
 function endOfDayUTC(date: Date): Date {
-  const d = new Date(date);
-  d.setUTCHours(23, 59, 59, 999);
-  return d;
+  const year = date.getFullYear();
+  const month = date.getMonth();
+  const day = date.getDate();
+  return new Date(Date.UTC(year, month, day, 23, 59, 59, 999));
 }
 
 interface TradeLog {
