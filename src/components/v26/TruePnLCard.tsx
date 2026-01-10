@@ -20,9 +20,16 @@ export function TruePnLCard() {
 
       const totalDeposits = deposits?.reduce((sum, d) => sum + Number(d.amount_usd), 0) || 0;
 
-      // Fetch CLOB balance from edge function
-      const { data: clobData } = await supabase.functions.invoke("get-clob-balance");
-      const clobBalance = clobData?.balance || 0;
+      // Fetch latest runner heartbeat for balance
+      const { data: heartbeat } = await supabase
+        .from("runner_heartbeats")
+        .select("balance")
+        .eq("runner_type", "v26")
+        .order("last_heartbeat", { ascending: false })
+        .limit(1)
+        .single();
+
+      const clobBalance = heartbeat?.balance || 0;
 
       // Fetch open positions value from canonical_positions
       const { data: positions } = await supabase
