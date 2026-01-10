@@ -67,7 +67,7 @@ interface TradeLog {
   pricePerShare: number;
   total: number;
   orderType: 'LIMIT';
-  result: 'WIN' | 'LOSS' | 'LIVE' | 'PENDING' | 'NOT_BOUGHT' | 'NO_FILL' | 'FAILED';
+  result: 'WIN' | 'LOSS' | 'LIVE' | 'PENDING' | 'NOT_BOUGHT' | 'NO_FILL' | 'EXPIRED' | 'FAILED';
   resultSource: 'PNL' | 'RESULT' | 'DELTA' | 'LIVE' | 'NOT_FILLED' | 'UNKNOWN'; // Source of result decision
   pnl: number | null;
   expectedPayout: number | null; // What we'd get if we win ($1 * shares)
@@ -97,7 +97,7 @@ interface AssetStats {
 }
 
 const ASSETS = ['ALL', 'BTC', 'ETH', 'SOL', 'XRP'] as const;
-const STATUSES = ['ALL', 'WIN', 'LOSS', 'LIVE', 'PENDING', 'NO_FILL', 'NOT_BOUGHT', 'FAILED'] as const;
+const STATUSES = ['ALL', 'WIN', 'LOSS', 'LIVE', 'PENDING', 'NO_FILL', 'EXPIRED', 'NOT_BOUGHT', 'FAILED'] as const;
 const PAGE_SIZE = 20;
 
 export default function V26Dashboard() {
@@ -415,10 +415,21 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
         resultSource = 'NOT_FILLED';
         debugLog(`${logId} Status = NOT_PLACED (no order_id, no fills)`);
       } else if (!isFilled) {
-        // Order was placed but we got 0 fills (or the runner marked it as error)
-        result = (trade.status ?? '').toLowerCase() === 'error' ? 'FAILED' : 'NO_FILL';
-        resultSource = 'NOT_FILLED';
-        debugLog(`${logId} Status = ${result} (order placed, 0 fill)`);
+        // Order was placed but we got 0 fills
+        const statusLower = (trade.status ?? '').toLowerCase();
+        if (statusLower === 'expired') {
+          result = 'EXPIRED';
+          resultSource = 'NOT_FILLED';
+          debugLog(`${logId} Status = EXPIRED (order placed, 0 fill, market ended)`);
+        } else if (statusLower === 'error') {
+          result = 'FAILED';
+          resultSource = 'NOT_FILLED';
+          debugLog(`${logId} Status = FAILED (order error)`);
+        } else {
+          result = 'NO_FILL';
+          resultSource = 'NOT_FILLED';
+          debugLog(`${logId} Status = NO_FILL (order placed, 0 fill)`);
+        }
       } else {
         const sideUpper = (trade.side ?? '').toUpperCase();
         const resultUpper = (tradeResult ?? '').toUpperCase();
@@ -885,6 +896,12 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
         return (
           <Badge variant="outline" className="text-muted-foreground text-xs">
             ⏳ Niet gevuld
+          </Badge>
+        );
+      case 'EXPIRED':
+        return (
+          <Badge variant="outline" className="text-slate-400 border-slate-400/30 text-xs">
+            ⌛ Verlopen
           </Badge>
         );
       case 'FAILED':
@@ -1539,7 +1556,7 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
                   onClick={() => setStatusFilter(status)}
                   className="text-xs px-2 h-7 md:h-8"
                 >
-                  {status === 'NO_FILL' ? '∅Fill' : status === 'NOT_BOUGHT' ? '∅Buy' : status}
+                  {status === 'NO_FILL' ? '∅Fill' : status === 'NOT_BOUGHT' ? '∅Buy' : status === 'EXPIRED' ? '⌛Exp' : status}
                 </Button>
               ))}
             </div>

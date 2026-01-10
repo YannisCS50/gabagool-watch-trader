@@ -10,7 +10,7 @@
 // ============================================================
 
 import { config } from '../config.js';
-import { testConnection, getBalance, placeOrder, cancelOrder, getOrderFillInfo, getOrderbookDepth } from '../polymarket.js';
+import { testConnection, getBalance, placeOrder, getOrderFillInfo, getOrderbookDepth } from '../polymarket.js';
 import { fetchMarkets, sendHeartbeat, saveFillLogs, saveSettlementLogs, saveSnapshotLogs, savePriceTicks, saveDecisionSnapshot, saveFundingSnapshot, PriceTick, FundingSnapshot } from '../backend.js';
 import { enforceVpnOrExit } from '../vpn-check.js';
 import { fetchChainlinkPrice } from '../chain.js';
@@ -595,7 +595,7 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
 
     log(`✅ [${market.asset}] Order placed: ${result.orderId} (status=${result.status ?? 'unknown'})`);
 
-    // If already filled, we can skip cancellation and go straight to settlement.
+    // If already filled, we can skip expiry check and go straight to settlement.
     if (trade.status === 'filled' && trade.filledShares > 0) {
       scheduleSettlement(market, trade);
       completedMarkets.add(key);
@@ -603,15 +603,15 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
       return;
     }
 
-    // Schedule cancellation: X seconds AFTER market start (from config)
-    const cancelTime = market.eventStartTime.getTime() + (cfg.cancelAfterStartSec * 1000);
-    const msUntilCancel = Math.max(0, cancelTime - Date.now());
+    // Schedule expiry check: at market END time (orders auto-expire, we just need to check final status)
+    const expiryCheckTime = market.eventEndTime.getTime() + 5_000; // 5s after market end
+    const msUntilExpiry = Math.max(0, expiryCheckTime - Date.now());
 
-    log(`⏰ [${market.asset}] Cancel scheduled in ${Math.round(msUntilCancel / 1000)}s (${cfg.cancelAfterStartSec}s after market start)`);
+    log(`⏰ [${market.asset}] Expiry check scheduled in ${Math.round(msUntilExpiry / 1000)}s (at market end)`);
 
     scheduled.cancelTimeout = setTimeout(async () => {
-      await checkAndCancelOrder(scheduled);
-    }, msUntilCancel);
+      await checkOrderExpiry(scheduled);
+    }, msUntilExpiry);
 
   } catch (err) {
     logError(`[${market.asset}] Failed to place order`, err);
@@ -626,65 +626,50 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
   }
 }
 
-async function checkAndCancelOrder(scheduled: ScheduledTrade, attempt: number = 0): Promise<void> {
-  const MAX_CANCEL_ATTEMPTS = 5; // Reduced from 10 - most issues are permanent
-  const CANCEL_RETRY_DELAY_MS = 2000; // 2 seconds between retries
-  
+/**
+ * Check order status after market ends.
+ * Orders auto-expire on Polymarket - we just check final fill status.
+ * NO cancellation attempts - simpler and avoids false "error" states.
+ */
+async function checkOrderExpiry(scheduled: ScheduledTrade): Promise<void> {
   const { market, trade, orderId } = scheduled;
   const key = `${market.id}:${market.asset}`;
 
   if (!orderId) {
+    // No order was placed - mark as expired
+    trade.status = 'expired';
+    if (trade.id) {
+      await updateV26Trade(trade.id, { status: 'expired' });
+    }
     completedMarkets.add(key);
     scheduledTrades.delete(key);
     return;
   }
 
   try {
-    log(`⏰ [${market.asset}] Checking fill status before cancel (attempt ${attempt + 1}/${MAX_CANCEL_ATTEMPTS})...`);
+    log(`⏰ [${market.asset}] Checking final fill status at market end...`);
 
-    // STEP 1: Always check order status first
-    const before = await getOrderFillInfo(orderId);
-    const matchedBefore = before.success ? (before.filledSize ?? 0) : 0;
+    // Check order fill status
+    const info = await getOrderFillInfo(orderId);
+    const filledSize = info.success ? (info.filledSize ?? 0) : 0;
 
-    // Handle case where order doesn't exist or can't be found
-    if (!before.success) {
-      // Order not found - likely already cancelled or filled and removed from system
-      log(`⚠️ [${market.asset}] Order not found in system (${before.error}) - treating as already cancelled`);
-      
-      // Check if we had any fills recorded previously
-      if (trade.filledShares > 0) {
-        trade.status = 'filled';
-        if (trade.id) {
-          await updateV26Trade(trade.id, { status: 'filled' });
-        }
-        scheduleSettlement(market, trade);
-      } else {
-        trade.status = 'cancelled';
-        if (trade.id) {
-          await updateV26Trade(trade.id, { status: 'cancelled' });
-        }
-      }
-      completedMarkets.add(key);
-      scheduledTrades.delete(key);
-      return;
-    }
-
-    if (matchedBefore > 0) {
+    if (filledSize > 0) {
+      // Order was filled (fully or partially)
       const previousFilled = trade.filledShares;
-      trade.filledShares = matchedBefore;
+      trade.filledShares = filledSize;
       trade.avgFillPrice = trade.avgFillPrice ?? trade.price;
-      trade.status = before.status === 'partial' ? 'partial' : before.status === 'filled' ? 'filled' : 'partial';
+      trade.status = info.status === 'filled' ? 'filled' : 'partial';
 
       if (scheduled.placedAtMs && trade.fillTimeMs === undefined) {
         trade.fillTimeMs = Math.max(0, Date.now() - scheduled.placedAtMs);
       }
 
       // Log fill if this is a new fill detection
-      if (matchedBefore > previousFilled) {
-        const assetCfgPreCancel = getAssetConfig(market.asset);
+      if (filledSize > previousFilled) {
+        const assetCfg = getAssetConfig(market.asset);
         tradesCount++;
-        void logV26Fill(market, trade, matchedBefore - previousFilled, trade.avgFillPrice, assetCfgPreCancel?.side as 'UP' | 'DOWN' ?? 'DOWN');
-        void logV26DecisionSnapshot(market, trade, 'ENTRY', 'PRE_CANCEL_FILL', assetCfgPreCancel?.side ?? 'DOWN');
+        void logV26Fill(market, trade, filledSize - previousFilled, trade.avgFillPrice, assetCfg?.side as 'UP' | 'DOWN' ?? 'DOWN');
+        void logV26DecisionSnapshot(market, trade, 'ENTRY', 'EXPIRY_FILL', assetCfg?.side ?? 'DOWN');
       }
 
       if (trade.id) {
@@ -696,144 +681,31 @@ async function checkAndCancelOrder(scheduled: ScheduledTrade, attempt: number = 
         });
       }
 
-      if (before.status === 'filled') {
-        log(`✓ [${market.asset}] Already filled (${matchedBefore}/${before.originalSize ?? V26_CONFIG.shares}); skipping cancel.`);
-        scheduleSettlement(market, trade);
-        completedMarkets.add(key);
-        scheduledTrades.delete(key);
-        return;
-      }
-
-      log(`✓ [${market.asset}] Partial fill detected (${matchedBefore}/${before.originalSize ?? V26_CONFIG.shares}); will cancel remainder.`);
-    }
-
-    // STEP 2: Try to cancel any remainder
-    log(`⏰ [${market.asset}] Attempting to cancel order ${V26_CONFIG.cancelAfterStartSec}s after market start`);
-    const cancelResult = await cancelOrder(orderId);
-
-    // STEP 3: Check for "Invalid order payload" - this means order no longer exists
-    // This is NOT an error - the order was already processed (filled/cancelled)
-    const isOrderGone = cancelResult.error && (
-      cancelResult.error.includes('Invalid order payload') ||
-      cancelResult.error.includes('Order not found') ||
-      cancelResult.error.includes('order does not exist') ||
-      cancelResult.error.includes('404')
-    );
-
-    if (isOrderGone) {
-      log(`✓ [${market.asset}] Order no longer exists in system - treating as successfully handled`);
-      
-      // Final check for fills
-      if (matchedBefore > 0 || trade.filledShares > 0) {
-        trade.status = 'filled';
-        if (trade.id) {
-          await updateV26Trade(trade.id, { status: 'filled' });
-        }
-        scheduleSettlement(market, trade);
-      } else {
-        trade.status = 'cancelled';
-        if (trade.id) {
-          await updateV26Trade(trade.id, { status: 'cancelled' });
-        }
-      }
-      completedMarkets.add(key);
-      scheduledTrades.delete(key);
-      return;
-    }
-
-    // Re-check after cancel (it may have filled between calls)
-    const after = await getOrderFillInfo(orderId);
-    const matchedAfter = after.success ? (after.filledSize ?? 0) : matchedBefore;
-
-    if (after.success && matchedAfter > 0) {
-      const previousFilled = trade.filledShares;
-      trade.filledShares = matchedAfter;
-      trade.avgFillPrice = trade.avgFillPrice ?? trade.price;
-      trade.status = after.status === 'filled' ? 'filled' : 'partial';
-
-      if (scheduled.placedAtMs && trade.fillTimeMs === undefined) {
-        trade.fillTimeMs = Math.max(0, Date.now() - scheduled.placedAtMs);
-      }
-
-      // Log fill if this is a new fill detection
-      if (matchedAfter > previousFilled) {
-        const assetCfgPostCancel = getAssetConfig(market.asset);
-        tradesCount++;
-        void logV26Fill(market, trade, matchedAfter - previousFilled, trade.avgFillPrice, assetCfgPostCancel?.side as 'UP' | 'DOWN' ?? 'DOWN');
-        void logV26DecisionSnapshot(market, trade, 'ENTRY', 'POST_CANCEL_FILL', assetCfgPostCancel?.side ?? 'DOWN');
-      }
-
-      if (trade.id) {
-        await updateV26Trade(trade.id, {
-          status: trade.status,
-          filledShares: trade.filledShares,
-          avgFillPrice: trade.avgFillPrice,
-          fillTimeMs: trade.fillTimeMs,
-        });
-      }
-
-      log(`✓ [${market.asset}] Post-cancel fill status: ${trade.status} (${matchedAfter}/${after.originalSize ?? V26_CONFIG.shares})`);
-
-      // If fully filled, settle. If partial, we still settle the partial position.
+      log(`✓ [${market.asset}] Order filled: ${filledSize} shares`);
       scheduleSettlement(market, trade);
     } else {
-      if (cancelResult.success) {
-        log(`✓ [${market.asset}] Order cancelled (no fills detected)`);
-        trade.status = 'cancelled';
-        if (trade.id) {
-          await updateV26Trade(trade.id, { status: 'cancelled' });
-        }
-      } else {
-        // Cancel failed with a real error - RETRY if we haven't exceeded max attempts
-        if (attempt < MAX_CANCEL_ATTEMPTS - 1) {
-          log(`⚠️ [${market.asset}] Cancel failed (${cancelResult.error}), retrying in ${CANCEL_RETRY_DELAY_MS / 1000}s... (attempt ${attempt + 1}/${MAX_CANCEL_ATTEMPTS})`);
-          setTimeout(() => {
-            void checkAndCancelOrder(scheduled, attempt + 1);
-          }, CANCEL_RETRY_DELAY_MS);
-          return; // Don't mark as completed yet, we're retrying
-        } else {
-          // All retries exhausted - but still try to determine final state
-          log(`⚠️ [${market.asset}] Cancel retries exhausted, determining final state...`);
-          
-          // If we have fills, consider it a success (filled/partial)
-          if (matchedBefore > 0 || trade.filledShares > 0) {
-            trade.status = trade.filledShares >= (trade.shares ?? 10) ? 'filled' : 'partial';
-            if (trade.id) {
-              await updateV26Trade(trade.id, { status: trade.status });
-            }
-            scheduleSettlement(market, trade);
-          } else {
-            // No fills, mark as error but don't spam logs
-            trade.status = 'error';
-            trade.errorMessage = `Cancel failed after ${MAX_CANCEL_ATTEMPTS} attempts: ${cancelResult.error}`;
-            if (trade.id) {
-              await updateV26Trade(trade.id, { 
-                status: 'error', 
-                errorMessage: trade.errorMessage 
-              });
-            }
-          }
-        }
+      // Order expired without any fills - this is normal, not an error
+      log(`⏳ [${market.asset}] Order expired without fills (no liquidity at ${trade.price})`);
+      trade.status = 'expired';
+      if (trade.id) {
+        await updateV26Trade(trade.id, { status: 'expired' });
       }
     }
   } catch (err) {
-    logError(`[${market.asset}] Error checking/cancelling order`, err);
+    logError(`[${market.asset}] Error checking order expiry`, err);
     
-    // Retry on exception - but fewer times
-    if (attempt < MAX_CANCEL_ATTEMPTS - 1) {
-      log(`⚠️ [${market.asset}] Exception during cancel, retrying in ${CANCEL_RETRY_DELAY_MS / 1000}s...`);
-      setTimeout(() => {
-        void checkAndCancelOrder(scheduled, attempt + 1);
-      }, CANCEL_RETRY_DELAY_MS);
-      return;
+    // On error, check if we had previous fills
+    if (trade.filledShares > 0) {
+      trade.status = 'filled';
+      if (trade.id) {
+        await updateV26Trade(trade.id, { status: 'filled' });
+      }
+      scheduleSettlement(market, trade);
     } else {
-      // Final attempt failed - mark based on what we know
-      if (trade.filledShares > 0) {
-        trade.status = 'filled';
-        if (trade.id) {
-          await updateV26Trade(trade.id, { status: 'filled' });
-        }
-        scheduleSettlement(market, trade);
+      // No fills known, treat as expired (not error)
+      trade.status = 'expired';
+      if (trade.id) {
+        await updateV26Trade(trade.id, { status: 'expired' });
       }
     }
   }
