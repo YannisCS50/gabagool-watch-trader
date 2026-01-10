@@ -124,16 +124,8 @@ export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps
           bucket.downBets++;
         }
         
-        // Track market outcome (which side won)
-        let outcome = (trade.marketOutcome ?? '').toUpperCase();
-        if (!outcome && (trade.result === 'WIN' || trade.result === 'LOSS')) {
-          const betSide = side;
-          if (trade.result === 'WIN') {
-            outcome = betSide;
-          } else {
-            outcome = betSide === 'UP' ? 'DOWN' : 'UP';
-          }
-        }
+        // Track market outcome (which side won) - only use marketOutcome from database
+        const outcome = (trade.marketOutcome ?? '').toUpperCase();
         if (outcome === 'UP') {
           bucket.upOutcomes++;
         } else if (outcome === 'DOWN') {
