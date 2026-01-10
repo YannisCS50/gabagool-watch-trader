@@ -12,3 +12,4 @@ export { DailyPnLChart } from './DailyPnLChart';
 export { DailyPnLTable } from './DailyPnLTable';
 export { AccountPnLSummary } from './AccountPnLSummary';
 export { DownloadTodayTicksButton } from './DownloadTodayTicksButton';
+export { default as ToxicityFilterDashboard } from './ToxicityFilterDashboard';
