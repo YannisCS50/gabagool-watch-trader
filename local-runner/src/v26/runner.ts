@@ -254,19 +254,38 @@ async function logV26Snapshots(): Promise<void> {
     for (const { market, trade } of activeMarkets) {
       const secondsRemaining = Math.max(0, Math.round((market.eventEndTime.getTime() - now) / 1000));
       
-      // Fetch orderbook for DOWN token
+      // Fetch orderbook for BOTH UP and DOWN tokens in parallel
+      let upBid: number | null = null;
+      let upAsk: number | null = null;
+      let upMid: number | null = null;
       let downBid: number | null = null;
       let downAsk: number | null = null;
       let downMid: number | null = null;
-      let orderbookReady = false;
+      let upBookReady = false;
+      let downBookReady = false;
 
       try {
-        const depth = await getOrderbookDepth(market.downTokenId);
-        downBid = depth.topBid;
-        downAsk = depth.topAsk;
+        const [upDepth, downDepth] = await Promise.all([
+          market.upTokenId ? getOrderbookDepth(market.upTokenId) : Promise.resolve(null),
+          getOrderbookDepth(market.downTokenId),
+        ]);
+
+        // UP side
+        if (upDepth) {
+          upBid = upDepth.topBid;
+          upAsk = upDepth.topAsk;
+          if (upBid !== null && upAsk !== null) {
+            upMid = (upBid + upAsk) / 2;
+            upBookReady = upDepth.hasLiquidity;
+          }
+        }
+
+        // DOWN side
+        downBid = downDepth.topBid;
+        downAsk = downDepth.topAsk;
         if (downBid !== null && downAsk !== null) {
           downMid = (downBid + downAsk) / 2;
-          orderbookReady = depth.hasLiquidity;
+          downBookReady = downDepth.hasLiquidity;
         }
       } catch {
         // Orderbook fetch failed
@@ -274,6 +293,10 @@ async function logV26Snapshots(): Promise<void> {
 
       // Get spot price for this asset
       const spotPrice = market.asset === 'BTC' ? lastBtcPrice : lastEthPrice;
+
+      // Calculate combined ask (UP + DOWN) for arbitrage detection
+      const combinedAsk = (upAsk !== null && downAsk !== null) ? upAsk + downAsk : null;
+      const combinedMid = (upMid !== null && downMid !== null) ? upMid + downMid : null;
 
       const snapshot: SnapshotLog = {
         ts: now,
@@ -286,20 +309,20 @@ async function logV26Snapshots(): Promise<void> {
         delta: null,
         btcPrice: lastBtcPrice,
         ethPrice: lastEthPrice,
-        upBid: null,
-        upAsk: null,
-        upMid: null,
+        upBid,
+        upAsk,
+        upMid,
         downBid,
         downAsk,
         downMid,
-        spreadUp: null,
+        spreadUp: upBid !== null && upAsk !== null ? upAsk - upBid : null,
         spreadDown: downBid !== null && downAsk !== null ? downAsk - downBid : null,
-        combinedAsk: null,
-        combinedMid: null,
+        combinedAsk,
+        combinedMid,
         cheapestAskPlusOtherMid: null,
-        upBestAsk: null,
+        upBestAsk: upAsk,
         downBestAsk: downAsk,
-        orderbookReady,
+        orderbookReady: upBookReady && downBookReady,
         botState: trade.status === 'filled' ? 'POSITION' : trade.status === 'partial' ? 'PARTIAL' : 'PENDING',
         upShares: 0,
         downShares: trade.filledShares,
