@@ -4,11 +4,32 @@ import { Button } from '@/components/ui/button';
 import { Calendar } from '@/components/ui/calendar';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, ReferenceLine } from 'recharts';
-import { format, startOfHour, subHours, startOfDay, endOfDay, differenceInHours, eachHourOfInterval } from 'date-fns';
+import { format, subHours, eachHourOfInterval } from 'date-fns';
 import { TrendingUp, TrendingDown, CalendarIcon, Save, Loader2 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+
+// Helper: floor a Date to the start of its hour in UTC
+function startOfHourUTC(date: Date): Date {
+  const d = new Date(date);
+  d.setUTCMinutes(0, 0, 0);
+  return d;
+}
+
+// Helper: start of day in UTC
+function startOfDayUTC(date: Date): Date {
+  const d = new Date(date);
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
+}
+
+// Helper: end of day in UTC
+function endOfDayUTC(date: Date): Date {
+  const d = new Date(date);
+  d.setUTCHours(23, 59, 59, 999);
+  return d;
+}
 
 interface TradeLog {
   result: string;
@@ -54,9 +75,9 @@ export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps
     const hourBuckets = new Map<string, HourlyData>();
 
     if (isUsingDateRange && dateRange.from && dateRange.to) {
-      // Use date range
-      const start = startOfDay(dateRange.from);
-      const end = endOfDay(dateRange.to);
+      // Use date range - use UTC to match database timestamps
+      const start = startOfDayUTC(dateRange.from);
+      const end = endOfDayUTC(dateRange.to);
       const hours = eachHourOfInterval({ start, end });
       
       for (const hourStart of hours) {
@@ -79,7 +100,7 @@ export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps
       // Use default hours
       const now = new Date();
       for (let i = hoursToShow - 1; i >= 0; i--) {
-        const hourStart = startOfHour(subHours(now, i));
+        const hourStart = startOfHourUTC(subHours(now, i));
         const key = hourStart.toISOString();
         hourBuckets.set(key, {
           hour: key,
@@ -101,7 +122,7 @@ export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps
     const settledTrades = trades.filter(t => t.result === 'WIN' || t.result === 'LOSS');
     
     for (const trade of settledTrades) {
-      const tradeHour = startOfHour(new Date(trade.eventStartTime));
+      const tradeHour = startOfHourUTC(new Date(trade.eventStartTime));
       const key = tradeHour.toISOString();
       const bucket = hourBuckets.get(key);
       
@@ -189,8 +210,8 @@ export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps
     setIsSaving(true);
     try {
       const { error } = await supabase.from('hourly_pnl_snapshots').insert({
-        period_start: startOfDay(dateRange.from).toISOString(),
-        period_end: endOfDay(dateRange.to).toISOString(),
+        period_start: startOfDayUTC(dateRange.from).toISOString(),
+        period_end: endOfDayUTC(dateRange.to).toISOString(),
         total_pnl: summary.totalPnl,
         total_invested: summary.totalInvested,
         total_wins: summary.totalWins,
