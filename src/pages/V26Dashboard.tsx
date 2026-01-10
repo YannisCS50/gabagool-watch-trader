@@ -6,6 +6,7 @@ import {
   CheckCircle2, XCircle, Flame, Activity, Wifi, WifiOff, Gavel, Database, Download
 } from 'lucide-react';
 import { DownloadV26LogicButton } from '@/components/DownloadV26LogicButton';
+import { DownloadXrpSolUrlsButton } from '@/components/v26/DownloadXrpSolUrlsButton';
 import { V26StrategyModal } from '@/components/V26StrategyModal';
 import { V26OracleSettleModal } from '@/components/V26OracleSettleModal';
 import { SubgraphDashboard } from '@/components/v26';
@@ -966,10 +967,9 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
               <Gavel className="h-4 w-4 md:mr-2" />
               <span className="hidden md:inline">Settle</span>
             </Button>
-            <Button onClick={() => setOracleModalOpen(true)} variant="outline" size="sm" className="shrink-0">
-              <Gavel className="h-4 w-4 md:mr-2" />
-              <span className="hidden md:inline">Settle</span>
-            </Button>
+            <div className="shrink-0">
+              <DownloadXrpSolUrlsButton />
+            </div>
             <div className="shrink-0">
               <DownloadV26LogicButton />
             </div>
