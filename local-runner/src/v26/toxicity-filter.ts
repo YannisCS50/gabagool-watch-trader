@@ -122,7 +122,8 @@ export function computeDataQuality(
   const nTicks = ticks.length;
 
   if (nTicks < 2) {
-    return { nTicks, maxGapSeconds: Infinity, quality: 'INSUFFICIENT' };
+    // Use cfg.analysisWindowSeconds as default (entire window = one big gap)
+    return { nTicks, maxGapSeconds: cfg.analysisWindowSeconds, quality: 'INSUFFICIENT' };
   }
 
   // Calculate max gap between consecutive ticks
@@ -469,33 +470,39 @@ export function getPositionMultiplier(features: ToxicityFeatures): number {
 
 export async function saveToxicityFeatures(features: ToxicityFeatures, runId?: string): Promise<string | null> {
   try {
+    // Ensure all numeric values are valid (not Infinity/NaN/null where DB requires non-null)
+    const safeNumber = (val: number | null | undefined, fallback: number = 0): number => {
+      if (val === null || val === undefined || !Number.isFinite(val)) return fallback;
+      return val;
+    };
+
     const payload = {
       market_id: features.marketId,
       market_slug: features.marketSlug,
       asset: features.asset,
       market_start_time: features.marketStartTime.toISOString(),
-      n_ticks: features.nTicks,
-      max_gap_seconds: features.maxGapSeconds,
-      data_quality: features.dataQuality,
-      ask_volatility: features.askVolatility,
-      ask_change_count: features.askChangeCount,
-      min_distance_to_target: features.minDistanceToTarget,
-      mean_distance_to_target: features.meanDistanceToTarget,
-      time_near_target_pct: features.timeNearTargetPct,
-      ask_median_early: features.askMedianEarly,
-      ask_median_late: features.askMedianLate,
-      liquidity_pull_detected: features.liquidityPullDetected,
-      spread_volatility: features.spreadVolatility,
-      spread_jump_last_20s: features.spreadJumpLast20s,
-      bid_drift: features.bidDrift,
-      mid_drift: features.midDrift,
-      toxicity_score: features.toxicityScore,
-      percentile_rank: features.percentileRank,
-      classification: features.classification,
-      decision: features.decision,
-      confidence: features.confidence,
-      target_price: features.targetPrice,
-      filter_version: features.filterVersion,
+      n_ticks: features.nTicks ?? 0,
+      max_gap_seconds: safeNumber(features.maxGapSeconds, 60), // Default to 60s if no data
+      data_quality: features.dataQuality ?? 'INSUFFICIENT',
+      ask_volatility: safeNumber(features.askVolatility),
+      ask_change_count: features.askChangeCount ?? 0,
+      min_distance_to_target: safeNumber(features.minDistanceToTarget),
+      mean_distance_to_target: safeNumber(features.meanDistanceToTarget),
+      time_near_target_pct: safeNumber(features.timeNearTargetPct),
+      ask_median_early: safeNumber(features.askMedianEarly),
+      ask_median_late: safeNumber(features.askMedianLate),
+      liquidity_pull_detected: features.liquidityPullDetected ?? false,
+      spread_volatility: safeNumber(features.spreadVolatility),
+      spread_jump_last_20s: safeNumber(features.spreadJumpLast20s),
+      bid_drift: safeNumber(features.bidDrift),
+      mid_drift: safeNumber(features.midDrift),
+      toxicity_score: safeNumber(features.toxicityScore),
+      percentile_rank: features.percentileRank, // Can be null
+      classification: features.classification ?? 'UNKNOWN',
+      decision: features.decision ?? 'SKIP',
+      confidence: features.confidence ?? 'LOW',
+      target_price: features.targetPrice ?? 0.48,
+      filter_version: features.filterVersion ?? 'v2-bootstrap',
       run_id: runId,
     };
 
