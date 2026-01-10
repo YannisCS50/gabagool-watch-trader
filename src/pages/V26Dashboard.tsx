@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { DownloadV26LogicButton } from '@/components/DownloadV26LogicButton';
 import { DownloadXrpSolUrlsButton } from '@/components/v26/DownloadXrpSolUrlsButton';
+import { CsvResultsUploader } from '@/components/v26/CsvResultsUploader';
 import { V26StrategyModal } from '@/components/V26StrategyModal';
 import { V26OracleSettleModal } from '@/components/V26OracleSettleModal';
 import { SubgraphDashboard } from '@/components/v26';
@@ -80,7 +81,8 @@ interface TradeLog {
   eventEndTime: string;
   eventStartTime: string;
   createdAt: string;
-  side: string; // UP or DOWN
+  side: string; // UP or DOWN (bet side)
+  marketOutcome?: string; // UP or DOWN (winning side from database result)
 }
 
 interface AssetStats {
@@ -564,6 +566,10 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
       // Calculate expected payout (what we'd get if we win)
       const expectedPayout = filledShares > 0 ? filledShares * 1.0 : null; // $1 per share if win
 
+      // Get the market outcome (winning side) from the database result field
+      const dbResult = (trade.result ?? '').toUpperCase();
+      const marketOutcome = (dbResult === 'UP' || dbResult === 'DOWN') ? dbResult : undefined;
+
       logs.push({
         id: trade.id,
         market: marketTitle,
@@ -589,6 +595,7 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
         eventStartTime: trade.event_start_time,
         createdAt: trade.created_at,
         side: trade.side ?? 'DOWN',
+        marketOutcome,
       });
     }
 
@@ -993,6 +1000,9 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
               <Gavel className="h-4 w-4 md:mr-2" />
               <span className="hidden md:inline">Settle</span>
             </Button>
+            <div className="shrink-0">
+              <CsvResultsUploader onImportComplete={fetchData} />
+            </div>
             <div className="shrink-0">
               <DownloadXrpSolUrlsButton />
             </div>
