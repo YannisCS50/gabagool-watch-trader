@@ -11,7 +11,7 @@
 
 import { config } from '../config.js';
 import { testConnection, getBalance, placeOrder, cancelOrder, getOrderFillInfo, getOrderbookDepth } from '../polymarket.js';
-import { fetchMarkets, sendHeartbeat, saveFillLogs, saveSettlementLogs, saveSnapshotLogs, savePriceTicks, saveDecisionSnapshot, PriceTick } from '../backend.js';
+import { fetchMarkets, sendHeartbeat, saveFillLogs, saveSettlementLogs, saveSnapshotLogs, savePriceTicks, saveDecisionSnapshot, saveFundingSnapshot, PriceTick, FundingSnapshot } from '../backend.js';
 import { enforceVpnOrExit } from '../vpn-check.js';
 import { fetchChainlinkPrice } from '../chain.js';
 import { 
@@ -398,7 +398,10 @@ let tradesCount = 0;
 async function sendV26Heartbeat(): Promise<void> {
   try {
     const balance = await getBalance();
-    const balanceNum = normalizeUsdAmount(balance) ?? 0;
+    
+    // Extract balance details
+    const balanceTotal = normalizeUsdAmount((balance as any)?.usdc) ?? normalizeUsdAmount(balance) ?? 0;
+    const balanceAvailable = normalizeUsdAmount((balance as any)?.available) ?? balanceTotal;
 
     await sendHeartbeat({
       runner_id: RUN_ID,
@@ -408,9 +411,20 @@ async function sendV26Heartbeat(): Promise<void> {
       markets_count: scheduledTrades.size,
       positions_count: 0,
       trades_count: tradesCount,
-      balance: balanceNum,
+      balance: balanceTotal,
       version: V26_VERSION,
     });
+
+    // Log funding snapshot for portfolio tracking
+    const fundingSnapshot: FundingSnapshot = {
+      ts: Date.now(),
+      balance_total: balanceTotal,
+      balance_available: balanceAvailable,
+      reserved_total: 0, // V26 doesn't track reserves the same way
+      trigger_type: 'heartbeat',
+    };
+    
+    await saveFundingSnapshot(fundingSnapshot);
   } catch (err) {
     // Heartbeat failures are non-critical
     logError('Heartbeat failed', err);
