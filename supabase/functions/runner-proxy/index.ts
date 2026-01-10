@@ -56,7 +56,11 @@ type Action =
   | 'save-hedge-skip-logs'
   | 'save-mtm-snapshot'
   | 'save-gabagool-metrics'
-  | 'get-v26-config';
+  | 'get-v26-config'
+  // Toxicity Filter v2
+  | 'save-toxicity-features'
+  | 'update-toxicity-outcome'
+  | 'get-toxicity-history';
 
 interface RequestBody {
   action: Action;
@@ -1803,6 +1807,123 @@ Deno.serve(async (req) => {
           data: globalRes.data,
           assetConfigs: assetConfigs,
         }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // ============================================================
+      // TOXICITY FILTER v2 ACTIONS
+      // ============================================================
+
+      case 'save-toxicity-features': {
+        const payload = data as Record<string, unknown>;
+        const { error, data: inserted } = await supabase
+          .from('toxicity_features')
+          .upsert({
+            market_id: payload.market_id,
+            market_slug: payload.market_slug,
+            asset: payload.asset,
+            market_start_time: payload.market_start_time,
+            n_ticks: payload.n_ticks,
+            max_gap_seconds: payload.max_gap_seconds,
+            data_quality: payload.data_quality,
+            ask_volatility: payload.ask_volatility,
+            ask_change_count: payload.ask_change_count,
+            min_distance_to_target: payload.min_distance_to_target,
+            mean_distance_to_target: payload.mean_distance_to_target,
+            time_near_target_pct: payload.time_near_target_pct,
+            ask_median_early: payload.ask_median_early,
+            ask_median_late: payload.ask_median_late,
+            liquidity_pull_detected: payload.liquidity_pull_detected,
+            spread_volatility: payload.spread_volatility,
+            spread_jump_last_20s: payload.spread_jump_last_20s,
+            bid_drift: payload.bid_drift,
+            mid_drift: payload.mid_drift,
+            toxicity_score: payload.toxicity_score,
+            percentile_rank: payload.percentile_rank,
+            classification: payload.classification,
+            decision: payload.decision,
+            confidence: payload.confidence,
+            target_price: payload.target_price,
+            filter_version: payload.filter_version,
+            run_id: payload.run_id,
+          }, { onConflict: 'market_id,asset' })
+          .select('id')
+          .single();
+
+        if (error) {
+          console.error('[runner-proxy] save-toxicity-features error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] ✅ Saved toxicity features for ${payload.asset} ${payload.market_slug}`);
+        return new Response(JSON.stringify({ success: true, id: inserted?.id }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      case 'update-toxicity-outcome': {
+        const { market_id, asset, outcome, pnl, settled_at } = data as {
+          market_id: string;
+          asset: string;
+          outcome: string;
+          pnl: number;
+          settled_at: string;
+        };
+
+        const { error } = await supabase
+          .from('toxicity_features')
+          .update({
+            outcome,
+            pnl,
+            settled_at,
+          })
+          .eq('market_id', market_id)
+          .eq('asset', asset);
+
+        if (error) {
+          console.error('[runner-proxy] update-toxicity-outcome error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] ✅ Updated toxicity outcome: ${asset} ${market_id} -> ${outcome} ($${pnl})`);
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      case 'get-toxicity-history': {
+        const { asset, limit = 200 } = data as { asset?: string; limit?: number };
+
+        let query = supabase
+          .from('toxicity_features')
+          .select('*')
+          .not('outcome', 'is', null)
+          .order('market_start_time', { ascending: false })
+          .limit(limit);
+
+        if (asset) {
+          query = query.eq('asset', asset);
+        }
+
+        const { data: history, error } = await query;
+
+        if (error) {
+          console.error('[runner-proxy] get-toxicity-history error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] 📊 Toxicity history: ${history?.length ?? 0} settled markets`);
+        return new Response(JSON.stringify({ success: true, data: history }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }

@@ -3295,6 +3295,111 @@ export type Database = {
         }
         Relationships: []
       }
+      toxicity_features: {
+        Row: {
+          ask_change_count: number | null
+          ask_median_early: number | null
+          ask_median_late: number | null
+          ask_volatility: number | null
+          asset: string
+          bid_drift: number | null
+          classification: string
+          confidence: string | null
+          created_at: string
+          data_quality: string
+          decision: string
+          filter_version: string
+          id: string
+          liquidity_pull_detected: boolean
+          market_id: string
+          market_slug: string
+          market_start_time: string
+          max_gap_seconds: number
+          mean_distance_to_target: number | null
+          mid_drift: number | null
+          min_distance_to_target: number | null
+          n_ticks: number
+          outcome: string | null
+          percentile_rank: number | null
+          pnl: number | null
+          run_id: string | null
+          settled_at: string | null
+          spread_jump_last_20s: number | null
+          spread_volatility: number | null
+          target_price: number
+          time_near_target_pct: number | null
+          toxicity_score: number | null
+        }
+        Insert: {
+          ask_change_count?: number | null
+          ask_median_early?: number | null
+          ask_median_late?: number | null
+          ask_volatility?: number | null
+          asset: string
+          bid_drift?: number | null
+          classification?: string
+          confidence?: string | null
+          created_at?: string
+          data_quality?: string
+          decision?: string
+          filter_version?: string
+          id?: string
+          liquidity_pull_detected?: boolean
+          market_id: string
+          market_slug: string
+          market_start_time: string
+          max_gap_seconds?: number
+          mean_distance_to_target?: number | null
+          mid_drift?: number | null
+          min_distance_to_target?: number | null
+          n_ticks?: number
+          outcome?: string | null
+          percentile_rank?: number | null
+          pnl?: number | null
+          run_id?: string | null
+          settled_at?: string | null
+          spread_jump_last_20s?: number | null
+          spread_volatility?: number | null
+          target_price?: number
+          time_near_target_pct?: number | null
+          toxicity_score?: number | null
+        }
+        Update: {
+          ask_change_count?: number | null
+          ask_median_early?: number | null
+          ask_median_late?: number | null
+          ask_volatility?: number | null
+          asset?: string
+          bid_drift?: number | null
+          classification?: string
+          confidence?: string | null
+          created_at?: string
+          data_quality?: string
+          decision?: string
+          filter_version?: string
+          id?: string
+          liquidity_pull_detected?: boolean
+          market_id?: string
+          market_slug?: string
+          market_start_time?: string
+          max_gap_seconds?: number
+          mean_distance_to_target?: number | null
+          mid_drift?: number | null
+          min_distance_to_target?: number | null
+          n_ticks?: number
+          outcome?: string | null
+          percentile_rank?: number | null
+          pnl?: number | null
+          run_id?: string | null
+          settled_at?: string | null
+          spread_jump_last_20s?: number | null
+          spread_volatility?: number | null
+          target_price?: number
+          time_near_target_pct?: number | null
+          toxicity_score?: number | null
+        }
+        Relationships: []
+      }
       trader_stats: {
         Row: {
           active_since: string | null
