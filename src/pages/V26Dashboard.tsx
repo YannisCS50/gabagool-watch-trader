@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { 
   ArrowLeft, TrendingUp, TrendingDown, DollarSign, Target, Percent,
   Clock, Zap, BarChart3, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ExternalLink,
-  CheckCircle2, XCircle, Flame, Activity, Wifi, WifiOff, Gavel, Database, Download, RefreshCw
+  CheckCircle2, XCircle, Flame, Activity, Wifi, WifiOff, Gavel, Database, Download, RefreshCw, Shield
 } from 'lucide-react';
 import { DownloadV26LogicButton } from '@/components/DownloadV26LogicButton';
 import { DownloadXrpSolUrlsButton } from '@/components/v26/DownloadXrpSolUrlsButton';
@@ -11,7 +11,7 @@ import { DownloadTodayTicksButton } from '@/components/v26/DownloadTodayTicksBut
 import { CsvResultsUploader } from '@/components/v26/CsvResultsUploader';
 import { V26StrategyModal } from '@/components/V26StrategyModal';
 import { V26OracleSettleModal } from '@/components/V26OracleSettleModal';
-import { SubgraphDashboard } from '@/components/v26';
+import { SubgraphDashboard, ToxicityFilterDashboard } from '@/components/v26';
 import { HourlyPnLChart } from '@/components/v26/HourlyPnLChart';
 import { TruePnLCard } from '@/components/v26/TruePnLCard';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -155,7 +155,7 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
     version: null,
   });
   const [oracleModalOpen, setOracleModalOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'local' | 'subgraph'>('local');
+  const [activeTab, setActiveTab] = useState<'local' | 'subgraph' | 'toxicity'>('local');
   const [claimables, setClaimables] = useState<{
     count: number;
     totalValue: number;
@@ -1080,21 +1080,33 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
         />
 
         {/* Tabs for Local vs Subgraph data */}
-        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'local' | 'subgraph')} className="w-full">
-          <TabsList className="grid w-full max-w-md grid-cols-2">
+        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'local' | 'subgraph' | 'toxicity')} className="w-full">
+          <TabsList className="grid w-full max-w-lg grid-cols-3">
             <TabsTrigger value="local" className="flex items-center gap-2">
               <Activity className="h-4 w-4" />
-              Local Bot Logs
+              <span className="hidden sm:inline">Local Bot</span>
+              <span className="sm:hidden">Local</span>
             </TabsTrigger>
             <TabsTrigger value="subgraph" className="flex items-center gap-2">
               <Database className="h-4 w-4" />
-              Subgraph (Canonical)
+              <span className="hidden sm:inline">Subgraph</span>
+              <span className="sm:hidden">Chain</span>
+            </TabsTrigger>
+            <TabsTrigger value="toxicity" className="flex items-center gap-2">
+              <Shield className="h-4 w-4" />
+              <span className="hidden sm:inline">Toxicity Filter</span>
+              <span className="sm:hidden">Filter</span>
             </TabsTrigger>
           </TabsList>
 
           {/* Subgraph Tab Content */}
           <TabsContent value="subgraph" className="mt-4">
             <SubgraphDashboard />
+          </TabsContent>
+
+          {/* Toxicity Filter Tab Content */}
+          <TabsContent value="toxicity" className="mt-4">
+            <ToxicityFilterDashboard />
           </TabsContent>
 
           {/* Local Tab Content */}
