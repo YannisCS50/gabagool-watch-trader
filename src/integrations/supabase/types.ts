@@ -610,6 +610,36 @@ export type Database = {
         }
         Relationships: []
       }
+      deposits: {
+        Row: {
+          amount_usd: number
+          created_at: string
+          deposited_at: string
+          id: string
+          notes: string | null
+          source: string | null
+          wallet: string
+        }
+        Insert: {
+          amount_usd: number
+          created_at?: string
+          deposited_at: string
+          id?: string
+          notes?: string | null
+          source?: string | null
+          wallet?: string
+        }
+        Update: {
+          amount_usd?: number
+          created_at?: string
+          deposited_at?: string
+          id?: string
+          notes?: string | null
+          source?: string | null
+          wallet?: string
+        }
+        Relationships: []
+      }
       fill_attributions: {
         Row: {
           asset: string

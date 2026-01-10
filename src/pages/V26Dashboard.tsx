@@ -10,6 +10,7 @@ import { V26StrategyModal } from '@/components/V26StrategyModal';
 import { V26OracleSettleModal } from '@/components/V26OracleSettleModal';
 import { SubgraphDashboard } from '@/components/v26';
 import { HourlyPnLChart } from '@/components/v26/HourlyPnLChart';
+import { TruePnLCard } from '@/components/v26/TruePnLCard';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -1083,6 +1084,9 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
 
           {/* Local Tab Content */}
           <TabsContent value="local" className="mt-4 space-y-4">
+
+        {/* True P&L Card - Real deposits vs portfolio value */}
+        <TruePnLCard />
 
         {/* Main KPIs - Row 1 - Compact grid on mobile */}
         <div className="grid grid-cols-3 md:grid-cols-5 gap-2 md:gap-3">
