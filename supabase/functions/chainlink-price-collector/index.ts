@@ -86,7 +86,7 @@ async function fetchChainlinkPrice(asset: string): Promise<{ price: number; time
     // Chainlink uses 8 decimals for most feeds
     const price = Number(answer) / 1e8;
     
-    console.log(`[chainlink] ${asset} price: $${price.toFixed(2)} at ${new Date(updatedAt * 1000).toISOString()}`);
+    console.log(`[chainlink] ${asset} price: $${price.toFixed(6)} at ${new Date(updatedAt * 1000).toISOString()}`);
     return { price, timestamp: updatedAt * 1000 };
   } catch (e) {
     console.error(`[chainlink] Error fetching ${asset}:`, e);
@@ -259,7 +259,8 @@ async function storePricesFromChainlink(
       const timeSinceStart = now - targetOpenTime;
       
       if (timeSinceStart <= 10 * 60 * 1000) { // Within 10 minutes of start
-        updates.open_price = Math.round(priceData.price * 100) / 100;
+        // Keep 6 decimal places for precision - XRP can have 4-5 decimal differences
+        updates.open_price = Math.round(priceData.price * 1000000) / 1000000;
         updates.open_timestamp = priceData.timestamp;
         updates.strike_price = updates.open_price;
         updates.quality = determineQuality(priceData.timestamp, targetOpenTime);
@@ -275,7 +276,8 @@ async function storePricesFromChainlink(
       const timeSinceEnd = now - targetCloseTime;
       
       if (timeSinceEnd >= 0 && timeSinceEnd <= 10 * 60 * 1000) { // 0-10 minutes after end
-        updates.close_price = Math.round(priceData.price * 100) / 100;
+        // Keep 6 decimal places for precision - XRP can have 4-5 decimal differences
+        updates.close_price = Math.round(priceData.price * 1000000) / 1000000;
         updates.close_timestamp = priceData.timestamp;
         closeStored++;
         console.log(`✅ Close price for ${market.slug}: $${updates.close_price}`);
