@@ -3316,6 +3316,45 @@ export type Database = {
         }
         Relationships: []
       }
+      true_pnl_snapshots: {
+        Row: {
+          clob_balance: number
+          created_at: string
+          hour: string
+          id: string
+          open_orders_value: number
+          portfolio_value: number
+          running_bets_value: number
+          total_deposits: number
+          true_pnl: number
+          true_pnl_percent: number
+        }
+        Insert: {
+          clob_balance?: number
+          created_at?: string
+          hour: string
+          id?: string
+          open_orders_value?: number
+          portfolio_value?: number
+          running_bets_value?: number
+          total_deposits?: number
+          true_pnl?: number
+          true_pnl_percent?: number
+        }
+        Update: {
+          clob_balance?: number
+          created_at?: string
+          hour?: string
+          id?: string
+          open_orders_value?: number
+          portfolio_value?: number
+          running_bets_value?: number
+          total_deposits?: number
+          true_pnl?: number
+          true_pnl_percent?: number
+        }
+        Relationships: []
+      }
       v26_asset_config: {
         Row: {
           asset: string
