@@ -1175,6 +1175,18 @@ async function main(): Promise<void> {
 
   // Keep process alive
   log('👀 Watching for markets... (Ctrl+C to stop)');
+  
+  // Log toxicity filter status on startup
+  log('');
+  log('🧪 ═══════════════════════════════════════════════════════════');
+  log('🧪 TOXICITY FILTER v2.0 ACTIVE');
+  log('🧪 ───────────────────────────────────────────────────────────');
+  log('🧪 Mode: Self-Calibrating (Bootstrap Phase)');
+  log('🧪 Features: ask_volatility, ask_change_count, proximity, liquidity_pull');
+  log('🧪 Decision: Will evaluate each market before placing orders');
+  log('🧪 Logging: All decisions saved to toxicity_features table');
+  log('🧪 ═══════════════════════════════════════════════════════════');
+  log('');
 }
 
 // Handle shutdown
