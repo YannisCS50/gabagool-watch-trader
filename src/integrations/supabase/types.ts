@@ -1042,6 +1042,69 @@ export type Database = {
         }
         Relationships: []
       }
+      hourly_pnl_snapshots: {
+        Row: {
+          avg_pnl_per_hour: number
+          created_at: string
+          down_outcome_pct: number
+          down_outcomes: number
+          id: string
+          losing_hours: number
+          notes: string | null
+          period_end: string
+          period_start: string
+          profitable_hours: number
+          total_invested: number
+          total_losses: number
+          total_pnl: number
+          total_trades: number
+          total_wins: number
+          up_outcome_pct: number
+          up_outcomes: number
+          win_rate: number
+        }
+        Insert: {
+          avg_pnl_per_hour?: number
+          created_at?: string
+          down_outcome_pct?: number
+          down_outcomes?: number
+          id?: string
+          losing_hours?: number
+          notes?: string | null
+          period_end: string
+          period_start: string
+          profitable_hours?: number
+          total_invested?: number
+          total_losses?: number
+          total_pnl?: number
+          total_trades?: number
+          total_wins?: number
+          up_outcome_pct?: number
+          up_outcomes?: number
+          win_rate?: number
+        }
+        Update: {
+          avg_pnl_per_hour?: number
+          created_at?: string
+          down_outcome_pct?: number
+          down_outcomes?: number
+          id?: string
+          losing_hours?: number
+          notes?: string | null
+          period_end?: string
+          period_start?: string
+          profitable_hours?: number
+          total_invested?: number
+          total_losses?: number
+          total_pnl?: number
+          total_trades?: number
+          total_wins?: number
+          up_outcome_pct?: number
+          up_outcomes?: number
+          win_rate?: number
+        }
+        Relationships: []
+      }
       inventory_snapshots: {
         Row: {
           asset: string
