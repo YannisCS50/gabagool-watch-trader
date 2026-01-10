@@ -9,6 +9,7 @@ import { DownloadV26LogicButton } from '@/components/DownloadV26LogicButton';
 import { V26StrategyModal } from '@/components/V26StrategyModal';
 import { V26OracleSettleModal } from '@/components/V26OracleSettleModal';
 import { SubgraphDashboard } from '@/components/v26';
+import { HourlyPnLChart } from '@/components/v26/HourlyPnLChart';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -1242,6 +1243,9 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
             </CardContent>
           </Card>
         </div>
+
+        {/* Hourly P&L Chart */}
+        <HourlyPnLChart trades={trades} hoursToShow={48} />
 
         {/* Execution & Risk Stats - Row 4 */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
