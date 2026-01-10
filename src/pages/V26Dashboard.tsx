@@ -950,58 +950,58 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
     <div className="min-h-screen bg-background p-4 md:p-6">
       <div className="max-w-7xl mx-auto space-y-4">
         {/* Header */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Button variant="ghost" size="icon" onClick={() => navigate('/')}>
-              <ArrowLeft className="h-5 w-5" />
-            </Button>
-            <div>
-              <h1 className="text-2xl md:text-3xl font-bold">V26 Trade Log</h1>
-              <div className="flex items-center gap-2">
-                <span className="text-sm">🐍</span>
-                <p className="text-sm text-muted-foreground">DOWN @ $0.48 LIMIT orders</p>
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Button variant="ghost" size="icon" onClick={() => navigate('/')}>
+                <ArrowLeft className="h-5 w-5" />
+              </Button>
+              <div>
+                <h1 className="text-xl md:text-3xl font-bold">V26 Trade Log</h1>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm">🐍</span>
+                  <p className="text-xs md:text-sm text-muted-foreground">DOWN @ $0.48 LIMIT</p>
+                </div>
               </div>
             </div>
-          </div>
-          <div className="flex items-center gap-2">
             {/* Runner Status Indicator */}
-            <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-sm font-medium ${
+            <div className={`flex items-center gap-1.5 md:gap-2 px-2 md:px-3 py-1 md:py-1.5 rounded-full text-xs md:text-sm font-medium ${
               runnerStatus.isOnline 
                 ? 'bg-green-500/10 text-green-500 border border-green-500/20' 
                 : 'bg-red-500/10 text-red-500 border border-red-500/20'
             }`}>
               {runnerStatus.isOnline ? (
                 <>
-                  <Wifi className="h-4 w-4" />
-                  <span>Online</span>
+                  <Wifi className="h-3 w-3 md:h-4 md:w-4" />
+                  <span className="hidden sm:inline">Online</span>
                   {runnerStatus.marketsCount > 0 && (
-                    <span className="text-xs opacity-70">({runnerStatus.marketsCount} markets)</span>
+                    <span className="text-xs opacity-70 hidden md:inline">({runnerStatus.marketsCount})</span>
                   )}
                 </>
               ) : (
                 <>
-                  <WifiOff className="h-4 w-4" />
-                  <span>Offline</span>
-                  {runnerStatus.lastHeartbeat && (
-                    <span className="text-xs opacity-70">
-                      ({formatDistanceToNow(new Date(runnerStatus.lastHeartbeat), { addSuffix: true, locale: nl })})
-                    </span>
-                  )}
+                  <WifiOff className="h-3 w-3 md:h-4 md:w-4" />
+                  <span className="hidden sm:inline">Offline</span>
                 </>
               )}
             </div>
+          </div>
+          
+          {/* Action buttons - scrollable on mobile */}
+          <div className="flex items-center gap-2 overflow-x-auto pb-2 -mx-4 px-4 md:mx-0 md:px-0 scrollbar-thin">
             <Button 
               variant="outline" 
               size="sm" 
               asChild
+              className="shrink-0"
             >
               <a 
                 href="https://polymarket.com/profile?tab=portfolio" 
                 target="_blank" 
                 rel="noopener noreferrer"
               >
-                <ExternalLink className="h-4 w-4 mr-2" />
-                Polymarket
+                <ExternalLink className="h-4 w-4 md:mr-2" />
+                <span className="hidden md:inline">Polymarket</span>
               </a>
             </Button>
             <input
@@ -1016,24 +1016,29 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
               size="sm"
               disabled={uploadingSyncing || loading}
               onClick={() => fileInputRef.current?.click()}
+              className="shrink-0"
             >
-              <Upload className={`h-4 w-4 mr-2 ${uploadingSyncing ? 'animate-pulse' : ''}`} />
-              {uploadingSyncing ? 'Syncing...' : 'CSV Upload'}
+              <Upload className={`h-4 w-4 md:mr-2 ${uploadingSyncing ? 'animate-pulse' : ''}`} />
+              <span className="hidden md:inline">{uploadingSyncing ? 'Syncing...' : 'CSV'}</span>
             </Button>
-            <Button onClick={syncFills} variant="outline" size="sm" disabled={syncing || loading}>
-              <RefreshCw className={`h-4 w-4 mr-2 ${syncing ? 'animate-spin' : ''}`} />
-              Sync Fills
+            <Button onClick={syncFills} variant="outline" size="sm" disabled={syncing || loading} className="shrink-0">
+              <RefreshCw className={`h-4 w-4 md:mr-2 ${syncing ? 'animate-spin' : ''}`} />
+              <span className="hidden md:inline">Sync</span>
             </Button>
-            <Button onClick={fetchData} variant="outline" size="sm" disabled={loading}>
-              <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-              Refresh
+            <Button onClick={fetchData} variant="outline" size="sm" disabled={loading} className="shrink-0">
+              <RefreshCw className={`h-4 w-4 md:mr-2 ${loading ? 'animate-spin' : ''}`} />
+              <span className="hidden md:inline">Refresh</span>
             </Button>
-            <Button onClick={() => setOracleModalOpen(true)} variant="outline" size="sm">
-              <Gavel className="h-4 w-4 mr-2" />
-              Settle
+            <Button onClick={() => setOracleModalOpen(true)} variant="outline" size="sm" className="shrink-0">
+              <Gavel className="h-4 w-4 md:mr-2" />
+              <span className="hidden md:inline">Settle</span>
             </Button>
-            <DownloadV26LogicButton />
-            <V26StrategyModal />
+            <div className="shrink-0">
+              <DownloadV26LogicButton />
+            </div>
+            <div className="shrink-0">
+              <V26StrategyModal />
+            </div>
           </div>
         </div>
 
@@ -1065,55 +1070,55 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
           {/* Local Tab Content */}
           <TabsContent value="local" className="mt-4 space-y-4">
 
-        {/* Main KPIs - Row 1 */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        {/* Main KPIs - Row 1 - Compact grid on mobile */}
+        <div className="grid grid-cols-3 md:grid-cols-5 gap-2 md:gap-3">
           <Card className="bg-gradient-to-br from-card to-muted/30">
-            <CardContent className="pt-4 pb-3">
-              <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
-                <Target className="h-3 w-3" /> Filled
+            <CardContent className="p-2 md:pt-4 md:pb-3 md:px-4">
+              <div className="flex items-center gap-1 md:gap-2 text-muted-foreground text-[10px] md:text-xs mb-0.5 md:mb-1">
+                <Target className="h-2.5 w-2.5 md:h-3 md:w-3" /> <span className="hidden sm:inline">Filled</span>
               </div>
-              <div className="text-2xl font-bold">{stats.filledBets}</div>
-              <div className="text-xs text-muted-foreground mt-1">
+              <div className="text-lg md:text-2xl font-bold">{stats.filledBets}</div>
+              <div className="text-[10px] md:text-xs text-muted-foreground mt-0.5 md:mt-1 truncate">
                 {stats.live > 0 && <span className="text-blue-500">{stats.live} live</span>}
                 {stats.live > 0 && stats.pending > 0 && ' · '}
-                {stats.pending > 0 && <span className="text-yellow-500">{stats.pending} pending</span>}
+                {stats.pending > 0 && <span className="text-yellow-500">{stats.pending} pend</span>}
               </div>
             </CardContent>
           </Card>
 
           <Card className="bg-gradient-to-br from-green-500/5 to-green-500/10 border-green-500/20">
-            <CardContent className="pt-4 pb-3">
-              <div className="flex items-center gap-2 text-green-500/70 text-xs mb-1">
-                <TrendingUp className="h-3 w-3" /> Wins
+            <CardContent className="p-2 md:pt-4 md:pb-3 md:px-4">
+              <div className="flex items-center gap-1 md:gap-2 text-green-500/70 text-[10px] md:text-xs mb-0.5 md:mb-1">
+                <TrendingUp className="h-2.5 w-2.5 md:h-3 md:w-3" /> <span className="hidden sm:inline">Wins</span>
               </div>
-              <div className="text-2xl font-bold text-green-500">{stats.wins}</div>
+              <div className="text-lg md:text-2xl font-bold text-green-500">{stats.wins}</div>
             </CardContent>
           </Card>
 
           <Card className="bg-gradient-to-br from-red-500/5 to-red-500/10 border-red-500/20">
-            <CardContent className="pt-4 pb-3">
-              <div className="flex items-center gap-2 text-red-500/70 text-xs mb-1">
-                <TrendingDown className="h-3 w-3" /> Losses
+            <CardContent className="p-2 md:pt-4 md:pb-3 md:px-4">
+              <div className="flex items-center gap-1 md:gap-2 text-red-500/70 text-[10px] md:text-xs mb-0.5 md:mb-1">
+                <TrendingDown className="h-2.5 w-2.5 md:h-3 md:w-3" /> <span className="hidden sm:inline">Losses</span>
               </div>
-              <div className="text-2xl font-bold text-red-500">{stats.losses}</div>
+              <div className="text-lg md:text-2xl font-bold text-red-500">{stats.losses}</div>
             </CardContent>
           </Card>
 
-          <Card className="bg-gradient-to-br from-card to-muted/30">
-            <CardContent className="pt-4 pb-3">
-              <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
-                <Percent className="h-3 w-3" /> Win Rate
+          <Card className="bg-gradient-to-br from-card to-muted/30 col-span-1">
+            <CardContent className="p-2 md:pt-4 md:pb-3 md:px-4">
+              <div className="flex items-center gap-1 md:gap-2 text-muted-foreground text-[10px] md:text-xs mb-0.5 md:mb-1">
+                <Percent className="h-2.5 w-2.5 md:h-3 md:w-3" /> <span className="hidden sm:inline">Win Rate</span>
               </div>
-              <div className="text-2xl font-bold">{stats.winRate.toFixed(1)}%</div>
+              <div className="text-lg md:text-2xl font-bold">{stats.winRate.toFixed(1)}%</div>
             </CardContent>
           </Card>
 
-          <Card className={`bg-gradient-to-br ${stats.totalPnl >= 0 ? 'from-green-500/5 to-green-500/10 border-green-500/20' : 'from-red-500/5 to-red-500/10 border-red-500/20'}`}>
-            <CardContent className="pt-4 pb-3">
-              <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
-                <DollarSign className="h-3 w-3" /> Net P&L
+          <Card className={`col-span-2 md:col-span-1 bg-gradient-to-br ${stats.totalPnl >= 0 ? 'from-green-500/5 to-green-500/10 border-green-500/20' : 'from-red-500/5 to-red-500/10 border-red-500/20'}`}>
+            <CardContent className="p-2 md:pt-4 md:pb-3 md:px-4">
+              <div className="flex items-center gap-1 md:gap-2 text-muted-foreground text-[10px] md:text-xs mb-0.5 md:mb-1">
+                <DollarSign className="h-2.5 w-2.5 md:h-3 md:w-3" /> Net P&L
               </div>
-              <div className={`text-2xl font-bold ${stats.totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+              <div className={`text-lg md:text-2xl font-bold ${stats.totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                 ${stats.totalPnl.toFixed(2)}
               </div>
             </CardContent>
@@ -1121,58 +1126,58 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
         </div>
 
         {/* Secondary KPIs - Row 2 */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-3">
           <Card>
-            <CardContent className="pt-4 pb-3">
-              <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
-                <Zap className="h-3 w-3" /> Avg Fill Time
+            <CardContent className="p-2 md:pt-4 md:pb-3 md:px-4">
+              <div className="flex items-center gap-1 md:gap-2 text-muted-foreground text-[10px] md:text-xs mb-0.5 md:mb-1">
+                <Zap className="h-2.5 w-2.5 md:h-3 md:w-3" /> Fill Time
               </div>
-              <div className="text-xl font-bold font-mono">
+              <div className="text-base md:text-xl font-bold font-mono">
                 {formatFillTime(fillTimeStats.avgMs)}
               </div>
-              <div className="text-xs text-muted-foreground mt-1">
-                Best: {formatFillTime(fillTimeStats.bestMs)} · Worst: {formatFillTime(fillTimeStats.worstMs)}
+              <div className="text-[10px] md:text-xs text-muted-foreground mt-0.5 md:mt-1 hidden sm:block">
+                Best: {formatFillTime(fillTimeStats.bestMs)}
               </div>
             </CardContent>
           </Card>
 
           <Card>
-            <CardContent className="pt-4 pb-3">
-              <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
-                <BarChart3 className="h-3 w-3" /> Best Asset
+            <CardContent className="p-2 md:pt-4 md:pb-3 md:px-4">
+              <div className="flex items-center gap-1 md:gap-2 text-muted-foreground text-[10px] md:text-xs mb-0.5 md:mb-1">
+                <BarChart3 className="h-2.5 w-2.5 md:h-3 md:w-3" /> Best
               </div>
-              <div className="text-xl font-bold text-green-500">
+              <div className="text-base md:text-xl font-bold text-green-500">
                 {bestAsset.asset}
               </div>
-              <div className="text-xs text-muted-foreground mt-1">
-                {bestAsset.winRate.toFixed(0)}% win rate
+              <div className="text-[10px] md:text-xs text-muted-foreground mt-0.5 md:mt-1">
+                {bestAsset.winRate.toFixed(0)}%
               </div>
             </CardContent>
           </Card>
 
           <Card>
-            <CardContent className="pt-4 pb-3">
-              <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
-                <BarChart3 className="h-3 w-3" /> Worst Asset
+            <CardContent className="p-2 md:pt-4 md:pb-3 md:px-4">
+              <div className="flex items-center gap-1 md:gap-2 text-muted-foreground text-[10px] md:text-xs mb-0.5 md:mb-1">
+                <BarChart3 className="h-2.5 w-2.5 md:h-3 md:w-3" /> Worst
               </div>
-              <div className="text-xl font-bold text-red-500">
+              <div className="text-base md:text-xl font-bold text-red-500">
                 {worstAsset.asset}
               </div>
-              <div className="text-xs text-muted-foreground mt-1">
-                {worstAsset.winRate.toFixed(0)}% win rate
+              <div className="text-[10px] md:text-xs text-muted-foreground mt-0.5 md:mt-1">
+                {worstAsset.winRate.toFixed(0)}%
               </div>
             </CardContent>
           </Card>
 
           <Card>
-            <CardContent className="pt-4 pb-3">
-              <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
-                <DollarSign className="h-3 w-3" /> Invested
+            <CardContent className="p-2 md:pt-4 md:pb-3 md:px-4">
+              <div className="flex items-center gap-1 md:gap-2 text-muted-foreground text-[10px] md:text-xs mb-0.5 md:mb-1">
+                <DollarSign className="h-2.5 w-2.5 md:h-3 md:w-3" /> Invested
               </div>
-              <div className="text-xl font-bold font-mono">
-                ${stats.totalInvested.toFixed(2)}
+              <div className="text-base md:text-xl font-bold font-mono">
+                ${stats.totalInvested.toFixed(0)}
               </div>
-              <div className="text-xs text-muted-foreground mt-1">
+              <div className="text-[10px] md:text-xs text-muted-foreground mt-0.5 md:mt-1">
                 ROI: <span className={stats.roi >= 0 ? 'text-green-500' : 'text-red-500'}>{stats.roi.toFixed(1)}%</span>
               </div>
             </CardContent>
@@ -1464,39 +1469,60 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
         </Card>
 
 
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <div className="flex items-center gap-4 flex-wrap">
-            <div className="flex gap-1">
+        <div className="flex flex-col gap-2">
+          {/* Filters - scrollable on mobile */}
+          <div className="flex items-center gap-2 overflow-x-auto pb-2 -mx-4 px-4 md:mx-0 md:px-0 scrollbar-thin">
+            <div className="flex gap-1 shrink-0">
               {ASSETS.map((asset) => (
                 <Button
                   key={asset}
                   variant={assetFilter === asset ? 'default' : 'outline'}
                   size="sm"
                   onClick={() => setAssetFilter(asset)}
-                  className="text-xs px-3"
+                  className="text-xs px-2 md:px-3 h-7 md:h-8"
                 >
                   {asset}
                 </Button>
               ))}
             </div>
-            <div className="flex gap-1">
-              {STATUSES.map((status) => (
+            <div className="w-px h-6 bg-border shrink-0" />
+            <div className="flex gap-1 shrink-0">
+              {STATUSES.slice(0, 4).map((status) => (
                 <Button
                   key={status}
                   variant={statusFilter === status ? 'default' : 'outline'}
                   size="sm"
                   onClick={() => setStatusFilter(status)}
-                  className="text-xs px-2"
+                  className="text-xs px-2 h-7 md:h-8"
                 >
-                  {status === 'ALL' ? 'Alle' : status === 'NO_FILL' ? 'Niet gevuld' : status === 'NOT_BOUGHT' ? 'Niet geplaatst' : status}
+                  {status === 'ALL' ? 'Alle' : status}
+                </Button>
+              ))}
+            </div>
+            <div className="flex gap-1 shrink-0">
+              {STATUSES.slice(4).map((status) => (
+                <Button
+                  key={status}
+                  variant={statusFilter === status ? 'default' : 'outline'}
+                  size="sm"
+                  onClick={() => setStatusFilter(status)}
+                  className="text-xs px-2 h-7 md:h-8"
+                >
+                  {status === 'NO_FILL' ? '∅Fill' : status === 'NOT_BOUGHT' ? '∅Buy' : status}
                 </Button>
               ))}
             </div>
           </div>
-          <div className="flex items-center gap-3">
+          
+          {/* Export and pagination info */}
+          <div className="flex items-center justify-between">
+            <div className="text-xs md:text-sm text-muted-foreground">
+              {filtered.length} trades · P{currentPage}/{Math.max(totalPages, 1)}
+            </div>
             <Button
               variant="outline"
               size="sm"
+              className="h-7 md:h-8"
               onClick={() => {
                 const headers = [
                   'Market Slug',
@@ -1554,12 +1580,9 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
               }}
               disabled={filtered.length === 0}
             >
-              <Download className="h-4 w-4 mr-2" />
-              Export CSV
+              <Download className="h-3.5 w-3.5 md:h-4 md:w-4 md:mr-2" />
+              <span className="hidden md:inline">Export CSV</span>
             </Button>
-            <div className="text-sm text-muted-foreground">
-              {filtered.length} trades · Pagina {currentPage} van {Math.max(totalPages, 1)}
-            </div>
           </div>
         </div>
 
