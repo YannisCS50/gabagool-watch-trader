@@ -30,8 +30,22 @@ import {
   getEnabledAssets,
 } from './index.js';
 import { saveV26Trade, updateV26Trade, hasExistingTrade, getV26Oracle } from './backend.js';
+import { 
+  computeToxicityFeatures, 
+  saveToxicityFeatures, 
+  updateToxicityOutcome,
+  shouldTrade as toxicityShouldTrade, 
+  getPositionMultiplier,
+  logToxicityDecision,
+  type OrderbookTick,
+  type ToxicityFeatures,
+} from './toxicity-filter.js';
 import type { FillLog, SettlementLog, SnapshotLog } from '../logger.js';
 import type { DecisionSnapshot } from '../backend.js';
+
+// Toxicity filter state per market
+const toxicityCache = new Map<string, ToxicityFeatures>();
+const orderbookTicks = new Map<string, OrderbookTick[]>(); // Collect ticks per market
 
 // ============================================================
 // CONSTANTS
@@ -287,6 +301,25 @@ async function logV26Snapshots(): Promise<void> {
           downMid = (downBid + downAsk) / 2;
           downBookReady = downDepth.hasLiquidity;
         }
+
+        // ============================================================
+        // TOXICITY FILTER: Collect orderbook ticks for pre-start analysis
+        // ============================================================
+        const marketKey = `${market.id}:${market.asset}`;
+        const isPreMarket = now < market.eventStartTime.getTime();
+        
+        if (isPreMarket && downBid !== null && downAsk !== null) {
+          // Collect tick for toxicity analysis
+          const tick: OrderbookTick = {
+            timestamp: now,
+            bestBid: downBid,
+            bestAsk: downAsk,
+          };
+          
+          const existingTicks = orderbookTicks.get(marketKey) || [];
+          existingTicks.push(tick);
+          orderbookTicks.set(marketKey, existingTicks);
+        }
       } catch {
         // Orderbook fetch failed
       }
@@ -537,6 +570,54 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
   log(`🎯 [${market.asset}] Placing V26 order: ${assetCfg.shares} shares @ $${assetCfg.price} (${assetCfg.side})`);
   
   try {
+    // ============================================================
+    // TOXICITY FILTER: Compute and evaluate before placing order
+    // ============================================================
+    const marketKey = `${market.id}:${market.asset}`;
+    const ticks = orderbookTicks.get(marketKey) || [];
+    
+    const toxicityFeatures = computeToxicityFeatures(
+      market.id,
+      market.slug,
+      market.asset,
+      market.eventStartTime,
+      ticks,
+      { targetPrice: assetCfg.price }
+    );
+    
+    // Log decision
+    logToxicityDecision(toxicityFeatures);
+    
+    // Save to DB for calibration
+    toxicityCache.set(marketKey, toxicityFeatures);
+    void saveToxicityFeatures(toxicityFeatures, RUN_ID);
+    
+    // Check if we should trade
+    if (!toxicityShouldTrade(toxicityFeatures)) {
+      log(`🚫 [${market.asset}] Toxicity filter BLOCKED trade: ${toxicityFeatures.classification} (score=${toxicityFeatures.toxicityScore?.toFixed(2)})`);
+      completedMarkets.add(key);
+      scheduledTrades.delete(key);
+      orderbookTicks.delete(marketKey);
+      return;
+    }
+    
+    // Apply position sizing based on toxicity
+    const positionMultiplier = getPositionMultiplier(toxicityFeatures);
+    const adjustedShares = Math.round(assetCfg.shares * positionMultiplier);
+    
+    if (adjustedShares < 1) {
+      log(`⚠️ [${market.asset}] Position size too small after toxicity adjustment, skipping`);
+      completedMarkets.add(key);
+      scheduledTrades.delete(key);
+      orderbookTicks.delete(marketKey);
+      return;
+    }
+    
+    log(`✅ [${market.asset}] Toxicity filter PASSED: ${toxicityFeatures.classification} | Shares: ${assetCfg.shares} → ${adjustedShares}`);
+    
+    // Clean up ticks after decision
+    orderbookTicks.delete(marketKey);
+
     // STEP 1: Check if we already have a trade for this market (DB check for duplicate prevention)
     const exists = await hasExistingTrade(market.id, market.asset);
     if (exists) {
