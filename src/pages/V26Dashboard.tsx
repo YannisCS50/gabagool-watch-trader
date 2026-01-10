@@ -155,6 +155,11 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
   });
   const [oracleModalOpen, setOracleModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'local' | 'subgraph'>('local');
+  const [claimables, setClaimables] = useState<{
+    count: number;
+    totalValue: number;
+    totalPnl: number;
+  }>({ count: 0, totalValue: 0, totalPnl: 0 });
 
   // Two-proportion z-test for comparing win rates
   const calculatePValue = (
@@ -777,9 +782,25 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
     }
   };
 
+  const fetchClaimables = async () => {
+    try {
+      const { data, error } = await supabase.functions.invoke('get-claimables');
+      if (!error && data?.success && data?.summary) {
+        setClaimables({
+          count: data.summary.count || 0,
+          totalValue: data.summary.totalValue || 0,
+          totalPnl: data.summary.totalPnl || 0,
+        });
+      }
+    } catch (err) {
+      console.error('[V26Dashboard] Failed to fetch claimables:', err);
+    }
+  };
+
   useEffect(() => {
     fetchData();
     fetchRunnerStatus();
+    fetchClaimables();
     
     // Auto-sync fills AND auto-settle every 2 minutes (silently in background)
     const autoSyncAndSettle = async () => {
@@ -805,6 +826,7 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
     const syncInterval = setInterval(autoSyncAndSettle, 2 * 60 * 1000);
     
     const dataInterval = setInterval(fetchData, 5 * 60 * 1000);
+    const claimablesInterval = setInterval(fetchClaimables, 60 * 1000); // Check claimables every minute
     const statusInterval = setInterval(fetchRunnerStatus, 10000); // Check status every 10s
     
     const channel = supabase
@@ -818,6 +840,7 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
       clearTimeout(initialSyncTimeout);
       clearInterval(syncInterval);
       clearInterval(dataInterval);
+      clearInterval(claimablesInterval);
       clearInterval(statusInterval);
       supabase.removeChannel(channel);
     };
@@ -1171,6 +1194,22 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
               </div>
             </CardContent>
           </Card>
+
+          {claimables.count > 0 && (
+            <Card className="bg-gradient-to-br from-yellow-500/5 to-yellow-500/10 border-yellow-500/20">
+              <CardContent className="p-2 md:pt-4 md:pb-3 md:px-4">
+                <div className="flex items-center gap-1 md:gap-2 text-yellow-500/70 text-[10px] md:text-xs mb-0.5 md:mb-1">
+                  <Gavel className="h-2.5 w-2.5 md:h-3 md:w-3" /> Claimable
+                </div>
+                <div className="text-base md:text-xl font-bold font-mono text-yellow-500">
+                  ${claimables.totalValue.toFixed(2)}
+                </div>
+                <div className="text-[10px] md:text-xs text-muted-foreground mt-0.5 md:mt-1">
+                  {claimables.count} won bets
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
 
         {/* Profit Stats - Row 3 */}
