@@ -323,13 +323,17 @@ export function classifyToxicity(
   dataQuality: 'GOOD' | 'SPARSE' | 'INSUFFICIENT',
   acceptancePercentile: number
 ): { classification: 'HEALTHY' | 'BORDERLINE' | 'TOXIC' | 'UNKNOWN'; decision: 'TRADE' | 'SKIP' | 'REDUCED' | 'PENDING'; confidence: 'LOW' | 'MEDIUM' | 'HIGH' } {
-  // Data quality gate (Section 6)
+  // BOOTSTRAP MODE (Section 7): When data is insufficient, we TRADE to collect data
+  // The filter only starts blocking after we have enough historical data to calibrate
   if (dataQuality === 'INSUFFICIENT') {
-    return { classification: 'UNKNOWN', decision: 'SKIP', confidence: 'LOW' };
+    // Bootstrap phase: TRADE anyway but with LOW confidence
+    // This allows us to collect outcome data for calibration
+    return { classification: 'UNKNOWN', decision: 'TRADE', confidence: 'LOW' };
   }
 
   if (dataQuality === 'SPARSE') {
-    return { classification: 'BORDERLINE', decision: 'REDUCED', confidence: 'LOW' };
+    // Some data but not ideal - proceed with caution
+    return { classification: 'BORDERLINE', decision: 'TRADE', confidence: 'LOW' };
   }
 
   // Percentile-based decision (Section 9)
