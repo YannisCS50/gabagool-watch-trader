@@ -1004,6 +1004,7 @@ async function pollMarkets(): Promise<void> {
 
 async function printStatus(): Promise<void> {
   const balance = await getBalance();
+  const balanceValue = (balance as any)?.usdc ?? 0;
 
   console.log('');
   console.log('═══════════════════════════════════════════════════════════════');
@@ -1011,7 +1012,7 @@ async function printStatus(): Promise<void> {
   console.log('═══════════════════════════════════════════════════════════════');
   console.log(`  Scheduled: ${scheduledTrades.size} markets`);
   console.log(`  Completed: ${completedMarkets.size} markets`);
-  console.log(`  Balance:   $${formatUsd(balance)}`);
+  console.log(`  Balance:   $${formatUsd(balanceValue)}`);
   console.log('═══════════════════════════════════════════════════════════════');
   console.log('');
 }
