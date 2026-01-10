@@ -269,8 +269,16 @@ export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps
                 <Calendar
                   mode="range"
                   selected={{ from: dateRange.from, to: dateRange.to }}
-                  onSelect={(range) => setDateRange({ from: range?.from, to: range?.to })}
+                  onSelect={(range) => {
+                    // Allow single day selection: if only from is selected, set to = from
+                    if (range?.from && !range?.to) {
+                      setDateRange({ from: range.from, to: range.from });
+                    } else {
+                      setDateRange({ from: range?.from, to: range?.to });
+                    }
+                  }}
                   numberOfMonths={1}
+                  min={1}
                   className={cn("p-3 pointer-events-auto")}
                 />
                 {isUsingDateRange && (
