@@ -306,11 +306,37 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
     // For streaks calculation
     const settledResults: ('WIN' | 'LOSS')[] = [];
 
-    const seen = new Set<string>();
+    // Choose one representative row per market_slug.
+    // The table can contain multiple rows per market (e.g. placed + later filled).
+    // If we dedupe by "first seen" we can accidentally pick the unfilled row and make the dashboard look empty.
+    const bestBySlug = new Map<string, V26Trade>();
 
-    for (const trade of tradesData) {
-      if (seen.has(trade.market_slug)) continue;
-      seen.add(trade.market_slug);
+    const tradeScore = (t: V26Trade) => {
+      const filledShares = t.filled_shares ?? 0;
+      const isFilled = (t.status ?? '').toLowerCase() === 'filled' || filledShares > 0;
+      const hasOrder = !!t.order_id;
+      const hasPnl = t.pnl !== null && t.pnl !== undefined;
+      const hasResult = !!t.result;
+
+      // Higher is better
+      return (
+        (isFilled ? 1_000_000 : 0) +
+        Math.round(filledShares * 10_000) +
+        (hasPnl ? 10_000 : 0) +
+        (hasResult ? 1_000 : 0) +
+        (hasOrder ? 100 : 0)
+      );
+    };
+
+    for (const t of tradesData) {
+      if (!t.market_slug) continue;
+      const prev = bestBySlug.get(t.market_slug);
+      if (!prev || tradeScore(t) > tradeScore(prev)) {
+        bestBySlug.set(t.market_slug, t);
+      }
+    }
+
+    for (const trade of bestBySlug.values()) {
 
       // Track placed orders per asset
       if (perAsset[trade.asset]) {
