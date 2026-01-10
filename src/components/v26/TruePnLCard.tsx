@@ -20,14 +20,9 @@ export function TruePnLCard() {
 
       const totalDeposits = deposits?.reduce((sum, d) => sum + Number(d.amount_usd), 0) || 0;
 
-      // Fetch latest funding snapshot for wallet balance
-      const { data: funding } = await supabase
-        .from("funding_snapshots")
-        .select("balance_total")
-        .order("ts", { ascending: false })
-        .limit(1);
-
-      const walletBalance = funding?.[0]?.balance_total || 0;
+      // Fetch CLOB balance from edge function
+      const { data: clobData } = await supabase.functions.invoke("get-clob-balance");
+      const clobBalance = clobData?.balance || 0;
 
       // Fetch open positions value from canonical_positions
       const { data: positions } = await supabase
@@ -37,8 +32,8 @@ export function TruePnLCard() {
 
       const openPositionsValue = positions?.reduce((sum, p) => sum + Number(p.total_cost_usd || 0), 0) || 0;
 
-      // Portfolio value = wallet balance + open positions value
-      const portfolioValue = walletBalance + openPositionsValue;
+      // Portfolio value = CLOB balance + open positions value
+      const portfolioValue = clobBalance + openPositionsValue;
 
       // True P&L = Portfolio Value - Total Deposits
       const truePnL = portfolioValue - totalDeposits;

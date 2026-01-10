@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -13,11 +14,23 @@ serve(async (req) => {
   }
 
   try {
-    const walletAddress = Deno.env.get("POLYMARKET_WALLET_ADDRESS");
+    // Get wallet address from bot_config
+    const supabase = createClient(
+      Deno.env.get("SUPABASE_URL")!,
+      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
+    );
+
+    const { data: config } = await supabase
+      .from("bot_config")
+      .select("polymarket_address")
+      .limit(1)
+      .single();
+
+    const walletAddress = config?.polymarket_address;
     
     if (!walletAddress) {
       return new Response(
-        JSON.stringify({ success: false, error: "POLYMARKET_WALLET_ADDRESS not configured" }),
+        JSON.stringify({ success: false, error: "No wallet address in bot_config" }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
