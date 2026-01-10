@@ -202,6 +202,19 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
   const fetchData = async () => {
     setLoading(true);
 
+    // Debug logging (opt-in). Enable by adding `?v26Debug=1` to the URL.
+    const debugV26 = (() => {
+      try {
+        return new URLSearchParams(window.location.search).has('v26Debug');
+      } catch {
+        return false;
+      }
+    })();
+
+    const debugLog = (...args: unknown[]) => {
+      if (debugV26) console.log(...args);
+    };
+
     const tradesRes = await supabase
       .from('v26_trades')
       .select('*')
@@ -290,7 +303,7 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
     // Fill time tracking
     const fillTimes: number[] = [];
     const entryOffsets: number[] = [];
-    
+
     // For streaks calculation
     const settledResults: ('WIN' | 'LOSS')[] = [];
 
@@ -308,8 +321,8 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
       const strike = strikeLookup.get(trade.market_slug);
       const strikePrice = strike?.strike_price ?? null;
       const closePrice = strike?.close_price ?? null;
-      const delta = strikePrice !== null && closePrice !== null 
-        ? closePrice - strikePrice 
+      const delta = strikePrice !== null && closePrice !== null
+        ? closePrice - strikePrice
         : null;
 
       const now = new Date();
@@ -317,7 +330,7 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
       const isEnded = eventEnd < now;
       const isFilled = trade.status === 'filled' || trade.filled_shares > 0;
       const filledShares = trade.filled_shares || 0;
-      
+
       // Track filled orders per asset
       if (isFilled && perAsset[trade.asset]) {
         perAsset[trade.asset].filled++;
@@ -368,12 +381,12 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
         // No order placed and no fills
         result = 'NOT_BOUGHT';
         resultSource = 'NOT_FILLED';
-        console.log(`${logId} Status = NOT_PLACED (no order_id, no fills)`);
+        debugLog(`${logId} Status = NOT_PLACED (no order_id, no fills)`);
       } else if (!isFilled) {
         // Order was placed but we got 0 fills (or the runner marked it as error)
         result = (trade.status ?? '').toLowerCase() === 'error' ? 'FAILED' : 'NO_FILL';
         resultSource = 'NOT_FILLED';
-        console.log(`${logId} Status = ${result} (order placed, 0 fill)`);
+        debugLog(`${logId} Status = ${result} (order placed, 0 fill)`);
       } else {
         const sideUpper = (trade.side ?? '').toUpperCase();
         const resultUpper = (tradeResult ?? '').toUpperCase();
@@ -382,10 +395,10 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
         if (tradePnl !== null && tradePnl !== 0) {
           if (tradePnl > 0) {
             settleWin('PNL');
-            console.log(`${logId} Result = WIN via pnl ($${tradePnl.toFixed(2)})`);
+            debugLog(`${logId} Result = WIN via pnl ($${tradePnl.toFixed(2)})`);
           } else {
             settleLoss('PNL');
-            console.log(`${logId} Result = LOSS via pnl ($${tradePnl.toFixed(2)})`);
+            debugLog(`${logId} Result = LOSS via pnl ($${tradePnl.toFixed(2)})`);
           }
         }
         // PRIORITY 2: Market not ended yet -> LIVE
@@ -394,7 +407,7 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
           resultSource = 'LIVE';
           totalLive++;
           addFilledAccounting();
-          console.log(`${logId} Status = LIVE (market not ended)`);
+          debugLog(`${logId} Status = LIVE (market not ended)`);
         }
         // PRIORITY 3: pnl = 0 and market ended - ambiguous, check other sources
         else if (tradePnl === 0) {
@@ -402,27 +415,27 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
           if (resultUpper === 'UP' || resultUpper === 'DOWN') {
             if (sideUpper && sideUpper === resultUpper) {
               settleWin('RESULT');
-              console.log(`${logId} Result = WIN via result (pnl=0 but result=${resultUpper})`);
+              debugLog(`${logId} Result = WIN via result (pnl=0 but result=${resultUpper})`);
             } else {
               settleLoss('RESULT');
-              console.log(`${logId} Result = LOSS via result (pnl=0 but result=${resultUpper})`);
+              debugLog(`${logId} Result = LOSS via result (pnl=0 but result=${resultUpper})`);
             }
           } else {
             result = 'PENDING';
             resultSource = 'UNKNOWN';
             totalPending++;
             addFilledAccounting();
-            console.log(`${logId} Status = PENDING (pnl=0, no result data)`);
+            debugLog(`${logId} Status = PENDING (pnl=0, no result data)`);
           }
         }
         // PRIORITY 4: Backend stored market winning side (UP/DOWN)
         else if (resultUpper === 'UP' || resultUpper === 'DOWN') {
           if (sideUpper && sideUpper === resultUpper) {
             settleWin('RESULT');
-            console.log(`${logId} Result = WIN via result (${sideUpper} === ${resultUpper})`);
+            debugLog(`${logId} Result = WIN via result (${sideUpper} === ${resultUpper})`);
           } else {
             settleLoss('RESULT');
-            console.log(`${logId} Result = LOSS via result (${sideUpper} !== ${resultUpper})`);
+            debugLog(`${logId} Result = LOSS via result (${sideUpper} !== ${resultUpper})`);
           }
         }
         // PRIORITY 5: Fallback - infer winner from close-vs-strike delta
@@ -432,15 +445,15 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
             resultSource = 'UNKNOWN';
             totalPending++;
             addFilledAccounting();
-            console.log(`${logId} Status = PENDING (delta=0, ambiguous)`);
+            debugLog(`${logId} Status = PENDING (delta=0, ambiguous)`);
           } else {
             const winningSide = delta < 0 ? 'DOWN' : 'UP';
             if (sideUpper && sideUpper === winningSide) {
               settleWin('DELTA');
-              console.log(`${logId} Result = WIN via delta fallback (delta=${delta.toFixed(2)} → ${winningSide})`);
+              debugLog(`${logId} Result = WIN via delta fallback (delta=${delta.toFixed(2)} → ${winningSide})`);
             } else {
               settleLoss('DELTA');
-              console.log(`${logId} Result = LOSS via delta fallback (delta=${delta.toFixed(2)} → ${winningSide})`);
+              debugLog(`${logId} Result = LOSS via delta fallback (delta=${delta.toFixed(2)} → ${winningSide})`);
             }
           }
         } else {
@@ -448,13 +461,13 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
           resultSource = 'UNKNOWN';
           totalPending++;
           addFilledAccounting();
-          console.log(`${logId} Status = PENDING (no pnl, no result, no delta)`);
+          debugLog(`${logId} Status = PENDING (no pnl, no result, no delta)`);
         }
       }
 
       // Use stored pnl from database, or calculate if result is known
       let pnl: number | null = tradePnl;
-      
+
       // If pnl is null but we have a settled result, calculate it
       // WIN: shares × $1 - cost, LOSS: $0 - cost
       if (pnl === null && (result === 'WIN' || result === 'LOSS') && filledShares > 0) {
