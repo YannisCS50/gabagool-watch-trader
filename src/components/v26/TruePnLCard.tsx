@@ -34,21 +34,28 @@ export function TruePnLCard() {
 
       const clobBalance = heartbeat?.balance || 0;
 
-      // Fetch open orders value (orders that are placed and reserving funds)
-      const { data: openOrders } = await supabase
-        .from("order_queue")
-        .select("price, shares")
+      // Fetch open orders value from v26_trades (status = 'placed')
+      const { data: placedOrders } = await supabase
+        .from("v26_trades")
+        .select("notional")
         .eq("status", "placed");
 
-      const openOrdersValue = openOrders?.reduce((sum, o) => sum + (Number(o.price) * Number(o.shares)), 0) || 0;
+      const openOrdersValue = placedOrders?.reduce((sum, o) => sum + Number(o.notional || 0), 0) || 0;
 
-      // Fetch open positions value from canonical_positions (running bets)
-      const { data: positions } = await supabase
-        .from("canonical_positions")
-        .select("total_cost_usd")
-        .eq("state", "OPEN");
+      // Fetch running bets value from v26_trades (status = 'filled' and not yet settled)
+      const { data: runningBets } = await supabase
+        .from("v26_trades")
+        .select("filled_shares, avg_fill_price, notional")
+        .eq("status", "filled")
+        .is("settled_at", null);
 
-      const openPositionsValue = positions?.reduce((sum, p) => sum + Number(p.total_cost_usd || 0), 0) || 0;
+      const openPositionsValue = runningBets?.reduce((sum, t) => {
+        // Use actual fill cost if available, otherwise use notional
+        const cost = t.filled_shares && t.avg_fill_price 
+          ? Number(t.filled_shares) * Number(t.avg_fill_price)
+          : Number(t.notional || 0);
+        return sum + cost;
+      }, 0) || 0;
 
       // Portfolio value = CLOB balance + open orders + open positions
       const portfolioValue = clobBalance + openOrdersValue + openPositionsValue;
