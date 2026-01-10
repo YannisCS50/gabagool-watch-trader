@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
-import { TrendingUp, TrendingDown, DollarSign, BarChart3 } from "lucide-react";
+import { TrendingUp, TrendingDown, DollarSign, BarChart3, Gavel } from "lucide-react";
 import { TruePnLModal } from "./TruePnLModal";
 
 interface TruePnLData {
@@ -9,6 +9,8 @@ interface TruePnLData {
   clobBalance: number;
   openOrdersValue: number;
   openPositionsValue: number;
+  claimableValue: number;
+  claimableCount: number;
   portfolioValue: number;
   truePnL: number;
   truePnLPercent: number;
@@ -61,14 +63,27 @@ export function TruePnLCard() {
         return sum + cost;
       }, 0) || 0;
 
-      // Portfolio value = CLOB balance + open orders + open positions
-      const portfolioValue = clobBalance + openOrdersValue + openPositionsValue;
+      // Fetch claimable value from Polymarket API
+      let claimableValue = 0;
+      let claimableCount = 0;
+      try {
+        const { data: claimablesData } = await supabase.functions.invoke('get-claimables');
+        if (claimablesData?.success && claimablesData?.summary) {
+          claimableValue = claimablesData.summary.totalValue || 0;
+          claimableCount = claimablesData.summary.count || 0;
+        }
+      } catch (err) {
+        console.error('Failed to fetch claimables:', err);
+      }
+
+      // Portfolio value = CLOB balance + open orders + open positions + claimables
+      const portfolioValue = clobBalance + openOrdersValue + openPositionsValue + claimableValue;
 
       // True P&L = Portfolio Value - Total Deposits
       const truePnL = portfolioValue - totalDeposits;
       const truePnLPercent = totalDeposits > 0 ? (truePnL / totalDeposits) * 100 : 0;
 
-      return { totalDeposits, clobBalance, openOrdersValue, openPositionsValue, portfolioValue, truePnL, truePnLPercent };
+      return { totalDeposits, clobBalance, openOrdersValue, openPositionsValue, claimableValue, claimableCount, portfolioValue, truePnL, truePnLPercent };
     },
     refetchInterval: 30000,
   });
@@ -84,6 +99,8 @@ export function TruePnLCard() {
   const clobBalance = data?.clobBalance ?? 0;
   const openOrdersValue = data?.openOrdersValue ?? 0;
   const openPositionsValue = data?.openPositionsValue ?? 0;
+  const claimableValue = data?.claimableValue ?? 0;
+  const claimableCount = data?.claimableCount ?? 0;
   const hasClobBalance = clobBalance > 0;
   
   const isPositive = (data?.truePnL ?? 0) >= 0;
@@ -114,6 +131,13 @@ export function TruePnLCard() {
           <span className="text-muted-foreground">Running Bets:</span>
           <span className="font-medium">${openPositionsValue.toLocaleString()}</span>
         </div>
+        {claimableValue > 0 && (
+          <div className="flex items-center gap-2">
+            <Gavel className="h-4 w-4 text-yellow-500" />
+            <span className="text-muted-foreground">Claimable:</span>
+            <span className="font-medium text-yellow-500">${claimableValue.toLocaleString()} ({claimableCount})</span>
+          </div>
+        )}
         {hasClobBalance ? (
           <>
             <div className="flex items-center gap-2">
