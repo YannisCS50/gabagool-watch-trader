@@ -112,8 +112,8 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      // Determine result: UP if close > strike, DOWN if close <= strike
-      const result: 'UP' | 'DOWN' = oracle.close_price > oracle.strike_price ? 'UP' : 'DOWN';
+      // Determine result: UP if close >= strike (per Polymarket rules), DOWN if close < strike
+      const result: 'UP' | 'DOWN' = oracle.close_price >= oracle.strike_price ? 'UP' : 'DOWN';
 
       // Calculate PnL
       const didWin = trade.side === result;
