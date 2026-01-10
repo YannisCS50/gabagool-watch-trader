@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { DownloadV26LogicButton } from '@/components/DownloadV26LogicButton';
 import { DownloadXrpSolUrlsButton } from '@/components/v26/DownloadXrpSolUrlsButton';
+import { DownloadTodayTicksButton } from '@/components/v26/DownloadTodayTicksButton';
 import { CsvResultsUploader } from '@/components/v26/CsvResultsUploader';
 import { V26StrategyModal } from '@/components/V26StrategyModal';
 import { V26OracleSettleModal } from '@/components/V26OracleSettleModal';
@@ -1061,6 +1062,9 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
             </div>
             <div className="shrink-0">
               <DownloadV26LogicButton />
+            </div>
+            <div className="shrink-0">
+              <DownloadTodayTicksButton />
             </div>
             <div className="shrink-0">
               <V26StrategyModal />
