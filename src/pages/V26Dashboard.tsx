@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { 
   ArrowLeft, TrendingUp, TrendingDown, DollarSign, Target, Percent,
   Clock, Zap, BarChart3, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ExternalLink,
-  CheckCircle2, XCircle, Flame, Activity, Wifi, WifiOff, Gavel, Database, Download
+  CheckCircle2, XCircle, Flame, Activity, Wifi, WifiOff, Gavel, Database, Download, RefreshCw
 } from 'lucide-react';
 import { DownloadV26LogicButton } from '@/components/DownloadV26LogicButton';
 import { DownloadXrpSolUrlsButton } from '@/components/v26/DownloadXrpSolUrlsButton';
@@ -981,6 +981,19 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
           
           {/* Action buttons - scrollable on mobile */}
           <div className="flex items-center gap-2 overflow-x-auto pb-2 -mx-4 px-4 md:mx-0 md:px-0 scrollbar-thin">
+            <Button 
+              variant="outline" 
+              size="sm" 
+              onClick={() => {
+                fetchData();
+                fetchRunnerStatus();
+              }}
+              disabled={loading}
+              className="shrink-0"
+            >
+              <RefreshCw className={`h-4 w-4 md:mr-2 ${loading ? 'animate-spin' : ''}`} />
+              <span className="hidden md:inline">Ververs</span>
+            </Button>
             <Button 
               variant="outline" 
               size="sm" 
