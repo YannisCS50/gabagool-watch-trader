@@ -627,8 +627,8 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
 }
 
 async function checkAndCancelOrder(scheduled: ScheduledTrade, attempt: number = 0): Promise<void> {
-  const MAX_CANCEL_ATTEMPTS = 10; // Retry up to 10 times (30 seconds total)
-  const CANCEL_RETRY_DELAY_MS = 3000; // 3 seconds between retries
+  const MAX_CANCEL_ATTEMPTS = 5; // Reduced from 10 - most issues are permanent
+  const CANCEL_RETRY_DELAY_MS = 2000; // 2 seconds between retries
   
   const { market, trade, orderId } = scheduled;
   const key = `${market.id}:${market.asset}`;
@@ -642,10 +642,34 @@ async function checkAndCancelOrder(scheduled: ScheduledTrade, attempt: number = 
   try {
     log(`⏰ [${market.asset}] Checking fill status before cancel (attempt ${attempt + 1}/${MAX_CANCEL_ATTEMPTS})...`);
 
+    // STEP 1: Always check order status first
     const before = await getOrderFillInfo(orderId);
     const matchedBefore = before.success ? (before.filledSize ?? 0) : 0;
 
-    if (before.success && matchedBefore > 0) {
+    // Handle case where order doesn't exist or can't be found
+    if (!before.success) {
+      // Order not found - likely already cancelled or filled and removed from system
+      log(`⚠️ [${market.asset}] Order not found in system (${before.error}) - treating as already cancelled`);
+      
+      // Check if we had any fills recorded previously
+      if (trade.filledShares > 0) {
+        trade.status = 'filled';
+        if (trade.id) {
+          await updateV26Trade(trade.id, { status: 'filled' });
+        }
+        scheduleSettlement(market, trade);
+      } else {
+        trade.status = 'cancelled';
+        if (trade.id) {
+          await updateV26Trade(trade.id, { status: 'cancelled' });
+        }
+      }
+      completedMarkets.add(key);
+      scheduledTrades.delete(key);
+      return;
+    }
+
+    if (matchedBefore > 0) {
       const previousFilled = trade.filledShares;
       trade.filledShares = matchedBefore;
       trade.avgFillPrice = trade.avgFillPrice ?? trade.price;
@@ -683,9 +707,39 @@ async function checkAndCancelOrder(scheduled: ScheduledTrade, attempt: number = 
       log(`✓ [${market.asset}] Partial fill detected (${matchedBefore}/${before.originalSize ?? V26_CONFIG.shares}); will cancel remainder.`);
     }
 
-    // Try to cancel any remainder
+    // STEP 2: Try to cancel any remainder
     log(`⏰ [${market.asset}] Attempting to cancel order ${V26_CONFIG.cancelAfterStartSec}s after market start`);
     const cancelResult = await cancelOrder(orderId);
+
+    // STEP 3: Check for "Invalid order payload" - this means order no longer exists
+    // This is NOT an error - the order was already processed (filled/cancelled)
+    const isOrderGone = cancelResult.error && (
+      cancelResult.error.includes('Invalid order payload') ||
+      cancelResult.error.includes('Order not found') ||
+      cancelResult.error.includes('order does not exist') ||
+      cancelResult.error.includes('404')
+    );
+
+    if (isOrderGone) {
+      log(`✓ [${market.asset}] Order no longer exists in system - treating as successfully handled`);
+      
+      // Final check for fills
+      if (matchedBefore > 0 || trade.filledShares > 0) {
+        trade.status = 'filled';
+        if (trade.id) {
+          await updateV26Trade(trade.id, { status: 'filled' });
+        }
+        scheduleSettlement(market, trade);
+      } else {
+        trade.status = 'cancelled';
+        if (trade.id) {
+          await updateV26Trade(trade.id, { status: 'cancelled' });
+        }
+      }
+      completedMarkets.add(key);
+      scheduledTrades.delete(key);
+      return;
+    }
 
     // Re-check after cancel (it may have filled between calls)
     const after = await getOrderFillInfo(orderId);
@@ -730,7 +784,7 @@ async function checkAndCancelOrder(scheduled: ScheduledTrade, attempt: number = 
           await updateV26Trade(trade.id, { status: 'cancelled' });
         }
       } else {
-        // Cancel failed - RETRY if we haven't exceeded max attempts
+        // Cancel failed with a real error - RETRY if we haven't exceeded max attempts
         if (attempt < MAX_CANCEL_ATTEMPTS - 1) {
           log(`⚠️ [${market.asset}] Cancel failed (${cancelResult.error}), retrying in ${CANCEL_RETRY_DELAY_MS / 1000}s... (attempt ${attempt + 1}/${MAX_CANCEL_ATTEMPTS})`);
           setTimeout(() => {
@@ -738,15 +792,26 @@ async function checkAndCancelOrder(scheduled: ScheduledTrade, attempt: number = 
           }, CANCEL_RETRY_DELAY_MS);
           return; // Don't mark as completed yet, we're retrying
         } else {
-          // All retries exhausted - log error and mark as error state
-          logError(`[${market.asset}] CRITICAL: Failed to cancel order after ${MAX_CANCEL_ATTEMPTS} attempts! Order may still be open: ${orderId}`);
-          trade.status = 'error';
-          trade.errorMessage = `Cancel failed after ${MAX_CANCEL_ATTEMPTS} attempts: ${cancelResult.error}`;
-          if (trade.id) {
-            await updateV26Trade(trade.id, { 
-              status: 'error', 
-              errorMessage: trade.errorMessage 
-            });
+          // All retries exhausted - but still try to determine final state
+          log(`⚠️ [${market.asset}] Cancel retries exhausted, determining final state...`);
+          
+          // If we have fills, consider it a success (filled/partial)
+          if (matchedBefore > 0 || trade.filledShares > 0) {
+            trade.status = trade.filledShares >= (trade.shares ?? 10) ? 'filled' : 'partial';
+            if (trade.id) {
+              await updateV26Trade(trade.id, { status: trade.status });
+            }
+            scheduleSettlement(market, trade);
+          } else {
+            // No fills, mark as error but don't spam logs
+            trade.status = 'error';
+            trade.errorMessage = `Cancel failed after ${MAX_CANCEL_ATTEMPTS} attempts: ${cancelResult.error}`;
+            if (trade.id) {
+              await updateV26Trade(trade.id, { 
+                status: 'error', 
+                errorMessage: trade.errorMessage 
+              });
+            }
           }
         }
       }
@@ -754,13 +819,22 @@ async function checkAndCancelOrder(scheduled: ScheduledTrade, attempt: number = 
   } catch (err) {
     logError(`[${market.asset}] Error checking/cancelling order`, err);
     
-    // Retry on exception too
+    // Retry on exception - but fewer times
     if (attempt < MAX_CANCEL_ATTEMPTS - 1) {
       log(`⚠️ [${market.asset}] Exception during cancel, retrying in ${CANCEL_RETRY_DELAY_MS / 1000}s...`);
       setTimeout(() => {
         void checkAndCancelOrder(scheduled, attempt + 1);
       }, CANCEL_RETRY_DELAY_MS);
       return;
+    } else {
+      // Final attempt failed - mark based on what we know
+      if (trade.filledShares > 0) {
+        trade.status = 'filled';
+        if (trade.id) {
+          await updateV26Trade(trade.id, { status: 'filled' });
+        }
+        scheduleSettlement(market, trade);
+      }
     }
   }
 
