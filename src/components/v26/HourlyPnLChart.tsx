@@ -9,6 +9,7 @@ interface TradeLog {
   pnl: number | null;
   eventStartTime: string;
   total: number;
+  side: string; // UP or DOWN
 }
 
 interface HourlyPnLChartProps {
@@ -24,6 +25,8 @@ interface HourlyData {
   losses: number;
   trades: number;
   invested: number;
+  upBets: number;
+  downBets: number;
 }
 
 export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps) {
@@ -43,6 +46,8 @@ export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps
         losses: 0,
         trades: 0,
         invested: 0,
+        upBets: 0,
+        downBets: 0,
       });
     }
 
@@ -65,6 +70,13 @@ export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps
         } else if (trade.result === 'LOSS') {
           bucket.losses++;
         }
+        // Track UP/DOWN side
+        const side = (trade.side ?? '').toUpperCase();
+        if (side === 'UP') {
+          bucket.upBets++;
+        } else if (side === 'DOWN') {
+          bucket.downBets++;
+        }
       }
     }
 
@@ -80,6 +92,13 @@ export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps
     const bestHour = withTrades.reduce((best, h) => h.pnl > best.pnl ? h : best, { pnl: -Infinity, hourLabel: '-' });
     const worstHour = withTrades.reduce((worst, h) => h.pnl < worst.pnl ? h : worst, { pnl: Infinity, hourLabel: '-' });
 
+    // Calculate Up/Down distribution
+    const totalUp = hourlyData.reduce((sum, h) => sum + h.upBets, 0);
+    const totalDown = hourlyData.reduce((sum, h) => sum + h.downBets, 0);
+    const totalBets = totalUp + totalDown;
+    const upPct = totalBets > 0 ? (totalUp / totalBets) * 100 : 0;
+    const downPct = totalBets > 0 ? (totalDown / totalBets) * 100 : 0;
+
     return {
       totalPnl,
       profitableHours,
@@ -88,6 +107,10 @@ export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps
       bestHour: bestHour.pnl !== -Infinity ? bestHour : null,
       worstHour: worstHour.pnl !== Infinity ? worstHour : null,
       totalHoursWithTrades: withTrades.length,
+      totalUp,
+      totalDown,
+      upPct,
+      downPct,
     };
   }, [hourlyData]);
 
@@ -106,6 +129,11 @@ export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground mt-1">
           <span>Avg/hr: <span className={summary.avgPnlPerHour >= 0 ? 'text-green-500' : 'text-red-500'}>${summary.avgPnlPerHour.toFixed(2)}</span></span>
           <span>📈 {summary.profitableHours} / 📉 {summary.losingHours}</span>
+          <span>
+            <span className="text-green-500">⬆ {summary.upPct.toFixed(0)}%</span>
+            {' / '}
+            <span className="text-red-500">⬇ {summary.downPct.toFixed(0)}%</span>
+          </span>
           {summary.bestHour && <span>Best: {summary.bestHour.hourLabel} (+${summary.bestHour.pnl.toFixed(2)})</span>}
           {summary.worstHour && <span>Worst: {summary.worstHour.hourLabel} (${summary.worstHour.pnl.toFixed(2)})</span>}
         </div>
@@ -146,6 +174,9 @@ export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps
                     </p>
                     <p className="text-muted-foreground">
                       {data.wins}W / {data.losses}L ({data.trades} trades)
+                    </p>
+                    <p className="text-muted-foreground">
+                      ⬆ {data.upBets} / ⬇ {data.downBets}
                     </p>
                     <p className="text-muted-foreground">
                       Invested: ${data.invested.toFixed(2)}
