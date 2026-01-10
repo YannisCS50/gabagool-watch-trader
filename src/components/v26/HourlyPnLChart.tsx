@@ -9,7 +9,8 @@ interface TradeLog {
   pnl: number | null;
   eventStartTime: string;
   total: number;
-  side: string; // UP or DOWN
+  side: string; // UP or DOWN (bet side)
+  marketOutcome?: string; // UP or DOWN (winning side)
 }
 
 interface HourlyPnLChartProps {
@@ -27,6 +28,8 @@ interface HourlyData {
   invested: number;
   upBets: number;
   downBets: number;
+  upOutcomes: number;   // Markets where UP won
+  downOutcomes: number; // Markets where DOWN won
 }
 
 export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps) {
@@ -48,6 +51,8 @@ export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps
         invested: 0,
         upBets: 0,
         downBets: 0,
+        upOutcomes: 0,
+        downOutcomes: 0,
       });
     }
 
@@ -70,12 +75,30 @@ export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps
         } else if (trade.result === 'LOSS') {
           bucket.losses++;
         }
-        // Track UP/DOWN side
+        // Track UP/DOWN bet side
         const side = (trade.side ?? '').toUpperCase();
         if (side === 'UP') {
           bucket.upBets++;
         } else if (side === 'DOWN') {
           bucket.downBets++;
+        }
+        
+        // Track market outcome (which side won)
+        // If we have explicit marketOutcome, use that
+        // Otherwise derive: if we bet DOWN and won, DOWN won. If we bet DOWN and lost, UP won.
+        let outcome = (trade.marketOutcome ?? '').toUpperCase();
+        if (!outcome && (trade.result === 'WIN' || trade.result === 'LOSS')) {
+          const betSide = side;
+          if (trade.result === 'WIN') {
+            outcome = betSide; // We won, so our side won
+          } else {
+            outcome = betSide === 'UP' ? 'DOWN' : 'UP'; // We lost, so opposite side won
+          }
+        }
+        if (outcome === 'UP') {
+          bucket.upOutcomes++;
+        } else if (outcome === 'DOWN') {
+          bucket.downOutcomes++;
         }
       }
     }
@@ -92,12 +115,12 @@ export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps
     const bestHour = withTrades.reduce((best, h) => h.pnl > best.pnl ? h : best, { pnl: -Infinity, hourLabel: '-' });
     const worstHour = withTrades.reduce((worst, h) => h.pnl < worst.pnl ? h : worst, { pnl: Infinity, hourLabel: '-' });
 
-    // Calculate Up/Down distribution
-    const totalUp = hourlyData.reduce((sum, h) => sum + h.upBets, 0);
-    const totalDown = hourlyData.reduce((sum, h) => sum + h.downBets, 0);
-    const totalBets = totalUp + totalDown;
-    const upPct = totalBets > 0 ? (totalUp / totalBets) * 100 : 0;
-    const downPct = totalBets > 0 ? (totalDown / totalBets) * 100 : 0;
+    // Calculate Up/Down OUTCOME distribution (which side won the market)
+    const totalUpOutcomes = hourlyData.reduce((sum, h) => sum + h.upOutcomes, 0);
+    const totalDownOutcomes = hourlyData.reduce((sum, h) => sum + h.downOutcomes, 0);
+    const totalOutcomes = totalUpOutcomes + totalDownOutcomes;
+    const upOutcomePct = totalOutcomes > 0 ? (totalUpOutcomes / totalOutcomes) * 100 : 0;
+    const downOutcomePct = totalOutcomes > 0 ? (totalDownOutcomes / totalOutcomes) * 100 : 0;
 
     return {
       totalPnl,
@@ -107,10 +130,10 @@ export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps
       bestHour: bestHour.pnl !== -Infinity ? bestHour : null,
       worstHour: worstHour.pnl !== Infinity ? worstHour : null,
       totalHoursWithTrades: withTrades.length,
-      totalUp,
-      totalDown,
-      upPct,
-      downPct,
+      totalUpOutcomes,
+      totalDownOutcomes,
+      upOutcomePct,
+      downOutcomePct,
     };
   }, [hourlyData]);
 
@@ -129,10 +152,10 @@ export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground mt-1">
           <span>Avg/hr: <span className={summary.avgPnlPerHour >= 0 ? 'text-green-500' : 'text-red-500'}>${summary.avgPnlPerHour.toFixed(2)}</span></span>
           <span>📈 {summary.profitableHours} / 📉 {summary.losingHours}</span>
-          <span>
-            <span className="text-green-500">⬆ {summary.upPct.toFixed(0)}%</span>
+          <span title="Market outcomes (48h)">
+            <span className="text-green-500">⬆ {summary.upOutcomePct.toFixed(0)}%</span>
             {' / '}
-            <span className="text-red-500">⬇ {summary.downPct.toFixed(0)}%</span>
+            <span className="text-red-500">⬇ {summary.downOutcomePct.toFixed(0)}%</span>
           </span>
           {summary.bestHour && <span>Best: {summary.bestHour.hourLabel} (+${summary.bestHour.pnl.toFixed(2)})</span>}
           {summary.worstHour && <span>Worst: {summary.worstHour.hourLabel} (${summary.worstHour.pnl.toFixed(2)})</span>}
