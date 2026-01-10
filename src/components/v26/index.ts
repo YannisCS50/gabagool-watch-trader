@@ -11,3 +11,4 @@ export { CashflowDiagnostics } from './CashflowDiagnostics';
 export { DailyPnLChart } from './DailyPnLChart';
 export { DailyPnLTable } from './DailyPnLTable';
 export { AccountPnLSummary } from './AccountPnLSummary';
+export { DownloadTodayTicksButton } from './DownloadTodayTicksButton';
