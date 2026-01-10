@@ -5,7 +5,7 @@ import { format, startOfHour, subHours } from 'date-fns';
 import { TrendingUp, TrendingDown } from 'lucide-react';
 
 interface TradeLog {
-  result: 'WIN' | 'LOSS' | 'LIVE' | 'PENDING' | 'NOT_BOUGHT' | 'NO_FILL' | 'FAILED';
+  result: string;
   pnl: number | null;
   eventStartTime: string;
   total: number;
