@@ -122,6 +122,12 @@ export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps
     const upOutcomePct = totalOutcomes > 0 ? (totalUpOutcomes / totalOutcomes) * 100 : 0;
     const downOutcomePct = totalOutcomes > 0 ? (totalDownOutcomes / totalOutcomes) * 100 : 0;
 
+    // Calculate Win/Loss ratio
+    const totalWins = hourlyData.reduce((sum, h) => sum + h.wins, 0);
+    const totalLosses = hourlyData.reduce((sum, h) => sum + h.losses, 0);
+    const totalTrades = totalWins + totalLosses;
+    const winRate = totalTrades > 0 ? (totalWins / totalTrades) * 100 : 0;
+
     return {
       totalPnl,
       profitableHours,
@@ -134,6 +140,9 @@ export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps
       totalDownOutcomes,
       upOutcomePct,
       downOutcomePct,
+      totalWins,
+      totalLosses,
+      winRate,
     };
   }, [hourlyData]);
 
@@ -151,11 +160,14 @@ export function HourlyPnLChart({ trades, hoursToShow = 24 }: HourlyPnLChartProps
         </div>
         <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground mt-1">
           <span>Avg/hr: <span className={summary.avgPnlPerHour >= 0 ? 'text-green-500' : 'text-red-500'}>${summary.avgPnlPerHour.toFixed(2)}</span></span>
-          <span>📈 {summary.profitableHours} / 📉 {summary.losingHours}</span>
-          <span title="Market outcomes (48h)">
-            <span className="text-green-500">⬆ {summary.upOutcomePct.toFixed(0)}%</span>
+          <span title="Win/Loss ratio">
+            W/L: <span className={summary.winRate >= 50 ? 'text-green-500' : 'text-red-500'}>{summary.winRate.toFixed(0)}%</span>
+            <span className="text-muted-foreground/70"> ({summary.totalWins}W/{summary.totalLosses}L)</span>
+          </span>
+          <span title="Market outcomes - which side won">
+            Mkt: <span className="text-green-500">⬆{summary.upOutcomePct.toFixed(0)}%</span>
             {' / '}
-            <span className="text-red-500">⬇ {summary.downOutcomePct.toFixed(0)}%</span>
+            <span className="text-red-500">⬇{summary.downOutcomePct.toFixed(0)}%</span>
           </span>
           {summary.bestHour && <span>Best: {summary.bestHour.hourLabel} (+${summary.bestHour.pnl.toFixed(2)})</span>}
           {summary.worstHour && <span>Worst: {summary.worstHour.hourLabel} (${summary.worstHour.pnl.toFixed(2)})</span>}
