@@ -1037,9 +1037,12 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
     }
 
     const rawBalance = result?.balance ?? result?.available_balance ?? '0';
-    const balance = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
+    const rawValue = typeof rawBalance === 'number' ? rawBalance : parseFloat(String(rawBalance));
+    
+    // USDC has 6 decimals - if balance seems unreasonably high (>1M), it's likely in micro-units
+    const balance = rawValue > 1_000_000 ? rawValue / 1_000_000 : rawValue;
 
-    console.log(`💰 CLOB Balance: $${balance.toFixed(2)} USDC`);
+    console.log(`💰 CLOB Balance: $${balance.toFixed(2)} USDC (raw: ${rawValue})`);
     balanceCache = { usdc: balance, fetchedAt: Date.now() };
     return { usdc: balance };
   } catch (error: any) {
