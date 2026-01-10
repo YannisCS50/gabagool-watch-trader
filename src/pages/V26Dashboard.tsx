@@ -1,9 +1,9 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
-  ArrowLeft, RefreshCw, TrendingUp, TrendingDown, DollarSign, Target, Percent,
+  ArrowLeft, TrendingUp, TrendingDown, DollarSign, Target, Percent,
   Clock, Zap, BarChart3, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, ExternalLink,
-  Upload, CheckCircle2, XCircle, Flame, Activity, Wifi, WifiOff, Gavel, Database, Download
+  CheckCircle2, XCircle, Flame, Activity, Wifi, WifiOff, Gavel, Database, Download
 } from 'lucide-react';
 import { DownloadV26LogicButton } from '@/components/DownloadV26LogicButton';
 import { V26StrategyModal } from '@/components/V26StrategyModal';
@@ -103,10 +103,7 @@ export default function V26Dashboard() {
 const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
   const [statusFilter, setStatusFilter] = useState<typeof STATUSES[number]>('ALL');
   const [loading, setLoading] = useState(true);
-  const [syncing, setSyncing] = useState(false);
-  const [uploadingSyncing, setUploadingSyncing] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
-  const fileInputRef = useRef<HTMLInputElement>(null);
   const [stats, setStats] = useState({
     totalBets: 0,
     filledBets: 0,
@@ -719,54 +716,6 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
     setLoading(false);
   };
 
-  const syncFills = async () => {
-    setSyncing(true);
-    try {
-      const { data, error } = await supabase.functions.invoke('v26-sync-fills');
-      if (error) {
-        console.error('[V26Dashboard] Sync failed:', error);
-      } else {
-        console.log('[V26Dashboard] Sync result:', data);
-        // Refresh data after sync
-        await fetchData();
-      }
-    } catch (err) {
-      console.error('[V26Dashboard] Sync error:', err);
-    } finally {
-      setSyncing(false);
-    }
-  };
-
-  const handleCsvUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    setUploadingSyncing(true);
-    try {
-      const csvContent = await file.text();
-      console.log('[V26Dashboard] Uploading CSV with', csvContent.split('\n').length, 'lines');
-
-      const { data, error } = await supabase.functions.invoke('v26-sync-csv', {
-        body: { csv: csvContent },
-      });
-
-      if (error) {
-        console.error('[V26Dashboard] CSV sync failed:', error);
-      } else {
-        console.log('[V26Dashboard] CSV sync result:', data);
-        await fetchData();
-      }
-    } catch (err) {
-      console.error('[V26Dashboard] CSV sync error:', err);
-    } finally {
-      setUploadingSyncing(false);
-      // Reset file input
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
-    }
-  };
-
   const fetchRunnerStatus = async () => {
     const { data, error } = await supabase
       .from('runner_heartbeats')
@@ -1019,30 +968,9 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
                 <span className="hidden md:inline">Polymarket</span>
               </a>
             </Button>
-            <input
-              type="file"
-              accept=".csv"
-              onChange={handleCsvUpload}
-              ref={fileInputRef}
-              className="hidden"
-            />
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={uploadingSyncing || loading}
-              onClick={() => fileInputRef.current?.click()}
-              className="shrink-0"
-            >
-              <Upload className={`h-4 w-4 md:mr-2 ${uploadingSyncing ? 'animate-pulse' : ''}`} />
-              <span className="hidden md:inline">{uploadingSyncing ? 'Syncing...' : 'CSV'}</span>
-            </Button>
-            <Button onClick={syncFills} variant="outline" size="sm" disabled={syncing || loading} className="shrink-0">
-              <RefreshCw className={`h-4 w-4 md:mr-2 ${syncing ? 'animate-spin' : ''}`} />
-              <span className="hidden md:inline">Sync</span>
-            </Button>
-            <Button onClick={fetchData} variant="outline" size="sm" disabled={loading} className="shrink-0">
-              <RefreshCw className={`h-4 w-4 md:mr-2 ${loading ? 'animate-spin' : ''}`} />
-              <span className="hidden md:inline">Refresh</span>
+            <Button onClick={() => setOracleModalOpen(true)} variant="outline" size="sm" className="shrink-0">
+              <Gavel className="h-4 w-4 md:mr-2" />
+              <span className="hidden md:inline">Settle</span>
             </Button>
             <Button onClick={() => setOracleModalOpen(true)} variant="outline" size="sm" className="shrink-0">
               <Gavel className="h-4 w-4 md:mr-2" />
