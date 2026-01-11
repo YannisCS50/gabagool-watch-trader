@@ -555,9 +555,12 @@ export class ShadowEngine {
       logType,
     };
     
-    // 8. PERSIST TO DATABASE (based on log type)
-    // Only persist full snapshots and event-driven logs to reduce DB load
-    if (logType === 'FULL_SNAPSHOT' || logType === 'EVENT_DRIVEN') {
+    // 8. PERSIST TO DATABASE
+    // Persist FULL_SNAPSHOT, EVENT_DRIVEN, and also every 10th HEARTBEAT for visibility
+    const shouldPersist = logType === 'FULL_SNAPSHOT' || 
+                          logType === 'EVENT_DRIVEN' || 
+                          (this.stats.totalEvaluations % 10 === 0);
+    if (shouldPersist) {
       await this.persistEvaluation(evaluation);
     }
     
@@ -841,7 +844,8 @@ export class ShadowEngine {
   
   private async persistEvaluation(eval_: ShadowEvaluation): Promise<void> {
     if (!this.supabase) {
-      console.warn('[SHADOW] No Supabase client - evaluation not persisted');
+      console.warn('[SHADOW] ⚠️ No Supabase client - evaluation not persisted. Check SUPABASE_URL and SUPABASE_ANON_KEY env vars.');
+      this.stats.dbWriteErrors++;
       return;
     }
     
