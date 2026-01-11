@@ -146,7 +146,7 @@ async function fetchUpcomingMarkets(): Promise<V27Market[]> {
       }
 
       v27Markets.push({
-        id: m.id,
+        id: m.slug,  // Use slug as ID since backend doesn't return separate ID
         slug: m.slug,
         asset: m.asset,
         strikePrice,
