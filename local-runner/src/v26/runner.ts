@@ -572,52 +572,12 @@ async function placeV26Order(scheduled: ScheduledTrade): Promise<void> {
   
   try {
     // ============================================================
-    // TOXICITY FILTER: Compute and evaluate before placing order
+    // TOXICITY FILTER: DISABLED - All trades pass through
     // ============================================================
     const marketKey = `${market.id}:${market.asset}`;
-    const ticks = orderbookTicks.get(marketKey) || [];
+    orderbookTicks.delete(marketKey); // Clean up any collected ticks
     
-    const toxicityFeatures = computeToxicityFeatures(
-      market.id,
-      market.slug,
-      market.asset,
-      market.eventStartTime,
-      ticks,
-      { targetPrice: assetCfg.price }
-    );
-    
-    // Log decision
-    logToxicityDecision(toxicityFeatures);
-    
-    // Save to DB for calibration
-    toxicityCache.set(marketKey, toxicityFeatures);
-    void saveToxicityFeatures(toxicityFeatures, RUN_ID);
-    
-    // Check if we should trade
-    if (!toxicityShouldTrade(toxicityFeatures)) {
-      log(`🚫 [${market.asset}] Toxicity filter BLOCKED trade: ${toxicityFeatures.classification} (score=${toxicityFeatures.toxicityScore?.toFixed(2)})`);
-      completedMarkets.add(key);
-      scheduledTrades.delete(key);
-      orderbookTicks.delete(marketKey);
-      return;
-    }
-    
-    // Apply position sizing based on toxicity
-    const positionMultiplier = getPositionMultiplier(toxicityFeatures);
-    const adjustedShares = Math.round(assetCfg.shares * positionMultiplier);
-    
-    if (adjustedShares < 1) {
-      log(`⚠️ [${market.asset}] Position size too small after toxicity adjustment, skipping`);
-      completedMarkets.add(key);
-      scheduledTrades.delete(key);
-      orderbookTicks.delete(marketKey);
-      return;
-    }
-    
-    log(`✅ [${market.asset}] Toxicity filter PASSED: ${toxicityFeatures.classification} | Shares: ${assetCfg.shares} → ${adjustedShares}`);
-    
-    // Clean up ticks after decision
-    orderbookTicks.delete(marketKey);
+    log(`✅ [${market.asset}] Toxicity filter DISABLED - proceeding with ${assetCfg.shares} shares`);
 
     // STEP 1: Check if we already have a trade for this market (DB check for duplicate prevention)
     const exists = await hasExistingTrade(market.id, market.asset);
