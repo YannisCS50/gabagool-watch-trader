@@ -98,11 +98,14 @@ const envFromDockerOrCli = Boolean(process.env.POLYMARKET_PRIVATE_KEY);
 
 let loadedEnvPath: string | null = null;
 
+const readTrimmedEnv = (key: string): string => String(process.env[key] ?? '').trim();
+const hasEnv = (key: string): boolean => readTrimmedEnv(key).length > 0;
+
 const hasDbEnv = Boolean(
-  (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL) &&
-    (process.env.SUPABASE_ANON_KEY ||
-      process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
-      process.env.SUPABASE_SERVICE_ROLE_KEY)
+  (hasEnv('SUPABASE_URL') || hasEnv('VITE_SUPABASE_URL')) &&
+    (hasEnv('SUPABASE_ANON_KEY') ||
+      hasEnv('VITE_SUPABASE_PUBLISHABLE_KEY') ||
+      hasEnv('SUPABASE_SERVICE_ROLE_KEY'))
 );
 
 if (envFromDockerOrCli) {
@@ -159,7 +162,18 @@ if (envFromDockerOrCli) {
             process.exit(1);
           }
 
-          dotenv.config({ path: p, override: false });
+          // In Docker, variables may exist-but-empty (or be partially provided).
+          // We only fill missing/blank keys from disk to avoid surprising overrides.
+          const parsed = dotenv.parse(fs.readFileSync(p, 'utf-8')) as Record<string, string>;
+          let filled = 0;
+          for (const [k, v] of Object.entries(parsed)) {
+            if (!hasEnv(k)) {
+              process.env[k] = v;
+              filled++;
+            }
+          }
+
+          console.log(`✅ Supplemented env from: ${p} (filled ${filled} keys)`);
           loadedEnvPath = `${p} (supplement)`;
           break;
         }
