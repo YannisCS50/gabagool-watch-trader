@@ -1,6 +1,20 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
-import { Download, Loader2 } from 'lucide-react';
+import { Download, Loader2, ChevronDown, Clock, Calendar } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuSeparator,
+  DropdownMenuLabel,
+} from '@/components/ui/dropdown-menu';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import type { ShadowPosition, ShadowExecution, ShadowDailyPnL, ShadowAccounting, ShadowHedgeAttempt } from '@/hooks/useShadowPositions';
 
 interface ShadowExportButtonProps {
@@ -13,6 +27,12 @@ interface ShadowExportButtonProps {
   stats: any;
 }
 
+type TimeFilter = 
+  | { type: 'hours'; hours: number }
+  | { type: 'days'; days: number }
+  | { type: 'date'; from: string; to: string }
+  | { type: 'all' };
+
 export function ShadowExportButton({
   positions,
   executions,
@@ -23,15 +43,63 @@ export function ShadowExportButton({
   stats,
 }: ShadowExportButtonProps) {
   const [exporting, setExporting] = useState(false);
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [datePopoverOpen, setDatePopoverOpen] = useState(false);
 
-  const handleExport = async () => {
+  const filterByTime = <T extends { timestamp?: number; ts?: number; entry_timestamp?: number; date?: string }>(
+    data: T[],
+    filter: TimeFilter
+  ): T[] => {
+    if (filter.type === 'all') return data;
+
+    const now = Date.now();
+    let cutoffMs: number;
+
+    if (filter.type === 'hours') {
+      cutoffMs = now - filter.hours * 60 * 60 * 1000;
+    } else if (filter.type === 'days') {
+      cutoffMs = now - filter.days * 24 * 60 * 60 * 1000;
+    } else if (filter.type === 'date') {
+      const fromMs = new Date(filter.from + 'T00:00:00').getTime();
+      const toMs = new Date(filter.to + 'T23:59:59').getTime();
+      return data.filter((item) => {
+        const itemTs = item.timestamp || item.ts || item.entry_timestamp || (item.date ? new Date(item.date).getTime() : 0);
+        return itemTs >= fromMs && itemTs <= toMs;
+      });
+    } else {
+      return data;
+    }
+
+    return data.filter((item) => {
+      const itemTs = item.timestamp || item.ts || item.entry_timestamp || (item.date ? new Date(item.date).getTime() : 0);
+      return itemTs >= cutoffMs;
+    });
+  };
+
+  const handleExport = async (filter: TimeFilter) => {
     setExporting(true);
     try {
+      const filteredPositions = filterByTime(positions, filter);
+      const filteredExecutions = filterByTime(executions, filter);
+      const filteredDailyPnl = filterByTime(dailyPnl, filter);
+      const filteredAccounting = filterByTime(accounting, filter);
+      const filteredHedgeAttempts = filterByTime(hedgeAttempts, filter);
+      const filteredEvaluations = filterByTime(evaluations, filter);
+
+      const filterLabel = 
+        filter.type === 'hours' ? `last_${filter.hours}h` :
+        filter.type === 'days' ? `last_${filter.days}d` :
+        filter.type === 'date' ? `${filter.from}_to_${filter.to}` :
+        'all';
+
       const exportData = {
         metadata: {
           exportedAt: new Date().toISOString(),
           version: 'v27-shadow-lifecycle-1.0',
           description: 'Complete shadow position lifecycle export for backtest replay',
+          filter: filter,
+          filterLabel,
         },
         config_snapshot: {
           starting_equity: stats.startingEquity,
@@ -43,15 +111,15 @@ export function ShadowExportButton({
         },
         summary: {
           ...stats,
-          totalPositions: positions.length,
-          totalExecutions: executions.length,
-          totalDays: dailyPnl.length,
+          totalPositions: filteredPositions.length,
+          totalExecutions: filteredExecutions.length,
+          totalDays: filteredDailyPnl.length,
           dateRange: {
-            start: dailyPnl.length > 0 ? dailyPnl[dailyPnl.length - 1].date : null,
-            end: dailyPnl.length > 0 ? dailyPnl[0].date : null,
+            start: filteredDailyPnl.length > 0 ? filteredDailyPnl[filteredDailyPnl.length - 1].date : null,
+            end: filteredDailyPnl.length > 0 ? filteredDailyPnl[0].date : null,
           },
         },
-        positions: positions.map((p) => ({
+        positions: filteredPositions.map((p) => ({
           id: p.id,
           market_id: p.market_id,
           asset: p.asset,
@@ -98,7 +166,7 @@ export function ShadowExportButton({
             combined_price_paid: p.combined_price_paid,
           },
         })),
-        executions: executions.map((e) => ({
+        executions: filteredExecutions.map((e) => ({
           id: e.id,
           position_id: e.position_id,
           type: e.execution_type,
@@ -121,7 +189,7 @@ export function ShadowExportButton({
           slippage_cents: e.slippage_cents,
           fee_usd: e.fee_usd,
         })),
-        hedge_attempts: hedgeAttempts.map((h) => ({
+        hedge_attempts: filteredHedgeAttempts.map((h) => ({
           id: h.id,
           position_id: h.position_id,
           attempt_number: h.attempt_number,
@@ -137,7 +205,7 @@ export function ShadowExportButton({
           projected_cpp: h.hedge_cpp,
           projected_pnl: h.projected_pnl,
         })),
-        daily_pnl: dailyPnl.map((d) => ({
+        daily_pnl: filteredDailyPnl.map((d) => ({
           date: d.date,
           realized_pnl: d.realized_pnl,
           unrealized_pnl: d.unrealized_pnl,
@@ -165,7 +233,7 @@ export function ShadowExportButton({
           },
           fees: d.total_fees,
         })),
-        equity_curve: accounting.map((a) => ({
+        equity_curve: filteredAccounting.map((a) => ({
           timestamp: a.timestamp,
           iso: a.iso,
           equity: a.equity,
@@ -181,7 +249,7 @@ export function ShadowExportButton({
           },
           peak_equity: a.peak_equity,
         })),
-        signals: evaluations.slice(0, 1000).map((e) => ({
+        signals: filteredEvaluations.slice(0, 1000).map((e) => ({
           id: e.id,
           ts: e.ts,
           market_id: e.market_id,
@@ -206,7 +274,7 @@ export function ShadowExportButton({
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `shadow-positions-export-${new Date().toISOString().split('T')[0]}.json`;
+      a.download = `shadow-export-${filterLabel}-${new Date().toISOString().split('T')[0]}.json`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -218,14 +286,116 @@ export function ShadowExportButton({
     }
   };
 
+  const handleDateRangeExport = () => {
+    if (dateFrom && dateTo) {
+      handleExport({ type: 'date', from: dateFrom, to: dateTo });
+      setDatePopoverOpen(false);
+    }
+  };
+
   return (
-    <Button variant="outline" size="sm" onClick={handleExport} disabled={exporting} className="h-8">
-      {exporting ? (
-        <Loader2 className="h-4 w-4 animate-spin" />
-      ) : (
-        <Download className="h-4 w-4" />
-      )}
-      <span className="hidden sm:inline ml-1">Export</span>
-    </Button>
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="outline" size="sm" disabled={exporting} className="h-8 gap-1">
+          {exporting ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Download className="h-4 w-4" />
+          )}
+          <span className="hidden sm:inline">Export</span>
+          <ChevronDown className="h-3 w-3" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-48">
+        <DropdownMenuLabel className="text-xs text-muted-foreground">Per uur</DropdownMenuLabel>
+        <DropdownMenuItem onClick={() => handleExport({ type: 'hours', hours: 1 })}>
+          <Clock className="h-4 w-4 mr-2" />
+          Laatste 1 uur
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => handleExport({ type: 'hours', hours: 3 })}>
+          <Clock className="h-4 w-4 mr-2" />
+          Laatste 3 uur
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => handleExport({ type: 'hours', hours: 6 })}>
+          <Clock className="h-4 w-4 mr-2" />
+          Laatste 6 uur
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => handleExport({ type: 'hours', hours: 9 })}>
+          <Clock className="h-4 w-4 mr-2" />
+          Laatste 9 uur
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => handleExport({ type: 'hours', hours: 12 })}>
+          <Clock className="h-4 w-4 mr-2" />
+          Laatste 12 uur
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => handleExport({ type: 'hours', hours: 24 })}>
+          <Clock className="h-4 w-4 mr-2" />
+          Laatste 24 uur
+        </DropdownMenuItem>
+
+        <DropdownMenuSeparator />
+        <DropdownMenuLabel className="text-xs text-muted-foreground">Per dag</DropdownMenuLabel>
+        <DropdownMenuItem onClick={() => handleExport({ type: 'days', days: 1 })}>
+          <Calendar className="h-4 w-4 mr-2" />
+          Laatste dag
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => handleExport({ type: 'days', days: 3 })}>
+          <Calendar className="h-4 w-4 mr-2" />
+          Laatste 3 dagen
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => handleExport({ type: 'days', days: 7 })}>
+          <Calendar className="h-4 w-4 mr-2" />
+          Laatste 7 dagen
+        </DropdownMenuItem>
+
+        <DropdownMenuSeparator />
+        <Popover open={datePopoverOpen} onOpenChange={setDatePopoverOpen}>
+          <PopoverTrigger asChild>
+            <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
+              <Calendar className="h-4 w-4 mr-2" />
+              Datum bereik...
+            </DropdownMenuItem>
+          </PopoverTrigger>
+          <PopoverContent className="w-64 p-3" align="end">
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <Label htmlFor="dateFrom" className="text-xs">Van</Label>
+                <Input
+                  id="dateFrom"
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                  className="h-8"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="dateTo" className="text-xs">Tot</Label>
+                <Input
+                  id="dateTo"
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => setDateTo(e.target.value)}
+                  className="h-8"
+                />
+              </div>
+              <Button 
+                size="sm" 
+                className="w-full" 
+                onClick={handleDateRangeExport}
+                disabled={!dateFrom || !dateTo}
+              >
+                Exporteer bereik
+              </Button>
+            </div>
+          </PopoverContent>
+        </Popover>
+
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={() => handleExport({ type: 'all' })}>
+          <Download className="h-4 w-4 mr-2" />
+          Alles exporteren
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
