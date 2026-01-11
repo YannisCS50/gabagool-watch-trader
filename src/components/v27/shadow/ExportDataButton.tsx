@@ -7,8 +7,11 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
+  DropdownMenuSub,
+  DropdownMenuSubTrigger,
+  DropdownMenuSubContent,
 } from '@/components/ui/dropdown-menu';
-import { Download, FileJson, FileSpreadsheet, Loader2 } from 'lucide-react';
+import { Download, FileJson, FileSpreadsheet, Loader2, ListFilter } from 'lucide-react';
 import { toast } from 'sonner';
 import type { ShadowDashboardData } from '@/hooks/useShadowDashboard';
 
@@ -17,6 +20,8 @@ interface ExportDataButtonProps {
   rawEvaluations: any[];
   rawTrackings: any[];
 }
+
+type SampleSize = 'all' | 10 | 25 | 50 | 100;
 
 export function ExportDataButton({ data, rawEvaluations, rawTrackings }: ExportDataButtonProps) {
   const [exporting, setExporting] = useState(false);
@@ -33,11 +38,19 @@ export function ExportDataButton({ data, rawEvaluations, rawTrackings }: ExportD
     URL.revokeObjectURL(url);
   };
 
-  const exportAllJSON = async () => {
+  const sliceData = <T,>(arr: T[], size: SampleSize): T[] => {
+    if (size === 'all') return arr;
+    return arr.slice(0, size);
+  };
+
+  const getSizeLabel = (size: SampleSize) => size === 'all' ? 'All' : `First ${size}`;
+
+  const exportAllJSON = async (size: SampleSize = 'all') => {
     setExporting(true);
     try {
       const exportData = {
         exportedAt: new Date().toISOString(),
+        sampleSize: size,
         config: {
           startingBudget: data.stats.startingEquity,
           accountingMode: 'FIFO',
@@ -45,18 +58,19 @@ export function ExportDataButton({ data, rawEvaluations, rawTrackings }: ExportD
         },
         engineStatus: data.engineStatus,
         stats: data.stats,
-        rawEvaluations,
-        rawTrackings,
-        signalLogs: data.signalLogs,
-        postSignalTracking: data.postSignalTracking,
-        hedgeSimulations: data.hedgeSimulations,
-        equityCurve: data.equityCurve,
+        rawEvaluations: sliceData(rawEvaluations, size),
+        rawTrackings: sliceData(rawTrackings, size),
+        signalLogs: sliceData(data.signalLogs, size),
+        postSignalTracking: sliceData(data.postSignalTracking, size),
+        hedgeSimulations: sliceData(data.hedgeSimulations, size),
+        equityCurve: sliceData(data.equityCurve, size),
         pnlByCategory: data.pnlByCategory,
       };
 
       const json = JSON.stringify(exportData, null, 2);
-      downloadFile(json, `shadow-export-${Date.now()}.json`, 'application/json');
-      toast.success('Exported all data as JSON');
+      const sizeLabel = size === 'all' ? 'all' : `sample-${size}`;
+      downloadFile(json, `shadow-export-${sizeLabel}-${Date.now()}.json`, 'application/json');
+      toast.success(`Exported ${getSizeLabel(size)} as JSON`);
     } catch (err) {
       console.error('Export failed:', err);
       toast.error('Export failed');
@@ -65,13 +79,14 @@ export function ExportDataButton({ data, rawEvaluations, rawTrackings }: ExportD
     }
   };
 
-  const exportSignalsCSV = () => {
+  const exportSignalsCSV = (size: SampleSize = 'all') => {
     const headers = [
       'id', 'timestamp', 'asset', 'side', 'delta', 'mispricing', 'threshold',
       'engine_state', 'passed_filters', 'failed_filters'
     ];
     
-    const rows = data.signalLogs.map((s) => [
+    const signals = sliceData(data.signalLogs, size);
+    const rows = signals.map((s) => [
       s.id,
       s.iso,
       s.asset,
@@ -85,17 +100,19 @@ export function ExportDataButton({ data, rawEvaluations, rawTrackings }: ExportD
     ]);
 
     const csv = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
-    downloadFile(csv, `signals-${Date.now()}.csv`, 'text/csv');
-    toast.success('Exported signals as CSV');
+    const sizeLabel = size === 'all' ? 'all' : `sample-${size}`;
+    downloadFile(csv, `signals-${sizeLabel}-${Date.now()}.csv`, 'text/csv');
+    toast.success(`Exported ${getSizeLabel(size)} signals as CSV`);
   };
 
-  const exportTrackingsCSV = () => {
+  const exportTrackingsCSV = (size: SampleSize = 'all') => {
     const headers = [
       'signal_id', 'at_5s_favorable', 'at_5s_adverse', 'at_10s_favorable', 'at_10s_adverse',
       'at_15s_favorable', 'at_15s_adverse', 'resolved', 'resolution_time_s'
     ];
     
-    const rows = data.postSignalTracking.map((t) => [
+    const trackings = sliceData(data.postSignalTracking, size);
+    const rows = trackings.map((t) => [
       t.signalId,
       t.at5s?.favorable.toFixed(4) || '',
       t.at5s?.adverse.toFixed(4) || '',
@@ -108,14 +125,16 @@ export function ExportDataButton({ data, rawEvaluations, rawTrackings }: ExportD
     ]);
 
     const csv = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
-    downloadFile(csv, `trackings-${Date.now()}.csv`, 'text/csv');
-    toast.success('Exported trackings as CSV');
+    const sizeLabel = size === 'all' ? 'all' : `sample-${size}`;
+    downloadFile(csv, `trackings-${sizeLabel}-${Date.now()}.csv`, 'text/csv');
+    toast.success(`Exported ${getSizeLabel(size)} trackings as CSV`);
   };
 
-  const exportEquityCurveCSV = () => {
+  const exportEquityCurveCSV = (size: SampleSize = 'all') => {
     const headers = ['timestamp', 'equity', 'realized_pnl', 'unrealized_pnl', 'fees', 'drawdown'];
     
-    const rows = data.equityCurve.map((e) => [
+    const curve = sliceData(data.equityCurve, size);
+    const rows = curve.map((e) => [
       new Date(e.timestamp).toISOString(),
       e.equity.toFixed(2),
       e.realizedPnl.toFixed(2),
@@ -125,18 +144,20 @@ export function ExportDataButton({ data, rawEvaluations, rawTrackings }: ExportD
     ]);
 
     const csv = [headers.join(','), ...rows.map((r) => r.join(','))].join('\n');
-    downloadFile(csv, `equity-curve-${Date.now()}.csv`, 'text/csv');
-    toast.success('Exported equity curve as CSV');
+    const sizeLabel = size === 'all' ? 'all' : `sample-${size}`;
+    downloadFile(csv, `equity-curve-${sizeLabel}-${Date.now()}.csv`, 'text/csv');
+    toast.success(`Exported ${getSizeLabel(size)} equity curve as CSV`);
   };
 
-  const exportRawEvaluationsCSV = () => {
+  const exportRawEvaluationsCSV = (size: SampleSize = 'all') => {
     if (rawEvaluations.length === 0) {
       toast.error('No evaluations to export');
       return;
     }
 
-    const headers = Object.keys(rawEvaluations[0]);
-    const rows = rawEvaluations.map((e) => 
+    const evals = sliceData(rawEvaluations, size);
+    const headers = Object.keys(evals[0]);
+    const rows = evals.map((e) => 
       headers.map((h) => {
         const val = e[h];
         if (val === null || val === undefined) return '';
@@ -146,9 +167,12 @@ export function ExportDataButton({ data, rawEvaluations, rawTrackings }: ExportD
     );
 
     const csv = [headers.join(','), ...rows.map((r) => r.map(v => `"${v}"`).join(','))].join('\n');
-    downloadFile(csv, `raw-evaluations-${Date.now()}.csv`, 'text/csv');
-    toast.success('Exported raw evaluations as CSV');
+    const sizeLabel = size === 'all' ? 'all' : `sample-${size}`;
+    downloadFile(csv, `raw-evaluations-${sizeLabel}-${Date.now()}.csv`, 'text/csv');
+    toast.success(`Exported ${getSizeLabel(size)} raw evaluations as CSV`);
   };
+
+  const sampleSizes: SampleSize[] = [10, 25, 50, 100, 'all'];
 
   return (
     <DropdownMenu>
@@ -159,40 +183,95 @@ export function ExportDataButton({ data, rawEvaluations, rawTrackings }: ExportD
           ) : (
             <Download className="h-4 w-4 mr-2" />
           )}
-          Export All
+          Export
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-56">
-        <DropdownMenuLabel>Export Format</DropdownMenuLabel>
+        <DropdownMenuLabel>Export Data</DropdownMenuLabel>
         <DropdownMenuSeparator />
         
-        <DropdownMenuItem onClick={exportAllJSON}>
-          <FileJson className="h-4 w-4 mr-2" />
-          All Data (JSON)
-        </DropdownMenuItem>
+        {/* JSON Export with size options */}
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <FileJson className="h-4 w-4 mr-2" />
+            All Data (JSON)
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            {sampleSizes.map((size) => (
+              <DropdownMenuItem key={size} onClick={() => exportAllJSON(size)}>
+                <ListFilter className="h-4 w-4 mr-2" />
+                {getSizeLabel(size)}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
         
         <DropdownMenuSeparator />
         <DropdownMenuLabel className="text-xs text-muted-foreground">CSV Tables</DropdownMenuLabel>
         
-        <DropdownMenuItem onClick={exportSignalsCSV}>
-          <FileSpreadsheet className="h-4 w-4 mr-2" />
-          Signal Logs
-        </DropdownMenuItem>
+        {/* Signal Logs with size options */}
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <FileSpreadsheet className="h-4 w-4 mr-2" />
+            Signal Logs
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            {sampleSizes.map((size) => (
+              <DropdownMenuItem key={size} onClick={() => exportSignalsCSV(size)}>
+                <ListFilter className="h-4 w-4 mr-2" />
+                {getSizeLabel(size)}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
         
-        <DropdownMenuItem onClick={exportTrackingsCSV}>
-          <FileSpreadsheet className="h-4 w-4 mr-2" />
-          Post-Signal Trackings
-        </DropdownMenuItem>
+        {/* Post-Signal Trackings with size options */}
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <FileSpreadsheet className="h-4 w-4 mr-2" />
+            Post-Signal Trackings
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            {sampleSizes.map((size) => (
+              <DropdownMenuItem key={size} onClick={() => exportTrackingsCSV(size)}>
+                <ListFilter className="h-4 w-4 mr-2" />
+                {getSizeLabel(size)}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
         
-        <DropdownMenuItem onClick={exportEquityCurveCSV}>
-          <FileSpreadsheet className="h-4 w-4 mr-2" />
-          Equity Curve
-        </DropdownMenuItem>
+        {/* Equity Curve with size options */}
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <FileSpreadsheet className="h-4 w-4 mr-2" />
+            Equity Curve
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            {sampleSizes.map((size) => (
+              <DropdownMenuItem key={size} onClick={() => exportEquityCurveCSV(size)}>
+                <ListFilter className="h-4 w-4 mr-2" />
+                {getSizeLabel(size)}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
         
-        <DropdownMenuItem onClick={exportRawEvaluationsCSV}>
-          <FileSpreadsheet className="h-4 w-4 mr-2" />
-          Raw Evaluations
-        </DropdownMenuItem>
+        {/* Raw Evaluations with size options */}
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <FileSpreadsheet className="h-4 w-4 mr-2" />
+            Raw Evaluations
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            {sampleSizes.map((size) => (
+              <DropdownMenuItem key={size} onClick={() => exportRawEvaluationsCSV(size)}>
+                <ListFilter className="h-4 w-4 mr-2" />
+                {getSizeLabel(size)}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
       </DropdownMenuContent>
     </DropdownMenu>
   );
