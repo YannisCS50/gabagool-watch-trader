@@ -320,19 +320,21 @@ function connectPolymarket(): void {
     stats.polymarket.lastMessageAt = Date.now();
 
     // Subscribe using RTDS format (docs.polymarket.com/developers/RTDS/RTDS-crypto-prices)
-    // Filters are OPTIONAL - omit them to get all symbols
+    // IMPORTANT:
+    // - crypto_prices requires type="update"
+    // - crypto_prices_chainlink requires type="*" AND a filters field ("" is valid)
+    // - Avoid unsupported topics here; we log CLOB share prices via the dedicated CLOB WS.
     polymarketWs?.send(
       JSON.stringify({
         action: 'subscribe',
         subscriptions: [
           { topic: 'crypto_prices', type: 'update' },
-          { topic: 'crypto_prices_chainlink', type: '*' },
-          { topic: 'crypto_prices_market', type: '*' },  // UP/DOWN share prices
+          { topic: 'crypto_prices_chainlink', type: '*', filters: '' },
         ],
       })
     );
 
-    console.log('[PriceFeedLogger] 📡 Subscribed to crypto_prices + chainlink + market (UP/DOWN shares)');
+    console.log('[PriceFeedLogger] 📡 Subscribed to crypto_prices + crypto_prices_chainlink');
   });
 
   polymarketWs.on('message', (data: WebSocket.Data) => {
