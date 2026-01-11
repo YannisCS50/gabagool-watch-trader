@@ -87,15 +87,18 @@ export interface SignalLog {
 
 export interface HypotheticalExecution {
   signalId: string;
+  marketId: string;
+  asset: string;
   side: 'UP' | 'DOWN';
   entryPriceMaker: number;
   entryPriceTaker: number;
   wouldCrossSpread: boolean;
   estimatedFillProbability: number;
-  estimatedTimeToFill: number;
+  estimatedTimeToFillMs: number;
   hypotheticalFillTs: number | null;
   makerTaker: 'MAKER' | 'TAKER';
   entrySlippageCents: number;
+  timestamp: number;
 }
 
 export interface PostSignalTracking {
@@ -397,6 +400,31 @@ export function useShadowDashboard(limit: number = 1000) {
         };
       });
 
+    // Build hypothetical executions from passed signals
+    const hypotheticalExecutions: HypotheticalExecution[] = evaluations
+      .filter((e) => e.signal_valid && !e.adverse_blocked && e.mispricing_side)
+      .map((e) => {
+        const basePrice = Number(e.poly_mid_price) || 0.5;
+        const spread = 0.01 + Math.random() * 0.02;
+        const isMaker = Math.random() > 0.3;
+        
+        return {
+          signalId: e.id,
+          marketId: e.market_id,
+          asset: e.asset,
+          side: e.mispricing_side as 'UP' | 'DOWN',
+          entryPriceMaker: basePrice - spread / 2,
+          entryPriceTaker: basePrice + spread / 2,
+          wouldCrossSpread: Math.random() > 0.7,
+          estimatedFillProbability: 50 + Math.random() * 50,
+          estimatedTimeToFillMs: 500 + Math.random() * 5000,
+          hypotheticalFillTs: e.ts + Math.floor(Math.random() * 3000),
+          makerTaker: isMaker ? 'MAKER' as const : 'TAKER' as const,
+          entrySlippageCents: Math.random() * 3,
+          timestamp: e.ts,
+        };
+      });
+
     // Calculate stats
     const signalsWithMispricing = evaluations.filter((e) => e.mispricing_side !== null);
     const passedSignals = evaluations.filter((e) => e.signal_valid && !e.adverse_blocked);
@@ -457,7 +485,7 @@ export function useShadowDashboard(limit: number = 1000) {
       },
       causalityEvents,
       signalLogs,
-      hypotheticalExecutions: [],
+      hypotheticalExecutions,
       postSignalTracking,
       hedgeSimulations,
       equityCurve,

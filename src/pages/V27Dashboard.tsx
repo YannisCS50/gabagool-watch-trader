@@ -13,6 +13,7 @@ import { LiveMarketMonitor } from '@/components/v27/shadow/LiveMarketMonitor';
 import { AdverseSelectionPanel } from '@/components/v27/shadow/AdverseSelectionPanel';
 import { CausalityTracker } from '@/components/v27/shadow/CausalityTracker';
 import { SignalLogTable } from '@/components/v27/shadow/SignalLogTable';
+import { HypotheticalExecutionPanel } from '@/components/v27/shadow/HypotheticalExecutionPanel';
 import { PostSignalTrackingPanel } from '@/components/v27/shadow/PostSignalTrackingPanel';
 import { HedgeSimulationPanel } from '@/components/v27/shadow/HedgeSimulationPanel';
 import { EquityCurveChart } from '@/components/v27/shadow/EquityCurveChart';
@@ -84,6 +85,7 @@ export default function V27Dashboard() {
           <TabsTrigger value="overview">Markets & Signals</TabsTrigger>
           <TabsTrigger value="adverse">Adverse Selection</TabsTrigger>
           <TabsTrigger value="causality">Causality</TabsTrigger>
+          <TabsTrigger value="execution">Execution Sim</TabsTrigger>
           <TabsTrigger value="tracking">Post-Signal</TabsTrigger>
           <TabsTrigger value="hedge">Hedge Sim</TabsTrigger>
           <TabsTrigger value="pnl">PnL & Equity</TabsTrigger>
@@ -108,6 +110,10 @@ export default function V27Dashboard() {
             events={data.causalityEvents}
             latencyToleranceMs={200}
           />
+        </TabsContent>
+
+        <TabsContent value="execution">
+          <HypotheticalExecutionPanel executions={data.hypotheticalExecutions} />
         </TabsContent>
 
         <TabsContent value="tracking">
