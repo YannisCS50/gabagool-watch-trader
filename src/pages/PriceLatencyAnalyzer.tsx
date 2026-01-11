@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, Cell } from "recharts";
-import { Activity, Wifi, WifiOff, RefreshCw, Download, Trash2 } from "lucide-react";
+import { Activity, Wifi, WifiOff, RefreshCw, Download, Trash2, Play, Square } from "lucide-react";
 import { useEffect, useState } from "react";
 
 const ASSETS: Asset[] = ['BTC', 'ETH', 'SOL', 'XRP'];
@@ -56,6 +56,7 @@ export default function PriceLatencyAnalyzer() {
     clearEventLog,
     resetSession,
     connect,
+    disconnect,
     getChartData,
     getLatencyHistogram,
   } = usePriceLatencyComparison();
@@ -121,6 +122,17 @@ export default function PriceLatencyAnalyzer() {
               {connectionStatus === 'connected' ? <Wifi className="h-3 w-3 mr-1" /> : <WifiOff className="h-3 w-3 mr-1" />}
               {connectionStatus}
             </Badge>
+            {connectionStatus === 'connected' ? (
+              <Button variant="outline" size="sm" onClick={disconnect}>
+                <Square className="h-4 w-4 mr-1" />
+                Disconnect
+              </Button>
+            ) : (
+              <Button variant="default" size="sm" onClick={connect} disabled={connectionStatus === 'connecting'}>
+                <Play className="h-4 w-4 mr-1" />
+                {connectionStatus === 'connecting' ? 'Connecting...' : 'Connect'}
+              </Button>
+            )}
             <Button variant="outline" size="sm" onClick={resetSession}>
               <RefreshCw className="h-4 w-4 mr-1" />
               Reset
