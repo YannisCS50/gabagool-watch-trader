@@ -1940,6 +1940,8 @@ Deno.serve(async (req) => {
           price: number;
           raw_timestamp: number;
           received_at: number;
+          // For CLOB share logs
+          outcome?: 'up' | 'down';
         }> | undefined;
 
         if (!logs || logs.length === 0) {
@@ -1949,12 +1951,13 @@ Deno.serve(async (req) => {
         }
 
         // Map to database schema
-        const dbLogs = logs.map(log => ({
+        const dbLogs = logs.map((log) => ({
           source: log.source,
           asset: log.asset,
           price: log.price,
           raw_timestamp: log.raw_timestamp,
           received_at: new Date(log.received_at).toISOString(),
+          outcome: log.outcome ?? null,
         }));
 
         const { error } = await supabase
