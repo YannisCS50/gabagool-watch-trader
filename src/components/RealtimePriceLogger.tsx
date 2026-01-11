@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Play, Square, RefreshCw, Database, Zap, Clock, TrendingUp } from 'lucide-react';
+import { RefreshCw, Database, Zap, Server, TrendingUp } from 'lucide-react';
 import { format } from 'date-fns';
 
 export function RealtimePriceLogger() {
@@ -11,13 +11,7 @@ export function RealtimePriceLogger() {
     logs,
     status,
     isLoading,
-    isCollecting,
     error,
-    lastCollect,
-    isAutoCollecting,
-    collectNow,
-    startAutoCollect,
-    stopAutoCollect,
     fetchRecentLogs,
   } = useRealtimePriceLogs();
 
@@ -29,57 +23,41 @@ export function RealtimePriceLogger() {
           <CardTitle className="flex items-center justify-between text-[#E6EDF3]">
             <span className="flex items-center gap-2">
               <Database className="h-5 w-5" />
-              Price Feed Database Logger
+              WebSocket Price Logger
             </span>
-            <div className="flex items-center gap-2">
-              {isAutoCollecting ? (
-                <Badge variant="default" className="bg-green-600">
-                  <Zap className="h-3 w-3 mr-1" /> Auto-collecting
-                </Badge>
-              ) : (
-                <Badge variant="secondary" className="bg-[#30363D]">
-                  <Clock className="h-3 w-3 mr-1" /> Manual mode
-                </Badge>
-              )}
-            </div>
+            <Badge variant="default" className="bg-blue-600">
+              <Server className="h-3 w-3 mr-1" /> Runner-based
+            </Badge>
           </CardTitle>
         </CardHeader>
         <CardContent>
+          <div className="bg-[#21262D] rounded-lg p-4 mb-4">
+            <div className="flex items-start gap-3">
+              <Zap className="h-5 w-5 text-yellow-400 mt-0.5" />
+              <div>
+                <p className="text-sm text-[#E6EDF3] font-medium">Millisecond-Precision Logging</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  WebSocket data wordt gelogd door de runner met <code className="bg-[#161B22] px-1 rounded">FEATURE_PRICE_LOGGER=true</code>
+                </p>
+                <p className="text-xs text-muted-foreground mt-2">
+                  <strong>Sources:</strong> Binance WS (trade stream) + Polymarket RTDS (crypto_prices + chainlink)
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  <strong>Start runner:</strong> <code className="bg-[#161B22] px-1 rounded">FEATURE_PRICE_LOGGER=true npm start</code>
+                </p>
+              </div>
+            </div>
+          </div>
+
           <div className="flex flex-wrap gap-4 mb-4">
             <Button
-              onClick={() => startAutoCollect(10)}
-              disabled={isAutoCollecting}
-              variant="default"
-              className="bg-green-600 hover:bg-green-700"
-            >
-              <Play className="h-4 w-4 mr-2" />
-              Start Auto-Collect (10s)
-            </Button>
-            <Button
-              onClick={stopAutoCollect}
-              disabled={!isAutoCollecting}
-              variant="destructive"
-            >
-              <Square className="h-4 w-4 mr-2" />
-              Stop Auto-Collect
-            </Button>
-            <Button
-              onClick={collectNow}
-              disabled={isCollecting}
-              variant="outline"
-              className="border-[#30363D] text-[#E6EDF3] hover:bg-[#21262D]"
-            >
-              <TrendingUp className="h-4 w-4 mr-2" />
-              {isCollecting ? 'Collecting...' : 'Collect Now'}
-            </Button>
-            <Button
-              onClick={() => fetchRecentLogs(100)}
+              onClick={() => fetchRecentLogs(500)}
               variant="outline"
               disabled={isLoading}
               className="border-[#30363D] text-[#E6EDF3] hover:bg-[#21262D]"
             >
-              <RefreshCw className="h-4 w-4 mr-2" />
-              Refresh Logs
+              <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
+              Refresh Logs (500)
             </Button>
           </div>
 
@@ -87,42 +65,11 @@ export function RealtimePriceLogger() {
             <div className="text-red-400 text-sm mb-4 p-2 bg-red-900/20 rounded">{error}</div>
           )}
 
-          {/* Last Collect Result */}
-          {lastCollect && (
-            <div className="bg-[#21262D] rounded-lg p-3 mb-4">
-              <div className="text-xs text-muted-foreground mb-1">Last Collection</div>
-              <div className="flex gap-4 text-sm">
-                <span className="text-[#E6EDF3]">
-                  <strong>{lastCollect.collected}</strong> prices collected
-                </span>
-                <span className="text-orange-400">
-                  Polymarket: {lastCollect.polymarket}
-                </span>
-                <span className="text-blue-400">
-                  Chainlink: {lastCollect.chainlink}
-                </span>
-              </div>
-              {lastCollect.logs.length > 0 && (
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {lastCollect.logs.map((log, i) => (
-                    <Badge 
-                      key={i} 
-                      variant="outline"
-                      className={`text-xs ${log.source.includes('chainlink') ? 'border-blue-500 text-blue-400' : 'border-orange-500 text-orange-400'}`}
-                    >
-                      {log.asset}: ${log.price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                    </Badge>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-
           {/* Status Grid */}
           {status && (
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-4">
               <div className="bg-[#21262D] rounded-lg p-3">
-                <div className="text-xs text-muted-foreground">Total Logs</div>
+                <div className="text-xs text-muted-foreground">Total Logs (DB)</div>
                 <div className="text-2xl font-bold text-[#E6EDF3]">{status.totalLogs.toLocaleString()}</div>
               </div>
               
