@@ -89,8 +89,9 @@ serve(async (req) => {
   try {
     const body = await req.json().catch(() => ({}));
     const assets: string[] = body.assets || ['BTC', 'ETH', 'SOL', 'XRP'];
+    const chainlinkOnly: boolean = body.chainlinkOnly || false;
 
-    console.log(`[price-feeds] Fetching prices for: ${assets.join(', ')}`);
+    console.log(`[price-feeds] Fetching ${chainlinkOnly ? 'Chainlink only' : 'all'} prices for: ${assets.join(', ')}`);
 
     const results: Record<string, {
       binance?: number;
@@ -104,22 +105,30 @@ serve(async (req) => {
       const symbol = ASSET_SYMBOLS[asset];
       if (!symbol) return;
 
-      const [binanceData, chainlinkData] = await Promise.all([
-        fetchBinancePrice(symbol),
-        fetchChainlinkPrice(asset),
-      ]);
+      if (chainlinkOnly) {
+        // Only fetch Chainlink
+        const chainlinkData = await fetchChainlinkPrice(asset);
+        results[asset] = {
+          chainlink: chainlinkData?.price,
+          chainlink_ts: chainlinkData?.timestamp,
+        };
+      } else {
+        // Fetch both
+        const [binanceData, chainlinkData] = await Promise.all([
+          fetchBinancePrice(symbol),
+          fetchChainlinkPrice(asset),
+        ]);
 
-      results[asset] = {
-        binance: binanceData?.price,
-        binance_ts: binanceData?.timestamp,
-        chainlink: chainlinkData?.price,
-        chainlink_ts: chainlinkData?.timestamp,
-      };
+        results[asset] = {
+          binance: binanceData?.price,
+          binance_ts: binanceData?.timestamp,
+          chainlink: chainlinkData?.price,
+          chainlink_ts: chainlinkData?.timestamp,
+        };
+      }
     });
 
     await Promise.all(promises);
-
-    console.log('[price-feeds] Results:', JSON.stringify(results));
 
     return new Response(JSON.stringify({
       success: true,
