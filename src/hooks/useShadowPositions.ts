@@ -172,26 +172,177 @@ interface V27Evaluation {
 // ============================================
 
 export function useShadowPositions(limit: number = 500) {
-  const [rawEvaluations, setRawEvaluations] = useState<V27Evaluation[]>([]);
+  const [positions, setPositions] = useState<ShadowPosition[]>([]);
+  const [executions, setExecutions] = useState<ShadowExecution[]>([]);
+  const [dailyPnlData, setDailyPnlData] = useState<ShadowDailyPnL[]>([]);
+  const [accountingData, setAccountingData] = useState<ShadowAccounting[]>([]);
+  const [hedgeAttemptsData, setHedgeAttemptsData] = useState<ShadowHedgeAttempt[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchData = useCallback(async () => {
     try {
-      // Fetch ENTRY evaluations from v27_evaluations - this is the SOURCE OF TRUTH
-      const { data: evalData, error } = await supabase
-        .from('v27_evaluations')
-        .select('*')
-        .eq('action', 'ENTRY')
-        .order('ts', { ascending: false })
-        .limit(limit);
+      // Fetch from ACTUAL shadow tables (not derived from evaluations)
+      const [positionsRes, executionsRes, dailyRes, accountingRes, hedgeRes] = await Promise.all([
+        supabase
+          .from('shadow_positions')
+          .select('*')
+          .order('entry_timestamp', { ascending: false })
+          .limit(limit),
+        supabase
+          .from('shadow_executions')
+          .select('*')
+          .order('timestamp', { ascending: false })
+          .limit(limit * 2),
+        supabase
+          .from('shadow_daily_pnl')
+          .select('*')
+          .order('date', { ascending: false })
+          .limit(90),
+        supabase
+          .from('shadow_accounting')
+          .select('*')
+          .order('timestamp', { ascending: false })
+          .limit(1000),
+        supabase
+          .from('shadow_hedge_attempts')
+          .select('*')
+          .order('timestamp', { ascending: false })
+          .limit(500),
+      ]);
 
-      if (error) {
-        console.error('Error fetching v27_evaluations:', error);
-      } else {
-        setRawEvaluations(evalData || []);
+      // Map positions from DB format to interface
+      if (positionsRes.data && positionsRes.data.length > 0) {
+        setPositions(positionsRes.data.map((p: any) => ({
+          id: p.id,
+          market_id: p.market_id,
+          asset: p.asset,
+          side: p.side as 'UP' | 'DOWN',
+          entry_timestamp: Number(p.entry_timestamp),
+          entry_iso: p.entry_iso,
+          entry_price: Number(p.entry_price),
+          entry_fill_type: p.entry_fill_type as 'MAKER' | 'TAKER',
+          best_bid_at_signal: Number(p.best_bid_at_signal) || 0,
+          best_ask_at_signal: Number(p.best_ask_at_signal) || 0,
+          spread_at_entry: Number(p.spread_at_entry) || 0,
+          size_usd: Number(p.size_usd) || 50,
+          size_shares: Number(p.size_shares) || 0,
+          signal_id: p.signal_id || p.id,
+          time_to_expiry_at_entry: Number(p.time_to_expiry_at_entry) || 900,
+          spot_price_at_entry: Number(p.spot_price_at_entry) || 0,
+          theoretical_price_at_entry: Number(p.theoretical_price_at_entry) || 0.5,
+          delta_at_entry: Number(p.delta_at_entry) || 0,
+          mispricing_at_entry: Number(p.mispricing_at_entry) || 0,
+          hedge_timestamp: p.hedge_timestamp ? Number(p.hedge_timestamp) : null,
+          hedge_iso: p.hedge_iso,
+          hedge_price: p.hedge_price ? Number(p.hedge_price) : null,
+          hedge_fill_type: p.hedge_fill_type as 'MAKER' | 'TAKER' | 'EMERGENCY' | null,
+          hedge_latency_ms: p.hedge_latency_ms ? Number(p.hedge_latency_ms) : null,
+          hedge_spread: p.hedge_spread ? Number(p.hedge_spread) : null,
+          paired: Boolean(p.paired),
+          resolution: p.resolution as ShadowPosition['resolution'],
+          resolution_timestamp: p.resolution_timestamp ? Number(p.resolution_timestamp) : null,
+          resolution_reason: p.resolution_reason,
+          gross_pnl: p.gross_pnl ? Number(p.gross_pnl) : null,
+          fees: Number(p.fees) || 0,
+          net_pnl: p.net_pnl ? Number(p.net_pnl) : null,
+          roi_pct: p.roi_pct ? Number(p.roi_pct) : null,
+          combined_price_paid: p.combined_price_paid ? Number(p.combined_price_paid) : null,
+          created_at: p.created_at,
+        })));
       }
+
+      // Map executions
+      if (executionsRes.data && executionsRes.data.length > 0) {
+        setExecutions(executionsRes.data.map((e: any) => ({
+          id: e.id,
+          position_id: e.position_id,
+          execution_type: e.execution_type as 'ENTRY' | 'HEDGE' | 'EMERGENCY_EXIT',
+          timestamp: Number(e.timestamp),
+          iso: e.iso,
+          side: e.side as 'UP' | 'DOWN',
+          price: Number(e.price),
+          shares: Number(e.shares),
+          cost_usd: Number(e.cost_usd),
+          fill_type: e.fill_type as 'MAKER' | 'TAKER',
+          fill_latency_assumed_ms: Number(e.fill_latency_assumed_ms) || 0,
+          fill_confidence: (e.fill_confidence || 'MEDIUM') as 'HIGH' | 'MEDIUM' | 'LOW',
+          best_bid: Number(e.best_bid) || 0,
+          best_ask: Number(e.best_ask) || 0,
+          spread: Number(e.spread) || 0,
+          slippage_cents: Number(e.slippage_cents) || 0,
+          fee_usd: Number(e.fee_usd) || 0,
+        })));
+      }
+
+      // Map daily PnL
+      if (dailyRes.data && dailyRes.data.length > 0) {
+        setDailyPnlData(dailyRes.data.map((d: any) => ({
+          id: d.id || d.date,
+          date: d.date,
+          realized_pnl: Number(d.realized_pnl) || 0,
+          unrealized_pnl: Number(d.unrealized_pnl) || 0,
+          total_pnl: Number(d.total_pnl) || 0,
+          cumulative_pnl: Number(d.cumulative_pnl) || 0,
+          trades: Number(d.trades) || 0,
+          wins: Number(d.wins) || 0,
+          losses: Number(d.losses) || 0,
+          paired_hedged: Number(d.paired_hedged) || 0,
+          expired_one_sided: Number(d.expired_one_sided) || 0,
+          emergency_exited: Number(d.emergency_exited) || 0,
+          no_fill: Number(d.no_fill) || 0,
+          total_fees: Number(d.total_fees) || 0,
+          win_rate: Number(d.win_rate) || 0,
+          avg_win: Number(d.avg_win) || 0,
+          avg_loss: Number(d.avg_loss) || 0,
+          profit_factor: Number(d.profit_factor) || 0,
+          starting_equity: Number(d.starting_equity) || 3000,
+          ending_equity: Number(d.ending_equity) || 3000,
+          max_drawdown: Number(d.max_drawdown) || 0,
+        })));
+      }
+
+      // Map accounting
+      if (accountingRes.data && accountingRes.data.length > 0) {
+        setAccountingData(accountingRes.data.map((a: any) => ({
+          id: a.id,
+          timestamp: Number(a.timestamp),
+          iso: a.iso,
+          equity: Number(a.equity) || 3000,
+          starting_equity: Number(a.starting_equity) || 3000,
+          realized_pnl: Number(a.realized_pnl) || 0,
+          unrealized_pnl: Number(a.unrealized_pnl) || 0,
+          total_fees: Number(a.total_fees) || 0,
+          open_positions: Number(a.open_positions) || 0,
+          total_trades: Number(a.total_trades) || 0,
+          peak_equity: Number(a.peak_equity) || 3000,
+          drawdown_usd: Number(a.drawdown_usd) || 0,
+          drawdown_pct: Number(a.drawdown_pct) || 0,
+          max_drawdown_pct: Number(a.max_drawdown_pct) || 0,
+        })));
+      }
+
+      // Map hedge attempts
+      if (hedgeRes.data && hedgeRes.data.length > 0) {
+        setHedgeAttemptsData(hedgeRes.data.map((h: any) => ({
+          id: h.id,
+          position_id: h.position_id,
+          attempt_number: Number(h.attempt_number) || 1,
+          timestamp: Number(h.timestamp),
+          seconds_since_entry: Number(h.seconds_since_entry) || 0,
+          hedge_side: h.hedge_side as 'UP' | 'DOWN',
+          target_price: Number(h.target_price) || 0,
+          actual_price: h.actual_price ? Number(h.actual_price) : null,
+          spread_at_attempt: Number(h.spread_at_attempt) || 0,
+          success: Boolean(h.success),
+          failure_reason: h.failure_reason,
+          is_emergency: Boolean(h.is_emergency),
+          hedge_cpp: Number(h.hedge_cpp) || 0,
+          projected_pnl: Number(h.projected_pnl) || 0,
+        })));
+      }
+
     } catch (err) {
-      console.error('Error fetching shadow positions:', err);
+      console.error('Error fetching shadow data:', err);
     } finally {
       setLoading(false);
     }
@@ -203,11 +354,17 @@ export function useShadowPositions(limit: number = 500) {
     return () => clearInterval(interval);
   }, [fetchData]);
 
-  // Realtime subscription for v27_evaluations
+  // Realtime subscription
   useEffect(() => {
     const channel = supabase
-      .channel('v27_evaluations_positions')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'v27_evaluations' }, () => {
+      .channel('shadow_positions_realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'shadow_positions' }, () => {
+        fetchData();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'shadow_executions' }, () => {
+        fetchData();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'shadow_accounting' }, () => {
         fetchData();
       })
       .subscribe();
@@ -217,122 +374,27 @@ export function useShadowPositions(limit: number = 500) {
     };
   }, [fetchData]);
 
-  // DERIVE positions from evaluations
-  // CRITICAL: Only 1 position per market+side (no stacking!)
-  const positions = useMemo((): ShadowPosition[] => {
-    const positionMap = new Map<string, ShadowPosition>();
+  // Use DB data if available, otherwise derive from positions
+  // For backwards compatibility with derived approach
+  const finalExecutions = useMemo(() => {
+    if (executions.length > 0) return executions;
     
-    // Sort by timestamp (oldest first) to keep the FIRST entry per market+side
-    const sorted = [...rawEvaluations].sort((a, b) => a.ts - b.ts);
-    
-    for (const e of sorted) {
-      const side = (e.mispricing_side || 'UP') as 'UP' | 'DOWN';
-      const key = `${e.market_id}:${side}`;
-      
-      // Skip if we already have a position for this market+side
-      if (positionMap.has(key)) continue;
-      
-      const entryPrice = side === 'UP' 
-        ? (e.pm_up_ask || 0.5) 
-        : (e.pm_down_ask || 0.5);
-      const bidPrice = side === 'UP' ? (e.pm_up_bid || 0) : (e.pm_down_bid || 0);
-      const spread = entryPrice - bidPrice;
-      
-      // Simulate position sizing (typical $10-25 trades)
-      const sizeUsd = 15;
-      const sizeShares = sizeUsd / entryPrice;
-      
-      // Simulate hedge based on mispricing magnitude
-      const mispricingMag = Math.abs(e.mispricing_magnitude || 0);
-      const isHedged = mispricingMag > 1; // High mispricing = more likely to get hedged
-      const hedgePrice = isHedged ? (1 - entryPrice) + 0.01 : null; // Opposite side + slippage
-      const cpp = hedgePrice ? entryPrice + hedgePrice : null;
-      
-      // Simulate PnL based on whether market resolved in our favor
-      // Using theoretical price vs spot to estimate win probability
-      const theoreticalPrice = side === 'UP' 
-        ? (e.theoretical_up || 0.5) 
-        : (e.theoretical_down || 0.5);
-      const estimatedWin = theoreticalPrice > 0.55; // >55% theoretical = we expect to win
-      
-      let netPnl = 0;
-      let resolution: ShadowPosition['resolution'] = 'OPEN';
-      
-      if (isHedged && cpp) {
-        // Hedged position: guaranteed payout based on CPP
-        netPnl = (1 - cpp) * sizeShares * 0.9; // 90% of max due to fees
-        resolution = 'PAIRED_HEDGED';
-      } else if (mispricingMag < 0.5) {
-        // Low mispricing = expired without hedge
-        netPnl = estimatedWin ? (1 - entryPrice) * sizeShares * 0.9 : -entryPrice * sizeShares;
-        resolution = 'EXPIRED_ONE_SIDED';
-      } else {
-        resolution = 'OPEN';
-      }
-      
-      const fees = sizeUsd * 0.002; // 0.2% fee
-
-      positionMap.set(key, {
-        id: e.id,
-        market_id: e.market_id,
-        asset: e.asset,
-        side,
-        entry_timestamp: e.ts,
-        entry_iso: e.created_at,
-        entry_price: entryPrice,
-        entry_fill_type: 'TAKER' as const,
-        best_bid_at_signal: bidPrice,
-        best_ask_at_signal: entryPrice,
-        spread_at_entry: spread,
-        size_usd: sizeUsd,
-        size_shares: sizeShares,
-        signal_id: e.id,
-        time_to_expiry_at_entry: 900, // Assume 15 min
-        spot_price_at_entry: e.spot_price || 0,
-        theoretical_price_at_entry: theoreticalPrice,
-        delta_at_entry: side === 'UP' ? (e.delta_up || 0) : (e.delta_down || 0),
-        mispricing_at_entry: mispricingMag,
-        hedge_timestamp: isHedged ? e.ts + 5000 : null,
-        hedge_iso: isHedged ? new Date(e.ts + 5000).toISOString() : null,
-        hedge_price: hedgePrice,
-        hedge_fill_type: isHedged ? 'MAKER' : null,
-        hedge_latency_ms: isHedged ? Math.floor(Math.random() * 10000) + 1000 : null,
-        hedge_spread: isHedged ? 0.02 : null,
-        paired: isHedged,
-        resolution,
-        resolution_timestamp: resolution !== 'OPEN' ? e.ts + 900000 : null,
-        resolution_reason: resolution === 'PAIRED_HEDGED' ? 'Hedge filled' : resolution === 'EXPIRED_ONE_SIDED' ? 'No hedge liquidity' : null,
-        gross_pnl: netPnl + fees,
-        fees,
-        net_pnl: netPnl,
-        roi_pct: sizeUsd > 0 ? (netPnl / sizeUsd) * 100 : 0,
-        combined_price_paid: cpp,
-        created_at: e.created_at,
-      });
-    }
-    
-    return Array.from(positionMap.values());
-  }, [rawEvaluations]);
-
-  // DERIVE executions from positions
-  const executions = useMemo((): ShadowExecution[] => {
+    // Fallback: derive from positions if DB is empty
     const execs: ShadowExecution[] = [];
-    
     positions.forEach((p) => {
-      // Entry execution
       execs.push({
         id: `${p.id}-entry`,
         position_id: p.id,
-        execution_type: 'ENTRY',
+        execution_type: 'ENTRY' as const,
         timestamp: p.entry_timestamp,
         iso: p.entry_iso,
         side: p.side,
         price: p.entry_price,
         shares: p.size_shares,
         cost_usd: p.size_usd,
-        fill_type: 'TAKER',
+        fill_type: p.entry_fill_type || 'TAKER',
         fill_latency_assumed_ms: 100,
-        fill_confidence: 'HIGH',
+        fill_confidence: 'HIGH' as const,
         best_bid: p.best_bid_at_signal,
         best_ask: p.best_ask_at_signal,
         spread: p.spread_at_entry,
@@ -340,12 +402,11 @@ export function useShadowPositions(limit: number = 500) {
         fee_usd: p.fees / 2,
       });
       
-      // Hedge execution if exists
       if (p.hedge_timestamp && p.hedge_price) {
         execs.push({
           id: `${p.id}-hedge`,
           position_id: p.id,
-          execution_type: 'HEDGE',
+          execution_type: 'HEDGE' as const,
           timestamp: p.hedge_timestamp,
           iso: p.hedge_iso || '',
           side: p.side === 'UP' ? 'DOWN' : 'UP',
@@ -354,7 +415,7 @@ export function useShadowPositions(limit: number = 500) {
           cost_usd: p.hedge_price * p.size_shares,
           fill_type: p.hedge_fill_type === 'EMERGENCY' ? 'TAKER' : 'MAKER',
           fill_latency_assumed_ms: p.hedge_latency_ms || 0,
-          fill_confidence: 'MEDIUM',
+          fill_confidence: 'MEDIUM' as const,
           best_bid: p.hedge_price - 0.01,
           best_ask: p.hedge_price,
           spread: p.hedge_spread || 0.02,
@@ -363,14 +424,14 @@ export function useShadowPositions(limit: number = 500) {
         });
       }
     });
-    
     return execs.sort((a, b) => b.timestamp - a.timestamp);
-  }, [positions]);
+  }, [executions, positions]);
 
-  // DERIVE daily PnL from positions
-  const dailyPnl = useMemo((): ShadowDailyPnL[] => {
-    const byDate: Record<string, ShadowPosition[]> = {};
+  const finalDailyPnl = useMemo(() => {
+    if (dailyPnlData.length > 0) return dailyPnlData;
     
+    // Fallback: derive from positions
+    const byDate: Record<string, ShadowPosition[]> = {};
     positions.forEach((p) => {
       const date = new Date(p.entry_iso).toISOString().split('T')[0];
       if (!byDate[date]) byDate[date] = [];
@@ -390,7 +451,7 @@ export function useShadowPositions(limit: number = 500) {
           realized_pnl: totalPnl,
           unrealized_pnl: 0,
           total_pnl: totalPnl,
-          cumulative_pnl: 0, // Calculated below
+          cumulative_pnl: 0,
           trades: dayPositions.length,
           wins,
           losses,
@@ -410,7 +471,6 @@ export function useShadowPositions(limit: number = 500) {
       })
       .sort((a, b) => b.date.localeCompare(a.date));
 
-    // Calculate cumulative PnL
     let cumulative = 0;
     const reversed = [...days].reverse();
     reversed.forEach((d) => {
@@ -419,17 +479,18 @@ export function useShadowPositions(limit: number = 500) {
     });
 
     return days;
-  }, [positions]);
+  }, [dailyPnlData, positions]);
 
-  // DERIVE accounting snapshots (equity curve)
-  const accounting = useMemo((): ShadowAccounting[] => {
+  const finalAccounting = useMemo(() => {
+    if (accountingData.length > 0) return accountingData;
+    
+    // Fallback: derive from positions
     const startingEquity = 3000;
     let equity = startingEquity;
     let peakEquity = startingEquity;
     let totalFees = 0;
     let totalRealizedPnl = 0;
 
-    // Sort positions by timestamp for proper equity curve
     const sortedPositions = [...positions].sort((a, b) => a.entry_timestamp - b.entry_timestamp);
 
     return sortedPositions.map((p, idx) => {
@@ -457,14 +518,15 @@ export function useShadowPositions(limit: number = 500) {
         max_drawdown_pct: drawdownPct,
       };
     });
-  }, [positions]);
+  }, [accountingData, positions]);
 
-  // Empty hedge attempts (derived from positions in future)
-  const hedgeAttempts = useMemo((): ShadowHedgeAttempt[] => [], []);
+  const finalHedgeAttempts = useMemo(() => {
+    return hedgeAttemptsData;
+  }, [hedgeAttemptsData]);
 
   // Computed: Equity curve from accounting snapshots
   const equityCurve = useMemo(() => {
-    return accounting.map((a) => ({
+    return finalAccounting.map((a) => ({
       timestamp: a.timestamp,
       iso: a.iso,
       equity: a.equity,
@@ -473,7 +535,7 @@ export function useShadowPositions(limit: number = 500) {
       drawdown: a.drawdown_pct,
       fees: a.total_fees,
     }));
-  }, [accounting]);
+  }, [finalAccounting]);
 
   // Computed: Hedge analysis stats
   const hedgeAnalysis = useMemo((): HedgeAnalysisStats => {
@@ -518,7 +580,7 @@ export function useShadowPositions(limit: number = 500) {
 
   // Computed: Summary stats
   const stats = useMemo(() => {
-    const latestAccounting = accounting[accounting.length - 1];
+    const latestAccounting = finalAccounting[finalAccounting.length - 1];
     const totalPnl = positions.reduce((sum, p) => sum + (p.net_pnl || 0), 0);
     const wins = positions.filter((p) => (p.net_pnl || 0) > 0).length;
     const losses = positions.filter((p) => (p.net_pnl || 0) < 0).length;
@@ -527,7 +589,7 @@ export function useShadowPositions(limit: number = 500) {
     const startingEquity = 3000;
     const currentEquity = latestAccounting?.equity || startingEquity + totalPnl;
 
-    const allTimeHigh = accounting.reduce((max, a) => Math.max(max, a.peak_equity || a.equity), startingEquity);
+    const allTimeHigh = finalAccounting.reduce((max, a) => Math.max(max, a.peak_equity || a.equity), startingEquity);
     const maxDrawdown = latestAccounting?.max_drawdown_pct || 0;
 
     // PnL by asset
@@ -554,18 +616,19 @@ export function useShadowPositions(limit: number = 500) {
       maxDrawdown,
       allTimeHigh,
       totalTrades: positions.length,
+      totalPositions: positions.length,
       openPositions: positions.filter((p) => p.resolution === 'OPEN').length,
       pnlByAsset,
       pnlByResolution,
     };
-  }, [positions, accounting]);
+  }, [positions, finalAccounting]);
 
   return {
     positions,
-    executions,
-    dailyPnl,
-    accounting,
-    hedgeAttempts,
+    executions: finalExecutions,
+    dailyPnl: finalDailyPnl,
+    accounting: finalAccounting,
+    hedgeAttempts: finalHedgeAttempts,
     equityCurve,
     hedgeAnalysis,
     stats,
