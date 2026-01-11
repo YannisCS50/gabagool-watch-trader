@@ -416,70 +416,66 @@ export function RealtimePriceLogger() {
         </CardContent>
       </Card>
 
-      {/* CLOB Share Prices Chart - Separate scale */}
+      {/* Price Lag Analysis - Shows delay between sources */}
       <Card className="bg-[#161B22] border-[#30363D]">
         <CardHeader className="pb-3">
           <CardTitle className="text-base text-[#E6EDF3] flex items-center gap-2">
-            <TrendingUp className="h-4 w-4" /> CLOB UP/DOWN Share Prices (Last 60s)
-            <Badge variant="outline" className="ml-2 text-xs border-muted-foreground">0-100¢</Badge>
+            <Clock className="h-4 w-4" /> Price Lag Analysis
+            <Badge variant="outline" className="ml-2 text-xs border-muted-foreground">vs Binance</Badge>
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {chartData.some(d => d.clob_up !== undefined || d.clob_down !== undefined) ? (
-            <ResponsiveContainer width="100%" height={150}>
-              <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
-                <XAxis 
-                  dataKey="time" 
-                  tickFormatter={formatChartTime}
-                  stroke="#8B949E"
-                  fontSize={10}
-                  tickLine={false}
-                />
-                <YAxis 
-                  domain={[0, 1]}
-                  stroke="#8B949E"
-                  fontSize={10}
-                  tickLine={false}
-                  tickFormatter={(value) => `${(value * 100).toFixed(0)}¢`}
-                  ticks={[0, 0.25, 0.5, 0.75, 1]}
-                />
-                <Tooltip 
-                  contentStyle={{ backgroundColor: '#21262D', border: '1px solid #30363D', borderRadius: '8px' }}
-                  labelStyle={{ color: '#E6EDF3' }}
-                  labelFormatter={(label) => format(new Date(label), 'HH:mm:ss.SSS')}
-                  formatter={(value: number, name: string) => [
-                    `${(value * 100).toFixed(1)}¢`,
-                    name
-                  ]}
-                />
-                <Legend />
-                <ReferenceLine y={0.5} stroke="#8B949E" strokeDasharray="3 3" label={{ value: '50¢', fill: '#8B949E', fontSize: 10 }} />
-                <Line 
-                  type="stepAfter" 
-                  dataKey="clob_up" 
-                  stroke="#22C55E" 
-                  strokeWidth={2} 
-                  dot={false}
-                  name="UP Share"
-                  connectNulls
-                />
-                <Line 
-                  type="stepAfter" 
-                  dataKey="clob_down" 
-                  stroke="#EF4444" 
-                  strokeWidth={2} 
-                  dot={false}
-                  name="DOWN Share"
-                  connectNulls
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="h-[150px] flex items-center justify-center text-muted-foreground">
-              <div className="text-center">
-                <div>No CLOB share data yet for {selectedAsset}</div>
-                <div className="text-xs mt-1">Waiting for crypto_prices_market feed...</div>
+          {analytics?.latestPrices?.[selectedAsset] ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Polymarket vs Binance */}
+              <div className="bg-[#21262D] rounded-lg p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm text-muted-foreground">Polymarket vs Binance</span>
+                  <Badge variant="outline" className="border-fuchsia-500 text-fuchsia-400">PM</Badge>
+                </div>
+                {analytics.latestPrices[selectedAsset]?.binance && analytics.latestPrices[selectedAsset]?.polymarket ? (
+                  <>
+                    <div className="text-2xl font-bold text-[#E6EDF3]">
+                      ${Math.abs(analytics.latestPrices[selectedAsset].binance.price - analytics.latestPrices[selectedAsset].polymarket.price).toFixed(2)}
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-1">
+                      {((analytics.latestPrices[selectedAsset].binance.price - analytics.latestPrices[selectedAsset].polymarket.price) / analytics.latestPrices[selectedAsset].binance.price * 100).toFixed(4)}% difference
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Time lag: {Math.abs(analytics.latestPrices[selectedAsset].binance.ts - analytics.latestPrices[selectedAsset].polymarket.ts)}ms
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-muted-foreground">Waiting for data...</div>
+                )}
               </div>
+
+              {/* Chainlink vs Binance */}
+              <div className="bg-[#21262D] rounded-lg p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm text-muted-foreground">Chainlink vs Binance</span>
+                  <Badge variant="outline" className="border-cyan-500 text-cyan-400">CL</Badge>
+                </div>
+                {analytics.latestPrices[selectedAsset]?.binance && analytics.latestPrices[selectedAsset]?.chainlink ? (
+                  <>
+                    <div className="text-2xl font-bold text-[#E6EDF3]">
+                      ${Math.abs(analytics.latestPrices[selectedAsset].binance.price - analytics.latestPrices[selectedAsset].chainlink.price).toFixed(2)}
+                    </div>
+                    <div className="text-xs text-muted-foreground mt-1">
+                      {((analytics.latestPrices[selectedAsset].binance.price - analytics.latestPrices[selectedAsset].chainlink.price) / analytics.latestPrices[selectedAsset].binance.price * 100).toFixed(4)}% difference
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Time lag: {Math.abs(analytics.latestPrices[selectedAsset].binance.ts - analytics.latestPrices[selectedAsset].chainlink.ts)}ms
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-muted-foreground">Waiting for data...</div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="h-[100px] flex items-center justify-center text-muted-foreground">
+              No price data yet for {selectedAsset}
             </div>
           )}
         </CardContent>
