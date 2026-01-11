@@ -125,21 +125,25 @@ export default function V27Dashboard() {
         </TabsContent>
 
         <TabsContent value="pnl">
-          <EquityCurveChart 
-            data={data.equityCurve}
-            startingEquity={data.stats.startingEquity}
-            currentEquity={data.stats.currentEquity}
-            realizedPnl={data.stats.realizedPnl}
-            unrealizedPnl={data.stats.unrealizedPnl}
-            maxDrawdown={data.stats.maxDrawdown}
-            winCount={data.stats.winCount}
-            lossCount={data.stats.lossCount}
-            winRate={data.stats.winRate}
-          />
+          <div>
+            <EquityCurveChart 
+              data={data.equityCurve}
+              startingEquity={data.stats.startingEquity}
+              currentEquity={data.stats.currentEquity}
+              realizedPnl={data.stats.realizedPnl}
+              unrealizedPnl={data.stats.unrealizedPnl}
+              maxDrawdown={data.stats.maxDrawdown}
+              winCount={data.stats.winCount}
+              lossCount={data.stats.lossCount}
+              winRate={data.stats.winRate}
+            />
+          </div>
         </TabsContent>
 
         <TabsContent value="counterfactual">
-          <CounterfactualAnalysisPanel counterfactuals={data.counterfactuals} />
+          <div>
+            <CounterfactualAnalysisPanel counterfactuals={data.counterfactuals} />
+          </div>
         </TabsContent>
       </Tabs>
     </div>
