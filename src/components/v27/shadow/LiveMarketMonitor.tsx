@@ -82,9 +82,10 @@ export function LiveMarketMonitor() {
             const expectedUp = Number(e.theoretical_up) || 0.5;
             const expectedDown = Number(e.theoretical_down) || 0.5;
             
-            const mispricingCents = Number(e.mispricing_magnitude) || 0;
+            // mispricing_magnitude is already in decimal (e.g., 0.0325 = 3.25 cents)
+            const mispricingDecimal = Number(e.mispricing_magnitude) || 0;
             const threshold = Number(e.dynamic_threshold) || Number(e.base_threshold) || 0.03;
-            const mispricingPctThreshold = threshold > 0 ? (mispricingCents / threshold) * 100 : 0;
+            const mispricingPctThreshold = threshold > 0 ? (mispricingDecimal / threshold) * 100 : 0;
             
             const nearSignal = mispricingPctThreshold >= 60;
             const hotSignal = mispricingPctThreshold >= 85 || e.signal_valid;
@@ -111,7 +112,7 @@ export function LiveMarketMonitor() {
               downBid,
               downAsk,
               spreadTicks: Math.round(((upAsk - upBid) + (downAsk - downBid)) / 2 * 100),
-              mispricingCents: mispricingCents * 100,
+              mispricingCents: mispricingDecimal * 100, // Convert decimal to cents (0.0325 -> 3.25¢)
               mispricingPctThreshold,
               nearSignal,
               hotSignal,
