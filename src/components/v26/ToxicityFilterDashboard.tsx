@@ -10,8 +10,9 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   LineChart, Line, Legend, Cell, PieChart, Pie 
 } from 'recharts';
-import { Shield, TrendingUp, TrendingDown, AlertTriangle, CheckCircle, XCircle, Activity, Calendar } from 'lucide-react';
+import { Shield, TrendingUp, TrendingDown, AlertTriangle, CheckCircle, XCircle, Activity, Calendar, Download, Loader2 } from 'lucide-react';
 import { format } from 'date-fns';
+import { toast } from 'sonner';
 
 // Go-live timestamp for the toxicity filter
 const TOXICITY_FILTER_GO_LIVE = new Date('2026-01-11T00:00:00Z');
@@ -160,6 +161,7 @@ export default function ToxicityFilterDashboard() {
   const { data: toxicityFeatures = [], isLoading: loadingFeatures } = useToxicityFeatures();
   
   const [activeTab, setActiveTab] = useState('overview');
+  const [isExporting, setIsExporting] = useState(false);
   
   const beforeStats = useMemo(() => calculateStats(historicalTrades), [historicalTrades]);
   const afterStats = useMemo(() => calculateStats(newTrades), [newTrades]);
@@ -233,6 +235,90 @@ export default function ToxicityFilterDashboard() {
     PENDING: 'hsl(var(--muted))',
   };
 
+  const handleExportCSV = async () => {
+    setIsExporting(true);
+    try {
+      // Fetch ALL toxicity features (not just the 500 limit)
+      const { data: allFeatures, error } = await supabase
+        .from('toxicity_features')
+        .select('*')
+        .order('market_start_time', { ascending: false });
+
+      if (error) throw error;
+
+      const features = (allFeatures || []) as ToxicityFeature[];
+      
+      if (features.length === 0) {
+        toast.error('No data to export');
+        return;
+      }
+
+      // CSV header
+      const headers = [
+        'market_id',
+        'market_slug',
+        'asset',
+        'market_start_time',
+        'classification',
+        'decision',
+        'confidence',
+        'toxicity_score',
+        'liquidity_pull_detected',
+        'outcome',
+        'pnl',
+        'n_ticks',
+        'data_quality',
+        'ask_volatility',
+        'ask_change_count',
+        'spread_volatility',
+        'filter_version',
+      ];
+
+      const csvRows = [headers.join(',')];
+
+      for (const f of features) {
+        const row = [
+          f.market_id,
+          f.market_slug,
+          f.asset,
+          f.market_start_time,
+          f.classification,
+          f.decision,
+          f.confidence,
+          f.toxicity_score ?? '',
+          f.liquidity_pull_detected,
+          f.outcome ?? '',
+          f.pnl ?? '',
+          f.n_ticks,
+          f.data_quality,
+          f.ask_volatility ?? '',
+          f.ask_change_count ?? '',
+          f.spread_volatility ?? '',
+          f.filter_version ?? '',
+        ];
+        csvRows.push(row.map(v => `"${v}"`).join(','));
+      }
+
+      const csv = csvRows.join('\n');
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `toxicity-filter-export-${format(new Date(), 'yyyy-MM-dd-HHmm')}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+
+      toast.success(`Exported ${features.length} records`);
+    } catch (err) {
+      console.error('Export error:', err);
+      toast.error('Export failed');
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -247,6 +333,16 @@ export default function ToxicityFilterDashboard() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleExportCSV}
+            disabled={isExporting || toxicityFeatures.length === 0}
+            className="gap-1.5"
+          >
+            {isExporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            Export CSV
+          </Button>
           <Badge variant={isLive ? 'default' : 'secondary'} className="gap-1">
             {isLive ? <CheckCircle className="h-3 w-3" /> : <Calendar className="h-3 w-3" />}
             {isLive ? 'LIVE' : 'Pending'}
