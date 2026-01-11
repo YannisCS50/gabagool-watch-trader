@@ -1,6 +1,6 @@
 import { useMemo, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, AlertCircle, Zap, ArrowRight, CheckCircle2, Activity } from 'lucide-react';
+import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, AlertCircle, Zap, ArrowRight, CheckCircle2, Activity, Timer } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { StatCard } from '@/components/StatCard';
 import { TradesTable } from '@/components/TradesTable';
@@ -252,6 +252,28 @@ const Index = () => {
               <ArrowRight className={`w-5 h-5 group-hover:translate-x-1 transition-transform ${
                 v27Stats.online ? 'text-violet-400' : 'text-muted-foreground'
               }`} />
+            </div>
+          </div>
+        </Link>
+
+        {/* Price Latency Analyzer Link */}
+        <Link to="/price-latency" className="block">
+          <div className="relative overflow-hidden rounded-xl border border-border/50 bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-transparent hover:border-amber-500/30 p-4 transition-all group cursor-pointer">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-amber-500/20 flex items-center justify-center">
+                  <Timer className="w-5 h-5 text-amber-400" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-lg flex items-center gap-2">
+                    Price Latency Analyzer
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    Real-time Binance vs Polymarket latency comparison
+                  </p>
+                </div>
+              </div>
+              <ArrowRight className="w-5 h-5 text-amber-400 group-hover:translate-x-1 transition-transform" />
             </div>
           </div>
         </Link>
