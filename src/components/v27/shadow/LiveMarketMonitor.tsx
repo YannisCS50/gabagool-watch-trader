@@ -24,7 +24,7 @@ interface LiveMarketRow {
   downBid: number;
   downAsk: number;
   spreadTicks: number;
-  mispricingCents: number;
+  mispricingDollars: number;
   mispricingPctThreshold: number;
   nearSignal: boolean;
   hotSignal: boolean;
@@ -82,10 +82,11 @@ export function LiveMarketMonitor() {
             const expectedUp = Number(e.theoretical_up) || 0.5;
             const expectedDown = Number(e.theoretical_down) || 0.5;
             
-            // mispricing_magnitude is already in decimal (e.g., 0.0325 = 3.25 cents)
-            const mispricingDecimal = Number(e.mispricing_magnitude) || 0;
-            const threshold = Number(e.dynamic_threshold) || Number(e.base_threshold) || 0.03;
-            const mispricingPctThreshold = threshold > 0 ? (mispricingDecimal / threshold) * 100 : 0;
+            // mispricing_magnitude is in DOLLARS (spot price difference)
+            // e.g., BTC: 125.5 = $125.50, ETH: 5.05 = $5.05, SOL: -0.29 = -$0.29
+            const mispricingDollars = Number(e.mispricing_magnitude) || 0;
+            const threshold = Number(e.dynamic_threshold) || Number(e.base_threshold) || 1;
+            const mispricingPctThreshold = threshold > 0 ? (mispricingDollars / threshold) * 100 : 0;
             
             const nearSignal = mispricingPctThreshold >= 60;
             const hotSignal = mispricingPctThreshold >= 85 || e.signal_valid;
@@ -112,7 +113,7 @@ export function LiveMarketMonitor() {
               downBid,
               downAsk,
               spreadTicks: Math.round(((upAsk - upBid) + (downAsk - downBid)) / 2 * 100),
-              mispricingCents: mispricingDecimal * 100, // Convert decimal to cents (0.0325 -> 3.25¢)
+              mispricingDollars,
               mispricingPctThreshold,
               nearSignal,
               hotSignal,
@@ -248,7 +249,11 @@ export function LiveMarketMonitor() {
                   <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/50 text-xs">
                     <span className="text-muted-foreground">Mispricing</span>
                     <div className="flex items-center gap-2">
-                      <span className="font-mono">{m.mispricingCents.toFixed(1)}¢</span>
+                      <span className="font-mono">
+                        {Math.abs(m.mispricingDollars) < 1 
+                          ? `${(m.mispricingDollars * 100).toFixed(1)}¢` 
+                          : `$${m.mispricingDollars.toFixed(2)}`}
+                      </span>
                       <span className={cn(
                         "font-mono font-bold",
                         m.mispricingPctThreshold >= 100 && "text-green-400",
@@ -330,7 +335,9 @@ export function LiveMarketMonitor() {
                     {m.spreadTicks}t
                   </TableCell>
                   <TableCell className="text-right font-mono text-sm">
-                    {m.mispricingCents.toFixed(1)}¢
+                    {Math.abs(m.mispricingDollars) < 1 
+                      ? `${(m.mispricingDollars * 100).toFixed(1)}¢` 
+                      : `$${m.mispricingDollars.toFixed(2)}`}
                   </TableCell>
                   <TableCell className="text-right">
                     <span className={cn(
