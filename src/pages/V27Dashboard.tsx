@@ -14,6 +14,7 @@ import { useV27Data } from '@/hooks/useV27Data';
 import { useV27Evaluations } from '@/hooks/useV27Evaluations';
 import { V27SkipReasonsCard } from '@/components/v27/V27SkipReasonsCard';
 import { V27ConfigEditor } from '@/components/v27/V27ConfigEditor';
+import { V27MarketsAccordion } from '@/components/v27/V27MarketsAccordion';
 import { format, formatDistanceToNow } from 'date-fns';
 import { nl } from 'date-fns/locale';
 
@@ -21,7 +22,7 @@ export default function V27Dashboard() {
   const navigate = useNavigate();
   const { entries, signals, stats, loading, runnerStatus, refetch } = useV27Data();
   const { evaluations, config, stats: evalStats, refetch: refetchEvals } = useV27Evaluations(500);
-  const [activeTab, setActiveTab] = useState<'overview' | 'signals' | 'entries' | 'config'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'markets' | 'signals' | 'entries' | 'config'>('overview');
 
   const formatCurrency = (value: number) => {
     const prefix = value >= 0 ? '+$' : '-$';
@@ -240,6 +241,7 @@ export default function V27Dashboard() {
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)}>
         <TabsList className="mb-4">
           <TabsTrigger value="overview">Overview</TabsTrigger>
+          <TabsTrigger value="markets">Markets</TabsTrigger>
           <TabsTrigger value="signals">Signals ({signals.length})</TabsTrigger>
           <TabsTrigger value="entries">Entries ({entries.length})</TabsTrigger>
           <TabsTrigger value="config" className="flex items-center gap-1">
@@ -332,6 +334,11 @@ export default function V27Dashboard() {
             {/* Skip Reasons */}
             <V27SkipReasonsCard evaluations={evaluations} />
           </div>
+        </TabsContent>
+
+        {/* Markets Tab */}
+        <TabsContent value="markets">
+          <V27MarketsAccordion />
         </TabsContent>
 
         {/* Signals Tab */}
