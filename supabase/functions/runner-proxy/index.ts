@@ -57,6 +57,8 @@ type Action =
   | 'save-mtm-snapshot'
   | 'save-gabagool-metrics'
   | 'get-v26-config'
+  // V27 analytics
+  | 'save-v27-evaluation'
   // Toxicity Filter v2
   | 'save-toxicity-features'
   | 'update-toxicity-outcome'
