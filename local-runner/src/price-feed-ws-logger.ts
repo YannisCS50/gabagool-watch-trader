@@ -44,8 +44,8 @@ interface LoggerStats {
 
 // Config
 const BINANCE_WS_URL = 'wss://stream.binance.com:9443/ws';
-// Polymarket RTDS URL for crypto prices - see docs.polymarket.com/developers/RTDS
-const POLYMARKET_RTDS_URL = 'wss://rtds.polymarket.com';
+// Polymarket RTDS connection details (official docs): wss://ws-live-data.polymarket.com
+const POLYMARKET_RTDS_URL = 'wss://ws-live-data.polymarket.com';
 
 const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP'];
 const BINANCE_SYMBOLS = ['btcusdt', 'ethusdt', 'solusdt', 'xrpusdt'];
@@ -299,16 +299,21 @@ function connectPolymarket(): void {
     stats.polymarket.connected = true;
     stats.polymarket.lastMessageAt = Date.now();
 
-    // Subscribe to crypto prices (Polymarket + Chainlink) using proper RTDS format
-    // See: docs.polymarket.com/developers/RTDS
-    polymarketWs?.send(JSON.stringify({
-      action: 'subscribe',
-      subscriptions: [
-        { topic: 'crypto_prices', type: 'update' },
-        { topic: 'crypto_prices_chainlink', type: 'update' }
-      ]
-    }));
-    
+    // Subscribe using RTDS format (docs.polymarket.com/developers/RTDS/RTDS-crypto-prices)
+    // - crypto_prices: Binance symbols like "btcusdt"
+    // - crypto_prices_chainlink: symbols like "btc/usd"
+    const cryptoPricesFilters = BINANCE_SYMBOLS.join(',');
+
+    polymarketWs?.send(
+      JSON.stringify({
+        action: 'subscribe',
+        subscriptions: [
+          { topic: 'crypto_prices', type: 'update', filters: cryptoPricesFilters },
+          { topic: 'crypto_prices_chainlink', type: '*', filters: '' },
+        ],
+      })
+    );
+
     console.log('[PriceFeedLogger] 📡 Subscribed to crypto_prices + crypto_prices_chainlink');
   });
 
@@ -321,20 +326,31 @@ function connectPolymarket(): void {
 
       // Log first few messages for debugging
       if (stats.polymarket.messageCount <= 5) {
-        console.log('[PriceFeedLogger] PM msg:', JSON.stringify(msg).slice(0, 200));
+        console.log('[PriceFeedLogger] PM msg:', JSON.stringify(msg).slice(0, 220));
       }
 
-      // Handle crypto_prices topic - format: { topic, type, timestamp, payload: { symbol, value, timestamp } }
-      if (msg.topic === 'crypto_prices' && msg.payload) {
-        const payload = msg.payload;
-        const symbol = payload.symbol?.replace('/usd', '')?.toUpperCase();
-        const price = payload.value;
-        const timestamp = payload.timestamp || msg.timestamp || now;
-        
-        if (price > 0 && symbol && ASSETS.includes(symbol)) {
+      const toAsset = (raw: unknown): string | null => {
+        if (typeof raw !== 'string' || raw.length === 0) return null;
+        const s = raw.toLowerCase();
+        // Chainlink format: "btc/usd"
+        if (s.includes('/')) return s.split('/')[0]?.toUpperCase() ?? null;
+        // Binance format: "btcusdt"
+        if (s.endsWith('usdt')) return s.slice(0, -4).toUpperCase();
+        return s.toUpperCase();
+      };
+
+      // Message format (both topics): { topic, type, timestamp, payload: { symbol, value, timestamp } }
+      if ((msg.topic === 'crypto_prices' || msg.topic === 'crypto_prices_chainlink') && msg.payload) {
+        const payload = msg.payload as { symbol?: unknown; value?: unknown; timestamp?: unknown };
+        const asset = toAsset(payload.symbol);
+        const price = typeof payload.value === 'number' ? payload.value : Number(payload.value);
+        const ts = typeof payload.timestamp === 'number' ? payload.timestamp : Number(payload.timestamp);
+        const timestamp = Number.isFinite(ts) ? ts : (msg.timestamp ?? now);
+
+        if (asset && ASSETS.includes(asset) && Number.isFinite(price) && price > 0) {
           addTick({
-            source: 'polymarket_rtds',
-            asset: symbol,
+            source: msg.topic === 'crypto_prices' ? 'polymarket_rtds' : 'chainlink_rtds',
+            asset,
             price,
             raw_timestamp: timestamp,
             received_at: now,
@@ -342,25 +358,7 @@ function connectPolymarket(): void {
         }
       }
 
-      // Handle crypto_prices_chainlink topic - same format
-      if (msg.topic === 'crypto_prices_chainlink' && msg.payload) {
-        const payload = msg.payload;
-        const symbol = payload.symbol?.replace('/usd', '')?.toUpperCase();
-        const price = payload.value;
-        const timestamp = payload.timestamp || msg.timestamp || now;
-        
-        if (price > 0 && symbol && ASSETS.includes(symbol)) {
-          addTick({
-            source: 'chainlink_rtds',
-            asset: symbol,
-            price,
-            raw_timestamp: timestamp,
-            received_at: now,
-          });
-        }
-      }
-
-      // Also handle legacy batch format just in case
+      // Legacy batch format fallback (older RTDS versions)
       if (msg.topic === 'crypto_prices' && msg.data && !msg.payload) {
         const timestamp = msg.timestamp || now;
         for (const [asset, priceData] of Object.entries(msg.data)) {
@@ -413,7 +411,7 @@ function checkWebSocketHealth(): void {
   const binanceStale = stats.binance.lastMessageAt > 0 && 
                        (now - stats.binance.lastMessageAt) > STALE_THRESHOLD_MS;
   
-  if (binanceStale || (!stats.binance.connected && binanceWs?.readyState !== WebSocket.CONNECTING)) {
+  if (!binanceReconnectTimer && (binanceStale || (!stats.binance.connected && binanceWs?.readyState !== WebSocket.CONNECTING))) {
     console.log(`[PriceFeedLogger] ⚠️ Binance appears stale or disconnected (last msg: ${Math.round((now - stats.binance.lastMessageAt) / 1000)}s ago)`);
     forceReconnectBinance();
   }
@@ -422,7 +420,7 @@ function checkWebSocketHealth(): void {
   const polymarketStale = stats.polymarket.lastMessageAt > 0 && 
                           (now - stats.polymarket.lastMessageAt) > STALE_THRESHOLD_MS;
   
-  if (polymarketStale || (!stats.polymarket.connected && polymarketWs?.readyState !== WebSocket.CONNECTING)) {
+  if (!polymarketReconnectTimer && (polymarketStale || (!stats.polymarket.connected && polymarketWs?.readyState !== WebSocket.CONNECTING))) {
     console.log(`[PriceFeedLogger] ⚠️ Polymarket appears stale or disconnected (last msg: ${Math.round((now - stats.polymarket.lastMessageAt) / 1000)}s ago)`);
     forceReconnectPolymarket();
   }
@@ -466,12 +464,12 @@ export function startPriceFeedLogger(): void {
     }
   }, FLUSH_INTERVAL_MS);
 
-  // Keep-alive pings
+  // Keep-alive pings (RTDS expects literal "PING")
   pingInterval = setInterval(() => {
     if (polymarketWs?.readyState === WebSocket.OPEN) {
-      polymarketWs.send(JSON.stringify({ action: 'ping' }));
+      polymarketWs.send('PING');
     }
-  }, 30000);
+  }, 10000);
 
   // Health check - auto-reconnect stale connections
   healthCheckInterval = setInterval(checkWebSocketHealth, HEALTH_CHECK_INTERVAL_MS);
