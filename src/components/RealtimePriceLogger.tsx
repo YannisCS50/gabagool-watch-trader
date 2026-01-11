@@ -3,9 +3,11 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { RefreshCw, Database, Zap, Server, TrendingUp, Activity, Clock } from 'lucide-react';
+import { RefreshCw, Database, Zap, Server, TrendingUp, Activity, Clock, Wifi, WifiOff } from 'lucide-react';
 import { format } from 'date-fns';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend, ReferenceLine } from 'recharts';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 interface PriceLog {
   id: string;
@@ -26,9 +28,20 @@ export function RealtimePriceLogger() {
     fetchRecentLogs,
   } = useRealtimePriceLogs();
 
+  const [selectedAsset, setSelectedAsset] = useState<string>('BTC');
+
   // Calculate analytics from logs
   const analytics = useMemo(() => {
     if (logs.length === 0) return null;
+
+    const now = Date.now();
+    const tenSecondsAgo = now - 10_000;
+    const oneMinuteAgo = now - 60_000;
+
+    // Check WebSocket status (data received in last 10 seconds)
+    const recentLogs = logs.filter(log => new Date(log.received_at).getTime() > tenSecondsAgo);
+    const binanceOnline = recentLogs.some(log => log.source.includes('binance'));
+    const polymarketOnline = recentLogs.some(log => log.source.includes('polymarket') || log.source.includes('chainlink'));
 
     // Group by source
     const bySource: Record<string, PriceLog[]> = {};
@@ -110,6 +123,24 @@ export function RealtimePriceLogger() {
       }
     });
 
+    // Get last update time per source
+    const lastUpdate: Record<string, Date | null> = {
+      binance: null,
+      polymarket: null,
+      chainlink: null,
+    };
+    logs.forEach((log) => {
+      const sourceKey = log.source.includes('binance') ? 'binance' : 
+                        log.source.includes('polymarket') ? 'polymarket' : 
+                        log.source.includes('chainlink') ? 'chainlink' : null;
+      if (sourceKey) {
+        const logTime = new Date(log.received_at);
+        if (!lastUpdate[sourceKey] || logTime > lastUpdate[sourceKey]!) {
+          lastUpdate[sourceKey] = logTime;
+        }
+      }
+    });
+
     return {
       bySource,
       byAsset,
@@ -117,8 +148,67 @@ export function RealtimePriceLogger() {
       latestPrices,
       priceDeltas,
       totalLogs: logs.length,
+      binanceOnline,
+      polymarketOnline,
+      lastUpdate,
+      assets: Object.keys(byAsset),
     };
   }, [logs]);
+
+  // Build chart data for selected asset (last minute)
+  const chartData = useMemo(() => {
+    if (!analytics || !selectedAsset) return [];
+
+    const now = Date.now();
+    const oneMinuteAgo = now - 60_000;
+
+    // Filter logs for selected asset in last minute
+    const assetLogs = logs.filter(log => 
+      log.asset === selectedAsset && 
+      new Date(log.received_at).getTime() > oneMinuteAgo
+    );
+
+    // Group by time bucket (500ms buckets for smooth chart)
+    const buckets: Record<number, { binance?: number; polymarket?: number; chainlink?: number; time: number }> = {};
+    
+    assetLogs.forEach(log => {
+      const ts = new Date(log.received_at).getTime();
+      const bucket = Math.floor(ts / 500) * 500; // 500ms buckets
+      
+      if (!buckets[bucket]) {
+        buckets[bucket] = { time: bucket };
+      }
+      
+      const sourceKey = log.source.includes('binance') ? 'binance' : 
+                        log.source.includes('polymarket') ? 'polymarket' : 
+                        log.source.includes('chainlink') ? 'chainlink' : null;
+      
+      if (sourceKey) {
+        buckets[bucket][sourceKey] = log.price;
+      }
+    });
+
+    // Convert to array and sort by time
+    const data = Object.values(buckets).sort((a, b) => a.time - b.time);
+
+    // Forward-fill missing values for smoother chart
+    let lastBinance: number | undefined;
+    let lastPolymarket: number | undefined;
+    let lastChainlink: number | undefined;
+    
+    data.forEach(point => {
+      if (point.binance !== undefined) lastBinance = point.binance;
+      else if (lastBinance !== undefined) point.binance = lastBinance;
+      
+      if (point.polymarket !== undefined) lastPolymarket = point.polymarket;
+      else if (lastPolymarket !== undefined) point.polymarket = lastPolymarket;
+      
+      if (point.chainlink !== undefined) lastChainlink = point.chainlink;
+      else if (lastChainlink !== undefined) point.chainlink = lastChainlink;
+    });
+
+    return data;
+  }, [logs, selectedAsset, analytics]);
 
   const getSourceBadge = (source: string) => {
     if (source.includes('binance')) {
@@ -133,20 +223,93 @@ export function RealtimePriceLogger() {
     return <Badge variant="outline" className="font-mono text-xs">{source.slice(0, 3).toUpperCase()}</Badge>;
   };
 
+  const formatChartTime = (ts: number) => {
+    return format(new Date(ts), 'HH:mm:ss');
+  };
+
   return (
     <div className="space-y-4">
-      {/* Status Banner */}
+      {/* WebSocket Status */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Card className="bg-[#161B22] border-[#30363D]">
+          <CardContent className="pt-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                {analytics?.binanceOnline ? (
+                  <Wifi className="h-6 w-6 text-green-400" />
+                ) : (
+                  <WifiOff className="h-6 w-6 text-red-400" />
+                )}
+                <div>
+                  <div className="font-semibold text-[#E6EDF3]">Binance WebSocket</div>
+                  <div className="text-xs text-muted-foreground">
+                    wss://stream.binance.com
+                  </div>
+                </div>
+              </div>
+              <div className="text-right">
+                <Badge className={analytics?.binanceOnline ? 'bg-green-600' : 'bg-red-600'}>
+                  {analytics?.binanceOnline ? 'ONLINE' : 'OFFLINE'}
+                </Badge>
+                {analytics?.lastUpdate?.binance && (
+                  <div className="text-xs text-muted-foreground mt-1">
+                    Last: {format(analytics.lastUpdate.binance, 'HH:mm:ss')}
+                  </div>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="bg-[#161B22] border-[#30363D]">
+          <CardContent className="pt-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                {analytics?.polymarketOnline ? (
+                  <Wifi className="h-6 w-6 text-green-400" />
+                ) : (
+                  <WifiOff className="h-6 w-6 text-red-400" />
+                )}
+                <div>
+                  <div className="font-semibold text-[#E6EDF3]">Polymarket WebSocket</div>
+                  <div className="text-xs text-muted-foreground">
+                    wss://ws-live-data.polymarket.com
+                  </div>
+                </div>
+              </div>
+              <div className="text-right">
+                <Badge className={analytics?.polymarketOnline ? 'bg-green-600' : 'bg-red-600'}>
+                  {analytics?.polymarketOnline ? 'ONLINE' : 'OFFLINE'}
+                </Badge>
+                {(analytics?.lastUpdate?.polymarket || analytics?.lastUpdate?.chainlink) && (
+                  <div className="text-xs text-muted-foreground mt-1">
+                    Last: {format(analytics.lastUpdate.polymarket || analytics.lastUpdate.chainlink!, 'HH:mm:ss')}
+                  </div>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Price Comparison Chart */}
       <Card className="bg-[#161B22] border-[#30363D]">
         <CardHeader className="pb-3">
-          <CardTitle className="flex items-center justify-between text-[#E6EDF3]">
-            <span className="flex items-center gap-2">
-              <Activity className="h-5 w-5 text-green-400" />
-              WebSocket Price Analytics
-            </span>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base text-[#E6EDF3] flex items-center gap-2">
+              <Activity className="h-4 w-4" /> Price Timeline (Last 60s)
+            </CardTitle>
             <div className="flex items-center gap-2">
-              <Badge variant="default" className="bg-green-600">
-                <Server className="h-3 w-3 mr-1" /> Runner Active
-              </Badge>
+              <Select value={selectedAsset} onValueChange={setSelectedAsset}>
+                <SelectTrigger className="w-24 h-8 bg-[#21262D] border-[#30363D] text-[#E6EDF3]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-[#21262D] border-[#30363D]">
+                  {(analytics?.assets || ['BTC', 'ETH', 'SOL', 'XRP']).map(asset => (
+                    <SelectItem key={asset} value={asset} className="text-[#E6EDF3]">{asset}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <Button
                 onClick={() => fetchRecentLogs(500)}
                 variant="outline"
@@ -158,15 +321,77 @@ export function RealtimePriceLogger() {
                 Refresh
               </Button>
             </div>
-          </CardTitle>
+          </div>
         </CardHeader>
         <CardContent>
-          {error && (
-            <div className="text-red-400 text-sm mb-4 p-2 bg-red-900/20 rounded">{error}</div>
+          {chartData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={250}>
+              <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                <XAxis 
+                  dataKey="time" 
+                  tickFormatter={formatChartTime}
+                  stroke="#8B949E"
+                  fontSize={10}
+                  tickLine={false}
+                />
+                <YAxis 
+                  domain={['auto', 'auto']}
+                  stroke="#8B949E"
+                  fontSize={10}
+                  tickLine={false}
+                  tickFormatter={(value) => `$${value.toLocaleString()}`}
+                />
+                <Tooltip 
+                  contentStyle={{ backgroundColor: '#21262D', border: '1px solid #30363D', borderRadius: '8px' }}
+                  labelStyle={{ color: '#E6EDF3' }}
+                  labelFormatter={(label) => format(new Date(label), 'HH:mm:ss.SSS')}
+                  formatter={(value: number, name: string) => [
+                    `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+                    name.charAt(0).toUpperCase() + name.slice(1)
+                  ]}
+                />
+                <Legend />
+                <Line 
+                  type="stepAfter" 
+                  dataKey="binance" 
+                  stroke="#F0B90B" 
+                  strokeWidth={2} 
+                  dot={false}
+                  name="Binance"
+                  connectNulls
+                />
+                <Line 
+                  type="stepAfter" 
+                  dataKey="polymarket" 
+                  stroke="#8B5CF6" 
+                  strokeWidth={2} 
+                  dot={false}
+                  name="Polymarket"
+                  connectNulls
+                />
+                <Line 
+                  type="stepAfter" 
+                  dataKey="chainlink" 
+                  stroke="#375BD2" 
+                  strokeWidth={2} 
+                  dot={false}
+                  name="Chainlink"
+                  connectNulls
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="h-[250px] flex items-center justify-center text-muted-foreground">
+              No data in last 60 seconds for {selectedAsset}
+            </div>
           )}
+        </CardContent>
+      </Card>
 
-          {/* Key Metrics */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+      {/* Key Metrics */}
+      <Card className="bg-[#161B22] border-[#30363D]">
+        <CardContent className="pt-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div className="bg-[#21262D] rounded-lg p-3">
               <div className="text-xs text-muted-foreground flex items-center gap-1">
                 <Database className="h-3 w-3" /> Total in DB
@@ -278,32 +503,13 @@ export function RealtimePriceLogger() {
         </Card>
       )}
 
-      {/* Source Distribution */}
-      {analytics && (
-        <Card className="bg-[#161B22] border-[#30363D]">
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base text-[#E6EDF3]">Source Distribution (in view)</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="flex flex-wrap gap-3">
-              {Object.entries(analytics.bySource).map(([source, sourceLogs]) => (
-                <div key={source} className="bg-[#21262D] rounded-lg px-4 py-2 flex items-center gap-2">
-                  <span className="text-sm capitalize text-[#E6EDF3]">{source}</span>
-                  <Badge variant="secondary">{sourceLogs.length}</Badge>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
       {/* Recent Logs Table */}
       <Card className="bg-[#161B22] border-[#30363D]">
         <CardHeader className="pb-3">
           <CardTitle className="text-base text-[#E6EDF3]">Recent Logs ({logs.length})</CardTitle>
         </CardHeader>
         <CardContent>
-          <ScrollArea className="h-[400px]">
+          <ScrollArea className="h-[300px]">
             <div className="space-y-1">
               {logs.length === 0 ? (
                 <div className="text-center text-muted-foreground py-8">
@@ -311,7 +517,7 @@ export function RealtimePriceLogger() {
                   <p className="text-xs mt-2">Start runner with: <code className="bg-[#21262D] px-2 py-1 rounded">FEATURE_PRICE_LOGGER=true npm start</code></p>
                 </div>
               ) : (
-                logs.map((log) => {
+                logs.slice(0, 100).map((log) => {
                   const receivedAt = new Date(log.received_at).getTime();
                   const latencyMs = log.raw_timestamp ? receivedAt - log.raw_timestamp : null;
                   
