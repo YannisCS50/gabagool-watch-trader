@@ -207,7 +207,8 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
   const V26_GO_LIVE_DATE = '2026-01-07T14:30:00+00:00';
 
   const fetchData = async () => {
-    setLoading(true);
+    // Only show a blocking spinner on cold start; keep existing data visible on refresh
+    setLoading(trades.length === 0);
 
     // Debug logging (opt-in). Enable by adding `?v26Debug=1` to the URL.
     const debugV26 = (() => {
@@ -733,11 +734,9 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
     // Calculate ROI
     const roi = totalInvested > 0 ? (totalPnl / totalInvested) * 100 : 0;
 
-    setTrades(logs);
-    setAssetStats(perAsset);
-    setFillTimeStats(fillTimeStatsCalc);
-    setTimingAnalysis({ beforeOpen: beforeOpenStats, afterOpen: afterOpenStats, pValue: timingPValue });
-    setStats({
+    const nextTimingAnalysis = { beforeOpen: beforeOpenStats, afterOpen: afterOpenStats, pValue: timingPValue };
+
+    const nextStats = {
       totalBets: logs.length,
       filledBets: totalFilled,
       wins: totalWins,
@@ -757,9 +756,34 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
       maxWinStreak,
       maxLossStreak,
       profitFactor,
-    });
+    };
+
+    setTrades(logs);
+    setAssetStats(perAsset);
+    setFillTimeStats(fillTimeStatsCalc);
+    setTimingAnalysis(nextTimingAnalysis);
+    setStats(nextStats);
+
+    // Cache the last computed state so the dashboard can render instantly on refresh.
+    try {
+      localStorage.setItem(
+        'v26_dashboard_cache_v1',
+        JSON.stringify({
+          cachedAt: new Date().toISOString(),
+          trades: logs,
+          assetStats: perAsset,
+          fillTimeStats: fillTimeStatsCalc,
+          timingAnalysis: nextTimingAnalysis,
+          stats: nextStats,
+        })
+      );
+    } catch {
+      // ignore cache write errors (e.g., quota exceeded)
+    }
+
     setLoading(false);
   };
+
 
   const fetchRunnerStatus = async () => {
     const { data, error } = await supabase
@@ -810,13 +834,29 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
   };
 
   useEffect(() => {
+    // INSTANT: paint last known state from local cache (if available)
+    try {
+      const raw = localStorage.getItem('v26_dashboard_cache_v1');
+      if (raw) {
+        const cached = JSON.parse(raw) as any;
+        if (Array.isArray(cached?.trades)) setTrades(cached.trades);
+        if (cached?.stats) setStats(cached.stats);
+        if (cached?.assetStats) setAssetStats(cached.assetStats);
+        if (cached?.fillTimeStats) setFillTimeStats(cached.fillTimeStats);
+        if (cached?.timingAnalysis) setTimingAnalysis(cached.timingAnalysis);
+        setLoading(false);
+      }
+    } catch {
+      // ignore cache read errors
+    }
+
     // FAST: Fetch all data in parallel immediately on mount
     Promise.all([
       fetchData(),
       fetchRunnerStatus(),
       fetchClaimables(),
-    ]).catch(err => console.error('[V26Dashboard] Initial fetch error:', err));
-    
+    ]).catch((err) => console.error('[V26Dashboard] Initial fetch error:', err));
+
     // Auto-sync fills AND auto-settle every 2 minutes (silently in background)
     const autoSyncAndSettle = async () => {
       try {
@@ -1102,14 +1142,14 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
             </TabsTrigger>
           </TabsList>
 
-          {/* Subgraph Tab Content */}
+          {/* Subgraph Tab Content (lazy-mounted for faster initial load) */}
           <TabsContent value="subgraph" className="mt-4">
-            <SubgraphDashboard />
+            {activeTab === 'subgraph' ? <SubgraphDashboard /> : null}
           </TabsContent>
 
-          {/* Toxicity Filter Tab Content */}
+          {/* Toxicity Filter Tab Content (lazy-mounted for faster initial load) */}
           <TabsContent value="toxicity" className="mt-4">
-            <ToxicityFilterDashboard />
+            {activeTab === 'toxicity' ? <ToxicityFilterDashboard /> : null}
           </TabsContent>
 
           {/* Local Tab Content */}
