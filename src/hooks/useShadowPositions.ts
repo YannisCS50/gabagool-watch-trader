@@ -218,9 +218,20 @@ export function useShadowPositions(limit: number = 500) {
   }, [fetchData]);
 
   // DERIVE positions from evaluations
+  // CRITICAL: Only 1 position per market+side (no stacking!)
   const positions = useMemo((): ShadowPosition[] => {
-    return rawEvaluations.map((e) => {
+    const positionMap = new Map<string, ShadowPosition>();
+    
+    // Sort by timestamp (oldest first) to keep the FIRST entry per market+side
+    const sorted = [...rawEvaluations].sort((a, b) => a.ts - b.ts);
+    
+    for (const e of sorted) {
       const side = (e.mispricing_side || 'UP') as 'UP' | 'DOWN';
+      const key = `${e.market_id}:${side}`;
+      
+      // Skip if we already have a position for this market+side
+      if (positionMap.has(key)) continue;
+      
       const entryPrice = side === 'UP' 
         ? (e.pm_up_ask || 0.5) 
         : (e.pm_down_ask || 0.5);
@@ -261,7 +272,7 @@ export function useShadowPositions(limit: number = 500) {
       
       const fees = sizeUsd * 0.002; // 0.2% fee
 
-      return {
+      positionMap.set(key, {
         id: e.id,
         market_id: e.market_id,
         asset: e.asset,
@@ -297,8 +308,10 @@ export function useShadowPositions(limit: number = 500) {
         roi_pct: sizeUsd > 0 ? (netPnl / sizeUsd) * 100 : 0,
         combined_price_paid: cpp,
         created_at: e.created_at,
-      };
-    });
+      });
+    }
+    
+    return Array.from(positionMap.values());
   }, [rawEvaluations]);
 
   // DERIVE executions from positions
