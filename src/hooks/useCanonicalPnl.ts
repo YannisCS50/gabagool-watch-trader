@@ -90,7 +90,8 @@ export function useCanonicalPnlSummary(wallet?: string) {
       return data as PnlSummary | null;
     },
     enabled: !!wallet,
-    refetchInterval: 30000,
+    staleTime: 5000,
+    refetchInterval: 10000,
   });
 }
 
@@ -113,7 +114,8 @@ export function useCanonicalMarketPnl(wallet?: string) {
       return (data || []) as MarketPnl[];
     },
     enabled: !!wallet,
-    refetchInterval: 30000,
+    staleTime: 5000,
+    refetchInterval: 10000,
   });
 }
 
@@ -183,7 +185,8 @@ export function useMarketLifecycle(wallet?: string) {
       return data || [];
     },
     enabled: !!wallet,
-    refetchInterval: 30000,
+    staleTime: 5000,
+    refetchInterval: 10000,
   });
 }
 

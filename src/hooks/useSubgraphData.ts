@@ -124,7 +124,8 @@ export function useSubgraphFills(wallet?: string, limit = 100) {
       return (data || []) as SubgraphFill[];
     },
     enabled: !!wallet,
-    refetchInterval: 30000,
+    staleTime: 5000,
+    refetchInterval: 10000,
   });
 }
 
@@ -147,7 +148,8 @@ export function useSubgraphPositions(wallet?: string) {
       return (data || []) as SubgraphPosition[];
     },
     enabled: !!wallet,
-    refetchInterval: 30000,
+    staleTime: 5000,
+    refetchInterval: 10000,
   });
 }
 
@@ -215,7 +217,8 @@ export function useSubgraphSyncState(wallet?: string) {
       return (data || []) as SubgraphSyncState[];
     },
     enabled: !!wallet,
-    refetchInterval: 10000,
+    staleTime: 3000,
+    refetchInterval: 5000,
   });
 }
 
