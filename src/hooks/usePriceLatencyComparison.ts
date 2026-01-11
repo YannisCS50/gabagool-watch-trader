@@ -28,7 +28,6 @@ const SYMBOL_MAP: Record<Asset, { binance: string; binanceWs: string; chainlink:
 
 const MAX_TICKS = 2000;
 const MAX_MEASUREMENTS = 1000;
-const CHAINLINK_POLL_MS = 500; // Chainlink updates ~1/sec on-chain
 
 interface PriceLatencyState {
   selectedAsset: Asset;
@@ -46,6 +45,7 @@ interface PriceLatencyState {
   eventLog: Array<{ timestamp: number; source: 'binance' | 'chainlink'; symbol: string; price: number; latencyLead?: number }>;
   lastError: string | null;
   binanceWsStatus: 'connecting' | 'connected' | 'disconnected' | 'error';
+  chainlinkWsStatus: 'connecting' | 'connected' | 'disconnected' | 'error';
 }
 
 export function usePriceLatencyComparison() {
@@ -65,10 +65,12 @@ export function usePriceLatencyComparison() {
     eventLog: [],
     lastError: null,
     binanceWsStatus: 'disconnected',
+    chainlinkWsStatus: 'disconnected',
   });
 
   const binanceWsRef = useRef<WebSocket | null>(null);
-  const chainlinkPollRef = useRef<number | null>(null);
+  const chainlinkWsRef = useRef<WebSocket | null>(null);
+  const chainlinkFeedsRef = useRef<Record<string, string>>({});
   const lastBinancePriceRef = useRef<Map<string, { price: number; timestamp: number }>>(new Map());
   const lastChainlinkPriceRef = useRef<Map<string, { price: number; timestamp: number }>>(new Map());
 
@@ -105,13 +107,11 @@ export function usePriceLatencyComparison() {
       const data = JSON.parse(event.data);
       const receivedAt = Date.now();
       
-      // Trade stream format: { e: "trade", s: "BTCUSDT", p: "12345.67", T: 1234567890123 }
       if (data.e === 'trade') {
         const symbol = data.s.toLowerCase();
         const price = parseFloat(data.p);
-        const tradeTime = data.T; // Exchange timestamp in ms
+        const tradeTime = data.T;
         
-        // Find which asset this is
         const asset = Object.entries(SYMBOL_MAP).find(([_, v]) => v.binance === symbol)?.[0] as Asset | undefined;
         if (!asset) return;
 
@@ -132,12 +132,10 @@ export function usePriceLatencyComparison() {
           let newMeasurements = prev.latencyMeasurements;
           let latencyLead: number | undefined;
           
-          // Calculate latency against last Chainlink price for this asset
           const lastChainlink = lastChainlinkPriceRef.current.get(asset);
           if (lastChainlink && isCurrentAsset) {
-            // Binance timestamp vs Chainlink timestamp
             const latencyMs = tradeTime - lastChainlink.timestamp;
-            latencyLead = -latencyMs; // Negative means Binance is ahead
+            latencyLead = -latencyMs;
             newMeasurements = [...prev.latencyMeasurements, {
               binanceTimestamp: tradeTime,
               chainlinkTimestamp: lastChainlink.timestamp,
@@ -167,119 +165,123 @@ export function usePriceLatencyComparison() {
     }
   }, []);
 
-  // Fetch Chainlink prices via edge function
-  const fetchChainlinkPrices = useCallback(async () => {
+  // Handle Chainlink WebSocket message (Alchemy eth_subscribe logs)
+  const handleChainlinkMessage = useCallback((event: MessageEvent) => {
     try {
+      const msg = JSON.parse(event.data);
       const receivedAt = Date.now();
-      const { data, error } = await supabase.functions.invoke('price-feeds', {
-        body: { assets: ['BTC', 'ETH', 'SOL', 'XRP'], chainlinkOnly: true }
-      });
+      
+      // Handle subscription confirmation
+      if (msg.result && typeof msg.result === 'string') {
+        console.log('Chainlink subscription confirmed:', msg.result);
+        setState(prev => ({ ...prev, chainlinkWsStatus: 'connected' }));
+        return;
+      }
+      
+      // Handle log events
+      if (msg.params?.result) {
+        const log = msg.params.result;
+        const contractAddress = log.address.toLowerCase();
+        
+        // Find which asset this is
+        const asset = Object.entries(chainlinkFeedsRef.current).find(
+          ([_, addr]) => addr.toLowerCase() === contractAddress
+        )?.[0] as Asset | undefined;
+        
+        if (!asset) return;
+        
+        // Decode the event
+        // topics[0] = event signature
+        // topics[1] = indexed current (answer) - int256
+        // topics[2] = indexed roundId - uint256
+        // data = updatedAt - uint256
+        
+        const answerHex = log.topics[1];
+        const answer = BigInt(answerHex);
+        // Chainlink uses 8 decimals
+        const price = Number(answer) / 1e8;
+        
+        // Get updatedAt from data
+        const updatedAtHex = log.data.slice(0, 66); // 0x + 64 chars
+        const updatedAt = Number(BigInt(updatedAtHex)) * 1000; // to ms
+        
+        const chainlinkSymbol = SYMBOL_MAP[asset].chainlink;
+        
+        const tick: PriceTick = {
+          source: 'chainlink',
+          symbol: chainlinkSymbol,
+          price,
+          timestamp: updatedAt,
+          receivedAt,
+        };
 
-      if (error) throw error;
+        lastChainlinkPriceRef.current.set(asset, { price, timestamp: updatedAt });
 
-      if (data?.prices) {
         setState(prev => {
-          let newChainlinkTicks = [...prev.chainlinkTicks];
-          let newMeasurements = [...prev.latencyMeasurements];
-          let newEventLog = [...prev.eventLog];
-          let totalChainlink = prev.totalChainlinkTicks;
-          let updates: Partial<PriceLatencyState> = {};
-
-          for (const [asset, priceData] of Object.entries(data.prices as Record<string, { chainlink?: number; chainlink_ts?: number }>)) {
-            if (!priceData.chainlink) continue;
-            
-            const chainlinkSymbol = SYMBOL_MAP[asset as Asset]?.chainlink;
-            if (!chainlinkSymbol) continue;
-            
-            const ts = priceData.chainlink_ts || receivedAt;
-            const price = priceData.chainlink;
-            const isCurrentAsset = asset === prev.selectedAsset;
-
-            // Check if price changed
-            const lastPrice = lastChainlinkPriceRef.current.get(asset);
-            if (lastPrice && lastPrice.price === price && Math.abs(lastPrice.timestamp - ts) < 100) {
-              continue; // Skip duplicate
-            }
-
-            lastChainlinkPriceRef.current.set(asset, { price, timestamp: ts });
-
-            const tick: PriceTick = {
-              source: 'chainlink',
-              symbol: chainlinkSymbol,
-              price,
-              timestamp: ts,
-              receivedAt,
-            };
-            newChainlinkTicks = [...newChainlinkTicks, tick].slice(-MAX_TICKS);
-            totalChainlink++;
-
-            // Calculate latency vs Binance
-            const lastBinance = lastBinancePriceRef.current.get(asset);
-            let latencyLead: number | undefined;
-            if (lastBinance && isCurrentAsset) {
-              const latencyMs = ts - lastBinance.timestamp;
-              latencyLead = latencyMs;
-              newMeasurements = [...newMeasurements, {
-                binanceTimestamp: lastBinance.timestamp,
-                chainlinkTimestamp: ts,
-                latencyMs,
-                priceDiff: Math.abs(price - lastBinance.price),
-                measuredAt: receivedAt,
-              }].slice(-MAX_MEASUREMENTS);
-            }
-
-            if (isCurrentAsset) {
-              updates.chainlinkPrice = price;
-              updates.chainlinkLastUpdate = ts;
-              newEventLog = [
-                { timestamp: receivedAt, source: 'chainlink' as const, symbol: chainlinkSymbol, price, latencyLead },
-                ...newEventLog
-              ].slice(0, 200);
-            }
+          const isCurrentAsset = asset === prev.selectedAsset;
+          const newChainlinkTicks = [...prev.chainlinkTicks, tick].slice(-MAX_TICKS);
+          
+          let newMeasurements = prev.latencyMeasurements;
+          let latencyLead: number | undefined;
+          
+          const lastBinance = lastBinancePriceRef.current.get(asset);
+          if (lastBinance && isCurrentAsset) {
+            const latencyMs = updatedAt - lastBinance.timestamp;
+            latencyLead = latencyMs;
+            newMeasurements = [...prev.latencyMeasurements, {
+              binanceTimestamp: lastBinance.timestamp,
+              chainlinkTimestamp: updatedAt,
+              latencyMs,
+              priceDiff: Math.abs(price - lastBinance.price),
+              measuredAt: receivedAt,
+            }].slice(-MAX_MEASUREMENTS);
           }
+
+          const newEventLog = isCurrentAsset 
+            ? [{ timestamp: receivedAt, source: 'chainlink' as const, symbol: chainlinkSymbol, price, latencyLead }, ...prev.eventLog].slice(0, 200)
+            : prev.eventLog;
 
           return {
             ...prev,
-            ...updates,
+            chainlinkPrice: isCurrentAsset ? price : prev.chainlinkPrice,
+            chainlinkLastUpdate: isCurrentAsset ? updatedAt : prev.chainlinkLastUpdate,
             chainlinkTicks: newChainlinkTicks,
             latencyMeasurements: newMeasurements,
             eventLog: newEventLog,
-            totalChainlinkTicks: totalChainlink,
+            totalChainlinkTicks: prev.totalChainlinkTicks + 1,
           };
         });
       }
     } catch (err) {
-      console.error('Chainlink fetch error:', err);
+      console.error('Chainlink WS parse error:', err);
     }
   }, []);
 
-  const connect = useCallback(() => {
-    // Already connected
+  const connect = useCallback(async () => {
     if (binanceWsRef.current?.readyState === WebSocket.OPEN) return;
 
-    setState(prev => ({ ...prev, connectionStatus: 'connecting', binanceWsStatus: 'connecting' }));
+    setState(prev => ({ 
+      ...prev, 
+      connectionStatus: 'connecting', 
+      binanceWsStatus: 'connecting',
+      chainlinkWsStatus: 'connecting',
+    }));
 
-    // Connect to Binance WebSocket for all assets
+    // 1. Connect to Binance WebSocket
     const streams = Object.values(SYMBOL_MAP).map(s => s.binanceWs).join('/');
-    const wsUrl = `wss://stream.binance.com:9443/stream?streams=${streams}`;
+    const binanceWsUrl = `wss://stream.binance.com:9443/stream?streams=${streams}`;
     
-    const ws = new WebSocket(wsUrl);
-    binanceWsRef.current = ws;
+    const binanceWs = new WebSocket(binanceWsUrl);
+    binanceWsRef.current = binanceWs;
 
-    ws.onopen = () => {
+    binanceWs.onopen = () => {
       console.log('Binance WebSocket connected');
-      setState(prev => ({ 
-        ...prev, 
-        connectionStatus: 'connected', 
-        binanceWsStatus: 'connected',
-        lastError: null 
-      }));
+      setState(prev => ({ ...prev, binanceWsStatus: 'connected' }));
     };
 
-    ws.onmessage = (event) => {
+    binanceWs.onmessage = (event) => {
       try {
         const wrapper = JSON.parse(event.data);
-        // Combined stream format: { stream: "btcusdt@trade", data: {...} }
         if (wrapper.data) {
           handleBinanceMessage({ data: JSON.stringify(wrapper.data) } as MessageEvent);
         }
@@ -288,44 +290,87 @@ export function usePriceLatencyComparison() {
       }
     };
 
-    ws.onerror = (error) => {
+    binanceWs.onerror = (error) => {
       console.error('Binance WebSocket error:', error);
-      setState(prev => ({ 
-        ...prev, 
-        connectionStatus: 'error', 
-        binanceWsStatus: 'error',
-        lastError: 'WebSocket connection failed' 
-      }));
+      setState(prev => ({ ...prev, binanceWsStatus: 'error' }));
     };
 
-    ws.onclose = () => {
+    binanceWs.onclose = () => {
       console.log('Binance WebSocket closed');
-      setState(prev => ({ 
-        ...prev, 
-        connectionStatus: prev.connectionStatus === 'error' ? 'error' : 'disconnected',
-        binanceWsStatus: 'disconnected' 
-      }));
+      setState(prev => ({ ...prev, binanceWsStatus: 'disconnected' }));
     };
 
-    // Start Chainlink polling
-    fetchChainlinkPrices();
-    chainlinkPollRef.current = window.setInterval(fetchChainlinkPrices, CHAINLINK_POLL_MS);
+    // 2. Get Chainlink WebSocket config from edge function
+    try {
+      const { data, error } = await supabase.functions.invoke('chainlink-ws-proxy');
+      
+      if (error || !data?.success) {
+        console.error('Failed to get Chainlink WS config:', error || data?.error);
+        setState(prev => ({ 
+          ...prev, 
+          chainlinkWsStatus: 'error',
+          lastError: 'Failed to get Chainlink WebSocket config. Check ALCHEMY_POLYGON_API_KEY.',
+        }));
+        return;
+      }
 
-  }, [handleBinanceMessage, fetchChainlinkPrices]);
+      const { wssUrl, subscriptionPayload, feeds } = data;
+      chainlinkFeedsRef.current = feeds;
+
+      // Connect to Alchemy WebSocket
+      const chainlinkWs = new WebSocket(wssUrl);
+      chainlinkWsRef.current = chainlinkWs;
+
+      chainlinkWs.onopen = () => {
+        console.log('Chainlink (Alchemy) WebSocket connected, subscribing...');
+        // Send subscription
+        chainlinkWs.send(JSON.stringify(subscriptionPayload));
+      };
+
+      chainlinkWs.onmessage = handleChainlinkMessage;
+
+      chainlinkWs.onerror = (error) => {
+        console.error('Chainlink WebSocket error:', error);
+        setState(prev => ({ ...prev, chainlinkWsStatus: 'error' }));
+      };
+
+      chainlinkWs.onclose = () => {
+        console.log('Chainlink WebSocket closed');
+        setState(prev => ({ ...prev, chainlinkWsStatus: 'disconnected' }));
+      };
+
+    } catch (err) {
+      console.error('Chainlink connection error:', err);
+      setState(prev => ({ 
+        ...prev, 
+        chainlinkWsStatus: 'error',
+        lastError: err instanceof Error ? err.message : 'Chainlink connection failed',
+      }));
+    }
+
+    // Update overall connection status
+    setState(prev => ({
+      ...prev,
+      connectionStatus: 'connected',
+      lastError: null,
+    }));
+
+  }, [handleBinanceMessage, handleChainlinkMessage]);
 
   const disconnect = useCallback(() => {
     if (binanceWsRef.current) {
       binanceWsRef.current.close();
       binanceWsRef.current = null;
     }
-    if (chainlinkPollRef.current) {
-      clearInterval(chainlinkPollRef.current);
-      chainlinkPollRef.current = null;
+    if (chainlinkWsRef.current) {
+      chainlinkWsRef.current.close();
+      chainlinkWsRef.current = null;
     }
     setState(prev => ({ 
       ...prev, 
       connectionStatus: 'disconnected',
-      binanceWsStatus: 'disconnected' 
+      binanceWsStatus: 'disconnected',
+      chainlinkWsStatus: 'disconnected',
     }));
   }, []);
 
@@ -335,8 +380,8 @@ export function usePriceLatencyComparison() {
       if (binanceWsRef.current) {
         binanceWsRef.current.close();
       }
-      if (chainlinkPollRef.current) {
-        clearInterval(chainlinkPollRef.current);
+      if (chainlinkWsRef.current) {
+        chainlinkWsRef.current.close();
       }
     };
   }, []);
