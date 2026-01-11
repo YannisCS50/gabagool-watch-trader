@@ -1,6 +1,6 @@
 import { useMemo, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, AlertCircle, Zap, ArrowRight, CheckCircle2 } from 'lucide-react';
+import { TrendingUp, DollarSign, Target, BarChart3, RefreshCw, AlertCircle, Zap, ArrowRight, CheckCircle2, Activity } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { StatCard } from '@/components/StatCard';
 import { TradesTable } from '@/components/TradesTable';
@@ -23,11 +23,13 @@ const Index = () => {
   const { trades, stats, positions, isLoading, scrape, isScraping } = useTrades('gabagool22');
   const [v26Online, setV26Online] = useState(false);
   const [v26TradesCount, setV26TradesCount] = useState(0);
+  const [v27Stats, setV27Stats] = useState({ online: false, evaluations: 0, entries: 0 });
 
-  // Fetch V26 runner status
+  // Fetch V26 and V27 runner status
   useEffect(() => {
-    const fetchV26Status = async () => {
-      const { data } = await supabase
+    const fetchStatus = async () => {
+      // V26 status
+      const { data: v26Data } = await supabase
         .from('runner_heartbeats')
         .select('last_heartbeat, trades_count')
         .eq('runner_type', 'v26')
@@ -35,15 +37,33 @@ const Index = () => {
         .limit(1)
         .maybeSingle();
       
-      if (data) {
-        const isOnline = new Date(data.last_heartbeat).getTime() > Date.now() - 60000;
+      if (v26Data) {
+        const isOnline = new Date(v26Data.last_heartbeat).getTime() > Date.now() - 60000;
         setV26Online(isOnline);
-        setV26TradesCount(data.trades_count || 0);
+        setV26TradesCount(v26Data.trades_count || 0);
       }
+
+      // V27 status from evaluations - use any() to avoid type depth issues
+      const recentDate = new Date(Date.now() - 60000).toISOString();
+      const { count } = await (supabase as any)
+        .from('v27_evaluations')
+        .select('id', { count: 'exact', head: true })
+        .gte('created_at', recentDate);
+
+      const { count: entryCount } = await (supabase as any)
+        .from('v27_evaluations')
+        .select('id', { count: 'exact', head: true })
+        .eq('decision', 'ENTER');
+
+      setV27Stats({
+        online: (count || 0) > 0,
+        evaluations: count || 0,
+        entries: entryCount || 0
+      });
     };
 
-    fetchV26Status();
-    const interval = setInterval(fetchV26Status, 10000);
+    fetchStatus();
+    const interval = setInterval(fetchStatus, 10000);
     return () => clearInterval(interval);
   }, []);
 
@@ -184,6 +204,47 @@ const Index = () => {
               </div>
               <ArrowRight className={`w-5 h-5 group-hover:translate-x-1 transition-transform ${
                 v26Online ? 'text-emerald-400' : 'text-muted-foreground'
+              }`} />
+            </div>
+          </div>
+        </Link>
+
+        {/* V27 Delta Mispricing Strategy Link */}
+        <Link to="/v27" className="block">
+          <div className={`relative overflow-hidden rounded-xl border p-4 hover:border-primary/50 transition-all group cursor-pointer ${
+            v27Stats.online 
+              ? 'border-violet-500/30 bg-gradient-to-r from-violet-500/10 via-violet-500/5 to-transparent hover:from-violet-500/20' 
+              : 'border-border/50 bg-gradient-to-r from-muted/30 via-muted/10 to-transparent'
+          }`}>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+                  v27Stats.online ? 'bg-violet-500/20' : 'bg-muted/50'
+                }`}>
+                  <Activity className={`w-5 h-5 ${v27Stats.online ? 'text-violet-400' : 'text-muted-foreground'}`} />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-lg flex items-center gap-2">
+                    V27 Delta Mispricing
+                    {v27Stats.online ? (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-violet-500/20 text-violet-400 font-mono flex items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" />
+                        SHADOW
+                      </span>
+                    ) : (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-muted/50 text-muted-foreground font-mono flex items-center gap-1">
+                        <AlertCircle className="w-3 h-3" />
+                        OFFLINE
+                      </span>
+                    )}
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    Spot-leading mispricing detection • {v27Stats.entries} shadow entries
+                  </p>
+                </div>
+              </div>
+              <ArrowRight className={`w-5 h-5 group-hover:translate-x-1 transition-transform ${
+                v27Stats.online ? 'text-violet-400' : 'text-muted-foreground'
               }`} />
             </div>
           </div>
