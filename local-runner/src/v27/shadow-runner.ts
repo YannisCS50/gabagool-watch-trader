@@ -21,7 +21,7 @@ import { testConnection, getBalance, getOrderbookDepth } from '../polymarket.js'
 import { fetchMarkets, sendHeartbeat, savePriceTicks, getSupabaseClient, type PriceTick } from '../backend.js';
 import { enforceVpnOrExit } from '../vpn-check.js';
 import { fetchChainlinkPrice } from '../chain.js';
-import { startPriceFeedLogger, stopPriceFeedLogger, getPriceFeedLoggerStats, type PriceFeedCallback } from '../price-feed-ws-logger.js';
+import { startPriceFeedLogger, stopPriceFeedLogger, getPriceFeedLoggerStats } from '../price-feed-ws-logger.js';
 import { ShadowEngine } from './shadow-engine.js';
 import { getV27Config, loadV27Config } from './config.js';
 import type { V27Market, V27OrderBook } from './index.js';
@@ -85,23 +85,27 @@ function normalizeUsdAmount(value: unknown): number | null {
 // PRICE FEED CALLBACKS
 // ============================================================
 
-function onBinancePrice(asset: string, price: number): void {
-  const ts = Date.now();
-  spotPrices.set(asset, { price, ts, source: 'binance' });
-  shadowEngine.feedSpotPrice(asset, price, ts, 'binance');
+function onBinancePrice(asset: string, price: number, timestamp: number): void {
+  spotPrices.set(asset, { price, ts: timestamp, source: 'binance' });
+  shadowEngine.feedSpotPrice(asset, price, timestamp, 'binance');
 }
 
-function onPolymarketPrice(marketId: string, upMid: number, downMid: number): void {
-  // Update orderbook cache with mid prices
-  const existing = orderbookCache.get(marketId);
-  if (existing) {
-    existing.upMid = upMid;
-    existing.downMid = downMid;
-    existing.timestamp = Date.now();
+function onPolymarketPrice(assetOrMarketId: string, upMid: number, downMid: number, timestamp: number): void {
+  // The price logger fires this with asset as the key
+  // We need to update all markets for this asset
+  for (const [marketId, market] of activeMarkets) {
+    if (market.asset === assetOrMarketId) {
+      const existing = orderbookCache.get(marketId);
+      if (existing) {
+        existing.upMid = upMid;
+        existing.downMid = downMid;
+        existing.timestamp = timestamp;
+      }
+    }
   }
 }
 
-function onTakerFill(asset: string, size: number, side: 'UP' | 'DOWN', price: number): void {
+function onTakerFill(asset: string, size: number, side: 'UP' | 'DOWN', price: number, _timestamp: number): void {
   shadowEngine.feedTakerFill(asset, size, side, price);
 }
 

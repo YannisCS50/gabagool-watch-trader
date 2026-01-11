@@ -23,6 +23,16 @@ export interface PriceTickLog {
   outcome?: 'up' | 'down';  // For clob_shares: which side
 }
 
+// Callback types for real-time price feeds
+export interface PriceFeedCallback {
+  // Called when Binance sends a new price
+  onBinancePrice?: (asset: string, price: number, timestamp: number) => void;
+  // Called when Polymarket CLOB sends updated mid prices for a market
+  onPolymarketPrice?: (marketId: string, upMid: number, downMid: number, timestamp: number) => void;
+  // Called when a taker fill is detected (for adverse selection tracking)
+  onTakerFill?: (asset: string, size: number, side: 'UP' | 'DOWN', price: number, timestamp: number) => void;
+}
+
 interface LoggerStats {
   binance: {
     connected: boolean;
@@ -48,6 +58,9 @@ interface LoggerStats {
   startedAt: number;
   errors: number;
 }
+
+// Callback storage
+let callbacks: PriceFeedCallback = {};
 
 // Config
 const BINANCE_WS_URL = 'wss://stream.binance.com:9443/ws';
@@ -233,13 +246,21 @@ function connectBinance(): void {
       if (msg.e === 'trade' && msg.s && msg.p && msg.T) {
         const symbol = msg.s.replace('USDT', '').toUpperCase();
         if (ASSETS.includes(symbol)) {
+          const price = parseFloat(msg.p);
+          const timestamp = msg.T;
+          
           addTick({
             source: 'binance_ws',
             asset: symbol,
-            price: parseFloat(msg.p),
-            raw_timestamp: msg.T,
+            price,
+            raw_timestamp: timestamp,
             received_at: now,
           });
+          
+          // Fire callback for V27 shadow engine
+          if (callbacks.onBinancePrice) {
+            callbacks.onBinancePrice(symbol, price, timestamp);
+          }
         }
       }
     } catch (e) {
@@ -630,6 +651,9 @@ async function connectClob(): Promise<void> {
             received_at: now,
             outcome: tokenInfo.outcome,
           });
+          
+          // Track per-asset mid prices for V27 callback
+          trackMidPriceForCallback(tokenInfo.asset, tokenInfo.outcome, price, msg.timestamp || now);
         }
       }
       
@@ -649,6 +673,28 @@ async function connectClob(): Promise<void> {
               received_at: now,
               outcome: tokenInfo.outcome,
             });
+            
+            // Track per-asset mid prices for V27 callback
+            trackMidPriceForCallback(tokenInfo.asset, tokenInfo.outcome, price, msg.timestamp || now);
+          }
+        }
+      }
+      
+      // Trade/fill event: detect taker fills for adverse selection tracking
+      // CLOB sends: { event_type: 'trade', asset_id, price, size, side, ... }
+      if (msg.event_type === 'trade' && msg.asset_id && callbacks.onTakerFill) {
+        const tokenInfo = tokenToAssetMap.get(msg.asset_id);
+        if (tokenInfo) {
+          const price = parseFloat(msg.price);
+          const size = parseFloat(msg.size);
+          if (Number.isFinite(price) && Number.isFinite(size)) {
+            callbacks.onTakerFill(
+              tokenInfo.asset,
+              size,
+              tokenInfo.outcome === 'up' ? 'UP' : 'DOWN',
+              price,
+              msg.timestamp || now
+            );
           }
         }
       }
@@ -716,13 +762,48 @@ function checkWebSocketHealth(): void {
   }
 }
 
+// ============ MID PRICE TRACKING FOR CALLBACKS ============
+
+// Track UP/DOWN mid prices per asset so we can fire combined callback
+const assetMidPrices = new Map<string, { upMid: number; downMid: number; upTs: number; downTs: number; marketId: string }>();
+
+function trackMidPriceForCallback(asset: string, outcome: 'up' | 'down', price: number, timestamp: number): void {
+  if (!callbacks.onPolymarketPrice) return;
+  
+  // Get or create entry for this asset
+  let entry = assetMidPrices.get(asset);
+  if (!entry) {
+    entry = { upMid: 0, downMid: 0, upTs: 0, downTs: 0, marketId: '' };
+    assetMidPrices.set(asset, entry);
+  }
+  
+  // Update the relevant side
+  if (outcome === 'up') {
+    entry.upMid = price;
+    entry.upTs = timestamp;
+  } else {
+    entry.downMid = price;
+    entry.downTs = timestamp;
+  }
+  
+  // If we have both sides, fire the callback
+  if (entry.upMid > 0 && entry.downMid > 0) {
+    // Use asset as marketId since we don't have the actual market ID here
+    // The shadow-runner will need to map this if needed
+    callbacks.onPolymarketPrice(asset, entry.upMid, entry.downMid, Math.max(entry.upTs, entry.downTs));
+  }
+}
+
 // ============ PUBLIC API ============
 
-export function startPriceFeedLogger(): void {
+export async function startPriceFeedLogger(callbackConfig?: PriceFeedCallback): Promise<void> {
   if (isRunning) {
     console.log('[PriceFeedLogger] Already running');
     return;
   }
+
+  // Store callbacks
+  callbacks = callbackConfig || {};
 
   console.log('');
   console.log('╔════════════════════════════════════════════════════════════════╗');
@@ -732,6 +813,9 @@ export function startPriceFeedLogger(): void {
   console.log('║  Assets:  BTC, ETH, SOL, XRP                                   ║');
   console.log(`║  Flush:   Every ${FLUSH_INTERVAL_MS}ms or ${MAX_BUFFER_SIZE} ticks                            ║`);
   console.log(`║  Health:  Auto-reconnect if stale >${STALE_THRESHOLD_MS / 1000}s                        ║`);
+  if (callbacks.onBinancePrice || callbacks.onPolymarketPrice || callbacks.onTakerFill) {
+    console.log('║  Callbacks: ✅ V27 Shadow Engine integration enabled           ║');
+  }
   console.log('╚════════════════════════════════════════════════════════════════╝');
   console.log('');
 
@@ -743,11 +827,14 @@ export function startPriceFeedLogger(): void {
   stats.binance.lastMessageAt = Date.now();
   stats.polymarket.lastMessageAt = Date.now();
   stats.clob.lastMessageAt = Date.now();
+  
+  // Clear mid price tracking
+  assetMidPrices.clear();
 
   // Connect to all WebSockets
   connectBinance();
   connectPolymarket();
-  connectClob();
+  await connectClob();
 
   // Periodic flush timer
   flushInterval = setInterval(() => {
@@ -828,6 +915,10 @@ export async function stopPriceFeedLogger(): Promise<void> {
     clobWs.close();
     clobWs = null;
   }
+
+  // Clear callbacks and mid price tracking
+  callbacks = {};
+  assetMidPrices.clear();
 
   // Final flush
   await flushBuffer();
