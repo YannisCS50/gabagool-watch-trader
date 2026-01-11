@@ -1,5 +1,24 @@
+import { createClient } from '@supabase/supabase-js';
 import { config } from './config.js';
 import type { FillLog, SettlementLog, SnapshotLog } from './logger.js';
+
+// Supabase client singleton for direct database access
+let supabaseClient: ReturnType<typeof createClient> | null = null;
+
+export function getSupabaseClient() {
+  if (supabaseClient) return supabaseClient;
+  
+  const supabaseUrl = process.env.SUPABASE_URL || '';
+  const supabaseKey = process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+  
+  if (!supabaseUrl || !supabaseKey) {
+    console.warn('[Backend] Supabase not configured - URL or key missing');
+    return null;
+  }
+  
+  supabaseClient = createClient(supabaseUrl, supabaseKey);
+  return supabaseClient;
+}
 
 interface MarketToken {
   slug: string;
