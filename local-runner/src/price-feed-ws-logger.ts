@@ -44,7 +44,8 @@ interface LoggerStats {
 
 // Config
 const BINANCE_WS_URL = 'wss://stream.binance.com:9443/ws';
-const POLYMARKET_RTDS_URL = 'wss://ws-live-data.polymarket.com';
+// Polymarket RTDS URL for crypto prices - see docs.polymarket.com/developers/RTDS
+const POLYMARKET_RTDS_URL = 'wss://rtds.polymarket.com';
 
 const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP'];
 const BINANCE_SYMBOLS = ['btcusdt', 'ethusdt', 'solusdt', 'xrpusdt'];
@@ -296,18 +297,19 @@ function connectPolymarket(): void {
   polymarketWs.on('open', () => {
     console.log('[PriceFeedLogger] ✅ Polymarket RTDS connected');
     stats.polymarket.connected = true;
-    stats.polymarket.lastMessageAt = Date.now(); // Reset to prevent immediate health check trigger
+    stats.polymarket.lastMessageAt = Date.now();
 
-    // Subscribe to crypto prices (both Polymarket and Chainlink)
+    // Subscribe to crypto prices (Polymarket + Chainlink) using proper RTDS format
+    // See: docs.polymarket.com/developers/RTDS
     polymarketWs?.send(JSON.stringify({
       action: 'subscribe',
-      topic: 'crypto_prices'
+      subscriptions: [
+        { topic: 'crypto_prices', type: 'update' },
+        { topic: 'crypto_prices_chainlink', type: 'update' }
+      ]
     }));
     
-    polymarketWs?.send(JSON.stringify({
-      action: 'subscribe',
-      topic: 'crypto_prices_chainlink'
-    }));
+    console.log('[PriceFeedLogger] 📡 Subscribed to crypto_prices + crypto_prices_chainlink');
   });
 
   polymarketWs.on('message', (data: WebSocket.Data) => {
@@ -317,8 +319,49 @@ function connectPolymarket(): void {
       stats.polymarket.lastMessageAt = now;
       stats.polymarket.messageCount++;
 
-      // Handle crypto_prices topic (Polymarket prices)
-      if (msg.topic === 'crypto_prices' && msg.data) {
+      // Log first few messages for debugging
+      if (stats.polymarket.messageCount <= 5) {
+        console.log('[PriceFeedLogger] PM msg:', JSON.stringify(msg).slice(0, 200));
+      }
+
+      // Handle crypto_prices topic - format: { topic, type, timestamp, payload: { symbol, value, timestamp } }
+      if (msg.topic === 'crypto_prices' && msg.payload) {
+        const payload = msg.payload;
+        const symbol = payload.symbol?.replace('/usd', '')?.toUpperCase();
+        const price = payload.value;
+        const timestamp = payload.timestamp || msg.timestamp || now;
+        
+        if (price > 0 && symbol && ASSETS.includes(symbol)) {
+          addTick({
+            source: 'polymarket_rtds',
+            asset: symbol,
+            price,
+            raw_timestamp: timestamp,
+            received_at: now,
+          });
+        }
+      }
+
+      // Handle crypto_prices_chainlink topic - same format
+      if (msg.topic === 'crypto_prices_chainlink' && msg.payload) {
+        const payload = msg.payload;
+        const symbol = payload.symbol?.replace('/usd', '')?.toUpperCase();
+        const price = payload.value;
+        const timestamp = payload.timestamp || msg.timestamp || now;
+        
+        if (price > 0 && symbol && ASSETS.includes(symbol)) {
+          addTick({
+            source: 'chainlink_rtds',
+            asset: symbol,
+            price,
+            raw_timestamp: timestamp,
+            received_at: now,
+          });
+        }
+      }
+
+      // Also handle legacy batch format just in case
+      if (msg.topic === 'crypto_prices' && msg.data && !msg.payload) {
         const timestamp = msg.timestamp || now;
         for (const [asset, priceData] of Object.entries(msg.data)) {
           if (priceData && typeof priceData === 'object' && 'value' in (priceData as object)) {
@@ -326,25 +369,6 @@ function connectPolymarket(): void {
             if (price > 0 && ASSETS.includes(asset.toUpperCase())) {
               addTick({
                 source: 'polymarket_rtds',
-                asset: asset.toUpperCase(),
-                price,
-                raw_timestamp: timestamp,
-                received_at: now,
-              });
-            }
-          }
-        }
-      }
-
-      // Handle crypto_prices_chainlink topic (Chainlink oracle prices)
-      if (msg.topic === 'crypto_prices_chainlink' && msg.data) {
-        const timestamp = msg.timestamp || now;
-        for (const [asset, priceData] of Object.entries(msg.data)) {
-          if (priceData && typeof priceData === 'object' && 'value' in (priceData as object)) {
-            const price = (priceData as { value: number }).value;
-            if (price > 0 && ASSETS.includes(asset.toUpperCase())) {
-              addTick({
-                source: 'chainlink_rtds',
                 asset: asset.toUpperCase(),
                 price,
                 raw_timestamp: timestamp,
