@@ -317,6 +317,69 @@ export function usePriceLatencyComparison() {
       const { wssUrl, subscriptionPayload, feeds } = data;
       chainlinkFeedsRef.current = feeds;
 
+      // Fetch initial Chainlink prices via RPC before connecting to WS
+      console.log('Fetching initial Chainlink prices via RPC...');
+      try {
+        const rpcUrl = wssUrl.replace('wss://', 'https://');
+        const assets = Object.keys(feeds) as Asset[];
+        
+        for (const asset of assets) {
+          const feedAddress = feeds[asset];
+          // latestRoundData() selector: 0xfeaf968c
+          const response = await fetch(rpcUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: 1,
+              method: 'eth_call',
+              params: [{ to: feedAddress, data: '0xfeaf968c' }, 'latest'],
+            }),
+          });
+          
+          const result = await response.json();
+          if (result.result) {
+            // Decode latestRoundData response: (roundId, answer, startedAt, updatedAt, answeredInRound)
+            const data = result.result.slice(2); // remove 0x
+            const answer = BigInt('0x' + data.slice(64, 128)); // 2nd 32 bytes = answer
+            const updatedAt = BigInt('0x' + data.slice(192, 256)); // 4th 32 bytes = updatedAt
+            const price = Number(answer) / 1e8;
+            const timestamp = Number(updatedAt) * 1000;
+            
+            const chainlinkSymbol = SYMBOL_MAP[asset].chainlink;
+            const receivedAt = Date.now();
+            
+            lastChainlinkPriceRef.current.set(asset, { price, timestamp });
+            
+            console.log(`Initial Chainlink ${asset}: $${price.toFixed(2)} (updated ${new Date(timestamp).toLocaleTimeString()})`);
+            
+            setState(prev => {
+              const isCurrentAsset = asset === prev.selectedAsset;
+              const tick: PriceTick = {
+                source: 'chainlink',
+                symbol: chainlinkSymbol,
+                price,
+                timestamp,
+                receivedAt,
+              };
+              
+              return {
+                ...prev,
+                chainlinkPrice: isCurrentAsset ? price : prev.chainlinkPrice,
+                chainlinkLastUpdate: isCurrentAsset ? timestamp : prev.chainlinkLastUpdate,
+                chainlinkTicks: [...prev.chainlinkTicks, tick].slice(-MAX_TICKS),
+                totalChainlinkTicks: prev.totalChainlinkTicks + 1,
+                eventLog: isCurrentAsset 
+                  ? [{ timestamp: receivedAt, source: 'chainlink' as const, symbol: chainlinkSymbol, price }, ...prev.eventLog].slice(0, 200)
+                  : prev.eventLog,
+              };
+            });
+          }
+        }
+      } catch (rpcErr) {
+        console.warn('RPC initial fetch failed, continuing with WS only:', rpcErr);
+      }
+
       // Connect to Alchemy WebSocket
       const chainlinkWs = new WebSocket(wssUrl);
       chainlinkWsRef.current = chainlinkWs;
