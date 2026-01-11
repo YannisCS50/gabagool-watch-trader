@@ -1030,14 +1030,6 @@ export class ShadowPositionManager {
       // Non-critical
     }
   }
-      
-      if (error && !error.message.includes('duplicate key')) {
-        console.error('[SHADOW-POS] Daily PnL persist error:', error.message);
-      }
-    } catch (err) {
-      // Non-critical
-    }
-  }
   
   // ============================================================
   // STATS PRINTING
