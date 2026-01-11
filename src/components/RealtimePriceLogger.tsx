@@ -320,12 +320,12 @@ export function RealtimePriceLogger() {
         </Card>
       </div>
 
-      {/* Price Comparison Chart */}
+      {/* Spot Price Comparison Chart */}
       <Card className="bg-[#161B22] border-[#30363D]">
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
             <CardTitle className="text-base text-[#E6EDF3] flex items-center gap-2">
-              <Activity className="h-4 w-4" /> Price Timeline (Last 60s)
+              <Activity className="h-4 w-4" /> Spot Prices (Last 60s)
             </CardTitle>
             <div className="flex items-center gap-2">
               <Select value={selectedAsset} onValueChange={setSelectedAsset}>
@@ -353,7 +353,7 @@ export function RealtimePriceLogger() {
         </CardHeader>
         <CardContent>
           {chartData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={250}>
+            <ResponsiveContainer width="100%" height={200}>
               <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
                 <XAxis 
                   dataKey="time" 
@@ -369,22 +369,13 @@ export function RealtimePriceLogger() {
                   tickLine={false}
                   tickFormatter={(value) => `$${value.toLocaleString()}`}
                 />
-                <YAxis 
-                  yAxisId="right"
-                  orientation="right"
-                  domain={[0, 1]}
-                  stroke="#8B949E"
-                  fontSize={10}
-                  tickLine={false}
-                  tickFormatter={(value) => `${(value * 100).toFixed(0)}¢`}
-                />
                 <Tooltip 
                   contentStyle={{ backgroundColor: '#21262D', border: '1px solid #30363D', borderRadius: '8px' }}
                   labelStyle={{ color: '#E6EDF3' }}
                   labelFormatter={(label) => format(new Date(label), 'HH:mm:ss.SSS')}
                   formatter={(value: number, name: string) => [
                     `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
-                    name.charAt(0).toUpperCase() + name.slice(1)
+                    name
                   ]}
                 />
                 <Legend />
@@ -415,33 +406,80 @@ export function RealtimePriceLogger() {
                   name="Chainlink"
                   connectNulls
                 />
+              </LineChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="h-[200px] flex items-center justify-center text-muted-foreground">
+              No spot data in last 60 seconds for {selectedAsset}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* CLOB Share Prices Chart - Separate scale */}
+      <Card className="bg-[#161B22] border-[#30363D]">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base text-[#E6EDF3] flex items-center gap-2">
+            <TrendingUp className="h-4 w-4" /> CLOB UP/DOWN Share Prices (Last 60s)
+            <Badge variant="outline" className="ml-2 text-xs border-muted-foreground">0-100¢</Badge>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {chartData.some(d => d.clob_up !== undefined || d.clob_down !== undefined) ? (
+            <ResponsiveContainer width="100%" height={150}>
+              <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                <XAxis 
+                  dataKey="time" 
+                  tickFormatter={formatChartTime}
+                  stroke="#8B949E"
+                  fontSize={10}
+                  tickLine={false}
+                />
+                <YAxis 
+                  domain={[0, 1]}
+                  stroke="#8B949E"
+                  fontSize={10}
+                  tickLine={false}
+                  tickFormatter={(value) => `${(value * 100).toFixed(0)}¢`}
+                  ticks={[0, 0.25, 0.5, 0.75, 1]}
+                />
+                <Tooltip 
+                  contentStyle={{ backgroundColor: '#21262D', border: '1px solid #30363D', borderRadius: '8px' }}
+                  labelStyle={{ color: '#E6EDF3' }}
+                  labelFormatter={(label) => format(new Date(label), 'HH:mm:ss.SSS')}
+                  formatter={(value: number, name: string) => [
+                    `${(value * 100).toFixed(1)}¢`,
+                    name
+                  ]}
+                />
+                <Legend />
+                <ReferenceLine y={0.5} stroke="#8B949E" strokeDasharray="3 3" label={{ value: '50¢', fill: '#8B949E', fontSize: 10 }} />
                 <Line 
                   type="stepAfter" 
                   dataKey="clob_up" 
                   stroke="#22C55E" 
-                  strokeWidth={1.5} 
-                  strokeDasharray="4 2"
+                  strokeWidth={2} 
                   dot={false}
-                  name="CLOB UP"
+                  name="UP Share"
                   connectNulls
-                  yAxisId="right"
                 />
                 <Line 
                   type="stepAfter" 
                   dataKey="clob_down" 
                   stroke="#EF4444" 
-                  strokeWidth={1.5} 
-                  strokeDasharray="4 2"
+                  strokeWidth={2} 
                   dot={false}
-                  name="CLOB DOWN"
+                  name="DOWN Share"
                   connectNulls
-                  yAxisId="right"
                 />
               </LineChart>
             </ResponsiveContainer>
           ) : (
-            <div className="h-[250px] flex items-center justify-center text-muted-foreground">
-              No data in last 60 seconds for {selectedAsset}
+            <div className="h-[150px] flex items-center justify-center text-muted-foreground">
+              <div className="text-center">
+                <div>No CLOB share data yet for {selectedAsset}</div>
+                <div className="text-xs mt-1">Waiting for crypto_prices_market feed...</div>
+              </div>
             </div>
           )}
         </CardContent>
