@@ -397,6 +397,33 @@ export type Database = {
           },
         ]
       }
+      chainlink_prices: {
+        Row: {
+          asset: string
+          chainlink_timestamp: number
+          created_at: string
+          id: string
+          price: number
+          source: string | null
+        }
+        Insert: {
+          asset: string
+          chainlink_timestamp: number
+          created_at?: string
+          id?: string
+          price: number
+          source?: string | null
+        }
+        Update: {
+          asset?: string
+          chainlink_timestamp?: number
+          created_at?: string
+          id?: string
+          price?: number
+          source?: string | null
+        }
+        Relationships: []
+      }
       claim_logs: {
         Row: {
           block_number: number | null
@@ -2335,6 +2362,36 @@ export type Database = {
           timestamp?: string
           tx_hash?: string | null
           wallet?: string
+        }
+        Relationships: []
+      }
+      realtime_price_logs: {
+        Row: {
+          asset: string
+          created_at: string
+          id: string
+          price: number
+          raw_timestamp: number | null
+          received_at: string
+          source: string
+        }
+        Insert: {
+          asset: string
+          created_at?: string
+          id?: string
+          price: number
+          raw_timestamp?: number | null
+          received_at?: string
+          source: string
+        }
+        Update: {
+          asset?: string
+          created_at?: string
+          id?: string
+          price?: number
+          raw_timestamp?: number | null
+          received_at?: string
+          source?: string
         }
         Relationships: []
       }

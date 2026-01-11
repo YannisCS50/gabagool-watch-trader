@@ -1,14 +1,15 @@
 import { usePriceLatencyComparison, Asset } from "@/hooks/usePriceLatencyComparison";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, Cell } from "recharts";
-import { Activity, Wifi, WifiOff, RefreshCw, Download, Trash2, Play, Square, Clock } from "lucide-react";
+import { Activity, Wifi, WifiOff, RefreshCw, Download, Trash2, Play, Square, Clock, Database } from "lucide-react";
 import { useEffect, useState, useRef } from "react";
+import { RealtimePriceLogger } from "@/components/RealtimePriceLogger";
 
 const ASSETS: Asset[] = ['BTC', 'ETH', 'SOL', 'XRP'];
 
@@ -187,6 +188,8 @@ export default function PriceLatencyAnalyzer() {
       return acc;
     }, [] as any[]);
 
+  const [activeTab, setActiveTab] = useState<'realtime' | 'logger'>('realtime');
+
   return (
     <div className="min-h-screen bg-[#0D1117] text-[#E6EDF3] p-4 md:p-6">
       {/* Header */}
@@ -248,20 +251,38 @@ export default function PriceLatencyAnalyzer() {
         </div>
       </div>
 
-      {/* Asset Selector */}
-      <Tabs value={selectedAsset} onValueChange={(v) => setSelectedAsset(v as Asset)} className="mb-6">
+      {/* Main Tabs: Realtime vs Logger */}
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'realtime' | 'logger')} className="mb-6">
         <TabsList className="bg-[#161B22]">
-          {ASSETS.map(asset => (
-            <TabsTrigger 
-              key={asset} 
-              value={asset}
-              className="data-[state=active]:bg-[#21262D] data-[state=active]:text-white"
-            >
-              {asset}
-            </TabsTrigger>
-          ))}
+          <TabsTrigger value="realtime" className="data-[state=active]:bg-[#21262D] data-[state=active]:text-white">
+            <Activity className="h-4 w-4 mr-2" />
+            Realtime Analysis
+          </TabsTrigger>
+          <TabsTrigger value="logger" className="data-[state=active]:bg-[#21262D] data-[state=active]:text-white">
+            <Database className="h-4 w-4 mr-2" />
+            Database Logger
+          </TabsTrigger>
         </TabsList>
-      </Tabs>
+
+        <TabsContent value="logger" className="mt-4">
+          <RealtimePriceLogger />
+        </TabsContent>
+
+        <TabsContent value="realtime" className="mt-4">
+          {/* Asset Selector */}
+          <Tabs value={selectedAsset} onValueChange={(v) => setSelectedAsset(v as Asset)} className="mb-6">
+            <TabsList className="bg-[#161B22]">
+              {ASSETS.map(asset => (
+                <TabsTrigger 
+                  key={asset} 
+                  value={asset}
+                  className="data-[state=active]:bg-[#21262D] data-[state=active]:text-white"
+                >
+                  {asset}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
         {/* Binance Price Card */}
@@ -591,6 +612,8 @@ export default function PriceLatencyAnalyzer() {
           </CardContent>
         </Card>
       </div>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
