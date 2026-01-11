@@ -1,40 +1,26 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { 
-  ArrowLeft, TrendingUp, TrendingDown, Activity, Target, Percent,
-  Zap, BarChart3, Shield, AlertTriangle, CheckCircle2, XCircle,
-  Wifi, WifiOff, Eye, EyeOff, RefreshCw, Settings
-} from 'lucide-react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { ArrowLeft, Eye, RefreshCw, Wifi, WifiOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { useV27Data } from '@/hooks/useV27Data';
-import { useV27Evaluations } from '@/hooks/useV27Evaluations';
-import { useShadowEngineData } from '@/hooks/useShadowEngineData';
-import { V27SkipReasonsCard } from '@/components/v27/V27SkipReasonsCard';
-import { V27ConfigEditor } from '@/components/v27/V27ConfigEditor';
-import { V27MarketsAccordion } from '@/components/v27/V27MarketsAccordion';
-import { ShadowEnginePanel } from '@/components/v27/ShadowEnginePanel';
-import { format, formatDistanceToNow } from 'date-fns';
+import { formatDistanceToNow } from 'date-fns';
 import { nl } from 'date-fns/locale';
+
+import { useShadowDashboard } from '@/hooks/useShadowDashboard';
+import { EngineStatusPanel } from '@/components/v27/shadow/EngineStatusPanel';
+import { LiveMarketMonitor } from '@/components/v27/shadow/LiveMarketMonitor';
+import { AdverseSelectionPanel } from '@/components/v27/shadow/AdverseSelectionPanel';
+import { SignalLogTable } from '@/components/v27/shadow/SignalLogTable';
+import { PostSignalTrackingPanel } from '@/components/v27/shadow/PostSignalTrackingPanel';
+import { HedgeSimulationPanel } from '@/components/v27/shadow/HedgeSimulationPanel';
+import { EquityCurveChart } from '@/components/v27/shadow/EquityCurveChart';
+import { ExportDataButton } from '@/components/v27/shadow/ExportDataButton';
 
 export default function V27Dashboard() {
   const navigate = useNavigate();
-  const { entries, signals, stats, loading, runnerStatus, refetch } = useV27Data();
-  const { evaluations, config, stats: evalStats, refetch: refetchEvals } = useV27Evaluations(500);
-  const { evaluations: shadowEvals, trackings, stats: shadowStats, runnerStatus: shadowRunnerStatus, refetch: refetchShadow } = useShadowEngineData(500);
-  const [activeTab, setActiveTab] = useState<'shadow' | 'overview' | 'markets' | 'signals' | 'entries' | 'config'>('shadow');
-
-  const formatCurrency = (value: number) => {
-    const prefix = value >= 0 ? '+$' : '-$';
-    return `${prefix}${Math.abs(value).toFixed(2)}`;
-  };
-
-  const formatPercent = (value: number) => {
-    return `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`;
-  };
+  const { data, loading, refetch, rawEvaluations, rawTrackings } = useShadowDashboard(1000);
+  const [activeTab, setActiveTab] = useState<string>('overview');
 
   return (
     <div className="min-h-screen bg-background p-4 md:p-6">
@@ -46,459 +32,93 @@ export default function V27Dashboard() {
           </Button>
           <div>
             <h1 className="text-2xl font-bold flex items-center gap-2">
-              V27 Delta Mispricing
-              {runnerStatus.shadowMode && (
-                <Badge variant="outline" className="text-amber-500 border-amber-500">
-                  <Eye className="h-3 w-3 mr-1" />
-                  Shadow Mode
-                </Badge>
-              )}
+              V27 Shadow Trading Dashboard
+              <Badge variant="outline" className="text-amber-500 border-amber-500">
+                <Eye className="h-3 w-3 mr-1" />
+                Shadow Mode
+              </Badge>
             </h1>
             <p className="text-muted-foreground text-sm">
-              Trade mispricing, not spread
+              $3000 starting budget • FIFO accounting • Full data collection
             </p>
           </div>
         </div>
         
         <div className="flex items-center gap-3">
-          {/* Runner Status - prefer shadow runner status */}
-          <div className="flex items-center gap-2">
-            {(shadowRunnerStatus.isOnline || runnerStatus.isOnline) ? (
-              <Badge variant="default" className="bg-green-500">
-                <Wifi className="h-3 w-3 mr-1" />
-                Online
-              </Badge>
-            ) : (
-              <Badge variant="destructive">
-                <WifiOff className="h-3 w-3 mr-1" />
-                Offline
-              </Badge>
-            )}
-            {(shadowRunnerStatus.lastHeartbeat || runnerStatus.lastHeartbeat) && (
-              <span className="text-xs text-muted-foreground">
-                {formatDistanceToNow(new Date(shadowRunnerStatus.lastHeartbeat || runnerStatus.lastHeartbeat!), { addSuffix: true, locale: nl })}
-              </span>
-            )}
-            {shadowRunnerStatus.marketsCount > 0 && (
-              <Badge variant="outline" className="text-xs">
-                {shadowRunnerStatus.marketsCount} markets
-              </Badge>
-            )}
-          </div>
+          {data.engineStatus.isOnline ? (
+            <Badge className="bg-green-500/20 text-green-400 border-green-500/30">
+              <Wifi className="h-3 w-3 mr-1" />
+              Online
+            </Badge>
+          ) : (
+            <Badge variant="destructive">
+              <WifiOff className="h-3 w-3 mr-1" />
+              Offline
+            </Badge>
+          )}
+          {data.engineStatus.lastHeartbeat && (
+            <span className="text-xs text-muted-foreground">
+              {formatDistanceToNow(new Date(data.engineStatus.lastHeartbeat), { addSuffix: true, locale: nl })}
+            </span>
+          )}
           
-          <Button variant="outline" size="sm" onClick={() => { refetch(); refetchShadow(); }} disabled={loading}>
+          <ExportDataButton data={data} rawEvaluations={rawEvaluations} rawTrackings={rawTrackings} />
+          
+          <Button variant="outline" size="sm" onClick={() => refetch()} disabled={loading}>
             <RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </Button>
         </div>
       </div>
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 mb-6">
-        {/* Signal Quality */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
-              <Zap className="h-4 w-4" />
-              Signal Quality
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {stats.signalQuality.toFixed(1)}%
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {stats.validSignals}/{stats.totalSignals} valid
-            </p>
-          </CardContent>
-        </Card>
-
-        {/* Adverse Selection Blocks */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
-              <Shield className="h-4 w-4" />
-              Adverse Blocks
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-amber-500">
-              {stats.adverseBlocks}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Toxic flow filtered
-            </p>
-          </CardContent>
-        </Card>
-
-        {/* Fill Rate */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
-              <Target className="h-4 w-4" />
-              Fill Rate
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {stats.fillRate.toFixed(1)}%
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {stats.filledEntries}/{stats.totalEntries} filled
-            </p>
-          </CardContent>
-        </Card>
-
-        {/* Corrections */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
-              <Activity className="h-4 w-4" />
-              Corrections
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-green-500">
-              {stats.correctionsCompleted}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Avg {stats.avgCorrectionPct.toFixed(1)}%
-            </p>
-          </CardContent>
-        </Card>
-
-        {/* Win Rate */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
-              <Percent className="h-4 w-4" />
-              Win Rate
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className={`text-2xl font-bold ${stats.winRate >= 50 ? 'text-green-500' : 'text-red-500'}`}>
-              {stats.winRate.toFixed(1)}%
-            </div>
-            <p className="text-xs text-muted-foreground">
-              {stats.wins}W / {stats.losses}L
-            </p>
-          </CardContent>
-        </Card>
-
-        {/* Net PnL */}
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1">
-              {stats.netPnl >= 0 ? <TrendingUp className="h-4 w-4" /> : <TrendingDown className="h-4 w-4" />}
-              Net PnL
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className={`text-2xl font-bold ${stats.netPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-              {formatCurrency(stats.netPnl)}
-            </div>
-            <p className="text-xs text-muted-foreground">
-              ROI: {formatPercent(stats.roi)}
-            </p>
-          </CardContent>
-        </Card>
+      {/* Engine Status */}
+      <div className="mb-6">
+        <EngineStatusPanel status={data.engineStatus} />
       </div>
 
-      {/* Secondary Stats Row */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
-        <Card className="bg-muted/30">
-          <CardContent className="pt-4">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">Open Positions</span>
-              <Badge variant="outline">{stats.openPositions}</Badge>
-            </div>
-          </CardContent>
-        </Card>
-        
-        <Card className="bg-muted/30">
-          <CardContent className="pt-4">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">Hedges Triggered</span>
-              <Badge variant="outline" className="text-amber-500">{stats.hedgesTriggered}</Badge>
-            </div>
-          </CardContent>
-        </Card>
-        
-        <Card className="bg-muted/30">
-          <CardContent className="pt-4">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">Emergency Hedges</span>
-              <Badge variant="outline" className="text-red-500">{stats.emergencyHedges}</Badge>
-            </div>
-          </CardContent>
-        </Card>
-        
-        <Card className="bg-muted/30">
-          <CardContent className="pt-4">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-muted-foreground">Gross PnL</span>
-              <span className={stats.grossPnl >= 0 ? 'text-green-500' : 'text-red-500'}>
-                {formatCurrency(stats.grossPnl)}
-              </span>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)}>
+      {/* Main Content Tabs */}
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList className="mb-4">
-          <TabsTrigger value="shadow" className="flex items-center gap-1">
-            <Eye className="h-3 w-3" />
-            Shadow Engine
-          </TabsTrigger>
-          <TabsTrigger value="overview">Overview</TabsTrigger>
-          <TabsTrigger value="markets">Markets</TabsTrigger>
-          <TabsTrigger value="signals">Signals ({signals.length})</TabsTrigger>
-          <TabsTrigger value="entries">Entries ({entries.length})</TabsTrigger>
-          <TabsTrigger value="config" className="flex items-center gap-1">
-            <Settings className="h-3 w-3" />
-            Config
-          </TabsTrigger>
+          <TabsTrigger value="overview">Markets & Signals</TabsTrigger>
+          <TabsTrigger value="adverse">Adverse Selection</TabsTrigger>
+          <TabsTrigger value="tracking">Post-Signal</TabsTrigger>
+          <TabsTrigger value="hedge">Hedge Sim</TabsTrigger>
+          <TabsTrigger value="pnl">PnL & Equity</TabsTrigger>
         </TabsList>
 
-        {/* Shadow Engine Tab */}
-        <TabsContent value="shadow">
-          <ShadowEnginePanel 
-            evaluations={shadowEvals}
-            trackings={trackings}
-            stats={shadowStats}
+        <TabsContent value="overview" className="space-y-6">
+          <LiveMarketMonitor />
+          <SignalLogTable signals={data.signalLogs} />
+        </TabsContent>
+
+        <TabsContent value="adverse">
+          <AdverseSelectionPanel 
+            metrics={data.adverseSelection}
+            blockedTrades={[]}
+            totalBlocked={data.stats.blockedSignals}
           />
         </TabsContent>
 
-        {/* Overview Tab */}
-        <TabsContent value="overview">
-          <div className="grid md:grid-cols-2 gap-6">
-            {/* Recent Signals */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg">Recent Signals</CardTitle>
-                <CardDescription>Mispricing detections</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  {signals.slice(0, 5).map((signal) => (
-                    <div key={signal.id} className="flex items-center justify-between p-2 rounded bg-muted/30">
-                      <div className="flex items-center gap-2">
-                        <Badge variant={signal.signal_side === 'UP' ? 'default' : 'secondary'}>
-                          {signal.asset} {signal.signal_side}
-                        </Badge>
-                        <span className="text-sm text-muted-foreground">
-                          Δ{(signal.mispricing * 100).toFixed(2)}%
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {signal.action_taken ? (
-                          <CheckCircle2 className="h-4 w-4 text-green-500" />
-                        ) : (
-                          <XCircle className="h-4 w-4 text-muted-foreground" />
-                        )}
-                        <span className="text-xs text-muted-foreground">
-                          {format(new Date(signal.created_at), 'HH:mm:ss')}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                  {signals.length === 0 && (
-                    <p className="text-sm text-muted-foreground text-center py-4">
-                      No signals yet
-                    </p>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Open Positions */}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg">Open Positions</CardTitle>
-                <CardDescription>Active entries awaiting correction</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  {entries.filter(e => e.status === 'open').slice(0, 5).map((entry) => (
-                    <div key={entry.id} className="flex items-center justify-between p-2 rounded bg-muted/30">
-                      <div className="flex items-center gap-2">
-                        <Badge variant={entry.side === 'UP' ? 'default' : 'secondary'}>
-                          {entry.asset} {entry.side}
-                        </Badge>
-                        <span className="text-sm">
-                          {entry.filled_shares.toFixed(1)} @ ${entry.avg_fill_price?.toFixed(3) || entry.entry_price.toFixed(3)}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        {entry.peak_correction !== null && (
-                          <span className="text-xs text-green-500">
-                            +{(entry.peak_correction * 100).toFixed(1)}%
-                          </span>
-                        )}
-                        <Badge variant="outline" className="text-xs">
-                          {entry.order_status}
-                        </Badge>
-                      </div>
-                    </div>
-                  ))}
-                  {entries.filter(e => e.status === 'open').length === 0 && (
-                    <p className="text-sm text-muted-foreground text-center py-4">
-                      No open positions
-                    </p>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-            
-            {/* Skip Reasons */}
-            <V27SkipReasonsCard evaluations={evaluations} />
-          </div>
+        <TabsContent value="tracking">
+          <PostSignalTrackingPanel trackings={data.postSignalTracking} />
         </TabsContent>
 
-        {/* Markets Tab */}
-        <TabsContent value="markets">
-          <V27MarketsAccordion />
+        <TabsContent value="hedge">
+          <HedgeSimulationPanel simulations={data.hedgeSimulations} />
         </TabsContent>
 
-        {/* Signals Tab */}
-        <TabsContent value="signals">
-          <Card>
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Time</TableHead>
-                    <TableHead>Asset</TableHead>
-                    <TableHead>Side</TableHead>
-                    <TableHead>Mispricing</TableHead>
-                    <TableHead>Threshold</TableHead>
-                    <TableHead>Confidence</TableHead>
-                    <TableHead>Action</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {signals.map((signal) => (
-                    <TableRow key={signal.id}>
-                      <TableCell className="text-sm">
-                        {format(new Date(signal.created_at), 'dd-MM HH:mm:ss')}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline">{signal.asset}</Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={signal.signal_side === 'UP' ? 'default' : 'secondary'}>
-                          {signal.signal_side}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="font-mono">
-                        {(signal.mispricing * 100).toFixed(3)}%
-                      </TableCell>
-                      <TableCell className="font-mono text-muted-foreground">
-                        {(signal.threshold * 100).toFixed(3)}%
-                      </TableCell>
-                      <TableCell>
-                        {signal.confidence !== null ? `${(signal.confidence * 100).toFixed(0)}%` : '-'}
-                      </TableCell>
-                      <TableCell>
-                        {signal.action_taken ? (
-                          <Badge className="bg-green-500">Entry</Badge>
-                        ) : (
-                          <Badge variant="outline" className="text-muted-foreground">Skip</Badge>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* Entries Tab */}
-        <TabsContent value="entries">
-          <Card>
-            <CardContent className="p-0">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Time</TableHead>
-                    <TableHead>Asset</TableHead>
-                    <TableHead>Side</TableHead>
-                    <TableHead>Shares</TableHead>
-                    <TableHead>Entry Price</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>Correction</TableHead>
-                    <TableHead>Hedge</TableHead>
-                    <TableHead>PnL</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {entries.map((entry) => (
-                    <TableRow key={entry.id}>
-                      <TableCell className="text-sm">
-                        {format(new Date(entry.created_at), 'dd-MM HH:mm')}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline">{entry.asset}</Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={entry.side === 'UP' ? 'default' : 'secondary'}>
-                          {entry.side}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="font-mono">
-                        {entry.filled_shares.toFixed(1)}
-                      </TableCell>
-                      <TableCell className="font-mono">
-                        ${entry.avg_fill_price?.toFixed(3) || entry.entry_price.toFixed(3)}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={
-                          entry.status === 'open' ? 'default' :
-                          entry.status === 'corrected' ? 'secondary' :
-                          entry.status === 'hedged' ? 'outline' :
-                          'destructive'
-                        }>
-                          {entry.status}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        {entry.peak_correction !== null ? (
-                          <span className="text-green-500">
-                            +{(entry.peak_correction * 100).toFixed(1)}%
-                          </span>
-                        ) : '-'}
-                      </TableCell>
-                      <TableCell>
-                        {entry.hedge_triggered ? (
-                          <Badge variant="outline" className="text-amber-500">
-                            <AlertTriangle className="h-3 w-3 mr-1" />
-                            Hedged
-                          </Badge>
-                        ) : '-'}
-                      </TableCell>
-                      <TableCell className={`font-mono ${
-                        entry.pnl === null ? '' :
-                        entry.pnl >= 0 ? 'text-green-500' : 'text-red-500'
-                      }`}>
-                        {entry.pnl !== null ? formatCurrency(entry.pnl) : '-'}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* Config Tab */}
-        <TabsContent value="config">
-          <div className="grid md:grid-cols-2 gap-6">
-            <V27ConfigEditor config={config} onConfigUpdated={refetchEvals} />
-            <V27SkipReasonsCard evaluations={evaluations} />
-          </div>
+        <TabsContent value="pnl">
+          <EquityCurveChart 
+            data={data.equityCurve}
+            startingEquity={data.stats.startingEquity}
+            currentEquity={data.stats.currentEquity}
+            realizedPnl={data.stats.realizedPnl}
+            unrealizedPnl={data.stats.unrealizedPnl}
+            maxDrawdown={data.stats.maxDrawdown}
+            winCount={data.stats.winCount}
+            lossCount={data.stats.lossCount}
+            winRate={data.stats.winRate}
+          />
         </TabsContent>
       </Tabs>
     </div>
