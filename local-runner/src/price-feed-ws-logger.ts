@@ -547,6 +547,9 @@ async function connectClob(): Promise<void> {
   
   console.log('[PriceFeedLogger] Connecting to CLOB Market WebSocket...');
   
+  // Store token IDs locally to avoid race conditions
+  const tokensToSubscribe = [...activeTokenIds];
+  
   try {
     clobWs = new WebSocket(CLOB_MARKET_WS_URL);
   } catch (e) {
@@ -561,24 +564,28 @@ async function connectClob(): Promise<void> {
     stats.clob.connected = true;
     stats.clob.lastMessageAt = Date.now();
     
-    // Guard: only send if socket is truly open
-    if (clobWs?.readyState !== WebSocket.OPEN) {
-      console.warn('[PriceFeedLogger] ⚠️ CLOB socket not ready, skipping subscribe');
-      return;
-    }
-    
-    // Subscribe to orderbook updates for active tokens
-    // CLOB expects: { assets_ids: [...], type: "market" }
-    const subscribeMsg = {
-      assets_ids: activeTokenIds,
-      type: 'market',
-    };
-    try {
-      clobWs.send(JSON.stringify(subscribeMsg));
-      console.log(`[PriceFeedLogger] 📡 Subscribed to ${activeTokenIds.length} CLOB orderbooks`);
-    } catch (e) {
-      console.error('[PriceFeedLogger] Failed to send CLOB subscribe:', e);
-    }
+    // Use setTimeout to ensure the socket is truly ready before sending
+    // This avoids the "WebSocket is not open: readyState 0 (CONNECTING)" error
+    setTimeout(() => {
+      if (!clobWs || clobWs.readyState !== WebSocket.OPEN) {
+        console.warn('[PriceFeedLogger] ⚠️ CLOB socket closed before subscribe');
+        return;
+      }
+      
+      // Subscribe to orderbook updates for active tokens
+      // CLOB expects: { assets_ids: [...], type: "market" }
+      const subscribeMsg = {
+        assets_ids: tokensToSubscribe,
+        type: 'market',
+      };
+      try {
+        clobWs.send(JSON.stringify(subscribeMsg));
+        console.log(`[PriceFeedLogger] 📡 Subscribed to ${tokensToSubscribe.length} CLOB orderbooks`);
+      } catch (e) {
+        console.error('[PriceFeedLogger] Failed to send CLOB subscribe:', e);
+        stats.errors++;
+      }
+    }, 100); // 100ms delay to ensure socket is fully ready
   });
   
   clobWs.on('message', (data: WebSocket.Data) => {
