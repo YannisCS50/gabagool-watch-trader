@@ -226,7 +226,7 @@ export class V27Logger {
     // Persist to Supabase using existing schema
     if (this.supabase) {
       try {
-        await this.supabase.from('v27_evaluations').insert({
+        const insertData = {
           ts: log.timestamp,
           asset: log.asset,
           market_id: log.marketId,
@@ -255,17 +255,25 @@ export class V27Logger {
           signal_valid: log.mispricingExists && log.filterPass && log.causalityPass,
           action: log.decision,
           skip_reason: log.decision === 'SKIP' ? log.reason : null,
-        });
+        };
+        
+        const { error } = await this.supabase.from('v27_evaluations').insert(insertData);
+        
+        if (error) {
+          console.error('[V27] DB insert error:', error.message, error.details);
+        }
       } catch (err) {
         console.error('[V27] Failed to persist evaluation:', err);
       }
+    } else {
+      console.warn('[V27] No Supabase client - evaluation not persisted');
     }
     
     // Console log for real-time visibility
     const emoji = log.decision === 'ENTER' ? '🎯' : '⏭️';
     console.log(
-      `[V27] ${emoji} ${log.asset} | delta=${log.deltaAbs.toFixed(4)} | ` +
-      `mispricing=${log.mispricingExists} | filter=${log.filterPass} | ${log.decision}: ${log.reason}`
+      `[V27] ${emoji} ${log.asset} | strike=${log.strikePrice} spot=${log.spotPrice.toFixed(2)} delta=${log.deltaAbs.toFixed(2)} | ` +
+      `mispricing=${log.mispricingExists} | filter=${log.filterPass} | ${log.decision}: ${log.reason || 'OK'}`
     );
     
     return log;
