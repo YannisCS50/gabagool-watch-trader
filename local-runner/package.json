@@ -8,6 +8,7 @@
     "auth:check": "node clob_auth_check.js",
     "auth:order-smoketest": "node clob_order_auth_smoketest.js",
     "v26": "tsx src/v26/runner.ts",
+    "v27": "tsx src/v27/index.ts",
     "claim:debug": "tsx scripts/claim-debug.ts",
     "claim": "tsx scripts/claim-now.ts",
     "claim:loop": "tsx scripts/claim-loop.ts"
