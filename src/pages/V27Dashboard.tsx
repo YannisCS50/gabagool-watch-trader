@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { 
   ArrowLeft, TrendingUp, TrendingDown, Activity, Target, Percent,
   Zap, BarChart3, Shield, AlertTriangle, CheckCircle2, XCircle,
-  Wifi, WifiOff, Eye, EyeOff, RefreshCw
+  Wifi, WifiOff, Eye, EyeOff, RefreshCw, Settings
 } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -11,13 +11,17 @@ import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useV27Data } from '@/hooks/useV27Data';
+import { useV27Evaluations } from '@/hooks/useV27Evaluations';
+import { V27SkipReasonsCard } from '@/components/v27/V27SkipReasonsCard';
+import { V27ConfigEditor } from '@/components/v27/V27ConfigEditor';
 import { format, formatDistanceToNow } from 'date-fns';
 import { nl } from 'date-fns/locale';
 
 export default function V27Dashboard() {
   const navigate = useNavigate();
   const { entries, signals, stats, loading, runnerStatus, refetch } = useV27Data();
-  const [activeTab, setActiveTab] = useState<'overview' | 'signals' | 'entries'>('overview');
+  const { evaluations, config, stats: evalStats, refetch: refetchEvals } = useV27Evaluations(500);
+  const [activeTab, setActiveTab] = useState<'overview' | 'signals' | 'entries' | 'config'>('overview');
 
   const formatCurrency = (value: number) => {
     const prefix = value >= 0 ? '+$' : '-$';
@@ -238,6 +242,10 @@ export default function V27Dashboard() {
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="signals">Signals ({signals.length})</TabsTrigger>
           <TabsTrigger value="entries">Entries ({entries.length})</TabsTrigger>
+          <TabsTrigger value="config" className="flex items-center gap-1">
+            <Settings className="h-3 w-3" />
+            Config
+          </TabsTrigger>
         </TabsList>
 
         {/* Overview Tab */}
@@ -320,6 +328,9 @@ export default function V27Dashboard() {
                 </div>
               </CardContent>
             </Card>
+            
+            {/* Skip Reasons */}
+            <V27SkipReasonsCard evaluations={evaluations} />
           </div>
         </TabsContent>
 
@@ -452,6 +463,14 @@ export default function V27Dashboard() {
               </Table>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Config Tab */}
+        <TabsContent value="config">
+          <div className="grid md:grid-cols-2 gap-6">
+            <V27ConfigEditor config={config} onConfigUpdated={refetchEvals} />
+            <V27SkipReasonsCard evaluations={evaluations} />
+          </div>
         </TabsContent>
       </Tabs>
     </div>

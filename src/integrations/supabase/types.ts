@@ -3739,6 +3739,45 @@ export type Database = {
         }
         Relationships: []
       }
+      v27_config: {
+        Row: {
+          asset_thresholds: Json | null
+          assets: string[] | null
+          causality_max_ms: number | null
+          causality_min_ms: number | null
+          correction_threshold_pct: number | null
+          enabled: boolean | null
+          id: string
+          shadow_mode: boolean | null
+          updated_at: string | null
+          updated_by: string | null
+        }
+        Insert: {
+          asset_thresholds?: Json | null
+          assets?: string[] | null
+          causality_max_ms?: number | null
+          causality_min_ms?: number | null
+          correction_threshold_pct?: number | null
+          enabled?: boolean | null
+          id?: string
+          shadow_mode?: boolean | null
+          updated_at?: string | null
+          updated_by?: string | null
+        }
+        Update: {
+          asset_thresholds?: Json | null
+          assets?: string[] | null
+          causality_max_ms?: number | null
+          causality_min_ms?: number | null
+          correction_threshold_pct?: number | null
+          enabled?: boolean | null
+          id?: string
+          shadow_mode?: boolean | null
+          updated_at?: string | null
+          updated_by?: string | null
+        }
+        Relationships: []
+      }
       v27_corrections: {
         Row: {
           correction_pct: number
