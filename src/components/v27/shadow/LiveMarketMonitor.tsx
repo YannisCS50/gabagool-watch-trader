@@ -4,16 +4,19 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
-import { Activity, RefreshCw, AlertTriangle, Target, Flame } from 'lucide-react';
+import { Activity, RefreshCw, AlertTriangle, Target, Flame, ExternalLink } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { cn } from '@/lib/utils';
 
 interface LiveMarketRow {
   asset: string;
   marketId: string;
+  marketSlug: string;
+  marketName: string;
   timeRemaining: number;
   strikePrice: number;
   spotPrice: number;
+  priceToBeat: number;
   deltaAbs: number;
   deltaPct: number;
   stateScore: number;
@@ -32,6 +35,7 @@ interface LiveMarketRow {
   blockReason: string | null;
   action: string;
   lastTs: number;
+  polymarketUrl: string;
 }
 
 export function LiveMarketMonitor() {
@@ -66,9 +70,22 @@ export function LiveMarketMonitor() {
         const activeMarkets: LiveMarketRow[] = Array.from(marketMap.values())
           .map((e) => {
             const spotPrice = Number(e.spot_price) || 0;
-            const strikePrice = spotPrice; // Derive from market_id if needed
+            
+            // Extract strike price from market_id (e.g., btc-updown-15m-1768139100)
+            // The strike is typically stored in strike_price field or derived
+            const strikePrice = Number(e.strike_price) || spotPrice;
+            const priceToBeat = strikePrice;
+            
             const deltaAbs = Math.abs(Number(e.delta_up) || Number(e.delta_down) || 0);
             const deltaPct = deltaAbs * 100;
+            
+            // Generate market name and slug
+            const endTs = parseInt(e.market_id.split('-').pop() || '0', 10);
+            const endDate = new Date(endTs * 1000);
+            const timeStr = endDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+            const marketName = `${e.asset} ${strikePrice > 0 ? `>${strikePrice.toLocaleString()}` : 'Up/Down'} @ ${timeStr}`;
+            const marketSlug = e.market_slug || `${e.asset.toLowerCase()}-price-${endTs}`;
+            const polymarketUrl = `https://polymarket.com/event/${marketSlug}`;
             
             const upBid = Number(e.pm_up_bid) || 0;
             const upAsk = Number(e.pm_up_ask) || 1;
@@ -94,15 +111,18 @@ export function LiveMarketMonitor() {
             
             // Extract time remaining from market_id (format: asset-updown-15m-timestamp)
             const parts = e.market_id.split('-');
-            const endTs = parseInt(parts[parts.length - 1], 10) || 0;
-            const timeRemaining = Math.max(0, (endTs * 1000 - now) / 1000);
+            const endTsFromId = parseInt(parts[parts.length - 1], 10) || 0;
+            const timeRemaining = Math.max(0, (endTsFromId * 1000 - now) / 1000);
 
             return {
               asset: e.asset,
               marketId: e.market_id,
+              marketSlug,
+              marketName,
               timeRemaining,
               strikePrice,
               spotPrice,
+              priceToBeat,
               deltaAbs,
               deltaPct,
               stateScore: mispricingPctThreshold,
@@ -121,6 +141,7 @@ export function LiveMarketMonitor() {
               blockReason: e.adverse_reason || e.skip_reason || null,
               action: e.action || 'SCAN',
               lastTs: e.ts,
+              polymarketUrl,
             };
           })
           .filter((m) => m.timeRemaining > 0 || m.lastTs > now - 300000) // Recent or active
@@ -188,7 +209,7 @@ export function LiveMarketMonitor() {
                     !m.blocked && !m.hotSignal && m.action !== 'ENTRY' && "bg-muted/20 border-border"
                   )}
                 >
-                  {/* Header: Asset, Status, Time */}
+                  {/* Header: Asset, Status, Time + Link */}
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <Badge variant="outline" className="font-mono font-bold text-xs">
@@ -210,21 +231,40 @@ export function LiveMarketMonitor() {
                         <Badge variant="outline" className="text-xs">Scan</Badge>
                       )}
                     </div>
-                    <span className="text-xs text-muted-foreground">
-                      {formatTime(m.timeRemaining)}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-muted-foreground">
+                        {formatTime(m.timeRemaining)}
+                      </span>
+                      <a
+                        href={m.polymarketUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary hover:text-primary/80 p-1"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                      </a>
+                    </div>
                   </div>
                   
-                  {/* Price Info */}
-                  <div className="grid grid-cols-2 gap-2 text-xs mb-2">
+                  {/* Market Name */}
+                  <div className="text-xs text-muted-foreground mb-2 truncate">
+                    {m.marketName}
+                  </div>
+                  
+                  {/* Price Info: Actual, To Beat, Delta */}
+                  <div className="grid grid-cols-3 gap-2 text-xs mb-2">
                     <div>
-                      <span className="text-muted-foreground">Spot: </span>
-                      <span className="font-mono">${m.spotPrice.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                      <span className="text-muted-foreground block text-[10px]">Actual</span>
+                      <span className="font-mono font-medium">${m.spotPrice.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
                     </div>
                     <div>
-                      <span className="text-muted-foreground">Δ: </span>
-                      <span className={cn("font-mono", m.deltaPct > 0 ? 'text-green-400' : 'text-muted-foreground')}>
-                        {m.deltaPct.toFixed(2)}%
+                      <span className="text-muted-foreground block text-[10px]">To Beat</span>
+                      <span className="font-mono font-medium">${m.priceToBeat.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground block text-[10px]">Delta</span>
+                      <span className={cn("font-mono font-medium", m.deltaPct > 0 ? 'text-green-400' : m.deltaPct < 0 ? 'text-red-400' : 'text-muted-foreground')}>
+                        {m.mispricingDollars >= 0 ? '+' : ''}{m.deltaPct.toFixed(2)}%
                       </span>
                     </div>
                   </div>
@@ -276,21 +316,22 @@ export function LiveMarketMonitor() {
             <TableHeader className="sticky top-0 bg-background z-10">
               <TableRow>
                 <TableHead className="w-[70px]">Asset</TableHead>
-                <TableHead className="w-[60px]">Time</TableHead>
-                <TableHead className="text-right">Spot</TableHead>
+                <TableHead>Name</TableHead>
+                <TableHead className="w-[50px]">Time</TableHead>
+                <TableHead className="text-right">Actual</TableHead>
+                <TableHead className="text-right">To Beat</TableHead>
                 <TableHead className="text-right">Δ%</TableHead>
-                <TableHead className="text-right">UP bid/ask</TableHead>
-                <TableHead className="text-right">DOWN bid/ask</TableHead>
-                <TableHead className="text-right">Spread</TableHead>
-                <TableHead className="text-right">Misp. ¢</TableHead>
-                <TableHead className="text-right">% Thr</TableHead>
-                <TableHead className="w-[80px]">Status</TableHead>
+                <TableHead className="text-right">UP</TableHead>
+                <TableHead className="text-right">DOWN</TableHead>
+                <TableHead className="text-right">Misp.</TableHead>
+                <TableHead className="w-[70px]">Status</TableHead>
+                <TableHead className="w-[40px]"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {markets.length === 0 && !loading && (
                 <TableRow>
-                  <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
+                  <TableCell colSpan={12} className="text-center text-muted-foreground py-8">
                     No active markets - waiting for evaluations...
                   </TableCell>
                 </TableRow>
@@ -310,44 +351,45 @@ export function LiveMarketMonitor() {
                       {m.asset}
                     </Badge>
                   </TableCell>
+                  <TableCell className="text-xs text-muted-foreground max-w-[200px] truncate">
+                    {m.marketName}
+                  </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     {formatTime(m.timeRemaining)}
                   </TableCell>
                   <TableCell className="text-right font-mono text-sm">
-                    ${m.spotPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <span className={m.deltaPct > 0 ? 'text-green-400' : 'text-muted-foreground'}>
-                      {m.deltaPct.toFixed(2)}%
-                    </span>
-                  </TableCell>
-                  <TableCell className="text-right text-xs font-mono">
-                    <span className="text-green-400">{(m.upBid * 100).toFixed(1)}</span>
-                    /
-                    <span className="text-green-400">{(m.upAsk * 100).toFixed(1)}</span>
-                  </TableCell>
-                  <TableCell className="text-right text-xs font-mono">
-                    <span className="text-red-400">{(m.downBid * 100).toFixed(1)}</span>
-                    /
-                    <span className="text-red-400">{(m.downAsk * 100).toFixed(1)}</span>
-                  </TableCell>
-                  <TableCell className="text-right text-xs">
-                    {m.spreadTicks}t
+                    ${m.spotPrice.toLocaleString(undefined, { maximumFractionDigits: 0 })}
                   </TableCell>
                   <TableCell className="text-right font-mono text-sm">
-                    {Math.abs(m.mispricingDollars) < 1 
-                      ? `${(m.mispricingDollars * 100).toFixed(1)}¢` 
-                      : `$${m.mispricingDollars.toFixed(2)}`}
+                    ${m.priceToBeat.toLocaleString(undefined, { maximumFractionDigits: 0 })}
                   </TableCell>
                   <TableCell className="text-right">
                     <span className={cn(
-                      "font-mono text-sm",
+                      "font-mono",
+                      m.mispricingDollars > 0 ? 'text-green-400' : m.mispricingDollars < 0 ? 'text-red-400' : 'text-muted-foreground'
+                    )}>
+                      {m.mispricingDollars >= 0 ? '+' : ''}{m.deltaPct.toFixed(2)}%
+                    </span>
+                  </TableCell>
+                  <TableCell className="text-right text-xs font-mono">
+                    <span className="text-green-400">{(m.upBid * 100).toFixed(0)}</span>
+                    <span className="text-muted-foreground">/</span>
+                    <span className="text-green-400">{(m.upAsk * 100).toFixed(0)}</span>
+                  </TableCell>
+                  <TableCell className="text-right text-xs font-mono">
+                    <span className="text-red-400">{(m.downBid * 100).toFixed(0)}</span>
+                    <span className="text-muted-foreground">/</span>
+                    <span className="text-red-400">{(m.downAsk * 100).toFixed(0)}</span>
+                  </TableCell>
+                  <TableCell className="text-right font-mono text-sm">
+                    <span className={cn(
                       m.mispricingPctThreshold >= 100 && "text-green-400 font-bold",
                       m.mispricingPctThreshold >= 85 && m.mispricingPctThreshold < 100 && "text-orange-400",
-                      m.mispricingPctThreshold >= 60 && m.mispricingPctThreshold < 85 && "text-amber-400",
-                      m.mispricingPctThreshold < 60 && "text-muted-foreground"
+                      m.mispricingPctThreshold < 85 && "text-muted-foreground"
                     )}>
-                      {m.mispricingPctThreshold.toFixed(0)}%
+                      {Math.abs(m.mispricingDollars) < 1 
+                        ? `${(m.mispricingDollars * 100).toFixed(0)}¢` 
+                        : `$${m.mispricingDollars.toFixed(0)}`}
                     </span>
                   </TableCell>
                   <TableCell>
@@ -375,6 +417,16 @@ export function LiveMarketMonitor() {
                         Scan
                       </Badge>
                     )}
+                  </TableCell>
+                  <TableCell>
+                    <a
+                      href={m.polymarketUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary hover:text-primary/80 p-1 inline-flex"
+                    >
+                      <ExternalLink className="h-4 w-4" />
+                    </a>
                   </TableCell>
                 </TableRow>
               ))}
