@@ -36,8 +36,11 @@ const RTDS_ASSET_MAP: Record<string, Asset> = {
 const MAX_TICKS = 2000;
 const MAX_MEASUREMENTS = 1000;
 
-// Polymarket RTDS WebSocket URL (public, no auth needed)
-const RTDS_WS_URL = 'wss://ws-live-data.polymarket.com';
+// Polymarket RTDS via our backend WebSocket proxy (avoids browser/network quirks)
+const PROJECT_BASE_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined;
+const RTDS_PROXY_WS_URL = PROJECT_BASE_URL
+  ? `${PROJECT_BASE_URL.replace(/^http/, 'ws')}/functions/v1/rtds-proxy`
+  : null;
 
 interface PriceLatencyState {
   selectedAsset: Asset;
@@ -174,68 +177,98 @@ export function usePriceLatencyComparison() {
     }
   }, []);
 
-  // Handle Polymarket RTDS message (contains oracle_price events with Chainlink data)
+  // Handle RTDS proxy messages (crypto_prices_chainlink topic)
   const handleRtdsMessage = useCallback((event: MessageEvent) => {
+    const receivedAt = Date.now();
+
     try {
       const msg = JSON.parse(event.data);
-      const receivedAt = Date.now();
-      
-      // RTDS sends oracle_price events with Chainlink prices
-      // Format: { type: "oracle_price", asset: "BTC", price: 94523.12, timestamp: 1736569200000 }
-      if (msg.type === 'oracle_price' || msg.event === 'oracle_price' || msg.oracle_price) {
-        const data = msg.oracle_price || msg;
-        const assetStr = (data.asset || data.symbol || '').toUpperCase();
-        const asset = RTDS_ASSET_MAP[assetStr];
-        
+
+      // Proxy control messages
+      if (msg?.type === 'proxy_error') {
+        console.error('[RTDS] proxy_error:', msg?.error);
+        setState(prev => ({ ...prev, chainlinkWsStatus: 'error', lastError: String(msg?.error || 'RTDS proxy error') }));
+        return;
+      }
+
+      if (msg?.type === 'proxy_disconnected') {
+        console.warn('[RTDS] proxy_disconnected:', msg?.code);
+        setState(prev => ({ ...prev, chainlinkWsStatus: 'error', lastError: 'RTDS proxy disconnected' }));
+        return;
+      }
+
+      // Chainlink crypto prices
+      // Expected: { topic: "crypto_prices_chainlink", payload: { symbol: "btc/usd", value: 98765.43, timestamp?: ... } }
+      if (msg?.topic === 'crypto_prices_chainlink' && msg?.payload) {
+        const symbolRaw = String(msg.payload.symbol || msg.payload.asset || msg.payload.ticker || '').toLowerCase();
+        const valueRaw =
+          typeof msg.payload.value === 'number'
+            ? msg.payload.value
+            : typeof msg.payload.price === 'number'
+              ? msg.payload.price
+              : typeof msg.payload.p === 'number'
+                ? msg.payload.p
+                : null;
+
+        if (valueRaw === null) return;
+
+        let asset: Asset | null = null;
+        if (symbolRaw.includes('btc')) asset = 'BTC';
+        else if (symbolRaw.includes('eth')) asset = 'ETH';
+        else if (symbolRaw.includes('sol')) asset = 'SOL';
+        else if (symbolRaw.includes('xrp')) asset = 'XRP';
+
         if (!asset) return;
-        
-        const price = parseFloat(data.price);
-        if (isNaN(price)) return;
-        
-        // Use the timestamp from RTDS or current time
-        const timestamp = data.timestamp ? Number(data.timestamp) : receivedAt;
-        
+
+        const timestamp =
+          typeof msg.payload.timestamp === 'number'
+            ? msg.payload.timestamp
+            : typeof msg.payload.ts === 'number'
+              ? msg.payload.ts
+              : typeof msg.payload.timestampMs === 'number'
+                ? msg.payload.timestampMs
+                : receivedAt;
+
         const chainlinkSymbol = SYMBOL_MAP[asset].chainlink;
-        
+
         const tick: PriceTick = {
           source: 'chainlink',
           symbol: chainlinkSymbol,
-          price,
+          price: valueRaw,
           timestamp,
           receivedAt,
         };
 
-        lastChainlinkPriceRef.current.set(asset, { price, timestamp });
-        
-        console.log(`[RTDS] Chainlink ${asset}: $${price.toFixed(2)}`);
+        lastChainlinkPriceRef.current.set(asset, { price: valueRaw, timestamp });
 
         setState(prev => {
           const isCurrentAsset = asset === prev.selectedAsset;
           const newChainlinkTicks = [...prev.chainlinkTicks, tick].slice(-MAX_TICKS);
-          
+
           let newMeasurements = prev.latencyMeasurements;
           let latencyLead: number | undefined;
-          
+
           const lastBinance = lastBinancePriceRef.current.get(asset);
           if (lastBinance && isCurrentAsset) {
             const latencyMs = timestamp - lastBinance.timestamp;
             latencyLead = latencyMs;
-            newMeasurements = [...prev.latencyMeasurements, {
-              binanceTimestamp: lastBinance.timestamp,
-              chainlinkTimestamp: timestamp,
-              latencyMs,
-              priceDiff: Math.abs(price - lastBinance.price),
-              measuredAt: receivedAt,
-            }].slice(-MAX_MEASUREMENTS);
+            newMeasurements =
+              [...prev.latencyMeasurements, {
+                binanceTimestamp: lastBinance.timestamp,
+                chainlinkTimestamp: timestamp,
+                latencyMs,
+                priceDiff: Math.abs(valueRaw - lastBinance.price),
+                measuredAt: receivedAt,
+              }].slice(-MAX_MEASUREMENTS);
           }
 
-          const newEventLog = isCurrentAsset 
-            ? [{ timestamp: receivedAt, source: 'chainlink' as const, symbol: chainlinkSymbol, price, latencyLead }, ...prev.eventLog].slice(0, 200)
+          const newEventLog = isCurrentAsset
+            ? [{ timestamp: receivedAt, source: 'chainlink' as const, symbol: chainlinkSymbol, price: valueRaw, latencyLead }, ...prev.eventLog].slice(0, 200)
             : prev.eventLog;
 
           return {
             ...prev,
-            chainlinkPrice: isCurrentAsset ? price : prev.chainlinkPrice,
+            chainlinkPrice: isCurrentAsset ? valueRaw : prev.chainlinkPrice,
             chainlinkLastUpdate: isCurrentAsset ? timestamp : prev.chainlinkLastUpdate,
             chainlinkTicks: newChainlinkTicks,
             latencyMeasurements: newMeasurements,
@@ -243,46 +276,46 @@ export function usePriceLatencyComparison() {
             totalChainlinkTicks: prev.totalChainlinkTicks + 1,
           };
         });
+
+        return;
       }
-      
-      // Also check for price updates in different formats RTDS might use
-      if (msg.prices || msg.data?.prices) {
+
+      // Some RTDS variants may broadcast a price map
+      if (msg?.prices || msg?.data?.prices) {
         const prices = msg.prices || msg.data.prices;
         for (const [key, value] of Object.entries(prices)) {
-          const assetStr = key.toUpperCase();
-          const asset = RTDS_ASSET_MAP[assetStr];
-          if (!asset) continue;
-          
+          const assetStr = String(key).toUpperCase();
+          const mapped = RTDS_ASSET_MAP[assetStr];
+          if (!mapped) continue;
+
           const price = typeof value === 'number' ? value : parseFloat(value as string);
           if (isNaN(price)) continue;
-          
-          const timestamp = receivedAt;
-          const chainlinkSymbol = SYMBOL_MAP[asset].chainlink;
-          
-          lastChainlinkPriceRef.current.set(asset, { price, timestamp });
-          
+
+          const chainlinkSymbol = SYMBOL_MAP[mapped].chainlink;
+          const tick: PriceTick = {
+            source: 'chainlink',
+            symbol: chainlinkSymbol,
+            price,
+            timestamp: receivedAt,
+            receivedAt,
+          };
+
+          lastChainlinkPriceRef.current.set(mapped, { price, timestamp: receivedAt });
+
           setState(prev => {
-            const isCurrentAsset = asset === prev.selectedAsset;
-            const tick: PriceTick = {
-              source: 'chainlink',
-              symbol: chainlinkSymbol,
-              price,
-              timestamp,
-              receivedAt,
-            };
-            
+            const isCurrentAsset = mapped === prev.selectedAsset;
             return {
               ...prev,
               chainlinkPrice: isCurrentAsset ? price : prev.chainlinkPrice,
-              chainlinkLastUpdate: isCurrentAsset ? timestamp : prev.chainlinkLastUpdate,
+              chainlinkLastUpdate: isCurrentAsset ? receivedAt : prev.chainlinkLastUpdate,
               chainlinkTicks: [...prev.chainlinkTicks, tick].slice(-MAX_TICKS),
               totalChainlinkTicks: prev.totalChainlinkTicks + 1,
             };
           });
         }
       }
-    } catch (err) {
-      // Non-JSON message or parse error - ignore
+    } catch {
+      // Non-JSON message (e.g. PONG) - ignore
     }
   }, []);
 
@@ -329,49 +362,57 @@ export function usePriceLatencyComparison() {
       setState(prev => ({ ...prev, binanceWsStatus: 'disconnected' }));
     };
 
-    // 2. Connect to Polymarket RTDS for Chainlink oracle prices
-    // This is the SAME data Polymarket uses for settlement - no API key needed!
+    // 2. Connect to Polymarket RTDS via backend proxy for Chainlink oracle prices
+    // This should match the same stream we use elsewhere in the app.
     try {
-      console.log('Connecting to Polymarket RTDS for Chainlink prices...');
-      const chainlinkWs = new WebSocket(RTDS_WS_URL);
+      if (!RTDS_PROXY_WS_URL) {
+        throw new Error('Missing backend base URL (VITE_SUPABASE_URL)');
+      }
+
+      console.log('Connecting to RTDS proxy for Chainlink prices...');
+      const chainlinkWs = new WebSocket(RTDS_PROXY_WS_URL);
       chainlinkWsRef.current = chainlinkWs;
 
       chainlinkWs.onopen = () => {
-        console.log('Polymarket RTDS WebSocket connected');
+        console.log('RTDS proxy WebSocket connected');
         setState(prev => ({ ...prev, chainlinkWsStatus: 'connected' }));
-        
-        // Subscribe to oracle price updates for all assets
-        // RTDS subscription format
-        const subscriptions = [
-          { action: 'subscribe', channel: 'oracle', assets: ['BTC', 'ETH', 'SOL', 'XRP'] },
-          { action: 'subscribe', channel: 'price', assets: ['BTC', 'ETH', 'SOL', 'XRP'] },
-        ];
-        
-        for (const sub of subscriptions) {
-          chainlinkWs.send(JSON.stringify(sub));
-        }
-        
-        console.log('Subscribed to RTDS oracle channels');
       };
 
-      chainlinkWs.onmessage = handleRtdsMessage;
+      chainlinkWs.onmessage = (event) => {
+        // Subscribe as soon as proxy confirms it connected upstream
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg?.type === 'proxy_connected') {
+            chainlinkWs.send(
+              JSON.stringify({
+                action: 'subscribe',
+                subscriptions: [{ topic: 'crypto_prices_chainlink', type: '*', filters: '' }],
+              }),
+            );
+            return;
+          }
+        } catch {
+          // ignore
+        }
+
+        handleRtdsMessage(event);
+      };
 
       chainlinkWs.onerror = (error) => {
-        console.error('RTDS WebSocket error:', error);
-        setState(prev => ({ ...prev, chainlinkWsStatus: 'error' }));
+        console.error('RTDS proxy WebSocket error:', error);
+        setState(prev => ({ ...prev, chainlinkWsStatus: 'error', lastError: 'RTDS proxy WebSocket error' }));
       };
 
       chainlinkWs.onclose = () => {
-        console.log('RTDS WebSocket closed');
+        console.log('RTDS proxy WebSocket closed');
         setState(prev => ({ ...prev, chainlinkWsStatus: 'disconnected' }));
       };
-
     } catch (err) {
-      console.error('RTDS connection error:', err);
-      setState(prev => ({ 
-        ...prev, 
+      console.error('RTDS proxy connection error:', err);
+      setState(prev => ({
+        ...prev,
         chainlinkWsStatus: 'error',
-        lastError: err instanceof Error ? err.message : 'RTDS connection failed',
+        lastError: err instanceof Error ? err.message : 'RTDS proxy connection failed',
       }));
     }
 
