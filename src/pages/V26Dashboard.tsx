@@ -11,7 +11,7 @@ import { DownloadTodayTicksButton } from '@/components/v26/DownloadTodayTicksBut
 import { CsvResultsUploader } from '@/components/v26/CsvResultsUploader';
 import { V26StrategyModal } from '@/components/V26StrategyModal';
 import { V26OracleSettleModal } from '@/components/V26OracleSettleModal';
-import { SubgraphDashboard, ToxicityFilterDashboard } from '@/components/v26';
+import { SubgraphDashboard, ToxicityFilterDashboard, ExportDatasetModal } from '@/components/v26';
 import { HourlyPnLChart } from '@/components/v26/HourlyPnLChart';
 import { TruePnLCard } from '@/components/v26/TruePnLCard';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -1111,6 +1111,9 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
             </div>
             <div className="shrink-0">
               <V26StrategyModal />
+            </div>
+            <div className="shrink-0">
+              <ExportDatasetModal />
             </div>
           </div>
         </div>
