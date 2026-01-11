@@ -4,9 +4,10 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
-import { Activity, RefreshCw, AlertTriangle, Target, Flame, ExternalLink } from "lucide-react";
+import { Activity, RefreshCw, AlertTriangle, Target, Flame, ExternalLink, Wifi, WifiOff } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
+import { usePolymarketRealtime } from "@/hooks/usePolymarketRealtime";
 
 interface LiveMarketRow {
   asset: string;
@@ -65,6 +66,15 @@ export function LiveMarketMonitor() {
   const [markets, setMarkets] = useState<LiveMarketRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  // Realtime orderbooks (CLOB WS)
+  const {
+    getOrderbook,
+    isConnected: isOrderbookLive,
+    connectionState: orderbookState,
+    connect: connectOrderbooks,
+    lastUpdateTime: orderbookLastUpdateTime,
+  } = usePolymarketRealtime(true);
 
   // Live spot prices, sourced from the same backend feed used elsewhere (Chainlink RPC).
   const [liveSpotPrices, setLiveSpotPrices] = useState<Record<string, number>>({});
@@ -147,10 +157,12 @@ export function LiveMarketMonitor() {
         const now = Date.now();
 
         const base = Array.from(marketMap.values()).map((e) => {
-          // Polymarket 15-min market URL format: {asset}-updown-15m-{start_timestamp}
-          const endTs = parseInt(String(e.market_id).split("-").pop() || "0", 10);
-          const startTs = endTs - 15 * 60;
+          const parts = String(e.market_id).split("-");
+          const windowStartTs = parseInt(parts[parts.length - 1], 10) || 0;
+          const startTs = windowStartTs;
+          const endTs = startTs + 15 * 60;
           const endDate = new Date(endTs * 1000);
+
           const timeStr = endDate.toLocaleTimeString("en-US", {
             hour: "2-digit",
             minute: "2-digit",
@@ -160,9 +172,7 @@ export function LiveMarketMonitor() {
           const marketSlug = e.market_slug || `${String(e.asset).toLowerCase()}-updown-15m-${startTs}`;
           const polymarketUrl = `https://polymarket.com/event/${marketSlug}`;
 
-          const parts = String(e.market_id).split("-");
-          const endTsFromId = parseInt(parts[parts.length - 1], 10) || 0;
-          const timeRemaining = Math.max(0, (endTsFromId * 1000 - now) / 1000);
+          const timeRemaining = Math.max(0, (endTs * 1000 - now) / 1000);
 
           // Live spot price preferred; fallback to evaluation spot_price.
           const asset = String(e.asset);
@@ -288,6 +298,7 @@ export function LiveMarketMonitor() {
 
   const handleRefresh = async () => {
     setRefreshing(true);
+    connectOrderbooks();
     await fetchMarkets();
     setRefreshing(false);
   };
@@ -315,6 +326,17 @@ export function LiveMarketMonitor() {
           <Badge variant="outline" className="ml-1 text-xs">
             {markets.length}
           </Badge>
+          {isOrderbookLive ? (
+            <Badge variant="outline" className="text-xs">
+              <Wifi className="h-3 w-3 mr-1" />
+              Live
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="text-xs">
+              <WifiOff className="h-3 w-3 mr-1" />
+              {orderbookState}
+            </Badge>
+          )}
         </CardTitle>
         <Button
           variant="ghost"
