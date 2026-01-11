@@ -42,58 +42,6 @@ export function LiveMarketMonitor() {
   const [markets, setMarkets] = useState<LiveMarketRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [livePrices, setLivePrices] = useState<Record<string, number>>({});
-
-  // Subscribe to real-time price updates from chainlink_prices
-  useEffect(() => {
-    // Fetch latest prices initially
-    const fetchLatestPrices = async () => {
-      const assets = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'SUI'];
-      const priceMap: Record<string, number> = {};
-      
-      for (const asset of assets) {
-        const { data } = await supabase
-          .from('chainlink_prices')
-          .select('price, asset')
-          .eq('asset', asset)
-          .order('chainlink_timestamp', { ascending: false })
-          .limit(1)
-          .single();
-        
-        if (data) {
-          priceMap[data.asset] = Number(data.price);
-        }
-      }
-      
-      setLivePrices(priceMap);
-    };
-
-    fetchLatestPrices();
-
-    // Subscribe to real-time updates
-    const channel = supabase
-      .channel('chainlink-prices-live')
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'chainlink_prices',
-        },
-        (payload) => {
-          const newPrice = payload.new as { asset: string; price: number };
-          setLivePrices(prev => ({
-            ...prev,
-            [newPrice.asset]: Number(newPrice.price),
-          }));
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [livePrices]);
 
   const fetchMarkets = useCallback(async () => {
     try {
@@ -121,16 +69,15 @@ export function LiveMarketMonitor() {
         const now = Date.now();
         const activeMarkets: LiveMarketRow[] = Array.from(marketMap.values())
           .map((e) => {
-            // Use live price if available, otherwise fallback to evaluation spot_price
-            const evalSpotPrice = Number(e.spot_price) || 0;
-            const spotPrice = livePrices[e.asset] || evalSpotPrice;
+            // Use the spot_price directly from the latest evaluation
+            const spotPrice = Number(e.spot_price) || 0;
             
             // Extract strike price from market_id (e.g., btc-updown-15m-1768139100)
             // The strike is typically stored in strike_price field or derived
-            const strikePrice = Number(e.strike_price) || evalSpotPrice;
+            const strikePrice = Number(e.strike_price) || spotPrice;
             const priceToBeat = strikePrice;
             
-            // Calculate delta based on current live price vs strike
+            // Calculate delta based on current price vs strike
             const rawDelta = strikePrice > 0 ? (spotPrice - strikePrice) / strikePrice : 0;
             const deltaAbs = Math.abs(rawDelta);
             const deltaPct = rawDelta * 100;
