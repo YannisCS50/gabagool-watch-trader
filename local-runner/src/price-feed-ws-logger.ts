@@ -52,6 +52,8 @@ const BINANCE_SYMBOLS = ['btcusdt', 'ethusdt', 'solusdt', 'xrpusdt'];
 const FLUSH_INTERVAL_MS = 2000;  // Flush every 2 seconds
 const MAX_BUFFER_SIZE = 200;     // Or when buffer hits 200 items
 const RECONNECT_DELAY_MS = 5000; // Wait 5s before reconnect
+const HEALTH_CHECK_INTERVAL_MS = 10000; // Check health every 10s
+const STALE_THRESHOLD_MS = 30000; // Consider stale if no data for 30s
 
 // State
 let binanceWs: WebSocket | null = null;
@@ -61,6 +63,9 @@ let logBuffer: PriceTickLog[] = [];
 let lastFlushTime = Date.now();
 let flushInterval: NodeJS.Timeout | null = null;
 let pingInterval: NodeJS.Timeout | null = null;
+let healthCheckInterval: NodeJS.Timeout | null = null;
+let binanceReconnectTimer: NodeJS.Timeout | null = null;
+let polymarketReconnectTimer: NodeJS.Timeout | null = null;
 
 const stats: LoggerStats = {
   binance: { connected: false, messageCount: 0, lastMessageAt: 0, reconnects: 0 },
@@ -140,8 +145,40 @@ function addTick(tick: PriceTickLog): void {
 
 // ============ BINANCE WEBSOCKET ============
 
+function forceReconnectBinance(): void {
+  console.log('[PriceFeedLogger] 🔄 Force reconnecting Binance...');
+  
+  // Clear any pending reconnect timer
+  if (binanceReconnectTimer) {
+    clearTimeout(binanceReconnectTimer);
+    binanceReconnectTimer = null;
+  }
+  
+  // Close existing connection if any
+  if (binanceWs) {
+    try {
+      binanceWs.removeAllListeners();
+      binanceWs.terminate();
+    } catch (e) { /* ignore */ }
+    binanceWs = null;
+  }
+  
+  stats.binance.connected = false;
+  stats.binance.reconnects++;
+  
+  // Reconnect after delay
+  binanceReconnectTimer = setTimeout(connectBinance, RECONNECT_DELAY_MS);
+}
+
 function connectBinance(): void {
+  if (!isRunning) return;
   if (binanceWs?.readyState === WebSocket.OPEN) return;
+
+  // Clear any pending reconnect timer
+  if (binanceReconnectTimer) {
+    clearTimeout(binanceReconnectTimer);
+    binanceReconnectTimer = null;
+  }
 
   console.log('[PriceFeedLogger] Connecting to Binance WebSocket...');
   
@@ -149,11 +186,19 @@ function connectBinance(): void {
   const streams = BINANCE_SYMBOLS.map(s => `${s}@trade`).join('/');
   const url = `${BINANCE_WS_URL}/${streams}`;
   
-  binanceWs = new WebSocket(url);
+  try {
+    binanceWs = new WebSocket(url);
+  } catch (e) {
+    console.error('[PriceFeedLogger] Failed to create Binance WebSocket:', e);
+    stats.errors++;
+    binanceReconnectTimer = setTimeout(connectBinance, RECONNECT_DELAY_MS);
+    return;
+  }
 
   binanceWs.on('open', () => {
     console.log('[PriceFeedLogger] ✅ Binance WebSocket connected');
     stats.binance.connected = true;
+    stats.binance.lastMessageAt = Date.now(); // Reset to prevent immediate health check trigger
   });
 
   binanceWs.on('message', (data: WebSocket.Data) => {
@@ -187,30 +232,71 @@ function connectBinance(): void {
     stats.errors++;
   });
 
-  binanceWs.on('close', () => {
-    console.log('[PriceFeedLogger] Binance WebSocket disconnected');
+  binanceWs.on('close', (code, reason) => {
+    console.log(`[PriceFeedLogger] Binance WebSocket disconnected (code: ${code})`);
     stats.binance.connected = false;
+    binanceWs = null;
     
     if (isRunning) {
       stats.binance.reconnects++;
       console.log(`[PriceFeedLogger] Reconnecting Binance in ${RECONNECT_DELAY_MS}ms...`);
-      setTimeout(connectBinance, RECONNECT_DELAY_MS);
+      binanceReconnectTimer = setTimeout(connectBinance, RECONNECT_DELAY_MS);
     }
   });
 }
 
 // ============ POLYMARKET RTDS WEBSOCKET ============
 
+function forceReconnectPolymarket(): void {
+  console.log('[PriceFeedLogger] 🔄 Force reconnecting Polymarket...');
+  
+  // Clear any pending reconnect timer
+  if (polymarketReconnectTimer) {
+    clearTimeout(polymarketReconnectTimer);
+    polymarketReconnectTimer = null;
+  }
+  
+  // Close existing connection if any
+  if (polymarketWs) {
+    try {
+      polymarketWs.removeAllListeners();
+      polymarketWs.terminate();
+    } catch (e) { /* ignore */ }
+    polymarketWs = null;
+  }
+  
+  stats.polymarket.connected = false;
+  stats.polymarket.reconnects++;
+  
+  // Reconnect after delay
+  polymarketReconnectTimer = setTimeout(connectPolymarket, RECONNECT_DELAY_MS);
+}
+
 function connectPolymarket(): void {
+  if (!isRunning) return;
   if (polymarketWs?.readyState === WebSocket.OPEN) return;
+
+  // Clear any pending reconnect timer
+  if (polymarketReconnectTimer) {
+    clearTimeout(polymarketReconnectTimer);
+    polymarketReconnectTimer = null;
+  }
 
   console.log('[PriceFeedLogger] Connecting to Polymarket RTDS...');
   
-  polymarketWs = new WebSocket(POLYMARKET_RTDS_URL);
+  try {
+    polymarketWs = new WebSocket(POLYMARKET_RTDS_URL);
+  } catch (e) {
+    console.error('[PriceFeedLogger] Failed to create Polymarket WebSocket:', e);
+    stats.errors++;
+    polymarketReconnectTimer = setTimeout(connectPolymarket, RECONNECT_DELAY_MS);
+    return;
+  }
 
   polymarketWs.on('open', () => {
     console.log('[PriceFeedLogger] ✅ Polymarket RTDS connected');
     stats.polymarket.connected = true;
+    stats.polymarket.lastMessageAt = Date.now(); // Reset to prevent immediate health check trigger
 
     // Subscribe to crypto prices (both Polymarket and Chainlink)
     polymarketWs?.send(JSON.stringify({
@@ -279,16 +365,43 @@ function connectPolymarket(): void {
     stats.errors++;
   });
 
-  polymarketWs.on('close', () => {
-    console.log('[PriceFeedLogger] Polymarket RTDS disconnected');
+  polymarketWs.on('close', (code, reason) => {
+    console.log(`[PriceFeedLogger] Polymarket RTDS disconnected (code: ${code})`);
     stats.polymarket.connected = false;
+    polymarketWs = null;
     
     if (isRunning) {
       stats.polymarket.reconnects++;
       console.log(`[PriceFeedLogger] Reconnecting Polymarket in ${RECONNECT_DELAY_MS}ms...`);
-      setTimeout(connectPolymarket, RECONNECT_DELAY_MS);
+      polymarketReconnectTimer = setTimeout(connectPolymarket, RECONNECT_DELAY_MS);
     }
   });
+}
+
+// ============ HEALTH CHECK ============
+
+function checkWebSocketHealth(): void {
+  if (!isRunning) return;
+  
+  const now = Date.now();
+  
+  // Check Binance health
+  const binanceStale = stats.binance.lastMessageAt > 0 && 
+                       (now - stats.binance.lastMessageAt) > STALE_THRESHOLD_MS;
+  
+  if (binanceStale || (!stats.binance.connected && binanceWs?.readyState !== WebSocket.CONNECTING)) {
+    console.log(`[PriceFeedLogger] ⚠️ Binance appears stale or disconnected (last msg: ${Math.round((now - stats.binance.lastMessageAt) / 1000)}s ago)`);
+    forceReconnectBinance();
+  }
+  
+  // Check Polymarket health
+  const polymarketStale = stats.polymarket.lastMessageAt > 0 && 
+                          (now - stats.polymarket.lastMessageAt) > STALE_THRESHOLD_MS;
+  
+  if (polymarketStale || (!stats.polymarket.connected && polymarketWs?.readyState !== WebSocket.CONNECTING)) {
+    console.log(`[PriceFeedLogger] ⚠️ Polymarket appears stale or disconnected (last msg: ${Math.round((now - stats.polymarket.lastMessageAt) / 1000)}s ago)`);
+    forceReconnectPolymarket();
+  }
 }
 
 // ============ PUBLIC API ============
@@ -306,6 +419,7 @@ export function startPriceFeedLogger(): void {
   console.log('║  Sources: Binance WS + Polymarket RTDS (incl. Chainlink)       ║');
   console.log('║  Assets:  BTC, ETH, SOL, XRP                                   ║');
   console.log(`║  Flush:   Every ${FLUSH_INTERVAL_MS}ms or ${MAX_BUFFER_SIZE} ticks                            ║`);
+  console.log(`║  Health:  Auto-reconnect if stale >${STALE_THRESHOLD_MS / 1000}s                        ║`);
   console.log('╚════════════════════════════════════════════════════════════════╝');
   console.log('');
 
@@ -314,6 +428,8 @@ export function startPriceFeedLogger(): void {
   stats.totalLogged = 0;
   stats.flushCount = 0;
   stats.errors = 0;
+  stats.binance.lastMessageAt = Date.now();
+  stats.polymarket.lastMessageAt = Date.now();
 
   // Connect to both WebSockets
   connectBinance();
@@ -332,9 +448,12 @@ export function startPriceFeedLogger(): void {
       polymarketWs.send(JSON.stringify({ action: 'ping' }));
     }
   }, 30000);
+
+  // Health check - auto-reconnect stale connections
+  healthCheckInterval = setInterval(checkWebSocketHealth, HEALTH_CHECK_INTERVAL_MS);
 }
 
-export function stopPriceFeedLogger(): void {
+export async function stopPriceFeedLogger(): Promise<void> {
   if (!isRunning) return;
 
   console.log('[PriceFeedLogger] Stopping...');
@@ -349,19 +468,35 @@ export function stopPriceFeedLogger(): void {
     clearInterval(pingInterval);
     pingInterval = null;
   }
+  if (healthCheckInterval) {
+    clearInterval(healthCheckInterval);
+    healthCheckInterval = null;
+  }
+  
+  // Clear reconnect timers
+  if (binanceReconnectTimer) {
+    clearTimeout(binanceReconnectTimer);
+    binanceReconnectTimer = null;
+  }
+  if (polymarketReconnectTimer) {
+    clearTimeout(polymarketReconnectTimer);
+    polymarketReconnectTimer = null;
+  }
 
   // Close WebSockets
   if (binanceWs) {
+    binanceWs.removeAllListeners();
     binanceWs.close();
     binanceWs = null;
   }
   if (polymarketWs) {
+    polymarketWs.removeAllListeners();
     polymarketWs.close();
     polymarketWs = null;
   }
 
   // Final flush
-  flushBuffer();
+  await flushBuffer();
 
   console.log('[PriceFeedLogger] Stopped');
   logPriceFeedLoggerStats();
