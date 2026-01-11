@@ -300,16 +300,13 @@ function connectPolymarket(): void {
     stats.polymarket.lastMessageAt = Date.now();
 
     // Subscribe using RTDS format (docs.polymarket.com/developers/RTDS/RTDS-crypto-prices)
-    // - crypto_prices: Binance symbols like "btcusdt"
-    // - crypto_prices_chainlink: symbols like "btc/usd"
-    const cryptoPricesFilters = BINANCE_SYMBOLS.join(',');
-
+    // Filters are OPTIONAL - omit them to get all symbols
     polymarketWs?.send(
       JSON.stringify({
         action: 'subscribe',
         subscriptions: [
-          { topic: 'crypto_prices', type: 'update', filters: cryptoPricesFilters },
-          { topic: 'crypto_prices_chainlink', type: '*', filters: '' },
+          { topic: 'crypto_prices', type: 'update' },
+          { topic: 'crypto_prices_chainlink', type: '*' },
         ],
       })
     );
