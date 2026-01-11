@@ -33,7 +33,7 @@ import type { V27Market, V27OrderBook } from './index.js';
 const RUN_ID = `shadow-${Date.now()}`;
 const MARKET_POLL_INTERVAL_MS = 30_000; // Check for new markets every 30s
 const PRICE_TICK_INTERVAL_MS = 1_000; // Log chainlink price every second
-const ORDERBOOK_POLL_INTERVAL_MS = 500; // Poll orderbooks every 500ms (CRITICAL)
+const ORDERBOOK_POLL_INTERVAL_MS = 250; // Poll at fastest cadence (HOT), engine filters per-market
 const HEARTBEAT_INTERVAL_MS = 30_000; // Send heartbeat every 30s
 const STATS_LOG_INTERVAL_MS = 60_000; // Log stats every minute
 
@@ -248,9 +248,14 @@ async function pollOrderbooksAndEvaluate(): Promise<void> {
   const config = getV27Config();
   if (!config.enabled) return;
 
-  // Evaluate ALL active markets
+  // Evaluate ALL active markets based on their individual cadence
   for (const [marketId, market] of activeMarkets) {
     try {
+      // Check if this market should be evaluated based on its cadence state
+      if (!shadowEngine.shouldEvaluate(marketId)) {
+        continue; // Skip - not time yet for this market's cadence
+      }
+      
       // Fetch orderbook for both sides
       const [upDepth, downDepth] = await Promise.all([
         market.upTokenId ? getOrderbookDepth(market.upTokenId) : null,
@@ -284,7 +289,7 @@ async function pollOrderbooksAndEvaluate(): Promise<void> {
       // Update any active post-signal tracking
       shadowEngine.updateTrackingWithOrderbook(marketId, book);
 
-      // EVALUATE - this is the core loop
+      // EVALUATE - this is the core loop (cadence already checked)
       await shadowEngine.evaluate(marketId, book);
       
     } catch (err) {
@@ -317,8 +322,10 @@ async function sendShadowHeartbeat(): Promise<void> {
       version: 'shadow-v27',
     });
 
+    const cadenceStats = shadowEngine.getCadenceStats();
+
     log(`💓 Heartbeat | Markets: ${activeMarkets.size} | Evals: ${stats.totalEvaluations} | Signals: ${stats.signalsDetected} | Clean: ${stats.cleanSignals}`);
-    log(`   📊 Feeds: Binance=${loggerStats.binance.connected ? '✅' : '❌'} PM=${loggerStats.polymarket.connected ? '✅' : '❌'} CLOB=${loggerStats.clob.connected ? '✅' : '❌'} | Ticks: ${loggerStats.totalLogged}`);
+    log(`   📊 Cadence: 🧊${cadenceStats.coldCount} 🌡️${cadenceStats.warmCount} 🔥${cadenceStats.hotCount} | Feeds: Binance=${loggerStats.binance.connected ? '✅' : '❌'} PM=${loggerStats.polymarket.connected ? '✅' : '❌'}`);
   } catch (err) {
     logError('Heartbeat failed', err);
   }
