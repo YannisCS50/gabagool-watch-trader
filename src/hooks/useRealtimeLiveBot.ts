@@ -59,6 +59,8 @@ export function useRealtimeLiveBot() {
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const maxReconnectDelay = 30000; // Max 30s between reconnects
 
   // Fetch enabled state from database
   useEffect(() => {
@@ -126,6 +128,7 @@ export function useRealtimeLiveBot() {
 
     ws.onopen = () => {
       console.log('[LiveBot] WebSocket connected');
+      reconnectAttemptsRef.current = 0; // Reset on successful connect
       setStatus((prev) => ({
         ...prev,
         isConnected: true,
@@ -134,15 +137,22 @@ export function useRealtimeLiveBot() {
         lastMessageAt: Date.now(),
       }));
 
-      // Keep-alive ping
+      // Keep-alive ping every 15s (more aggressive)
       pingIntervalRef.current = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: 'ping' }));
+          try {
+            ws.send(JSON.stringify({ type: 'ping' }));
+          } catch (e) {
+            console.warn('[LiveBot] Ping failed, reconnecting...', e);
+            ws.close();
+          }
         }
-      }, 30000);
+      }, 15000);
 
       // Ask server to send current status immediately
-      ws.send(JSON.stringify({ type: 'status' }));
+      try {
+        ws.send(JSON.stringify({ type: 'status' }));
+      } catch {}
     };
 
     ws.onmessage = (event) => {
@@ -224,12 +234,16 @@ export function useRealtimeLiveBot() {
 
       clearTimers();
 
-      // Reconnect after delay
+      // Exponential backoff with max delay
+      reconnectAttemptsRef.current++;
+      const delay = Math.min(1000 * Math.pow(1.5, reconnectAttemptsRef.current), maxReconnectDelay);
+      console.log(`[LiveBot] Reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttemptsRef.current})`);
+      
       reconnectTimeoutRef.current = setTimeout(() => {
         connect();
-      }, 5000);
+      }, delay);
     };
-  }, [clearTimers, wsUrl]);
+  }, [clearTimers, wsUrl, maxReconnectDelay]);
 
   useEffect(() => {
     connect();

@@ -580,29 +580,46 @@ Deno.serve(async (req) => {
     }
 
     log(`🔌 Connecting to CLOB with ${tokenIds.length} tokens...`);
-    clobSocket = new WebSocket('wss://ws-subscriptions-clob.polymarket.com/ws/market');
+    
+    try {
+      clobSocket = new WebSocket('wss://ws-subscriptions-clob.polymarket.com/ws/market');
 
-    clobSocket.onopen = () => {
-      log('✅ Connected to Polymarket CLOB');
-      clobSocket!.send(JSON.stringify({ type: 'market', assets_ids: tokenIds }));
-      sendStatus();
-    };
+      clobSocket.onopen = () => {
+        log('✅ Connected to Polymarket CLOB');
+        try {
+          clobSocket!.send(JSON.stringify({ type: 'market', assets_ids: tokenIds }));
+        } catch (e) {
+          log(`❌ CLOB send error: ${e}`);
+        }
+        sendStatus();
+      };
 
-    clobSocket.onmessage = async (event) => {
-      try {
-        const data = JSON.parse(event.data.toString());
-        await processMarketEvent(data);
-      } catch {}
-    };
+      clobSocket.onmessage = async (event) => {
+        try {
+          const data = JSON.parse(event.data.toString());
+          await processMarketEvent(data);
+        } catch {}
+      };
 
-    clobSocket.onerror = (error) => log(`❌ CLOB error: ${error}`);
+      clobSocket.onerror = (error) => {
+        log(`❌ CLOB error: ${String(error)}`);
+        // Don't close here - let onclose handle reconnection
+      };
 
-    clobSocket.onclose = () => {
-      log('🔌 CLOB disconnected, reconnecting...');
+      clobSocket.onclose = (event) => {
+        log(`🔌 CLOB disconnected (code: ${event.code}), reconnecting in 3s...`);
+        clobSocket = null;
+        setTimeout(() => {
+          if (isEnabled) connectToClob();
+        }, 3000);
+      };
+    } catch (e) {
+      log(`❌ CLOB connection failed: ${e}`);
+      clobSocket = null;
       setTimeout(() => {
         if (isEnabled) connectToClob();
       }, 5000);
-    };
+    }
   };
 
   let bookEventCount = 0;
@@ -1299,7 +1316,8 @@ Deno.serve(async (req) => {
   };
 
   socket.onerror = (error) => {
-    log(`WebSocket error: ${error}`);
+    log(`WebSocket error: ${String(error)}`);
+    // Don't close - let the client reconnect
   };
 
   socket.onclose = () => {
