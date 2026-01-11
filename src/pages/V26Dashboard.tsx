@@ -810,9 +810,12 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
   };
 
   useEffect(() => {
-    fetchData();
-    fetchRunnerStatus();
-    fetchClaimables();
+    // FAST: Fetch all data in parallel immediately on mount
+    Promise.all([
+      fetchData(),
+      fetchRunnerStatus(),
+      fetchClaimables(),
+    ]).catch(err => console.error('[V26Dashboard] Initial fetch error:', err));
     
     // Auto-sync fills AND auto-settle every 2 minutes (silently in background)
     const autoSyncAndSettle = async () => {
@@ -833,13 +836,13 @@ const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
       }
     };
     
-    // Initial sync after 10 seconds, then every 2 minutes
-    const initialSyncTimeout = setTimeout(autoSyncAndSettle, 10 * 1000);
+    // Initial sync after 3 seconds (faster!), then every 2 minutes
+    const initialSyncTimeout = setTimeout(autoSyncAndSettle, 3 * 1000);
     const syncInterval = setInterval(autoSyncAndSettle, 2 * 60 * 1000);
     
-    const dataInterval = setInterval(fetchData, 5 * 60 * 1000);
-    const claimablesInterval = setInterval(fetchClaimables, 60 * 1000); // Check claimables every minute
-    const statusInterval = setInterval(fetchRunnerStatus, 10000); // Check status every 10s
+    const dataInterval = setInterval(fetchData, 60 * 1000); // Refresh every 60s (was 5 min)
+    const claimablesInterval = setInterval(fetchClaimables, 30 * 1000); // Check claimables every 30s
+    const statusInterval = setInterval(fetchRunnerStatus, 5000); // Check status every 5s (was 10s)
     
     const channel = supabase
       .channel('v26_realtime')
