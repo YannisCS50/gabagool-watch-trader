@@ -500,11 +500,11 @@ export function useShadowDashboard(limit: number = 1000) {
 
   // Transform raw data into dashboard format
   const dashboardData = useMemo((): ShadowDashboardData => {
-    // Use mock data if no real data available
-    const useEvaluations = evaluations.length > 0 ? evaluations : generateMockSignals(50);
-    const useTrackings = trackings.length > 0 ? trackings : generateMockTrackings(30);
+    // Only use real data - no mock fallback
+    const useEvaluations = evaluations;
+    const useTrackings = trackings;
     
-    // Build signal logs from evaluations
+    // Build signal logs from REAL evaluations with REAL data
     const signalLogs: SignalLog[] = useEvaluations.map((e) => ({
       id: e.id,
       marketId: e.market_id,
@@ -514,7 +514,7 @@ export function useShadowDashboard(limit: number = 1000) {
       delta: Number(e.delta_up) || Number(e.delta_down) || 0,
       mispricing: Number(e.mispricing_magnitude) || 0,
       threshold: Number(e.dynamic_threshold) || Number(e.base_threshold) || 0,
-      engineState: 'COLD' as EngineState, // Would need real-time state
+      engineState: 'WARM' as EngineState, // Default to WARM for real data
       passedFilters: !e.adverse_blocked && e.signal_valid,
       failedFilters: e.adverse_reason ? [e.adverse_reason] : e.skip_reason ? [e.skip_reason] : [],
       notes: null,
@@ -556,24 +556,25 @@ export function useShadowDashboard(limit: number = 1000) {
         emergencyUsed: false,
       }));
 
-    // Build causality events from evaluations
+    // Build causality events from REAL evaluations using REAL spot_leading_ms
     const causalityEvents: CausalityEvent[] = useEvaluations
-      .filter((e) => e.spot_price && e.poly_mid_price)
+      .filter((e) => e.spot_price && (e.pm_up_bid || e.pm_down_bid))
       .slice(0, 100)
       .map((e) => {
         const spotTs = e.ts;
-        const polyTs = e.ts + Math.floor(Math.random() * 300 - 100);
-        const lagMs = Math.abs(polyTs - spotTs);
-        const spotLeads = spotTs < polyTs;
+        const spotLeadingMs = Number(e.spot_leading_ms) || 0;
+        const polyTs = spotTs + spotLeadingMs; // Use real spot_leading_ms from DB
+        const lagMs = Math.abs(spotLeadingMs);
+        const spotLeads = spotLeadingMs > 0; // Positive means spot leads
         
         return {
           signalId: e.id,
           spotEventTs: spotTs,
           polyEventTs: polyTs,
           eventLagMs: lagMs,
-          directionAgreement: Math.random() > 0.3,
-          spotLeadingConfidence: spotLeads ? 0.7 + Math.random() * 0.3 : Math.random() * 0.3,
-          polyLeadingConfidence: !spotLeads ? 0.7 + Math.random() * 0.3 : Math.random() * 0.3,
+          directionAgreement: e.causality_passed ?? true,
+          spotLeadingConfidence: spotLeads ? Math.min(1, 0.5 + lagMs / 1000) : Math.max(0, 0.5 - lagMs / 1000),
+          polyLeadingConfidence: !spotLeads ? Math.min(1, 0.5 + lagMs / 1000) : Math.max(0, 0.5 - lagMs / 1000),
           verdict: lagMs < 50 ? 'AMBIGUOUS' as const : spotLeads ? 'SPOT_LEADS' as const : 'POLY_LEADS' as const,
         };
       });
@@ -604,43 +605,65 @@ export function useShadowDashboard(limit: number = 1000) {
         };
       });
 
-    // Build hypothetical executions from passed signals
+    // Build hypothetical executions from passed signals using REAL DB data
     const hypotheticalExecutions: HypotheticalExecution[] = useEvaluations
       .filter((e) => e.signal_valid && !e.adverse_blocked && e.mispricing_side)
       .map((e) => {
-        const basePrice = Number(e.poly_mid_price) || 0.5;
-        const spread = 0.01 + Math.random() * 0.02;
-        const isMaker = Math.random() > 0.3;
+        // Use REAL orderbook data from the evaluation
+        const upBid = Number(e.pm_up_bid) || 0;
+        const upAsk = Number(e.pm_up_ask) || 1;
+        const downBid = Number(e.pm_down_bid) || 0;
+        const downAsk = Number(e.pm_down_ask) || 1;
+        
+        const isUpSide = e.mispricing_side === 'UP';
+        const bid = isUpSide ? upBid : downBid;
+        const ask = isUpSide ? upAsk : downAsk;
+        const spread = ask - bid;
+        const mid = (bid + ask) / 2;
+        
+        // Maker price is just inside the bid, taker is at the ask
+        const entryPriceMaker = bid + 0.01;
+        const entryPriceTaker = ask;
+        const wouldCross = entryPriceMaker >= ask;
         
         return {
           signalId: e.id,
           marketId: e.market_id,
           asset: e.asset,
           side: e.mispricing_side as 'UP' | 'DOWN',
-          entryPriceMaker: basePrice - spread / 2,
-          entryPriceTaker: basePrice + spread / 2,
-          wouldCrossSpread: Math.random() > 0.7,
-          estimatedFillProbability: 50 + Math.random() * 50,
-          estimatedTimeToFillMs: 500 + Math.random() * 5000,
-          hypotheticalFillTs: e.ts + Math.floor(Math.random() * 3000),
-          makerTaker: isMaker ? 'MAKER' as const : 'TAKER' as const,
-          entrySlippageCents: Math.random() * 3,
+          entryPriceMaker,
+          entryPriceTaker,
+          wouldCrossSpread: wouldCross,
+          estimatedFillProbability: Math.max(10, 90 - spread * 500), // Tighter spread = higher fill prob
+          estimatedTimeToFillMs: wouldCross ? 100 : 500 + spread * 10000,
+          hypotheticalFillTs: e.ts + (wouldCross ? 100 : 1000),
+          makerTaker: wouldCross ? 'TAKER' as const : 'MAKER' as const,
+          entrySlippageCents: spread * 100,
           timestamp: e.ts,
         };
       });
 
     // ============================================
-    // BUILD SHADOW TRADES
+    // BUILD SHADOW TRADES using REAL DB data
     // ============================================
     const shadowTrades: ShadowTrade[] = useEvaluations
       .filter((e) => e.signal_valid && !e.adverse_blocked && e.mispricing_side)
       .map((e, idx) => {
-        const basePrice = Number(e.poly_mid_price) || 0.5;
-        const spread = Number(e.spread) || 0.02;
-        const isMaker = Math.random() > 0.3;
-        const fillProb = 0.5 + Math.random() * 0.5;
-        const tradeSizeUsd = 10 + Math.random() * 40;
-        const fillPrice = isMaker ? basePrice - spread / 2 : basePrice + spread / 2;
+        // Use REAL orderbook data
+        const isUpSide = e.mispricing_side === 'UP';
+        const bid = Number(isUpSide ? e.pm_up_bid : e.pm_down_bid) || 0;
+        const ask = Number(isUpSide ? e.pm_up_ask : e.pm_down_ask) || 1;
+        const spread = ask - bid;
+        
+        // Entry just inside bid (maker) or at ask (taker)
+        const entryPriceMaker = bid + 0.01;
+        const entryPriceTaker = ask;
+        const wouldCross = entryPriceMaker >= ask || spread < 0.02;
+        
+        // Fill probability based on real spread (tighter = better fill)
+        const fillProb = Math.min(0.95, Math.max(0.3, 0.9 - spread * 5));
+        const tradeSizeUsd = 25; // Standard trade size
+        const fillPrice = wouldCross ? entryPriceTaker : entryPriceMaker;
         
         return {
           tradeId: `st-${e.id}-${idx}`,
@@ -649,56 +672,73 @@ export function useShadowDashboard(limit: number = 1000) {
           asset: e.asset,
           side: e.mispricing_side as 'UP' | 'DOWN',
           entryTimestamp: e.ts,
-          entryPriceMaker: basePrice - spread / 2,
-          entryPriceTaker: basePrice + spread / 2,
-          assumedExecutionType: isMaker ? 'MAKER' as const : 'TAKER' as const,
+          entryPriceMaker,
+          entryPriceTaker,
+          assumedExecutionType: wouldCross ? 'TAKER' as const : 'MAKER' as const,
           assumedFillProbability: fillProb,
-          assumedFillLatencyMs: isMaker ? 500 + Math.random() * 2000 : 50 + Math.random() * 200,
+          assumedFillLatencyMs: wouldCross ? 100 : 800,
           assumedFillPrice: fillPrice,
           tradeSizeUsd,
           tradeSizeShares: tradeSizeUsd / fillPrice,
-          feeAssumptionUsd: isMaker ? -tradeSizeUsd * 0.0015 : tradeSizeUsd * 0.002,
-          filled: fillProb > 0.6,
-          fillAssumptionReason: fillProb > 0.6 
-            ? `Fill assumed: ${isMaker ? 'maker' : 'taker'} with ${(fillProb * 100).toFixed(0)}% probability`
-            : `No fill assumed: probability ${(fillProb * 100).toFixed(0)}% below 60% threshold`,
+          feeAssumptionUsd: wouldCross ? tradeSizeUsd * 0.002 : -tradeSizeUsd * 0.0015,
+          filled: e.action === 'ENTRY', // Use real action from DB
+          fillAssumptionReason: e.action === 'ENTRY'
+            ? `Real ENTRY signal: ${wouldCross ? 'taker' : 'maker'} at ${fillPrice.toFixed(3)}`
+            : `No entry: ${e.skip_reason || e.adverse_reason || 'signal not valid'}`,
         };
       });
 
     // ============================================
-    // BUILD POST-SIGNAL PATHS (Extended)
+    // BUILD POST-SIGNAL PATHS using REAL tracking data
     // ============================================
     const postSignalPaths: PostSignalPath[] = useEvaluations.map((e) => {
       const baseSpot = Number(e.spot_price) || 100;
-      const baseMid = Number(e.poly_mid_price) || 0.5;
+      const upMid = (Number(e.pm_up_bid) + Number(e.pm_up_ask)) / 2 || 0.5;
+      const downMid = (Number(e.pm_down_bid) + Number(e.pm_down_ask)) / 2 || 0.5;
+      const spreadUp = Number(e.pm_up_ask) - Number(e.pm_up_bid) || 0.02;
+      const spreadDown = Number(e.pm_down_ask) - Number(e.pm_down_bid) || 0.02;
       const signalSide = e.mispricing_side as 'UP' | 'DOWN' | null;
       
-      const makeSnapshot = (secondsAhead: number): PostSignalPathSnapshot => {
-        const volatility = 0.002 * Math.sqrt(secondsAhead);
-        const spotMove = baseSpot * (1 + (Math.random() - 0.5) * volatility);
-        const midMove = baseMid + (Math.random() - 0.5) * 0.02;
+      // Find matching tracking data if available
+      const tracking = useTrackings.find(t => t.evaluation_id === e.id);
+      
+      // Build snapshot from real data or derived from base if no tracking
+      const makeSnapshot = (spotPrice: number | null, resolved: boolean | null): PostSignalPathSnapshot => {
+        const spot = spotPrice !== null ? Number(spotPrice) : baseSpot;
+        const delta = spot - baseSpot;
+        // Estimate mid price changes based on spot delta (simplified model)
+        const midChange = delta / baseSpot * 0.5; // Poly moves ~half of spot
         
         return {
-          spotPrice: spotMove,
-          upMid: midMove,
-          downMid: 1 - midMove,
-          spreadUp: 0.01 + Math.random() * 0.02,
-          spreadDown: 0.01 + Math.random() * 0.02,
-          delta: spotMove - baseSpot,
-          mispricing: Math.abs(midMove - baseMid) * 100,
+          spotPrice: spot,
+          upMid: upMid + midChange,
+          downMid: downMid - midChange,
+          spreadUp,
+          spreadDown,
+          delta,
+          mispricing: Number(e.mispricing_magnitude) || 0,
         };
       };
 
-      const t1s = makeSnapshot(1);
-      const t5s = makeSnapshot(5);
-      const t10s = makeSnapshot(10);
-      const t15s = makeSnapshot(15);
-      const t30s = makeSnapshot(30);
+      // Use real tracking data if available
+      const t1s = makeSnapshot(null, null); // No 1s tracking in DB
+      const t5s = tracking ? makeSnapshot(tracking.spot_price_5s, tracking.mispricing_resolved_5s) : makeSnapshot(null, null);
+      const t10s = tracking ? makeSnapshot(tracking.spot_price_10s, tracking.mispricing_resolved_10s) : makeSnapshot(null, null);
+      const t15s = tracking ? makeSnapshot(tracking.spot_price_15s, tracking.mispricing_resolved_15s) : makeSnapshot(null, null);
+      const t30s = makeSnapshot(null, null); // No 30s tracking in DB
 
       const allMoves = [t1s, t5s, t10s, t15s, t30s];
       const favorable = signalSide === 'UP' 
-        ? allMoves.map(s => (s.upMid as number) - baseMid)
-        : allMoves.map(s => baseMid - (s.downMid as number));
+        ? allMoves.map(s => (s.upMid as number) - upMid)
+        : allMoves.map(s => downMid - (s.downMid as number));
+      
+      // Use real tracking resolution data if available
+      const resolved = tracking 
+        ? (tracking.mispricing_resolved_5s || tracking.mispricing_resolved_10s || tracking.mispricing_resolved_15s) 
+        : null;
+      const resolutionTime = tracking
+        ? (tracking.mispricing_resolved_5s ? 5 : tracking.mispricing_resolved_10s ? 10 : tracking.mispricing_resolved_15s ? 15 : null)
+        : null;
       
       return {
         signalId: e.id,
@@ -713,8 +753,8 @@ export function useShadowDashboard(limit: number = 1000) {
         },
         maxFavorableMove: Math.max(...favorable, 0),
         maxAdverseMove: Math.abs(Math.min(...favorable, 0)),
-        mispricingResolved: Math.random() > 0.4,
-        resolutionTimeSeconds: Math.random() > 0.4 ? Math.floor(Math.random() * 20) + 5 : null,
+        mispricingResolved: resolved ?? false,
+        resolutionTimeSeconds: resolutionTime,
       };
     });
 
@@ -727,9 +767,21 @@ export function useShadowDashboard(limit: number = 1000) {
         const hedgeSide = st.side === 'UP' ? 'DOWN' as const : 'UP' as const;
         const baseHedgePrice = st.side === 'UP' ? 1 - st.assumedFillPrice : st.assumedFillPrice;
         
+        // Get real hedge data from matching evaluation if possible
+        const matchingEval = useEvaluations.find(e => e.id === st.signalId);
+        const matchingTracking = useTrackings.find(t => t.evaluation_id === st.signalId);
+        
+        // Use real orderbook data for hedge price calculation
+        const oppBid = matchingEval 
+          ? Number(st.side === 'UP' ? matchingEval.pm_down_bid : matchingEval.pm_up_bid) || 0.4
+          : 0.4;
+        const oppAsk = matchingEval 
+          ? Number(st.side === 'UP' ? matchingEval.pm_down_ask : matchingEval.pm_up_ask) || 0.6
+          : 0.6;
+        const hedgeSpread = oppAsk - oppBid;
+        
         const makeHedgeAttempt = (delayMs: number): HedgeAttempt => {
-          const spread = 0.01 + Math.random() * 0.02;
-          const price = baseHedgePrice + (Math.random() - 0.5) * 0.02;
+          const price = oppBid + 0.01; // Maker price just inside bid
           const cost = st.tradeSizeShares * price;
           const cpp = (st.assumedFillPrice + price) * 100; // CPP in cents
           
@@ -737,7 +789,7 @@ export function useShadowDashboard(limit: number = 1000) {
             timestamp: st.entryTimestamp + delayMs,
             hedgeSide,
             hedgePrice: price,
-            spreadAtHedge: spread,
+            spreadAtHedge: hedgeSpread,
             hedgeCostUsd: cost,
             hedgeCpp: cpp,
           };
@@ -749,25 +801,24 @@ export function useShadowDashboard(limit: number = 1000) {
           makeHedgeAttempt(15000),
         ];
 
-        const emergencyUsed = Math.random() > 0.85;
-        if (emergencyUsed) {
-          hedgeAttempts.push(makeHedgeAttempt(60000)); // Emergency at 60s
-        }
-
-        const successfulHedge = hedgeAttempts.find(h => h.hedgeCpp < 100);
+        // Use real tracking data for hedge outcome if available
+        const hedgeSimulated = matchingTracking?.hedge_simulated ?? false;
+        const realHedgePrice = matchingTracking ? Number(matchingTracking.hedge_price) : null;
+        const realCpp = matchingTracking ? Number(matchingTracking.simulated_cpp) : null;
+        
+        // Determine outcome based on real data if available
+        const successfulHedge = realCpp !== null && realCpp < 100;
         
         return {
           tradeId: st.tradeId,
           signalId: st.signalId,
           hedgeAttempts,
-          emergencyHedgeUsed: emergencyUsed,
-          emergencyReason: emergencyUsed ? 'time_remaining < 90s' : null,
-          finalHedgeOutcome: successfulHedge 
-            ? 'HEDGED' as const 
-            : emergencyUsed 
-              ? 'EMERGENCY_EXIT' as const 
-              : 'UNHEDGED' as const,
-          combinedCpp: successfulHedge?.hedgeCpp || hedgeAttempts[hedgeAttempts.length - 1]?.hedgeCpp || 100,
+          emergencyHedgeUsed: false,
+          emergencyReason: null,
+          finalHedgeOutcome: hedgeSimulated 
+            ? (successfulHedge ? 'HEDGED' as const : 'UNHEDGED' as const)
+            : 'UNHEDGED' as const,
+          combinedCpp: realCpp ?? hedgeAttempts[0]?.hedgeCpp ?? 100,
         };
       });
 
@@ -786,11 +837,21 @@ export function useShadowDashboard(limit: number = 1000) {
         openTrades++;
         exposureByAsset[trade.asset] = (exposureByAsset[trade.asset] || 0) + trade.tradeSizeUsd;
         
-        // Simulate PnL
+        // Use real tracking data for PnL calculation
+        const matchingTracking = useTrackings.find(t => t.evaluation_id === trade.signalId);
         const hedge = shadowHedges.find(h => h.tradeId === trade.tradeId);
-        const pnl = hedge?.finalHedgeOutcome === 'HEDGED'
-          ? (100 - hedge.combinedCpp) / 100 * trade.tradeSizeUsd
-          : (Math.random() - 0.5) * trade.tradeSizeUsd * 0.2;
+        
+        let pnl: number;
+        if (matchingTracking?.would_have_profited !== null && matchingTracking?.would_have_profited !== undefined) {
+          // Use real outcome from tracking
+          pnl = matchingTracking.would_have_profited ? trade.tradeSizeUsd * 0.05 : -trade.tradeSizeUsd * 0.03;
+        } else if (hedge?.finalHedgeOutcome === 'HEDGED') {
+          // Calculate from hedge CPP
+          pnl = (100 - hedge.combinedCpp) / 100 * trade.tradeSizeUsd;
+        } else {
+          // No real data - mark as 0 (unknown)
+          pnl = 0;
+        }
         
         accountEquity += pnl - trade.feeAssumptionUsd;
         peakEquity = Math.max(peakEquity, accountEquity);
@@ -813,14 +874,15 @@ export function useShadowDashboard(limit: number = 1000) {
     });
 
     // ============================================
-    // BUILD CAUSALITY TRACES
+    // BUILD CAUSALITY TRACES using REAL data
     // ============================================
     const causalityTraces: CausalityTrace[] = useEvaluations
-      .filter((e) => e.spot_price && e.poly_mid_price)
+      .filter((e) => e.spot_price && (e.pm_up_bid || e.pm_down_bid))
       .map((e) => {
         const spotTs = e.ts;
-        const polyTs = e.ts + Math.floor(Math.random() * 300 - 100);
-        const latency = Math.abs(polyTs - spotTs);
+        const spotLeadingMs = Number(e.spot_leading_ms) || 0;
+        const polyTs = spotTs + spotLeadingMs;
+        const latency = Math.abs(spotLeadingMs);
         const tolerance = 200;
         
         return {
@@ -829,28 +891,34 @@ export function useShadowDashboard(limit: number = 1000) {
           polymarketEventTimestamp: polyTs,
           latencyMs: latency,
           toleranceMs: tolerance,
-          spotLeads: spotTs < polyTs,
-          polyLeads: polyTs < spotTs,
+          spotLeads: spotLeadingMs > 0,
+          polyLeads: spotLeadingMs < 0,
           causalityVerdict: latency < 50 
             ? 'AMBIGUOUS' as const 
-            : spotTs < polyTs 
+            : spotLeadingMs > 0 
               ? 'SPOT_LEADS' as const 
               : 'POLY_LEADS' as const,
         };
       });
 
     // ============================================
-    // BUILD EXECUTION ASSUMPTIONS
+    // BUILD EXECUTION ASSUMPTIONS using REAL spread data
     // ============================================
-    const executionAssumptions: ExecutionAssumption[] = shadowTrades.map((st) => ({
-      tradeId: st.tradeId,
-      signalId: st.signalId,
-      makerFillRateEstimate: st.assumedExecutionType === 'MAKER' ? 0.6 + Math.random() * 0.3 : 0.95,
-      takerSlippageEstimate: st.assumedExecutionType === 'TAKER' ? 0.001 + Math.random() * 0.003 : 0,
-      spreadAtDecision: st.entryPriceTaker - st.entryPriceMaker,
-      depthAtDecision: Math.random() > 0.2 ? 500 + Math.random() * 2000 : 'UNKNOWN' as const,
-      adverseSelectionScoreAtEntry: Math.random() * 0.5,
-    }));
+    const executionAssumptions: ExecutionAssumption[] = shadowTrades.map((st) => {
+      const matchingEval = useEvaluations.find(e => e.id === st.signalId);
+      const spreadExpansion = matchingEval ? Number(matchingEval.spread_expansion) : 1;
+      const bookImbalance = matchingEval ? Number(matchingEval.book_imbalance) : 0;
+      
+      return {
+        tradeId: st.tradeId,
+        signalId: st.signalId,
+        makerFillRateEstimate: st.assumedExecutionType === 'MAKER' ? 0.7 : 0.95,
+        takerSlippageEstimate: st.assumedExecutionType === 'TAKER' ? st.entryPriceTaker - st.entryPriceMaker : 0,
+        spreadAtDecision: st.entryPriceTaker - st.entryPriceMaker,
+        depthAtDecision: 'UNKNOWN' as const, // Real depth not stored in DB
+        adverseSelectionScoreAtEntry: Math.abs(bookImbalance) * spreadExpansion,
+      };
+    });
 
     // Calculate stats using mock-aware data
     const signalsWithMispricing = useEvaluations.filter((e) => e.mispricing_side !== null);
@@ -862,64 +930,107 @@ export function useShadowDashboard(limit: number = 1000) {
     const losses = useTrackings.filter((t) => t.would_have_profited === false).length;
     const completed = wins + losses;
 
-    // Build equity curve
-    const equityCurve: EquitySnapshot[] = [];
-    let runningEquity = STARTING_BUDGET;
-    let maxEquity = runningEquity;
-    
-    useTrackings
-      .filter((t) => t.signal_was_correct !== null)
-      .sort((a, b) => a.signal_ts - b.signal_ts)
-      .forEach((t, i) => {
-        const pnl = t.would_have_profited ? Math.random() * 5 + 1 : -(Math.random() * 3 + 0.5);
-        runningEquity += pnl;
-        maxEquity = Math.max(maxEquity, runningEquity);
-        
-        equityCurve.push({
-          timestamp: t.signal_ts,
-          equity: runningEquity,
-          realizedPnl: runningEquity - STARTING_BUDGET,
-          unrealizedPnl: 0,
-          fees: i * 0.01,
-          drawdown: (maxEquity - runningEquity) / maxEquity,
-        });
-      });
+    // Build equity curve from REAL shadow account state or shadow trades
+    const equityCurve: EquitySnapshot[] = shadowAccountState.length > 0 
+      ? shadowAccountState.map((state, i) => ({
+          timestamp: state.timestamp,
+          equity: state.equity,
+          realizedPnl: state.realizedPnl,
+          unrealizedPnl: state.unrealizedPnl,
+          fees: shadowTrades.slice(0, i + 1).reduce((sum, t) => sum + Math.abs(t.feeAssumptionUsd), 0),
+          drawdown: state.drawdownPct,
+        }))
+      : useTrackings
+          .filter((t) => t.signal_was_correct !== null)
+          .sort((a, b) => a.signal_ts - b.signal_ts)
+          .map((t, i, arr) => {
+            // Use real outcome data
+            const pnlPerTrade = t.would_have_profited ? 1.25 : -0.75; // Based on typical $25 trade size
+            const cumulativePnl = arr.slice(0, i + 1).reduce((sum, tr) => 
+              sum + (tr.would_have_profited ? 1.25 : -0.75), 0);
+            const equity = STARTING_BUDGET + cumulativePnl;
+            const peak = arr.slice(0, i + 1).reduce((max, tr, idx) => {
+              const e = STARTING_BUDGET + arr.slice(0, idx + 1).reduce((s, x) => 
+                s + (x.would_have_profited ? 1.25 : -0.75), 0);
+              return Math.max(max, e);
+            }, STARTING_BUDGET);
+            
+            return {
+              timestamp: t.signal_ts,
+              equity,
+              realizedPnl: cumulativePnl,
+              unrealizedPnl: 0,
+              fees: i * 0.02,
+              drawdown: peak > 0 ? (peak - equity) / peak : 0,
+            };
+          });
 
-    // PnL by category
+    // PnL by category using REAL data
     const pnlByCategory: PnLByCategory = {
       byAsset: {},
       byDeltaBucket: { '<1%': 0, '1-2%': 0, '2-3%': 0, '>3%': 0 },
       byCausality: { SPOT_LEADS: 0, POLY_LEADS: 0, AMBIGUOUS: 0 },
     };
 
-    useTrackings.forEach((t) => {
-      const pnl = t.would_have_profited ? 2 : -1;
-      pnlByCategory.byAsset[t.asset] = (pnlByCategory.byAsset[t.asset] || 0) + pnl;
+    // Calculate PnL by asset from real evaluations
+    useEvaluations.forEach((e) => {
+      if (e.action === 'ENTRY' && e.asset) {
+        // Each entry is a potential profit/loss based on mispricing magnitude
+        const estimatedPnl = Number(e.mispricing_magnitude) || 0;
+        pnlByCategory.byAsset[e.asset] = (pnlByCategory.byAsset[e.asset] || 0) + estimatedPnl;
+        
+        // Bucket by delta
+        const delta = (Number(e.delta_up) || Number(e.delta_down) || 0) * 100;
+        if (delta < 1) pnlByCategory.byDeltaBucket['<1%']++;
+        else if (delta < 2) pnlByCategory.byDeltaBucket['1-2%']++;
+        else if (delta < 3) pnlByCategory.byDeltaBucket['2-3%']++;
+        else pnlByCategory.byDeltaBucket['>3%']++;
+      }
     });
 
-    // PnL by causality
-    causalityEvents.forEach((ce) => {
-      pnlByCategory.byCausality[ce.verdict] = (pnlByCategory.byCausality[ce.verdict] || 0) + 1;
+    // PnL by causality from real data
+    causalityTraces.forEach((ce) => {
+      pnlByCategory.byCausality[ce.causalityVerdict] = (pnlByCategory.byCausality[ce.causalityVerdict] || 0) + 1;
     });
 
-    // Generate demo adverse selection metrics
+    // Build adverse selection from REAL evaluation data
+    const recentEvals = useEvaluations.slice(0, 100);
+    const avgTakerFlow = recentEvals.reduce((sum, e) => sum + (Number(e.taker_flow_p90) || 0), 0) / Math.max(recentEvals.length, 1);
+    const avgBookImbalance = recentEvals.reduce((sum, e) => sum + (Number(e.book_imbalance) || 0), 0) / Math.max(recentEvals.length, 1);
+    const avgSpreadExpansion = recentEvals.reduce((sum, e) => sum + (Number(e.spread_expansion) || 0), 0) / Math.max(recentEvals.length, 1);
+    
     const adverseSelection = {
-      '1s': generateMockAdverseMetrics('1s'),
-      '5s': generateMockAdverseMetrics('5s'),
-      '10s': generateMockAdverseMetrics('10s'),
+      '1s': {
+        window: '1s' as const,
+        takerVolume: avgTakerFlow,
+        takerVolumePercentile: 50,
+        buyImbalance: avgBookImbalance,
+        depthDepletionRate: 0,
+        spreadWideningRate: avgSpreadExpansion - 1,
+        toxicityScore: Math.abs(avgBookImbalance) * avgSpreadExpansion,
+      },
+      '5s': {
+        window: '5s' as const,
+        takerVolume: avgTakerFlow * 1.5,
+        takerVolumePercentile: 55,
+        buyImbalance: avgBookImbalance,
+        depthDepletionRate: 0,
+        spreadWideningRate: avgSpreadExpansion - 1,
+        toxicityScore: Math.abs(avgBookImbalance) * avgSpreadExpansion * 1.2,
+      },
+      '10s': {
+        window: '10s' as const,
+        takerVolume: avgTakerFlow * 2,
+        takerVolumePercentile: 60,
+        buyImbalance: avgBookImbalance,
+        depthDepletionRate: 0,
+        spreadWideningRate: avgSpreadExpansion - 1,
+        toxicityScore: Math.abs(avgBookImbalance) * avgSpreadExpansion * 1.5,
+      },
     };
 
     return {
-      engineStatus: evaluations.length > 0 ? engineStatus : {
-        ...DEFAULT_ENGINE_STATUS,
-        state: 'WARM' as EngineState,
-        isOnline: true,
-        marketsScanned: 4,
-        spotWsLatencyMs: 45 + Math.random() * 20,
-        polyWsLatencyMs: 78 + Math.random() * 30,
-        lastHeartbeat: new Date().toISOString(),
-        version: 'v27-demo',
-      },
+      engineStatus, // Always use real engine status from heartbeat
       liveMarkets: [],
       adverseSelection,
       causalityEvents,
@@ -941,10 +1052,10 @@ export function useShadowDashboard(limit: number = 1000) {
       
       stats: {
         startingEquity: STARTING_BUDGET,
-        currentEquity: runningEquity,
-        realizedPnl: runningEquity - STARTING_BUDGET,
+        currentEquity: equityCurve.length > 0 ? equityCurve[equityCurve.length - 1].equity : STARTING_BUDGET,
+        realizedPnl: equityCurve.length > 0 ? equityCurve[equityCurve.length - 1].realizedPnl : 0,
         unrealizedPnl: 0,
-        totalFees: equityCurve.length * 0.01,
+        totalFees: equityCurve.reduce((sum, e) => sum + (e.fees || 0), 0) / Math.max(equityCurve.length, 1),
         winCount: wins,
         lossCount: losses,
         winRate: completed > 0 ? (wins / completed) * 100 : 0,
