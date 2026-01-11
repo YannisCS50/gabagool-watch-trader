@@ -12,9 +12,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { useV27Data } from '@/hooks/useV27Data';
 import { useV27Evaluations } from '@/hooks/useV27Evaluations';
+import { useShadowEngineData } from '@/hooks/useShadowEngineData';
 import { V27SkipReasonsCard } from '@/components/v27/V27SkipReasonsCard';
 import { V27ConfigEditor } from '@/components/v27/V27ConfigEditor';
 import { V27MarketsAccordion } from '@/components/v27/V27MarketsAccordion';
+import { ShadowEnginePanel } from '@/components/v27/ShadowEnginePanel';
 import { format, formatDistanceToNow } from 'date-fns';
 import { nl } from 'date-fns/locale';
 
@@ -22,7 +24,8 @@ export default function V27Dashboard() {
   const navigate = useNavigate();
   const { entries, signals, stats, loading, runnerStatus, refetch } = useV27Data();
   const { evaluations, config, stats: evalStats, refetch: refetchEvals } = useV27Evaluations(500);
-  const [activeTab, setActiveTab] = useState<'overview' | 'markets' | 'signals' | 'entries' | 'config'>('overview');
+  const { evaluations: shadowEvals, trackings, stats: shadowStats, runnerStatus: shadowRunnerStatus, refetch: refetchShadow } = useShadowEngineData(500);
+  const [activeTab, setActiveTab] = useState<'shadow' | 'overview' | 'markets' | 'signals' | 'entries' | 'config'>('shadow');
 
   const formatCurrency = (value: number) => {
     const prefix = value >= 0 ? '+$' : '-$';
@@ -58,9 +61,9 @@ export default function V27Dashboard() {
         </div>
         
         <div className="flex items-center gap-3">
-          {/* Runner Status */}
+          {/* Runner Status - prefer shadow runner status */}
           <div className="flex items-center gap-2">
-            {runnerStatus.isOnline ? (
+            {(shadowRunnerStatus.isOnline || runnerStatus.isOnline) ? (
               <Badge variant="default" className="bg-green-500">
                 <Wifi className="h-3 w-3 mr-1" />
                 Online
@@ -71,14 +74,19 @@ export default function V27Dashboard() {
                 Offline
               </Badge>
             )}
-            {runnerStatus.lastHeartbeat && (
+            {(shadowRunnerStatus.lastHeartbeat || runnerStatus.lastHeartbeat) && (
               <span className="text-xs text-muted-foreground">
-                {formatDistanceToNow(new Date(runnerStatus.lastHeartbeat), { addSuffix: true, locale: nl })}
+                {formatDistanceToNow(new Date(shadowRunnerStatus.lastHeartbeat || runnerStatus.lastHeartbeat!), { addSuffix: true, locale: nl })}
               </span>
+            )}
+            {shadowRunnerStatus.marketsCount > 0 && (
+              <Badge variant="outline" className="text-xs">
+                {shadowRunnerStatus.marketsCount} markets
+              </Badge>
             )}
           </div>
           
-          <Button variant="outline" size="sm" onClick={refetch} disabled={loading}>
+          <Button variant="outline" size="sm" onClick={() => { refetch(); refetchShadow(); }} disabled={loading}>
             <RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} />
             Refresh
           </Button>
@@ -240,6 +248,10 @@ export default function V27Dashboard() {
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)}>
         <TabsList className="mb-4">
+          <TabsTrigger value="shadow" className="flex items-center gap-1">
+            <Eye className="h-3 w-3" />
+            Shadow Engine
+          </TabsTrigger>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="markets">Markets</TabsTrigger>
           <TabsTrigger value="signals">Signals ({signals.length})</TabsTrigger>
@@ -249,6 +261,15 @@ export default function V27Dashboard() {
             Config
           </TabsTrigger>
         </TabsList>
+
+        {/* Shadow Engine Tab */}
+        <TabsContent value="shadow">
+          <ShadowEnginePanel 
+            evaluations={shadowEvals}
+            trackings={trackings}
+            stats={shadowStats}
+          />
+        </TabsContent>
 
         {/* Overview Tab */}
         <TabsContent value="overview">
