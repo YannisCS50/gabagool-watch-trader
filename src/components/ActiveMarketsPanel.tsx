@@ -1,27 +1,12 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { RefreshCw, TrendingUp, TrendingDown, Clock, Target, ExternalLink, Eye } from 'lucide-react';
+import { RefreshCw, TrendingUp, TrendingDown, Clock, Target, ExternalLink, Eye, Wifi, WifiOff } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { format, formatDistanceToNow } from 'date-fns';
-import { nl } from 'date-fns/locale';
-
-interface ActiveMarket {
-  slug: string;
-  asset: string;
-  question: string;
-  strikePrice: number;
-  openPrice: number;
-  eventStartTime: string;
-  eventEndTime: string;
-  marketType: string;
-  upTokenId: string;
-  downTokenId: string;
-  conditionId: string;
-}
+import { usePolymarketRealtime, MarketInfo } from '@/hooks/usePolymarketRealtime';
 
 interface HypotheticalPosition {
   marketSlug: string;
@@ -33,75 +18,22 @@ interface HypotheticalPosition {
   strikePrice: number;
 }
 
-interface OrderbookSnapshot {
-  upBid: number | null;
-  upAsk: number | null;
-  downBid: number | null;
-  downAsk: number | null;
-}
-
 export function ActiveMarketsPanel() {
-  const [markets, setMarkets] = useState<ActiveMarket[]>([]);
   const [hypotheticalPositions, setHypotheticalPositions] = useState<HypotheticalPosition[]>([]);
-  const [orderbooks, setOrderbooks] = useState<Map<string, OrderbookSnapshot>>(new Map());
-  const [loading, setLoading] = useState(true);
-  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  
+  // Use realtime WebSocket hook for live orderbook data
+  const {
+    markets,
+    getOrderbook,
+    isConnected,
+    connectionState,
+    updateCount,
+    lastUpdateTime,
+    connect,
+    pricesVersion,
+  } = usePolymarketRealtime(true);
 
-  const fetchMarkets = useCallback(async () => {
-    try {
-      const { data, error } = await supabase.functions.invoke('get-market-tokens', { 
-        body: {} 
-      });
-
-      if (error) throw error;
-
-      if (data?.markets) {
-        setMarkets(data.markets);
-      }
-      setLastUpdate(new Date());
-    } catch (err) {
-      console.error('Error fetching markets:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  // Fetch orderbook prices from CLOB proxy
-  const fetchOrderbooks = useCallback(async () => {
-    if (markets.length === 0) return;
-
-    const newOrderbooks = new Map<string, OrderbookSnapshot>();
-
-    for (const market of markets) {
-      try {
-        const { data: clobData } = await supabase.functions.invoke('clob-prices', {
-          body: { tokenId: market.upTokenId }
-        });
-
-        if (clobData?.book) {
-          const upBook = clobData.book;
-          
-          // Fetch down book
-          const { data: downData } = await supabase.functions.invoke('clob-prices', {
-            body: { tokenId: market.downTokenId }
-          });
-
-          const downBook = downData?.book;
-
-          newOrderbooks.set(market.slug, {
-            upBid: upBook?.bids?.[0]?.price ?? null,
-            upAsk: upBook?.asks?.[0]?.price ?? null,
-            downBid: downBook?.bids?.[0]?.price ?? null,
-            downAsk: downBook?.asks?.[0]?.price ?? null,
-          });
-        }
-      } catch (err) {
-        console.error(`Error fetching orderbook for ${market.slug}:`, err);
-      }
-    }
-
-    setOrderbooks(newOrderbooks);
-  }, [markets]);
+  const loading = connectionState === 'discovering' || connectionState === 'connecting';
 
   // Load existing hypothetical positions from localStorage
   useEffect(() => {
@@ -113,7 +45,7 @@ export function ActiveMarketsPanel() {
         const now = new Date();
         const active = parsed.filter((p: HypotheticalPosition) => {
           const market = markets.find(m => m.slug === p.marketSlug);
-          return market && new Date(market.eventEndTime) > now;
+          return market && market.eventEndTime > now;
         });
         setHypotheticalPositions(active);
       } catch (e) {
@@ -128,22 +60,6 @@ export function ActiveMarketsPanel() {
       localStorage.setItem('hypothetical_positions', JSON.stringify(hypotheticalPositions));
     }
   }, [hypotheticalPositions]);
-
-  // Initial load
-  useEffect(() => {
-    fetchMarkets();
-    const interval = setInterval(fetchMarkets, 30000); // Refresh markets every 30s
-    return () => clearInterval(interval);
-  }, [fetchMarkets]);
-
-  // Fetch orderbooks when markets change
-  useEffect(() => {
-    if (markets.length > 0) {
-      fetchOrderbooks();
-      const interval = setInterval(fetchOrderbooks, 5000); // Refresh orderbooks every 5s
-      return () => clearInterval(interval);
-    }
-  }, [markets, fetchOrderbooks]);
 
   // Sync with v27_evaluations for hypothetical positions
   useEffect(() => {
@@ -180,15 +96,17 @@ export function ActiveMarketsPanel() {
         if (!market) continue;
 
         // Skip if already expired
-        if (new Date(market.eventEndTime) <= new Date()) continue;
+        if (market.eventEndTime <= new Date()) continue;
 
         // Determine side from signal - use mispricing_side directly
         const side = ev.mispricing_side === 'UP' ? 'UP' : 'DOWN';
         
-        // Estimate shares based on typical position size ($35)
+        // Get current ask price from realtime orderbook
+        const upBook = getOrderbook(marketId, 'up');
+        const downBook = getOrderbook(marketId, 'down');
         const entryPrice = side === 'UP' 
-          ? (orderbooks.get(marketId)?.upAsk ?? 0.48)
-          : (orderbooks.get(marketId)?.downAsk ?? 0.48);
+          ? (upBook?.ask ?? 0.48)
+          : (downBook?.ask ?? 0.48);
         const shares = entryPrice > 0 ? 35 / entryPrice : 72;
 
         newPositions.push({
@@ -198,7 +116,7 @@ export function ActiveMarketsPanel() {
           shares,
           avgPrice: entryPrice,
           entryTime: ev.created_at,
-          strikePrice: market.strikePrice,
+          strikePrice: market.strikePrice ?? 0,
         });
       }
 
@@ -221,17 +139,16 @@ export function ActiveMarketsPanel() {
       const interval = setInterval(syncPositions, 15000);
       return () => clearInterval(interval);
     }
-  }, [markets, orderbooks]);
+  }, [markets, getOrderbook]);
 
   const formatPrice = (price: number | null | undefined): string => {
     if (price === null || price === undefined) return '—';
     return `${(price * 100).toFixed(1)}¢`;
   };
 
-  const getTimeRemaining = (endTime: string): string => {
-    const end = new Date(endTime);
+  const getTimeRemaining = (endTime: Date): string => {
     const now = new Date();
-    const diffMs = end.getTime() - now.getTime();
+    const diffMs = endTime.getTime() - now.getTime();
     
     if (diffMs <= 0) return 'Expired';
     
@@ -244,10 +161,10 @@ export function ActiveMarketsPanel() {
   };
 
   const getHypotheticalPnL = (position: HypotheticalPosition): { pnl: number; percent: number } => {
-    const book = orderbooks.get(position.marketSlug);
+    const book = getOrderbook(position.marketSlug, position.side.toLowerCase());
     if (!book) return { pnl: 0, percent: 0 };
 
-    const currentBid = position.side === 'UP' ? book.upBid : book.downBid;
+    const currentBid = book.bid;
     if (!currentBid) return { pnl: 0, percent: 0 };
 
     const entryValue = position.shares * position.avgPrice;
@@ -258,9 +175,19 @@ export function ActiveMarketsPanel() {
     return { pnl, percent };
   };
 
-  const totalHypotheticalPnL = hypotheticalPositions.reduce((sum, p) => {
-    return sum + getHypotheticalPnL(p).pnl;
-  }, 0);
+  const totalHypotheticalPnL = useMemo(() => {
+    return hypotheticalPositions.reduce((sum, p) => {
+      return sum + getHypotheticalPnL(p).pnl;
+    }, 0);
+  }, [hypotheticalPositions, pricesVersion]);
+
+  // Time since last update for display
+  const timeSinceUpdate = useMemo(() => {
+    const diff = Date.now() - lastUpdateTime;
+    if (diff < 1000) return 'just now';
+    if (diff < 60000) return `${Math.floor(diff / 1000)}s ago`;
+    return `${Math.floor(diff / 60000)}m ago`;
+  }, [lastUpdateTime, updateCount]);
 
   return (
     <Card className="glass">
@@ -269,14 +196,23 @@ export function ActiveMarketsPanel() {
           <Target className="h-5 w-5 text-primary" />
           Active Markets
           <Badge variant="outline" className="ml-2">{markets.length}</Badge>
+          {isConnected ? (
+            <Badge variant="outline" className="text-xs bg-green-500/10 text-green-400 border-green-500/20">
+              <Wifi className="h-3 w-3 mr-1" />
+              Live
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="text-xs bg-yellow-500/10 text-yellow-400 border-yellow-500/20">
+              <WifiOff className="h-3 w-3 mr-1" />
+              {connectionState}
+            </Badge>
+          )}
         </CardTitle>
         <div className="flex items-center gap-2">
-          {lastUpdate && (
-            <span className="text-xs text-muted-foreground">
-              {formatDistanceToNow(lastUpdate, { addSuffix: true })}
-            </span>
-          )}
-          <Button variant="ghost" size="sm" onClick={() => fetchMarkets()} disabled={loading}>
+          <span className="text-xs text-muted-foreground">
+            {updateCount} updates • {timeSinceUpdate}
+          </span>
+          <Button variant="ghost" size="sm" onClick={connect} disabled={loading}>
             <RefreshCw className={cn('h-4 w-4', loading && 'animate-spin')} />
           </Button>
         </div>
@@ -285,7 +221,7 @@ export function ActiveMarketsPanel() {
         {loading && markets.length === 0 ? (
           <div className="text-center py-8 text-muted-foreground">
             <RefreshCw className="h-6 w-6 animate-spin mx-auto mb-2" />
-            Loading markets...
+            Connecting to orderbooks...
           </div>
         ) : markets.length === 0 ? (
           <div className="text-center py-8 text-muted-foreground">
@@ -343,7 +279,8 @@ export function ActiveMarketsPanel() {
             <ScrollArea className="h-[400px]">
               <div className="grid gap-3">
                 {markets.map(market => {
-                  const book = orderbooks.get(market.slug);
+                  const upBook = getOrderbook(market.slug, 'up');
+                  const downBook = getOrderbook(market.slug, 'down');
                   const timeRemaining = getTimeRemaining(market.eventEndTime);
                   const isExpiringSoon = timeRemaining.includes('s') && !timeRemaining.includes('m');
                   const hasPosition = hypotheticalPositions.some(p => p.marketSlug === market.slug);
@@ -394,14 +331,14 @@ export function ActiveMarketsPanel() {
                       <div className="flex items-center justify-between text-xs">
                         <span className="text-muted-foreground">Strike Price:</span>
                         <span className="font-mono font-medium">
-                          ${market.strikePrice.toLocaleString(undefined, { 
+                          ${(market.strikePrice ?? 0).toLocaleString(undefined, { 
                             minimumFractionDigits: 2,
                             maximumFractionDigits: market.asset === 'XRP' ? 4 : 2 
                           })}
                         </span>
                       </div>
 
-                      {/* Orderbook Prices */}
+                      {/* Orderbook Prices - REALTIME */}
                       <div className="grid grid-cols-2 gap-3 text-xs">
                         <div className="space-y-1">
                           <div className="flex items-center gap-1 text-success font-medium">
@@ -410,9 +347,9 @@ export function ActiveMarketsPanel() {
                           </div>
                           <div className="grid grid-cols-2 gap-1 text-muted-foreground">
                             <span>Bid:</span>
-                            <span className="font-mono text-foreground">{formatPrice(book?.upBid)}</span>
+                            <span className="font-mono text-foreground">{formatPrice(upBook?.bid)}</span>
                             <span>Ask:</span>
-                            <span className="font-mono text-foreground">{formatPrice(book?.upAsk)}</span>
+                            <span className="font-mono text-foreground">{formatPrice(upBook?.ask)}</span>
                           </div>
                         </div>
                         <div className="space-y-1">
@@ -422,23 +359,23 @@ export function ActiveMarketsPanel() {
                           </div>
                           <div className="grid grid-cols-2 gap-1 text-muted-foreground">
                             <span>Bid:</span>
-                            <span className="font-mono text-foreground">{formatPrice(book?.downBid)}</span>
+                            <span className="font-mono text-foreground">{formatPrice(downBook?.bid)}</span>
                             <span>Ask:</span>
-                            <span className="font-mono text-foreground">{formatPrice(book?.downAsk)}</span>
+                            <span className="font-mono text-foreground">{formatPrice(downBook?.ask)}</span>
                           </div>
                         </div>
                       </div>
 
                       {/* Combined Edge */}
-                      {book?.upAsk && book?.downAsk && (
+                      {upBook?.ask && downBook?.ask && (
                         <div className="flex items-center justify-between text-xs pt-2 border-t border-border/50">
                           <span className="text-muted-foreground">Combined Ask / Edge:</span>
                           <span className={cn(
                             'font-mono font-medium',
-                            (book.upAsk + book.downAsk) < 1 ? 'text-success' : 'text-muted-foreground'
+                            (upBook.ask + downBook.ask) < 1 ? 'text-success' : 'text-muted-foreground'
                           )}>
-                            {formatPrice(book.upAsk + book.downAsk)} / 
-                            {((1 - (book.upAsk + book.downAsk)) * 100).toFixed(2)}%
+                            {formatPrice(upBook.ask + downBook.ask)} / 
+                            {((1 - (upBook.ask + downBook.ask)) * 100).toFixed(2)}%
                           </span>
                         </div>
                       )}
