@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Eye, RefreshCw, Wifi, WifiOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -26,12 +26,60 @@ import { ShadowHedgeAnalysis } from '@/components/v27/shadow/ShadowHedgeAnalysis
 import { ShadowEquityCurve } from '@/components/v27/shadow/ShadowEquityCurve';
 import { ShadowCounterfactualPanel } from '@/components/v27/shadow/ShadowCounterfactualPanel';
 import { ShadowExportButton } from '@/components/v27/shadow/ShadowExportButton';
+import { TimeRangeFilter, filterDataByTime, DEFAULT_TIME_FILTER, type TimeFilterType } from '@/components/v27/shadow/TimeRangeFilter';
 
 export default function V27Dashboard() {
   const navigate = useNavigate();
   const { data, loading, refetch, rawEvaluations, rawTrackings } = useShadowDashboard(1000);
   const positionsData = useShadowPositions(500);
   const [activeTab, setActiveTab] = useState<string>('overview');
+  const [timeFilter, setTimeFilter] = useState<TimeFilterType>(DEFAULT_TIME_FILTER);
+
+  // Filter all data based on time selection
+  const filteredData = useMemo(() => {
+    return {
+      signalLogs: filterDataByTime(data.signalLogs, timeFilter),
+      causalityEvents: filterDataByTime(data.causalityEvents, timeFilter) as typeof data.causalityEvents,
+      hypotheticalExecutions: filterDataByTime(data.hypotheticalExecutions, timeFilter) as typeof data.hypotheticalExecutions,
+      postSignalTracking: data.postSignalTracking, // No timestamp field, keep as is
+      hedgeSimulations: filterDataByTime(data.hedgeSimulations, timeFilter) as typeof data.hedgeSimulations,
+    };
+  }, [data, timeFilter]);
+
+  const filteredPositionsData = useMemo(() => {
+    const positions = filterDataByTime(positionsData.positions, timeFilter);
+    const executions = filterDataByTime(positionsData.executions, timeFilter);
+    const dailyPnl = filterDataByTime(positionsData.dailyPnl, timeFilter);
+    const accounting = filterDataByTime(positionsData.accounting, timeFilter);
+    const hedgeAttempts = filterDataByTime(positionsData.hedgeAttempts, timeFilter);
+
+    // Recalculate stats based on filtered positions
+    const wins = positions.filter(p => (p.net_pnl || 0) > 0).length;
+    const losses = positions.filter(p => (p.net_pnl || 0) < 0).length;
+    const realizedPnl = positions.reduce((sum, p) => sum + (p.net_pnl || 0), 0);
+    
+    return {
+      positions,
+      executions,
+      dailyPnl,
+      accounting,
+      hedgeAttempts,
+      equityCurve: positionsData.equityCurve, // Keep full curve for now
+      hedgeAnalysis: positionsData.hedgeAnalysis,
+      stats: {
+        ...positionsData.stats,
+        wins,
+        losses,
+        winRate: wins + losses > 0 ? (wins / (wins + losses)) * 100 : 0,
+        realizedPnl,
+        totalPositions: positions.length,
+      },
+    };
+  }, [positionsData, timeFilter]);
+
+  const filteredEvaluations = useMemo(() => {
+    return filterDataByTime(rawEvaluations, timeFilter);
+  }, [rawEvaluations, timeFilter]);
 
   return (
     <div className="min-h-screen bg-background p-3 sm:p-4 md:p-6">
@@ -53,12 +101,12 @@ export default function V27Dashboard() {
               </Badge>
             </div>
             <p className="text-muted-foreground text-xs sm:text-sm mt-0.5 hidden sm:block">
-              $3000 starting budget • FIFO accounting
+              $3000 starting budget • FIFO accounting • Market cycle: 15 min
             </p>
           </div>
         </div>
         
-        {/* Action row: Status + Buttons */}
+        {/* Action row: Status + Time Filter + Buttons */}
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <div className="flex items-center gap-2">
             {data.engineStatus.isOnline ? (
@@ -80,14 +128,17 @@ export default function V27Dashboard() {
           </div>
           
           <div className="flex items-center gap-2">
+            {/* Time Range Filter */}
+            <TimeRangeFilter value={timeFilter} onChange={setTimeFilter} />
+            
             <ShadowExportButton
-              positions={positionsData.positions}
-              executions={positionsData.executions}
-              dailyPnl={positionsData.dailyPnl}
-              accounting={positionsData.accounting}
-              hedgeAttempts={positionsData.hedgeAttempts}
-              evaluations={rawEvaluations}
-              stats={positionsData.stats}
+              positions={filteredPositionsData.positions}
+              executions={filteredPositionsData.executions}
+              dailyPnl={filteredPositionsData.dailyPnl}
+              accounting={filteredPositionsData.accounting}
+              hedgeAttempts={filteredPositionsData.hedgeAttempts}
+              evaluations={filteredEvaluations}
+              stats={filteredPositionsData.stats}
             />
             <ExportDataButton data={data} rawEvaluations={rawEvaluations} rawTrackings={rawTrackings} />
             <Button variant="outline" size="sm" onClick={() => refetch()} disabled={loading} className="h-8">
@@ -101,6 +152,22 @@ export default function V27Dashboard() {
       {/* Engine Status - Collapsible on Mobile */}
       <div className="mb-4 sm:mb-6">
         <EngineStatusPanel status={data.engineStatus} />
+      </div>
+
+      {/* Stats Summary Bar - Shows filtered counts */}
+      <div className="mb-4 flex flex-wrap gap-2 text-xs">
+        <Badge variant="secondary" className="font-normal">
+          {filteredPositionsData.positions.length} posities
+        </Badge>
+        <Badge variant="secondary" className="font-normal">
+          {filteredData.signalLogs.length} signals
+        </Badge>
+        <Badge variant="secondary" className="font-normal">
+          {filteredPositionsData.stats.wins}W / {filteredPositionsData.stats.losses}L
+        </Badge>
+        <Badge variant={filteredPositionsData.stats.realizedPnl >= 0 ? "default" : "destructive"} className="font-normal">
+          ${filteredPositionsData.stats.realizedPnl.toFixed(2)} PnL
+        </Badge>
       </div>
 
       {/* Main Content Tabs - Horizontal Scroll on Mobile */}
@@ -140,7 +207,7 @@ export default function V27Dashboard() {
 
         <TabsContent value="overview" className="space-y-4 sm:space-y-6 mt-4">
           <LiveMarketMonitor />
-          <SignalLogTable signals={data.signalLogs} />
+          <SignalLogTable signals={filteredData.signalLogs} />
         </TabsContent>
 
         <TabsContent value="adverse" className="mt-4">
@@ -153,21 +220,21 @@ export default function V27Dashboard() {
 
         <TabsContent value="causality" className="mt-4">
           <CausalityTracker 
-            events={data.causalityEvents}
+            events={filteredData.causalityEvents}
             latencyToleranceMs={200}
           />
         </TabsContent>
 
         <TabsContent value="execution" className="mt-4">
-          <HypotheticalExecutionPanel executions={data.hypotheticalExecutions} />
+          <HypotheticalExecutionPanel executions={filteredData.hypotheticalExecutions} />
         </TabsContent>
 
         <TabsContent value="tracking" className="mt-4">
-          <PostSignalTrackingPanel trackings={data.postSignalTracking} />
+          <PostSignalTrackingPanel trackings={filteredData.postSignalTracking} />
         </TabsContent>
 
         <TabsContent value="hedge" className="mt-4">
-          <HedgeSimulationPanel simulations={data.hedgeSimulations} />
+          <HedgeSimulationPanel simulations={filteredData.hedgeSimulations} />
         </TabsContent>
 
         <TabsContent value="pnl" className="mt-4 space-y-4">
@@ -175,23 +242,23 @@ export default function V27Dashboard() {
             data={positionsData.equityCurve}
             startingEquity={positionsData.stats.startingEquity}
             currentEquity={positionsData.stats.currentEquity}
-            realizedPnl={positionsData.stats.realizedPnl}
+            realizedPnl={filteredPositionsData.stats.realizedPnl}
             unrealizedPnl={positionsData.stats.unrealizedPnl}
             maxDrawdown={positionsData.stats.maxDrawdown}
-            winCount={positionsData.stats.wins}
-            lossCount={positionsData.stats.losses}
-            winRate={positionsData.stats.winRate}
+            winCount={filteredPositionsData.stats.wins}
+            lossCount={filteredPositionsData.stats.losses}
+            winRate={filteredPositionsData.stats.winRate}
           />
-          <ShadowDailyPnLTable dailyPnl={positionsData.dailyPnl} />
+          <ShadowDailyPnLTable dailyPnl={filteredPositionsData.dailyPnl} />
         </TabsContent>
 
         <TabsContent value="positions" className="mt-4 space-y-4">
-          <ShadowPositionTable positions={positionsData.positions} />
-          <ShadowHedgeAnalysis analysis={positionsData.hedgeAnalysis} />
+          <ShadowPositionTable positions={filteredPositionsData.positions} />
+          <ShadowHedgeAnalysis analysis={filteredPositionsData.hedgeAnalysis} />
         </TabsContent>
 
         <TabsContent value="counterfactual" className="mt-4">
-          <ShadowCounterfactualPanel positions={positionsData.positions} evaluations={rawEvaluations} />
+          <ShadowCounterfactualPanel positions={filteredPositionsData.positions} evaluations={filteredEvaluations} />
         </TabsContent>
       </Tabs>
     </div>
