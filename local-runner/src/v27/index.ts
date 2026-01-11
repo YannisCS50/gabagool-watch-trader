@@ -20,14 +20,23 @@
 export const V27_VERSION = '27.0.0';
 export const V27_NAME = 'Polymarket V27 - Delta Mispricing Strategy';
 
-// Core modules
-export { V27Config, getV27Config, loadV27Config } from './config.js';
-export { MispricingDetector, MispricingSignal } from './mispricing-detector.js';
-export { AdverseSelectionFilter, FilterResult } from './adverse-selection-filter.js';
-export { EntryManager, EntryDecision } from './entry-manager.js';
-export { CorrectionMonitor, CorrectionStatus } from './correction-monitor.js';
-export { HedgeManager, HedgeDecision } from './hedge-manager.js';
-export { V27Logger, V27EvaluationLog, V27TradeLog } from './logger.js';
+// Core modules - classes
+export { MispricingDetector } from './mispricing-detector.js';
+export { AdverseSelectionFilter } from './adverse-selection-filter.js';
+export { EntryManager } from './entry-manager.js';
+export { CorrectionMonitor } from './correction-monitor.js';
+export { HedgeManager } from './hedge-manager.js';
+export { V27Logger } from './logger.js';
+export { getV27Config, loadV27Config } from './config.js';
+
+// Core modules - types (must use 'export type' for interfaces)
+export type { V27Config } from './config.js';
+export type { MispricingSignal } from './mispricing-detector.js';
+export type { FilterResult } from './adverse-selection-filter.js';
+export type { EntryDecision } from './entry-manager.js';
+export type { CorrectionStatus } from './correction-monitor.js';
+export type { HedgeDecision } from './hedge-manager.js';
+export type { V27EvaluationLog, V27TradeLog } from './logger.js';
 
 // Types
 export interface V27Market {
