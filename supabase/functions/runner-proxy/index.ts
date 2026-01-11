@@ -60,7 +60,9 @@ type Action =
   // Toxicity Filter v2
   | 'save-toxicity-features'
   | 'update-toxicity-outcome'
-  | 'get-toxicity-history';
+  | 'get-toxicity-history'
+  // Price feed WebSocket logger
+  | 'save-realtime-price-logs';
 
 interface RequestBody {
   action: Action;
@@ -1924,6 +1926,51 @@ Deno.serve(async (req) => {
 
         console.log(`[runner-proxy] 📊 Toxicity history: ${history?.length ?? 0} settled markets`);
         return new Response(JSON.stringify({ success: true, data: history }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // ============================================================
+      // Price Feed WebSocket Logger (millisecond precision)
+      // ============================================================
+      case 'save-realtime-price-logs': {
+        const logs = data?.logs as Array<{
+          source: string;
+          asset: string;
+          price: number;
+          raw_timestamp: number;
+          received_at: number;
+        }> | undefined;
+
+        if (!logs || logs.length === 0) {
+          return new Response(JSON.stringify({ success: true, count: 0 }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        // Map to database schema
+        const dbLogs = logs.map(log => ({
+          source: log.source,
+          asset: log.asset,
+          price: log.price,
+          raw_timestamp: log.raw_timestamp,
+          received_at: new Date(log.received_at).toISOString(),
+        }));
+
+        const { error } = await supabase
+          .from('realtime_price_logs')
+          .insert(dbLogs);
+
+        if (error) {
+          console.error('[runner-proxy] save-realtime-price-logs error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] 📊 Saved ${logs.length} realtime price logs`);
+        return new Response(JSON.stringify({ success: true, count: logs.length }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }

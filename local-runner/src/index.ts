@@ -177,6 +177,18 @@ import {
   unregisterMarketFromCache,
 } from './position-cache.js';
 
+// Price Feed WebSocket Logger (runs alongside trading)
+import {
+  startPriceFeedLogger,
+  stopPriceFeedLogger,
+  getPriceFeedLoggerStats,
+  logPriceFeedLoggerStats,
+  isPriceFeedLoggerRunning,
+} from './price-feed-ws-logger.js';
+
+// Feature flag for price feed logger
+const FEATURE_PRICE_LOGGER = process.env.FEATURE_PRICE_LOGGER === 'true';
+
 // Ensure Node prefers IPv4 to avoid hangs on IPv6-only DNS results under some VPN setups.
 try {
   dns.setDefaultResultOrder('ipv4first');
@@ -3698,6 +3710,12 @@ async function main(): Promise<void> {
   startStaleCleanupLoop(RUN_ID);
   console.log('🧹 Stale order cleanup loop started (3s interval)');
 
+  // Start price feed logger if enabled
+  if (FEATURE_PRICE_LOGGER) {
+    console.log('\n📊 Starting price feed WebSocket logger...');
+    startPriceFeedLogger();
+  }
+
   console.log('\n✅ Live trader running with auto-claim! Press Ctrl+C to stop.\n');
 }
 
@@ -3705,6 +3723,12 @@ async function main(): Promise<void> {
 process.on('SIGINT', async () => {
   console.log('\n\n👋 Shutting down...');
   isRunning = false;
+  
+  // Stop price feed logger first (flush remaining data)
+  if (isPriceFeedLoggerRunning()) {
+    console.log('📊 Stopping price feed logger...');
+    stopPriceFeedLogger();
+  }
   
   // v7.3.2: Release runner lease FIRST so another runner can start immediately
   console.log('🔓 Releasing runner lease...');
@@ -3724,6 +3748,11 @@ process.on('SIGINT', async () => {
   console.log(`\n📊 CLAIM SESSION STATS:`);
   console.log(`   Confirmed claims: ${claimStats.confirmed}`);
   console.log(`   Total claimed: $${claimStats.totalClaimedUSDC.toFixed(2)}`);
+  
+  // Print price logger stats if it was running
+  if (FEATURE_PRICE_LOGGER) {
+    logPriceFeedLoggerStats();
+  }
   
   // Stop benchmark polling
   stopBenchmarkPolling();
