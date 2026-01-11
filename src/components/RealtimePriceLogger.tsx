@@ -354,8 +354,8 @@ export function RealtimePriceLogger() {
                 <Line 
                   type="stepAfter" 
                   dataKey="binance" 
-                  stroke="#F0B90B" 
-                  strokeWidth={2} 
+                  stroke="#FF9500" 
+                  strokeWidth={2.5} 
                   dot={false}
                   name="Binance"
                   connectNulls
@@ -363,7 +363,7 @@ export function RealtimePriceLogger() {
                 <Line 
                   type="stepAfter" 
                   dataKey="polymarket" 
-                  stroke="#8B5CF6" 
+                  stroke="#E879F9" 
                   strokeWidth={2} 
                   dot={false}
                   name="Polymarket"
@@ -372,7 +372,7 @@ export function RealtimePriceLogger() {
                 <Line 
                   type="stepAfter" 
                   dataKey="chainlink" 
-                  stroke="#375BD2" 
+                  stroke="#22D3EE" 
                   strokeWidth={2} 
                   dot={false}
                   name="Chainlink"
