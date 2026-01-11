@@ -17,6 +17,7 @@ interface PriceLog {
   raw_timestamp: number | null;
   received_at: string;
   created_at: string;
+  outcome?: string | null;  // 'up' | 'down' for clob_shares source
 }
 
 export function RealtimePriceLogger() {
@@ -50,7 +51,8 @@ export function RealtimePriceLogger() {
     logs.forEach((log) => {
       const sourceKey = log.source.includes('binance') ? 'binance' : 
                         log.source.includes('polymarket') ? 'polymarket' : 
-                        log.source.includes('chainlink') ? 'chainlink' : log.source;
+                        log.source.includes('chainlink') ? 'chainlink' :
+                        log.source.includes('clob') ? 'clob_shares' : log.source;
       if (!bySource[sourceKey]) bySource[sourceKey] = [];
       bySource[sourceKey].push(log);
       
@@ -75,7 +77,8 @@ export function RealtimePriceLogger() {
     latencies.forEach(({ source, latencyMs }) => {
       const sourceKey = source.includes('binance') ? 'binance' : 
                         source.includes('polymarket') ? 'polymarket' : 
-                        source.includes('chainlink') ? 'chainlink' : source;
+                        source.includes('chainlink') ? 'chainlink' :
+                        source.includes('clob') ? 'clob_shares' : source;
       if (!latencyBySource[sourceKey]) {
         latencyBySource[sourceKey] = { avg: 0, min: Infinity, max: 0, count: 0 };
       }
@@ -89,7 +92,8 @@ export function RealtimePriceLogger() {
       const sourceLogs = latencies.filter(l => {
         const sourceKey = l.source.includes('binance') ? 'binance' : 
                           l.source.includes('polymarket') ? 'polymarket' : 
-                          l.source.includes('chainlink') ? 'chainlink' : l.source;
+                          l.source.includes('chainlink') ? 'chainlink' :
+                          l.source.includes('clob') ? 'clob_shares' : l.source;
         return sourceKey === key;
       });
       latencyBySource[key].avg = sourceLogs.reduce((sum, l) => sum + l.latencyMs, 0) / sourceLogs.length;
@@ -98,9 +102,11 @@ export function RealtimePriceLogger() {
     // Get latest price per asset per source for comparison
     const latestPrices: Record<string, Record<string, { price: number; ts: number }>> = {};
     logs.forEach((log) => {
-      const sourceKey = log.source.includes('binance') ? 'binance' : 
+      // For clob_shares, differentiate between up and down
+      let sourceKey = log.source.includes('binance') ? 'binance' : 
                         log.source.includes('polymarket') ? 'polymarket' : 
-                        log.source.includes('chainlink') ? 'chainlink' : log.source;
+                        log.source.includes('chainlink') ? 'chainlink' :
+                        log.source.includes('clob') ? `clob_${log.outcome || 'up'}` : log.source;
       if (!latestPrices[log.asset]) latestPrices[log.asset] = {};
       if (!latestPrices[log.asset][sourceKey] || new Date(log.received_at).getTime() > latestPrices[log.asset][sourceKey].ts) {
         latestPrices[log.asset][sourceKey] = {
@@ -128,11 +134,13 @@ export function RealtimePriceLogger() {
       binance: null,
       polymarket: null,
       chainlink: null,
+      clob_shares: null,
     };
     logs.forEach((log) => {
       const sourceKey = log.source.includes('binance') ? 'binance' : 
                         log.source.includes('polymarket') ? 'polymarket' : 
-                        log.source.includes('chainlink') ? 'chainlink' : null;
+                        log.source.includes('chainlink') ? 'chainlink' :
+                        log.source.includes('clob') ? 'clob_shares' : null;
       if (sourceKey) {
         const logTime = new Date(log.received_at);
         if (!lastUpdate[sourceKey] || logTime > lastUpdate[sourceKey]!) {
@@ -169,7 +177,7 @@ export function RealtimePriceLogger() {
     );
 
     // Group by time bucket (500ms buckets for smooth chart)
-    const buckets: Record<number, { binance?: number; polymarket?: number; chainlink?: number; time: number }> = {};
+    const buckets: Record<number, { binance?: number; polymarket?: number; chainlink?: number; clob_up?: number; clob_down?: number; time: number }> = {};
     
     assetLogs.forEach(log => {
       const ts = new Date(log.received_at).getTime();
@@ -179,12 +187,18 @@ export function RealtimePriceLogger() {
         buckets[bucket] = { time: bucket };
       }
       
-      const sourceKey = log.source.includes('binance') ? 'binance' : 
-                        log.source.includes('polymarket') ? 'polymarket' : 
-                        log.source.includes('chainlink') ? 'chainlink' : null;
-      
-      if (sourceKey) {
-        buckets[bucket][sourceKey] = log.price;
+      if (log.source.includes('binance')) {
+        buckets[bucket].binance = log.price;
+      } else if (log.source.includes('polymarket')) {
+        buckets[bucket].polymarket = log.price;
+      } else if (log.source.includes('chainlink')) {
+        buckets[bucket].chainlink = log.price;
+      } else if (log.source.includes('clob')) {
+        if (log.outcome === 'up') {
+          buckets[bucket].clob_up = log.price;
+        } else if (log.outcome === 'down') {
+          buckets[bucket].clob_down = log.price;
+        }
       }
     });
 
@@ -195,6 +209,8 @@ export function RealtimePriceLogger() {
     let lastBinance: number | undefined;
     let lastPolymarket: number | undefined;
     let lastChainlink: number | undefined;
+    let lastClobUp: number | undefined;
+    let lastClobDown: number | undefined;
     
     data.forEach(point => {
       if (point.binance !== undefined) lastBinance = point.binance;
@@ -205,20 +221,32 @@ export function RealtimePriceLogger() {
       
       if (point.chainlink !== undefined) lastChainlink = point.chainlink;
       else if (lastChainlink !== undefined) point.chainlink = lastChainlink;
+      
+      if (point.clob_up !== undefined) lastClobUp = point.clob_up;
+      else if (lastClobUp !== undefined) point.clob_up = lastClobUp;
+      
+      if (point.clob_down !== undefined) lastClobDown = point.clob_down;
+      else if (lastClobDown !== undefined) point.clob_down = lastClobDown;
     });
 
     return data;
   }, [logs, selectedAsset, analytics]);
 
-  const getSourceBadge = (source: string) => {
+  const getSourceBadge = (source: string, outcome?: string | null) => {
     if (source.includes('binance')) {
-      return <Badge variant="outline" className="border-yellow-500 text-yellow-400 font-mono text-xs">BIN</Badge>;
+      return <Badge variant="outline" className="border-orange-500 text-orange-400 font-mono text-xs">BIN</Badge>;
     }
     if (source.includes('polymarket')) {
-      return <Badge variant="outline" className="border-purple-500 text-purple-400 font-mono text-xs">PM</Badge>;
+      return <Badge variant="outline" className="border-fuchsia-500 text-fuchsia-400 font-mono text-xs">PM</Badge>;
     }
     if (source.includes('chainlink')) {
-      return <Badge variant="outline" className="border-blue-500 text-blue-400 font-mono text-xs">CL</Badge>;
+      return <Badge variant="outline" className="border-cyan-500 text-cyan-400 font-mono text-xs">CL</Badge>;
+    }
+    if (source.includes('clob')) {
+      if (outcome === 'up') {
+        return <Badge variant="outline" className="border-green-500 text-green-400 font-mono text-xs">UP</Badge>;
+      }
+      return <Badge variant="outline" className="border-red-500 text-red-400 font-mono text-xs">DN</Badge>;
     }
     return <Badge variant="outline" className="font-mono text-xs">{source.slice(0, 3).toUpperCase()}</Badge>;
   };
@@ -341,6 +369,15 @@ export function RealtimePriceLogger() {
                   tickLine={false}
                   tickFormatter={(value) => `$${value.toLocaleString()}`}
                 />
+                <YAxis 
+                  yAxisId="right"
+                  orientation="right"
+                  domain={[0, 1]}
+                  stroke="#8B949E"
+                  fontSize={10}
+                  tickLine={false}
+                  tickFormatter={(value) => `${(value * 100).toFixed(0)}¢`}
+                />
                 <Tooltip 
                   contentStyle={{ backgroundColor: '#21262D', border: '1px solid #30363D', borderRadius: '8px' }}
                   labelStyle={{ color: '#E6EDF3' }}
@@ -377,6 +414,28 @@ export function RealtimePriceLogger() {
                   dot={false}
                   name="Chainlink"
                   connectNulls
+                />
+                <Line 
+                  type="stepAfter" 
+                  dataKey="clob_up" 
+                  stroke="#22C55E" 
+                  strokeWidth={1.5} 
+                  strokeDasharray="4 2"
+                  dot={false}
+                  name="CLOB UP"
+                  connectNulls
+                  yAxisId="right"
+                />
+                <Line 
+                  type="stepAfter" 
+                  dataKey="clob_down" 
+                  stroke="#EF4444" 
+                  strokeWidth={1.5} 
+                  strokeDasharray="4 2"
+                  dot={false}
+                  name="CLOB DOWN"
+                  connectNulls
+                  yAxisId="right"
                 />
               </LineChart>
             </ResponsiveContainer>

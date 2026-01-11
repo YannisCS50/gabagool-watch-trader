@@ -9,6 +9,7 @@ interface PriceLog {
   raw_timestamp: number | null;
   received_at: string;
   created_at: string;
+  outcome?: string | null;  // 'up' | 'down' for clob_shares source
 }
 
 interface LoggerStatus {
