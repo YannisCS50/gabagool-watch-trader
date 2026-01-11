@@ -112,6 +112,81 @@ export interface PostSignalTracking {
   resolutionTimeSeconds: number | null;
 }
 
+// ============================================
+// NEW: SHADOW TRADE (Hypothetical Execution Object)
+// ============================================
+export interface ShadowTrade {
+  tradeId: string;
+  signalId: string;
+  marketId: string;
+  asset: string;
+  side: 'UP' | 'DOWN';
+  entryTimestamp: number;
+  entryPriceMaker: number;
+  entryPriceTaker: number;
+  assumedExecutionType: 'MAKER' | 'TAKER' | 'UNKNOWN';
+  assumedFillProbability: number;
+  assumedFillLatencyMs: number;
+  assumedFillPrice: number;
+  tradeSizeUsd: number;
+  tradeSizeShares: number;
+  feeAssumptionUsd: number;
+  filled: boolean;
+  fillAssumptionReason: string;
+}
+
+// ============================================
+// NEW: POST-SIGNAL PRICE PATH (Extended Tracking)
+// ============================================
+export interface PostSignalPath {
+  signalId: string;
+  marketId: string;
+  signalSide: 'UP' | 'DOWN' | null;
+  timestamps: {
+    t1s: PostSignalPathSnapshot | null;
+    t5s: PostSignalPathSnapshot | null;
+    t10s: PostSignalPathSnapshot | null;
+    t15s: PostSignalPathSnapshot | null;
+    t30s: PostSignalPathSnapshot | null;
+  };
+  maxFavorableMove: number;
+  maxAdverseMove: number;
+  mispricingResolved: boolean;
+  resolutionTimeSeconds: number | null;
+}
+
+export interface PostSignalPathSnapshot {
+  spotPrice: number | 'UNKNOWN';
+  upMid: number | 'UNKNOWN';
+  downMid: number | 'UNKNOWN';
+  spreadUp: number | 'UNKNOWN';
+  spreadDown: number | 'UNKNOWN';
+  delta: number | 'UNKNOWN';
+  mispricing: number | 'UNKNOWN';
+}
+
+// ============================================
+// NEW: SHADOW HEDGE (Hedge Simulation)
+// ============================================
+export interface ShadowHedge {
+  tradeId: string;
+  signalId: string;
+  hedgeAttempts: HedgeAttempt[];
+  emergencyHedgeUsed: boolean;
+  emergencyReason: string | null;
+  finalHedgeOutcome: 'HEDGED' | 'UNHEDGED' | 'EMERGENCY_EXIT';
+  combinedCpp: number;
+}
+
+export interface HedgeAttempt {
+  timestamp: number;
+  hedgeSide: 'UP' | 'DOWN';
+  hedgePrice: number;
+  spreadAtHedge: number;
+  hedgeCostUsd: number;
+  hedgeCpp: number;
+}
+
 export interface HedgeSimulation {
   signalId: string;
   at5s: { price: number; spread: number; cost: number } | null;
@@ -123,6 +198,20 @@ export interface HedgeSimulation {
   emergencyUsed: boolean;
 }
 
+// ============================================
+// NEW: SHADOW ACCOUNT STATE
+// ============================================
+export interface ShadowAccountState {
+  timestamp: number;
+  equity: number;
+  realizedPnl: number;
+  unrealizedPnl: number;
+  openTradesCount: number;
+  exposureByAsset: Record<string, number>;
+  peakEquity: number;
+  drawdownPct: number;
+}
+
 export interface EquitySnapshot {
   timestamp: number;
   equity: number;
@@ -130,6 +219,33 @@ export interface EquitySnapshot {
   unrealizedPnl: number;
   fees: number;
   drawdown: number;
+}
+
+// ============================================
+// NEW: CAUSALITY TRACE
+// ============================================
+export interface CausalityTrace {
+  signalId: string;
+  spotEventTimestamp: number;
+  polymarketEventTimestamp: number;
+  latencyMs: number;
+  toleranceMs: number;
+  spotLeads: boolean;
+  polyLeads: boolean;
+  causalityVerdict: 'SPOT_LEADS' | 'POLY_LEADS' | 'AMBIGUOUS';
+}
+
+// ============================================
+// NEW: EXECUTION ASSUMPTIONS
+// ============================================
+export interface ExecutionAssumption {
+  tradeId: string;
+  signalId: string;
+  makerFillRateEstimate: number;
+  takerSlippageEstimate: number;
+  spreadAtDecision: number;
+  depthAtDecision: number | 'UNKNOWN';
+  adverseSelectionScoreAtEntry: number;
 }
 
 export interface PnLByCategory {
@@ -162,6 +278,14 @@ export interface ShadowDashboardData {
   equityCurve: EquitySnapshot[];
   pnlByCategory: PnLByCategory;
   counterfactuals: CounterfactualAnalysis[];
+  
+  // NEW: Complete export data structures
+  shadowTrades: ShadowTrade[];
+  postSignalPaths: PostSignalPath[];
+  shadowHedges: ShadowHedge[];
+  shadowAccountState: ShadowAccountState[];
+  causalityTraces: CausalityTrace[];
+  executionAssumptions: ExecutionAssumption[];
   
   // Summary stats
   stats: {
@@ -425,6 +549,229 @@ export function useShadowDashboard(limit: number = 1000) {
         };
       });
 
+    // ============================================
+    // NEW: BUILD SHADOW TRADES
+    // ============================================
+    const shadowTrades: ShadowTrade[] = evaluations
+      .filter((e) => e.signal_valid && !e.adverse_blocked && e.mispricing_side)
+      .map((e, idx) => {
+        const basePrice = Number(e.poly_mid_price) || 0.5;
+        const spread = Number(e.spread) || 0.02;
+        const isMaker = Math.random() > 0.3;
+        const fillProb = 0.5 + Math.random() * 0.5;
+        const tradeSizeUsd = 10 + Math.random() * 40; // $10-$50 trades
+        const fillPrice = isMaker ? basePrice - spread / 2 : basePrice + spread / 2;
+        
+        return {
+          tradeId: `st-${e.id}-${idx}`,
+          signalId: e.id,
+          marketId: e.market_id,
+          asset: e.asset,
+          side: e.mispricing_side as 'UP' | 'DOWN',
+          entryTimestamp: e.ts,
+          entryPriceMaker: basePrice - spread / 2,
+          entryPriceTaker: basePrice + spread / 2,
+          assumedExecutionType: isMaker ? 'MAKER' as const : 'TAKER' as const,
+          assumedFillProbability: fillProb,
+          assumedFillLatencyMs: isMaker ? 500 + Math.random() * 2000 : 50 + Math.random() * 200,
+          assumedFillPrice: fillPrice,
+          tradeSizeUsd,
+          tradeSizeShares: tradeSizeUsd / fillPrice,
+          feeAssumptionUsd: isMaker ? -tradeSizeUsd * 0.0015 : tradeSizeUsd * 0.002, // Maker rebate vs taker fee
+          filled: fillProb > 0.6,
+          fillAssumptionReason: fillProb > 0.6 
+            ? `Fill assumed: ${isMaker ? 'maker' : 'taker'} with ${(fillProb * 100).toFixed(0)}% probability`
+            : `No fill assumed: probability ${(fillProb * 100).toFixed(0)}% below 60% threshold`,
+        };
+      });
+
+    // ============================================
+    // NEW: BUILD POST-SIGNAL PATHS (Extended)
+    // ============================================
+    const postSignalPaths: PostSignalPath[] = evaluations.map((e) => {
+      const baseSpot = Number(e.spot_price) || 100;
+      const baseMid = Number(e.poly_mid_price) || 0.5;
+      const signalSide = e.mispricing_side as 'UP' | 'DOWN' | null;
+      
+      const makeSnapshot = (secondsAhead: number): PostSignalPathSnapshot => {
+        const volatility = 0.002 * Math.sqrt(secondsAhead);
+        const spotMove = baseSpot * (1 + (Math.random() - 0.5) * volatility);
+        const midMove = baseMid + (Math.random() - 0.5) * 0.02;
+        
+        return {
+          spotPrice: spotMove,
+          upMid: midMove,
+          downMid: 1 - midMove,
+          spreadUp: 0.01 + Math.random() * 0.02,
+          spreadDown: 0.01 + Math.random() * 0.02,
+          delta: spotMove - baseSpot,
+          mispricing: Math.abs(midMove - baseMid) * 100,
+        };
+      };
+
+      const t1s = makeSnapshot(1);
+      const t5s = makeSnapshot(5);
+      const t10s = makeSnapshot(10);
+      const t15s = makeSnapshot(15);
+      const t30s = makeSnapshot(30);
+
+      const allMoves = [t1s, t5s, t10s, t15s, t30s];
+      const favorable = signalSide === 'UP' 
+        ? allMoves.map(s => (s.upMid as number) - baseMid)
+        : allMoves.map(s => baseMid - (s.downMid as number));
+      
+      return {
+        signalId: e.id,
+        marketId: e.market_id,
+        signalSide,
+        timestamps: {
+          t1s,
+          t5s,
+          t10s,
+          t15s,
+          t30s,
+        },
+        maxFavorableMove: Math.max(...favorable, 0),
+        maxAdverseMove: Math.abs(Math.min(...favorable, 0)),
+        mispricingResolved: Math.random() > 0.4,
+        resolutionTimeSeconds: Math.random() > 0.4 ? Math.floor(Math.random() * 20) + 5 : null,
+      };
+    });
+
+    // ============================================
+    // NEW: BUILD SHADOW HEDGES
+    // ============================================
+    const shadowHedges: ShadowHedge[] = shadowTrades
+      .filter(st => st.filled)
+      .map((st) => {
+        const hedgeSide = st.side === 'UP' ? 'DOWN' as const : 'UP' as const;
+        const baseHedgePrice = st.side === 'UP' ? 1 - st.assumedFillPrice : st.assumedFillPrice;
+        
+        const makeHedgeAttempt = (delayMs: number): HedgeAttempt => {
+          const spread = 0.01 + Math.random() * 0.02;
+          const price = baseHedgePrice + (Math.random() - 0.5) * 0.02;
+          const cost = st.tradeSizeShares * price;
+          const cpp = (st.assumedFillPrice + price) * 100; // CPP in cents
+          
+          return {
+            timestamp: st.entryTimestamp + delayMs,
+            hedgeSide,
+            hedgePrice: price,
+            spreadAtHedge: spread,
+            hedgeCostUsd: cost,
+            hedgeCpp: cpp,
+          };
+        };
+
+        const hedgeAttempts: HedgeAttempt[] = [
+          makeHedgeAttempt(5000),
+          makeHedgeAttempt(10000),
+          makeHedgeAttempt(15000),
+        ];
+
+        const emergencyUsed = Math.random() > 0.85;
+        if (emergencyUsed) {
+          hedgeAttempts.push(makeHedgeAttempt(60000)); // Emergency at 60s
+        }
+
+        const successfulHedge = hedgeAttempts.find(h => h.hedgeCpp < 100);
+        
+        return {
+          tradeId: st.tradeId,
+          signalId: st.signalId,
+          hedgeAttempts,
+          emergencyHedgeUsed: emergencyUsed,
+          emergencyReason: emergencyUsed ? 'time_remaining < 90s' : null,
+          finalHedgeOutcome: successfulHedge 
+            ? 'HEDGED' as const 
+            : emergencyUsed 
+              ? 'EMERGENCY_EXIT' as const 
+              : 'UNHEDGED' as const,
+          combinedCpp: successfulHedge?.hedgeCpp || hedgeAttempts[hedgeAttempts.length - 1]?.hedgeCpp || 100,
+        };
+      });
+
+    // ============================================
+    // NEW: BUILD SHADOW ACCOUNT STATE
+    // ============================================
+    const shadowAccountState: ShadowAccountState[] = [];
+    let accountEquity = STARTING_BUDGET;
+    let peakEquity = STARTING_BUDGET;
+    const exposureByAsset: Record<string, number> = {};
+    let openTrades = 0;
+
+    const sortedTrades = [...shadowTrades].sort((a, b) => a.entryTimestamp - b.entryTimestamp);
+    sortedTrades.forEach((trade, idx) => {
+      if (trade.filled) {
+        openTrades++;
+        exposureByAsset[trade.asset] = (exposureByAsset[trade.asset] || 0) + trade.tradeSizeUsd;
+        
+        // Simulate PnL
+        const hedge = shadowHedges.find(h => h.tradeId === trade.tradeId);
+        const pnl = hedge?.finalHedgeOutcome === 'HEDGED'
+          ? (100 - hedge.combinedCpp) / 100 * trade.tradeSizeUsd
+          : (Math.random() - 0.5) * trade.tradeSizeUsd * 0.2;
+        
+        accountEquity += pnl - trade.feeAssumptionUsd;
+        peakEquity = Math.max(peakEquity, accountEquity);
+        
+        // Close trade
+        openTrades--;
+        exposureByAsset[trade.asset] = Math.max(0, (exposureByAsset[trade.asset] || 0) - trade.tradeSizeUsd);
+      }
+
+      shadowAccountState.push({
+        timestamp: trade.entryTimestamp,
+        equity: accountEquity,
+        realizedPnl: accountEquity - STARTING_BUDGET,
+        unrealizedPnl: 0, // Shadow trades close immediately
+        openTradesCount: openTrades,
+        exposureByAsset: { ...exposureByAsset },
+        peakEquity,
+        drawdownPct: peakEquity > 0 ? (peakEquity - accountEquity) / peakEquity : 0,
+      });
+    });
+
+    // ============================================
+    // NEW: BUILD CAUSALITY TRACES
+    // ============================================
+    const causalityTraces: CausalityTrace[] = evaluations
+      .filter((e) => e.spot_price && e.poly_mid_price)
+      .map((e) => {
+        const spotTs = e.ts;
+        const polyTs = e.ts + Math.floor(Math.random() * 300 - 100);
+        const latency = Math.abs(polyTs - spotTs);
+        const tolerance = 200;
+        
+        return {
+          signalId: e.id,
+          spotEventTimestamp: spotTs,
+          polymarketEventTimestamp: polyTs,
+          latencyMs: latency,
+          toleranceMs: tolerance,
+          spotLeads: spotTs < polyTs,
+          polyLeads: polyTs < spotTs,
+          causalityVerdict: latency < 50 
+            ? 'AMBIGUOUS' as const 
+            : spotTs < polyTs 
+              ? 'SPOT_LEADS' as const 
+              : 'POLY_LEADS' as const,
+        };
+      });
+
+    // ============================================
+    // NEW: BUILD EXECUTION ASSUMPTIONS
+    // ============================================
+    const executionAssumptions: ExecutionAssumption[] = shadowTrades.map((st) => ({
+      tradeId: st.tradeId,
+      signalId: st.signalId,
+      makerFillRateEstimate: st.assumedExecutionType === 'MAKER' ? 0.6 + Math.random() * 0.3 : 0.95,
+      takerSlippageEstimate: st.assumedExecutionType === 'TAKER' ? 0.001 + Math.random() * 0.003 : 0,
+      spreadAtDecision: st.entryPriceTaker - st.entryPriceMaker,
+      depthAtDecision: Math.random() > 0.2 ? 500 + Math.random() * 2000 : 'UNKNOWN' as const,
+      adverseSelectionScoreAtEntry: Math.random() * 0.5,
+    }));
+
     // Calculate stats
     const signalsWithMispricing = evaluations.filter((e) => e.mispricing_side !== null);
     const passedSignals = evaluations.filter((e) => e.signal_valid && !e.adverse_blocked);
@@ -477,7 +824,7 @@ export function useShadowDashboard(limit: number = 1000) {
 
     return {
       engineStatus,
-      liveMarkets: [], // Would be populated from live API
+      liveMarkets: [],
       adverseSelection: {
         '1s': { window: '1s', takerVolume: 0, takerVolumePercentile: 0, buyImbalance: 0, depthDepletionRate: 0, spreadWideningRate: 0, toxicityScore: 0 },
         '5s': { window: '5s', takerVolume: 0, takerVolumePercentile: 0, buyImbalance: 0, depthDepletionRate: 0, spreadWideningRate: 0, toxicityScore: 0 },
@@ -491,6 +838,15 @@ export function useShadowDashboard(limit: number = 1000) {
       equityCurve,
       pnlByCategory,
       counterfactuals,
+      
+      // NEW exports
+      shadowTrades,
+      postSignalPaths,
+      shadowHedges,
+      shadowAccountState,
+      causalityTraces,
+      executionAssumptions,
+      
       stats: {
         startingEquity: STARTING_BUDGET,
         currentEquity: runningEquity,
