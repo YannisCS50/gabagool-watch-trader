@@ -25,6 +25,7 @@ import type { FilterResult } from './adverse-selection-filter.js';
 import type { EntryDecision } from './entry-manager.js';
 import type { HedgeDecision } from './hedge-manager.js';
 import type { CorrectionStatus } from './correction-monitor.js';
+import { saveV27Evaluation } from '../backend.js';
 
 export interface V27EvaluationLog {
   // Identifiers
@@ -223,50 +224,21 @@ export class V27Logger {
       this.evaluationLogs.shift();
     }
     
-    // Persist to Supabase using existing schema
-    if (this.supabase) {
-      try {
-        const insertData = {
-          ts: log.timestamp,
-          asset: log.asset,
-          market_id: log.marketId,
-          spot_price: log.spotPrice,
-          spot_source: 'chainlink',
-          pm_up_bid: book.upMid - (book.spreadUp / 2),
-          pm_up_ask: book.upMid + (book.spreadUp / 2),
-          pm_down_bid: book.downMid - (book.spreadDown / 2),
-          pm_down_ask: book.downMid + (book.spreadDown / 2),
-          theoretical_up: log.expectedPolyPrice,
-          theoretical_down: 1 - log.expectedPolyPrice,
-          delta_up: log.mispricedSide === 'UP' ? log.deltaAbs : 0,
-          delta_down: log.mispricedSide === 'DOWN' ? log.deltaAbs : 0,
-          mispricing_side: log.mispricedSide,
-          mispricing_magnitude: log.deltaAbs,
-          base_threshold: log.threshold,
-          dynamic_threshold: log.threshold,
-          threshold_source: 'config',
-          taker_flow_p90: log.aggressiveFlowMetrics.p90Threshold,
-          book_imbalance: log.bookShapeMetrics.asymmetryRatio,
-          spread_expansion: log.spreadExpansionMetrics.expansionRatio,
-          adverse_blocked: !log.filterPass,
-          adverse_reason: log.failedFilter || null,
-          causality_passed: log.causalityPass,
-          spot_leading_ms: log.spotLeadMs,
-          signal_valid: log.mispricingExists && log.filterPass && log.causalityPass,
-          action: log.decision,
-          skip_reason: log.decision === 'SKIP' ? log.reason : null,
-        };
-        
+    // Persist to database (prefer direct client; fallback via runner-proxy)
+    try {
+      if (this.supabase) {
         const { error } = await this.supabase.from('v27_evaluations').insert(insertData);
-        
         if (error) {
           console.error('[V27] DB insert error:', error.message, error.details);
         }
-      } catch (err) {
-        console.error('[V27] Failed to persist evaluation:', err);
+      } else {
+        const ok = await saveV27Evaluation(insertData);
+        if (!ok) {
+          console.warn('[V27] Failed to persist evaluation via runner-proxy');
+        }
       }
-    } else {
-      console.warn('[V27] No Supabase client - evaluation not persisted');
+    } catch (err) {
+      console.error('[V27] Failed to persist evaluation:', err);
     }
     
     // Console log for real-time visibility

@@ -273,8 +273,23 @@ export async function savePriceTicks(ticks: PriceTick[]): Promise<boolean> {
 }
 
 // ============================================
+// V27 PERSISTENCE (via runner-proxy)
+// ============================================
+
+export async function saveV27Evaluation(evaluation: Record<string, unknown>): Promise<boolean> {
+  try {
+    const result = await callProxy<{ success: boolean }>('save-v27-evaluation', { evaluation });
+    return result.success;
+  } catch (error) {
+    console.error('❌ saveV27Evaluation error:', error);
+    return false;
+  }
+}
+
+// ============================================
 // TELEMETRY LOGGING (SNAPSHOT/FILL/SETTLEMENT)
 // ============================================
+
 
 export async function saveSnapshotLogs(logs: SnapshotLog[]): Promise<boolean> {
   if (logs.length === 0) return true;

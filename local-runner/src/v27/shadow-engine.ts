@@ -30,6 +30,7 @@ import { CadenceController, type CadenceMetrics, type CadenceState } from './cad
 import type { V27Market, V27OrderBook, V27SpotData } from './index.js';
 import type { MispricingSignal } from './mispricing-detector.js';
 import type { FilterResult } from './adverse-selection-filter.js';
+import { saveV27Evaluation } from '../backend.js';
 
 // ============================================================
 // TYPES
@@ -843,49 +844,56 @@ export class ShadowEngine {
   // ============================================================
   
   private async persistEvaluation(eval_: ShadowEvaluation): Promise<void> {
-    if (!this.supabase) {
-      console.warn('[SHADOW] ⚠️ No Supabase client - evaluation not persisted. Check SUPABASE_URL and SUPABASE_ANON_KEY env vars.');
-      this.stats.dbWriteErrors++;
-      return;
-    }
-    
+    const insertData = {
+      ts: eval_.ts,
+      asset: eval_.asset,
+      market_id: eval_.marketId,
+      spot_price: eval_.spotPrice,
+      spot_source: eval_.spotSource,
+      pm_up_bid: eval_.upBid,
+      pm_up_ask: eval_.upAsk,
+      pm_down_bid: eval_.downBid,
+      pm_down_ask: eval_.downAsk,
+      theoretical_up: eval_.expectedUpPrice,
+      theoretical_down: eval_.expectedDownPrice,
+      delta_up: eval_.mispricingSide === 'UP' ? eval_.mispricingMagnitude : 0,
+      delta_down: eval_.mispricingSide === 'DOWN' ? eval_.mispricingMagnitude : 0,
+      mispricing_side: eval_.mispricingSide,
+      mispricing_magnitude: eval_.deltaAbs,
+      base_threshold: eval_.threshold,
+      dynamic_threshold: eval_.threshold,
+      threshold_source: 'config',
+      taker_flow_p90: eval_.takerVolumeP85,
+      book_imbalance: eval_.bookImbalanceRatio,
+      spread_expansion: eval_.spreadExpansionRatio,
+      adverse_blocked: !eval_.filterPassed,
+      adverse_reason: eval_.filterFailedReason,
+      causality_passed: eval_.causalityPassed,
+      spot_leading_ms: eval_.spotLeadingMs,
+      signal_valid: eval_.signalType === 'ENTRY',
+      action: eval_.signalType,
+      skip_reason:
+        eval_.signalType === 'NONE'
+          ? 'NO_MISPRICING'
+          : eval_.signalType.startsWith('SKIP')
+            ? eval_.filterFailedReason
+            : null,
+    };
+
     try {
-      const insertData = {
-        ts: eval_.ts,
-        asset: eval_.asset,
-        market_id: eval_.marketId,
-        spot_price: eval_.spotPrice,
-        spot_source: eval_.spotSource,
-        pm_up_bid: eval_.upBid,
-        pm_up_ask: eval_.upAsk,
-        pm_down_bid: eval_.downBid,
-        pm_down_ask: eval_.downAsk,
-        theoretical_up: eval_.expectedUpPrice,
-        theoretical_down: eval_.expectedDownPrice,
-        delta_up: eval_.mispricingSide === 'UP' ? eval_.mispricingMagnitude : 0,
-        delta_down: eval_.mispricingSide === 'DOWN' ? eval_.mispricingMagnitude : 0,
-        mispricing_side: eval_.mispricingSide,
-        mispricing_magnitude: eval_.deltaAbs,
-        base_threshold: eval_.threshold,
-        dynamic_threshold: eval_.threshold,
-        threshold_source: 'config',
-        taker_flow_p90: eval_.takerVolumeP85,
-        book_imbalance: eval_.bookImbalanceRatio,
-        spread_expansion: eval_.spreadExpansionRatio,
-        adverse_blocked: !eval_.filterPassed,
-        adverse_reason: eval_.filterFailedReason,
-        causality_passed: eval_.causalityPassed,
-        spot_leading_ms: eval_.spotLeadingMs,
-        signal_valid: eval_.signalType === 'ENTRY',
-        action: eval_.signalType,
-        skip_reason: eval_.signalType === 'NONE' ? 'NO_MISPRICING' : 
-                     eval_.signalType.startsWith('SKIP') ? eval_.filterFailedReason : null,
-      };
-      
-      const { error } = await this.supabase.from('v27_evaluations').insert(insertData);
-      
-      if (error) {
-        console.error('[SHADOW] DB insert error:', error.message);
+      if (this.supabase) {
+        const { error } = await this.supabase.from('v27_evaluations').insert(insertData);
+        if (error) {
+          console.error('[SHADOW] DB insert error:', error.message);
+          this.stats.dbWriteErrors++;
+        }
+        return;
+      }
+
+      // Fallback: persist via runner-proxy (avoids needing DB creds in the runner)
+      const ok = await saveV27Evaluation(insertData);
+      if (!ok) {
+        console.warn('[SHADOW] ⚠️ Failed to persist evaluation via runner-proxy.');
         this.stats.dbWriteErrors++;
       }
     } catch (err) {
