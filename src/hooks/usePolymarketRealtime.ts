@@ -2,14 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 
 /**
- * Rebuilt: reliable top-of-book (bid/ask) + mid (market) pricing using backend polling.
- * No WebSocket dependency.
+ * Realtime Polymarket prices via WebSocket (CLOB WS).
+ * Uses the rtds-proxy edge function for WebSocket proxying.
  */
 
 type ConnectionState = "disconnected" | "connecting" | "connected" | "discovering" | "error";
 
 interface PricePoint {
-  price: number | null; // mid/last fallback
+  price: number | null;
   bestAsk: number | null;
   bestBid: number | null;
   timestampMs: number;
@@ -62,11 +62,12 @@ interface UsePolymarketRealtimeResult {
 
 const FUNCTIONS_BASE_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 const MARKET_TOKENS_URL = `${FUNCTIONS_BASE_URL}/get-market-tokens`;
-const CLOB_PRICES_URL = `${FUNCTIONS_BASE_URL}/clob-prices`;
 const SAVE_EXPIRED_URL = `${FUNCTIONS_BASE_URL}/save-expired-market`;
 
+// Direct CLOB WebSocket URL
+const CLOB_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
+
 const MARKET_REFRESH_INTERVAL_MS = 60_000;
-const PRICES_POLL_INTERVAL_MS = 1_000;
 
 const normalizeOutcome = (o: string) => o.trim().toLowerCase();
 
@@ -180,8 +181,10 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
   const tokenToMarketRef = useRef<Map<string, { slug: string; outcome: "up" | "down" }>>(new Map());
   const pricesRef = useRef<Map<string, Map<string, PricePoint>>>(new Map());
 
-  const pricesPollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
   const marketRefreshIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const savedExpiredSlugsRef = useRef<Set<string>>(new Set());
   const chainlinkPricesRef = useRef<{ btc: number | null; eth: number | null }>({ btc: null, eth: null });
@@ -210,148 +213,242 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
     tokenToMarketRef.current = mapping;
   }, []);
 
-  const stopIntervals = useCallback(() => {
-    if (pricesPollIntervalRef.current) {
-      clearInterval(pricesPollIntervalRef.current);
-      pricesPollIntervalRef.current = null;
+  const cleanup = useCallback(() => {
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
     }
     if (marketRefreshIntervalRef.current) {
       clearInterval(marketRefreshIntervalRef.current);
       marketRefreshIntervalRef.current = null;
     }
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+    if (pingIntervalRef.current) {
+      clearInterval(pingIntervalRef.current);
+      pingIntervalRef.current = null;
+    }
   }, []);
 
-  const pollPricesOnce = useCallback(async () => {
-    const tokenIds: string[] = [];
-    for (const m of marketsRef.current) {
-      if (m.upTokenId) tokenIds.push(String(m.upTokenId));
-      if (m.downTokenId) tokenIds.push(String(m.downTokenId));
-    }
-    const uniqueTokenIds = Array.from(new Set(tokenIds));
-    if (uniqueTokenIds.length === 0) return { ok: true, updatedAny: false, latency: 0 };
+  const subscribeToTokens = useCallback((ws: WebSocket, tokenIds: string[]) => {
+    if (ws.readyState !== WebSocket.OPEN || tokenIds.length === 0) return;
 
-    const started = performance.now();
-    const res = await fetch(CLOB_PRICES_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ tokenIds: uniqueTokenIds }),
-    });
-    const ended = performance.now();
-
-    if (!res.ok) return { ok: false, updatedAny: false, latency: Math.round(ended - started) };
-
-    const json = await res.json();
-    const prices: Record<string, any> = json?.prices || {};
-
-    const now = Date.now();
-    let updatedAny = false;
-
-    for (const [tokenId, raw] of Object.entries(prices)) {
-      const marketInfo = tokenToMarketRef.current.get(String(tokenId));
-      if (!marketInfo) continue;
-
-      const bestAsk = typeof raw?.bestAsk === "number" ? raw.bestAsk : null;
-      const bestBid = typeof raw?.bestBid === "number" ? raw.bestBid : null;
-      const price = typeof raw?.price === "number" ? raw.price : null;
-
-      if (bestAsk === null && bestBid === null && price === null) continue;
-
-      let marketMap = pricesRef.current.get(marketInfo.slug);
-      if (!marketMap) {
-        marketMap = new Map();
-        pricesRef.current.set(marketInfo.slug, marketMap);
-      }
-
-      const point: PricePoint = {
-        price: price ?? midpoint(bestBid, bestAsk),
-        bestAsk,
-        bestBid,
-        timestampMs: now,
+    // Subscribe to each token's market channel
+    for (const tokenId of tokenIds) {
+      const subscribeMsg = {
+        type: "subscribe",
+        channel: "market",
+        assets_ids: [tokenId],
       };
-
-      marketMap.set(marketInfo.outcome, point);
-      if (marketInfo.outcome === "up") marketMap.set("yes", point);
-      if (marketInfo.outcome === "down") marketMap.set("no", point);
-
-      updatedAny = true;
+      console.log("[CLOB WS] Subscribing to:", tokenId.slice(0, 20) + "...");
+      ws.send(JSON.stringify(subscribeMsg));
     }
-
-    if (updatedAny) {
-      setPricesVersion((v) => v + 1);
-      setUpdateCount((c) => c + 1);
-      setLastUpdateTime(now);
-    }
-
-    return { ok: true, updatedAny, latency: Math.round(ended - started) };
   }, []);
 
-  const connect = useCallback(async () => {
+  const handleWsMessage = useCallback((event: MessageEvent) => {
+    try {
+      const data = JSON.parse(event.data);
+      const now = Date.now();
+
+      // Handle price updates from CLOB WS
+      // Format: { asset_id, bids: [[price, size]], asks: [[price, size]], ... }
+      if (data.asset_id) {
+        const tokenId = String(data.asset_id);
+        const marketInfo = tokenToMarketRef.current.get(tokenId);
+        
+        if (marketInfo) {
+          // Parse bids and asks
+          let bestBid: number | null = null;
+          let bestAsk: number | null = null;
+
+          if (Array.isArray(data.bids) && data.bids.length > 0) {
+            // Bids are sorted DESC, first is best
+            const firstBid = data.bids[0];
+            bestBid = typeof firstBid === 'object' && firstBid.price 
+              ? parseFloat(firstBid.price) 
+              : (Array.isArray(firstBid) ? parseFloat(firstBid[0]) : null);
+          }
+
+          if (Array.isArray(data.asks) && data.asks.length > 0) {
+            // Asks are sorted ASC, first is best
+            const firstAsk = data.asks[0];
+            bestAsk = typeof firstAsk === 'object' && firstAsk.price
+              ? parseFloat(firstAsk.price)
+              : (Array.isArray(firstAsk) ? parseFloat(firstAsk[0]) : null);
+          }
+
+          // Also check for direct price field
+          if (data.price !== undefined) {
+            const directPrice = parseFloat(data.price);
+            if (!isNaN(directPrice)) {
+              bestBid = bestBid ?? directPrice;
+              bestAsk = bestAsk ?? directPrice;
+            }
+          }
+
+          const mid = midpoint(bestBid, bestAsk);
+          if (mid === null && bestBid === null && bestAsk === null) return;
+
+          let marketMap = pricesRef.current.get(marketInfo.slug);
+          if (!marketMap) {
+            marketMap = new Map();
+            pricesRef.current.set(marketInfo.slug, marketMap);
+          }
+
+          const point: PricePoint = {
+            price: mid,
+            bestAsk,
+            bestBid,
+            timestampMs: now,
+          };
+
+          marketMap.set(marketInfo.outcome, point);
+          if (marketInfo.outcome === "up") marketMap.set("yes", point);
+          if (marketInfo.outcome === "down") marketMap.set("no", point);
+
+          // Calculate latency if timestamp provided
+          if (data.timestamp) {
+            const serverTs = typeof data.timestamp === 'number' ? data.timestamp : Date.parse(data.timestamp);
+            if (!isNaN(serverTs)) {
+              setLatencyMs(now - serverTs);
+            }
+          }
+
+          setPricesVersion((v) => v + 1);
+          setUpdateCount((c) => c + 1);
+          setLastUpdateTime(now);
+        }
+      }
+    } catch (err) {
+      console.error("[CLOB WS] Parse error:", err);
+    }
+  }, []);
+
+  const connectWs = useCallback(async () => {
     if (!enabledRef.current || !manualEnabled) return;
 
+    cleanup();
     setConnectionState("discovering");
-    const discovered = await fetchActiveMarkets();
 
+    // Fetch markets first
+    const discovered = await fetchActiveMarkets();
     setMarkets(discovered);
     marketsRef.current = discovered;
     rebuildTokenMap(discovered);
 
-    setConnectionState("connecting");
-
-    // Prime one poll (so we can show "connected" immediately after first success)
-    try {
-      const first = await pollPricesOnce();
-      setLatencyMs(first.latency);
-      setIsConnected(first.ok);
-      setConnectionState(first.ok ? "connected" : "error");
-    } catch {
-      setIsConnected(false);
+    if (discovered.length === 0) {
+      console.log("[CLOB WS] No markets found");
       setConnectionState("error");
+      return;
     }
 
-    stopIntervals();
+    // Collect all token IDs
+    const tokenIds: string[] = [];
+    for (const m of discovered) {
+      if (m.upTokenId) tokenIds.push(m.upTokenId);
+      if (m.downTokenId) tokenIds.push(m.downTokenId);
+    }
 
-    pricesPollIntervalRef.current = setInterval(async () => {
-      if (!enabledRef.current || !manualEnabled) return;
-      try {
-        const r = await pollPricesOnce();
-        setLatencyMs(r.latency);
-        if (!r.ok) {
-          setIsConnected(false);
-          setConnectionState("error");
-        } else {
-          setIsConnected(true);
-          setConnectionState("connected");
+    if (tokenIds.length === 0) {
+      console.log("[CLOB WS] No token IDs");
+      setConnectionState("error");
+      return;
+    }
+
+    console.log(`[CLOB WS] Connecting to ${CLOB_WS_URL} with ${tokenIds.length} tokens...`);
+    setConnectionState("connecting");
+
+    const ws = new WebSocket(CLOB_WS_URL);
+    wsRef.current = ws;
+
+    ws.onopen = () => {
+      console.log("[CLOB WS] Connected!");
+      setIsConnected(true);
+      setConnectionState("connected");
+      
+      // Subscribe to all tokens
+      subscribeToTokens(ws, tokenIds);
+
+      // Keep-alive ping every 30s
+      pingIntervalRef.current = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "ping" }));
         }
-      } catch {
-        setIsConnected(false);
-        setConnectionState("error");
-      }
-    }, PRICES_POLL_INTERVAL_MS);
+      }, 30000);
+    };
 
+    ws.onmessage = handleWsMessage;
+
+    ws.onerror = (err) => {
+      console.error("[CLOB WS] Error:", err);
+      setConnectionState("error");
+    };
+
+    ws.onclose = (event) => {
+      console.log("[CLOB WS] Closed:", event.code, event.reason);
+      setIsConnected(false);
+      setConnectionState("disconnected");
+      
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
+      }
+
+      // Reconnect after 3s if still enabled
+      if (enabledRef.current && manualEnabled) {
+        reconnectTimeoutRef.current = setTimeout(() => {
+          console.log("[CLOB WS] Reconnecting...");
+          connectWs();
+        }, 3000);
+      }
+    };
+
+    // Refresh markets periodically
     marketRefreshIntervalRef.current = setInterval(async () => {
       if (!enabledRef.current || !manualEnabled) return;
       const refreshed = await fetchActiveMarkets();
+      
+      // Find new tokens to subscribe
+      const existingTokens = new Set(tokenToMarketRef.current.keys());
+      const newTokenIds: string[] = [];
+      
+      for (const m of refreshed) {
+        if (m.upTokenId && !existingTokens.has(m.upTokenId)) {
+          newTokenIds.push(m.upTokenId);
+        }
+        if (m.downTokenId && !existingTokens.has(m.downTokenId)) {
+          newTokenIds.push(m.downTokenId);
+        }
+      }
+
       setMarkets(refreshed);
       marketsRef.current = refreshed;
       rebuildTokenMap(refreshed);
+
+      // Subscribe to new tokens
+      if (newTokenIds.length > 0 && wsRef.current?.readyState === WebSocket.OPEN) {
+        subscribeToTokens(wsRef.current, newTokenIds);
+      }
     }, MARKET_REFRESH_INTERVAL_MS);
-  }, [manualEnabled, pollPricesOnce, rebuildTokenMap, stopIntervals]);
+  }, [manualEnabled, cleanup, rebuildTokenMap, subscribeToTokens, handleWsMessage]);
 
   const disconnect = useCallback(() => {
-    stopIntervals();
+    cleanup();
     setIsConnected(false);
     setConnectionState("disconnected");
-  }, [stopIntervals]);
+  }, [cleanup]);
 
   // Main effect
   useEffect(() => {
     if (enabled && manualEnabled) {
-      connect();
-      return () => disconnect();
+      connectWs();
+      return () => cleanup();
     }
-    disconnect();
+    cleanup();
     return;
-  }, [enabled, manualEnabled, connect, disconnect]);
+  }, [enabled, manualEnabled, connectWs, cleanup]);
 
   const getPrice = useCallback(
     (marketSlug: string, outcome: string) => {
@@ -379,7 +476,7 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
 
   const timeSinceLastUpdate = useMemo(() => Date.now() - lastUpdateTime, [lastUpdateTime, pricesVersion]);
 
-  // Expiry saving (unchanged behavior)
+  // Expiry saving
   useEffect(() => {
     const checkExpired = () => {
       const now = Date.now();
