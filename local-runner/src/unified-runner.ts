@@ -118,11 +118,27 @@ async function fetchUpcomingMarkets(): Promise<V27Market[]> {
       // Only include markets that haven't ended
       if (eventEnd <= now) continue;
 
+      // Extract strike price from market slug or question
+      // E.g. "btc-above-97500-jan-11" -> 97500
+      let strikePrice = m.strikePrice || 0;
+      if (strikePrice === 0 && m.slug) {
+        const match = m.slug.match(/(?:above|below)-(\d+(?:\.\d+)?)/i);
+        if (match) {
+          strikePrice = parseFloat(match[1]);
+        }
+      }
+      
+      // Skip if we still can't determine strike price
+      if (strikePrice === 0) {
+        log(`⚠️ Skipping market with unknown strike: ${m.slug}`);
+        continue;
+      }
+
       v27Markets.push({
         id: m.id,
         slug: m.slug,
         asset: m.asset,
-        strikePrice: m.strikePrice || 0, // Will be calculated from spot
+        strikePrice,
         eventStartTime: eventStart,
         eventEndTime: eventEnd,
         upTokenId: m.upTokenId,
