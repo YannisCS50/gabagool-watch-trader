@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Eye, RefreshCw, Wifi, WifiOff, Menu } from 'lucide-react';
+import { ArrowLeft, Eye, RefreshCw, Wifi, WifiOff } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -9,6 +9,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { nl } from 'date-fns/locale';
 
 import { useShadowDashboard } from '@/hooks/useShadowDashboard';
+import { useShadowPositions } from '@/hooks/useShadowPositions';
 import { EngineStatusPanel } from '@/components/v27/shadow/EngineStatusPanel';
 import { LiveMarketMonitor } from '@/components/v27/shadow/LiveMarketMonitor';
 import { AdverseSelectionPanel } from '@/components/v27/shadow/AdverseSelectionPanel';
@@ -17,13 +18,19 @@ import { SignalLogTable } from '@/components/v27/shadow/SignalLogTable';
 import { HypotheticalExecutionPanel } from '@/components/v27/shadow/HypotheticalExecutionPanel';
 import { PostSignalTrackingPanel } from '@/components/v27/shadow/PostSignalTrackingPanel';
 import { HedgeSimulationPanel } from '@/components/v27/shadow/HedgeSimulationPanel';
-import { EquityCurveChart } from '@/components/v27/shadow/EquityCurveChart';
 import { ExportDataButton } from '@/components/v27/shadow/ExportDataButton';
 import { CounterfactualAnalysisPanel } from '@/components/v27/shadow/CounterfactualAnalysis';
+import { ShadowPositionTable } from '@/components/v27/shadow/ShadowPositionTable';
+import { ShadowDailyPnLTable } from '@/components/v27/shadow/ShadowDailyPnLTable';
+import { ShadowHedgeAnalysis } from '@/components/v27/shadow/ShadowHedgeAnalysis';
+import { ShadowEquityCurve } from '@/components/v27/shadow/ShadowEquityCurve';
+import { ShadowCounterfactualPanel } from '@/components/v27/shadow/ShadowCounterfactualPanel';
+import { ShadowExportButton } from '@/components/v27/shadow/ShadowExportButton';
 
 export default function V27Dashboard() {
   const navigate = useNavigate();
   const { data, loading, refetch, rawEvaluations, rawTrackings } = useShadowDashboard(1000);
+  const positionsData = useShadowPositions(500);
   const [activeTab, setActiveTab] = useState<string>('overview');
 
   return (
@@ -73,6 +80,15 @@ export default function V27Dashboard() {
           </div>
           
           <div className="flex items-center gap-2">
+            <ShadowExportButton
+              positions={positionsData.positions}
+              executions={positionsData.executions}
+              dailyPnl={positionsData.dailyPnl}
+              accounting={positionsData.accounting}
+              hedgeAttempts={positionsData.hedgeAttempts}
+              evaluations={rawEvaluations}
+              stats={positionsData.stats}
+            />
             <ExportDataButton data={data} rawEvaluations={rawEvaluations} rawTrackings={rawTrackings} />
             <Button variant="outline" size="sm" onClick={() => refetch()} disabled={loading} className="h-8">
               <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
@@ -111,6 +127,9 @@ export default function V27Dashboard() {
             </TabsTrigger>
             <TabsTrigger value="pnl" className="text-xs sm:text-sm px-2 sm:px-3">
               PnL
+            </TabsTrigger>
+            <TabsTrigger value="positions" className="text-xs sm:text-sm px-2 sm:px-3">
+              Positions
             </TabsTrigger>
             <TabsTrigger value="counterfactual" className="text-xs sm:text-sm px-2 sm:px-3">
               Counter
@@ -151,26 +170,28 @@ export default function V27Dashboard() {
           <HedgeSimulationPanel simulations={data.hedgeSimulations} />
         </TabsContent>
 
-        <TabsContent value="pnl" className="mt-4">
-          <div>
-            <EquityCurveChart 
-              data={data.equityCurve}
-              startingEquity={data.stats.startingEquity}
-              currentEquity={data.stats.currentEquity}
-              realizedPnl={data.stats.realizedPnl}
-              unrealizedPnl={data.stats.unrealizedPnl}
-              maxDrawdown={data.stats.maxDrawdown}
-              winCount={data.stats.winCount}
-              lossCount={data.stats.lossCount}
-              winRate={data.stats.winRate}
-            />
-          </div>
+        <TabsContent value="pnl" className="mt-4 space-y-4">
+          <ShadowEquityCurve
+            data={positionsData.equityCurve}
+            startingEquity={positionsData.stats.startingEquity}
+            currentEquity={positionsData.stats.currentEquity}
+            realizedPnl={positionsData.stats.realizedPnl}
+            unrealizedPnl={positionsData.stats.unrealizedPnl}
+            maxDrawdown={positionsData.stats.maxDrawdown}
+            winCount={positionsData.stats.wins}
+            lossCount={positionsData.stats.losses}
+            winRate={positionsData.stats.winRate}
+          />
+          <ShadowDailyPnLTable dailyPnl={positionsData.dailyPnl} />
+        </TabsContent>
+
+        <TabsContent value="positions" className="mt-4 space-y-4">
+          <ShadowPositionTable positions={positionsData.positions} />
+          <ShadowHedgeAnalysis analysis={positionsData.hedgeAnalysis} />
         </TabsContent>
 
         <TabsContent value="counterfactual" className="mt-4">
-          <div>
-            <CounterfactualAnalysisPanel counterfactuals={data.counterfactuals} />
-          </div>
+          <ShadowCounterfactualPanel positions={positionsData.positions} evaluations={rawEvaluations} />
         </TabsContent>
       </Tabs>
     </div>

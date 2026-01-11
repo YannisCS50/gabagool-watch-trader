@@ -2677,6 +2677,418 @@ export type Database = {
         }
         Relationships: []
       }
+      shadow_accounting: {
+        Row: {
+          created_at: string
+          daily_losses: number | null
+          daily_pnl: number | null
+          daily_trades: number | null
+          daily_wins: number | null
+          drawdown_pct: number | null
+          drawdown_usd: number | null
+          equity: number
+          exposure_by_asset: Json | null
+          id: string
+          iso: string
+          max_drawdown_pct: number | null
+          open_positions: number | null
+          peak_equity: number | null
+          realized_pnl: number
+          starting_equity: number
+          timestamp: number
+          total_fees: number
+          total_trades: number | null
+          unrealized_pnl: number
+        }
+        Insert: {
+          created_at?: string
+          daily_losses?: number | null
+          daily_pnl?: number | null
+          daily_trades?: number | null
+          daily_wins?: number | null
+          drawdown_pct?: number | null
+          drawdown_usd?: number | null
+          equity: number
+          exposure_by_asset?: Json | null
+          id?: string
+          iso?: string
+          max_drawdown_pct?: number | null
+          open_positions?: number | null
+          peak_equity?: number | null
+          realized_pnl?: number
+          starting_equity?: number
+          timestamp: number
+          total_fees?: number
+          total_trades?: number | null
+          unrealized_pnl?: number
+        }
+        Update: {
+          created_at?: string
+          daily_losses?: number | null
+          daily_pnl?: number | null
+          daily_trades?: number | null
+          daily_wins?: number | null
+          drawdown_pct?: number | null
+          drawdown_usd?: number | null
+          equity?: number
+          exposure_by_asset?: Json | null
+          id?: string
+          iso?: string
+          max_drawdown_pct?: number | null
+          open_positions?: number | null
+          peak_equity?: number | null
+          realized_pnl?: number
+          starting_equity?: number
+          timestamp?: number
+          total_fees?: number
+          total_trades?: number | null
+          unrealized_pnl?: number
+        }
+        Relationships: []
+      }
+      shadow_daily_pnl: {
+        Row: {
+          avg_loss: number | null
+          avg_win: number | null
+          created_at: string
+          cumulative_pnl: number
+          date: string
+          emergency_exited: number | null
+          ending_equity: number | null
+          expired_one_sided: number | null
+          id: string
+          losses: number
+          max_drawdown: number | null
+          no_fill: number | null
+          paired_hedged: number | null
+          profit_factor: number | null
+          realized_pnl: number
+          starting_equity: number | null
+          total_fees: number | null
+          total_pnl: number
+          trades: number
+          unrealized_pnl: number | null
+          updated_at: string
+          win_rate: number | null
+          wins: number
+        }
+        Insert: {
+          avg_loss?: number | null
+          avg_win?: number | null
+          created_at?: string
+          cumulative_pnl?: number
+          date: string
+          emergency_exited?: number | null
+          ending_equity?: number | null
+          expired_one_sided?: number | null
+          id?: string
+          losses?: number
+          max_drawdown?: number | null
+          no_fill?: number | null
+          paired_hedged?: number | null
+          profit_factor?: number | null
+          realized_pnl?: number
+          starting_equity?: number | null
+          total_fees?: number | null
+          total_pnl?: number
+          trades?: number
+          unrealized_pnl?: number | null
+          updated_at?: string
+          win_rate?: number | null
+          wins?: number
+        }
+        Update: {
+          avg_loss?: number | null
+          avg_win?: number | null
+          created_at?: string
+          cumulative_pnl?: number
+          date?: string
+          emergency_exited?: number | null
+          ending_equity?: number | null
+          expired_one_sided?: number | null
+          id?: string
+          losses?: number
+          max_drawdown?: number | null
+          no_fill?: number | null
+          paired_hedged?: number | null
+          profit_factor?: number | null
+          realized_pnl?: number
+          starting_equity?: number | null
+          total_fees?: number | null
+          total_pnl?: number
+          trades?: number
+          unrealized_pnl?: number | null
+          updated_at?: string
+          win_rate?: number | null
+          wins?: number
+        }
+        Relationships: []
+      }
+      shadow_executions: {
+        Row: {
+          best_ask: number | null
+          best_bid: number | null
+          cost_usd: number
+          created_at: string
+          depth_at_best: number | null
+          execution_type: string
+          fee_usd: number | null
+          fill_confidence: string | null
+          fill_latency_assumed_ms: number | null
+          fill_type: string
+          id: string
+          iso: string
+          position_id: string | null
+          price: number
+          shares: number
+          side: string
+          slippage_cents: number | null
+          spread: number | null
+          timestamp: number
+        }
+        Insert: {
+          best_ask?: number | null
+          best_bid?: number | null
+          cost_usd: number
+          created_at?: string
+          depth_at_best?: number | null
+          execution_type: string
+          fee_usd?: number | null
+          fill_confidence?: string | null
+          fill_latency_assumed_ms?: number | null
+          fill_type: string
+          id?: string
+          iso?: string
+          position_id?: string | null
+          price: number
+          shares: number
+          side: string
+          slippage_cents?: number | null
+          spread?: number | null
+          timestamp: number
+        }
+        Update: {
+          best_ask?: number | null
+          best_bid?: number | null
+          cost_usd?: number
+          created_at?: string
+          depth_at_best?: number | null
+          execution_type?: string
+          fee_usd?: number | null
+          fill_confidence?: string | null
+          fill_latency_assumed_ms?: number | null
+          fill_type?: string
+          id?: string
+          iso?: string
+          position_id?: string | null
+          price?: number
+          shares?: number
+          side?: string
+          slippage_cents?: number | null
+          spread?: number | null
+          timestamp?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shadow_executions_position_id_fkey"
+            columns: ["position_id"]
+            isOneToOne: false
+            referencedRelation: "shadow_positions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      shadow_hedge_attempts: {
+        Row: {
+          actual_price: number | null
+          attempt_number: number
+          created_at: string
+          failure_reason: string | null
+          hedge_cpp: number | null
+          hedge_side: string
+          id: string
+          is_emergency: boolean | null
+          iso: string
+          position_id: string | null
+          projected_pnl: number | null
+          seconds_since_entry: number
+          spread_at_attempt: number | null
+          success: boolean | null
+          target_price: number
+          timestamp: number
+        }
+        Insert: {
+          actual_price?: number | null
+          attempt_number?: number
+          created_at?: string
+          failure_reason?: string | null
+          hedge_cpp?: number | null
+          hedge_side: string
+          id?: string
+          is_emergency?: boolean | null
+          iso?: string
+          position_id?: string | null
+          projected_pnl?: number | null
+          seconds_since_entry: number
+          spread_at_attempt?: number | null
+          success?: boolean | null
+          target_price: number
+          timestamp: number
+        }
+        Update: {
+          actual_price?: number | null
+          attempt_number?: number
+          created_at?: string
+          failure_reason?: string | null
+          hedge_cpp?: number | null
+          hedge_side?: string
+          id?: string
+          is_emergency?: boolean | null
+          iso?: string
+          position_id?: string | null
+          projected_pnl?: number | null
+          seconds_since_entry?: number
+          spread_at_attempt?: number | null
+          success?: boolean | null
+          target_price?: number
+          timestamp?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "shadow_hedge_attempts_position_id_fkey"
+            columns: ["position_id"]
+            isOneToOne: false
+            referencedRelation: "shadow_positions"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      shadow_positions: {
+        Row: {
+          adverse_filter_state: Json | null
+          asset: string
+          best_ask_at_signal: number
+          best_bid_at_signal: number
+          combined_price_paid: number | null
+          created_at: string
+          delta_at_entry: number | null
+          entry_fill_type: string
+          entry_iso: string
+          entry_price: number
+          entry_timestamp: number
+          evaluation_id: string | null
+          fees: number | null
+          gross_pnl: number | null
+          hedge_fill_type: string | null
+          hedge_iso: string | null
+          hedge_latency_ms: number | null
+          hedge_price: number | null
+          hedge_spread: number | null
+          hedge_timestamp: number | null
+          id: string
+          market_id: string
+          mispricing_at_entry: number | null
+          net_pnl: number | null
+          paired: boolean | null
+          resolution: string | null
+          resolution_iso: string | null
+          resolution_reason: string | null
+          resolution_timestamp: number | null
+          roi_pct: number | null
+          side: string
+          signal_id: string
+          size_shares: number
+          size_usd: number
+          spot_price_at_entry: number | null
+          spread_at_entry: number | null
+          theoretical_price_at_entry: number | null
+          time_to_expiry_at_entry: number | null
+          updated_at: string
+        }
+        Insert: {
+          adverse_filter_state?: Json | null
+          asset: string
+          best_ask_at_signal: number
+          best_bid_at_signal: number
+          combined_price_paid?: number | null
+          created_at?: string
+          delta_at_entry?: number | null
+          entry_fill_type: string
+          entry_iso?: string
+          entry_price: number
+          entry_timestamp: number
+          evaluation_id?: string | null
+          fees?: number | null
+          gross_pnl?: number | null
+          hedge_fill_type?: string | null
+          hedge_iso?: string | null
+          hedge_latency_ms?: number | null
+          hedge_price?: number | null
+          hedge_spread?: number | null
+          hedge_timestamp?: number | null
+          id?: string
+          market_id: string
+          mispricing_at_entry?: number | null
+          net_pnl?: number | null
+          paired?: boolean | null
+          resolution?: string | null
+          resolution_iso?: string | null
+          resolution_reason?: string | null
+          resolution_timestamp?: number | null
+          roi_pct?: number | null
+          side: string
+          signal_id: string
+          size_shares: number
+          size_usd?: number
+          spot_price_at_entry?: number | null
+          spread_at_entry?: number | null
+          theoretical_price_at_entry?: number | null
+          time_to_expiry_at_entry?: number | null
+          updated_at?: string
+        }
+        Update: {
+          adverse_filter_state?: Json | null
+          asset?: string
+          best_ask_at_signal?: number
+          best_bid_at_signal?: number
+          combined_price_paid?: number | null
+          created_at?: string
+          delta_at_entry?: number | null
+          entry_fill_type?: string
+          entry_iso?: string
+          entry_price?: number
+          entry_timestamp?: number
+          evaluation_id?: string | null
+          fees?: number | null
+          gross_pnl?: number | null
+          hedge_fill_type?: string | null
+          hedge_iso?: string | null
+          hedge_latency_ms?: number | null
+          hedge_price?: number | null
+          hedge_spread?: number | null
+          hedge_timestamp?: number | null
+          id?: string
+          market_id?: string
+          mispricing_at_entry?: number | null
+          net_pnl?: number | null
+          paired?: boolean | null
+          resolution?: string | null
+          resolution_iso?: string | null
+          resolution_reason?: string | null
+          resolution_timestamp?: number | null
+          roi_pct?: number | null
+          side?: string
+          signal_id?: string
+          size_shares?: number
+          size_usd?: number
+          spot_price_at_entry?: number | null
+          spread_at_entry?: number | null
+          theoretical_price_at_entry?: number | null
+          time_to_expiry_at_entry?: number | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       snapshot_logs: {
         Row: {
           adverse_streak: number
