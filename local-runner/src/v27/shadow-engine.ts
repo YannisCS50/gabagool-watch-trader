@@ -8,21 +8,25 @@
 // This is NOT a paper trading bot - it's a data collection engine
 // that simulates what a live bot WOULD do, without placing orders.
 //
-// Every 500ms, for every eligible market:
-// 1. Fetch current orderbook (UP/DOWN)
-// 2. Fetch current spot price
-// 3. Compute delta, expected fair price, mispricing
-// 4. Run toxicity filter
-// 5. Simulate hypothetical execution
-// 6. Track post-signal outcomes
-// 7. Simulate hedges
-// 8. LOG EVERYTHING
+// ADAPTIVE CADENCE:
+// - COLD: eval every 1000ms, full snapshot every 2s
+// - WARM: eval every 500ms, full snapshot every 1s  
+// - HOT: eval every 250ms, event-driven snapshots only
+//
+// NEAR/HOT detection (objective criteria):
+// - near = mispricing >= 0.6*threshold OR stateScore >= P75 OR spotMoveAge<1s OR polyMoveAge<1s
+// - hot = mispricing >= 0.85*threshold OR stateScore >= P90 OR spread changed>=1tick/1s
+//
+// HYSTERESIS:
+// - WARM→COLD: near=false for 5s
+// - HOT→WARM: hot=false for 3s
 //
 // ============================================================
 
 import { getV27Config, getAssetConfig } from './config.js';
 import { MispricingDetector } from './mispricing-detector.js';
 import { AdverseSelectionFilter } from './adverse-selection-filter.js';
+import { CadenceController, type CadenceMetrics, type CadenceState } from './cadence-controller.js';
 import type { V27Market, V27OrderBook, V27SpotData } from './index.js';
 import type { MispricingSignal } from './mispricing-detector.js';
 import type { FilterResult } from './adverse-selection-filter.js';
@@ -107,6 +111,17 @@ export interface ShadowEvaluation {
   
   // Post-signal tracking reference (filled in later)
   trackingId: string | null;
+  
+  // Cadence state
+  cadenceState: CadenceState;
+  isNear: boolean;
+  isHot: boolean;
+  nearReasons: string[];
+  hotReasons: string[];
+  stateScore: number;
+  
+  // Logging type (for adaptive logging)
+  logType: 'HEARTBEAT' | 'FULL_SNAPSHOT' | 'EVENT_DRIVEN';
 }
 
 export interface PostSignalTracking {
@@ -175,6 +190,7 @@ export class ShadowEngine {
   // Components
   private mispricingDetector: MispricingDetector;
   private adverseFilter: AdverseSelectionFilter;
+  private cadenceController: CadenceController;
   
   // Active markets
   private activeMarkets: Map<string, V27Market> = new Map();
@@ -195,6 +211,12 @@ export class ShadowEngine {
     trackingsCompleted: 0,
     dbWriteErrors: 0,
     lastEvaluationTs: 0,
+    heartbeatLogs: 0,
+    fullSnapshots: 0,
+    eventDrivenLogs: 0,
+    coldEvals: 0,
+    warmEvals: 0,
+    hotEvals: 0,
   };
   
   constructor(runId: string, supabase: any) {
@@ -202,6 +224,7 @@ export class ShadowEngine {
     this.supabase = supabase;
     this.mispricingDetector = new MispricingDetector();
     this.adverseFilter = new AdverseSelectionFilter();
+    this.cadenceController = new CadenceController();
   }
   
   // ============================================================
@@ -210,11 +233,13 @@ export class ShadowEngine {
   
   registerMarket(market: V27Market): void {
     this.activeMarkets.set(market.id, market);
+    this.cadenceController.registerMarket(market.id, market.asset);
     console.log(`[SHADOW] Registered: ${market.asset} ${market.slug}`);
   }
   
   unregisterMarket(marketId: string): void {
     this.activeMarkets.delete(marketId);
+    this.cadenceController.unregisterMarket(marketId);
   }
   
   getActiveMarketCount(): number {
@@ -228,6 +253,7 @@ export class ShadowEngine {
   feedSpotPrice(asset: string, price: number, ts: number, source: string = 'binance'): void {
     this.spotPrices.set(asset, { price, ts, source });
     this.mispricingDetector.recordSpotMove(asset, price, ts);
+    this.cadenceController.recordSpotMove(asset, price, ts);
   }
   
   feedOrderBook(marketId: string, book: V27OrderBook): void {
@@ -236,6 +262,8 @@ export class ShadowEngine {
     
     this.mispricingDetector.recordPolyMove(market.asset, book.upMid, book.downMid, book.timestamp);
     this.adverseFilter.recordSpread(market.asset, book);
+    this.cadenceController.recordPolyMove(marketId, book.upMid, book.downMid, book.timestamp);
+    this.cadenceController.recordSpread(marketId, book.spreadUp, book.spreadDown);
   }
   
   feedTakerFill(asset: string, size: number, side: 'UP' | 'DOWN', price: number): void {
@@ -247,11 +275,25 @@ export class ShadowEngine {
   }
   
   // ============================================================
-  // CORE EVALUATION LOOP
+  // CORE EVALUATION LOOP WITH ADAPTIVE CADENCE
   // ============================================================
   
   /**
-   * Evaluate a single market - this MUST be called every 500ms per market
+   * Check if market should be evaluated based on cadence state
+   */
+  shouldEvaluate(marketId: string): boolean {
+    return this.cadenceController.shouldEvaluate(marketId);
+  }
+  
+  /**
+   * Get current cadence state for a market
+   */
+  getCadenceState(marketId: string): CadenceState {
+    return this.cadenceController.getState(marketId);
+  }
+  
+  /**
+   * Evaluate a single market - called based on adaptive cadence
    * Returns the evaluation for immediate display/logging
    */
   async evaluate(marketId: string, book: V27OrderBook): Promise<ShadowEvaluation | null> {
@@ -390,7 +432,54 @@ export class ShadowEngine {
       }
     }
     
-    // 4. BUILD EVALUATION RECORD
+    // 4. COMPUTE STATE SCORE (composite signal strength)
+    // Higher score = closer to entry signal
+    const stateScore = this.computeStateScore(mispricing, filter, book);
+    
+    // 5. BUILD CADENCE METRICS AND UPDATE CADENCE STATE
+    const cadenceMetrics = this.cadenceController.buildMetrics(
+      marketId,
+      market.asset,
+      Math.abs(mispricing.priceLag), // mispricing magnitude
+      mispricing.threshold,
+      stateScore,
+      book.spreadUp,
+      book.spreadDown
+    );
+    
+    const cadenceState = this.cadenceController.updateState(marketId, market.asset, cadenceMetrics);
+    const cadenceEval = this.cadenceController.evaluateCadence(marketId, market.asset, cadenceMetrics);
+    
+    // Mark that we evaluated
+    this.cadenceController.markEvaluated(marketId);
+    
+    // Update cadence stats
+    switch (cadenceState) {
+      case 'COLD': this.stats.coldEvals++; break;
+      case 'WARM': this.stats.warmEvals++; break;
+      case 'HOT': this.stats.hotEvals++; break;
+    }
+    
+    // 6. DETERMINE LOG TYPE
+    // - HEARTBEAT: light log each eval
+    // - FULL_SNAPSHOT: detailed log on schedule (2s COLD, 1s WARM)
+    // - EVENT_DRIVEN: in HOT mode, only on signal events
+    let logType: ShadowEvaluation['logType'] = 'HEARTBEAT';
+    
+    if (signalType !== 'NONE') {
+      // Any signal = event-driven log
+      logType = 'EVENT_DRIVEN';
+      this.stats.eventDrivenLogs++;
+    } else if (this.cadenceController.shouldLogFullSnapshot(marketId)) {
+      // Time for a full snapshot
+      logType = 'FULL_SNAPSHOT';
+      this.cadenceController.markFullSnapshot(marketId);
+      this.stats.fullSnapshots++;
+    } else {
+      this.stats.heartbeatLogs++;
+    }
+    
+    // 7. BUILD EVALUATION RECORD
     const evaluation: ShadowEvaluation = {
       id: evalId,
       ts: now,
@@ -455,19 +544,72 @@ export class ShadowEngine {
       hypoEstimatedFillProb10s,
       
       trackingId,
+      
+      // Cadence fields
+      cadenceState,
+      isNear: cadenceEval.isNear,
+      isHot: cadenceEval.isHot,
+      nearReasons: cadenceEval.nearReasons,
+      hotReasons: cadenceEval.hotReasons,
+      stateScore,
+      logType,
     };
     
-    // 5. PERSIST TO DATABASE
-    await this.persistEvaluation(evaluation);
+    // 8. PERSIST TO DATABASE (based on log type)
+    // Only persist full snapshots and event-driven logs to reduce DB load
+    if (logType === 'FULL_SNAPSHOT' || logType === 'EVENT_DRIVEN') {
+      await this.persistEvaluation(evaluation);
+    }
     
-    // 6. UPDATE STATS
+    // 9. UPDATE STATS
     this.stats.totalEvaluations++;
     this.stats.lastEvaluationTs = now;
     
-    // 7. CONSOLE LOG (always, even for NONE signals)
+    // 10. CONSOLE LOG (adaptive based on log type)
     this.logEvaluation(evaluation);
     
     return evaluation;
+  }
+  
+  /**
+   * Compute a state score (0-1) representing proximity to entry signal
+   */
+  private computeStateScore(
+    mispricing: MispricingSignal,
+    filter: FilterResult,
+    book: V27OrderBook
+  ): number {
+    let score = 0;
+    
+    // Mispricing contribution (0-0.4)
+    if (mispricing.exists) {
+      const mispricingRatio = Math.min(Math.abs(mispricing.priceLag) / mispricing.threshold, 2);
+      score += 0.4 * Math.min(mispricingRatio, 1);
+    }
+    
+    // Causality contribution (0-0.2)
+    if (mispricing.causalityPass) {
+      score += 0.2;
+    } else if (mispricing.spotLeadMs > 0) {
+      score += 0.1; // Partial credit if spot is leading
+    }
+    
+    // Filter contribution (0-0.2)
+    if (filter.pass) {
+      score += 0.2;
+    } else if (filter.failedFilter !== 'AGGRESSIVE_FLOW') {
+      score += 0.1; // Partial credit if not toxic
+    }
+    
+    // Book quality contribution (0-0.2)
+    const avgSpread = (book.spreadUp + book.spreadDown) / 2;
+    if (avgSpread < 0.02) {
+      score += 0.2;
+    } else if (avgSpread < 0.04) {
+      score += 0.1;
+    }
+    
+    return Math.min(score, 1);
   }
   
   // ============================================================
@@ -794,32 +936,54 @@ export class ShadowEngine {
   }
   
   // ============================================================
-  // LOGGING
+  // LOGGING (ADAPTIVE BASED ON CADENCE)
   // ============================================================
   
   private logEvaluation(eval_: ShadowEvaluation): void {
     const emoji = this.getSignalEmoji(eval_.signalType);
-    const toxEmoji = this.getToxicityEmoji(eval_.toxicityClass);
+    const cadenceEmoji = this.getCadenceEmoji(eval_.cadenceState);
     
-    // Always log - even NONE signals
     const deltaStr = eval_.deltaAbs.toFixed(2);
     const spotStr = eval_.spotPrice.toFixed(2);
     const timeStr = Math.floor(eval_.timeRemainingSeconds).toString() + 's';
+    const scoreStr = eval_.stateScore.toFixed(2);
     
-    if (eval_.signalType === 'NONE') {
-      console.log(
-        `[SHADOW] ${emoji} ${eval_.asset} ${eval_.marketSlug.slice(0, 30)} | ` +
-        `spot=${spotStr} strike=${eval_.strikePrice} Δ=${deltaStr} | ` +
-        `time=${timeStr} | NO_SIGNAL`
-      );
-    } else {
+    // Always log ENTRY/SIGNAL or EVENT_DRIVEN
+    if (eval_.logType === 'EVENT_DRIVEN') {
+      const toxEmoji = this.getToxicityEmoji(eval_.toxicityClass);
       const priceStr = eval_.hypoPrice?.toFixed(3) ?? '-';
       console.log(
-        `[SHADOW] ${emoji} ${eval_.asset} ${eval_.marketSlug.slice(0, 30)} | ` +
+        `[SHADOW] ${emoji} ${cadenceEmoji} ${eval_.asset} ${eval_.marketSlug.slice(0, 25)} | ` +
         `spot=${spotStr} Δ=${deltaStr} ${toxEmoji}${eval_.toxicityClass} | ` +
         `${eval_.signalType} ${eval_.hypoSide} @ ${priceStr} | ` +
-        `conf=${eval_.confidence} time=${timeStr}`
+        `score=${scoreStr} time=${timeStr}`
       );
+      
+      // Log cadence reasons if near/hot
+      if (eval_.isHot && eval_.hotReasons.length > 0) {
+        console.log(`   🔥 HOT: ${eval_.hotReasons.slice(0, 2).join(', ')}`);
+      } else if (eval_.isNear && eval_.nearReasons.length > 0) {
+        console.log(`   📍 NEAR: ${eval_.nearReasons.slice(0, 2).join(', ')}`);
+      }
+      return;
+    }
+    
+    // FULL_SNAPSHOT: detailed log
+    if (eval_.logType === 'FULL_SNAPSHOT') {
+      console.log(
+        `[SHADOW] ${emoji} ${cadenceEmoji} ${eval_.asset} ${eval_.marketSlug.slice(0, 25)} | ` +
+        `spot=${spotStr} strike=${eval_.strikePrice} Δ=${deltaStr} | ` +
+        `score=${scoreStr} | ${eval_.cadenceState} | time=${timeStr}`
+      );
+      return;
+    }
+    
+    // HEARTBEAT: very light log (only in debug or every N)
+    // In HOT mode, we skip heartbeat logging entirely (only event-driven)
+    if (eval_.cadenceState !== 'HOT') {
+      // Light heartbeat - only log occasionally or skip entirely for efficiency
+      // For now, let's skip heartbeat console logs to reduce noise
+      // The evaluation is still processed, just not console logged
     }
   }
   
@@ -845,30 +1009,55 @@ export class ShadowEngine {
     }
   }
   
+  private getCadenceEmoji(state: CadenceState): string {
+    switch (state) {
+      case 'COLD': return '🧊';
+      case 'WARM': return '🌡️';
+      case 'HOT': return '🔥';
+      default: return '';
+    }
+  }
+  
   // ============================================================
   // STATS
   // ============================================================
   
   getStats() {
+    const cadenceStats = this.cadenceController.getStats();
     return {
       ...this.stats,
       activeTrackings: this.activeTracking.size,
       activeMarkets: this.activeMarkets.size,
+      ...cadenceStats,
     };
+  }
+  
+  getCadenceStats() {
+    return this.cadenceController.getStats();
   }
   
   printStats(): void {
     const s = this.stats;
+    const c = this.cadenceController.getStats();
     console.log('');
     console.log('╔══════════════════════════════════════════════════════════════╗');
-    console.log('║  📊 V27 SHADOW ENGINE STATS                                   ║');
+    console.log('║  📊 V27 SHADOW ENGINE STATS (ADAPTIVE CADENCE)                ║');
     console.log('╠══════════════════════════════════════════════════════════════╣');
     console.log(`║  Total Evaluations:    ${s.totalEvaluations.toString().padEnd(40)}║`);
+    console.log(`║  ├─ COLD evals:        ${s.coldEvals.toString().padEnd(40)}║`);
+    console.log(`║  ├─ WARM evals:        ${s.warmEvals.toString().padEnd(40)}║`);
+    console.log(`║  └─ HOT evals:         ${s.hotEvals.toString().padEnd(40)}║`);
+    console.log('║                                                               ║');
     console.log(`║  Signals Detected:     ${s.signalsDetected.toString().padEnd(40)}║`);
-    console.log(`║  Candidate Signals:    ${s.candidateSignals.toString().padEnd(40)}║`);
-    console.log(`║  Clean Signals:        ${s.cleanSignals.toString().padEnd(40)}║`);
-    console.log(`║  Toxic Skips:          ${s.toxicSkips.toString().padEnd(40)}║`);
-    console.log(`║  Trackings Completed:  ${s.trackingsCompleted.toString().padEnd(40)}║`);
+    console.log(`║  ├─ Clean Signals:     ${s.cleanSignals.toString().padEnd(40)}║`);
+    console.log(`║  └─ Toxic Skips:       ${s.toxicSkips.toString().padEnd(40)}║`);
+    console.log('║                                                               ║');
+    console.log(`║  Log Types:                                                   ║`);
+    console.log(`║  ├─ Heartbeats:        ${s.heartbeatLogs.toString().padEnd(40)}║`);
+    console.log(`║  ├─ Full Snapshots:    ${s.fullSnapshots.toString().padEnd(40)}║`);
+    console.log(`║  └─ Event-Driven:      ${s.eventDrivenLogs.toString().padEnd(40)}║`);
+    console.log('║                                                               ║');
+    console.log(`║  Cadence State:        🧊${c.coldCount} | 🌡️${c.warmCount} | 🔥${c.hotCount}${' '.repeat(29)}║`);
     console.log(`║  Active Trackings:     ${this.activeTracking.size.toString().padEnd(40)}║`);
     console.log(`║  DB Write Errors:      ${s.dbWriteErrors.toString().padEnd(40)}║`);
     console.log('╚══════════════════════════════════════════════════════════════╝');
