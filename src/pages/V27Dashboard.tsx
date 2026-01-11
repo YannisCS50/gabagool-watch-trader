@@ -11,11 +11,13 @@ import { useShadowDashboard } from '@/hooks/useShadowDashboard';
 import { EngineStatusPanel } from '@/components/v27/shadow/EngineStatusPanel';
 import { LiveMarketMonitor } from '@/components/v27/shadow/LiveMarketMonitor';
 import { AdverseSelectionPanel } from '@/components/v27/shadow/AdverseSelectionPanel';
+import { CausalityTracker } from '@/components/v27/shadow/CausalityTracker';
 import { SignalLogTable } from '@/components/v27/shadow/SignalLogTable';
 import { PostSignalTrackingPanel } from '@/components/v27/shadow/PostSignalTrackingPanel';
 import { HedgeSimulationPanel } from '@/components/v27/shadow/HedgeSimulationPanel';
 import { EquityCurveChart } from '@/components/v27/shadow/EquityCurveChart';
 import { ExportDataButton } from '@/components/v27/shadow/ExportDataButton';
+import { CounterfactualAnalysisPanel } from '@/components/v27/shadow/CounterfactualAnalysis';
 
 export default function V27Dashboard() {
   const navigate = useNavigate();
@@ -25,7 +27,7 @@ export default function V27Dashboard() {
   return (
     <div className="min-h-screen bg-background p-4 md:p-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
         <div className="flex items-center gap-4">
           <Button variant="ghost" size="icon" onClick={() => navigate('/')}>
             <ArrowLeft className="h-5 w-5" />
@@ -78,12 +80,14 @@ export default function V27Dashboard() {
 
       {/* Main Content Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="mb-4">
+        <TabsList className="mb-4 flex-wrap">
           <TabsTrigger value="overview">Markets & Signals</TabsTrigger>
           <TabsTrigger value="adverse">Adverse Selection</TabsTrigger>
+          <TabsTrigger value="causality">Causality</TabsTrigger>
           <TabsTrigger value="tracking">Post-Signal</TabsTrigger>
           <TabsTrigger value="hedge">Hedge Sim</TabsTrigger>
           <TabsTrigger value="pnl">PnL & Equity</TabsTrigger>
+          <TabsTrigger value="counterfactual">Counterfactual</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-6">
@@ -96,6 +100,13 @@ export default function V27Dashboard() {
             metrics={data.adverseSelection}
             blockedTrades={[]}
             totalBlocked={data.stats.blockedSignals}
+          />
+        </TabsContent>
+
+        <TabsContent value="causality">
+          <CausalityTracker 
+            events={data.causalityEvents}
+            latencyToleranceMs={200}
           />
         </TabsContent>
 
@@ -119,6 +130,10 @@ export default function V27Dashboard() {
             lossCount={data.stats.lossCount}
             winRate={data.stats.winRate}
           />
+        </TabsContent>
+
+        <TabsContent value="counterfactual">
+          <CounterfactualAnalysisPanel counterfactuals={data.counterfactuals} />
         </TabsContent>
       </Tabs>
     </div>
