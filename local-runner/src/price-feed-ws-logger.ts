@@ -55,7 +55,9 @@ const BINANCE_WS_URL = 'wss://stream.binance.com:9443/ws';
 const POLYMARKET_RTDS_URL = 'wss://ws-live-data.polymarket.com';
 // CLOB Market WebSocket for real UP/DOWN share prices
 const CLOB_MARKET_WS_URL = 'wss://ws-subscriptions-clob.polymarket.com/ws/market';
-const GAMMA_API_URL = 'https://gamma-api.polymarket.com';
+
+// Import backend to get token IDs from our own API (no external rate limits)
+import { fetchMarkets } from './backend.js';
 
 const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP'];
 const BINANCE_SYMBOLS = ['btcusdt', 'ethusdt', 'solusdt', 'xrpusdt'];
@@ -464,92 +466,40 @@ function connectPolymarket(): void {
 // ============ CLOB MARKET WEBSOCKET (UP/DOWN SHARE PRICES) ============
 
 async function fetchActiveTokenIds(): Promise<void> {
-  console.log('[PriceFeedLogger] Fetching active market token IDs from Gamma API...');
+  console.log('[PriceFeedLogger] Fetching token IDs from backend...');
   
   try {
     tokenToAssetMap.clear();
     activeTokenIds = [];
     
-    // Fetch active events with crypto tag from Gamma API
-    // Filter for active, not closed markets
-    const url = `${GAMMA_API_URL}/events?closed=false&active=true&tag=crypto&limit=100`;
+    // Use our own backend which has all active markets with token IDs
+    const result = await fetchMarkets();
     
-    console.log(`[PriceFeedLogger] Fetching: ${url}`);
-    const response = await fetch(url);
-    
-    if (!response.ok) {
-      console.error('[PriceFeedLogger] Failed to fetch events:', response.status, await response.text());
+    if (!result.success || !result.markets) {
+      console.error('[PriceFeedLogger] Failed to fetch markets from backend');
       return;
     }
     
-    const events = await response.json() as Array<{
-      id: string;
-      slug: string;
-      title: string;
-      active: boolean;
-      closed: boolean;
-      markets: Array<{
-        id: string;
-        question: string;
-        clobTokenIds: string[];
-        outcomes: string;
-        outcomePrices: string;
-        active: boolean;
-        closed: boolean;
-      }>;
-    }>;
+    console.log(`[PriceFeedLogger] Backend returned ${result.markets.length} markets`);
     
-    console.log(`[PriceFeedLogger] Fetched ${events.length} crypto events`);
-    
-    for (const event of events) {
-      // Look for crypto up/down price markets
-      const titleLower = (event.title || '').toLowerCase();
+    for (const market of result.markets) {
+      // Only include markets for tracked assets
+      if (!ASSETS.includes(market.asset)) continue;
       
-      // Find which asset this is for
-      let asset: string | null = null;
-      for (const a of ASSETS) {
-        if (titleLower.includes(a.toLowerCase())) {
-          asset = a;
-          break;
-        }
+      // Map UP token
+      if (market.upTokenId) {
+        tokenToAssetMap.set(market.upTokenId, { asset: market.asset, outcome: 'up' });
+        activeTokenIds.push(market.upTokenId);
       }
       
-      if (!asset) continue;
-      
-      // Check if it's an up/down market
-      const isUpDown = titleLower.includes('up') || titleLower.includes('down') || 
-                       titleLower.includes('above') || titleLower.includes('below');
-      if (!isUpDown) continue;
-      
-      for (const market of event.markets || []) {
-        if (market.closed || !market.active) continue;
-        if (!market.clobTokenIds || market.clobTokenIds.length < 2) continue;
-        
-        // Parse outcomes - usually ["Yes", "No"] for binary markets
-        let outcomes: string[] = [];
-        try {
-          outcomes = JSON.parse(market.outcomes || '[]');
-        } catch {
-          outcomes = ['Yes', 'No'];
-        }
-        
-        // Map token IDs: first is Yes/Up, second is No/Down
-        const [yesTokenId, noTokenId] = market.clobTokenIds;
-        
-        if (yesTokenId) {
-          tokenToAssetMap.set(yesTokenId, { asset, outcome: 'up' });
-          activeTokenIds.push(yesTokenId);
-        }
-        if (noTokenId) {
-          tokenToAssetMap.set(noTokenId, { asset, outcome: 'down' });
-          activeTokenIds.push(noTokenId);
-        }
-        
-        console.log(`[PriceFeedLogger] 📊 ${asset}: "${market.question.slice(0, 50)}..." -> ${yesTokenId?.slice(0, 8)}.../${noTokenId?.slice(0, 8)}...`);
+      // Map DOWN token
+      if (market.downTokenId) {
+        tokenToAssetMap.set(market.downTokenId, { asset: market.asset, outcome: 'down' });
+        activeTokenIds.push(market.downTokenId);
       }
     }
     
-    console.log(`[PriceFeedLogger] ✅ Found ${activeTokenIds.length} active crypto tokens for ${tokenToAssetMap.size / 2} markets`);
+    console.log(`[PriceFeedLogger] ✅ Found ${activeTokenIds.length} tokens for ${result.markets.length} markets`);
   } catch (error) {
     console.error('[PriceFeedLogger] Error fetching token IDs:', error);
   }
@@ -611,14 +561,24 @@ async function connectClob(): Promise<void> {
     stats.clob.connected = true;
     stats.clob.lastMessageAt = Date.now();
     
+    // Guard: only send if socket is truly open
+    if (clobWs?.readyState !== WebSocket.OPEN) {
+      console.warn('[PriceFeedLogger] ⚠️ CLOB socket not ready, skipping subscribe');
+      return;
+    }
+    
     // Subscribe to orderbook updates for active tokens
-    // CLOB expects: { type: "market", assets_ids: [...] }
+    // CLOB expects: { assets_ids: [...], type: "market" }
     const subscribeMsg = {
-      type: 'market',
       assets_ids: activeTokenIds,
+      type: 'market',
     };
-    clobWs?.send(JSON.stringify(subscribeMsg));
-    console.log(`[PriceFeedLogger] 📡 Subscribed to ${activeTokenIds.length} CLOB orderbooks`);
+    try {
+      clobWs.send(JSON.stringify(subscribeMsg));
+      console.log(`[PriceFeedLogger] 📡 Subscribed to ${activeTokenIds.length} CLOB orderbooks`);
+    } catch (e) {
+      console.error('[PriceFeedLogger] Failed to send CLOB subscribe:', e);
+    }
   });
   
   clobWs.on('message', (data: WebSocket.Data) => {
