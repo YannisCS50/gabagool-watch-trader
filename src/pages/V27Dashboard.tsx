@@ -27,6 +27,7 @@ import { ShadowEquityCurve } from '@/components/v27/shadow/ShadowEquityCurve';
 import { ShadowCounterfactualPanel } from '@/components/v27/shadow/ShadowCounterfactualPanel';
 import { ShadowExportButton } from '@/components/v27/shadow/ShadowExportButton';
 import { TimeRangeFilter, filterDataByTime, DEFAULT_TIME_FILTER, type TimeFilterType } from '@/components/v27/shadow/TimeRangeFilter';
+import type { ShadowDailyPnL } from '@/hooks/useShadowPositions';
 
 export default function V27Dashboard() {
   const navigate = useNavigate();
@@ -46,17 +47,148 @@ export default function V27Dashboard() {
     };
   }, [data, timeFilter]);
 
+  // ===========================================
+  // SHADOW P/L AGGREGATION (from shadow data, not executed trades)
+  // ===========================================
+  // v27 is a SHADOW system - it does NOT place real trades.
+  // P/L must be computed from:
+  // - shadowTrades (hypothetical entries)
+  // - v27_signal_tracking (outcomes)
+  // - shadowAccountState (equity snapshots)
+  // When shadow_positions table is empty, we derive from useShadowDashboard data.
+  
+  const hasShadowPositionData = positionsData.positions.length > 0;
+  
+  // Build daily PnL from shadow data when DB tables are empty
+  const derivedDailyPnl = useMemo((): ShadowDailyPnL[] => {
+    if (hasShadowPositionData) return positionsData.dailyPnl;
+    
+    // Aggregate from shadowTrades + trackings
+    const byDate: Record<string, { 
+      trades: number; 
+      wins: number; 
+      losses: number; 
+      pnl: number;
+      fees: number;
+    }> = {};
+    
+    data.shadowTrades.forEach((trade) => {
+      if (!trade.filled) return;
+      const date = new Date(trade.entryTimestamp).toISOString().split('T')[0];
+      if (!byDate[date]) byDate[date] = { trades: 0, wins: 0, losses: 0, pnl: 0, fees: 0 };
+      byDate[date].trades++;
+      byDate[date].fees += Math.abs(trade.feeAssumptionUsd);
+    });
+    
+    // Use tracking data for win/loss determination
+    rawTrackings.forEach((t: any) => {
+      const date = new Date(t.signal_ts).toISOString().split('T')[0];
+      if (!byDate[date]) byDate[date] = { trades: 0, wins: 0, losses: 0, pnl: 0, fees: 0 };
+      
+      if (t.would_have_profited === true) {
+        byDate[date].wins++;
+        byDate[date].pnl += 1.25; // ~5% on $25 trade
+      } else if (t.would_have_profited === false) {
+        byDate[date].losses++;
+        byDate[date].pnl -= 0.75; // ~3% loss on $25 trade
+      }
+    });
+    
+    let cumulative = 0;
+    const days = Object.entries(byDate)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, dayData]) => {
+        cumulative += dayData.pnl;
+        return {
+          id: date,
+          date,
+          realized_pnl: dayData.pnl,
+          unrealized_pnl: 0,
+          total_pnl: dayData.pnl,
+          cumulative_pnl: cumulative,
+          trades: dayData.trades,
+          wins: dayData.wins,
+          losses: dayData.losses,
+          paired_hedged: 0,
+          expired_one_sided: 0,
+          emergency_exited: 0,
+          no_fill: 0,
+          total_fees: dayData.fees,
+          win_rate: dayData.wins + dayData.losses > 0 ? dayData.wins / (dayData.wins + dayData.losses) : 0,
+          avg_win: dayData.wins > 0 ? dayData.pnl / dayData.wins : 0,
+          avg_loss: 0,
+          profit_factor: 0,
+          starting_equity: 3000,
+          ending_equity: 3000 + cumulative,
+          max_drawdown: 0,
+        };
+      })
+      .reverse(); // Most recent first
+    
+    return days;
+  }, [hasShadowPositionData, positionsData.dailyPnl, data.shadowTrades, rawTrackings]);
+  
+  // Build equity curve from shadow data when DB tables are empty
+  const derivedEquityCurve = useMemo(() => {
+    if (hasShadowPositionData && positionsData.equityCurve.length > 0) {
+      return positionsData.equityCurve;
+    }
+    
+    // Use shadowDashboard's computed equity curve and add iso field
+    return data.equityCurve.map((e) => ({
+      ...e,
+      iso: new Date(e.timestamp).toISOString(),
+    }));
+  }, [hasShadowPositionData, positionsData.equityCurve, data.equityCurve]);
+  
+  // Aggregate stats from shadow data
+  const aggregatedStats = useMemo(() => {
+    // Prefer actual position data if available
+    if (hasShadowPositionData) {
+      return positionsData.stats;
+    }
+    
+    // Otherwise use shadowDashboard's derived stats
+    return {
+      startingEquity: data.stats.startingEquity,
+      currentEquity: data.stats.currentEquity,
+      realizedPnl: data.stats.realizedPnl,
+      unrealizedPnl: data.stats.unrealizedPnl,
+      totalFees: data.stats.totalFees,
+      wins: data.stats.winCount,
+      losses: data.stats.lossCount,
+      winRate: data.stats.winRate,
+      maxDrawdown: data.stats.maxDrawdown * 100, // Convert to percentage
+      allTimeHigh: data.stats.currentEquity,
+      totalTrades: data.stats.entrySignals,
+      totalPositions: data.stats.entrySignals,
+      openPositions: 0,
+      pnlByAsset: data.pnlByCategory.byAsset,
+      pnlByResolution: {},
+    };
+  }, [hasShadowPositionData, positionsData.stats, data.stats, data.pnlByCategory]);
+
   const filteredPositionsData = useMemo(() => {
     const positions = filterDataByTime(positionsData.positions, timeFilter);
     const executions = filterDataByTime(positionsData.executions, timeFilter);
-    const dailyPnl = filterDataByTime(positionsData.dailyPnl, timeFilter);
+    const dailyPnl = filterDataByTime(derivedDailyPnl, timeFilter);
     const accounting = filterDataByTime(positionsData.accounting, timeFilter);
     const hedgeAttempts = filterDataByTime(positionsData.hedgeAttempts, timeFilter);
 
-    // Recalculate stats based on filtered positions
-    const wins = positions.filter(p => (p.net_pnl || 0) > 0).length;
-    const losses = positions.filter(p => (p.net_pnl || 0) < 0).length;
-    const realizedPnl = positions.reduce((sum, p) => sum + (p.net_pnl || 0), 0);
+    // Recalculate stats based on filtered data
+    // When no position data, use aggregated shadow stats
+    let wins: number, losses: number, realizedPnl: number;
+    
+    if (positions.length > 0) {
+      wins = positions.filter(p => (p.net_pnl || 0) > 0).length;
+      losses = positions.filter(p => (p.net_pnl || 0) < 0).length;
+      realizedPnl = positions.reduce((sum, p) => sum + (p.net_pnl || 0), 0);
+    } else {
+      // Use shadow-derived stats
+      wins = aggregatedStats.wins;
+      losses = aggregatedStats.losses;
+      realizedPnl = aggregatedStats.realizedPnl;
+    }
     
     return {
       positions,
@@ -64,18 +196,18 @@ export default function V27Dashboard() {
       dailyPnl,
       accounting,
       hedgeAttempts,
-      equityCurve: positionsData.equityCurve, // Keep full curve for now
+      equityCurve: derivedEquityCurve,
       hedgeAnalysis: positionsData.hedgeAnalysis,
       stats: {
-        ...positionsData.stats,
+        ...aggregatedStats,
         wins,
         losses,
-        winRate: wins + losses > 0 ? (wins / (wins + losses)) * 100 : 0,
+        winRate: wins + losses > 0 ? (wins / (wins + losses)) * 100 : aggregatedStats.winRate,
         realizedPnl,
-        totalPositions: positions.length,
+        totalPositions: positions.length > 0 ? positions.length : aggregatedStats.totalPositions,
       },
     };
-  }, [positionsData, timeFilter]);
+  }, [positionsData, derivedDailyPnl, derivedEquityCurve, aggregatedStats, timeFilter]);
 
   const filteredEvaluations = useMemo(() => {
     return filterDataByTime(rawEvaluations, timeFilter);
@@ -154,10 +286,12 @@ export default function V27Dashboard() {
         <EngineStatusPanel status={data.engineStatus} />
       </div>
 
-      {/* Stats Summary Bar - Shows filtered counts */}
+      {/* Stats Summary Bar - Shows shadow data even when position tables are empty */}
       <div className="mb-4 flex flex-wrap gap-2 text-xs">
         <Badge variant="secondary" className="font-normal">
-          {filteredPositionsData.positions.length} posities
+          {filteredPositionsData.stats.totalPositions > 0 
+            ? `${filteredPositionsData.stats.totalPositions} posities`
+            : `${data.stats.entrySignals} shadow trades`}
         </Badge>
         <Badge variant="secondary" className="font-normal">
           {filteredData.signalLogs.length} signals
@@ -166,8 +300,13 @@ export default function V27Dashboard() {
           {filteredPositionsData.stats.wins}W / {filteredPositionsData.stats.losses}L
         </Badge>
         <Badge variant={filteredPositionsData.stats.realizedPnl >= 0 ? "default" : "destructive"} className="font-normal">
-          ${filteredPositionsData.stats.realizedPnl.toFixed(2)} PnL
+          {filteredPositionsData.stats.realizedPnl >= 0 ? '+' : ''}${filteredPositionsData.stats.realizedPnl.toFixed(2)} PnL
         </Badge>
+        {filteredPositionsData.stats.maxDrawdown > 0 && (
+          <Badge variant="outline" className="text-red-400 border-red-400/50 font-normal">
+            -{filteredPositionsData.stats.maxDrawdown.toFixed(1)}% DD
+          </Badge>
+        )}
       </div>
 
       {/* Main Content Tabs - Horizontal Scroll on Mobile */}
@@ -239,15 +378,15 @@ export default function V27Dashboard() {
 
         <TabsContent value="pnl" className="mt-4 space-y-4">
           <ShadowEquityCurve
-            data={positionsData.equityCurve}
-            startingEquity={positionsData.stats.startingEquity}
-            currentEquity={positionsData.stats.currentEquity}
+            data={filteredPositionsData.equityCurve}
+            startingEquity={filteredPositionsData.stats.startingEquity}
+            currentEquity={filteredPositionsData.stats.currentEquity}
             realizedPnl={filteredPositionsData.stats.realizedPnl}
-            unrealizedPnl={positionsData.stats.unrealizedPnl}
-            maxDrawdown={positionsData.stats.maxDrawdown}
+            unrealizedPnl={filteredPositionsData.stats.unrealizedPnl}
+            maxDrawdown={filteredPositionsData.stats.maxDrawdown}
             winCount={filteredPositionsData.stats.wins}
             lossCount={filteredPositionsData.stats.losses}
-            winRate={filteredPositionsData.stats.winRate}
+            winRate={filteredPositionsData.stats.winRate / 100}
           />
           <ShadowDailyPnLTable dailyPnl={filteredPositionsData.dailyPnl} />
         </TabsContent>
