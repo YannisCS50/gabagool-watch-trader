@@ -15,11 +15,12 @@ import { config } from './config.js';
 
 // Types
 export interface PriceTickLog {
-  source: 'binance_ws' | 'polymarket_rtds' | 'chainlink_rtds';
+  source: 'binance_ws' | 'polymarket_rtds' | 'chainlink_rtds' | 'clob_shares';
   asset: string;
   price: number;
   raw_timestamp: number;  // Original timestamp from source
   received_at: number;    // Local timestamp when received
+  outcome?: 'up' | 'down';  // For clob_shares: which side
 }
 
 interface LoggerStats {
@@ -307,11 +308,12 @@ function connectPolymarket(): void {
         subscriptions: [
           { topic: 'crypto_prices', type: 'update' },
           { topic: 'crypto_prices_chainlink', type: '*' },
+          { topic: 'crypto_prices_market', type: '*' },  // UP/DOWN share prices
         ],
       })
     );
 
-    console.log('[PriceFeedLogger] 📡 Subscribed to crypto_prices + crypto_prices_chainlink');
+    console.log('[PriceFeedLogger] 📡 Subscribed to crypto_prices + chainlink + market (UP/DOWN shares)');
   });
 
   polymarketWs.on('message', (data: WebSocket.Data) => {
@@ -352,6 +354,51 @@ function connectPolymarket(): void {
             raw_timestamp: timestamp,
             received_at: now,
           });
+        }
+      }
+
+      // crypto_prices_market: UP/DOWN share prices from CLOB orderbook
+      // Format: { topic: 'crypto_prices_market', payload: { symbol, up_price, down_price, timestamp } }
+      if (msg.topic === 'crypto_prices_market' && msg.payload) {
+        const payload = msg.payload as { 
+          symbol?: unknown; 
+          up_price?: unknown; 
+          down_price?: unknown; 
+          timestamp?: unknown;
+          up_mid?: unknown;
+          down_mid?: unknown;
+        };
+        const asset = toAsset(payload.symbol);
+        const ts = typeof payload.timestamp === 'number' ? payload.timestamp : Number(payload.timestamp);
+        const timestamp = Number.isFinite(ts) ? ts : (msg.timestamp ?? now);
+
+        // Try both up_price/down_price and up_mid/down_mid formats
+        const upPrice = Number(payload.up_price ?? payload.up_mid);
+        const downPrice = Number(payload.down_price ?? payload.down_mid);
+
+        if (asset && ASSETS.includes(asset)) {
+          // Log UP share price
+          if (Number.isFinite(upPrice) && upPrice > 0 && upPrice < 1.5) {
+            addTick({
+              source: 'clob_shares',
+              asset,
+              price: upPrice,
+              raw_timestamp: timestamp,
+              received_at: now,
+              outcome: 'up',
+            });
+          }
+          // Log DOWN share price
+          if (Number.isFinite(downPrice) && downPrice > 0 && downPrice < 1.5) {
+            addTick({
+              source: 'clob_shares',
+              asset,
+              price: downPrice,
+              raw_timestamp: timestamp,
+              received_at: now,
+              outcome: 'down',
+            });
+          }
         }
       }
 

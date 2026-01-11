@@ -2370,6 +2370,7 @@ export type Database = {
           asset: string
           created_at: string
           id: string
+          outcome: string | null
           price: number
           raw_timestamp: number | null
           received_at: string
@@ -2379,6 +2380,7 @@ export type Database = {
           asset: string
           created_at?: string
           id?: string
+          outcome?: string | null
           price: number
           raw_timestamp?: number | null
           received_at?: string
@@ -2388,6 +2390,7 @@ export type Database = {
           asset?: string
           created_at?: string
           id?: string
+          outcome?: string | null
           price?: number
           raw_timestamp?: number | null
           received_at?: string
