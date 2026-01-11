@@ -43,21 +43,27 @@ const Index = () => {
         setV26TradesCount(v26Data.trades_count || 0);
       }
 
-      // V27 status from evaluations - use any() to avoid type depth issues
-      const recentDate = new Date(Date.now() - 60000).toISOString();
-      const { count } = await (supabase as any)
-        .from('v27_evaluations')
-        .select('id', { count: 'exact', head: true })
-        .gte('created_at', recentDate);
-
+      // V27 status from runner_heartbeats
+      const { data: v27Data } = await supabase
+        .from('runner_heartbeats')
+        .select('last_heartbeat, trades_count')
+        .eq('runner_type', 'v27')
+        .order('last_heartbeat', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      
+      // Also get entry count from v27_entries
       const { count: entryCount } = await (supabase as any)
-        .from('v27_evaluations')
-        .select('id', { count: 'exact', head: true })
-        .eq('decision', 'ENTER');
+        .from('v27_entries')
+        .select('id', { count: 'exact', head: true });
+
+      const v27Online = v27Data 
+        ? new Date(v27Data.last_heartbeat).getTime() > Date.now() - 120000 // 2 min threshold
+        : false;
 
       setV27Stats({
-        online: (count || 0) > 0,
-        evaluations: count || 0,
+        online: v27Online,
+        evaluations: v27Data?.trades_count || 0,
         entries: entryCount || 0
       });
     };
