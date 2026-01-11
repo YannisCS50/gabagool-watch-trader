@@ -6,15 +6,13 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuSeparator,
   DropdownMenuLabel,
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import type { ShadowPosition, ShadowExecution, ShadowDailyPnL, ShadowAccounting, ShadowHedgeAttempt } from '@/hooks/useShadowPositions';
 
 interface ShadowExportButtonProps {
@@ -28,10 +26,12 @@ interface ShadowExportButtonProps {
 }
 
 type TimeFilter = 
+  | { type: 'cycles'; cycles: number }
   | { type: 'hours'; hours: number }
-  | { type: 'days'; days: number }
-  | { type: 'date'; from: string; to: string }
+  | { type: 'datetime'; from: string; to: string }
   | { type: 'all' };
+
+const MARKET_CYCLE_MINUTES = 15;
 
 export function ShadowExportButton({
   positions,
@@ -43,9 +43,17 @@ export function ShadowExportButton({
   stats,
 }: ShadowExportButtonProps) {
   const [exporting, setExporting] = useState(false);
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
-  const [datePopoverOpen, setDatePopoverOpen] = useState(false);
+  const [dateTimeDialogOpen, setDateTimeDialogOpen] = useState(false);
+  
+  // DateTime range state - default to today
+  const now = new Date();
+  const today = now.toLocaleDateString('en-CA'); // YYYY-MM-DD
+  const currentTime = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  
+  const [fromDate, setFromDate] = useState(today);
+  const [fromTime, setFromTime] = useState('00:00');
+  const [toDate, setToDate] = useState(today);
+  const [toTime, setToTime] = useState(currentTime);
 
   const filterByTime = <T extends { timestamp?: number; ts?: number; entry_timestamp?: number; date?: string }>(
     data: T[],
@@ -56,13 +64,14 @@ export function ShadowExportButton({
     const now = Date.now();
     let cutoffMs: number;
 
-    if (filter.type === 'hours') {
+    if (filter.type === 'cycles') {
+      // Each cycle is 15 minutes
+      cutoffMs = now - filter.cycles * MARKET_CYCLE_MINUTES * 60 * 1000;
+    } else if (filter.type === 'hours') {
       cutoffMs = now - filter.hours * 60 * 60 * 1000;
-    } else if (filter.type === 'days') {
-      cutoffMs = now - filter.days * 24 * 60 * 60 * 1000;
-    } else if (filter.type === 'date') {
-      const fromMs = new Date(filter.from + 'T00:00:00').getTime();
-      const toMs = new Date(filter.to + 'T23:59:59').getTime();
+    } else if (filter.type === 'datetime') {
+      const fromMs = new Date(filter.from).getTime();
+      const toMs = new Date(filter.to).getTime();
       return data.filter((item) => {
         const itemTs = item.timestamp || item.ts || item.entry_timestamp || (item.date ? new Date(item.date).getTime() : 0);
         return itemTs >= fromMs && itemTs <= toMs;
@@ -77,6 +86,19 @@ export function ShadowExportButton({
     });
   };
 
+  const getFilterLabel = (filter: TimeFilter): string => {
+    if (filter.type === 'cycles') {
+      return `${filter.cycles}_cycles_${filter.cycles * 15}min`;
+    } else if (filter.type === 'hours') {
+      return `${filter.hours}h`;
+    } else if (filter.type === 'datetime') {
+      const fromPart = filter.from.replace(/[T:]/g, '-').slice(0, 16);
+      const toPart = filter.to.replace(/[T:]/g, '-').slice(11, 16);
+      return `${fromPart}_to_${toPart}`;
+    }
+    return 'all';
+  };
+
   const handleExport = async (filter: TimeFilter) => {
     setExporting(true);
     try {
@@ -87,11 +109,14 @@ export function ShadowExportButton({
       const filteredHedgeAttempts = filterByTime(hedgeAttempts, filter);
       const filteredEvaluations = filterByTime(evaluations, filter);
 
-      const filterLabel = 
-        filter.type === 'hours' ? `last_${filter.hours}h` :
-        filter.type === 'days' ? `last_${filter.days}d` :
-        filter.type === 'date' ? `${filter.from}_to_${filter.to}` :
-        'all';
+      const filterLabel = getFilterLabel(filter);
+
+      // Calculate cycles info for metadata
+      const cyclesInfo = filter.type === 'cycles' ? {
+        cycles: filter.cycles,
+        minutes: filter.cycles * MARKET_CYCLE_MINUTES,
+        cycleLength: `${MARKET_CYCLE_MINUTES} min`,
+      } : null;
 
       const exportData = {
         metadata: {
@@ -100,6 +125,8 @@ export function ShadowExportButton({
           description: 'Complete shadow position lifecycle export for backtest replay',
           filter: filter,
           filterLabel,
+          cyclesInfo,
+          marketCycleDuration: `${MARKET_CYCLE_MINUTES} minutes`,
         },
         config_snapshot: {
           starting_equity: stats.startingEquity,
@@ -114,6 +141,7 @@ export function ShadowExportButton({
           totalPositions: filteredPositions.length,
           totalExecutions: filteredExecutions.length,
           totalDays: filteredDailyPnl.length,
+          totalSignals: filteredEvaluations.length,
           dateRange: {
             start: filteredDailyPnl.length > 0 ? filteredDailyPnl[filteredDailyPnl.length - 1].date : null,
             end: filteredDailyPnl.length > 0 ? filteredDailyPnl[0].date : null,
@@ -249,7 +277,7 @@ export function ShadowExportButton({
           },
           peak_equity: a.peak_equity,
         })),
-        signals: filteredEvaluations.slice(0, 1000).map((e) => ({
+        signals: filteredEvaluations.slice(0, 2000).map((e) => ({
           id: e.id,
           ts: e.ts,
           market_id: e.market_id,
@@ -283,13 +311,17 @@ export function ShadowExportButton({
       console.error('Export failed:', err);
     } finally {
       setExporting(false);
+      setDateTimeDialogOpen(false);
     }
   };
 
-  const handleDateRangeExport = () => {
-    if (dateFrom && dateTo) {
-      handleExport({ type: 'date', from: dateFrom, to: dateTo });
-      setDatePopoverOpen(false);
+  const handleDateTimeExport = () => {
+    if (fromDate && fromTime && toDate && toTime) {
+      handleExport({ 
+        type: 'datetime', 
+        from: `${fromDate}T${fromTime}:00`, 
+        to: `${toDate}T${toTime}:00` 
+      });
     }
   };
 
@@ -306,89 +338,170 @@ export function ShadowExportButton({
           <ChevronDown className="h-3 w-3" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-48">
-        <DropdownMenuLabel className="text-xs text-muted-foreground">Per uur</DropdownMenuLabel>
+      <DropdownMenuContent align="end" className="w-56">
+        {/* Market Cycles - 15 min each */}
+        <DropdownMenuLabel className="text-xs text-muted-foreground flex items-center gap-1">
+          <Clock className="h-3 w-3" />
+          Per market cycle (15 min)
+        </DropdownMenuLabel>
+        <DropdownMenuItem onClick={() => handleExport({ type: 'cycles', cycles: 1 })}>
+          1 cycle (15 min)
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => handleExport({ type: 'cycles', cycles: 2 })}>
+          2 cycles (30 min)
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => handleExport({ type: 'cycles', cycles: 4 })}>
+          4 cycles (1 uur)
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => handleExport({ type: 'cycles', cycles: 8 })}>
+          8 cycles (2 uur)
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => handleExport({ type: 'cycles', cycles: 16 })}>
+          16 cycles (4 uur)
+        </DropdownMenuItem>
+
+        <DropdownMenuSeparator />
+        
+        {/* Hours */}
+        <DropdownMenuLabel className="text-xs text-muted-foreground flex items-center gap-1">
+          <Clock className="h-3 w-3" />
+          Per uur
+        </DropdownMenuLabel>
         <DropdownMenuItem onClick={() => handleExport({ type: 'hours', hours: 1 })}>
-          <Clock className="h-4 w-4 mr-2" />
           Laatste 1 uur
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => handleExport({ type: 'hours', hours: 3 })}>
-          <Clock className="h-4 w-4 mr-2" />
           Laatste 3 uur
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => handleExport({ type: 'hours', hours: 6 })}>
-          <Clock className="h-4 w-4 mr-2" />
           Laatste 6 uur
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => handleExport({ type: 'hours', hours: 9 })}>
-          <Clock className="h-4 w-4 mr-2" />
-          Laatste 9 uur
-        </DropdownMenuItem>
         <DropdownMenuItem onClick={() => handleExport({ type: 'hours', hours: 12 })}>
-          <Clock className="h-4 w-4 mr-2" />
           Laatste 12 uur
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => handleExport({ type: 'hours', hours: 24 })}>
-          <Clock className="h-4 w-4 mr-2" />
           Laatste 24 uur
         </DropdownMenuItem>
 
         <DropdownMenuSeparator />
-        <DropdownMenuLabel className="text-xs text-muted-foreground">Per dag</DropdownMenuLabel>
-        <DropdownMenuItem onClick={() => handleExport({ type: 'days', days: 1 })}>
-          <Calendar className="h-4 w-4 mr-2" />
-          Laatste dag
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => handleExport({ type: 'days', days: 3 })}>
-          <Calendar className="h-4 w-4 mr-2" />
-          Laatste 3 dagen
-        </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => handleExport({ type: 'days', days: 7 })}>
-          <Calendar className="h-4 w-4 mr-2" />
-          Laatste 7 dagen
-        </DropdownMenuItem>
 
-        <DropdownMenuSeparator />
-        <Popover open={datePopoverOpen} onOpenChange={setDatePopoverOpen}>
-          <PopoverTrigger asChild>
+        {/* Custom DateTime Range */}
+        <Dialog open={dateTimeDialogOpen} onOpenChange={setDateTimeDialogOpen}>
+          <DialogTrigger asChild>
             <DropdownMenuItem onSelect={(e) => e.preventDefault()}>
               <Calendar className="h-4 w-4 mr-2" />
-              Datum bereik...
+              Datum + tijd bereik...
             </DropdownMenuItem>
-          </PopoverTrigger>
-          <PopoverContent className="w-64 p-3" align="end">
-            <div className="space-y-3">
-              <div className="space-y-1">
-                <Label htmlFor="dateFrom" className="text-xs">Van</Label>
-                <Input
-                  id="dateFrom"
-                  type="date"
-                  value={dateFrom}
-                  onChange={(e) => setDateFrom(e.target.value)}
-                  className="h-8"
-                />
+          </DialogTrigger>
+          <DialogContent className="sm:max-w-[400px]">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Calendar className="h-5 w-5" />
+                Export datum/tijd bereik
+              </DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              {/* From */}
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">Van</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  <Input
+                    type="date"
+                    value={fromDate}
+                    onChange={(e) => setFromDate(e.target.value)}
+                  />
+                  <Input
+                    type="time"
+                    value={fromTime}
+                    onChange={(e) => setFromTime(e.target.value)}
+                  />
+                </div>
               </div>
-              <div className="space-y-1">
-                <Label htmlFor="dateTo" className="text-xs">Tot</Label>
-                <Input
-                  id="dateTo"
-                  type="date"
-                  value={dateTo}
-                  onChange={(e) => setDateTo(e.target.value)}
-                  className="h-8"
-                />
+              
+              {/* To */}
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">Tot</Label>
+                <div className="grid grid-cols-2 gap-2">
+                  <Input
+                    type="date"
+                    value={toDate}
+                    onChange={(e) => setToDate(e.target.value)}
+                  />
+                  <Input
+                    type="time"
+                    value={toTime}
+                    onChange={(e) => setToTime(e.target.value)}
+                  />
+                </div>
               </div>
+
+              {/* Quick presets */}
+              <div className="space-y-2">
+                <Label className="text-xs text-muted-foreground">Snelle selectie</Label>
+                <div className="flex flex-wrap gap-2">
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={() => {
+                      const now = new Date();
+                      setFromDate(now.toLocaleDateString('en-CA'));
+                      setFromTime('00:00');
+                      setToDate(now.toLocaleDateString('en-CA'));
+                      setToTime(now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }));
+                    }}
+                  >
+                    Vandaag
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={() => {
+                      const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000);
+                      setFromDate(yesterday.toLocaleDateString('en-CA'));
+                      setFromTime('00:00');
+                      setToDate(yesterday.toLocaleDateString('en-CA'));
+                      setToTime('23:59');
+                    }}
+                  >
+                    Gisteren
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={() => {
+                      const now = new Date();
+                      const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+                      setFromDate(weekAgo.toLocaleDateString('en-CA'));
+                      setFromTime('00:00');
+                      setToDate(now.toLocaleDateString('en-CA'));
+                      setToTime(now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }));
+                    }}
+                  >
+                    Laatste 7 dagen
+                  </Button>
+                </div>
+              </div>
+
               <Button 
-                size="sm" 
                 className="w-full" 
-                onClick={handleDateRangeExport}
-                disabled={!dateFrom || !dateTo}
+                onClick={handleDateTimeExport}
+                disabled={!fromDate || !fromTime || !toDate || !toTime || exporting}
               >
-                Exporteer bereik
+                {exporting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Exporteren...
+                  </>
+                ) : (
+                  <>
+                    <Download className="h-4 w-4 mr-2" />
+                    Exporteer bereik
+                  </>
+                )}
               </Button>
             </div>
-          </PopoverContent>
-        </Popover>
+          </DialogContent>
+        </Dialog>
 
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={() => handleExport({ type: 'all' })}>
