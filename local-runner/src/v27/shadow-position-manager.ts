@@ -827,36 +827,42 @@ export class ShadowPositionManager {
         id: position.id,
         market_id: position.marketId,
         asset: position.asset,
-        run_id: position.runId,
         side: position.side,
         entry_timestamp: position.entryTimestamp,
         entry_iso: position.entryIso,
-        entry_price_model: position.entryPriceModel,
+        entry_price: position.entryPriceModel.simulatedEntryPrice,
+        entry_fill_type: position.entryPriceModel.assumedFillType,
+        best_bid_at_signal: position.entryPriceModel.bestBidAtSignal,
+        best_ask_at_signal: position.entryPriceModel.bestAskAtSignal,
+        spread_at_entry: position.entryPriceModel.spreadAtEntry,
         size_usd: position.sizeUsd,
         size_shares: position.sizeShares,
-        signal_reference_id: position.signalReferenceId,
+        signal_id: position.signalReferenceId,
         evaluation_id: position.evaluationId,
         time_to_expiry_at_entry: position.timeToExpiryAtEntry,
         spot_price_at_entry: position.spotPriceAtEntry,
-        strike_price_at_entry: position.strikePriceAtEntry,
         theoretical_price_at_entry: position.theoreticalPriceAtEntry,
         delta_at_entry: position.deltaAtEntry,
-        adverse_filter_state_at_entry: position.adverseFilterStateAtEntry,
-        hedge_completed: position.hedgeCompleted,
+        mispricing_at_entry: null, // Not tracked yet
+        adverse_filter_state: position.adverseFilterStateAtEntry ? { state: position.adverseFilterStateAtEntry } : null,
         hedge_timestamp: position.hedgeTimestamp,
+        hedge_iso: position.hedgeTimestamp ? new Date(position.hedgeTimestamp).toISOString() : null,
         hedge_price: position.hedgePrice,
         hedge_fill_type: position.hedgeFillType,
         hedge_latency_ms: position.hedgeLatencyMs,
+        hedge_spread: null, // Computed from last attempt if needed
+        paired: position.hedgeCompleted,
         resolution: position.resolution,
         resolution_timestamp: position.resolutionTimestamp,
+        resolution_iso: position.resolutionTimestamp ? new Date(position.resolutionTimestamp).toISOString() : null,
         resolution_reason: position.resolutionReason,
-        entry_notional: position.entryNotional,
-        hedge_notional: position.hedgeNotional,
-        realized_pnl: position.realizedPnl,
+        gross_pnl: position.realizedPnl ? position.realizedPnl + position.fees : null,
         fees: position.fees,
-        roi: position.roi,
-        expiry_timestamp: position.expiryTimestamp,
-        market_expired: position.marketExpired,
+        net_pnl: position.realizedPnl,
+        roi_pct: position.roi ? position.roi * 100 : null,
+        combined_price_paid: position.hedgePrice 
+          ? position.entryPriceModel.simulatedEntryPrice + position.hedgePrice 
+          : null,
       });
       
       if (error) {
@@ -876,17 +882,22 @@ export class ShadowPositionManager {
       const { error } = await this.supabase.from('shadow_executions').insert({
         id: execution.id,
         position_id: execution.positionId,
-        timestamp: execution.timestamp,
-        side: execution.side,
         execution_type: execution.executionType,
+        timestamp: execution.timestamp,
+        iso: new Date(execution.timestamp).toISOString(),
+        side: execution.side,
         price: execution.price,
         shares: execution.shares,
-        notional: execution.notional,
+        cost_usd: execution.notional,
         fill_type: execution.fillType,
         fill_confidence: execution.fillConfidence,
         fill_latency_assumed_ms: execution.fillLatencyAssumedMs,
+        best_bid: null, // Not tracked per execution
+        best_ask: null,
         spread: execution.spread,
-        slippage: execution.slippage,
+        depth_at_best: null,
+        slippage_cents: execution.slippage * 100,
+        fee_usd: execution.notional * 0.002, // Estimated
       });
       
       if (error) {
@@ -903,18 +914,27 @@ export class ShadowPositionManager {
     if (!this.supabase) return;
     
     try {
+      const position = this.positions.get(attempt.positionId);
+      const secondsSinceEntry = position 
+        ? Math.floor((attempt.timestamp - position.entryTimestamp) / 1000) 
+        : 0;
+      
       const { error } = await this.supabase.from('shadow_hedge_attempts').insert({
         id: attempt.id,
         position_id: attempt.positionId,
+        attempt_number: 1, // TODO: track per position
         timestamp: attempt.timestamp,
-        side: attempt.side,
-        price: attempt.price,
-        spread: attempt.spread,
-        fill_type: attempt.fillType,
-        would_execute: attempt.wouldExecute,
-        projected_cpp: attempt.projectedCpp,
-        reason: attempt.reason,
+        iso: new Date(attempt.timestamp).toISOString(),
+        seconds_since_entry: secondsSinceEntry,
+        hedge_side: attempt.side,
+        target_price: attempt.price,
+        actual_price: attempt.wouldExecute ? attempt.price : null,
+        spread_at_attempt: attempt.spread,
         success: attempt.success,
+        failure_reason: !attempt.success ? attempt.reason : null,
+        is_emergency: attempt.reason.startsWith('EMERGENCY'),
+        hedge_cpp: attempt.projectedCpp,
+        projected_pnl: null, // TODO: compute from position
       });
       
       if (error) {
@@ -945,21 +965,29 @@ export class ShadowPositionManager {
       const today = new Date().toISOString().slice(0, 10);
       const dailyPnlRecord = this.dailyPnl.get(today);
       
+      const drawdownUsd = this.peakEquity - this.equity;
+      const drawdownPct = drawdown * 100;
+      
       const { error } = await this.supabase.from('shadow_accounting').insert({
         id: uuid(),
-        run_id: this.runId,
         timestamp: now,
+        iso: new Date(now).toISOString(),
         equity: this.equity,
+        starting_equity: this.config.startingEquity,
         realized_pnl: this.realizedPnl,
         unrealized_pnl: unrealizedPnl,
+        total_fees: this.stats.totalFees,
         open_positions: this.getOpenPositions().length,
-        closed_positions: this.positions.size - this.getOpenPositions().length,
-        daily_pnl: dailyPnlRecord?.pnl ?? 0,
-        drawdown,
-        max_drawdown: this.maxDrawdown,
+        total_trades: this.stats.positionsOpened,
         peak_equity: this.peakEquity,
-        win_count: this.winCount,
-        loss_count: this.lossCount,
+        drawdown_usd: drawdownUsd,
+        drawdown_pct: drawdownPct,
+        max_drawdown_pct: this.maxDrawdown * 100,
+        daily_pnl: dailyPnlRecord?.pnl ?? null,
+        daily_trades: dailyPnlRecord?.trades ?? null,
+        daily_wins: dailyPnlRecord?.wins ?? null,
+        daily_losses: dailyPnlRecord?.losses ?? null,
+        exposure_by_asset: null, // TODO: compute
       });
       
       if (error) {
@@ -981,18 +1009,27 @@ export class ShadowPositionManager {
     if (!this.supabase) return;
     
     try {
-      const { error } = await this.supabase.from('shadow_daily_pnl').upsert({
-        id: `${this.runId}_${daily.date}`,
-        run_id: this.runId,
+      const { error } = await this.supabase.from('shadow_daily_pnl').insert({
         date: daily.date,
+        realized_pnl: daily.pnl,
+        unrealized_pnl: 0,
+        total_pnl: daily.pnl,
+        cumulative_pnl: daily.cumulativePnl,
         trades: daily.trades,
         wins: daily.wins,
         losses: daily.losses,
-        pnl: daily.pnl,
-        fees: daily.fees,
-        cumulative_pnl: daily.cumulativePnl,
-        volume_traded: daily.volumeTraded,
+        total_fees: daily.fees,
+        win_rate: daily.trades > 0 ? daily.wins / daily.trades : null,
       });
+
+      if (error) {
+        // Non-critical, but surface useful info in logs
+        console.error('[SHADOW-POS] Daily PnL persist error:', error.message);
+      }
+    } catch (err) {
+      // Non-critical
+    }
+  }
       
       if (error && !error.message.includes('duplicate key')) {
         console.error('[SHADOW-POS] Daily PnL persist error:', error.message);
