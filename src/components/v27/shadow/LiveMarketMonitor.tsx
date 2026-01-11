@@ -80,11 +80,13 @@ export function LiveMarketMonitor() {
             const deltaPct = deltaAbs * 100;
             
             // Generate market name and slug
+            // Polymarket 15-min market URL format: {asset}-updown-15m-{start_timestamp}
             const endTs = parseInt(e.market_id.split('-').pop() || '0', 10);
+            const startTs = endTs - (15 * 60); // 15 minutes before end
             const endDate = new Date(endTs * 1000);
             const timeStr = endDate.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
             const marketName = `${e.asset} ${strikePrice > 0 ? `>${strikePrice.toLocaleString()}` : 'Up/Down'} @ ${timeStr}`;
-            const marketSlug = e.market_slug || `${e.asset.toLowerCase()}-price-${endTs}`;
+            const marketSlug = e.market_slug || `${e.asset.toLowerCase()}-updown-15m-${startTs}`;
             const polymarketUrl = `https://polymarket.com/event/${marketSlug}`;
             
             const upBid = Number(e.pm_up_bid) || 0;
