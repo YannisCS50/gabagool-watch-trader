@@ -4101,6 +4101,96 @@ export type Database = {
         }
         Relationships: []
       }
+      v27_signal_tracking: {
+        Row: {
+          adverse_selection_10s: boolean | null
+          adverse_selection_15s: boolean | null
+          adverse_selection_5s: boolean | null
+          asset: string
+          created_at: string
+          evaluation_id: string
+          hedge_price: number | null
+          hedge_side: string | null
+          hedge_simulated: boolean | null
+          hedge_spread: number | null
+          hedge_would_execute: boolean | null
+          id: string
+          market_id: string
+          mispricing_resolved_10s: boolean | null
+          mispricing_resolved_15s: boolean | null
+          mispricing_resolved_5s: boolean | null
+          signal_mispricing: number | null
+          signal_price: number | null
+          signal_side: string
+          signal_spot_price: number | null
+          signal_ts: number
+          signal_was_correct: boolean | null
+          simulated_cpp: number | null
+          spot_price_10s: number | null
+          spot_price_15s: number | null
+          spot_price_5s: number | null
+          would_have_profited: boolean | null
+        }
+        Insert: {
+          adverse_selection_10s?: boolean | null
+          adverse_selection_15s?: boolean | null
+          adverse_selection_5s?: boolean | null
+          asset: string
+          created_at?: string
+          evaluation_id: string
+          hedge_price?: number | null
+          hedge_side?: string | null
+          hedge_simulated?: boolean | null
+          hedge_spread?: number | null
+          hedge_would_execute?: boolean | null
+          id: string
+          market_id: string
+          mispricing_resolved_10s?: boolean | null
+          mispricing_resolved_15s?: boolean | null
+          mispricing_resolved_5s?: boolean | null
+          signal_mispricing?: number | null
+          signal_price?: number | null
+          signal_side: string
+          signal_spot_price?: number | null
+          signal_ts: number
+          signal_was_correct?: boolean | null
+          simulated_cpp?: number | null
+          spot_price_10s?: number | null
+          spot_price_15s?: number | null
+          spot_price_5s?: number | null
+          would_have_profited?: boolean | null
+        }
+        Update: {
+          adverse_selection_10s?: boolean | null
+          adverse_selection_15s?: boolean | null
+          adverse_selection_5s?: boolean | null
+          asset?: string
+          created_at?: string
+          evaluation_id?: string
+          hedge_price?: number | null
+          hedge_side?: string | null
+          hedge_simulated?: boolean | null
+          hedge_spread?: number | null
+          hedge_would_execute?: boolean | null
+          id?: string
+          market_id?: string
+          mispricing_resolved_10s?: boolean | null
+          mispricing_resolved_15s?: boolean | null
+          mispricing_resolved_5s?: boolean | null
+          signal_mispricing?: number | null
+          signal_price?: number | null
+          signal_side?: string
+          signal_spot_price?: number | null
+          signal_ts?: number
+          signal_was_correct?: boolean | null
+          simulated_cpp?: number | null
+          spot_price_10s?: number | null
+          spot_price_15s?: number | null
+          spot_price_5s?: number | null
+          would_have_profited?: boolean | null
+        }
+        Relationships: []
+      }
       v27_signals: {
         Row: {
           action_taken: boolean | null

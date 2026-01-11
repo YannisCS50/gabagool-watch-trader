@@ -17,8 +17,8 @@
 //
 // ============================================================
 
-export const V27_VERSION = '27.0.0';
-export const V27_NAME = 'Polymarket V27 - Delta Mispricing Strategy';
+export const V27_VERSION = '27.1.0';
+export const V27_NAME = 'Polymarket V27 - Shadow Trading Engine';
 
 // Core modules - classes
 export { MispricingDetector } from './mispricing-detector.js';
@@ -27,6 +27,7 @@ export { EntryManager } from './entry-manager.js';
 export { CorrectionMonitor } from './correction-monitor.js';
 export { HedgeManager } from './hedge-manager.js';
 export { V27Logger } from './logger.js';
+export { ShadowEngine } from './shadow-engine.js';
 export { getV27Config, loadV27Config } from './config.js';
 
 // Core modules - types (must use 'export type' for interfaces)
