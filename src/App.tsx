@@ -16,6 +16,7 @@ import Observability from "./pages/Observability";
 import BotHealth from "./pages/BotHealth";
 import Reconcile from "./pages/Reconcile";
 import V26Dashboard from "./pages/V26Dashboard";
+import V27Dashboard from "./pages/V27Dashboard";
 import PriceLatencyAnalyzer from "./pages/PriceLatencyAnalyzer";
 import NotFound from "./pages/NotFound";
 
@@ -47,6 +48,7 @@ const App = () => (
           <Route path="/bot-health" element={<BotHealth />} />
           <Route path="/reconcile" element={<Reconcile />} />
           <Route path="/v26" element={<V26Dashboard />} />
+          <Route path="/v27" element={<V27Dashboard />} />
           <Route path="/price-latency" element={<PriceLatencyAnalyzer />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />

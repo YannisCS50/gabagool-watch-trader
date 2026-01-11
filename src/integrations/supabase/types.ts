@@ -3739,6 +3739,379 @@ export type Database = {
         }
         Relationships: []
       }
+      v27_corrections: {
+        Row: {
+          correction_pct: number
+          created_at: string
+          current_price: number
+          entry_id: string | null
+          expected_price: number
+          id: string
+          is_complete: boolean | null
+          ts: number
+        }
+        Insert: {
+          correction_pct: number
+          created_at?: string
+          current_price: number
+          entry_id?: string | null
+          expected_price: number
+          id?: string
+          is_complete?: boolean | null
+          ts: number
+        }
+        Update: {
+          correction_pct?: number
+          created_at?: string
+          current_price?: number
+          entry_id?: string | null
+          expected_price?: number
+          id?: string
+          is_complete?: boolean | null
+          ts?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "v27_corrections_entry_id_fkey"
+            columns: ["entry_id"]
+            isOneToOne: false
+            referencedRelation: "v27_entries"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      v27_entries: {
+        Row: {
+          asset: string
+          avg_fill_price: number | null
+          correction_completed_at: string | null
+          correction_started_at: string | null
+          created_at: string
+          entry_price: number
+          exit_price: number | null
+          expected_correction: number | null
+          filled_shares: number | null
+          hedge_at: string | null
+          hedge_avg_price: number | null
+          hedge_filled_shares: number | null
+          hedge_order_id: string | null
+          hedge_triggered: boolean | null
+          id: string
+          market_id: string
+          market_slug: string | null
+          mispricing_at_entry: number | null
+          notional: number
+          order_id: string | null
+          order_status: string | null
+          peak_correction: number | null
+          pnl: number | null
+          result: string | null
+          shares: number
+          side: string
+          status: string | null
+          threshold_at_entry: number | null
+          ts: number
+        }
+        Insert: {
+          asset: string
+          avg_fill_price?: number | null
+          correction_completed_at?: string | null
+          correction_started_at?: string | null
+          created_at?: string
+          entry_price: number
+          exit_price?: number | null
+          expected_correction?: number | null
+          filled_shares?: number | null
+          hedge_at?: string | null
+          hedge_avg_price?: number | null
+          hedge_filled_shares?: number | null
+          hedge_order_id?: string | null
+          hedge_triggered?: boolean | null
+          id?: string
+          market_id: string
+          market_slug?: string | null
+          mispricing_at_entry?: number | null
+          notional: number
+          order_id?: string | null
+          order_status?: string | null
+          peak_correction?: number | null
+          pnl?: number | null
+          result?: string | null
+          shares: number
+          side: string
+          status?: string | null
+          threshold_at_entry?: number | null
+          ts: number
+        }
+        Update: {
+          asset?: string
+          avg_fill_price?: number | null
+          correction_completed_at?: string | null
+          correction_started_at?: string | null
+          created_at?: string
+          entry_price?: number
+          exit_price?: number | null
+          expected_correction?: number | null
+          filled_shares?: number | null
+          hedge_at?: string | null
+          hedge_avg_price?: number | null
+          hedge_filled_shares?: number | null
+          hedge_order_id?: string | null
+          hedge_triggered?: boolean | null
+          id?: string
+          market_id?: string
+          market_slug?: string | null
+          mispricing_at_entry?: number | null
+          notional?: number
+          order_id?: string | null
+          order_status?: string | null
+          peak_correction?: number | null
+          pnl?: number | null
+          result?: string | null
+          shares?: number
+          side?: string
+          status?: string | null
+          threshold_at_entry?: number | null
+          ts?: number
+        }
+        Relationships: []
+      }
+      v27_evaluations: {
+        Row: {
+          action: string | null
+          adverse_blocked: boolean | null
+          adverse_reason: string | null
+          asset: string
+          base_threshold: number | null
+          book_imbalance: number | null
+          causality_passed: boolean | null
+          created_at: string
+          delta_down: number | null
+          delta_up: number | null
+          dynamic_threshold: number | null
+          id: string
+          market_id: string
+          mispricing_magnitude: number | null
+          mispricing_side: string | null
+          pm_down_ask: number | null
+          pm_down_bid: number | null
+          pm_up_ask: number | null
+          pm_up_bid: number | null
+          signal_valid: boolean | null
+          skip_reason: string | null
+          spot_leading_ms: number | null
+          spot_price: number | null
+          spot_source: string | null
+          spread_expansion: number | null
+          taker_flow_p90: number | null
+          theoretical_down: number | null
+          theoretical_up: number | null
+          threshold_source: string | null
+          ts: number
+        }
+        Insert: {
+          action?: string | null
+          adverse_blocked?: boolean | null
+          adverse_reason?: string | null
+          asset: string
+          base_threshold?: number | null
+          book_imbalance?: number | null
+          causality_passed?: boolean | null
+          created_at?: string
+          delta_down?: number | null
+          delta_up?: number | null
+          dynamic_threshold?: number | null
+          id?: string
+          market_id: string
+          mispricing_magnitude?: number | null
+          mispricing_side?: string | null
+          pm_down_ask?: number | null
+          pm_down_bid?: number | null
+          pm_up_ask?: number | null
+          pm_up_bid?: number | null
+          signal_valid?: boolean | null
+          skip_reason?: string | null
+          spot_leading_ms?: number | null
+          spot_price?: number | null
+          spot_source?: string | null
+          spread_expansion?: number | null
+          taker_flow_p90?: number | null
+          theoretical_down?: number | null
+          theoretical_up?: number | null
+          threshold_source?: string | null
+          ts: number
+        }
+        Update: {
+          action?: string | null
+          adverse_blocked?: boolean | null
+          adverse_reason?: string | null
+          asset?: string
+          base_threshold?: number | null
+          book_imbalance?: number | null
+          causality_passed?: boolean | null
+          created_at?: string
+          delta_down?: number | null
+          delta_up?: number | null
+          dynamic_threshold?: number | null
+          id?: string
+          market_id?: string
+          mispricing_magnitude?: number | null
+          mispricing_side?: string | null
+          pm_down_ask?: number | null
+          pm_down_bid?: number | null
+          pm_up_ask?: number | null
+          pm_up_bid?: number | null
+          signal_valid?: boolean | null
+          skip_reason?: string | null
+          spot_leading_ms?: number | null
+          spot_price?: number | null
+          spot_source?: string | null
+          spread_expansion?: number | null
+          taker_flow_p90?: number | null
+          theoretical_down?: number | null
+          theoretical_up?: number | null
+          threshold_source?: string | null
+          ts?: number
+        }
+        Relationships: []
+      }
+      v27_metrics: {
+        Row: {
+          adverse_block_reasons: Json | null
+          adverse_blocks: number | null
+          avg_correction_pct: number | null
+          avg_correction_time_ms: number | null
+          avg_fill_time_ms: number | null
+          corrections_completed: number | null
+          corrections_detected: number | null
+          created_at: string
+          emergency_hedges: number | null
+          entries_attempted: number | null
+          entries_filled: number | null
+          fees_paid: number | null
+          fill_rate: number | null
+          gross_pnl: number | null
+          hedge_success_rate: number | null
+          hedges_triggered: number | null
+          id: string
+          losses: number | null
+          net_pnl: number | null
+          run_id: string | null
+          signal_quality_pct: number | null
+          total_signals: number | null
+          ts: number
+          valid_signals: number | null
+          win_rate: number | null
+          wins: number | null
+        }
+        Insert: {
+          adverse_block_reasons?: Json | null
+          adverse_blocks?: number | null
+          avg_correction_pct?: number | null
+          avg_correction_time_ms?: number | null
+          avg_fill_time_ms?: number | null
+          corrections_completed?: number | null
+          corrections_detected?: number | null
+          created_at?: string
+          emergency_hedges?: number | null
+          entries_attempted?: number | null
+          entries_filled?: number | null
+          fees_paid?: number | null
+          fill_rate?: number | null
+          gross_pnl?: number | null
+          hedge_success_rate?: number | null
+          hedges_triggered?: number | null
+          id?: string
+          losses?: number | null
+          net_pnl?: number | null
+          run_id?: string | null
+          signal_quality_pct?: number | null
+          total_signals?: number | null
+          ts: number
+          valid_signals?: number | null
+          win_rate?: number | null
+          wins?: number | null
+        }
+        Update: {
+          adverse_block_reasons?: Json | null
+          adverse_blocks?: number | null
+          avg_correction_pct?: number | null
+          avg_correction_time_ms?: number | null
+          avg_fill_time_ms?: number | null
+          corrections_completed?: number | null
+          corrections_detected?: number | null
+          created_at?: string
+          emergency_hedges?: number | null
+          entries_attempted?: number | null
+          entries_filled?: number | null
+          fees_paid?: number | null
+          fill_rate?: number | null
+          gross_pnl?: number | null
+          hedge_success_rate?: number | null
+          hedges_triggered?: number | null
+          id?: string
+          losses?: number | null
+          net_pnl?: number | null
+          run_id?: string | null
+          signal_quality_pct?: number | null
+          total_signals?: number | null
+          ts?: number
+          valid_signals?: number | null
+          win_rate?: number | null
+          wins?: number | null
+        }
+        Relationships: []
+      }
+      v27_signals: {
+        Row: {
+          action_taken: boolean | null
+          asset: string
+          confidence: number | null
+          created_at: string
+          entry_id: string | null
+          id: string
+          market_id: string
+          mispricing: number
+          signal_side: string
+          threshold: number
+          ts: number
+        }
+        Insert: {
+          action_taken?: boolean | null
+          asset: string
+          confidence?: number | null
+          created_at?: string
+          entry_id?: string | null
+          id?: string
+          market_id: string
+          mispricing: number
+          signal_side: string
+          threshold: number
+          ts: number
+        }
+        Update: {
+          action_taken?: boolean | null
+          asset?: string
+          confidence?: number | null
+          created_at?: string
+          entry_id?: string | null
+          id?: string
+          market_id?: string
+          mispricing?: number
+          signal_side?: string
+          threshold?: number
+          ts?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "v27_signals_entry_id_fkey"
+            columns: ["entry_id"]
+            isOneToOne: false
+            referencedRelation: "v27_entries"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       v_daily_pnl_cumulative: {
