@@ -8,9 +8,9 @@ const corsHeaders = {
 };
 
 interface ExportRequest {
-  wallet: string;
-  from_date: string; // ISO string
-  to_date: string;   // ISO string
+  wallet?: string;
+  from_date?: string; // ISO string
+  to_date?: string;   // ISO string
 }
 
 interface ConsistencyCheck {
@@ -63,14 +63,35 @@ serve(async (req) => {
 
     const { wallet, from_date, to_date } = (await req.json()) as ExportRequest;
 
-    if (!wallet) {
-      return new Response(JSON.stringify({ error: "wallet is required" }), {
-        status: 400,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    // Wallet is optional: if not provided by the client, we fall back to the configured wallet.
+    let walletOriginal = (wallet || "").trim();
+
+    if (!walletOriginal) {
+      const { data: cfgRows, error: cfgErr } = await supabase
+        .from("bot_config")
+        .select("polymarket_address, updated_at, created_at")
+        .order("updated_at", { ascending: false })
+        .order("created_at", { ascending: false })
+        .limit(1);
+
+      if (cfgErr) throw new Error(`bot_config: ${cfgErr.message}`);
+
+      walletOriginal = (cfgRows?.[0]?.polymarket_address || "").trim();
     }
 
-    const walletLower = wallet.toLowerCase();
+    if (!walletOriginal) {
+      return new Response(
+        JSON.stringify({
+          error: "wallet is required (configure bot_config.polymarket_address or pass wallet in request)",
+        }),
+        {
+          status: 400,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    const walletLower = walletOriginal.toLowerCase();
     const fromTs = from_date || "2020-01-01T00:00:00Z";
     const toTs = to_date || new Date().toISOString();
 
@@ -326,7 +347,7 @@ serve(async (req) => {
       export_version: "1.0.0",
       generated_at: new Date().toISOString(),
       wallet_lowercase: walletLower,
-      wallet_original: wallet,
+      wallet_original: walletOriginal,
       date_range: {
         from: fromTs,
         to: toTs,
@@ -395,7 +416,7 @@ serve(async (req) => {
 POLYMARKET EXPORT DATASET
 ================================================================================
 
-Wallet: ${wallet}
+Wallet: ${walletOriginal}
 Wallet (normalized): ${walletLower}
 Date Range: ${fromTs} to ${toTs}
 Timezone: UTC (all timestamps are in UTC)
