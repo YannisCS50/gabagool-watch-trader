@@ -274,8 +274,8 @@ export function LiveMarketMonitor() {
               polymarketUrl: b.polymarketUrl,
             };
           })
-          .filter((m) => m.timeRemaining > 0 || m.lastTs > now - 300000) // Recent or active
-          .sort((a, b) => a.asset.localeCompare(b.asset) || a.marketId.localeCompare(b.marketId));
+          .filter((m) => m.timeRemaining > 60) // Only show markets with at least 1 minute remaining
+          .sort((a, b) => b.timeRemaining - a.timeRemaining || a.asset.localeCompare(b.asset));
 
         setMarkets(activeMarkets);
       }
