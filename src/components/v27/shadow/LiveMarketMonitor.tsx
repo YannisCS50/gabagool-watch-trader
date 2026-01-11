@@ -122,7 +122,7 @@ export function LiveMarketMonitor() {
             };
           })
           .filter((m) => m.timeRemaining > 0 || m.lastTs > now - 300000) // Recent or active
-          .sort((a, b) => b.lastTs - a.lastTs);
+          .sort((a, b) => a.asset.localeCompare(b.asset) || a.marketId.localeCompare(b.marketId));
 
         setMarkets(activeMarkets);
       }
