@@ -23,6 +23,7 @@ import { enforceVpnOrExit } from '../vpn-check.js';
 import { fetchChainlinkPrice } from '../chain.js';
 import { startPriceFeedLogger, stopPriceFeedLogger, getPriceFeedLoggerStats } from '../price-feed-ws-logger.js';
 import { ShadowEngine } from './shadow-engine.js';
+import { ShadowPositionManager } from './shadow-position-manager.js';
 import { getV27Config, loadV27Config } from './config.js';
 import type { V27Market, V27OrderBook } from './index.js';
 
@@ -43,6 +44,7 @@ const STATS_LOG_INTERVAL_MS = 60_000; // Log stats every minute
 
 let isRunning = false;
 let shadowEngine: ShadowEngine;
+let positionManager: ShadowPositionManager;
 
 // Price state (from WebSocket feeds)
 const spotPrices: Map<string, { price: number; ts: number; source: string }> = new Map();
@@ -294,7 +296,29 @@ async function pollOrderbooksAndEvaluate(): Promise<void> {
       shadowEngine.updateTrackingWithOrderbook(marketId, book);
 
       // EVALUATE - this is the core loop (cadence already checked)
-      await shadowEngine.evaluate(marketId, book);
+      const evaluation = await shadowEngine.evaluate(marketId, book);
+      
+      // ========================================
+      // POSITION MANAGER INTEGRATION
+      // ========================================
+      
+      if (evaluation) {
+        // Open position on ENTRY signal
+        if (evaluation.signalType === 'ENTRY' && evaluation.hypoSide) {
+          await positionManager.openPosition(evaluation, market, book);
+        }
+        
+        // Evaluate hedges for open positions on this market
+        const spotData = spotPrices.get(market.asset);
+        if (spotData) {
+          await positionManager.evaluateHedges(
+            marketId,
+            book,
+            spotData.price,
+            market.strikePrice
+          );
+        }
+      }
       
     } catch (err) {
       // Non-critical, continue with other markets
@@ -369,6 +393,10 @@ async function main(): Promise<void> {
   loadV27Config({ shadowMode: true }); // Force shadow mode
   const supabaseClient = getSupabaseClient();
   shadowEngine = new ShadowEngine(RUN_ID, supabaseClient);
+  
+  // 4b. Initialize Position Manager
+  positionManager = new ShadowPositionManager(RUN_ID, supabaseClient);
+  log('✅ Position Manager initialized');
 
   // 5. Start price feed logger with callbacks
   log('Starting price feed logger...');
@@ -401,6 +429,7 @@ async function main(): Promise<void> {
   // Stats logging every 60s
   setInterval(() => {
     shadowEngine.printStats();
+    positionManager.printStats();
   }, STATS_LOG_INTERVAL_MS);
 
   log('');
@@ -421,6 +450,7 @@ async function main(): Promise<void> {
     log('Shutting down...');
     isRunning = false;
     shadowEngine.printStats();
+    positionManager.printStats();
     stopPriceFeedLogger();
     process.exit(0);
   };
