@@ -36,6 +36,12 @@ interface LoggerStats {
     lastMessageAt: number;
     reconnects: number;
   };
+  clob: {
+    connected: boolean;
+    messageCount: number;
+    lastMessageAt: number;
+    reconnects: number;
+  };
   totalLogged: number;
   bufferSize: number;
   flushCount: number;
@@ -45,8 +51,11 @@ interface LoggerStats {
 
 // Config
 const BINANCE_WS_URL = 'wss://stream.binance.com:9443/ws';
-// Polymarket RTDS connection details (official docs): wss://ws-live-data.polymarket.com
+// Polymarket RTDS connection details (docs.polymarket.com/developers/RTDS/RTDS-crypto-prices)
 const POLYMARKET_RTDS_URL = 'wss://ws-live-data.polymarket.com';
+// CLOB Market WebSocket for real UP/DOWN share prices
+const CLOB_MARKET_WS_URL = 'wss://ws-subscriptions-clob.polymarket.com/ws/market';
+const CLOB_API_URL = 'https://clob.polymarket.com';
 
 const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP'];
 const BINANCE_SYMBOLS = ['btcusdt', 'ethusdt', 'solusdt', 'xrpusdt'];
@@ -57,21 +66,29 @@ const RECONNECT_DELAY_MS = 5000; // Wait 5s before reconnect
 const HEALTH_CHECK_INTERVAL_MS = 10000; // Check health every 10s
 const STALE_THRESHOLD_MS = 30000; // Consider stale if no data for 30s
 
+// Token ID to asset mapping (populated dynamically from active markets)
+const tokenToAssetMap = new Map<string, { asset: string; outcome: 'up' | 'down' }>();
+let activeTokenIds: string[] = [];
+
 // State
 let binanceWs: WebSocket | null = null;
 let polymarketWs: WebSocket | null = null;
+let clobWs: WebSocket | null = null;
 let isRunning = false;
 let logBuffer: PriceTickLog[] = [];
 let lastFlushTime = Date.now();
 let flushInterval: NodeJS.Timeout | null = null;
 let pingInterval: NodeJS.Timeout | null = null;
+let clobPingInterval: NodeJS.Timeout | null = null;
 let healthCheckInterval: NodeJS.Timeout | null = null;
 let binanceReconnectTimer: NodeJS.Timeout | null = null;
 let polymarketReconnectTimer: NodeJS.Timeout | null = null;
+let clobReconnectTimer: NodeJS.Timeout | null = null;
 
 const stats: LoggerStats = {
   binance: { connected: false, messageCount: 0, lastMessageAt: 0, reconnects: 0 },
   polymarket: { connected: false, messageCount: 0, lastMessageAt: 0, reconnects: 0 },
+  clob: { connected: false, messageCount: 0, lastMessageAt: 0, reconnects: 0 },
   totalLogged: 0,
   bufferSize: 0,
   flushCount: 0,
@@ -444,6 +461,223 @@ function connectPolymarket(): void {
   });
 }
 
+// ============ CLOB MARKET WEBSOCKET (UP/DOWN SHARE PRICES) ============
+
+async function fetchActiveTokenIds(): Promise<void> {
+  console.log('[PriceFeedLogger] Fetching active market token IDs...');
+  
+  try {
+    // Fetch active markets from CLOB API
+    const response = await fetch(`${CLOB_API_URL}/markets`);
+    if (!response.ok) {
+      console.error('[PriceFeedLogger] Failed to fetch markets:', response.status);
+      return;
+    }
+    
+    const markets = await response.json() as Array<{
+      condition_id: string;
+      tokens: Array<{ token_id: string; outcome: string }>;
+      question?: string;
+      description?: string;
+      active?: boolean;
+    }>;
+    
+    // Filter for crypto up/down markets (15-min, 1-hour markets)
+    tokenToAssetMap.clear();
+    activeTokenIds = [];
+    
+    for (const market of markets) {
+      if (!market.active) continue;
+      
+      // Check if this is a crypto updown market
+      const desc = (market.question || market.description || '').toLowerCase();
+      let asset: string | null = null;
+      
+      for (const a of ASSETS) {
+        if (desc.includes(a.toLowerCase()) && (desc.includes('up') || desc.includes('down'))) {
+          asset = a;
+          break;
+        }
+      }
+      
+      if (!asset) continue;
+      
+      // Map token IDs to asset + outcome
+      for (const token of market.tokens || []) {
+        const outcome = token.outcome?.toLowerCase();
+        if (outcome === 'yes' || outcome === 'up') {
+          tokenToAssetMap.set(token.token_id, { asset, outcome: 'up' });
+          activeTokenIds.push(token.token_id);
+        } else if (outcome === 'no' || outcome === 'down') {
+          tokenToAssetMap.set(token.token_id, { asset, outcome: 'down' });
+          activeTokenIds.push(token.token_id);
+        }
+      }
+    }
+    
+    console.log(`[PriceFeedLogger] Found ${activeTokenIds.length} active crypto updown tokens`);
+  } catch (error) {
+    console.error('[PriceFeedLogger] Error fetching token IDs:', error);
+  }
+}
+
+function forceReconnectClob(): void {
+  console.log('[PriceFeedLogger] 🔄 Force reconnecting CLOB...');
+  
+  if (clobReconnectTimer) {
+    clearTimeout(clobReconnectTimer);
+    clobReconnectTimer = null;
+  }
+  
+  if (clobWs) {
+    try {
+      clobWs.removeAllListeners();
+      clobWs.terminate();
+    } catch (e) { /* ignore */ }
+    clobWs = null;
+  }
+  
+  stats.clob.connected = false;
+  stats.clob.reconnects++;
+  
+  clobReconnectTimer = setTimeout(connectClob, RECONNECT_DELAY_MS);
+}
+
+async function connectClob(): Promise<void> {
+  if (!isRunning) return;
+  if (clobWs?.readyState === WebSocket.OPEN) return;
+  
+  if (clobReconnectTimer) {
+    clearTimeout(clobReconnectTimer);
+    clobReconnectTimer = null;
+  }
+  
+  // Refresh token IDs before connecting
+  await fetchActiveTokenIds();
+  
+  if (activeTokenIds.length === 0) {
+    console.log('[PriceFeedLogger] No active tokens found, will retry in 60s...');
+    clobReconnectTimer = setTimeout(connectClob, 60000);
+    return;
+  }
+  
+  console.log('[PriceFeedLogger] Connecting to CLOB Market WebSocket...');
+  
+  try {
+    clobWs = new WebSocket(CLOB_MARKET_WS_URL);
+  } catch (e) {
+    console.error('[PriceFeedLogger] Failed to create CLOB WebSocket:', e);
+    stats.errors++;
+    clobReconnectTimer = setTimeout(connectClob, RECONNECT_DELAY_MS);
+    return;
+  }
+  
+  clobWs.on('open', () => {
+    console.log('[PriceFeedLogger] ✅ CLOB Market WebSocket connected');
+    stats.clob.connected = true;
+    stats.clob.lastMessageAt = Date.now();
+    
+    // Subscribe to orderbook updates for active tokens
+    // CLOB expects: { type: "market", assets_ids: [...] }
+    const subscribeMsg = {
+      type: 'market',
+      assets_ids: activeTokenIds,
+    };
+    clobWs?.send(JSON.stringify(subscribeMsg));
+    console.log(`[PriceFeedLogger] 📡 Subscribed to ${activeTokenIds.length} CLOB orderbooks`);
+  });
+  
+  clobWs.on('message', (data: WebSocket.Data) => {
+    try {
+      const msgStr = data.toString();
+      const now = Date.now();
+      stats.clob.lastMessageAt = now;
+      stats.clob.messageCount++;
+      
+      // Skip PONG messages
+      if (msgStr === 'PONG') return;
+      
+      const msg = JSON.parse(msgStr);
+      
+      // Book event: { event_type: 'book', asset_id: '...', bids: [[price, size]...], asks: [[price, size]...] }
+      if (msg.event_type === 'book' && msg.asset_id) {
+        const tokenInfo = tokenToAssetMap.get(msg.asset_id);
+        if (!tokenInfo) return;
+        
+        // Get best bid and best ask
+        const bestBid = msg.bids?.[0]?.[0];
+        const bestAsk = msg.asks?.[0]?.[0];
+        
+        // Use midpoint price, or best available
+        let price: number | null = null;
+        if (bestBid && bestAsk) {
+          price = (parseFloat(bestBid) + parseFloat(bestAsk)) / 2;
+        } else if (bestBid) {
+          price = parseFloat(bestBid);
+        } else if (bestAsk) {
+          price = parseFloat(bestAsk);
+        }
+        
+        if (price && Number.isFinite(price) && price > 0 && price < 1.5) {
+          addTick({
+            source: 'clob_shares',
+            asset: tokenInfo.asset,
+            price,
+            raw_timestamp: msg.timestamp || now,
+            received_at: now,
+            outcome: tokenInfo.outcome,
+          });
+        }
+      }
+      
+      // Price change event: { event_type: 'price_change', price_changes: [{ asset_id, price }...] }
+      if (msg.event_type === 'price_change' && msg.price_changes) {
+        for (const pc of msg.price_changes) {
+          const tokenInfo = tokenToAssetMap.get(pc.asset_id);
+          if (!tokenInfo) continue;
+          
+          const price = parseFloat(pc.price);
+          if (Number.isFinite(price) && price > 0 && price < 1.5) {
+            addTick({
+              source: 'clob_shares',
+              asset: tokenInfo.asset,
+              price,
+              raw_timestamp: msg.timestamp || now,
+              received_at: now,
+              outcome: tokenInfo.outcome,
+            });
+          }
+        }
+      }
+      
+      // Log first few messages for debugging
+      if (stats.clob.messageCount <= 3) {
+        console.log('[PriceFeedLogger] CLOB msg:', JSON.stringify(msg).slice(0, 200));
+      }
+    } catch (e) {
+      // Ignore parse errors
+    }
+  });
+  
+  clobWs.on('error', (error) => {
+    console.error('[PriceFeedLogger] CLOB WebSocket error:', error.message);
+    stats.clob.connected = false;
+    stats.errors++;
+  });
+  
+  clobWs.on('close', (code, reason) => {
+    console.log(`[PriceFeedLogger] CLOB WebSocket disconnected (code: ${code})`);
+    stats.clob.connected = false;
+    clobWs = null;
+    
+    if (isRunning) {
+      stats.clob.reconnects++;
+      console.log(`[PriceFeedLogger] Reconnecting CLOB in ${RECONNECT_DELAY_MS}ms...`);
+      clobReconnectTimer = setTimeout(connectClob, RECONNECT_DELAY_MS);
+    }
+  });
+}
+
 // ============ HEALTH CHECK ============
 
 function checkWebSocketHealth(): void {
@@ -468,6 +702,15 @@ function checkWebSocketHealth(): void {
     console.log(`[PriceFeedLogger] ⚠️ Polymarket appears stale or disconnected (last msg: ${Math.round((now - stats.polymarket.lastMessageAt) / 1000)}s ago)`);
     forceReconnectPolymarket();
   }
+  
+  // Check CLOB health
+  const clobStale = stats.clob.lastMessageAt > 0 && 
+                    (now - stats.clob.lastMessageAt) > STALE_THRESHOLD_MS;
+  
+  if (!clobReconnectTimer && (clobStale || (!stats.clob.connected && clobWs?.readyState !== WebSocket.CONNECTING))) {
+    console.log(`[PriceFeedLogger] ⚠️ CLOB appears stale or disconnected (last msg: ${Math.round((now - stats.clob.lastMessageAt) / 1000)}s ago)`);
+    forceReconnectClob();
+  }
 }
 
 // ============ PUBLIC API ============
@@ -482,7 +725,7 @@ export function startPriceFeedLogger(): void {
   console.log('╔════════════════════════════════════════════════════════════════╗');
   console.log('║  📊 PRICE FEED WEBSOCKET LOGGER                                ║');
   console.log('╠════════════════════════════════════════════════════════════════╣');
-  console.log('║  Sources: Binance WS + Polymarket RTDS (incl. Chainlink)       ║');
+  console.log('║  Sources: Binance WS + Polymarket RTDS + CLOB (UP/DOWN)        ║');
   console.log('║  Assets:  BTC, ETH, SOL, XRP                                   ║');
   console.log(`║  Flush:   Every ${FLUSH_INTERVAL_MS}ms or ${MAX_BUFFER_SIZE} ticks                            ║`);
   console.log(`║  Health:  Auto-reconnect if stale >${STALE_THRESHOLD_MS / 1000}s                        ║`);
@@ -496,10 +739,12 @@ export function startPriceFeedLogger(): void {
   stats.errors = 0;
   stats.binance.lastMessageAt = Date.now();
   stats.polymarket.lastMessageAt = Date.now();
+  stats.clob.lastMessageAt = Date.now();
 
-  // Connect to both WebSockets
+  // Connect to all WebSockets
   connectBinance();
   connectPolymarket();
+  connectClob();
 
   // Periodic flush timer
   flushInterval = setInterval(() => {
@@ -512,6 +757,13 @@ export function startPriceFeedLogger(): void {
   pingInterval = setInterval(() => {
     if (polymarketWs?.readyState === WebSocket.OPEN) {
       polymarketWs.send('PING');
+    }
+  }, 10000);
+
+  // CLOB keep-alive pings
+  clobPingInterval = setInterval(() => {
+    if (clobWs?.readyState === WebSocket.OPEN) {
+      clobWs.send('PING');
     }
   }, 10000);
 
@@ -534,6 +786,10 @@ export async function stopPriceFeedLogger(): Promise<void> {
     clearInterval(pingInterval);
     pingInterval = null;
   }
+  if (clobPingInterval) {
+    clearInterval(clobPingInterval);
+    clobPingInterval = null;
+  }
   if (healthCheckInterval) {
     clearInterval(healthCheckInterval);
     healthCheckInterval = null;
@@ -548,6 +804,10 @@ export async function stopPriceFeedLogger(): Promise<void> {
     clearTimeout(polymarketReconnectTimer);
     polymarketReconnectTimer = null;
   }
+  if (clobReconnectTimer) {
+    clearTimeout(clobReconnectTimer);
+    clobReconnectTimer = null;
+  }
 
   // Close WebSockets
   if (binanceWs) {
@@ -559,6 +819,11 @@ export async function stopPriceFeedLogger(): Promise<void> {
     polymarketWs.removeAllListeners();
     polymarketWs.close();
     polymarketWs = null;
+  }
+  if (clobWs) {
+    clobWs.removeAllListeners();
+    clobWs.close();
+    clobWs = null;
   }
 
   // Final flush
@@ -593,6 +858,11 @@ export function logPriceFeedLoggerStats(): void {
   console.log(`│    Connected: ${stats.polymarket.connected ? '✅' : '❌'}`.padEnd(54) + '│');
   console.log(`│    Messages: ${stats.polymarket.messageCount.toLocaleString()}`.padEnd(54) + '│');
   console.log(`│    Reconnects: ${stats.polymarket.reconnects}`.padEnd(54) + '│');
+  console.log('├─────────────────────────────────────────────────────┤');
+  console.log(`│  CLOB (UP/DOWN shares):`.padEnd(54) + '│');
+  console.log(`│    Connected: ${stats.clob.connected ? '✅' : '❌'}`.padEnd(54) + '│');
+  console.log(`│    Messages: ${stats.clob.messageCount.toLocaleString()}`.padEnd(54) + '│');
+  console.log(`│    Reconnects: ${stats.clob.reconnects}`.padEnd(54) + '│');
   console.log('├─────────────────────────────────────────────────────┤');
   console.log(`│  Total logged: ${stats.totalLogged.toLocaleString()}`.padEnd(54) + '│');
   console.log(`│  Buffer size: ${logBuffer.length}`.padEnd(54) + '│');
