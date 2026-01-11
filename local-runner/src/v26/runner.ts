@@ -42,6 +42,7 @@ import {
 } from './toxicity-filter.js';
 import type { FillLog, SettlementLog, SnapshotLog } from '../logger.js';
 import type { DecisionSnapshot } from '../backend.js';
+import { startPriceFeedLogger, stopPriceFeedLogger } from '../price-feed-ws-logger.js';
 
 // Toxicity filter state per market
 const toxicityCache = new Map<string, ToxicityFeatures>();
@@ -1187,12 +1188,31 @@ async function main(): Promise<void> {
   log('🧪 Logging: All decisions saved to toxicity_features table');
   log('🧪 ═══════════════════════════════════════════════════════════');
   log('');
+
+  // Start WebSocket price feed logger if enabled
+  if (process.env.FEATURE_PRICE_LOGGER === 'true') {
+    log('');
+    log('📡 ═══════════════════════════════════════════════════════════');
+    log('📡 WEBSOCKET PRICE LOGGER ACTIVE');
+    log('📡 ───────────────────────────────────────────────────────────');
+    log('📡 Sources: Binance WS, Polymarket WS (crypto_prices + chainlink)');
+    log('📡 Logging: All ticks saved to realtime_price_logs table');
+    log('📡 ═══════════════════════════════════════════════════════════');
+    log('');
+    startPriceFeedLogger();
+  }
 }
 
 // Handle shutdown
-process.on('SIGINT', () => {
+process.on('SIGINT', async () => {
   log('');
   log('🛑 Shutting down V26...');
+  
+  // Stop price feed logger if running
+  if (process.env.FEATURE_PRICE_LOGGER === 'true') {
+    log('📡 Stopping price feed logger...');
+    await stopPriceFeedLogger();
+  }
   
   // Cancel all scheduled timeouts
   for (const [key, scheduled] of scheduledTrades) {
