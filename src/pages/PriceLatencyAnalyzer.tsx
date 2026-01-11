@@ -4,9 +4,11 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, BarChart, Bar, Cell } from "recharts";
-import { Activity, Wifi, WifiOff, RefreshCw, Download, Trash2, Play, Square } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Activity, Wifi, WifiOff, RefreshCw, Download, Trash2, Play, Square, Clock } from "lucide-react";
+import { useEffect, useState, useRef } from "react";
 
 const ASSETS: Asset[] = ['BTC', 'ETH', 'SOL', 'XRP'];
 
@@ -63,6 +65,14 @@ export default function PriceLatencyAnalyzer() {
 
   const [chartData, setChartData] = useState<{ binanceData: any[]; chainlinkData: any[] }>({ binanceData: [], chainlinkData: [] });
   const [histogramData, setHistogramData] = useState<{ range: string; count: number }[]>([]);
+  
+  // Export recording state
+  const [isRecording, setIsRecording] = useState(false);
+  const [recordDuration, setRecordDuration] = useState<number>(5); // minutes
+  const [recordedLogs, setRecordedLogs] = useState<typeof eventLog>([]);
+  const [recordStartTime, setRecordStartTime] = useState<number | null>(null);
+  const [recordProgress, setRecordProgress] = useState(0);
+  const recordingRef = useRef<number | null>(null);
 
   // Update chart data periodically
   useEffect(() => {
@@ -73,19 +83,93 @@ export default function PriceLatencyAnalyzer() {
     return () => clearInterval(interval);
   }, [getChartData, getLatencyHistogram]);
 
-  const exportCSV = () => {
+  const exportCSV = (logs: typeof eventLog, prefix: string = 'price-latency') => {
     const rows = [
-      ['timestamp', 'source', 'symbol', 'price', 'latency_lead_ms'],
-      ...eventLog.map(e => [e.timestamp, e.source, e.symbol, e.price, e.latencyLead ?? ''])
+      ['timestamp', 'iso_time', 'source', 'symbol', 'price', 'latency_lead_ms'],
+      ...logs.map(e => [
+        e.timestamp, 
+        new Date(e.timestamp).toISOString(),
+        e.source, 
+        e.symbol, 
+        e.price, 
+        e.latencyLead ?? ''
+      ])
     ];
     const csv = rows.map(r => r.join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `price-latency-${selectedAsset}-${Date.now()}.csv`;
+    a.download = `${prefix}-${selectedAsset}-${recordDuration}min-${Date.now()}.csv`;
     a.click();
   };
+
+  // Start recording
+  const startRecording = () => {
+    if (connectionStatus !== 'connected') {
+      connect();
+    }
+    setRecordedLogs([]);
+    setRecordStartTime(Date.now());
+    setIsRecording(true);
+    setRecordProgress(0);
+  };
+
+  // Stop recording and export
+  const stopRecording = () => {
+    setIsRecording(false);
+    setRecordStartTime(null);
+    if (recordingRef.current) {
+      clearInterval(recordingRef.current);
+      recordingRef.current = null;
+    }
+    if (recordedLogs.length > 0) {
+      exportCSV(recordedLogs, 'price-recording');
+    }
+  };
+
+  // Recording effect: capture logs during recording period
+  useEffect(() => {
+    if (!isRecording || !recordStartTime) return;
+
+    const durationMs = recordDuration * 60 * 1000;
+    
+    // Update progress and capture logs
+    recordingRef.current = window.setInterval(() => {
+      const elapsed = Date.now() - recordStartTime;
+      const progress = Math.min((elapsed / durationMs) * 100, 100);
+      setRecordProgress(progress);
+
+      // Auto-stop when time is up
+      if (elapsed >= durationMs) {
+        setIsRecording(false);
+        setRecordStartTime(null);
+        if (recordingRef.current) {
+          clearInterval(recordingRef.current);
+          recordingRef.current = null;
+        }
+      }
+    }, 500);
+
+    return () => {
+      if (recordingRef.current) {
+        clearInterval(recordingRef.current);
+      }
+    };
+  }, [isRecording, recordStartTime, recordDuration]);
+
+  // Capture event logs while recording
+  useEffect(() => {
+    if (isRecording && eventLog.length > 0) {
+      // Add new events that we haven't captured yet
+      setRecordedLogs(prev => {
+        const newEvents = eventLog.filter(
+          e => !prev.some(p => p.timestamp === e.timestamp && p.source === e.source)
+        );
+        return [...prev, ...newEvents].sort((a, b) => a.timestamp - b.timestamp);
+      });
+    }
+  }, [eventLog, isRecording]);
 
   // Combine chart data for dual-line chart
   const combinedChartData = [...chartData.binanceData, ...chartData.chainlinkData]
@@ -361,10 +445,85 @@ export default function PriceLatencyAnalyzer() {
         <Card className="bg-[#161B22] border-[#30363D]">
           <CardHeader className="flex flex-row items-center justify-between">
             <CardTitle>SESSION STATISTICS</CardTitle>
-            <Button variant="outline" size="sm" onClick={exportCSV}>
-              <Download className="h-4 w-4 mr-1" />
-              Export CSV
-            </Button>
+            <div className="flex items-center gap-2">
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" size="sm">
+                    <Clock className="h-4 w-4 mr-1" />
+                    Record Export
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-64 bg-[#21262D] border-[#30363D]">
+                  <div className="space-y-3">
+                    <div className="text-sm font-medium">Record & Export Pricing Logs</div>
+                    <div className="space-y-2">
+                      <label className="text-xs text-muted-foreground">Duration</label>
+                      <Select 
+                        value={recordDuration.toString()} 
+                        onValueChange={(v) => setRecordDuration(Number(v))}
+                        disabled={isRecording}
+                      >
+                        <SelectTrigger className="bg-[#161B22] border-[#30363D]">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent className="bg-[#21262D] border-[#30363D]">
+                          <SelectItem value="1">1 minute</SelectItem>
+                          <SelectItem value="2">2 minutes</SelectItem>
+                          <SelectItem value="5">5 minutes</SelectItem>
+                          <SelectItem value="10">10 minutes</SelectItem>
+                          <SelectItem value="15">15 minutes</SelectItem>
+                          <SelectItem value="30">30 minutes</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    
+                    {isRecording ? (
+                      <div className="space-y-2">
+                        <div className="flex justify-between text-xs">
+                          <span>Recording...</span>
+                          <span>{recordedLogs.length} events</span>
+                        </div>
+                        <div className="h-2 bg-[#161B22] rounded-full overflow-hidden">
+                          <div 
+                            className="h-full bg-red-500 transition-all" 
+                            style={{ width: `${recordProgress}%` }} 
+                          />
+                        </div>
+                        <div className="flex gap-2">
+                          <Button 
+                            size="sm" 
+                            variant="destructive" 
+                            className="flex-1"
+                            onClick={stopRecording}
+                          >
+                            <Square className="h-3 w-3 mr-1" />
+                            Stop & Export
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <Button 
+                        size="sm" 
+                        className="w-full bg-red-600 hover:bg-red-700"
+                        onClick={startRecording}
+                      >
+                        <Play className="h-3 w-3 mr-1" />
+                        Start Recording
+                      </Button>
+                    )}
+                    
+                    <p className="text-xs text-muted-foreground">
+                      Records all price updates during the selected period and exports as CSV.
+                    </p>
+                  </div>
+                </PopoverContent>
+              </Popover>
+              
+              <Button variant="outline" size="sm" onClick={() => exportCSV(eventLog, 'price-latency')}>
+                <Download className="h-4 w-4 mr-1" />
+                Export Log
+              </Button>
+            </div>
           </CardHeader>
           <CardContent>
             <div className="space-y-3">
@@ -396,6 +555,15 @@ export default function PriceLatencyAnalyzer() {
                 <span className="text-muted-foreground">Latency Samples:</span>
                 <span className="font-mono">{latencyMeasurements.length}</span>
               </div>
+              {isRecording && (
+                <div className="flex justify-between border-t border-[#30363D] pt-2 mt-2">
+                  <span className="text-red-400 flex items-center gap-1">
+                    <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                    Recording:
+                  </span>
+                  <span className="font-mono text-red-400">{recordedLogs.length} events captured</span>
+                </div>
+              )}
             </div>
           </CardContent>
         </Card>
