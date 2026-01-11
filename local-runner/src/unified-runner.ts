@@ -16,7 +16,7 @@ import { testConnection, getBalance, placeOrder, getOrderbookDepth } from './pol
 import { fetchMarkets, sendHeartbeat, savePriceTicks, saveSnapshotLogs, type PriceTick } from './backend.js';
 import { enforceVpnOrExit } from './vpn-check.js';
 import { fetchChainlinkPrice } from './chain.js';
-import { startPriceFeedLogger, stopPriceFeedLogger, getLoggerStats } from './price-feed-ws-logger.js';
+import { startPriceFeedLogger, stopPriceFeedLogger, getPriceFeedLoggerStats } from './price-feed-ws-logger.js';
 import { V27Runner } from './v27/runner.js';
 import { getV27Config, loadV27Config } from './v27/config.js';
 import type { V27Market, V27OrderBook, V27SpotData } from './v27/index.js';
@@ -270,7 +270,7 @@ async function sendUnifiedHeartbeat(): Promise<void> {
     const balanceTotal = normalizeUsdAmount((balance as any)?.usdc) ?? normalizeUsdAmount(balance) ?? 0;
     
     const stats = v27Runner.getStats();
-    const loggerStats = getLoggerStats();
+    const loggerStats = getPriceFeedLoggerStats();
 
     await sendHeartbeat({
       runner_id: RUN_ID,
