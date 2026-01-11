@@ -13,7 +13,7 @@
 
 import { config } from './config.js';
 import { testConnection, getBalance, placeOrder, getOrderbookDepth } from './polymarket.js';
-import { fetchMarkets, sendHeartbeat, savePriceTicks, saveSnapshotLogs, type PriceTick } from './backend.js';
+import { fetchMarkets, sendHeartbeat, savePriceTicks, saveSnapshotLogs, type PriceTick, getSupabaseClient } from './backend.js';
 import { enforceVpnOrExit } from './vpn-check.js';
 import { fetchChainlinkPrice } from './chain.js';
 import { startPriceFeedLogger, stopPriceFeedLogger, getPriceFeedLoggerStats } from './price-feed-ws-logger.js';
@@ -359,9 +359,10 @@ async function main(): Promise<void> {
   const balance = await getBalance();
   log(`💰 Balance: $${normalizeUsdAmount(balance) ?? 'unknown'}`);
 
-  // 4. Initialize V27 runner
+  // 4. Initialize V27 runner with Supabase client for logging
   loadV27Config();
-  v27Runner = new V27Runner(RUN_ID);
+  const supabaseClient = getSupabaseClient();
+  v27Runner = new V27Runner(RUN_ID, supabaseClient);
   v27Runner.initialize();
   v27Runner.setOrderCallback(executeOrder);
   v27Runner.start();
