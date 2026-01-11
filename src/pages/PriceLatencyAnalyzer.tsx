@@ -61,6 +61,9 @@ export default function PriceLatencyAnalyzer() {
     disconnect,
     getChartData,
     getLatencyHistogram,
+    binanceWsStatus,
+    chainlinkWsStatus,
+    lastError,
   } = usePriceLatencyComparison();
 
   const [chartData, setChartData] = useState<{ binanceData: any[]; chainlinkData: any[] }>({ binanceData: [], chainlinkData: [] });
@@ -195,10 +198,30 @@ export default function PriceLatencyAnalyzer() {
               PRICE FEED LATENCY ANALYZER
             </h1>
             <p className="text-sm text-muted-foreground">
-              Comparing Binance vs Chainlink (Polymarket Settlement Source)
+              Real-time WebSocket: Binance + Chainlink (Alchemy)
             </p>
+            {lastError && (
+              <p className="text-xs text-red-400 mt-1">{lastError}</p>
+            )}
           </div>
           <div className="flex items-center gap-2">
+            {/* Individual feed status */}
+            <div className="flex gap-1">
+              <Badge 
+                variant="outline"
+                className={`text-xs ${binanceWsStatus === 'connected' ? 'border-yellow-500 text-yellow-500' : 'border-gray-500'}`}
+              >
+                <div className={`w-2 h-2 rounded-full mr-1 ${binanceWsStatus === 'connected' ? 'bg-yellow-500' : 'bg-gray-500'}`} />
+                Binance
+              </Badge>
+              <Badge 
+                variant="outline"
+                className={`text-xs ${chainlinkWsStatus === 'connected' ? 'border-blue-500 text-blue-500' : 'border-gray-500'}`}
+              >
+                <div className={`w-2 h-2 rounded-full mr-1 ${chainlinkWsStatus === 'connected' ? 'bg-blue-500' : 'bg-gray-500'}`} />
+                Chainlink
+              </Badge>
+            </div>
             <Badge 
               variant={connectionStatus === 'connected' ? 'default' : 'destructive'}
               className={connectionStatus === 'connected' ? 'bg-green-600' : ''}
