@@ -40,10 +40,10 @@ export function ExportDataButton({ data, rawEvaluations, rawTrackings }: ExportD
 
   const sliceData = <T,>(arr: T[], size: SampleSize): T[] => {
     if (size === 'all') return arr;
-    return arr.slice(0, size);
+    return arr.slice(-size); // Take last N items (most recent)
   };
 
-  const getSizeLabel = (size: SampleSize) => size === 'all' ? 'All' : `First ${size}`;
+  const getSizeLabel = (size: SampleSize) => size === 'all' ? 'Alles' : `Laatste ${size}`;
 
   const exportAllJSON = async (size: SampleSize = 'all') => {
     setExporting(true);
