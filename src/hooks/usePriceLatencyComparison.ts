@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { supabase } from '@/integrations/supabase/client';
 
 export interface PriceTick {
   source: 'binance' | 'chainlink';
@@ -25,9 +26,9 @@ const SYMBOL_MAP: Record<Asset, { binance: string; chainlink: string }> = {
   XRP: { binance: 'xrpusdt', chainlink: 'xrp/usd' },
 };
 
-const WS_URL = 'wss://ws-subscriptions-clob.polymarket.com/ws/';
 const MAX_TICKS = 1000;
 const MAX_MEASUREMENTS = 500;
+const POLL_INTERVAL_MS = 500; // Poll every 500ms
 
 interface PriceLatencyState {
   selectedAsset: Asset;
@@ -43,6 +44,7 @@ interface PriceLatencyState {
   totalChainlinkTicks: number;
   connectionStatus: 'connecting' | 'connected' | 'disconnected' | 'error';
   eventLog: Array<{ timestamp: number; source: 'binance' | 'chainlink'; symbol: string; price: number; latencyLead?: number }>;
+  lastError: string | null;
 }
 
 export function usePriceLatencyComparison() {
@@ -60,11 +62,12 @@ export function usePriceLatencyComparison() {
     totalChainlinkTicks: 0,
     connectionStatus: 'disconnected',
     eventLog: [],
+    lastError: null,
   });
 
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<number | null>(null);
-  const lastBinanceTickRef = useRef<Map<string, PriceTick>>(new Map());
+  const pollIntervalRef = useRef<number | null>(null);
+  const isPollingRef = useRef(false);
+  const lastBinancePriceRef = useRef<Map<string, { price: number; timestamp: number }>>(new Map());
 
   const setSelectedAsset = useCallback((asset: Asset) => {
     setState(prev => ({ ...prev, selectedAsset: asset }));
@@ -84,175 +87,173 @@ export function usePriceLatencyComparison() {
       totalBinanceTicks: 0,
       totalChainlinkTicks: 0,
       eventLog: [],
+      binancePrice: null,
+      chainlinkPrice: null,
+      binanceLastUpdate: null,
+      chainlinkLastUpdate: null,
     }));
-    lastBinanceTickRef.current.clear();
+    lastBinancePriceRef.current.clear();
   }, []);
 
-  const handleBinanceTick = useCallback((payload: { symbol: string; timestamp: number; value: number }, receivedAt: number) => {
-    const tick: PriceTick = {
-      source: 'binance',
-      symbol: payload.symbol,
-      price: payload.value,
-      timestamp: payload.timestamp,
-      receivedAt,
-    };
+  // Fetch prices from the edge function
+  const fetchPrices = useCallback(async () => {
+    if (isPollingRef.current) return;
+    isPollingRef.current = true;
 
-    lastBinanceTickRef.current.set(payload.symbol, tick);
+    try {
+      const receivedAt = Date.now();
 
-    setState(prev => {
-      const binanceSymbol = SYMBOL_MAP[prev.selectedAsset].binance;
-      const isCurrentAsset = payload.symbol === binanceSymbol;
+      // Call the price-feeds edge function for Binance + Chainlink prices
+      const { data, error } = await supabase.functions.invoke('price-feeds', {
+        body: { assets: ['BTC', 'ETH', 'SOL', 'XRP'] }
+      });
 
-      const newBinanceTicks = [...prev.binanceTicks, tick].slice(-MAX_TICKS);
-      const newEventLog = isCurrentAsset 
-        ? [{ timestamp: receivedAt, source: 'binance' as const, symbol: payload.symbol, price: payload.value }, ...prev.eventLog].slice(0, 100)
-        : prev.eventLog;
+      if (error) throw error;
 
-      return {
-        ...prev,
-        binanceTicks: newBinanceTicks,
-        totalBinanceTicks: prev.totalBinanceTicks + 1,
-        binancePrice: isCurrentAsset ? payload.value : prev.binancePrice,
-        binanceLastUpdate: isCurrentAsset ? payload.timestamp : prev.binanceLastUpdate,
-        eventLog: newEventLog,
-      };
-    });
-  }, []);
+      if (data?.prices) {
+        setState(prev => {
+          const updates: Partial<PriceLatencyState> = {};
+          let newBinanceTicks = [...prev.binanceTicks];
+          let newChainlinkTicks = [...prev.chainlinkTicks];
+          let newMeasurements = [...prev.latencyMeasurements];
+          let newEventLog = [...prev.eventLog];
+          let totalBinance = prev.totalBinanceTicks;
+          let totalChainlink = prev.totalChainlinkTicks;
 
-  const handleChainlinkTick = useCallback((payload: { symbol: string; timestamp: number; value: number }, receivedAt: number) => {
-    const tick: PriceTick = {
-      source: 'chainlink',
-      symbol: payload.symbol,
-      price: payload.value,
-      timestamp: payload.timestamp,
-      receivedAt,
-    };
+          for (const [asset, priceData] of Object.entries(data.prices as Record<string, { binance?: number; chainlink?: number; binance_ts?: number; chainlink_ts?: number }>)) {
+            const binanceSymbol = SYMBOL_MAP[asset as Asset]?.binance;
+            const chainlinkSymbol = SYMBOL_MAP[asset as Asset]?.chainlink;
+            const isCurrentAsset = asset === prev.selectedAsset;
 
-    setState(prev => {
-      const chainlinkSymbol = SYMBOL_MAP[prev.selectedAsset].chainlink;
-      const binanceSymbol = SYMBOL_MAP[prev.selectedAsset].binance;
-      const isCurrentAsset = payload.symbol === chainlinkSymbol;
+            // Handle Binance price
+            if (priceData.binance && binanceSymbol) {
+              const ts = priceData.binance_ts || receivedAt;
+              const lastPrice = lastBinancePriceRef.current.get(asset);
+              
+              // Only add if price changed
+              if (!lastPrice || lastPrice.price !== priceData.binance) {
+                const tick: PriceTick = {
+                  source: 'binance',
+                  symbol: binanceSymbol,
+                  price: priceData.binance,
+                  timestamp: ts,
+                  receivedAt,
+                };
+                newBinanceTicks = [...newBinanceTicks, tick].slice(-MAX_TICKS);
+                totalBinance++;
+                lastBinancePriceRef.current.set(asset, { price: priceData.binance, timestamp: ts });
 
-      // Find matching Binance tick for latency calculation
-      const matchingBinanceTick = lastBinanceTickRef.current.get(binanceSymbol);
-      let newMeasurement: LatencyMeasurement | null = null;
-      let latencyLead: number | undefined;
+                if (isCurrentAsset) {
+                  updates.binancePrice = priceData.binance;
+                  updates.binanceLastUpdate = ts;
+                  newEventLog = [
+                    { timestamp: receivedAt, source: 'binance' as const, symbol: binanceSymbol, price: priceData.binance },
+                    ...newEventLog
+                  ].slice(0, 100);
+                }
+              }
+            }
 
-      if (matchingBinanceTick && isCurrentAsset) {
-        const latencyMs = payload.timestamp - matchingBinanceTick.timestamp;
-        latencyLead = latencyMs;
-        newMeasurement = {
-          binanceTimestamp: matchingBinanceTick.timestamp,
-          chainlinkTimestamp: payload.timestamp,
-          latencyMs,
-          priceDiff: Math.abs(payload.value - matchingBinanceTick.price),
-          measuredAt: receivedAt,
-        };
+            // Handle Chainlink price
+            if (priceData.chainlink && chainlinkSymbol) {
+              const ts = priceData.chainlink_ts || receivedAt;
+              const tick: PriceTick = {
+                source: 'chainlink',
+                symbol: chainlinkSymbol,
+                price: priceData.chainlink,
+                timestamp: ts,
+                receivedAt,
+              };
+              
+              // Check if different from last
+              const lastChainlink = newChainlinkTicks.find(t => t.symbol === chainlinkSymbol);
+              if (!lastChainlink || lastChainlink.price !== priceData.chainlink) {
+                newChainlinkTicks = [...newChainlinkTicks, tick].slice(-MAX_TICKS);
+                totalChainlink++;
+
+                // Calculate latency if we have matching Binance
+                const lastBinance = lastBinancePriceRef.current.get(asset);
+                let latencyLead: number | undefined;
+                if (lastBinance && isCurrentAsset) {
+                  const latencyMs = ts - lastBinance.timestamp;
+                  latencyLead = latencyMs;
+                  newMeasurements = [...newMeasurements, {
+                    binanceTimestamp: lastBinance.timestamp,
+                    chainlinkTimestamp: ts,
+                    latencyMs,
+                    priceDiff: Math.abs(priceData.chainlink - lastBinance.price),
+                    measuredAt: receivedAt,
+                  }].slice(-MAX_MEASUREMENTS);
+                }
+
+                if (isCurrentAsset) {
+                  updates.chainlinkPrice = priceData.chainlink;
+                  updates.chainlinkLastUpdate = ts;
+                  newEventLog = [
+                    { timestamp: receivedAt, source: 'chainlink' as const, symbol: chainlinkSymbol, price: priceData.chainlink, latencyLead },
+                    ...newEventLog
+                  ].slice(0, 100);
+                }
+              }
+            }
+          }
+
+          return {
+            ...prev,
+            ...updates,
+            binanceTicks: newBinanceTicks,
+            chainlinkTicks: newChainlinkTicks,
+            latencyMeasurements: newMeasurements,
+            eventLog: newEventLog,
+            totalBinanceTicks: totalBinance,
+            totalChainlinkTicks: totalChainlink,
+            connectionStatus: 'connected',
+            lastError: null,
+          };
+        });
       }
-
-      const newChainlinkTicks = [...prev.chainlinkTicks, tick].slice(-MAX_TICKS);
-      const newMeasurements = newMeasurement 
-        ? [...prev.latencyMeasurements, newMeasurement].slice(-MAX_MEASUREMENTS)
-        : prev.latencyMeasurements;
-
-      const newEventLog = isCurrentAsset 
-        ? [{ timestamp: receivedAt, source: 'chainlink' as const, symbol: payload.symbol, price: payload.value, latencyLead }, ...prev.eventLog].slice(0, 100)
-        : prev.eventLog;
-
-      return {
+    } catch (err) {
+      console.error('Failed to fetch prices:', err);
+      setState(prev => ({
         ...prev,
-        chainlinkTicks: newChainlinkTicks,
-        totalChainlinkTicks: prev.totalChainlinkTicks + 1,
-        chainlinkPrice: isCurrentAsset ? payload.value : prev.chainlinkPrice,
-        chainlinkLastUpdate: isCurrentAsset ? payload.timestamp : prev.chainlinkLastUpdate,
-        latencyMeasurements: newMeasurements,
-        eventLog: newEventLog,
-      };
-    });
+        connectionStatus: 'error',
+        lastError: err instanceof Error ? err.message : 'Failed to fetch prices',
+      }));
+    } finally {
+      isPollingRef.current = false;
+    }
   }, []);
 
   const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    if (pollIntervalRef.current) return;
 
     setState(prev => ({ ...prev, connectionStatus: 'connecting' }));
 
-    try {
-      const ws = new WebSocket(WS_URL);
-      wsRef.current = ws;
+    // Initial fetch
+    fetchPrices();
 
-      ws.onopen = () => {
-        setState(prev => ({ ...prev, connectionStatus: 'connected' }));
-        
-        // Subscribe to both feeds
-        ws.send(JSON.stringify({
-          action: "subscribe",
-          subscriptions: [
-            {
-              topic: "crypto_prices",
-              type: "update",
-              filters: "btcusdt,ethusdt,solusdt,xrpusdt"
-            },
-            {
-              topic: "crypto_prices_chainlink",
-              type: "*",
-              filters: ""
-            }
-          ]
-        }));
-      };
-
-      ws.onmessage = (event) => {
-        const receivedAt = Date.now();
-        try {
-          const data = JSON.parse(event.data);
-          
-          if (data.topic === 'crypto_prices' && data.payload) {
-            handleBinanceTick(data.payload, receivedAt);
-          } else if (data.topic === 'crypto_prices_chainlink' && data.payload) {
-            handleChainlinkTick(data.payload, receivedAt);
-          }
-        } catch (e) {
-          console.error('Failed to parse WS message:', e);
-        }
-      };
-
-      ws.onerror = () => {
-        setState(prev => ({ ...prev, connectionStatus: 'error' }));
-      };
-
-      ws.onclose = () => {
-        setState(prev => ({ ...prev, connectionStatus: 'disconnected' }));
-        wsRef.current = null;
-        
-        // Auto-reconnect after 3 seconds
-        reconnectTimeoutRef.current = window.setTimeout(() => {
-          connect();
-        }, 3000);
-      };
-    } catch (e) {
-      console.error('WebSocket connection error:', e);
-      setState(prev => ({ ...prev, connectionStatus: 'error' }));
-    }
-  }, [handleBinanceTick, handleChainlinkTick]);
+    // Start polling
+    pollIntervalRef.current = window.setInterval(() => {
+      fetchPrices();
+    }, POLL_INTERVAL_MS);
+  }, [fetchPrices]);
 
   const disconnect = useCallback(() => {
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
     }
     setState(prev => ({ ...prev, connectionStatus: 'disconnected' }));
   }, []);
 
+  // Cleanup on unmount
   useEffect(() => {
-    connect();
     return () => {
-      disconnect();
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
     };
-  }, [connect, disconnect]);
+  }, []);
 
   // Calculate derived statistics
   const stats = {
