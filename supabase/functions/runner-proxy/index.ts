@@ -880,6 +880,30 @@ Deno.serve(async (req) => {
         });
       }
 
+      case 'save-v27-evaluation': {
+        const evaluation = data?.evaluation as Record<string, unknown> | undefined;
+        if (!evaluation) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing evaluation' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const { error } = await supabase.from('v27_evaluations').insert(evaluation);
+
+        if (error) {
+          console.error('[runner-proxy] save-v27-evaluation error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
       case 'save-snapshot-logs': {
         const logs = data?.logs as Array<Record<string, unknown>> | undefined;
         if (!logs || logs.length === 0) {
