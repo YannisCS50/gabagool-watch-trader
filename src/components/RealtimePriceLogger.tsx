@@ -416,6 +416,79 @@ export function RealtimePriceLogger() {
         </CardContent>
       </Card>
 
+      {/* CLOB Share Prices Chart (UP/DOWN) */}
+      <Card className="bg-[#161B22] border-[#30363D]">
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base text-[#E6EDF3] flex items-center gap-2">
+              <TrendingUp className="h-4 w-4" /> CLOB Share Prices (Last 60s)
+              <Badge variant="outline" className="ml-2 text-xs border-muted-foreground">{selectedAsset}</Badge>
+            </CardTitle>
+            <div className="flex gap-2 items-center">
+              <Badge variant="outline" className="border-green-500 text-green-400 text-xs">UP</Badge>
+              <Badge variant="outline" className="border-red-500 text-red-400 text-xs">DOWN</Badge>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {chartData.some(d => d.clob_up !== undefined || d.clob_down !== undefined) ? (
+            <ResponsiveContainer width="100%" height={200}>
+              <LineChart data={chartData} margin={{ top: 5, right: 30, left: 20, bottom: 5 }}>
+                <XAxis 
+                  dataKey="time" 
+                  tickFormatter={formatChartTime}
+                  stroke="#8B949E"
+                  fontSize={10}
+                  tickLine={false}
+                />
+                <YAxis 
+                  domain={[0, 1]}
+                  stroke="#8B949E"
+                  fontSize={10}
+                  tickLine={false}
+                  tickFormatter={(value) => `${(value * 100).toFixed(0)}¢`}
+                />
+                <Tooltip 
+                  contentStyle={{ backgroundColor: '#21262D', border: '1px solid #30363D', borderRadius: '8px' }}
+                  labelStyle={{ color: '#E6EDF3' }}
+                  labelFormatter={(label) => format(new Date(label), 'HH:mm:ss.SSS')}
+                  formatter={(value: number, name: string) => [
+                    `${(value * 100).toFixed(2)}¢`,
+                    name
+                  ]}
+                />
+                <Legend />
+                <ReferenceLine y={0.5} stroke="#555" strokeDasharray="3 3" />
+                <Line 
+                  type="stepAfter" 
+                  dataKey="clob_up" 
+                  stroke="#22C55E" 
+                  strokeWidth={2.5} 
+                  dot={false}
+                  name="UP Share"
+                  connectNulls
+                />
+                <Line 
+                  type="stepAfter" 
+                  dataKey="clob_down" 
+                  stroke="#EF4444" 
+                  strokeWidth={2.5} 
+                  dot={false}
+                  name="DOWN Share"
+                  connectNulls
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          ) : (
+            <div className="h-[200px] flex items-center justify-center text-muted-foreground flex-col gap-2">
+              <WifiOff className="h-8 w-8 text-muted-foreground/50" />
+              <p>No CLOB share data yet for {selectedAsset}</p>
+              <p className="text-xs">Restart runner to connect to CLOB WebSocket</p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
       {/* Price Lag Analysis - Shows delay between sources */}
       <Card className="bg-[#161B22] border-[#30363D]">
         <CardHeader className="pb-3">
