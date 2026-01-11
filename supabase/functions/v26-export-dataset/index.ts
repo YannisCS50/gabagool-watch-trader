@@ -494,18 +494,44 @@ KNOWN LIMITATIONS
       .join("\n");
     zip.file("CHECKSUMS.sha256", checksumContent);
 
-    // Generate ZIP as base64 string for reliable transport
-    const zipBase64 = await zip.generateAsync({ type: "base64" });
-    const zipBinary = Uint8Array.from(atob(zipBase64), c => c.charCodeAt(0));
+    // Generate ZIP as Uint8Array - CRITICAL: use "uint8array" type directly
+    // This avoids base64 encoding/decoding which can cause corruption
     const filename = `polymarket_export_${walletLower.slice(0, 8)}_${fromTs.split("T")[0]}_${toTs.split("T")[0]}_${Date.now()}.zip`;
+    
+    console.log(`[v26-export] Building ZIP file: ${filename}`);
+    
+    // Generate complete ZIP as Uint8Array
+    const zipBuffer: Uint8Array = await zip.generateAsync({ 
+      type: "uint8array",
+      compression: "DEFLATE",
+      compressionOptions: { level: 6 }
+    });
+    
+    // Verify ZIP is valid before returning
+    if (!zipBuffer || zipBuffer.length === 0) {
+      throw new Error("ZIP generation failed: empty buffer");
+    }
+    
+    // Basic ZIP header validation (PK\x03\x04 signature)
+    if (zipBuffer[0] !== 0x50 || zipBuffer[1] !== 0x4B) {
+      throw new Error("ZIP generation failed: invalid ZIP signature");
+    }
+    
+    const zipSize = zipBuffer.length;
+    console.log(`[v26-export] Generated ${filename} (${zipSize} bytes, valid ZIP signature)`);
 
-    console.log(`[v26-export] Generated ${filename} (${zipBinary.length} bytes)`);
-
-    return new Response(zipBinary, {
+    // Return with explicit Content-Length for reliable transport
+    // Create a new ArrayBuffer from Uint8Array to ensure valid BodyInit type
+    const responseBuffer = new ArrayBuffer(zipSize);
+    new Uint8Array(responseBuffer).set(zipBuffer);
+    
+    return new Response(responseBuffer, {
       headers: {
         ...corsHeaders,
         "Content-Type": "application/zip",
+        "Content-Length": String(zipSize),
         "Content-Disposition": `attachment; filename="${filename}"`,
+        "Cache-Control": "no-cache, no-store, must-revalidate",
       },
     });
   } catch (error) {
