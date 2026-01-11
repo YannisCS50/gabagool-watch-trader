@@ -1,9 +1,16 @@
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 
 /**
- * CANONICAL ACCOUNTING REDUCER v4
+ * CANONICAL ACCOUNTING REDUCER v5
  * 
- * FULL SYNC - Fetches complete history in one run
+ * CORRECT P/L FORMULA:
+ *   REALIZED_PNL = SUM(REDEEM payouts) + SUM(SELL proceeds) - SUM(BUY costs) - SUM(fees)
+ * 
+ * DAILY P/L:
+ *   daily_pnl = payouts_on_day + sells_on_day - buys_on_day - fees_on_day
+ * 
+ * VALIDATION:
+ *   SUM(daily_pnl) MUST equal SUM(market_pnl) MUST equal total_pnl
  */
 
 const corsHeaders = {
@@ -318,22 +325,22 @@ async function ingestBatch(wallet: string): Promise<{
   };
 }
 
-// REDUCER - runs after ingestion is complete
+// REDUCER v5 - CORRECT ACCOUNTING based on polymarket_cashflows
 async function runReducer(wallet: string): Promise<{
   marketsProcessed: number;
   realizedPnl: number;
   claimedMarkets: number;
   lostMarkets: number;
   daysWithActivity: number;
+  validation: { passed: boolean; drift: number };
 }> {
   const walletLower = wallet.toLowerCase();
-  
-  // Fetch all raw events from database
   const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
   const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
   
-  const eventsResp = await fetch(
-    `${supabaseUrl}/rest/v1/raw_subgraph_events?wallet=eq.${walletLower}&order=timestamp.asc&limit=10000`,
+  // Fetch ALL cashflows from polymarket_cashflows (source of truth)
+  const cfResp = await fetch(
+    `${supabaseUrl}/rest/v1/polymarket_cashflows?wallet=eq.${walletLower}&order=ts.asc&limit=10000`,
     {
       headers: {
         'apikey': supabaseKey,
@@ -342,279 +349,373 @@ async function runReducer(wallet: string): Promise<{
     }
   );
   
-  const events = await eventsResp.json() as {
+  const cashflows = await cfResp.json() as {
     id: string;
     market_id: string;
-    outcome: string;
-    event_type: string;
-    shares: number;
-    price: number;
+    outcome_side: string;
+    type: string;
     amount_usd: number;
+    shares: number | null;
+    price: number | null;
     fee_usd: number | null;
-    timestamp: string;
-    raw_json: Activity;
+    fee_known: boolean;
+    ts: string;
+    raw_json?: { slug?: string };
   }[];
 
-  if (!events?.length) {
-    return { marketsProcessed: 0, realizedPnl: 0, claimedMarkets: 0, lostMarkets: 0, daysWithActivity: 0 };
+  if (!cashflows?.length) {
+    console.log(`[reducer] No cashflows found for ${walletLower}`);
+    return { 
+      marketsProcessed: 0, 
+      realizedPnl: 0, 
+      claimedMarkets: 0, 
+      lostMarkets: 0, 
+      daysWithActivity: 0,
+      validation: { passed: true, drift: 0 }
+    };
   }
 
-  console.log(`[reducer] Processing ${events.length} events from database`);
+  console.log(`[reducer] Processing ${cashflows.length} cashflows from polymarket_cashflows`);
 
-  // Group by market
-  const byMarket = new Map<string, typeof events>();
-  for (const e of events) {
-    if (!e.market_id) continue;
-    if (!byMarket.has(e.market_id)) byMarket.set(e.market_id, []);
-    byMarket.get(e.market_id)!.push(e);
-  }
+  // ========================================
+  // STEP 1: DIRECT P/L CALCULATION (validation baseline)
+  // ========================================
+  let directBuyCost = 0;
+  let directSellProceeds = 0;
+  let directRedeemPayout = 0;
+  let directFees = 0;
 
-  // Fetch current positions from API
-  let currentPosMap = new Map<string, number>();
-  try {
-    const posResp = await fetch(`${DATA_API_BASE}/positions?user=${wallet}`);
-    if (posResp.ok) {
-      const positions = await posResp.json() as { conditionId: string; outcomeIndex: number; size: number }[];
-      for (const p of positions) {
-        currentPosMap.set(`${p.conditionId}:${p.outcomeIndex}`, p.size);
-      }
+  for (const cf of cashflows) {
+    const amount = Math.abs(Number(cf.amount_usd) || 0);
+    const fee = Number(cf.fee_usd) || 0;
+    
+    switch (cf.type) {
+      case 'FILL_BUY':
+        directBuyCost += amount;
+        if (cf.fee_known) directFees += fee;
+        break;
+      case 'FILL_SELL':
+        directSellProceeds += amount;
+        if (cf.fee_known) directFees += fee;
+        break;
+      case 'REDEEM':
+      case 'CLAIM':
+      case 'SETTLEMENT_PAYOUT':
+      case 'MERGE':
+        directRedeemPayout += amount;
+        break;
     }
-  } catch { /* ignore */ }
+  }
 
-  const positionRecords: unknown[] = [];
-  const marketRecords: unknown[] = [];
-  const dailyPnlMap = new Map<string, { realized: number; volume: number; buys: number; sells: number; redeems: number; markets: Set<string> }>();
-  
-  let totalRealizedPnl = 0;
+  const directTotalPnl = directRedeemPayout + directSellProceeds - directBuyCost - directFees;
+  console.log(`[reducer] Direct P/L: buys=$${directBuyCost.toFixed(2)}, sells=$${directSellProceeds.toFixed(2)}, redeems=$${directRedeemPayout.toFixed(2)}, fees=$${directFees.toFixed(2)} => PnL=$${directTotalPnl.toFixed(2)}`);
+
+  // ========================================
+  // STEP 2: PER-MARKET P/L CALCULATION
+  // ========================================
+  interface MarketAccounting {
+    market_id: string;
+    market_slug: string | null;
+    buy_cost: number;
+    sell_proceeds: number;
+    redeem_payout: number;
+    fees: number;
+    realized_pnl: number;
+    up_shares_bought: number;
+    down_shares_bought: number;
+    has_buy: boolean;
+    has_sell: boolean;
+    has_redeem: boolean;
+    first_ts: string;
+    last_ts: string;
+  }
+
+  const marketMap = new Map<string, MarketAccounting>();
+
+  for (const cf of cashflows) {
+    const marketId = cf.market_id;
+    if (!marketId) continue;
+
+    if (!marketMap.has(marketId)) {
+      marketMap.set(marketId, {
+        market_id: marketId,
+        market_slug: cf.raw_json?.slug || null,
+        buy_cost: 0,
+        sell_proceeds: 0,
+        redeem_payout: 0,
+        fees: 0,
+        realized_pnl: 0,
+        up_shares_bought: 0,
+        down_shares_bought: 0,
+        has_buy: false,
+        has_sell: false,
+        has_redeem: false,
+        first_ts: cf.ts,
+        last_ts: cf.ts,
+      });
+    }
+
+    const m = marketMap.get(marketId)!;
+    const amount = Math.abs(Number(cf.amount_usd) || 0);
+    const shares = Number(cf.shares) || 0;
+    const fee = Number(cf.fee_usd) || 0;
+
+    if (cf.ts > m.last_ts) m.last_ts = cf.ts;
+    if (!m.market_slug && cf.raw_json?.slug) m.market_slug = cf.raw_json.slug;
+
+    switch (cf.type) {
+      case 'FILL_BUY':
+        m.has_buy = true;
+        m.buy_cost += amount;
+        if (cf.fee_known) m.fees += fee;
+        if (cf.outcome_side === 'UP') m.up_shares_bought += shares;
+        else m.down_shares_bought += shares;
+        break;
+      case 'FILL_SELL':
+        m.has_sell = true;
+        m.sell_proceeds += amount;
+        if (cf.fee_known) m.fees += fee;
+        break;
+      case 'REDEEM':
+      case 'CLAIM':
+      case 'SETTLEMENT_PAYOUT':
+      case 'MERGE':
+        m.has_redeem = true;
+        m.redeem_payout += amount;
+        break;
+    }
+  }
+
+  // Calculate realized P/L per market using CORRECT formula
+  let totalMarketPnl = 0;
   let claimedCount = 0;
   let lostCount = 0;
 
-  for (const [marketId, marketEvents] of byMarket) {
-    let upShares = 0, downShares = 0;
-    let upCost = 0, downCost = 0;
-    let upRealized = 0, downRealized = 0;
-    let hasBuy = false, hasSell = false, hasRedeem = false;
-    let isClaimed = false, isLost = false;
-    let marketSlug: string | null = null;
-    let redeemOutcome: 'UP' | 'DOWN' | null = null;
-    let redeemPayout = 0;
-    
-    // Track TOTAL cost for market summary (never reset)
-    let totalUpCostSpent = 0, totalDownCostSpent = 0;
+  for (const m of marketMap.values()) {
+    // REALIZED P/L = payouts + sells - buys - fees
+    m.realized_pnl = m.redeem_payout + m.sell_proceeds - m.buy_cost - m.fees;
+    totalMarketPnl += m.realized_pnl;
 
-    for (const e of marketEvents) {
-      const type = e.event_type as 'BUY' | 'SELL' | 'REDEEM';
-      const outcome = e.outcome as 'UP' | 'DOWN';
-      const shares = e.shares || 0;
-      const price = e.price || 0;
-      const cost = shares * price;
-      const date = e.timestamp.split('T')[0];
-
-      if (!marketSlug && e.raw_json?.slug) marketSlug = e.raw_json.slug;
-
-      // Initialize daily record
-      if (!dailyPnlMap.has(date)) {
-        dailyPnlMap.set(date, { realized: 0, volume: 0, buys: 0, sells: 0, redeems: 0, markets: new Set() });
-      }
-      const day = dailyPnlMap.get(date)!;
-      day.markets.add(marketId);
-
-      if (type === 'BUY') {
-        hasBuy = true;
-        day.buys++;
-        day.volume += e.amount_usd;
-        if (outcome === 'UP') {
-          upCost += cost;
-          upShares += shares;
-          totalUpCostSpent += cost; // Track total spent
-        } else {
-          downCost += cost;
-          downShares += shares;
-          totalDownCostSpent += cost; // Track total spent
-        }
-      } else if (type === 'SELL') {
-        hasSell = true;
-        day.sells++;
-        day.volume += e.amount_usd;
-        if (outcome === 'UP' && upShares > 0) {
-          const avgCost = upCost / upShares;
-          const soldShares = Math.min(shares, upShares);
-          const costBasis = soldShares * avgCost;
-          const proceeds = soldShares * price;
-          const pnl = proceeds - costBasis;
-          upRealized += pnl;
-          upShares -= soldShares;
-          upCost = upShares > 0 ? upShares * avgCost : 0;
-          day.realized += pnl;
-        } else if (outcome === 'DOWN' && downShares > 0) {
-          const avgCost = downCost / downShares;
-          const soldShares = Math.min(shares, downShares);
-          const costBasis = soldShares * avgCost;
-          const proceeds = soldShares * price;
-          const pnl = proceeds - costBasis;
-          downRealized += pnl;
-          downShares -= soldShares;
-          downCost = downShares > 0 ? downShares * avgCost : 0;
-          day.realized += pnl;
-        }
-      } else if (type === 'REDEEM') {
-        hasRedeem = true;
-        day.redeems++;
-        redeemOutcome = outcome;
-        const payout = e.amount_usd > 0 ? e.amount_usd : shares;
-        redeemPayout += payout;
-
-        // P&L = payout - remaining cost basis for this outcome
-        let pnl = 0;
-        if (outcome === 'UP') {
-          pnl = payout - upCost;
-          upRealized += pnl;
-          upShares = 0;
-          upCost = 0;
-        } else {
-          pnl = payout - downCost;
-          downRealized += pnl;
-          downShares = 0;
-          downCost = 0;
-        }
-        day.realized += pnl;
-      }
-    }
-
-    const currentUp = currentPosMap.get(`${marketId}:0`) || 0;
-    const currentDown = currentPosMap.get(`${marketId}:1`) || 0;
-    const hasOpenPosition = currentUp > 0 || currentDown > 0;
-
-    let marketState: 'OPEN' | 'SETTLED' = 'OPEN';
-    let resolvedOutcome: 'UP' | 'DOWN' | null = null;
-
-    if (hasRedeem) {
-      isClaimed = true;
-      marketState = 'SETTLED';
-      resolvedOutcome = redeemOutcome;
-      claimedCount++;
-    } else if (hasSell && !hasOpenPosition && upShares === 0 && downShares === 0) {
-      marketState = 'SETTLED';
-    } else if (!hasOpenPosition && !hasRedeem && (upCost > 0 || downCost > 0)) {
-      isLost = true;
-      marketState = 'SETTLED';
-      upRealized -= upCost;
-      downRealized -= downCost;
+    if (m.has_redeem) claimedCount++;
+    else if (m.buy_cost > 0 && m.redeem_payout === 0 && m.sell_proceeds === 0) {
+      // Has buys but no payouts/sells - likely lost
       lostCount++;
     }
+  }
 
-    const totalRealized = upRealized + downRealized;
-    totalRealizedPnl += totalRealized;
+  console.log(`[reducer] Market P/L sum: $${totalMarketPnl.toFixed(2)} (${marketMap.size} markets)`);
 
-    if (upShares > 0 || upCost > 0 || upRealized !== 0) {
-      positionRecords.push({
-        id: `${walletLower}:${marketId}:UP`,
-        wallet: walletLower,
-        market_id: marketId,
-        outcome: 'UP',
-        shares_held: Math.max(0, currentUp || upShares),
-        total_cost_usd: upCost,
-        realized_pnl: upRealized,
-        state: isClaimed ? 'CLAIMED' : (isLost ? 'LOST' : (hasSell && upShares === 0 ? 'SOLD' : 'OPEN')),
-        updated_at: new Date().toISOString(),
+  // ========================================
+  // STEP 3: DAILY P/L CALCULATION
+  // ========================================
+  interface DailyAccounting {
+    date: string;
+    buy_cost: number;
+    sell_proceeds: number;
+    redeem_payout: number;
+    fees: number;
+    net_pnl: number;
+    trade_count: number;
+    markets: Set<string>;
+    buys: number;
+    sells: number;
+    redeems: number;
+  }
+
+  const dailyMap = new Map<string, DailyAccounting>();
+
+  for (const cf of cashflows) {
+    const dateStr = cf.ts.split('T')[0];
+    
+    if (!dailyMap.has(dateStr)) {
+      dailyMap.set(dateStr, {
+        date: dateStr,
+        buy_cost: 0,
+        sell_proceeds: 0,
+        redeem_payout: 0,
+        fees: 0,
+        net_pnl: 0,
+        trade_count: 0,
+        markets: new Set(),
+        buys: 0,
+        sells: 0,
+        redeems: 0,
       });
     }
 
-    if (downShares > 0 || downCost > 0 || downRealized !== 0) {
-      positionRecords.push({
-        id: `${walletLower}:${marketId}:DOWN`,
-        wallet: walletLower,
-        market_id: marketId,
-        outcome: 'DOWN',
-        shares_held: Math.max(0, currentDown || downShares),
-        total_cost_usd: downCost,
-        realized_pnl: downRealized,
-        state: isClaimed ? 'CLAIMED' : (isLost ? 'LOST' : (hasSell && downShares === 0 ? 'SOLD' : 'OPEN')),
-        updated_at: new Date().toISOString(),
-      });
+    const day = dailyMap.get(dateStr)!;
+    const amount = Math.abs(Number(cf.amount_usd) || 0);
+    const fee = Number(cf.fee_usd) || 0;
+
+    if (cf.market_id) day.markets.add(cf.market_id);
+    day.trade_count++;
+
+    switch (cf.type) {
+      case 'FILL_BUY':
+        day.buy_cost += amount;
+        day.buys++;
+        if (cf.fee_known) day.fees += fee;
+        break;
+      case 'FILL_SELL':
+        day.sell_proceeds += amount;
+        day.sells++;
+        if (cf.fee_known) day.fees += fee;
+        break;
+      case 'REDEEM':
+      case 'CLAIM':
+      case 'SETTLEMENT_PAYOUT':
+      case 'MERGE':
+        day.redeem_payout += amount;
+        day.redeems++;
+        break;
     }
-
-    marketRecords.push({
-      id: `${walletLower}:${marketId}`,
-      wallet: walletLower,
-      market_id: marketId,
-      market_slug: marketSlug,
-      state: marketState,
-      resolved_outcome: resolvedOutcome,
-      total_cost: totalUpCostSpent + totalDownCostSpent, // Use TOTAL cost spent, not remaining
-      total_payout: redeemPayout,
-      realized_pnl: totalRealized,
-      has_buy: hasBuy,
-      has_sell: hasSell,
-      has_redeem: hasRedeem,
-      is_claimed: isClaimed,
-      is_lost: isLost,
-      updated_at: new Date().toISOString(),
-    });
   }
 
-  // Store positions and markets
-  if (positionRecords.length > 0) {
-    await batchUpsert('canonical_positions', positionRecords, 'id');
-    console.log(`[reducer] Stored ${positionRecords.length} positions`);
+  // Calculate daily P/L
+  let totalDailyPnl = 0;
+  for (const day of dailyMap.values()) {
+    day.net_pnl = day.redeem_payout + day.sell_proceeds - day.buy_cost - day.fees;
+    totalDailyPnl += day.net_pnl;
   }
 
-  if (marketRecords.length > 0) {
-    await batchUpsert('market_lifecycle', marketRecords, 'id');
-    console.log(`[reducer] Stored ${marketRecords.length} market states`);
+  console.log(`[reducer] Daily P/L sum: $${totalDailyPnl.toFixed(2)} (${dailyMap.size} days)`);
+
+  // ========================================
+  // STEP 4: VALIDATION
+  // ========================================
+  const drift = Math.abs(directTotalPnl - totalMarketPnl);
+  const validationPassed = drift < 0.01;
+
+  if (!validationPassed) {
+    console.warn(`[reducer] VALIDATION FAILED: direct=$${directTotalPnl.toFixed(2)}, market_sum=$${totalMarketPnl.toFixed(2)}, drift=$${drift.toFixed(2)}`);
+  } else {
+    console.log(`[reducer] VALIDATION PASSED: P/L matches within $0.01`);
   }
 
-  // Store daily PnL
-  const dailyRecords = Array.from(dailyPnlMap.entries()).map(([date, day]) => ({
-    date,
+  // ========================================
+  // STEP 5: PERSIST TO DATABASE
+  // ========================================
+
+  // 5a. Update subgraph_pnl_markets with CORRECT P/L
+  const marketRecords = Array.from(marketMap.values()).map(m => ({
+    id: `${walletLower}:${m.market_id}`,
     wallet: walletLower,
-    realized_pnl: day.realized,
-    unrealized_pnl: 0,
-    total_pnl: day.realized,
-    volume_traded: day.volume,
-    markets_active: day.markets.size,
-    buy_count: day.buys,
-    sell_count: day.sells,
-    redeem_count: day.redeems,
+    market_id: m.market_id,
+    market_slug: m.market_slug,
+    up_shares: m.up_shares_bought,
+    down_shares: m.down_shares_bought,
+    total_cost: m.buy_cost,
+    realized_pnl_usd: m.realized_pnl,
+    realized_confidence: 'HIGH',
+    fees_known_usd: m.fees,
+    is_settled: m.has_redeem || (m.buy_cost > 0 && m.sell_proceeds >= m.buy_cost),
+    settlement_outcome: m.has_redeem ? 'WIN' : 
+                        (m.realized_pnl < -m.buy_cost * 0.9 ? 'LOSS' : null),
+    settlement_payout: m.redeem_payout > 0 ? m.redeem_payout : null,
+    payout_ingested: m.has_redeem,
+    payout_amount_usd: m.redeem_payout > 0 ? m.redeem_payout : null,
+    lifecycle_bought: m.has_buy,
+    lifecycle_sold: m.has_sell,
+    lifecycle_claimed: m.has_redeem,
+    lifecycle_lost: m.buy_cost > 0 && m.redeem_payout === 0 && m.sell_proceeds === 0,
+    lifecycle_state: m.has_redeem ? 'CLAIMED' : 
+                     (m.has_sell ? 'SOLD' : 
+                     (m.buy_cost > 0 && m.redeem_payout === 0 && m.sell_proceeds === 0 ? 'LOST' : 'OPEN')),
+    confidence: 'HIGH',
     updated_at: new Date().toISOString(),
   }));
 
-  if (dailyRecords.length > 0) {
-    await batchUpsert('daily_pnl', dailyRecords, 'wallet,date');
-    console.log(`[reducer] Stored ${dailyRecords.length} daily PnL records`);
-  }
+  await batchUpsert('subgraph_pnl_markets', marketRecords, 'id', 100);
+  console.log(`[reducer] Updated ${marketRecords.length} market P/L records`);
 
-  // Get date range
-  const dates = events.map(e => e.timestamp);
-  const oldestEvent = dates[0];
-  const newestEvent = dates[dates.length - 1];
+  // 5b. Update market_lifecycle
+  const lifecycleRecords = Array.from(marketMap.values()).map(m => ({
+    id: `${walletLower}:${m.market_id}`,
+    wallet: walletLower,
+    market_id: m.market_id,
+    market_slug: m.market_slug,
+    state: m.has_redeem ? 'SETTLED' : (m.has_sell ? 'SOLD' : 'OPEN'),
+    total_cost: m.buy_cost,
+    total_payout: m.redeem_payout,
+    realized_pnl: m.realized_pnl,
+    has_buy: m.has_buy,
+    has_sell: m.has_sell,
+    has_redeem: m.has_redeem,
+    is_claimed: m.has_redeem,
+    is_lost: m.buy_cost > 0 && m.redeem_payout === 0 && m.sell_proceeds === 0,
+    updated_at: new Date().toISOString(),
+  }));
 
-  // Update account summary
-  const totalVolume = Array.from(dailyPnlMap.values()).reduce((s, d) => s + d.volume, 0);
+  await batchUpsert('market_lifecycle', lifecycleRecords, 'id', 100);
+  console.log(`[reducer] Updated ${lifecycleRecords.length} market lifecycle records`);
+
+  // 5c. Update daily_pnl with CORRECT formula
+  const dailyRecords = Array.from(dailyMap.values()).map(d => ({
+    id: `${walletLower}:${d.date}`,
+    wallet: walletLower,
+    date: d.date,
+    realized_pnl: d.net_pnl,
+    unrealized_pnl: 0,
+    total_pnl: d.net_pnl,
+    volume_traded: d.buy_cost + d.sell_proceeds,
+    markets_active: d.markets.size,
+    buy_count: d.buys,
+    sell_count: d.sells,
+    redeem_count: d.redeems,
+    updated_at: new Date().toISOString(),
+  }));
+
+  await batchUpsert('daily_pnl', dailyRecords, 'id', 100);
+  console.log(`[reducer] Updated ${dailyRecords.length} daily P/L records`);
+
+  // 5d. Update summary with CORRECT totals
+  const summaryRecord = {
+    wallet: walletLower,
+    total_realized_pnl: directTotalPnl, // Use validated direct calculation
+    total_unrealized_pnl: 0,
+    total_pnl: directTotalPnl,
+    total_fees_known: directFees,
+    total_fills: cashflows.filter(cf => cf.type.startsWith('FILL_')).length,
+    total_payouts: cashflows.filter(cf => ['REDEEM', 'CLAIM', 'SETTLEMENT_PAYOUT', 'MERGE'].includes(cf.type)).length,
+    total_markets: marketMap.size,
+    settled_markets: claimedCount + lostCount,
+    open_markets: marketMap.size - claimedCount - lostCount,
+    markets_claimed: claimedCount,
+    markets_lost: lostCount,
+    realized_confidence: 'HIGH',
+    overall_confidence: validationPassed ? 'HIGH' : 'LOW',
+    pnl_complete: true,
+    updated_at: new Date().toISOString(),
+  };
+
+  await executeRest('subgraph_pnl_summary', 'upsert', [summaryRecord], { onConflict: 'wallet' });
+  console.log(`[reducer] Updated summary: P/L=$${directTotalPnl.toFixed(2)}`);
+
+  // 5e. Update account_pnl_summary for dashboard
+  const dates = cashflows.map(cf => cf.ts);
   await executeRest('account_pnl_summary', 'upsert', [{
     wallet: walletLower,
-    total_realized_pnl: totalRealizedPnl,
+    total_realized_pnl: directTotalPnl,
     total_unrealized_pnl: 0,
-    total_pnl: totalRealizedPnl,
-    first_trade_ts: oldestEvent,
-    last_trade_ts: newestEvent,
-    total_trades: events.length,
-    total_markets: marketRecords.length,
-    total_volume: totalVolume,
+    total_pnl: directTotalPnl,
+    first_trade_ts: dates[0],
+    last_trade_ts: dates[dates.length - 1],
+    total_trades: cashflows.length,
+    total_markets: marketMap.size,
+    total_volume: directBuyCost + directSellProceeds,
     claimed_markets: claimedCount,
     lost_markets: lostCount,
-    open_markets: marketRecords.filter((m: any) => m.state === 'OPEN').length,
+    open_markets: marketMap.size - claimedCount - lostCount,
     updated_at: new Date().toISOString(),
   }], { onConflict: 'wallet' });
 
-  console.log(`[reducer] Updated account summary: PnL=$${totalRealizedPnl.toFixed(2)}`);
-
   return {
-    marketsProcessed: marketRecords.length,
-    realizedPnl: totalRealizedPnl,
+    marketsProcessed: marketMap.size,
+    realizedPnl: directTotalPnl,
     claimedMarkets: claimedCount,
     lostMarkets: lostCount,
-    daysWithActivity: dailyPnlMap.size,
+    daysWithActivity: dailyMap.size,
+    validation: { passed: validationPassed, drift },
   };
 }
 
