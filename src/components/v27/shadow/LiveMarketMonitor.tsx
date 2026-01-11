@@ -4,7 +4,7 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Button } from '@/components/ui/button';
-import { Activity, RefreshCw, TrendingUp, TrendingDown, AlertTriangle, Target, Flame } from 'lucide-react';
+import { Activity, RefreshCw, AlertTriangle, Target, Flame } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { cn } from '@/lib/utils';
 
@@ -30,6 +30,8 @@ interface LiveMarketRow {
   hotSignal: boolean;
   blocked: boolean;
   blockReason: string | null;
+  action: string;
+  lastTs: number;
 }
 
 export function LiveMarketMonitor() {
@@ -39,65 +41,88 @@ export function LiveMarketMonitor() {
 
   const fetchMarkets = useCallback(async () => {
     try {
-      // Fetch live market data
-      const { data, error } = await supabase.functions.invoke('clob-prices', {
-        body: { assets: ['BTC', 'ETH', 'SOL', 'XRP'] }
-      });
+      // Fetch recent v27_evaluations to show live market state
+      const { data: evals, error } = await supabase
+        .from('v27_evaluations')
+        .select('*')
+        .order('ts', { ascending: false })
+        .limit(200);
 
       if (error) {
-        console.error('Failed to fetch markets:', error);
+        console.error('Failed to fetch evaluations:', error);
         return;
       }
 
-      if (data?.markets) {
+      if (evals && evals.length > 0) {
+        // Group by market_id and take latest for each
+        const marketMap = new Map<string, any>();
+        for (const e of evals) {
+          if (!marketMap.has(e.market_id) || marketMap.get(e.market_id).ts < e.ts) {
+            marketMap.set(e.market_id, e);
+          }
+        }
+
         const now = Date.now();
-        const activeMarkets: LiveMarketRow[] = data.markets
-          .filter((m: any) => new Date(m.eventEndTime).getTime() > now)
-          .map((m: any) => {
-            const spotPrice = data.spotPrices?.[m.asset] || 0;
-            const deltaAbs = Math.abs(spotPrice - m.strikePrice);
-            const deltaPct = m.strikePrice > 0 ? (deltaAbs / m.strikePrice) * 100 : 0;
-            const timeRemaining = Math.max(0, (new Date(m.eventEndTime).getTime() - now) / 1000);
+        const activeMarkets: LiveMarketRow[] = Array.from(marketMap.values())
+          .map((e) => {
+            const spotPrice = Number(e.spot_price) || 0;
+            const strikePrice = spotPrice; // Derive from market_id if needed
+            const deltaAbs = Math.abs(Number(e.delta_up) || Number(e.delta_down) || 0);
+            const deltaPct = deltaAbs * 100;
             
-            const upMid = (m.upBid + m.upAsk) / 2 || m.upMid || 0.5;
-            const downMid = (m.downBid + m.downAsk) / 2 || m.downMid || 0.5;
+            const upBid = Number(e.pm_up_bid) || 0;
+            const upAsk = Number(e.pm_up_ask) || 1;
+            const downBid = Number(e.pm_down_bid) || 0;
+            const downAsk = Number(e.pm_down_ask) || 1;
             
-            // Calculate expected prices from spot
-            const expectedUp = spotPrice > m.strikePrice ? 0.95 : 0.05;
-            const expectedDown = spotPrice < m.strikePrice ? 0.95 : 0.05;
+            const upMid = (upBid + upAsk) / 2;
+            const downMid = (downBid + downAsk) / 2;
             
-            const mispricingCents = Math.abs(upMid - expectedUp) * 100;
-            const threshold = { BTC: 0.03, ETH: 0.04, SOL: 0.05, XRP: 0.06 }[m.asset] || 0.05;
-            const mispricingPctThreshold = (mispricingCents / 100) / threshold * 100;
+            // Expected from spot delta
+            const expectedUp = Number(e.theoretical_up) || 0.5;
+            const expectedDown = Number(e.theoretical_down) || 0.5;
+            
+            const mispricingCents = Number(e.mispricing_magnitude) || 0;
+            const threshold = Number(e.dynamic_threshold) || Number(e.base_threshold) || 0.03;
+            const mispricingPctThreshold = threshold > 0 ? (mispricingCents / threshold) * 100 : 0;
             
             const nearSignal = mispricingPctThreshold >= 60;
-            const hotSignal = mispricingPctThreshold >= 85;
+            const hotSignal = mispricingPctThreshold >= 85 || e.signal_valid;
+            const blocked = e.adverse_blocked || false;
+            
+            // Extract time remaining from market_id (format: asset-updown-15m-timestamp)
+            const parts = e.market_id.split('-');
+            const endTs = parseInt(parts[parts.length - 1], 10) || 0;
+            const timeRemaining = Math.max(0, (endTs * 1000 - now) / 1000);
 
             return {
-              asset: m.asset,
-              marketId: m.id,
+              asset: e.asset,
+              marketId: e.market_id,
               timeRemaining,
-              strikePrice: m.strikePrice,
+              strikePrice,
               spotPrice,
               deltaAbs,
               deltaPct,
               stateScore: mispricingPctThreshold,
               expectedUp,
               expectedDown,
-              upBid: m.upBid || 0,
-              upAsk: m.upAsk || 0,
-              downBid: m.downBid || 0,
-              downAsk: m.downAsk || 0,
-              spreadTicks: Math.round(((m.upAsk - m.upBid) + (m.downAsk - m.downBid)) / 2 * 100),
-              mispricingCents,
+              upBid,
+              upAsk,
+              downBid,
+              downAsk,
+              spreadTicks: Math.round(((upAsk - upBid) + (downAsk - downBid)) / 2 * 100),
+              mispricingCents: mispricingCents * 100,
               mispricingPctThreshold,
               nearSignal,
               hotSignal,
-              blocked: false,
-              blockReason: null,
+              blocked,
+              blockReason: e.adverse_reason || e.skip_reason || null,
+              action: e.action || 'SCAN',
+              lastTs: e.ts,
             };
           })
-          .sort((a: LiveMarketRow, b: LiveMarketRow) => a.timeRemaining - b.timeRemaining);
+          .filter((m) => m.timeRemaining > 0 || m.lastTs > now - 300000) // Recent or active
+          .sort((a, b) => b.lastTs - a.lastTs);
 
         setMarkets(activeMarkets);
       }
@@ -116,14 +141,15 @@ export function LiveMarketMonitor() {
 
   useEffect(() => {
     fetchMarkets();
-    const interval = setInterval(fetchMarkets, 5000);
+    const interval = setInterval(fetchMarkets, 3000);
     return () => clearInterval(interval);
   }, [fetchMarkets]);
 
   const formatTime = (seconds: number) => {
+    if (seconds <= 0) return 'Exp';
     if (seconds < 60) return `${Math.floor(seconds)}s`;
     if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-    return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+    return `${Math.floor(seconds / 3600)}h`;
   };
 
   return (
@@ -132,7 +158,7 @@ export function LiveMarketMonitor() {
         <CardTitle className="text-lg flex items-center gap-2">
           <Activity className="h-5 w-5 text-primary" />
           Live Market Monitor
-          <Badge variant="outline" className="ml-2">{markets.length} active</Badge>
+          <Badge variant="outline" className="ml-2">{markets.length} markets</Badge>
         </CardTitle>
         <Button variant="ghost" size="sm" onClick={handleRefresh} disabled={refreshing}>
           <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
@@ -145,7 +171,6 @@ export function LiveMarketMonitor() {
               <TableRow>
                 <TableHead className="w-[70px]">Asset</TableHead>
                 <TableHead className="w-[60px]">Time</TableHead>
-                <TableHead className="text-right">Strike</TableHead>
                 <TableHead className="text-right">Spot</TableHead>
                 <TableHead className="text-right">Δ%</TableHead>
                 <TableHead className="text-right">UP bid/ask</TableHead>
@@ -159,8 +184,8 @@ export function LiveMarketMonitor() {
             <TableBody>
               {markets.length === 0 && !loading && (
                 <TableRow>
-                  <TableCell colSpan={11} className="text-center text-muted-foreground py-8">
-                    No active markets
+                  <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
+                    No active markets - waiting for evaluations...
                   </TableCell>
                 </TableRow>
               )}
@@ -169,7 +194,8 @@ export function LiveMarketMonitor() {
                   key={m.marketId}
                   className={cn(
                     m.blocked && "bg-red-500/5",
-                    m.hotSignal && !m.blocked && "bg-orange-500/10",
+                    m.action === 'ENTRY' && "bg-green-500/10",
+                    m.hotSignal && !m.blocked && m.action !== 'ENTRY' && "bg-orange-500/10",
                     m.nearSignal && !m.hotSignal && !m.blocked && "bg-amber-500/5"
                   )}
                 >
@@ -182,14 +208,11 @@ export function LiveMarketMonitor() {
                     {formatTime(m.timeRemaining)}
                   </TableCell>
                   <TableCell className="text-right font-mono text-sm">
-                    ${m.strikePrice.toLocaleString()}
-                  </TableCell>
-                  <TableCell className="text-right font-mono text-sm">
-                    ${m.spotPrice.toLocaleString()}
+                    ${m.spotPrice.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                   </TableCell>
                   <TableCell className="text-right">
-                    <span className={m.spotPrice >= m.strikePrice ? 'text-green-400' : 'text-red-400'}>
-                      {m.spotPrice >= m.strikePrice ? '+' : '-'}{m.deltaPct.toFixed(2)}%
+                    <span className={m.deltaPct > 0 ? 'text-green-400' : 'text-muted-foreground'}>
+                      {m.deltaPct.toFixed(2)}%
                     </span>
                   </TableCell>
                   <TableCell className="text-right text-xs font-mono">
@@ -220,7 +243,11 @@ export function LiveMarketMonitor() {
                     </span>
                   </TableCell>
                   <TableCell>
-                    {m.blocked ? (
+                    {m.action === 'ENTRY' ? (
+                      <Badge className="bg-green-500/20 text-green-400 border-green-500/30 text-xs">
+                        ENTRY
+                      </Badge>
+                    ) : m.blocked ? (
                       <Badge variant="destructive" className="text-xs">
                         <AlertTriangle className="h-3 w-3 mr-1" />
                         Block
