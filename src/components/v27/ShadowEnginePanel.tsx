@@ -1,9 +1,10 @@
+import { forwardRef } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { 
-  Eye, Zap, Shield, TrendingUp, TrendingDown, Activity, 
+  Eye, Zap, Shield, Activity, 
   CheckCircle2, XCircle, AlertTriangle, Target, Clock
 } from 'lucide-react';
 import { format, formatDistanceToNow } from 'date-fns';
@@ -16,7 +17,8 @@ interface ShadowEnginePanelProps {
   stats: ShadowStats;
 }
 
-export function ShadowEnginePanel({ evaluations, trackings, stats }: ShadowEnginePanelProps) {
+export const ShadowEnginePanel = forwardRef<HTMLDivElement, ShadowEnginePanelProps>(
+  function ShadowEnginePanel({ evaluations, trackings, stats }, ref) {
   const signalQuality = stats.signalsDetected > 0 
     ? (stats.cleanSignals / stats.signalsDetected * 100) 
     : 0;
@@ -34,7 +36,7 @@ export function ShadowEnginePanel({ evaluations, trackings, stats }: ShadowEngin
     : 0;
 
   return (
-    <div className="space-y-6">
+    <div ref={ref} className="space-y-6">
       {/* Shadow Mode Banner */}
       <Card className="border-amber-500/50 bg-amber-500/5">
         <CardHeader className="pb-3">
@@ -362,4 +364,6 @@ export function ShadowEnginePanel({ evaluations, trackings, stats }: ShadowEngin
       </Card>
     </div>
   );
-}
+});
+
+ShadowEnginePanel.displayName = 'ShadowEnginePanel';
