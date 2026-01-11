@@ -31,6 +31,7 @@ import { LiveBotDataFeed } from '@/components/LiveBotDataFeed';
 import { HedgeFeasibilityDashboard } from '@/components/HedgeFeasibilityDashboard';
 import { RunnerConflictBanner } from '@/components/RunnerConflictBanner';
 import { PositionCacheStatus } from '@/components/PositionCacheStatus';
+import { ActiveMarketsPanel } from '@/components/ActiveMarketsPanel';
 import { supabase } from '@/integrations/supabase/client';
 
 interface WalletBalance {
@@ -180,6 +181,11 @@ export default function LiveTrading() {
             </div>
           </CollapsibleContent>
         </Collapsible>
+
+        {/* Active Markets Panel - Shows live markets + hypothetical positions */}
+        <div className="mb-8">
+          <ActiveMarketsPanel />
+        </div>
 
         {/* Live Bot Data Feed - Realtime orderbook + fills from runner */}
         <div className="mb-8">
