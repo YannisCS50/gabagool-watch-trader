@@ -33,7 +33,18 @@ export function RealtimePriceLogger() {
 
   const [selectedAsset, setSelectedAsset] = useState<string>('BTC');
   const [isExporting, setIsExporting] = useState(false);
+  const [isExportingSnapshots, setIsExportingSnapshots] = useState(false);
   const [exportTimeRange, setExportTimeRange] = useState<'30m' | '1h' | '6h' | '24h' | 'all'>('1h');
+
+  // Calculate time filter for exports
+  const getTimeFilter = useCallback(() => {
+    if (exportTimeRange === 'all') return null;
+    const now = new Date();
+    const minutes = exportTimeRange === '30m' ? 30 : 
+                   exportTimeRange === '1h' ? 60 : 
+                   exportTimeRange === '6h' ? 360 : 1440;
+    return new Date(now.getTime() - minutes * 60 * 1000).toISOString();
+  }, [exportTimeRange]);
 
   // Export all logs from database
   const exportAllLogs = useCallback(async () => {
@@ -44,14 +55,9 @@ export function RealtimePriceLogger() {
         .select('*')
         .order('created_at', { ascending: true });
 
-      // Apply time filter
-      if (exportTimeRange !== 'all') {
-        const now = new Date();
-        const minutes = exportTimeRange === '30m' ? 30 : 
-                       exportTimeRange === '1h' ? 60 : 
-                       exportTimeRange === '6h' ? 360 : 1440;
-        const from = new Date(now.getTime() - minutes * 60 * 1000);
-        query = query.gte('created_at', from.toISOString());
+      const timeFilter = getTimeFilter();
+      if (timeFilter) {
+        query = query.gte('created_at', timeFilter);
       }
 
       const { data, error: fetchError } = await query;
@@ -96,7 +102,116 @@ export function RealtimePriceLogger() {
     } finally {
       setIsExporting(false);
     }
-  }, [exportTimeRange]);
+  }, [exportTimeRange, getTimeFilter]);
+
+  // Export snapshot_logs with UP/DOWN prices and midprices
+  const exportSnapshotLogs = useCallback(async () => {
+    setIsExportingSnapshots(true);
+    try {
+      const timeFilter = getTimeFilter();
+      
+      // Fetch snapshot_logs with pagination
+      const pageSize = 1000;
+      let allData: any[] = [];
+      let offset = 0;
+      let hasMore = true;
+
+      while (hasMore) {
+        let query = supabase
+          .from('snapshot_logs')
+          .select('created_at,asset,market_id,strike_price,spot_price,up_ask,up_bid,down_ask,down_bid,combined_ask,combined_mid,bot_state')
+          .order('created_at', { ascending: true })
+          .range(offset, offset + pageSize - 1);
+
+        if (timeFilter) {
+          query = query.gte('created_at', timeFilter);
+        }
+
+        const { data, error: fetchError } = await query;
+        if (fetchError) throw fetchError;
+        
+        if (data && data.length > 0) {
+          allData = [...allData, ...data];
+          offset += pageSize;
+          hasMore = data.length === pageSize;
+        } else {
+          hasMore = false;
+        }
+      }
+
+      if (allData.length === 0) {
+        toast.error('No snapshot data to export');
+        return;
+      }
+
+      // Create CSV with UP/DOWN prices
+      const headers = [
+        'timestamp',
+        'asset',
+        'market_id',
+        'bot_state',
+        'strike_price',
+        'spot_price',
+        'up_bid',
+        'up_ask',
+        'up_mid',
+        'down_bid',
+        'down_ask',
+        'down_mid',
+        'combined_ask',
+        'combined_mid',
+        'arb_edge'
+      ];
+
+      const rows = allData.map((s) => {
+        const upMid = (s.up_bid !== null && s.up_ask !== null) 
+          ? ((s.up_bid + s.up_ask) / 2).toFixed(4) 
+          : '';
+        const downMid = (s.down_bid !== null && s.down_ask !== null) 
+          ? ((s.down_bid + s.down_ask) / 2).toFixed(4) 
+          : '';
+        const arbEdge = s.combined_ask !== null && s.combined_ask < 1 
+          ? (1 - s.combined_ask).toFixed(4) 
+          : '';
+
+        return [
+          s.created_at,
+          s.asset,
+          s.market_id,
+          s.bot_state || '',
+          s.strike_price?.toFixed(2) || '',
+          s.spot_price?.toFixed(2) || '',
+          s.up_bid?.toFixed(4) || '',
+          s.up_ask?.toFixed(4) || '',
+          upMid,
+          s.down_bid?.toFixed(4) || '',
+          s.down_ask?.toFixed(4) || '',
+          downMid,
+          s.combined_ask?.toFixed(4) || '',
+          s.combined_mid?.toFixed(4) || '',
+          arbEdge
+        ].join(',');
+      });
+
+      const csv = [headers.join(','), ...rows].join('\n');
+
+      // Download
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `polymarket-ticks-${exportTimeRange}-${format(new Date(), 'yyyy-MM-dd-HHmm')}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      toast.success(`Exported ${allData.length.toLocaleString()} Polymarket tick rows`);
+    } catch (e) {
+      console.error('Snapshot export failed:', e);
+      toast.error('Export failed: ' + (e instanceof Error ? e.message : 'Unknown error'));
+    } finally {
+      setIsExportingSnapshots(false);
+    }
+  }, [exportTimeRange, getTimeFilter]);
 
   // Calculate analytics from logs
   const analytics = useMemo(() => {
@@ -362,7 +477,21 @@ export function RealtimePriceLogger() {
                 ) : (
                   <Download className="h-3 w-3 mr-1" />
                 )}
-                Export CSV
+                Raw Logs
+              </Button>
+              <Button
+                onClick={exportSnapshotLogs}
+                variant="outline"
+                size="sm"
+                disabled={isExportingSnapshots}
+                className="border-fuchsia-600 text-fuchsia-400 hover:bg-fuchsia-950"
+              >
+                {isExportingSnapshots ? (
+                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                ) : (
+                  <Download className="h-3 w-3 mr-1" />
+                )}
+                UP/DOWN Ticks
               </Button>
             </div>
           </div>
