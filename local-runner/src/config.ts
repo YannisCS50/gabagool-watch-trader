@@ -98,8 +98,17 @@ const envFromDockerOrCli = Boolean(process.env.POLYMARKET_PRIVATE_KEY);
 
 let loadedEnvPath: string | null = null;
 
+const hasDbEnv = Boolean(
+  (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL) &&
+    (process.env.SUPABASE_ANON_KEY ||
+      process.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+      process.env.SUPABASE_SERVICE_ROLE_KEY)
+);
+
 if (envFromDockerOrCli) {
-  // Docker already injected env vars via env_file — do NOT load any .env from disk
+  // Docker/CLI may already have injected env vars. However, on some setups only
+  // the Polymarket keys are exported, and DB vars are missing; in that case,
+  // we *supplement* from an env file on disk.
   loadedEnvPath = '(docker env_file / CLI)';
 
   // Optional: validate a mounted env file (so we can detect duplicates even in Docker)
@@ -121,11 +130,48 @@ if (envFromDockerOrCli) {
         process.exit(1);
       }
     } else {
-      console.warn(`⚠️ ENV_FILE is set to "${mountedEnvPath}" but is not readable inside this container.`);
-      console.warn('   Mount the file into the container to enable duplicate-key validation.');
+      console.warn(`⚠️ ENV_FILE is set to "${mountedEnvPath}" but is not readable on disk.`);
     }
-  } else {
-    console.warn('ℹ️  Duplicate-key validation is skipped in Docker unless ENV_FILE is mounted into the container.');
+  }
+
+  if (!hasDbEnv) {
+    const envCandidates = [
+      process.env.ENV_FILE,
+      process.env.DOTENV_CONFIG_PATH,
+      '/home/deploy/secrets/local-runner.env',
+    ].filter(Boolean) as string[];
+
+    for (const p of envCandidates) {
+      try {
+        if (fs.existsSync(p)) {
+          console.log(`\n🔍 Validating env file: ${p}`);
+          const validation = validateEnvFile(p);
+
+          for (const err of validation.errors) console.error(err);
+          for (const warn of validation.warnings) console.warn(warn);
+
+          if (!validation.valid) {
+            console.error('\n' + '='.repeat(60));
+            console.error('❌ ENV FILE VALIDATION FAILED');
+            console.error('='.repeat(60));
+            console.error('\nFix the duplicate keys in your env file before continuing.');
+            console.error('Each key should appear exactly ONCE.\n');
+            process.exit(1);
+          }
+
+          dotenv.config({ path: p, override: false });
+          loadedEnvPath = `${p} (supplement)`;
+          break;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (!process.env.SUPABASE_URL && !process.env.VITE_SUPABASE_URL) {
+      console.warn('⚠️  Database env vars still missing (SUPABASE_URL / SUPABASE_ANON_KEY).');
+      console.warn('   Add them to your env_file or /home/deploy/secrets/local-runner.env.');
+    }
   }
 } else {
   const envCandidates = [
