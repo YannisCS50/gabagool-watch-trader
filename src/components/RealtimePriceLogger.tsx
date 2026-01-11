@@ -3,11 +3,13 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { RefreshCw, Database, Zap, Server, TrendingUp, Activity, Clock, Wifi, WifiOff } from 'lucide-react';
+import { RefreshCw, Database, Zap, Server, TrendingUp, Activity, Clock, Wifi, WifiOff, Download, Loader2 } from 'lucide-react';
 import { format } from 'date-fns';
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useCallback } from 'react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend, ReferenceLine } from 'recharts';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { supabase } from '@/integrations/supabase/client';
+import { toast } from 'sonner';
 
 interface PriceLog {
   id: string;
@@ -30,6 +32,71 @@ export function RealtimePriceLogger() {
   } = useRealtimePriceLogs();
 
   const [selectedAsset, setSelectedAsset] = useState<string>('BTC');
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportTimeRange, setExportTimeRange] = useState<'30m' | '1h' | '6h' | '24h' | 'all'>('1h');
+
+  // Export all logs from database
+  const exportAllLogs = useCallback(async () => {
+    setIsExporting(true);
+    try {
+      let query = supabase
+        .from('realtime_price_logs')
+        .select('*')
+        .order('created_at', { ascending: true });
+
+      // Apply time filter
+      if (exportTimeRange !== 'all') {
+        const now = new Date();
+        const minutes = exportTimeRange === '30m' ? 30 : 
+                       exportTimeRange === '1h' ? 60 : 
+                       exportTimeRange === '6h' ? 360 : 1440;
+        const from = new Date(now.getTime() - minutes * 60 * 1000);
+        query = query.gte('created_at', from.toISOString());
+      }
+
+      const { data, error: fetchError } = await query;
+
+      if (fetchError) throw fetchError;
+      if (!data || data.length === 0) {
+        toast.error('No data to export');
+        return;
+      }
+
+      // Create CSV
+      const headers = ['id', 'source', 'asset', 'outcome', 'price', 'raw_timestamp', 'received_at', 'created_at'];
+      const rows = data.map(row => [
+        row.id,
+        row.source,
+        row.asset,
+        row.outcome || '',
+        row.price,
+        row.raw_timestamp || '',
+        row.received_at,
+        row.created_at
+      ]);
+
+      const csv = [
+        headers.join(','),
+        ...rows.map(r => r.map(v => typeof v === 'string' && v.includes(',') ? `"${v}"` : v).join(','))
+      ].join('\n');
+
+      // Download
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `price-logs-${exportTimeRange}-${format(new Date(), 'yyyy-MM-dd-HHmm')}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      toast.success(`Exported ${data.length.toLocaleString()} rows`);
+    } catch (e) {
+      console.error('Export failed:', e);
+      toast.error('Export failed: ' + (e instanceof Error ? e.message : 'Unknown error'));
+    } finally {
+      setIsExporting(false);
+    }
+  }, [exportTimeRange]);
 
   // Calculate analytics from logs
   const analytics = useMemo(() => {
@@ -257,6 +324,51 @@ export function RealtimePriceLogger() {
 
   return (
     <div className="space-y-4">
+      {/* Export Controls */}
+      <Card className="bg-[#161B22] border-[#30363D]">
+        <CardContent className="pt-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Database className="h-5 w-5 text-blue-400" />
+              <div>
+                <div className="font-semibold text-[#E6EDF3]">Export Price Logs</div>
+                <div className="text-xs text-muted-foreground">
+                  {status ? `${status.totalLogs.toLocaleString()} total rows • ${status.lastHourLogs.toLocaleString()} last hour` : 'Loading...'}
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <Select value={exportTimeRange} onValueChange={(v) => setExportTimeRange(v as typeof exportTimeRange)}>
+                <SelectTrigger className="w-24 h-8 bg-[#21262D] border-[#30363D] text-[#E6EDF3]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-[#21262D] border-[#30363D]">
+                  <SelectItem value="30m" className="text-[#E6EDF3]">30 min</SelectItem>
+                  <SelectItem value="1h" className="text-[#E6EDF3]">1 hour</SelectItem>
+                  <SelectItem value="6h" className="text-[#E6EDF3]">6 hours</SelectItem>
+                  <SelectItem value="24h" className="text-[#E6EDF3]">24 hours</SelectItem>
+                  <SelectItem value="all" className="text-[#E6EDF3]">All data</SelectItem>
+                </SelectContent>
+              </Select>
+              <Button
+                onClick={exportAllLogs}
+                variant="outline"
+                size="sm"
+                disabled={isExporting}
+                className="border-[#30363D] text-[#E6EDF3] hover:bg-[#21262D]"
+              >
+                {isExporting ? (
+                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                ) : (
+                  <Download className="h-3 w-3 mr-1" />
+                )}
+                Export CSV
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* WebSocket Status */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Card className="bg-[#161B22] border-[#30363D]">
