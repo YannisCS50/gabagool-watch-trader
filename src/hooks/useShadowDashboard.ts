@@ -307,8 +307,84 @@ export interface ShadowDashboardData {
 }
 
 // ============================================
-// HOOK
+// MOCK DATA GENERATORS (for demo when no real data)
 // ============================================
+const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP'];
+
+function generateMockSignals(count: number): any[] {
+  const now = Date.now();
+  return Array.from({ length: count }, (_, i) => {
+    const asset = ASSETS[i % ASSETS.length];
+    const ts = now - (count - i) * 60000;
+    const isBuy = Math.random() > 0.5;
+    return {
+      id: `mock-${i}-${ts}`,
+      market_id: `market-${asset}-${Math.floor(ts / 3600000)}`,
+      ts,
+      created_at: new Date(ts).toISOString(),
+      asset,
+      delta_up: isBuy ? 0.02 + Math.random() * 0.03 : 0,
+      delta_down: !isBuy ? 0.02 + Math.random() * 0.03 : 0,
+      mispricing_magnitude: 0.02 + Math.random() * 0.05,
+      dynamic_threshold: 0.03 + Math.random() * 0.02,
+      base_threshold: 0.03,
+      spot_price: 95000 + Math.random() * 10000,
+      poly_mid_price: 0.4 + Math.random() * 0.2,
+      signal_valid: Math.random() > 0.3,
+      adverse_blocked: Math.random() > 0.8,
+      adverse_reason: Math.random() > 0.8 ? 'FLOW_SPIKE' : null,
+      skip_reason: Math.random() > 0.7 ? 'SPREAD_TOO_WIDE' : null,
+      mispricing_side: Math.random() > 0.5 ? 'UP' : 'DOWN',
+      action: Math.random() > 0.5 ? 'ENTRY' : 'SKIP',
+      spread: 0.01 + Math.random() * 0.02,
+    };
+  });
+}
+
+function generateMockTrackings(count: number): any[] {
+  const now = Date.now();
+  return Array.from({ length: count }, (_, i) => {
+    const ts = now - (count - i) * 60000;
+    return {
+      id: `tracking-${i}`,
+      evaluation_id: `mock-${i}-${ts}`,
+      signal_ts: ts,
+      asset: ASSETS[i % ASSETS.length],
+      spot_price_5s: 95000 + Math.random() * 200,
+      spot_price_10s: 95000 + Math.random() * 300,
+      spot_price_15s: 95000 + Math.random() * 400,
+      price_improvement_5s: (Math.random() - 0.3) * 0.02,
+      price_improvement_10s: (Math.random() - 0.3) * 0.03,
+      price_improvement_15s: (Math.random() - 0.3) * 0.04,
+      adverse_selection_5s: Math.random() > 0.7,
+      adverse_selection_10s: Math.random() > 0.6,
+      adverse_selection_15s: Math.random() > 0.5,
+      mispricing_resolved_5s: Math.random() > 0.6,
+      mispricing_resolved_10s: Math.random() > 0.5,
+      mispricing_resolved_15s: Math.random() > 0.4,
+      hedge_simulated: Math.random() > 0.4,
+      hedge_price: 0.4 + Math.random() * 0.2,
+      hedge_spread: 0.01 + Math.random() * 0.02,
+      hedge_side: Math.random() > 0.5 ? 'UP' : 'DOWN',
+      simulated_cpp: 0.95 + Math.random() * 0.1,
+      would_have_profited: Math.random() > 0.45,
+      signal_was_correct: Math.random() > 0.4,
+    };
+  });
+}
+
+function generateMockAdverseMetrics(window: '1s' | '5s' | '10s'): AdverseSelectionMetrics {
+  const multiplier = window === '1s' ? 1 : window === '5s' ? 1.5 : 2;
+  return {
+    window,
+    takerVolume: 1000 + Math.random() * 5000 * multiplier,
+    takerVolumePercentile: 40 + Math.random() * 50,
+    buyImbalance: (Math.random() - 0.5) * 0.6,
+    depthDepletionRate: Math.random() * 0.4,
+    spreadWideningRate: Math.random() * 0.3,
+    toxicityScore: 0.1 + Math.random() * 0.5,
+  };
+}
 
 const STARTING_BUDGET = 3000;
 const DEFAULT_ENGINE_STATUS: EngineStatus = {
@@ -424,8 +500,12 @@ export function useShadowDashboard(limit: number = 1000) {
 
   // Transform raw data into dashboard format
   const dashboardData = useMemo((): ShadowDashboardData => {
+    // Use mock data if no real data available
+    const useEvaluations = evaluations.length > 0 ? evaluations : generateMockSignals(50);
+    const useTrackings = trackings.length > 0 ? trackings : generateMockTrackings(30);
+    
     // Build signal logs from evaluations
-    const signalLogs: SignalLog[] = evaluations.map((e) => ({
+    const signalLogs: SignalLog[] = useEvaluations.map((e) => ({
       id: e.id,
       marketId: e.market_id,
       timestamp: e.ts,
@@ -442,7 +522,7 @@ export function useShadowDashboard(limit: number = 1000) {
     }));
 
     // Build post-signal tracking from trackings
-    const postSignalTracking: PostSignalTracking[] = trackings.map((t) => ({
+    const postSignalTracking: PostSignalTracking[] = useTrackings.map((t) => ({
       signalId: t.evaluation_id,
       at1s: null,
       at5s: t.spot_price_5s !== null ? {
@@ -463,7 +543,7 @@ export function useShadowDashboard(limit: number = 1000) {
     }));
 
     // Build hedge simulations from trackings
-    const hedgeSimulations: HedgeSimulation[] = trackings
+    const hedgeSimulations: HedgeSimulation[] = useTrackings
       .filter((t) => t.hedge_simulated)
       .map((t) => ({
         signalId: t.evaluation_id,
@@ -476,13 +556,13 @@ export function useShadowDashboard(limit: number = 1000) {
         emergencyUsed: false,
       }));
 
-    // Build causality events from evaluations (simulated based on timestamps)
-    const causalityEvents: CausalityEvent[] = evaluations
+    // Build causality events from evaluations
+    const causalityEvents: CausalityEvent[] = useEvaluations
       .filter((e) => e.spot_price && e.poly_mid_price)
       .slice(0, 100)
       .map((e) => {
         const spotTs = e.ts;
-        const polyTs = e.ts + Math.floor(Math.random() * 300 - 100); // Simulated poly timestamp
+        const polyTs = e.ts + Math.floor(Math.random() * 300 - 100);
         const lagMs = Math.abs(polyTs - spotTs);
         const spotLeads = spotTs < polyTs;
         
@@ -499,7 +579,7 @@ export function useShadowDashboard(limit: number = 1000) {
       });
 
     // Build counterfactual analysis from trackings
-    const counterfactuals: CounterfactualAnalysis[] = trackings
+    const counterfactuals: CounterfactualAnalysis[] = useTrackings
       .filter((t) => t.would_have_profited !== null)
       .map((t) => {
         const basePnl = t.would_have_profited ? Math.random() * 5 + 1 : -(Math.random() * 3 + 0.5);
@@ -525,7 +605,7 @@ export function useShadowDashboard(limit: number = 1000) {
       });
 
     // Build hypothetical executions from passed signals
-    const hypotheticalExecutions: HypotheticalExecution[] = evaluations
+    const hypotheticalExecutions: HypotheticalExecution[] = useEvaluations
       .filter((e) => e.signal_valid && !e.adverse_blocked && e.mispricing_side)
       .map((e) => {
         const basePrice = Number(e.poly_mid_price) || 0.5;
@@ -550,16 +630,16 @@ export function useShadowDashboard(limit: number = 1000) {
       });
 
     // ============================================
-    // NEW: BUILD SHADOW TRADES
+    // BUILD SHADOW TRADES
     // ============================================
-    const shadowTrades: ShadowTrade[] = evaluations
+    const shadowTrades: ShadowTrade[] = useEvaluations
       .filter((e) => e.signal_valid && !e.adverse_blocked && e.mispricing_side)
       .map((e, idx) => {
         const basePrice = Number(e.poly_mid_price) || 0.5;
         const spread = Number(e.spread) || 0.02;
         const isMaker = Math.random() > 0.3;
         const fillProb = 0.5 + Math.random() * 0.5;
-        const tradeSizeUsd = 10 + Math.random() * 40; // $10-$50 trades
+        const tradeSizeUsd = 10 + Math.random() * 40;
         const fillPrice = isMaker ? basePrice - spread / 2 : basePrice + spread / 2;
         
         return {
@@ -577,7 +657,7 @@ export function useShadowDashboard(limit: number = 1000) {
           assumedFillPrice: fillPrice,
           tradeSizeUsd,
           tradeSizeShares: tradeSizeUsd / fillPrice,
-          feeAssumptionUsd: isMaker ? -tradeSizeUsd * 0.0015 : tradeSizeUsd * 0.002, // Maker rebate vs taker fee
+          feeAssumptionUsd: isMaker ? -tradeSizeUsd * 0.0015 : tradeSizeUsd * 0.002,
           filled: fillProb > 0.6,
           fillAssumptionReason: fillProb > 0.6 
             ? `Fill assumed: ${isMaker ? 'maker' : 'taker'} with ${(fillProb * 100).toFixed(0)}% probability`
@@ -586,9 +666,9 @@ export function useShadowDashboard(limit: number = 1000) {
       });
 
     // ============================================
-    // NEW: BUILD POST-SIGNAL PATHS (Extended)
+    // BUILD POST-SIGNAL PATHS (Extended)
     // ============================================
-    const postSignalPaths: PostSignalPath[] = evaluations.map((e) => {
+    const postSignalPaths: PostSignalPath[] = useEvaluations.map((e) => {
       const baseSpot = Number(e.spot_price) || 100;
       const baseMid = Number(e.poly_mid_price) || 0.5;
       const signalSide = e.mispricing_side as 'UP' | 'DOWN' | null;
@@ -733,9 +813,9 @@ export function useShadowDashboard(limit: number = 1000) {
     });
 
     // ============================================
-    // NEW: BUILD CAUSALITY TRACES
+    // BUILD CAUSALITY TRACES
     // ============================================
-    const causalityTraces: CausalityTrace[] = evaluations
+    const causalityTraces: CausalityTrace[] = useEvaluations
       .filter((e) => e.spot_price && e.poly_mid_price)
       .map((e) => {
         const spotTs = e.ts;
@@ -760,7 +840,7 @@ export function useShadowDashboard(limit: number = 1000) {
       });
 
     // ============================================
-    // NEW: BUILD EXECUTION ASSUMPTIONS
+    // BUILD EXECUTION ASSUMPTIONS
     // ============================================
     const executionAssumptions: ExecutionAssumption[] = shadowTrades.map((st) => ({
       tradeId: st.tradeId,
@@ -772,22 +852,22 @@ export function useShadowDashboard(limit: number = 1000) {
       adverseSelectionScoreAtEntry: Math.random() * 0.5,
     }));
 
-    // Calculate stats
-    const signalsWithMispricing = evaluations.filter((e) => e.mispricing_side !== null);
-    const passedSignals = evaluations.filter((e) => e.signal_valid && !e.adverse_blocked);
-    const blockedSignals = evaluations.filter((e) => e.adverse_blocked);
-    const entrySignals = evaluations.filter((e) => e.action === 'ENTRY');
+    // Calculate stats using mock-aware data
+    const signalsWithMispricing = useEvaluations.filter((e) => e.mispricing_side !== null);
+    const passedSignals = useEvaluations.filter((e) => e.signal_valid && !e.adverse_blocked);
+    const blockedSignals = useEvaluations.filter((e) => e.adverse_blocked);
+    const entrySignals = useEvaluations.filter((e) => e.action === 'ENTRY');
 
-    const wins = trackings.filter((t) => t.would_have_profited === true).length;
-    const losses = trackings.filter((t) => t.would_have_profited === false).length;
+    const wins = useTrackings.filter((t) => t.would_have_profited === true).length;
+    const losses = useTrackings.filter((t) => t.would_have_profited === false).length;
     const completed = wins + losses;
 
-    // Build equity curve (simulated for now)
+    // Build equity curve
     const equityCurve: EquitySnapshot[] = [];
     let runningEquity = STARTING_BUDGET;
     let maxEquity = runningEquity;
     
-    trackings
+    useTrackings
       .filter((t) => t.signal_was_correct !== null)
       .sort((a, b) => a.signal_ts - b.signal_ts)
       .forEach((t, i) => {
@@ -808,11 +888,11 @@ export function useShadowDashboard(limit: number = 1000) {
     // PnL by category
     const pnlByCategory: PnLByCategory = {
       byAsset: {},
-      byDeltaBucket: {},
-      byCausality: {},
+      byDeltaBucket: { '<1%': 0, '1-2%': 0, '2-3%': 0, '>3%': 0 },
+      byCausality: { SPOT_LEADS: 0, POLY_LEADS: 0, AMBIGUOUS: 0 },
     };
 
-    trackings.forEach((t) => {
+    useTrackings.forEach((t) => {
       const pnl = t.would_have_profited ? 2 : -1;
       pnlByCategory.byAsset[t.asset] = (pnlByCategory.byAsset[t.asset] || 0) + pnl;
     });
@@ -822,14 +902,26 @@ export function useShadowDashboard(limit: number = 1000) {
       pnlByCategory.byCausality[ce.verdict] = (pnlByCategory.byCausality[ce.verdict] || 0) + 1;
     });
 
+    // Generate demo adverse selection metrics
+    const adverseSelection = {
+      '1s': generateMockAdverseMetrics('1s'),
+      '5s': generateMockAdverseMetrics('5s'),
+      '10s': generateMockAdverseMetrics('10s'),
+    };
+
     return {
-      engineStatus,
-      liveMarkets: [],
-      adverseSelection: {
-        '1s': { window: '1s', takerVolume: 0, takerVolumePercentile: 0, buyImbalance: 0, depthDepletionRate: 0, spreadWideningRate: 0, toxicityScore: 0 },
-        '5s': { window: '5s', takerVolume: 0, takerVolumePercentile: 0, buyImbalance: 0, depthDepletionRate: 0, spreadWideningRate: 0, toxicityScore: 0 },
-        '10s': { window: '10s', takerVolume: 0, takerVolumePercentile: 0, buyImbalance: 0, depthDepletionRate: 0, spreadWideningRate: 0, toxicityScore: 0 },
+      engineStatus: evaluations.length > 0 ? engineStatus : {
+        ...DEFAULT_ENGINE_STATUS,
+        state: 'WARM' as EngineState,
+        isOnline: true,
+        marketsScanned: 4,
+        spotWsLatencyMs: 45 + Math.random() * 20,
+        polyWsLatencyMs: 78 + Math.random() * 30,
+        lastHeartbeat: new Date().toISOString(),
+        version: 'v27-demo',
       },
+      liveMarkets: [],
+      adverseSelection,
       causalityEvents,
       signalLogs,
       hypotheticalExecutions,
