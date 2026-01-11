@@ -154,18 +154,118 @@ export function LiveMarketMonitor() {
 
   return (
     <Card>
-      <CardHeader className="flex flex-row items-center justify-between pb-3">
-        <CardTitle className="text-lg flex items-center gap-2">
-          <Activity className="h-5 w-5 text-primary" />
-          Live Market Monitor
-          <Badge variant="outline" className="ml-2">{markets.length} markets</Badge>
+      <CardHeader className="flex flex-row items-center justify-between pb-3 px-3 sm:px-6">
+        <CardTitle className="text-base sm:text-lg flex items-center gap-2">
+          <Activity className="h-4 w-4 sm:h-5 sm:w-5 text-primary" />
+          <span className="hidden xs:inline">Live Market Monitor</span>
+          <span className="xs:hidden">Markets</span>
+          <Badge variant="outline" className="ml-1 text-xs">{markets.length}</Badge>
         </CardTitle>
-        <Button variant="ghost" size="sm" onClick={handleRefresh} disabled={refreshing}>
+        <Button variant="ghost" size="sm" onClick={handleRefresh} disabled={refreshing} className="h-8 w-8 p-0">
           <RefreshCw className={cn("h-4 w-4", refreshing && "animate-spin")} />
         </Button>
       </CardHeader>
       <CardContent className="p-0">
-        <ScrollArea className="h-[400px]">
+        {/* Mobile Card View */}
+        <div className="block md:hidden">
+          <ScrollArea className="h-[350px]">
+            <div className="space-y-2 p-3">
+              {markets.length === 0 && !loading && (
+                <div className="text-center text-muted-foreground py-8 text-sm">
+                  No active markets
+                </div>
+              )}
+              {markets.map((m) => (
+                <div
+                  key={m.marketId}
+                  className={cn(
+                    "p-3 rounded-lg border",
+                    m.blocked && "bg-red-500/10 border-red-500/30",
+                    m.action === 'ENTRY' && "bg-green-500/10 border-green-500/30",
+                    m.hotSignal && !m.blocked && m.action !== 'ENTRY' && "bg-orange-500/10 border-orange-500/30",
+                    !m.blocked && !m.hotSignal && m.action !== 'ENTRY' && "bg-muted/20 border-border"
+                  )}
+                >
+                  {/* Header: Asset, Status, Time */}
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <Badge variant="outline" className="font-mono font-bold text-xs">
+                        {m.asset}
+                      </Badge>
+                      {m.action === 'ENTRY' ? (
+                        <Badge className="bg-green-500/20 text-green-400 border-green-500/30 text-xs">
+                          ENTRY
+                        </Badge>
+                      ) : m.blocked ? (
+                        <Badge variant="destructive" className="text-xs">Block</Badge>
+                      ) : m.hotSignal ? (
+                        <Badge className="bg-orange-500/20 text-orange-400 border-orange-500/30 text-xs">
+                          <Flame className="h-3 w-3 mr-0.5" />HOT
+                        </Badge>
+                      ) : m.nearSignal ? (
+                        <Badge className="bg-amber-500/20 text-amber-400 border-amber-500/30 text-xs">Near</Badge>
+                      ) : (
+                        <Badge variant="outline" className="text-xs">Scan</Badge>
+                      )}
+                    </div>
+                    <span className="text-xs text-muted-foreground">
+                      {formatTime(m.timeRemaining)}
+                    </span>
+                  </div>
+                  
+                  {/* Price Info */}
+                  <div className="grid grid-cols-2 gap-2 text-xs mb-2">
+                    <div>
+                      <span className="text-muted-foreground">Spot: </span>
+                      <span className="font-mono">${m.spotPrice.toLocaleString(undefined, { maximumFractionDigits: 0 })}</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">Δ: </span>
+                      <span className={cn("font-mono", m.deltaPct > 0 ? 'text-green-400' : 'text-muted-foreground')}>
+                        {m.deltaPct.toFixed(2)}%
+                      </span>
+                    </div>
+                  </div>
+                  
+                  {/* Bid/Ask */}
+                  <div className="grid grid-cols-2 gap-2 text-xs">
+                    <div>
+                      <span className="text-muted-foreground">UP: </span>
+                      <span className="font-mono text-green-400">{(m.upBid * 100).toFixed(0)}</span>
+                      <span className="text-muted-foreground">/</span>
+                      <span className="font-mono text-green-400">{(m.upAsk * 100).toFixed(0)}</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">DN: </span>
+                      <span className="font-mono text-red-400">{(m.downBid * 100).toFixed(0)}</span>
+                      <span className="text-muted-foreground">/</span>
+                      <span className="font-mono text-red-400">{(m.downAsk * 100).toFixed(0)}</span>
+                    </div>
+                  </div>
+                  
+                  {/* Mispricing */}
+                  <div className="flex items-center justify-between mt-2 pt-2 border-t border-border/50 text-xs">
+                    <span className="text-muted-foreground">Mispricing</span>
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono">{m.mispricingCents.toFixed(1)}¢</span>
+                      <span className={cn(
+                        "font-mono font-bold",
+                        m.mispricingPctThreshold >= 100 && "text-green-400",
+                        m.mispricingPctThreshold >= 85 && m.mispricingPctThreshold < 100 && "text-orange-400",
+                        m.mispricingPctThreshold < 85 && "text-muted-foreground"
+                      )}>
+                        {m.mispricingPctThreshold.toFixed(0)}%
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </ScrollArea>
+        </div>
+
+        {/* Desktop Table View */}
+        <ScrollArea className="h-[400px] hidden md:block">
           <Table>
             <TableHeader className="sticky top-0 bg-background z-10">
               <TableRow>
