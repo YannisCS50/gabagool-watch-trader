@@ -19,10 +19,7 @@ interface ExportState {
 }
 
 export function ExportDatasetModal() {
-  const defaultWallet = import.meta.env.VITE_POLY_WALLET_ADDRESS || '';
-  
   const [open, setOpen] = useState(false);
-  const [wallet, setWallet] = useState(defaultWallet);
   const [fromDate, setFromDate] = useState(format(subDays(new Date(), 7), 'yyyy-MM-dd'));
   const [toDate, setToDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [exportState, setExportState] = useState<ExportState>({
@@ -32,10 +29,6 @@ export function ExportDatasetModal() {
   });
 
   const handleExport = async () => {
-    if (!wallet.trim()) {
-      toast.error('Wallet address is required');
-      return;
-    }
 
     setExportState({ status: 'exporting', progress: 10, message: 'Connecting to backend...' });
 
@@ -44,7 +37,6 @@ export function ExportDatasetModal() {
 
       const { data, error } = await supabase.functions.invoke('v26-export-dataset', {
         body: {
-          wallet: wallet.trim(),
           from_date: `${fromDate}T00:00:00Z`,
           to_date: `${toDate}T23:59:59Z`,
         },
@@ -73,7 +65,7 @@ export function ExportDatasetModal() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `polymarket_export_${wallet.slice(0, 8).toLowerCase()}_${fromDate}_${toDate}_${Date.now()}.zip`;
+      a.download = `polymarket_export_${fromDate}_${toDate}_${Date.now()}.zip`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -122,18 +114,6 @@ export function ExportDatasetModal() {
         </DialogHeader>
 
         <div className="space-y-4 py-4">
-          {/* Wallet Input */}
-          <div className="space-y-2">
-            <Label htmlFor="wallet">Wallet Address</Label>
-            <Input
-              id="wallet"
-              placeholder="0x..."
-              value={wallet}
-              onChange={(e) => setWallet(e.target.value)}
-              disabled={exportState.status === 'exporting'}
-            />
-          </div>
-
           {/* Date Range */}
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
@@ -221,7 +201,7 @@ export function ExportDatasetModal() {
           </Button>
           <Button
             onClick={handleExport}
-            disabled={exportState.status === 'exporting' || !wallet.trim()}
+            disabled={exportState.status === 'exporting'}
             className="gap-2"
           >
             {exportState.status === 'exporting' ? (
