@@ -38,6 +38,53 @@ function parseTimestampFromSlug(slug: string): number | null {
   return null;
 }
 
+// Binance symbols for assets
+const BINANCE_SYMBOLS: Record<string, string> = {
+  'BTC': 'BTCUSDT',
+  'ETH': 'ETHUSDT',
+  'SOL': 'SOLUSDT',
+  'XRP': 'XRPUSDT',
+};
+
+// Fetch historical Binance price at exact timestamp using klines (candles)
+// Returns the OPEN price of the 1-minute candle that started at the given timestamp
+// This is the most accurate way to get the price at an exact quarter-hour mark
+async function fetchBinanceHistoricalPrice(asset: string, timestampMs: number): Promise<{ price: number; timestamp: number } | null> {
+  const symbol = BINANCE_SYMBOLS[asset];
+  if (!symbol) return null;
+
+  try {
+    // Get the 1-minute kline that starts at the exact timestamp
+    const response = await fetch(
+      `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1m&startTime=${timestampMs}&limit=1`
+    );
+    if (!response.ok) {
+      console.log(`[binance] API error: ${response.status}`);
+      return null;
+    }
+    
+    const data = await response.json();
+    if (!data || data.length === 0) {
+      console.log(`[binance] No kline data for ${asset} at ${new Date(timestampMs).toISOString()}`);
+      return null;
+    }
+    
+    // Kline format: [openTime, open, high, low, close, volume, closeTime, ...]
+    const kline = data[0];
+    const openTime = kline[0];
+    const openPrice = parseFloat(kline[1]);
+    
+    console.log(`[binance] ${asset} historical price at ${new Date(openTime).toISOString()}: $${openPrice.toFixed(6)}`);
+    return {
+      price: openPrice,
+      timestamp: openTime,
+    };
+  } catch (e) {
+    console.error(`[binance] Error fetching historical ${asset}:`, e);
+    return null;
+  }
+}
+
 // Fetch current price from Polymarket RTDS (same source they use for settlement)
 async function fetchPolymarketChainlinkPrice(asset: string): Promise<{ price: number; timestamp: number } | null> {
   try {
@@ -242,6 +289,8 @@ function determineQuality(tickTimestamp: number, targetTimeMs: number): string {
 }
 
 // Store strike prices in database using best available price source
+// Priority for OPEN prices: Binance historical > Polymarket API > Chainlink RPC
+// Priority for CLOSE prices: Polymarket API > Chainlink RPC (current price)
 async function storePrices(
   supabase: any, 
   markets: MarketToTrack[]
@@ -249,7 +298,7 @@ async function storePrices(
   let openStored = 0;
   let closeStored = 0;
   
-  // Fetch current prices for all needed assets (prefer Polymarket's source)
+  // Fetch current prices for all needed assets (for close prices)
   const assetsNeeded = [...new Set(markets.map(m => m.asset))];
   const currentPrices: Record<string, { price: number; timestamp: number; source: string }> = {};
   
@@ -263,12 +312,6 @@ async function storePrices(
   const now = Date.now();
   
   for (const market of markets) {
-    const priceData = currentPrices[market.asset];
-    if (!priceData) {
-      console.log(`No Chainlink price for ${market.asset}, skipping ${market.slug}`);
-      continue;
-    }
-    
     // Get existing data to preserve
     const { data: existing } = await supabase
       .from('strike_prices')
@@ -280,8 +323,6 @@ async function storePrices(
       market_slug: market.slug,
       asset: market.asset,
       event_start_time: new Date(market.eventStartTime * 1000).toISOString(),
-      source: 'chainlink_rpc',
-      chainlink_timestamp: Math.floor(priceData.timestamp / 1000)
     };
     
     // Preserve existing prices
@@ -290,41 +331,63 @@ async function storePrices(
       updates.open_timestamp = existing.open_timestamp;
       updates.strike_price = existing.strike_price || existing.open_price;
       updates.quality = existing.quality;
+      updates.source = existing.source;
     }
     if (existing?.close_price) {
       updates.close_price = existing.close_price;
       updates.close_timestamp = existing.close_timestamp;
     }
     
-    // Handle open price
+    // Handle open price - USE BINANCE HISTORICAL for exact strike price!
     if (market.needsOpenPrice && !existing?.open_price) {
-      const targetOpenTime = market.eventStartTime * 1000;
-      // Only use current price if we're close to the event start
-      const timeSinceStart = now - targetOpenTime;
+      const targetOpenTimeMs = market.eventStartTime * 1000;
+      const timeSinceStart = now - targetOpenTimeMs;
       
-      if (timeSinceStart <= 10 * 60 * 1000) { // Within 10 minutes of start
-        // Keep 6 decimal places for precision - XRP can have 4-5 decimal differences
-        updates.open_price = Math.round(priceData.price * 1000000) / 1000000;
-        updates.open_timestamp = priceData.timestamp;
-        updates.strike_price = updates.open_price;
-        updates.quality = determineQuality(priceData.timestamp, targetOpenTime);
-        openStored++;
-        console.log(`✅ Open price for ${market.slug}: $${updates.open_price} (${updates.quality})`);
+      // Only try to get open price within 10 minutes of start
+      if (timeSinceStart >= 0 && timeSinceStart <= 10 * 60 * 1000) {
+        // PRIMARY: Try Binance historical price - most accurate for strike
+        const binancePrice = await fetchBinanceHistoricalPrice(market.asset, targetOpenTimeMs);
+        
+        if (binancePrice) {
+          updates.open_price = Math.round(binancePrice.price * 1000000) / 1000000;
+          updates.open_timestamp = binancePrice.timestamp;
+          updates.strike_price = updates.open_price;
+          updates.source = 'binance_kline';
+          updates.quality = 'exact'; // Binance kline at exact start time is most accurate
+          updates.chainlink_timestamp = Math.floor(binancePrice.timestamp / 1000);
+          openStored++;
+          console.log(`✅ Open price for ${market.slug}: $${updates.open_price} (source: binance_kline, quality: exact)`);
+        } else {
+          // FALLBACK: Use current Chainlink/Polymarket price
+          const priceData = currentPrices[market.asset];
+          if (priceData) {
+            updates.open_price = Math.round(priceData.price * 1000000) / 1000000;
+            updates.open_timestamp = priceData.timestamp;
+            updates.strike_price = updates.open_price;
+            updates.source = priceData.source;
+            updates.quality = determineQuality(priceData.timestamp, targetOpenTimeMs);
+            updates.chainlink_timestamp = Math.floor(priceData.timestamp / 1000);
+            openStored++;
+            console.log(`⚠️ Open price for ${market.slug}: $${updates.open_price} (fallback: ${priceData.source}, quality: ${updates.quality})`);
+          }
+        }
       }
     }
     
-    // Handle close price
+    // Handle close price - use current price
     if (market.needsClosePrice && !existing?.close_price) {
       const targetCloseTime = market.eventEndTime * 1000;
-      // Only use current price if we're close to the event end
       const timeSinceEnd = now - targetCloseTime;
       
       if (timeSinceEnd >= 0 && timeSinceEnd <= 10 * 60 * 1000) { // 0-10 minutes after end
-        // Keep 6 decimal places for precision - XRP can have 4-5 decimal differences
-        updates.close_price = Math.round(priceData.price * 1000000) / 1000000;
-        updates.close_timestamp = priceData.timestamp;
-        closeStored++;
-        console.log(`✅ Close price for ${market.slug}: $${updates.close_price}`);
+        const priceData = currentPrices[market.asset];
+        if (priceData) {
+          updates.close_price = Math.round(priceData.price * 1000000) / 1000000;
+          updates.close_timestamp = priceData.timestamp;
+          updates.chainlink_timestamp = Math.floor(priceData.timestamp / 1000);
+          closeStored++;
+          console.log(`✅ Close price for ${market.slug}: $${updates.close_price}`);
+        }
       }
     }
     
