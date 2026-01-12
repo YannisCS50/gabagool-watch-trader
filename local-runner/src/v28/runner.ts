@@ -20,6 +20,7 @@ interface MarketInfo {
   strikePrice: number;
   upTokenId: string;
   downTokenId: string;
+  eventStartTime: string;
   eventEndTime: string;
 }
 
@@ -239,6 +240,27 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
 
   // TRIGGER! We have a significant cumulative delta
   console.log(`[V28] 🎯 TRIGGER: ${asset} Δ$${delta.toFixed(2)} over ${windowDuration}ms`);
+
+  // Check if market is LIVE (started and not expired)
+  const market = marketInfo[asset];
+  if (!market) {
+    console.log(`[V28] No market info for ${asset}, skipping`);
+    return;
+  }
+  
+  const now2 = Date.now();
+  const startTime = new Date(market.eventStartTime).getTime();
+  const endTime = new Date(market.eventEndTime).getTime();
+  
+  if (now2 < startTime) {
+    console.log(`[V28] ⏳ ${asset} market not started yet (starts ${new Date(startTime).toISOString()})`);
+    return;
+  }
+  
+  if (now2 > endTime) {
+    console.log(`[V28] ⏰ ${asset} market expired (ended ${new Date(endTime).toISOString()})`);
+    return;
+  }
 
   const direction: 'UP' | 'DOWN' = delta > 0 ? 'UP' : 'DOWN';
 
@@ -732,12 +754,28 @@ async function fetchActiveMarkets(): Promise<void> {
         strikePrice: market.strikePrice || 0,
         upTokenId,
         downTokenId,
-        eventEndTime: market.eventEndTime,
+        eventStartTime: market.eventStartTime || market.event_start_time || new Date().toISOString(),
+        eventEndTime: market.eventEndTime || market.event_end_time,
       };
+      
+      // Only add LIVE markets (started but not expired)
+      const now = Date.now();
+      const startTime = new Date(info.eventStartTime).getTime();
+      const endTime = new Date(info.eventEndTime).getTime();
+      
+      if (now < startTime) {
+        console.log(`[V28] ⏳ ${asset}: ${market.slug} not started yet, skipping`);
+        continue;
+      }
+      
+      if (now > endTime) {
+        console.log(`[V28] ⏰ ${asset}: ${market.slug} expired, skipping`);
+        continue;
+      }
       
       marketInfo[asset] = info;
       count++;
-      console.log(`[V28] ✓ ${asset}: ${market.slug} (strike: $${info.strikePrice})`);
+      console.log(`[V28] ✓ ${asset}: ${market.slug} (strike: $${info.strikePrice}) LIVE`);
     }
     
     console.log(`[V28] Loaded ${count} active markets`);
