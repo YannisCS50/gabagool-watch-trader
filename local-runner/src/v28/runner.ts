@@ -622,7 +622,7 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
   // PRICE FIX: For FOK BUYs we must be AT/ABOVE the real bestAsk.
   // Previously we capped price to max_share_price even when bestAsk > max_share_price,
   // which guarantees a non-fill (FOK) while still “placing” orders.
-  const tick = 0.01;
+  const AGGRESSIVE_BUFFER = 0.03; // 3 cents buffer for latency
   const roundUpToTick = (p: number) => Math.ceil(p * 100) / 100;
 
   let price: number;
@@ -641,11 +641,11 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
       return;
     }
 
-    // Pay bestAsk (+1 tick) to maximize fill probability, but never exceed max_share_price.
-    price = Math.min(bestAskTick + tick, currentConfig.max_share_price);
+    // AGGRESSIVE: Pay bestAsk + 3¢ buffer to guarantee fill despite latency & price movement
+    price = Math.min(roundUpToTick(bestAskTick + AGGRESSIVE_BUFFER), currentConfig.max_share_price);
 
     console.log(
-      `[V28] 💹 Pricing: trigger=${(signal.share_price * 100).toFixed(1)}¢ bestAsk=${(bestAskTick * 100).toFixed(1)}¢ → buy@${(price * 100).toFixed(1)}¢`
+      `[V28] 💹 Pricing: bestAsk=${(bestAskTick * 100).toFixed(1)}¢ +3¢ buffer → buy@${(price * 100).toFixed(1)}¢`
     );
   } else {
     // No bestAsk available (thin book). Fall back to trigger price, still respecting max_share_price.
