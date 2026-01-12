@@ -52,6 +52,17 @@ export class MispricingDetector {
   // Historical snap-back data for learning
   private snapBackHistory: Map<string, { delta: number; snappedBack: boolean }[]> = new Map();
   
+  // Current evaluation context
+  private currentTimeRemaining: number = 900; // Default 15 min
+  
+  // Asset volatility (annualized, approximate)
+  private assetVolatility: Record<string, number> = {
+    BTC: 0.60,  // 60% annual vol
+    ETH: 0.75,  // 75% annual vol
+    SOL: 1.00,  // 100% annual vol
+    XRP: 0.90,  // 90% annual vol
+  };
+  
   constructor() {
     // Initialize for supported assets
     for (const asset of ['BTC', 'ETH', 'SOL', 'XRP']) {
@@ -114,6 +125,9 @@ export class MispricingDetector {
     timeRemainingSeconds: number
   ): MispricingSignal {
     const config = getV27Config();
+    
+    // Store time remaining for use in calculateExpectedPrice
+    this.currentTimeRemaining = timeRemainingSeconds;
     const assetConfig = getAssetConfig(asset);
     
     if (!assetConfig) {
@@ -149,9 +163,9 @@ export class MispricingDetector {
     // is UNDERPRICED relative to its theoretical value.
     // ============================================================
     
-    // Calculate expected Polymarket prices based on delta
-    const expectedUpPrice = this.calculateExpectedPrice(deltaPct, true);
-    const expectedDownPrice = this.calculateExpectedPrice(deltaPct, false);
+    // Calculate expected Polymarket prices based on delta, time remaining, and volatility
+    const expectedUpPrice = this.calculateExpectedPrice(deltaPct, true, asset);
+    const expectedDownPrice = this.calculateExpectedPrice(deltaPct, false, asset);
     
     // Calculate how much each side is underpriced
     // Positive = underpriced (good to buy), Negative = overpriced (avoid)
@@ -293,24 +307,77 @@ export class MispricingDetector {
   }
   
   /**
-   * Calculate expected Polymarket price based on delta
-   * This is a simplified model - should be trained on historical data
+   * Calculate expected Polymarket price using simplified binary option model
+   * 
+   * Key insight: The probability of spot ending above/below strike depends on:
+   * 1. Current distance from strike (delta)
+   * 2. Time remaining (more time = more uncertainty = prices closer to 0.50)
+   * 3. Asset volatility
+   * 
+   * With 1 minute left and price $40 below strike → UP should be ~0.01
+   * With 14 minutes left and price at strike → UP should be ~0.50
    */
-  private calculateExpectedPrice(deltaPct: number, isUp: boolean): number {
-    // Basic logistic model
-    // When delta% is positive and large, UP should be ~0.7-0.8
-    // When delta% is negative and large, DOWN should be ~0.7-0.8
+  private calculateExpectedPrice(deltaPct: number, isUp: boolean, asset?: string): number {
+    // Time remaining in fraction of 15-minute window
+    const timeRemaining = this.currentTimeRemaining;
+    const timeFraction = Math.max(0.01, timeRemaining / 900); // 0.01 to 1.0
     
-    const k = 20; // Steepness
-    const base = 0.5;
+    // Get asset volatility (default to ETH-like)
+    const annualVol = this.assetVolatility[asset || 'ETH'] || 0.75;
     
-    if (isUp) {
-      // UP price increases as spot goes above strike
-      return base + 0.3 * (1 / (1 + Math.exp(-k * deltaPct)) - 0.5);
-    } else {
-      // DOWN price increases as spot goes below strike
-      return base + 0.3 * (1 / (1 + Math.exp(k * deltaPct)) - 0.5);
-    }
+    // Convert to 15-minute volatility
+    // Annual vol → per-minute vol → 15-minute vol
+    // σ_15min = σ_annual * sqrt(15 / (365 * 24 * 60))
+    const minutesPerYear = 365 * 24 * 60;
+    const vol15min = annualVol * Math.sqrt(15 / minutesPerYear);
+    
+    // Adjusted volatility based on time remaining
+    // Less time = less expected movement = steeper probability curve
+    const adjustedVol = vol15min * Math.sqrt(timeFraction);
+    
+    // Prevent division by zero
+    const effectiveVol = Math.max(adjustedVol, 0.001);
+    
+    // Calculate z-score: how many standard deviations is current price from strike?
+    // deltaPct is (spot - strike) / strike
+    // z = deltaPct / adjustedVol
+    const z = deltaPct / effectiveVol;
+    
+    // Use cumulative normal distribution approximation for probability
+    // P(spot > strike at expiry) ≈ Φ(z) for UP
+    // P(spot < strike at expiry) ≈ Φ(-z) for DOWN
+    const probUp = this.normalCDF(z);
+    const probDown = 1 - probUp;
+    
+    // Clamp to realistic market bounds (never exactly 0 or 1)
+    const clamp = (p: number) => Math.max(0.005, Math.min(0.995, p));
+    
+    return isUp ? clamp(probUp) : clamp(probDown);
+  }
+  
+  /**
+   * Cumulative distribution function for standard normal distribution
+   * Uses Abramowitz and Stegun approximation
+   */
+  private normalCDF(x: number): number {
+    // Handle extreme values
+    if (x < -8) return 0;
+    if (x > 8) return 1;
+    
+    const a1 = 0.254829592;
+    const a2 = -0.284496736;
+    const a3 = 1.421413741;
+    const a4 = -1.453152027;
+    const a5 = 1.061405429;
+    const p = 0.3275911;
+    
+    const sign = x < 0 ? -1 : 1;
+    x = Math.abs(x);
+    
+    const t = 1 / (1 + p * x);
+    const y = 1 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x / 2);
+    
+    return 0.5 * (1 + sign * y);
   }
   
   /**
