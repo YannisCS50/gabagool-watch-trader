@@ -453,17 +453,31 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
   
   // Determine token ID based on direction
   const tokenId = signal.direction === 'UP' ? market.upTokenId : market.downTokenId;
-  const shares = signal.trade_size_usd / signal.share_price;
+  
+  // CRITICAL: Round shares to 2 decimals (Polymarket CLOB requirement)
+  // Also round price to 2 decimals
+  const rawShares = signal.trade_size_usd / signal.share_price;
+  const shares = Math.floor(rawShares * 100) / 100; // Floor to 2 decimals
+  const price = Math.round(signal.share_price * 100) / 100; // Round to 2 decimals (cents)
+  
+  if (shares < 0.01) {
+    console.error(`[V28] ❌ Shares too small: ${rawShares.toFixed(4)} → ${shares}`);
+    signal.status = 'failed';
+    signal.notes = 'Shares too small after rounding';
+    void saveSignal(signal);
+    positionLock = { status: 'idle' };
+    return;
+  }
   
   // SPEED: Minimal logging (save ~5-10ms)
-  console.log(`[V28] 📤 BUY ${shares.toFixed(1)} @ ${(signal.share_price * 100).toFixed(1)}¢`);
+  console.log(`[V28] 📤 BUY ${shares.toFixed(2)} @ ${(price * 100).toFixed(0)}¢`);
   
   try {
     // SPEED: Use FOK for immediate fill (no waiting for resting orders)
     const result = await placeOrder({
       tokenId,
       side: 'BUY',
-      price: signal.share_price,
+      price: price,
       size: shares,
       orderType: 'FOK', // Fill-Or-Kill for speed
       intent: 'ENTRY',
