@@ -120,6 +120,19 @@ let positionLock: PositionLock = { status: 'idle' };
 
 let lastMarketRefresh = 0;
 let lastConfigReload = 0;
+let positionMonitorInterval: NodeJS.Timeout | null = null;
+
+// Track open positions (filled BUYs waiting for SELL)
+interface OpenPosition {
+  signalId: string;
+  asset: Asset;
+  tokenId: string;
+  entryPrice: number;
+  shares: number;
+  fillTs: number;
+  signal: V28Signal;
+}
+const openPositions = new Map<string, OpenPosition>();
 
 // ============================================
 // DATABASE
@@ -666,7 +679,19 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
           return;
         } else {
           console.error(`[V28] ❌ LIMIT SELL FAILED after ${maxRetries} attempts: ${sellResult?.error}`);
-          signal.notes = `🔴 LIVE BUY @ ${(entryPrice * 100).toFixed(1)}¢ | SELL failed after ${maxRetries} retries: ${sellResult?.error}`;
+          signal.notes = `🔴 LIVE BUY @ ${(entryPrice * 100).toFixed(1)}¢ | SELL failed - tracking for retry`;
+          
+          // Track this position for the position monitor to retry
+          openPositions.set(signal.id!, {
+            signalId: signal.id!,
+            asset: signal.asset,
+            tokenId,
+            entryPrice,
+            shares: sellShares,
+            fillTs: signal.fill_ts!,
+            signal,
+          });
+          console.log(`[V28] 📋 Added to open positions for monitoring: ${signal.id}`);
         }
       } else {
         console.warn(`[V28] ⚠️ Sell shares too small after rounding: ${filledSize} -> ${sellShares}`);
@@ -815,6 +840,89 @@ async function handleLiveTimeout(signal: V28Signal, tokenId: string): Promise<vo
   const exitPrice = currentBid ?? (signal.entry_price ?? 0);
   
   await handleLiveExit(signal, tokenId, 'timeout', exitPrice);
+}
+
+/**
+ * Position Monitor - runs every 10s to check open positions and sell if profitable
+ */
+async function monitorOpenPositions(): Promise<void> {
+  if (openPositions.size === 0) return;
+  
+  console.log(`[V28] 📋 Position monitor: checking ${openPositions.size} open position(s)...`);
+  
+  for (const [signalId, position] of openPositions) {
+    const state = priceState[position.asset];
+    const market = marketInfo[position.asset];
+    if (!market) continue;
+    
+    const currentBid = position.signal.direction === 'UP' ? state.upBestBid : state.downBestBid;
+    if (currentBid === null) continue;
+    
+    const profitCents = (currentBid - position.entryPrice) * 100;
+    const profitPct = ((currentBid / position.entryPrice) - 1) * 100;
+    
+    console.log(`[V28] 📊 ${position.asset} ${position.signal.direction}: Entry ${(position.entryPrice * 100).toFixed(1)}¢ → Current ${(currentBid * 100).toFixed(1)}¢ (${profitPct >= 0 ? '+' : ''}${profitPct.toFixed(1)}%)`);
+    
+    // Only try to sell if in profit (current bid > entry price)
+    if (currentBid > position.entryPrice) {
+      console.log(`[V28] 💰 PROFIT detected! Attempting to sell ${position.shares.toFixed(2)} shares @ ${(currentBid * 100).toFixed(0)}¢`);
+      
+      const sellPrice = Math.round(currentBid * 100) / 100; // tickSize=0.01
+      const sellShares = Math.floor(position.shares * 100) / 100;
+      
+      if (sellShares < 1) {
+        console.log(`[V28] ⚠️ Shares too small to sell: ${sellShares}`);
+        continue;
+      }
+      
+      try {
+        const result = await placeOrder({
+          tokenId: position.tokenId,
+          side: 'SELL',
+          price: sellPrice,
+          size: sellShares,
+          orderType: 'FOK', // Fill-or-kill for immediate exit
+          intent: 'HEDGE',
+        });
+        
+        if (result.success) {
+          const actualExitPrice = result.avgPrice ?? sellPrice;
+          const exitFee = -sellShares * 0.005; // maker rebate assumption
+          const entryFee = position.signal.entry_fee ?? 0;
+          const grossPnl = (actualExitPrice - position.entryPrice) * sellShares;
+          const netPnl = grossPnl - (entryFee + exitFee);
+          
+          // Update signal
+          position.signal.status = 'sold';
+          position.signal.exit_price = actualExitPrice;
+          position.signal.sell_ts = Date.now();
+          position.signal.exit_fee = exitFee;
+          position.signal.total_fees = entryFee + exitFee;
+          position.signal.gross_pnl = grossPnl;
+          position.signal.net_pnl = netPnl;
+          position.signal.tp_status = 'filled';
+          position.signal.exit_type = 'tp';
+          position.signal.notes = `🔴 LIVE ✅ SOLD @ ${(actualExitPrice * 100).toFixed(1)}¢ | Net: $${netPnl.toFixed(2)} (monitor)`;
+          
+          await saveSignal(position.signal);
+          openPositions.delete(signalId);
+          
+          // Release position lock
+          if (positionLock.status === 'open' && positionLock.signalId === signalId) {
+            positionLock = { status: 'idle' };
+          }
+          
+          console.log(`[V28] ✅ MONITOR SOLD: ${position.asset} ${position.signal.direction} @ ${(actualExitPrice * 100).toFixed(1)}¢ | Net: $${netPnl.toFixed(2)}`);
+        } else {
+          console.log(`[V28] ⚠️ Monitor SELL failed: ${result.error}`);
+        }
+      } catch (error: any) {
+        console.error(`[V28] ❌ Monitor SELL exception: ${error?.message || error}`);
+      }
+    } else {
+      console.log(`[V28] ⏳ Not profitable yet, holding...`);
+    }
+  }
 }
 
 function startTpSlMonitoring(signal: V28Signal): NodeJS.Timeout | null {
@@ -1143,6 +1251,10 @@ export async function startV28Runner(): Promise<void> {
   console.log('[V28] Starting price feeds (Binance + Polymarket WebSockets)...');
   await startPriceFeedLogger(priceFeedCallbacks);
   
+  // Start position monitor (every 10 seconds)
+  console.log('[V28] Starting position monitor (10s interval)...');
+  positionMonitorInterval = setInterval(monitorOpenPositions, 10_000);
+  
   runLoop();
   
   console.log('[V28] ✅ Started successfully');
@@ -1153,12 +1265,19 @@ export async function stopV28Runner(): Promise<void> {
 
   isRunning = false;
   await stopPriceFeedLogger();
+  
+  // Stop position monitor
+  if (positionMonitorInterval) {
+    clearInterval(positionMonitorInterval);
+    positionMonitorInterval = null;
+  }
 
   for (const [_id, active] of activeSignals) {
     if (active.tpSlInterval) clearInterval(active.tpSlInterval);
     if (active.timeoutTimer) clearTimeout(active.timeoutTimer);
   }
   activeSignals.clear();
+  openPositions.clear();
 
   positionLock = { status: 'idle' };
 
