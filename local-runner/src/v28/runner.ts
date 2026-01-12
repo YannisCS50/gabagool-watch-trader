@@ -360,20 +360,23 @@ async function createSignal(
 async function simulateFill(signal: V28Signal): Promise<void> {
   const now = Date.now();
   const fillLatency = now - signal.signal_ts;
-  
+
+  // LOG LATENCY explicitly
+  console.log(`[V28] ⏱️ LATENCY: Signal → Fill = ${fillLatency}ms`);
+
   // Simulate slight slippage
   const slippage = (Math.random() - 0.5) * 0.005;
   const entryPrice = signal.share_price + slippage;
   const shares = signal.trade_size_usd / entryPrice;
-  
+
   // Determine order type (maker if slow, taker if fast)
   const orderType: 'maker' | 'taker' = fillLatency > 100 ? 'maker' : 'taker';
   const entryFee = orderType === 'taker' ? shares * 0.02 : -shares * 0.005;
-  
+
   // Calculate TP/SL prices
   const tpPrice = currentConfig.tp_enabled ? entryPrice + (currentConfig.tp_cents / 100) : null;
   const slPrice = currentConfig.sl_enabled ? entryPrice - (currentConfig.sl_cents / 100) : null;
-  
+
   signal.status = 'filled';
   signal.entry_price = entryPrice;
   signal.fill_ts = now;
@@ -384,20 +387,21 @@ async function simulateFill(signal: V28Signal): Promise<void> {
   signal.tp_status = tpPrice ? 'pending' : null;
   signal.sl_price = slPrice;
   signal.sl_status = slPrice ? 'pending' : null;
-  signal.notes = `Filled @ ${(entryPrice * 100).toFixed(1)}¢ | TP: ${tpPrice ? (tpPrice * 100).toFixed(1) : '-'}¢ | SL: ${slPrice ? (slPrice * 100).toFixed(1) : '-'}¢`;
-  
-  console.log(`[V28] ✅ Filled ${signal.asset} ${signal.direction} @ ${(entryPrice * 100).toFixed(1)}¢`);
-  
+  // Include latency in notes for DB storage
+  signal.notes = `Filled @ ${(entryPrice * 100).toFixed(1)}¢ | Latency: ${fillLatency}ms | TP: ${tpPrice ? (tpPrice * 100).toFixed(1) : '-'}¢ | SL: ${slPrice ? (slPrice * 100).toFixed(1) : '-'}¢`;
+
+  console.log(`[V28] ✅ Filled ${signal.asset} ${signal.direction} @ ${(entryPrice * 100).toFixed(1)}¢ (${fillLatency}ms)`);
+
   await saveSignal(signal);
-  
+
   // Start TP/SL monitoring
   const tpSlInterval = startTpSlMonitoring(signal);
-  
+
   // Set timeout fallback
   const timeoutTimer = setTimeout(() => {
     handleTimeout(signal);
   }, currentConfig.timeout_ms);
-  
+
   activeSignals.set(signal.id!, { signal, tpSlInterval, timeoutTimer });
 }
 
