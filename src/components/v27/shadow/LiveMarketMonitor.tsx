@@ -4,10 +4,19 @@ import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
-import { Activity, RefreshCw, AlertTriangle, Target, Flame, ExternalLink, Wifi, WifiOff } from "lucide-react";
+import { Activity, RefreshCw, AlertTriangle, Target, Flame, ExternalLink, Wifi, WifiOff, Zap } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { cn } from "@/lib/utils";
 import { usePolymarketRealtime } from "@/hooks/usePolymarketRealtime";
+import { usePriceLatencyComparison, Asset } from "@/hooks/usePriceLatencyComparison";
+
+// Asset-specific decimal precision
+const ASSET_DECIMALS: Record<string, number> = {
+  BTC: 0,
+  ETH: 0,
+  SOL: 2,
+  XRP: 4,
+};
 
 interface LiveMarketRow {
   asset: string;
@@ -37,6 +46,9 @@ interface LiveMarketRow {
   action: string;
   lastTs: number;
   polymarketUrl: string;
+  isLiveSpot: boolean;
+  isLiveOrderbook: boolean;
+  spotLastUpdate: number | null;
 }
 
 type PriceFeedsResponse = {
@@ -55,6 +67,12 @@ type PriceFeedsResponse = {
 
 function isValidPrice(n: unknown): n is number {
   return typeof n === "number" && Number.isFinite(n) && n > 0;
+}
+
+function formatPriceWithDecimals(value: number | null | undefined, asset: string) {
+  if (!isValidPrice(value)) return "—";
+  const decimals = ASSET_DECIMALS[asset] ?? 0;
+  return value.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
 }
 
 function formatPrice(value: number | null | undefined, maxFractionDigits = 0) {
@@ -76,13 +94,30 @@ export function LiveMarketMonitor() {
     lastUpdateTime: orderbookLastUpdateTime,
   } = usePolymarketRealtime(true);
 
-  // Live spot prices, sourced from the same backend feed used elsewhere (Chainlink RPC).
-  const [liveSpotPrices, setLiveSpotPrices] = useState<Record<string, number>>({});
-  const liveSpotPricesRef = useRef<Record<string, number>>({});
+  // Real-time spot prices from Binance WebSocket
+  const {
+    connectionStatus: priceConnectionStatus,
+    connect: connectPrices,
+    getAllPrices,
+  } = usePriceLatencyComparison();
 
+  // Trigger re-renders on price updates
+  const [priceVersion, setPriceVersion] = useState(0);
+
+  // Auto-connect to real-time price feed
   useEffect(() => {
-    liveSpotPricesRef.current = liveSpotPrices;
-  }, [liveSpotPrices]);
+    if (priceConnectionStatus === 'disconnected') {
+      connectPrices();
+    }
+  }, [priceConnectionStatus, connectPrices]);
+
+  // Poll for price updates from the hook (since getAllPrices uses refs)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setPriceVersion(v => v + 1);
+    }, 200); // Update UI every 200ms with latest WebSocket prices
+    return () => clearInterval(interval);
+  }, []);
 
   // Keep strike_prices populated (open/close) so "To Beat" stays stable.
   useEffect(() => {
@@ -99,37 +134,20 @@ export function LiveMarketMonitor() {
     return () => clearInterval(id);
   }, []);
 
-  // Poll live crypto prices (BTC/ETH/SOL/XRP) from backend.
-  useEffect(() => {
-    let cancelled = false;
-
-    const fetchPrices = async () => {
-      try {
-        const { data, error } = await supabase.functions.invoke<PriceFeedsResponse>("price-feeds", {
-          body: { assets: ["BTC", "ETH", "SOL", "XRP"], chainlinkOnly: true },
-        });
-
-        if (cancelled) return;
-        if (error || !data?.success || !data?.prices) return;
-
-        const next: Record<string, number> = {};
-        for (const [asset, v] of Object.entries(data.prices)) {
-          if (isValidPrice(v?.chainlink)) next[asset] = v.chainlink;
-        }
-        setLiveSpotPrices(next);
-      } catch {
-        // ignore
-      }
-    };
-
-    fetchPrices();
-    const id = setInterval(fetchPrices, 2000);
-
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, []);
+  // Get current live prices (for use in fetchMarkets)
+  const getLiveSpotPrice = useCallback((asset: string): { price: number | null; isLive: boolean; ts: number | null } => {
+    const prices = getAllPrices();
+    const assetKey = asset as Asset;
+    const data = prices[assetKey];
+    
+    if (data?.binance && data.binanceTs) {
+      return { price: data.binance, isLive: true, ts: data.binanceTs };
+    }
+    if (data?.chainlink && data.chainlinkTs) {
+      return { price: data.chainlink, isLive: true, ts: data.chainlinkTs };
+    }
+    return { price: null, isLive: false, ts: null };
+  }, [getAllPrices, priceVersion]); // priceVersion triggers re-evaluation
 
   const fetchMarkets = useCallback(async () => {
     try {
@@ -174,18 +192,25 @@ export function LiveMarketMonitor() {
 
           const timeRemaining = Math.max(0, (endTs * 1000 - now) / 1000);
 
-          // Live spot price preferred; fallback to evaluation spot_price.
+          // Live spot price from WebSocket preferred; fallback to evaluation spot_price.
           const asset = String(e.asset);
-          const spotPrice =
-            liveSpotPricesRef.current[asset] ??
-            (isValidPrice(Number(e.spot_price)) ? Number(e.spot_price) : 0);
+          const liveSpot = getLiveSpotPrice(asset);
+          const spotPrice = liveSpot.price ?? (isValidPrice(Number(e.spot_price)) ? Number(e.spot_price) : 0);
+          const isLiveSpot = liveSpot.isLive;
+          const spotLastUpdate = liveSpot.ts;
 
           const strikeFromEval = Number(e.strike_price);
 
-          const upBid = Number(e.pm_up_bid) || 0;
-          const upAsk = Number(e.pm_up_ask) || 1;
-          const downBid = Number(e.pm_down_bid) || 0;
-          const downAsk = Number(e.pm_down_ask) || 1;
+          // Get live orderbook data from WebSocket
+          const liveUpBook = getOrderbook(marketSlug, 'Up');
+          const liveDownBook = getOrderbook(marketSlug, 'Down');
+          
+          const hasLiveOrderbook = !!(liveUpBook?.ask || liveDownBook?.ask);
+          
+          const upBid = liveUpBook?.bid ?? Number(e.pm_up_bid) ?? 0;
+          const upAsk = liveUpBook?.ask ?? Number(e.pm_up_ask) ?? 1;
+          const downBid = liveDownBook?.bid ?? Number(e.pm_down_bid) ?? 0;
+          const downAsk = liveDownBook?.ask ?? Number(e.pm_down_ask) ?? 1;
 
           const expectedUp = Number(e.theoretical_up) || 0.5;
           const expectedDown = Number(e.theoretical_down) || 0.5;
@@ -206,11 +231,14 @@ export function LiveMarketMonitor() {
             timeRemaining,
             timeStr,
             spotPrice,
+            isLiveSpot,
+            spotLastUpdate,
             strikeFromEval,
             upBid,
             upAsk,
             downBid,
             downAsk,
+            hasLiveOrderbook,
             expectedUp,
             expectedDown,
             mispricingDollars,
@@ -282,6 +310,9 @@ export function LiveMarketMonitor() {
               action: b.e.action || "SCAN",
               lastTs: b.e.ts,
               polymarketUrl: b.polymarketUrl,
+              isLiveSpot: b.isLiveSpot,
+              isLiveOrderbook: b.hasLiveOrderbook,
+              spotLastUpdate: b.spotLastUpdate,
             };
           })
           .filter((m) => m.timeRemaining > 60) // Only show markets with at least 1 minute remaining
@@ -294,7 +325,7 @@ export function LiveMarketMonitor() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [getLiveSpotPrice, getOrderbook]);
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -326,10 +357,23 @@ export function LiveMarketMonitor() {
           <Badge variant="outline" className="ml-1 text-xs">
             {markets.length}
           </Badge>
-          {isOrderbookLive ? (
+          {/* Spot price connection status */}
+          {priceConnectionStatus === 'connected' ? (
+            <Badge variant="outline" className="text-xs bg-green-500/10 border-green-500/30">
+              <Zap className="h-3 w-3 mr-1 text-green-400" />
+              <span className="text-green-400">Spot</span>
+            </Badge>
+          ) : (
             <Badge variant="outline" className="text-xs">
-              <Wifi className="h-3 w-3 mr-1" />
-              Live
+              <WifiOff className="h-3 w-3 mr-1" />
+              Spot
+            </Badge>
+          )}
+          {/* Orderbook connection status */}
+          {isOrderbookLive ? (
+            <Badge variant="outline" className="text-xs bg-green-500/10 border-green-500/30">
+              <Wifi className="h-3 w-3 mr-1 text-green-400" />
+              <span className="text-green-400">Book</span>
             </Badge>
           ) : (
             <Badge variant="outline" className="text-xs">
@@ -411,12 +455,14 @@ export function LiveMarketMonitor() {
                     {/* Price Info: Actual, To Beat, Delta */}
                     <div className="grid grid-cols-3 gap-2 text-xs mb-2">
                       <div>
-                        <span className="text-muted-foreground block text-[10px]">Actual</span>
-                        <span className="font-mono font-medium">${formatPrice(m.spotPrice, 0)}</span>
+                        <span className="text-muted-foreground block text-[10px]">
+                          Actual {m.isLiveSpot && <Zap className="inline h-2.5 w-2.5 text-green-400" />}
+                        </span>
+                        <span className="font-mono font-medium">${formatPriceWithDecimals(m.spotPrice, m.asset)}</span>
                       </div>
                       <div>
                         <span className="text-muted-foreground block text-[10px]">To Beat</span>
-                        <span className="font-mono font-medium">${formatPrice(m.priceToBeat, 0)}</span>
+                        <span className="font-mono font-medium">${formatPriceWithDecimals(m.priceToBeat, m.asset)}</span>
                       </div>
                       <div>
                         <span className="text-muted-foreground block text-[10px]">Delta</span>
@@ -437,13 +483,14 @@ export function LiveMarketMonitor() {
 
                     {/* Bid/Ask */}
                     <div className="grid grid-cols-2 gap-2 text-xs">
-                      <div>
+                      <div className="flex items-center gap-1">
                         <span className="text-muted-foreground">UP: </span>
                         <span className="font-mono text-green-400">{(m.upBid * 100).toFixed(0)}</span>
                         <span className="text-muted-foreground">/</span>
                         <span className="font-mono text-green-400">{(m.upAsk * 100).toFixed(0)}</span>
+                        {m.isLiveOrderbook && <Zap className="h-2.5 w-2.5 text-green-400" />}
                       </div>
-                      <div>
+                      <div className="flex items-center gap-1">
                         <span className="text-muted-foreground">DN: </span>
                         <span className="font-mono text-red-400">{(m.downBid * 100).toFixed(0)}</span>
                         <span className="text-muted-foreground">/</span>
@@ -525,8 +572,13 @@ export function LiveMarketMonitor() {
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground max-w-[200px] truncate">{m.marketName}</TableCell>
                     <TableCell className="text-xs text-muted-foreground">{formatTime(m.timeRemaining)}</TableCell>
-                    <TableCell className="text-right font-mono text-sm">${formatPrice(m.spotPrice, 0)}</TableCell>
-                    <TableCell className="text-right font-mono text-sm">${formatPrice(m.priceToBeat, 0)}</TableCell>
+                    <TableCell className="text-right font-mono text-sm">
+                      <span className="flex items-center justify-end gap-1">
+                        ${formatPriceWithDecimals(m.spotPrice, m.asset)}
+                        {m.isLiveSpot && <Zap className="h-3 w-3 text-green-400" />}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-sm">${formatPriceWithDecimals(m.priceToBeat, m.asset)}</TableCell>
                     <TableCell className="text-right">
                       <span
                         className={cn(
@@ -538,9 +590,12 @@ export function LiveMarketMonitor() {
                       </span>
                     </TableCell>
                     <TableCell className="text-right text-xs font-mono">
-                      <span className="text-green-400">{(m.upBid * 100).toFixed(0)}</span>
-                      <span className="text-muted-foreground">/</span>
-                      <span className="text-green-400">{(m.upAsk * 100).toFixed(0)}</span>
+                      <span className="flex items-center justify-end gap-1">
+                        <span className="text-green-400">{(m.upBid * 100).toFixed(0)}</span>
+                        <span className="text-muted-foreground">/</span>
+                        <span className="text-green-400">{(m.upAsk * 100).toFixed(0)}</span>
+                        {m.isLiveOrderbook && <Zap className="h-3 w-3 text-green-400" />}
+                      </span>
                     </TableCell>
                     <TableCell className="text-right text-xs font-mono">
                       <span className="text-red-400">{(m.downBid * 100).toFixed(0)}</span>

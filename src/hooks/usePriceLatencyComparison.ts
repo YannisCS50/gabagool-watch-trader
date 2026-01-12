@@ -512,6 +512,32 @@ export function usePriceLatencyComparison() {
     return histogram;
   }, [state.latencyMeasurements]);
 
+  // Get all live prices (for use by other components like LiveMarketMonitor)
+  const getAllPrices = useCallback(() => {
+    const prices: Record<Asset, { binance: number | null; chainlink: number | null; binanceTs: number | null; chainlinkTs: number | null }> = {
+      BTC: { binance: null, chainlink: null, binanceTs: null, chainlinkTs: null },
+      ETH: { binance: null, chainlink: null, binanceTs: null, chainlinkTs: null },
+      SOL: { binance: null, chainlink: null, binanceTs: null, chainlinkTs: null },
+      XRP: { binance: null, chainlink: null, binanceTs: null, chainlinkTs: null },
+    };
+
+    for (const asset of ['BTC', 'ETH', 'SOL', 'XRP'] as Asset[]) {
+      const binanceData = lastBinancePriceRef.current.get(asset);
+      const chainlinkData = lastChainlinkPriceRef.current.get(asset);
+      
+      if (binanceData) {
+        prices[asset].binance = binanceData.price;
+        prices[asset].binanceTs = binanceData.timestamp;
+      }
+      if (chainlinkData) {
+        prices[asset].chainlink = chainlinkData.price;
+        prices[asset].chainlinkTs = chainlinkData.timestamp;
+      }
+    }
+
+    return prices;
+  }, []);
+
   return {
     ...state,
     stats,
@@ -522,5 +548,6 @@ export function usePriceLatencyComparison() {
     disconnect,
     getChartData,
     getLatencyHistogram,
+    getAllPrices,
   };
 }
