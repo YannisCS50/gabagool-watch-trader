@@ -86,6 +86,52 @@ export function usePriceLatencyComparison() {
   const lastBinancePriceRef = useRef<Map<string, { price: number; timestamp: number }>>(new Map());
   const lastChainlinkPriceRef = useRef<Map<string, { price: number; timestamp: number }>>(new Map());
 
+  // Connection robustness
+  const manualDisconnectRef = useRef(false);
+  const reconnectRef = useRef({
+    binance: { attempt: 0, timer: null as ReturnType<typeof setTimeout> | null },
+    chainlink: { attempt: 0, timer: null as ReturnType<typeof setTimeout> | null },
+  });
+  const chainlinkClientPingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const deriveConnectionStatus = useCallback(
+    (binanceWsStatus: PriceLatencyState['binanceWsStatus'], chainlinkWsStatus: PriceLatencyState['chainlinkWsStatus']): PriceLatencyState['connectionStatus'] => {
+      if (binanceWsStatus === 'connected' && chainlinkWsStatus === 'connected') return 'connected';
+      if (binanceWsStatus === 'connecting' || chainlinkWsStatus === 'connecting') return 'connecting';
+      if (binanceWsStatus === 'error' || chainlinkWsStatus === 'error') return 'error';
+      return 'disconnected';
+    },
+    [],
+  );
+
+  const setBinanceWsStatus = useCallback(
+    (status: PriceLatencyState['binanceWsStatus'], lastError?: string | null) => {
+      setState(prev => {
+        const next = {
+          ...prev,
+          binanceWsStatus: status,
+          lastError: lastError ?? prev.lastError,
+        };
+        return { ...next, connectionStatus: deriveConnectionStatus(next.binanceWsStatus, next.chainlinkWsStatus) };
+      });
+    },
+    [deriveConnectionStatus],
+  );
+
+  const setChainlinkWsStatus = useCallback(
+    (status: PriceLatencyState['chainlinkWsStatus'], lastError?: string | null) => {
+      setState(prev => {
+        const next = {
+          ...prev,
+          chainlinkWsStatus: status,
+          lastError: lastError ?? prev.lastError,
+        };
+        return { ...next, connectionStatus: deriveConnectionStatus(next.binanceWsStatus, next.chainlinkWsStatus) };
+      });
+    },
+    [deriveConnectionStatus],
+  );
+
   const setSelectedAsset = useCallback((asset: Asset) => {
     setState(prev => ({ ...prev, selectedAsset: asset }));
   }, []);
@@ -319,146 +365,217 @@ export function usePriceLatencyComparison() {
     }
   }, []);
 
-  const connect = useCallback(async () => {
+  const connect = useCallback(() => {
+    manualDisconnectRef.current = false;
+
     const isActive = (ws: WebSocket | null) =>
       ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING;
+
+    const scheduleReconnect = (key: 'binance' | 'chainlink', reason: string) => {
+      if (manualDisconnectRef.current) return;
+
+      const slot = reconnectRef.current[key];
+      if (slot.timer) return;
+
+      const base = 500; // ms
+      const cap = 30_000;
+      const delay = Math.min(cap, base * Math.pow(2, slot.attempt));
+      const jitter = Math.floor(delay * 0.3 * Math.random());
+      const wait = delay + jitter;
+
+      slot.timer = setTimeout(() => {
+        slot.timer = null;
+        slot.attempt = Math.min(slot.attempt + 1, 10);
+        connect();
+      }, wait);
+
+      console.warn(`[PriceLatency] ${key} reconnect scheduled in ${wait}ms (${reason})`);
+    };
 
     const binanceActive = isActive(binanceWsRef.current);
     const chainlinkActive = isActive(chainlinkWsRef.current);
 
-    // If both streams are already up (or mid-connecting), nothing to do.
-    if (binanceActive && chainlinkActive) return;
-
-    setState(prev => ({
-      ...prev,
-      connectionStatus: 'connecting',
-      binanceWsStatus: binanceActive ? prev.binanceWsStatus : 'connecting',
-      chainlinkWsStatus: chainlinkActive ? prev.chainlinkWsStatus : 'connecting',
-    }));
-
-    // 1) Binance: real-time CEX prices
     if (!binanceActive) {
+      setBinanceWsStatus('connecting', null);
+
       const streams = Object.values(SYMBOL_MAP).map(s => s.binanceWs).join('/');
       const binanceWsUrl = `wss://stream.binance.com:9443/stream?streams=${streams}`;
 
-      const binanceWs = new WebSocket(binanceWsUrl);
-      binanceWsRef.current = binanceWs;
+      const ws = new WebSocket(binanceWsUrl);
+      binanceWsRef.current = ws;
 
-      binanceWs.onopen = () => {
-        console.log('Binance WebSocket connected');
-        setState(prev => ({ ...prev, binanceWsStatus: 'connected' }));
+      ws.onopen = () => {
+        reconnectRef.current.binance.attempt = 0;
+        console.log('[PriceLatency] Binance WebSocket connected');
+        setBinanceWsStatus('connected', null);
       };
 
-      binanceWs.onmessage = (event) => {
+      ws.onmessage = (event) => {
         try {
           const wrapper = JSON.parse(event.data);
-          if (wrapper.data) {
+          if (wrapper?.data) {
             handleBinanceMessage({ data: JSON.stringify(wrapper.data) } as MessageEvent);
           }
         } catch (err) {
-          console.error('WS message error:', err);
+          console.error('[PriceLatency] Binance WS message parse error:', err);
         }
       };
 
-      binanceWs.onerror = (error) => {
-        console.error('Binance WebSocket error:', error);
-        setState(prev => ({ ...prev, binanceWsStatus: 'error' }));
+      ws.onerror = () => {
+        setBinanceWsStatus('error', 'Binance WebSocket error');
       };
 
-      binanceWs.onclose = () => {
-        console.log('Binance WebSocket closed');
-        setState(prev => ({ ...prev, binanceWsStatus: 'disconnected' }));
+      ws.onclose = (event) => {
+        console.warn('[PriceLatency] Binance WebSocket closed', event.code, event.reason);
+        setBinanceWsStatus('disconnected');
+        scheduleReconnect('binance', `close ${event.code}`);
       };
     }
 
-    // 2) Chainlink: via RTDS backend proxy
     if (!chainlinkActive) {
-      try {
-        if (!RTDS_PROXY_WS_URL) {
-          throw new Error('Missing backend base URL (VITE_SUPABASE_URL)');
-        }
+      if (!RTDS_PROXY_WS_URL) {
+        setChainlinkWsStatus('error', 'Missing backend base URL (VITE_SUPABASE_URL)');
+        return;
+      }
 
-        console.log('Connecting to RTDS proxy for Chainlink prices...');
-        const chainlinkWs = new WebSocket(RTDS_PROXY_WS_URL);
-        chainlinkWsRef.current = chainlinkWs;
+      setChainlinkWsStatus('connecting', null);
 
-        chainlinkWs.onopen = () => {
-          console.log('RTDS proxy WebSocket connected');
-          setState(prev => ({ ...prev, chainlinkWsStatus: 'connected' }));
-        };
+      // Clear client keepalive from any previous socket
+      if (chainlinkClientPingRef.current) {
+        clearInterval(chainlinkClientPingRef.current);
+        chainlinkClientPingRef.current = null;
+      }
 
-        chainlinkWs.onmessage = (event) => {
-          // Subscribe as soon as proxy confirms it connected upstream
+      console.log('[PriceLatency] Connecting to RTDS proxy for Chainlink prices...');
+      const ws = new WebSocket(RTDS_PROXY_WS_URL);
+      chainlinkWsRef.current = ws;
+
+      ws.onopen = () => {
+        // We keep status as "connecting" until we receive proxy_connected.
+        console.log('[PriceLatency] RTDS proxy socket open');
+
+        // Client-side keepalive (helps against idle timeouts between browser  backend)
+        chainlinkClientPingRef.current = setInterval(() => {
           try {
-            const msg = JSON.parse(event.data);
-            if (msg?.type === 'proxy_connected') {
-              chainlinkWs.send(
-                JSON.stringify({
-                  action: 'subscribe',
-                  subscriptions: [{ topic: 'crypto_prices_chainlink', type: '*', filters: '' }],
-                }),
-              );
-              return;
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ action: 'ping' }));
             }
           } catch {
             // ignore
           }
+        }, 25_000);
+      };
 
-          handleRtdsMessage(event);
-        };
+      ws.onmessage = (event) => {
+        // Subscribe as soon as proxy confirms it connected upstream
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg?.type === 'proxy_connected') {
+            reconnectRef.current.chainlink.attempt = 0;
+            setChainlinkWsStatus('connected', null);
+            ws.send(
+              JSON.stringify({
+                action: 'subscribe',
+                subscriptions: [{ topic: 'crypto_prices_chainlink', type: '*', filters: '' }],
+              }),
+            );
+            return;
+          }
 
-        chainlinkWs.onerror = (error) => {
-          console.error('RTDS proxy WebSocket error:', error);
-          setState(prev => ({ ...prev, chainlinkWsStatus: 'error', lastError: 'RTDS proxy WebSocket error' }));
-        };
+          if (msg?.type === 'proxy_error') {
+            setChainlinkWsStatus('error', String(msg?.error || 'RTDS proxy error'));
+            try { ws.close(); } catch { /* ignore */ }
+            return;
+          }
 
-        chainlinkWs.onclose = () => {
-          console.log('RTDS proxy WebSocket closed');
-          setState(prev => ({ ...prev, chainlinkWsStatus: 'disconnected' }));
-        };
-      } catch (err) {
-        console.error('RTDS proxy connection error:', err);
-        setState(prev => ({
-          ...prev,
-          chainlinkWsStatus: 'error',
-          lastError: err instanceof Error ? err.message : 'RTDS proxy connection failed',
-        }));
-      }
+          if (msg?.type === 'proxy_disconnected') {
+            setChainlinkWsStatus('error', 'RTDS proxy disconnected');
+            try { ws.close(); } catch { /* ignore */ }
+            return;
+          }
+        } catch {
+          // non-JSON - ignore
+        }
+
+        handleRtdsMessage(event);
+      };
+
+      ws.onerror = () => {
+        setChainlinkWsStatus('error', 'RTDS proxy WebSocket error');
+      };
+
+      ws.onclose = (event) => {
+        console.warn('[PriceLatency] RTDS proxy WebSocket closed', event.code, event.reason);
+        if (chainlinkClientPingRef.current) {
+          clearInterval(chainlinkClientPingRef.current);
+          chainlinkClientPingRef.current = null;
+        }
+        setChainlinkWsStatus('disconnected');
+        scheduleReconnect('chainlink', `close ${event.code}`);
+      };
     }
-
-    // Mark overall connection as active (individual statuses will reflect actual state)
-    setState(prev => ({
-      ...prev,
-      connectionStatus: 'connected',
-      lastError: null,
-    }));
-  }, [handleBinanceMessage, handleRtdsMessage]);
+  }, [handleBinanceMessage, handleRtdsMessage, setBinanceWsStatus, setChainlinkWsStatus]);
 
   const disconnect = useCallback(() => {
+    manualDisconnectRef.current = true;
+
+    // Clear reconnect timers
+    for (const key of ['binance', 'chainlink'] as const) {
+      const slot = reconnectRef.current[key];
+      if (slot.timer) {
+        clearTimeout(slot.timer);
+        slot.timer = null;
+      }
+      slot.attempt = 0;
+    }
+
+    if (chainlinkClientPingRef.current) {
+      clearInterval(chainlinkClientPingRef.current);
+      chainlinkClientPingRef.current = null;
+    }
+
     if (binanceWsRef.current) {
-      binanceWsRef.current.close();
+      try { binanceWsRef.current.close(); } catch { /* ignore */ }
       binanceWsRef.current = null;
     }
+
     if (chainlinkWsRef.current) {
-      chainlinkWsRef.current.close();
+      try { chainlinkWsRef.current.close(); } catch { /* ignore */ }
       chainlinkWsRef.current = null;
     }
-    setState(prev => ({ 
-      ...prev, 
+
+    setState(prev => ({
+      ...prev,
       connectionStatus: 'disconnected',
       binanceWsStatus: 'disconnected',
       chainlinkWsStatus: 'disconnected',
+      lastError: null,
     }));
   }, []);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
+      manualDisconnectRef.current = true;
+
+      for (const key of ['binance', 'chainlink'] as const) {
+        const slot = reconnectRef.current[key];
+        if (slot.timer) {
+          clearTimeout(slot.timer);
+          slot.timer = null;
+        }
+      }
+
+      if (chainlinkClientPingRef.current) {
+        clearInterval(chainlinkClientPingRef.current);
+        chainlinkClientPingRef.current = null;
+      }
+
       if (binanceWsRef.current) {
-        binanceWsRef.current.close();
+        try { binanceWsRef.current.close(); } catch { /* ignore */ }
       }
       if (chainlinkWsRef.current) {
-        chainlinkWsRef.current.close();
+        try { chainlinkWsRef.current.close(); } catch { /* ignore */ }
       }
     };
   }, []);
