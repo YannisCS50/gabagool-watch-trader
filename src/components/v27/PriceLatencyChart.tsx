@@ -108,11 +108,13 @@ export function PriceLatencyChart() {
   }, [getChartData]);
 
   // Combine chart data for dual-line chart with share price
+  // REDUCED AGGREGATION: Use 10ms window instead of 50ms for more granular view
   const combinedChartData = useMemo(() => {
     const merged = [...chartData.binanceData, ...chartData.chainlinkData]
       .sort((a, b) => a.time - b.time)
       .reduce((acc, point) => {
-        const existing = acc.find((p: any) => Math.abs(p.time - point.time) < 50);
+        // Reduced from 50ms to 10ms for higher resolution
+        const existing = acc.find((p: any) => Math.abs(p.time - point.time) < 10);
         if (existing) {
           existing[point.source] = point.price;
         } else {
@@ -123,7 +125,8 @@ export function PriceLatencyChart() {
     
     // Add share price to all data points for the chart
     const upAskCents = clobPrices?.upAsk ? clobPrices.upAsk * 100 : null;
-    return merged.slice(-600).map(point => ({
+    // Increased from 600 to 1200 for more data points
+    return merged.slice(-1200).map(point => ({
       ...point,
       sharePrice: upAskCents,
     }));
@@ -151,7 +154,8 @@ export function PriceLatencyChart() {
       if (point.chainlink) prevChainlink = point.chainlink;
     }
 
-    return data.slice(-300);
+    // Increased from 300 to 600 for more delta data points
+    return data.slice(-600);
   }, [combinedChartData]);
 
   // Check if current share price is in bounds

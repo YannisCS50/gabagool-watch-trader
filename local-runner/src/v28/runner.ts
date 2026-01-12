@@ -496,9 +496,23 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
   // For BUY orders: makerAmount = shares * price (in USDC cents internally)
   // We need: (shares * price) to have at most 2 decimal places
   
-  // AGGRESSIVE PRICING: Use bestAsk + 0.5¢ for better fill rate
+  // BUG FIX: Fetch FRESH orderbook before placing order
+  // The WebSocket cache can be stale (up to 500ms+ old) which causes pricing issues
+  let freshBestAsk: number | null = null;
+  try {
+    const book = await getOrderbookDepth(tokenId);
+    if (book && book.asks && book.asks.length > 0) {
+      freshBestAsk = parseFloat(book.asks[0].price);
+      console.log(`[V28] 📖 Fresh orderbook: bestAsk=${(freshBestAsk * 100).toFixed(1)}¢ (vs cached=${((signal.direction === 'UP' ? priceState[signal.asset].upBestAsk : priceState[signal.asset].downBestAsk) ?? 0) * 100}¢)`);
+    }
+  } catch (err) {
+    console.warn(`[V28] ⚠️ Failed to fetch fresh orderbook, using cached price`);
+  }
+  
+  // Use fresh orderbook price if available, otherwise fall back to cached
   const state = priceState[signal.asset];
-  const bestAsk = signal.direction === 'UP' ? state.upBestAsk : state.downBestAsk;
+  const cachedBestAsk = signal.direction === 'UP' ? state.upBestAsk : state.downBestAsk;
+  const bestAsk = freshBestAsk ?? cachedBestAsk;
   const aggressivePrice = bestAsk ? Math.round((bestAsk + 0.005) * 100) / 100 : signal.share_price;
   const price = Math.min(aggressivePrice, 0.99); // Cap at 99¢
   
@@ -569,15 +583,27 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
       return;
     }
     
-    // Order succeeded
+    // BUG FIX: Check if order actually filled (size_matched > 0)
+    // Polymarket can return status=MATCHED but size_matched=0 for FOK orders that failed to match
+    const filledSize = result.filledSize ?? 0;
+    if (filledSize <= 0) {
+      console.error(`[V28] ❌ ORDER NOT FILLED: status=${result.status} but filledSize=${filledSize}`);
+      signal.status = 'failed';
+      signal.notes = `Order not filled (size_matched=0) despite status=${result.status} | Latency: ${orderLatency}ms`;
+      await saveSignal(signal);
+      positionLock = { status: 'idle' };
+      return;
+    }
+    
+    // Order succeeded - use actual fill price, not expected price
     const entryPrice = result.avgPrice ?? signal.share_price;
-    const filledSize = result.filledSize ?? shares;
     const orderType: 'maker' | 'taker' = result.status === 'filled' ? 'taker' : 'maker';
     const entryFee = orderType === 'taker' ? filledSize * 0.02 : -filledSize * 0.005;
     
-    // Calculate TP price using percentage (default 4% = 0.04)
-    const tpPct = currentConfig.tp_pct ?? 0.04; // 4% take-profit
-    const tpPrice = currentConfig.tp_enabled ? entryPrice * (1 + tpPct) : null;
+    // BUG FIX: TP = entry + 4 CENTS (not 4%)
+    // User requirement: tp_cents is the exact amount to add, not a percentage
+    const tpCents = currentConfig.tp_cents ?? 4; // Default 4 cents
+    const tpPrice = currentConfig.tp_enabled ? entryPrice + (tpCents / 100) : null;
     
     signal.status = 'filled';
     signal.entry_price = entryPrice;
@@ -590,13 +616,13 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
     signal.sl_price = null; // No SL in immediate-sell mode
     signal.sl_status = null;
     
-    // Update notes with full trade info
+    // Update notes with full trade info including TP price
     const bcDelta = signal.binance_chainlink_delta;
     const latencyMs = signal.binance_chainlink_latency_ms;
-    signal.notes = `${signal.direction} | B-CL Δ$${bcDelta?.toFixed(0) ?? '?'} (~${latencyMs ?? '?'}ms) | Trigger@${(signal.share_price * 100).toFixed(1)}¢ → Entry@${(entryPrice * 100).toFixed(1)}¢`;
+    signal.notes = `${signal.direction} | B-CL Δ$${bcDelta?.toFixed(0) ?? '?'} (~${latencyMs ?? '?'}ms) | Entry@${(entryPrice * 100).toFixed(1)}¢ → TP@${tpPrice ? (tpPrice * 100).toFixed(1) : '-'}¢ (+${tpCents}¢)`;
     
     console.log(`[V28] ⏱️ LATENCY: Signal → BUY = ${totalLatency}ms (order took ${orderLatency}ms)`);
-    console.log(`[V28] ✅ LIVE FILL: ${signal.asset} ${signal.direction} @ ${(entryPrice * 100).toFixed(1)}¢ | ${filledSize.toFixed(2)} shares | B-CL Δ$${bcDelta?.toFixed(0) ?? '?'} (~${latencyMs ?? '?'}ms)`);
+    console.log(`[V28] ✅ LIVE FILL: ${signal.asset} ${signal.direction} @ ${(entryPrice * 100).toFixed(1)}¢ | ${filledSize.toFixed(2)} shares | TP@${tpPrice ? (tpPrice * 100).toFixed(1) : '-'}¢ (+${tpCents}¢)`);
     
     // ========================================
     // PLACE LIMIT SELL @ TP PRICE (with delay for settlement)
@@ -621,7 +647,9 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
           console.log(`[V28] ⏳ Attempt ${attempt}/${maxRetries}: Waiting ${waitTime}ms before SELL...`);
           await new Promise(resolve => setTimeout(resolve, waitTime));
           
-          console.log(`[V28] 📤 LIMIT SELL ${sellShares.toFixed(2)} @ ${(sellPrice * 100).toFixed(0)}¢ (TP +${((tpPrice / entryPrice - 1) * 100).toFixed(1)}%)`);
+          // Show TP in cents, not percentage
+          const tpCentsAmount = Math.round((sellPrice - entryPrice) * 100);
+          console.log(`[V28] 📤 LIMIT SELL ${sellShares.toFixed(2)} @ ${(sellPrice * 100).toFixed(0)}¢ (TP +${tpCentsAmount}¢)`);
           
           sellResult = await placeOrder({
             tokenId,
@@ -849,8 +877,9 @@ async function handleLiveTimeout(signal: V28Signal, tokenId: string): Promise<vo
   
   await handleLiveExit(signal, tokenId, 'timeout', exitPrice);
 }
-// Minimum profit % to trigger a sell
-const MIN_PROFIT_PCT_TO_SELL = 4.0;
+// Minimum profit in CENTS to trigger a sell (not percentage!)
+// User requirement: sell when price is +4¢ above entry
+const MIN_PROFIT_CENTS_TO_SELL = 4;
 
 /**
  * Position Monitor - runs every 10s to check REAL positions from Polymarket API
@@ -910,15 +939,16 @@ async function monitorOpenPositions(): Promise<void> {
     
     if (shares < 1 || avgCost <= 0) continue;
 
-    // Calculate profit %
+    // Calculate profit in CENTS (not percentage!)
+    const profitCents = Math.round((currentPrice - avgCost) * 100);
     const profitPct = ((currentPrice / avgCost) - 1) * 100;
     const profitUsd = (currentPrice - avgCost) * shares;
 
-    console.log(`[V28] 📊 ${asset} ${direction}: ${shares.toFixed(1)} shares @ ${(avgCost * 100).toFixed(1)}¢ → ${(currentPrice * 100).toFixed(1)}¢ (${profitPct >= 0 ? '+' : ''}${profitPct.toFixed(1)}% / $${profitUsd.toFixed(2)})`);
+    console.log(`[V28] 📊 ${asset} ${direction}: ${shares.toFixed(1)} shares @ ${(avgCost * 100).toFixed(1)}¢ → ${(currentPrice * 100).toFixed(1)}¢ (+${profitCents}¢ / ${profitPct >= 0 ? '+' : ''}${profitPct.toFixed(1)}% / $${profitUsd.toFixed(2)})`);
 
-    // Only sell if profit > 4%
-    if (profitPct >= MIN_PROFIT_PCT_TO_SELL) {
-      console.log(`[V28] 💰 PROFIT ${profitPct.toFixed(1)}% > ${MIN_PROFIT_PCT_TO_SELL}%! Selling ${shares.toFixed(1)} shares...`);
+    // Sell when profit >= 4 CENTS (user requirement)
+    if (profitCents >= MIN_PROFIT_CENTS_TO_SELL) {
+      console.log(`[V28] 💰 PROFIT +${profitCents}¢ >= +${MIN_PROFIT_CENTS_TO_SELL}¢! Selling ${shares.toFixed(1)} shares...`);
 
       // Get current orderbook for best bid
       const state = priceState[asset];
@@ -961,10 +991,10 @@ async function monitorOpenPositions(): Promise<void> {
       } catch (error: any) {
         console.error(`[V28] ❌ SELL exception: ${error?.message || error}`);
       }
-    } else if (profitPct > 0) {
-      console.log(`[V28] ⏳ Profit ${profitPct.toFixed(1)}% < ${MIN_PROFIT_PCT_TO_SELL}%, holding...`);
+    } else if (profitCents > 0) {
+      console.log(`[V28] ⏳ Profit +${profitCents}¢ < +${MIN_PROFIT_CENTS_TO_SELL}¢, holding...`);
     } else {
-      console.log(`[V28] 📉 Currently at ${profitPct.toFixed(1)}%, waiting for profit...`);
+      console.log(`[V28] 📉 Currently at ${profitCents}¢, waiting for profit...`);
     }
   }
 }
@@ -982,13 +1012,15 @@ async function monitorTrackedPositions(): Promise<void> {
     const currentBid = position.signal.direction === 'UP' ? state.upBestBid : state.downBestBid;
     if (currentBid === null) continue;
     
+    // Calculate profit in CENTS
+    const profitCents = Math.round((currentBid - position.entryPrice) * 100);
     const profitPct = ((currentBid / position.entryPrice) - 1) * 100;
     
-    console.log(`[V28] 📊 Tracked ${position.asset} ${position.signal.direction}: Entry ${(position.entryPrice * 100).toFixed(1)}¢ → Current ${(currentBid * 100).toFixed(1)}¢ (${profitPct >= 0 ? '+' : ''}${profitPct.toFixed(1)}%)`);
+    console.log(`[V28] 📊 Tracked ${position.asset} ${position.signal.direction}: Entry ${(position.entryPrice * 100).toFixed(1)}¢ → Current ${(currentBid * 100).toFixed(1)}¢ (+${profitCents}¢ / ${profitPct >= 0 ? '+' : ''}${profitPct.toFixed(1)}%)`);
     
-    // Only sell if profit > 4%
-    if (profitPct >= MIN_PROFIT_PCT_TO_SELL) {
-      console.log(`[V28] 💰 PROFIT ${profitPct.toFixed(1)}%! Selling tracked position...`);
+    // Sell when profit >= 4 CENTS
+    if (profitCents >= MIN_PROFIT_CENTS_TO_SELL) {
+      console.log(`[V28] 💰 PROFIT +${profitCents}¢! Selling tracked position...`);
       
       // AGGRESSIVE SELL: Use bestBid - 0.5¢
       const aggressiveSellPrice = Math.round((currentBid - 0.005) * 100) / 100;
