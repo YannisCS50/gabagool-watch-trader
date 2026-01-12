@@ -500,7 +500,10 @@ async function simulateFill(signal: V28Signal): Promise<void> {
   // Simulate slight slippage
   const slippage = (Math.random() - 0.5) * 0.005;
   const entryPrice = signal.share_price + slippage;
-  const shares = signal.trade_size_usd / entryPrice;
+  
+  // Calculate shares: min of (trade_size_usd / price) and max_shares
+  const rawShares = signal.trade_size_usd / entryPrice;
+  const shares = Math.min(rawShares, currentConfig.max_shares);
 
   // Determine order type (maker if slow, taker if fast)
   const orderType: 'maker' | 'taker' = fillLatency > 100 ? 'maker' : 'taker';
@@ -592,7 +595,8 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
   const desiredShares = signal.trade_size_usd / price;
   
   // Round shares to whole numbers for simplicity (guarantees makerAmount has ≤2 decimals)
-  const shares = Math.floor(desiredShares);
+  // ALSO cap at max_shares from config (default 5)
+  const shares = Math.min(Math.floor(desiredShares), currentConfig.max_shares);
   
   if (shares < 1) {
     console.error(`[V28] ❌ Not enough shares: desired=${desiredShares.toFixed(2)} -> ${shares}`);
