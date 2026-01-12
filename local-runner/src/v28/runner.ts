@@ -657,6 +657,8 @@ export async function startV28Runner(): Promise<void> {
   console.log(`[V28] Share bounds: ${(currentConfig.min_share_price * 100).toFixed(0)}-${(currentConfig.max_share_price * 100).toFixed(0)}¢`);
   console.log(`[V28] TP/SL: ${currentConfig.tp_cents}¢ / ${currentConfig.sl_cents}¢`);
   console.log(`[V28] Assets: ${currentConfig.assets.join(', ')}`);
+  console.log('[V28] ✅ LATENCY TRACKING ENABLED - Will log signal→fill in ms');
+  console.log('[V28] ✅ SINGLE POSITION LOCK - Max 1 position at a time');
   
   await fetchActiveMarkets();
   
