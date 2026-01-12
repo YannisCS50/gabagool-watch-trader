@@ -603,10 +603,26 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
   const state = priceState[signal.asset];
   const cachedBestAsk = signal.direction === 'UP' ? state.upBestAsk : state.downBestAsk;
   const bestAsk = freshBestAsk ?? cachedBestAsk;
-  const aggressivePrice = bestAsk ? Math.round((bestAsk + 0.005) * 100) / 100 : signal.share_price;
-  const price = Math.min(aggressivePrice, 0.99); // Cap at 99¢
   
-  console.log(`[V28] 💹 Aggressive pricing: trigger=${(signal.share_price * 100).toFixed(1)}¢ bestAsk=${bestAsk ? (bestAsk * 100).toFixed(1) : '?'}¢ → buy@${(price * 100).toFixed(1)}¢`);
+  // BUG FIX: Be more aggressive - add 2 cents to bestAsk to ensure fill
+  // Previous: +0.5¢ was often not enough and FOK orders failed
+  // Also ensure we're at least at bestAsk (not below)
+  const aggressivePrice = bestAsk ? Math.round((bestAsk + 0.02) * 100) / 100 : signal.share_price;
+  const price = Math.min(aggressivePrice, currentConfig.max_share_price); // Cap at max_share_price from config
+  
+  // SAFETY CHECK: Don't place order if price is significantly higher than trigger
+  // This prevents overpaying when bestAsk spikes
+  const maxPriceAllowed = signal.share_price + 0.05; // Max 5 cents above trigger
+  if (price > maxPriceAllowed) {
+    console.warn(`[V28] ⚠️ Price too high: bestAsk=${bestAsk ? (bestAsk * 100).toFixed(1) : '?'}¢ → buy@${(price * 100).toFixed(1)}¢ > max ${(maxPriceAllowed * 100).toFixed(1)}¢`);
+    signal.status = 'failed';
+    signal.notes = `Price too high: ${(price * 100).toFixed(1)}¢ > max ${(maxPriceAllowed * 100).toFixed(1)}¢`;
+    void saveSignal(signal);
+    positionLock = { status: 'idle' };
+    return;
+  }
+  
+  console.log(`[V28] 💹 Aggressive pricing: trigger=${(signal.share_price * 100).toFixed(1)}¢ bestAsk=${bestAsk ? (bestAsk * 100).toFixed(1) : '?'}¢ → buy@${(price * 100).toFixed(1)}¢ (+2¢ buffer)`);
   
   // SIMPLE FIX: Round shares to 2 decimals so that shares * price always has ≤2 decimals
   // Example: 4.12 shares × $0.72 = $2.9664 → FAILS
