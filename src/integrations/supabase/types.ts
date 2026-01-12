@@ -2448,6 +2448,7 @@ export type Database = {
           timeout_ms: number | null
           tp_cents: number | null
           tp_enabled: boolean | null
+          tp_pct: number | null
           trade_size_usd: number | null
           updated_at: string
         }
@@ -2465,6 +2466,7 @@ export type Database = {
           timeout_ms?: number | null
           tp_cents?: number | null
           tp_enabled?: boolean | null
+          tp_pct?: number | null
           trade_size_usd?: number | null
           updated_at?: string
         }
@@ -2482,6 +2484,7 @@ export type Database = {
           timeout_ms?: number | null
           tp_cents?: number | null
           tp_enabled?: boolean | null
+          tp_pct?: number | null
           trade_size_usd?: number | null
           updated_at?: string
         }

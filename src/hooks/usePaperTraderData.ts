@@ -58,6 +58,7 @@ export interface PaperTradingConfig {
   min_share_price: number;
   max_share_price: number;
   tp_cents: number;
+  tp_pct?: number; // Take-profit as percentage (e.g., 0.04 = 4%), optional for backward compatibility
   tp_enabled: boolean;
   sl_cents: number;
   sl_enabled: boolean;
