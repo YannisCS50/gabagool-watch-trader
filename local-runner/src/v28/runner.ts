@@ -494,7 +494,13 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
   // For BUY orders: makerAmount = shares * price (in USDC cents internally)
   // We need: (shares * price) to have at most 2 decimal places
   
-  const price = Math.round(signal.share_price * 100) / 100; // tickSize=0.01
+  // AGGRESSIVE PRICING: Use bestAsk + 0.5¢ for better fill rate
+  const state = priceState[signal.asset];
+  const bestAsk = signal.direction === 'UP' ? state.upBestAsk : state.downBestAsk;
+  const aggressivePrice = bestAsk ? Math.round((bestAsk + 0.005) * 100) / 100 : signal.share_price;
+  const price = Math.min(aggressivePrice, 0.99); // Cap at 99¢
+  
+  console.log(`[V28] 💹 Aggressive pricing: trigger=${(signal.share_price * 100).toFixed(1)}¢ bestAsk=${bestAsk ? (bestAsk * 100).toFixed(1) : '?'}¢ → buy@${(price * 100).toFixed(1)}¢`);
   
   // SIMPLE FIX: Round shares to 2 decimals so that shares * price always has ≤2 decimals
   // Example: 4.12 shares × $0.72 = $2.9664 → FAILS
