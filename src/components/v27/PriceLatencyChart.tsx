@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, ComposedChart, Bar, Area } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, ComposedChart, Bar, Area, ReferenceArea } from 'recharts';
 import { Activity, Settings, Zap, Timer, TrendingUp } from 'lucide-react';
 import { usePriceLatencyComparison, Asset } from '@/hooks/usePriceLatencyComparison';
 import { usePaperTradingConfig } from '@/hooks/usePaperTraderData';
@@ -124,14 +124,11 @@ export function PriceLatencyChart() {
     return merged.slice(-600);
   }, [chartData]);
 
-  // Calculate price deltas for delta chart - include share price
+  // Calculate price deltas for delta chart
   const deltaChartData = useMemo(() => {
-    const data: { time: number; binanceDelta: number | null; chainlinkDelta: number | null; upPrice: number | null }[] = [];
+    const data: { time: number; binanceDelta: number | null; chainlinkDelta: number | null }[] = [];
     let prevBinance: number | null = null;
     let prevChainlink: number | null = null;
-
-    // Scale share price to fit on delta chart (multiply by 100 to show as cents equivalent)
-    const scaledUpPrice = clobPrices?.upAsk ? clobPrices.upAsk * 100 : null;
 
     for (const point of combinedChartData) {
       const binanceDelta = point.binance && prevBinance ? point.binance - prevBinance : null;
@@ -142,7 +139,6 @@ export function PriceLatencyChart() {
           time: point.time,
           binanceDelta: binanceDelta && Math.abs(binanceDelta) > 0.01 ? binanceDelta : null,
           chainlinkDelta: chainlinkDelta && Math.abs(chainlinkDelta) > 0.01 ? chainlinkDelta : null,
-          upPrice: scaledUpPrice, // Constant line for current UP price
         });
       }
 
@@ -151,7 +147,14 @@ export function PriceLatencyChart() {
     }
 
     return data.slice(-300);
-  }, [combinedChartData, clobPrices]);
+  }, [combinedChartData]);
+
+  // Check if current share price is in bounds
+  const sharePriceInBounds = useMemo(() => {
+    if (!clobPrices?.upAsk || !config) return null;
+    const price = clobPrices.upAsk;
+    return price >= config.min_share_price && price <= config.max_share_price;
+  }, [clobPrices, config]);
 
   return (
     <Card className="col-span-full">
@@ -266,12 +269,21 @@ export function PriceLatencyChart() {
             <div className="text-xs text-muted-foreground flex items-center gap-1">
               <TrendingUp className="h-3 w-3" style={{ color: COLORS.sharePrice }} />
               UP Share
+              {sharePriceInBounds !== null && (
+                <Badge 
+                  variant="outline" 
+                  className={`ml-1 text-[9px] px-1 py-0 ${sharePriceInBounds ? 'border-green-500 text-green-500' : 'border-red-500 text-red-500'}`}
+                >
+                  {sharePriceInBounds ? 'IN BOUNDS' : 'OUT'}
+                </Badge>
+              )}
             </div>
-            <div className="text-lg font-mono font-bold" style={{ color: COLORS.sharePrice }}>
+            <div className="text-lg font-mono font-bold" style={{ color: sharePriceInBounds === false ? '#F85149' : COLORS.sharePrice }}>
               {clobPrices?.upAsk ? `${(clobPrices.upAsk * 100).toFixed(1)}¢` : '—'}
             </div>
             <div className="text-[10px] text-muted-foreground">
-              bid: {clobPrices?.upBid ? `${(clobPrices.upBid * 100).toFixed(1)}¢` : '—'}
+              bid: {clobPrices?.upBid ? `${(clobPrices.upBid * 100).toFixed(1)}¢` : '—'} | 
+              range: {config ? `${(config.min_share_price * 100).toFixed(0)}-${(config.max_share_price * 100).toFixed(0)}¢` : '—'}
             </div>
           </div>
           <div className="bg-muted rounded-lg p-3">
