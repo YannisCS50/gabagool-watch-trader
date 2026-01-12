@@ -134,31 +134,63 @@ export class MispricingDetector {
       });
     }
     
-    // Determine which side is mispriced
-    // If spot > strike (UP), UP should be expensive, DOWN should be cheap
-    // Mispricing: Polymarket hasn't adjusted yet
-    const spotAboveStrike = deltaAbs > 0;
-    const mispricedSide: 'UP' | 'DOWN' = spotAboveStrike ? 'UP' : 'DOWN';
+    // ============================================================
+    // CRITICAL FIX: Buy the CHEAP side, not the expensive side!
+    // ============================================================
+    //
+    // If spot > strike (delta positive):
+    //   - UP should become expensive (~0.70-0.90)
+    //   - DOWN should become cheap (~0.10-0.30)
+    //   → If UP is STILL cheap (below theoretical), BUY UP
+    //   → If DOWN is STILL expensive (above 1-theoretical), BUY DOWN
+    //
+    // The key insight: we want to buy when the market HASN'T YET
+    // adjusted to the new reality. That means buying the side that
+    // is UNDERPRICED relative to its theoretical value.
+    // ============================================================
     
-    // Calculate expected Polymarket price based on delta
-    // This is simplified - should be based on historical distribution
+    // Calculate expected Polymarket prices based on delta
     const expectedUpPrice = this.calculateExpectedPrice(deltaPct, true);
     const expectedDownPrice = this.calculateExpectedPrice(deltaPct, false);
     
-    const actualPrice = mispricedSide === 'UP' ? book.upMid : book.downMid;
-    const expectedPrice = mispricedSide === 'UP' ? expectedUpPrice : expectedDownPrice;
-    const priceLag = expectedPrice - actualPrice;
+    // Calculate how much each side is underpriced
+    // Positive = underpriced (good to buy), Negative = overpriced (avoid)
+    const upUnderpricing = expectedUpPrice - book.upAsk;  // Expected - actual ask
+    const downUnderpricing = expectedDownPrice - book.downAsk;
     
-    // Check B: Polymarket price hasn't moved to expectation
-    if (Math.abs(priceLag) < 0.02) {
-      return this.noMispricing('Polymarket already at expected price', {
+    // Find the side that is most underpriced (best opportunity)
+    let buyableSide: 'UP' | 'DOWN' | null = null;
+    let bestUnderpricing = 0;
+    let actualPrice = 0;
+    let expectedPrice = 0;
+    
+    // Only consider buying if underpriced by at least 2%
+    const minUnderpricingThreshold = 0.02;
+    
+    if (upUnderpricing > minUnderpricingThreshold && upUnderpricing > downUnderpricing) {
+      buyableSide = 'UP';
+      bestUnderpricing = upUnderpricing;
+      actualPrice = book.upAsk;
+      expectedPrice = expectedUpPrice;
+    } else if (downUnderpricing > minUnderpricingThreshold && downUnderpricing > upUnderpricing) {
+      buyableSide = 'DOWN';
+      bestUnderpricing = downUnderpricing;
+      actualPrice = book.downAsk;
+      expectedPrice = expectedDownPrice;
+    }
+    
+    // No underpriced side found
+    if (!buyableSide) {
+      return this.noMispricing('No side is sufficiently underpriced', {
         deltaAbs,
         deltaPct,
         threshold,
-        expectedPolyPrice: expectedPrice,
-        actualPolyPrice: actualPrice,
+        expectedPolyPrice: expectedUpPrice,
+        actualPolyPrice: book.upAsk,
       });
     }
+    
+    const priceLag = bestUnderpricing;
     
     // Check C: Causality - spot must lead Polymarket
     const causalityResult = this.checkCausality(asset, spot.timestamp, config);
@@ -183,7 +215,7 @@ export class MispricingDetector {
     
     return {
       exists: true,
-      side: mispricedSide,
+      side: buyableSide,
       deltaAbs,
       deltaPct,
       threshold,
