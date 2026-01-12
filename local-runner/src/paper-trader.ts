@@ -286,18 +286,38 @@ async function saveSignal(signal: PaperSignal): Promise<string | null> {
   if (!supabase) return null;
   
   try {
-    const { data, error } = await supabase
-      .from('paper_signals')
-      .upsert(signal as never, { onConflict: 'id' })
-      .select('id')
-      .single();
-    
-    if (error) {
-      console.error('[PaperTrader] Failed to save signal:', error.message);
-      return null;
+    // If signal has an ID, update it; otherwise insert new
+    if (signal.id) {
+      const { data, error } = await supabase
+        .from('paper_signals')
+        .update(signal as never)
+        .eq('id', signal.id)
+        .select('id')
+        .single();
+      
+      if (error) {
+        console.error('[PaperTrader] Failed to update signal:', error.message);
+        return signal.id;
+      }
+      
+      return data?.id ?? signal.id;
+    } else {
+      // Insert new signal without id (let DB generate it)
+      const { id, ...signalWithoutId } = signal;
+      const { data, error } = await supabase
+        .from('paper_signals')
+        .insert(signalWithoutId as never)
+        .select('id')
+        .single();
+      
+      if (error) {
+        console.error('[PaperTrader] Failed to insert signal:', error.message, error);
+        return null;
+      }
+      
+      console.log('[PaperTrader] 💾 Signal saved to DB:', data?.id);
+      return data?.id ?? null;
     }
-    
-    return data?.id ?? null;
   } catch (err) {
     console.error('[PaperTrader] Error saving signal:', err);
     return null;
