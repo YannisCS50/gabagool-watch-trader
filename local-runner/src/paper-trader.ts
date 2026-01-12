@@ -772,3 +772,33 @@ export function setMarketInfo(asset: Asset, info: MarketInfo): void {
 
 // Feature flag for paper trader
 export const FEATURE_PAPER_TRADER = process.env.FEATURE_PAPER_TRADER === 'true';
+
+// ============================================
+// STANDALONE ENTRY POINT
+// ============================================
+
+// Run as standalone if executed directly
+const isMainModule = process.argv[1]?.includes('paper-trader');
+if (isMainModule) {
+  console.log('='.repeat(50));
+  console.log('  PAPER TRADER - Standalone Mode');
+  console.log('='.repeat(50));
+  
+  startPaperTrader().catch((err) => {
+    console.error('[PaperTrader] Fatal error:', err);
+    process.exit(1);
+  });
+  
+  // Handle graceful shutdown
+  process.on('SIGINT', async () => {
+    console.log('\n[PaperTrader] Shutting down...');
+    await stopPaperTrader();
+    process.exit(0);
+  });
+  
+  process.on('SIGTERM', async () => {
+    console.log('\n[PaperTrader] Received SIGTERM, shutting down...');
+    await stopPaperTrader();
+    process.exit(0);
+  });
+}
