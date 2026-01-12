@@ -326,21 +326,48 @@ export function PriceLatencyChart() {
               </div>
             </div>
             <div>
-              <Label className="text-xs">Hold Time (sec)</Label>
+              <Label className="text-xs">TP (¢)</Label>
+              <div className="flex gap-1 items-center">
+                <Input 
+                  type="number" 
+                  value={config.takeProfitCents} 
+                  onChange={(e) => updateConfig({ takeProfitCents: parseFloat(e.target.value) || 3 })}
+                  className="h-8 w-14"
+                  disabled={!config.takeProfitEnabled}
+                />
+                <input 
+                  type="checkbox" 
+                  checked={config.takeProfitEnabled} 
+                  onChange={(e) => updateConfig({ takeProfitEnabled: e.target.checked })}
+                  className="h-4 w-4"
+                />
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">SL (¢)</Label>
+              <div className="flex gap-1 items-center">
+                <Input 
+                  type="number" 
+                  value={config.stopLossCents} 
+                  onChange={(e) => updateConfig({ stopLossCents: parseFloat(e.target.value) || 3 })}
+                  className="h-8 w-14"
+                  disabled={!config.stopLossEnabled}
+                />
+                <input 
+                  type="checkbox" 
+                  checked={config.stopLossEnabled} 
+                  onChange={(e) => updateConfig({ stopLossEnabled: e.target.checked })}
+                  className="h-4 w-4"
+                />
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">Timeout (s)</Label>
               <Input 
                 type="number" 
                 value={config.holdTimeMs / 1000} 
                 onChange={(e) => updateConfig({ holdTimeMs: (parseFloat(e.target.value) || 15) * 1000 })}
-                className="h-8"
-              />
-            </div>
-            <div>
-              <Label className="text-xs">Max Fill (ms)</Label>
-              <Input 
-                type="number" 
-                value={config.maxFillTimeMs} 
-                onChange={(e) => updateConfig({ maxFillTimeMs: parseInt(e.target.value) || 1000 })}
-                className="h-8"
+                className="h-8 w-16"
               />
             </div>
           </div>
