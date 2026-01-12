@@ -388,6 +388,63 @@ export function PriceLatencyChart() {
                 </LineChart>
               </ResponsiveContainer>
             </div>
+
+            {/* Market Cards under Live Prices */}
+            <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
+              {ASSETS.map(asset => {
+                const marketInfo = polymarketPrices[asset];
+                const upAsk = marketInfo?.upBestAsk;
+                const downAsk = marketInfo?.downBestAsk;
+                const inBounds = upAsk && upAsk >= config.minSharePrice && upAsk <= config.maxSharePrice;
+                const combinedAsk = upAsk && downAsk ? upAsk + downAsk : null;
+                
+                return (
+                  <div key={asset} className={`border rounded-lg p-3 ${asset === selectedAsset ? 'border-primary bg-primary/5' : ''}`}>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="font-bold text-lg">{asset}</span>
+                      {marketInfo?.strikePrice && (
+                        <Badge variant="outline" className="text-xs border-purple-500/50 text-purple-400">
+                          ${marketInfo.strikePrice.toLocaleString()}
+                        </Badge>
+                      )}
+                    </div>
+                    
+                    {marketInfo ? (
+                      <>
+                        <div className="grid grid-cols-2 gap-2 text-xs mb-2">
+                          <div>
+                            <span className="text-muted-foreground">UP</span>
+                            <div className="font-mono text-green-500 font-semibold">
+                              {upAsk ? `${(upAsk * 100).toFixed(1)}¢` : '—'}
+                            </div>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">DOWN</span>
+                            <div className="font-mono text-red-500 font-semibold">
+                              {downAsk ? `${(downAsk * 100).toFixed(1)}¢` : '—'}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="text-xs flex justify-between border-t pt-2">
+                          <span className="text-muted-foreground">Combined</span>
+                          <span className={`font-mono font-bold ${combinedAsk && combinedAsk < 1 ? 'text-green-500' : 'text-muted-foreground'}`}>
+                            {combinedAsk ? `${(combinedAsk * 100).toFixed(1)}¢` : '—'}
+                          </span>
+                        </div>
+                        <div className="text-xs flex justify-between">
+                          <span className="text-muted-foreground">Tradeable</span>
+                          <span className={inBounds ? 'text-green-500' : 'text-orange-400'}>
+                            {inBounds ? '✓ In bounds' : `✗ Outside ${(config.minSharePrice*100).toFixed(0)}-${(config.maxSharePrice*100).toFixed(0)}¢`}
+                          </span>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="text-xs text-muted-foreground">No market data</div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </TabsContent>
 
           <TabsContent value="deltas">
