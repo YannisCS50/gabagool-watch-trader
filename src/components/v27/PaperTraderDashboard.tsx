@@ -348,6 +348,82 @@ interface DecisionLog {
   created_at: string;
 }
 
+// ============ Realtime Trade Notifications ============
+
+function useRealtimeTradeNotifications() {
+  const queryClient = useQueryClient();
+  const [lastTrade, setLastTrade] = useState<PaperSignal | null>(null);
+  const [flashAsset, setFlashAsset] = useState<string | null>(null);
+  
+  useEffect(() => {
+    const channel = supabase
+      .channel('paper-signals-realtime-notifications')
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'paper_signals',
+        },
+        (payload) => {
+          console.log('[TradeNotify] New trade signal:', payload);
+          const signal = payload.new as PaperSignal;
+          setLastTrade(signal);
+          setFlashAsset(signal.asset);
+          
+          // Show toast notification
+          const dirEmoji = signal.direction === 'UP' ? '🟢' : '🔴';
+          const price = signal.share_price ? `@ ${(signal.share_price * 100).toFixed(1)}¢` : '';
+          toast.success(`${dirEmoji} ${signal.asset} ${signal.direction} ${price}`, {
+            description: `Delta: ${signal.binance_delta?.toFixed(1)} | Status: ${signal.status}`,
+            duration: 5000,
+          });
+          
+          // Clear flash after 2 seconds
+          setTimeout(() => setFlashAsset(null), 2000);
+          
+          // Invalidate related queries
+          queryClient.invalidateQueries({ queryKey: ['paper-signals'] });
+          queryClient.invalidateQueries({ queryKey: ['paper-trader-stats'] });
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'paper_signals',
+        },
+        (payload) => {
+          console.log('[TradeNotify] Trade updated:', payload);
+          const signal = payload.new as PaperSignal;
+          
+          // Notify on status changes (sold, expired, etc.)
+          if (signal.status === 'sold' && signal.net_pnl !== null) {
+            const pnlEmoji = signal.net_pnl >= 0 ? '✅' : '❌';
+            const pnlStr = signal.net_pnl >= 0 ? `+$${signal.net_pnl.toFixed(2)}` : `-$${Math.abs(signal.net_pnl).toFixed(2)}`;
+            toast.info(`${pnlEmoji} ${signal.asset} SOLD ${pnlStr}`, {
+              description: signal.exit_type ? `Exit: ${signal.exit_type.toUpperCase()}` : undefined,
+              duration: 5000,
+            });
+          }
+          
+          queryClient.invalidateQueries({ queryKey: ['paper-signals'] });
+          queryClient.invalidateQueries({ queryKey: ['paper-trader-stats'] });
+        }
+      )
+      .subscribe((status) => {
+        console.log('[TradeNotify] Subscription status:', status);
+      });
+    
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [queryClient]);
+  
+  return { lastTrade, flashAsset };
+}
+
 function useDecisionLogs() {
   const queryClient = useQueryClient();
   
@@ -363,10 +439,9 @@ function useDecisionLogs() {
       if (error) throw error;
       return (data || []) as DecisionLog[];
     },
-    refetchInterval: 10000, // Fallback polling (less frequent since realtime works)
+    refetchInterval: 10000,
   });
   
-  // Realtime subscription - stable effect
   useEffect(() => {
     const channel = supabase
       .channel('paper-trader-logs-realtime')
@@ -379,7 +454,6 @@ function useDecisionLogs() {
         },
         (payload) => {
           console.log('[DecisionLog] Realtime INSERT received:', payload);
-          // Use queryClient.invalidateQueries for stable reference
           queryClient.invalidateQueries({ queryKey: ['paper-trader-logs'] });
         }
       )
@@ -843,13 +917,63 @@ function ConfigEditor() {
   );
 }
 
+// ============ Last Trade Banner ============
+
+function LastTradeBanner({ lastTrade, flashAsset }: { lastTrade: PaperSignal | null; flashAsset: string | null }) {
+  if (!lastTrade) return null;
+  
+  const isFlashing = flashAsset === lastTrade.asset;
+  const dirColor = lastTrade.direction === 'UP' ? 'border-green-500 bg-green-500/10' : 'border-red-500 bg-red-500/10';
+  
+  return (
+    <div className={`border-2 rounded-lg p-4 transition-all duration-300 ${isFlashing ? dirColor + ' animate-pulse' : 'border-border bg-card'}`}>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <Badge 
+            className={`text-lg px-3 py-1 ${lastTrade.direction === 'UP' ? 'bg-green-500' : 'bg-red-500'}`}
+          >
+            {lastTrade.direction === 'UP' ? <TrendingUp className="h-4 w-4 mr-1" /> : <TrendingDown className="h-4 w-4 mr-1" />}
+            {lastTrade.asset} {lastTrade.direction}
+          </Badge>
+          <span className="font-mono text-lg">
+            @ {lastTrade.share_price ? `${(lastTrade.share_price * 100).toFixed(1)}¢` : '—'}
+          </span>
+          <StatusBadge status={lastTrade.status} />
+        </div>
+        <div className="text-sm text-muted-foreground">
+          {new Date(lastTrade.signal_ts).toLocaleTimeString()}
+        </div>
+      </div>
+      {lastTrade.notes && (
+        <div className="mt-2 text-sm text-muted-foreground">
+          {lastTrade.notes}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function PaperTraderDashboard() {
+  // Subscribe to realtime trade notifications
+  const { lastTrade, flashAsset } = useRealtimeTradeNotifications();
+  
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-bold">Paper Trader</h2>
+        <h2 className="text-2xl font-bold flex items-center gap-2">
+          Paper Trader
+          {flashAsset && (
+            <Badge className="animate-pulse bg-yellow-500">
+              <Activity className="h-3 w-3 mr-1" />
+              LIVE TRADE
+            </Badge>
+          )}
+        </h2>
         <p className="text-muted-foreground">Monitor paper trading signals from the runner</p>
       </div>
+      
+      {/* Last Trade Banner */}
+      <LastTradeBanner lastTrade={lastTrade} flashAsset={flashAsset} />
       
       {/* Browser-based price feed for comparison */}
       <PriceLatencyChart />
