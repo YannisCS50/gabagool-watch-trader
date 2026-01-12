@@ -588,24 +588,47 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
       const sellShares = Math.floor(filledSize * 100) / 100;
       
       if (sellShares >= 1) { // Minimum 1 share
-        // CRITICAL: Wait for blockchain settlement before placing SELL
-        // After BUY fills, shares need ~2-5s to be available in wallet
-        const settlementDelay = 3000; // 3 seconds
-        console.log(`[V28] ⏳ Waiting ${settlementDelay}ms for share settlement before SELL...`);
-        await new Promise(resolve => setTimeout(resolve, settlementDelay));
+        // RETRY LOOP: Keep trying SELL until position is available
+        // After BUY fills, shares need time to be available in wallet
+        const maxRetries = 10;
+        const retryDelay = 500; // 500ms between retries
+        let sellSuccess = false;
+        let sellResult: OrderResult | null = null;
         
-        console.log(`[V28] 📤 LIMIT SELL ${sellShares.toFixed(2)} @ ${(sellPrice * 100).toFixed(0)}¢ (TP +${((tpPrice / entryPrice - 1) * 100).toFixed(1)}%)`);
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+          const waitTime = attempt === 1 ? 3000 : retryDelay; // Initial 3s, then 500ms
+          console.log(`[V28] ⏳ Attempt ${attempt}/${maxRetries}: Waiting ${waitTime}ms before SELL...`);
+          await new Promise(resolve => setTimeout(resolve, waitTime));
+          
+          console.log(`[V28] 📤 LIMIT SELL ${sellShares.toFixed(2)} @ ${(sellPrice * 100).toFixed(0)}¢ (TP +${((tpPrice / entryPrice - 1) * 100).toFixed(1)}%)`);
+          
+          sellResult = await placeOrder({
+            tokenId,
+            side: 'SELL',
+            price: sellPrice,
+            size: sellShares,
+            orderType: 'GTC', // Resting order - waits in book
+            intent: 'HEDGE',
+          });
+          
+          if (sellResult.success) {
+            sellSuccess = true;
+            break;
+          }
+          
+          // Check if error is recoverable (balance/allowance issue)
+          const errMsg = sellResult.error?.toLowerCase() ?? '';
+          if (errMsg.includes('balance') || errMsg.includes('allowance')) {
+            console.log(`[V28] ⚠️ SELL attempt ${attempt} failed (position not ready): ${sellResult.error}`);
+            // Continue retrying
+          } else {
+            // Non-recoverable error, stop retrying
+            console.error(`[V28] ❌ SELL failed with non-recoverable error: ${sellResult.error}`);
+            break;
+          }
+        }
         
-        const sellResult = await placeOrder({
-          tokenId,
-          side: 'SELL',
-          price: sellPrice,
-          size: sellShares,
-          orderType: 'GTC', // Resting order - waits in book
-          intent: 'HEDGE',
-        });
-        
-        if (sellResult.success) {
+        if (sellSuccess && sellResult) {
           console.log(`[V28] ✅ LIMIT SELL placed in orderbook @ ${(sellPrice * 100).toFixed(0)}¢`);
           signal.notes = `🔴 LIVE BUY @ ${(entryPrice * 100).toFixed(1)}¢ | SELL @ ${(sellPrice * 100).toFixed(0)}¢ queued | ${totalLatency}ms`;
           
@@ -642,8 +665,8 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
           await saveSignal(signal);
           return;
         } else {
-          console.error(`[V28] ❌ LIMIT SELL FAILED: ${sellResult.error}`);
-          signal.notes = `🔴 LIVE BUY @ ${(entryPrice * 100).toFixed(1)}¢ | SELL failed: ${sellResult.error}`;
+          console.error(`[V28] ❌ LIMIT SELL FAILED after ${maxRetries} attempts: ${sellResult?.error}`);
+          signal.notes = `🔴 LIVE BUY @ ${(entryPrice * 100).toFixed(1)}¢ | SELL failed after ${maxRetries} retries: ${sellResult?.error}`;
         }
       } else {
         console.warn(`[V28] ⚠️ Sell shares too small after rounding: ${filledSize} -> ${sellShares}`);
