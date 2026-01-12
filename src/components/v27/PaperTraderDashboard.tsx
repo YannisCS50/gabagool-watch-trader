@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -14,7 +15,8 @@ import {
   updatePaperTradingConfig,
   type PaperSignal 
 } from '@/hooks/usePaperTraderData';
-import { RefreshCw, TrendingUp, TrendingDown, Target, XCircle, Clock } from 'lucide-react';
+import { supabase } from '@/integrations/supabase/client';
+import { RefreshCw, TrendingUp, TrendingDown, Target, XCircle, Clock, Activity, Wifi } from 'lucide-react';
 import { toast } from 'sonner';
 
 function formatCents(value: number | null): string {
@@ -110,6 +112,150 @@ function StatsCards() {
           </div>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+interface PriceSnapshot {
+  id: string;
+  asset: string;
+  binance_price: number;
+  up_best_bid: number | null;
+  up_best_ask: number | null;
+  down_best_bid: number | null;
+  down_best_ask: number | null;
+  strike_price: number | null;
+  market_slug: string | null;
+  created_at: string;
+}
+
+function usePriceSnapshots() {
+  return useQuery({
+    queryKey: ['paper-price-snapshots'],
+    queryFn: async () => {
+      // Get latest snapshot per asset
+      const { data, error } = await supabase
+        .from('paper_price_snapshots')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(20);
+      
+      if (error) throw error;
+      
+      // Group by asset, keep latest
+      const byAsset = new Map<string, PriceSnapshot>();
+      for (const row of (data || [])) {
+        if (!byAsset.has(row.asset)) {
+          byAsset.set(row.asset, row as PriceSnapshot);
+        }
+      }
+      return Array.from(byAsset.values());
+    },
+    refetchInterval: 2000,
+  });
+}
+
+function LivePriceMonitor() {
+  const { data: snapshots, isLoading, refetch } = usePriceSnapshots();
+  
+  if (isLoading) {
+    return <div className="text-muted-foreground">Loading prices...</div>;
+  }
+  
+  const assets = ['BTC', 'ETH', 'SOL', 'XRP'];
+  
+  return (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <div className="flex items-center gap-2">
+          <Activity className="h-5 w-5 text-green-400 animate-pulse" />
+          <h3 className="font-semibold">Live Price Monitor</h3>
+          {snapshots && snapshots.length > 0 && (
+            <Badge variant="outline" className="text-green-400 border-green-400">
+              <Wifi className="h-3 w-3 mr-1" />
+              Connected
+            </Badge>
+          )}
+        </div>
+        <Button variant="ghost" size="sm" onClick={() => refetch()}>
+          <RefreshCw className="h-4 w-4" />
+        </Button>
+      </div>
+      
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        {assets.map(asset => {
+          const snap = snapshots?.find(s => s.asset === asset);
+          
+          return (
+            <Card key={asset} className={snap ? 'border-green-500/30' : 'opacity-50'}>
+              <CardHeader className="pb-2">
+                <CardTitle className="text-lg flex items-center justify-between">
+                  {asset}
+                  {snap && (
+                    <span className="text-xs text-muted-foreground font-normal">
+                      {new Date(snap.created_at).toLocaleTimeString()}
+                    </span>
+                  )}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-2">
+                {snap ? (
+                  <>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground text-sm">Binance</span>
+                      <span className="font-mono font-bold">
+                        ${snap.binance_price.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                    
+                    <div className="border-t pt-2 space-y-1">
+                      <div className="flex justify-between text-sm">
+                        <span className="text-green-400 flex items-center gap-1">
+                          <TrendingUp className="h-3 w-3" /> UP
+                        </span>
+                        <span className="font-mono">
+                          {snap.up_best_bid ? `${(snap.up_best_bid * 100).toFixed(1)}¢` : '-'}
+                          {' / '}
+                          {snap.up_best_ask ? `${(snap.up_best_ask * 100).toFixed(1)}¢` : '-'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between text-sm">
+                        <span className="text-red-400 flex items-center gap-1">
+                          <TrendingDown className="h-3 w-3" /> DOWN
+                        </span>
+                        <span className="font-mono">
+                          {snap.down_best_bid ? `${(snap.down_best_bid * 100).toFixed(1)}¢` : '-'}
+                          {' / '}
+                          {snap.down_best_ask ? `${(snap.down_best_ask * 100).toFixed(1)}¢` : '-'}
+                        </span>
+                      </div>
+                    </div>
+                    
+                    {snap.strike_price && snap.strike_price > 0 && (
+                      <div className="text-xs text-muted-foreground border-t pt-1">
+                        Strike: ${snap.strike_price.toLocaleString()}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-muted-foreground text-sm">No data</div>
+                )}
+              </CardContent>
+            </Card>
+          );
+        })}
+      </div>
+      
+      {(!snapshots || snapshots.length === 0) && (
+        <div className="text-center p-8 border rounded-md border-dashed">
+          <p className="text-muted-foreground">
+            No price data yet. Make sure the Paper Trader is running.
+          </p>
+          <pre className="mt-2 text-xs bg-muted p-2 rounded">
+            npx tsx src/paper-trader.ts
+          </pre>
+        </div>
+      )}
     </div>
   );
 }
@@ -327,6 +473,8 @@ export default function PaperTraderDashboard() {
         <h2 className="text-2xl font-bold">Paper Trader</h2>
         <p className="text-muted-foreground">Monitor paper trading signals from the runner</p>
       </div>
+      
+      <LivePriceMonitor />
       
       <StatsCards />
       
