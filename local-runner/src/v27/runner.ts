@@ -220,12 +220,15 @@ export class V27Runner {
     
     // 5. Execute entry if decided (and not in shadow mode)
     if (entry.shouldEnter && entry.side && entry.price && entry.shares && entry.tokenId) {
+      const orderStartMs = Date.now();
       console.log(`[V27] ✅ Entry decision: ${market.asset} ${entry.side} ${entry.shares}@${entry.price.toFixed(3)}`);
       
       if (config.shadowMode) {
         console.log(`[V27] 🔮 SHADOW MODE - not placing order`);
+        this.entryManager.clearPendingOrder(marketId, entry.side);
       } else if (!this.onPlaceOrder) {
         console.log(`[V27] ⚠️ No order callback set!`);
+        this.entryManager.clearPendingOrder(marketId, entry.side);
       } else {
         console.log(`[V27] 📝 Placing LIVE order...`);
         try {
@@ -236,6 +239,8 @@ export class V27Runner {
             entry.price,
             entry.shares
           );
+          
+          const orderLatencyMs = Date.now() - orderStartMs;
           
           if (result.filled) {
             this.entryManager.recordEntry(
@@ -258,12 +263,14 @@ export class V27Runner {
               entry.shares
             );
             
-            console.log(`[V27] ✅ Order filled: ${result.orderId} @ ${result.avgFillPrice || entry.price}`);
+            console.log(`[V27] ✅ Order FILLED in ${orderLatencyMs}ms: ${result.orderId} @ ${result.avgFillPrice || entry.price}`);
           } else {
-            console.log(`[V27] ⏳ Order placed but not filled: ${result.orderId}`);
+            console.log(`[V27] ⏳ Order placed in ${orderLatencyMs}ms but not filled: ${result.orderId}`);
+            // Keep pending - don't clear, order might fill later
           }
         } catch (err) {
           console.error(`[V27] Order placement failed:`, err);
+          this.entryManager.clearPendingOrder(marketId, entry.side);
         }
       }
     } else if (entry.shouldEnter) {

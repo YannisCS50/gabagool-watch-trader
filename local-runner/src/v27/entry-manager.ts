@@ -4,11 +4,10 @@
 //
 // If mispricing exists AND all filters pass:
 // - Buy ONLY the mispriced side
-// - Order type: passive LIMIT
-// - Price: best_bid + 1 tick (never cross)
-// - Size: fixed small probe (e.g. 5–10 shares)
+// - Market order (take the ask)
+// - Size: fixed small probe (e.g. 5 shares)
+// - MAX 1 entry per market per side (no scaling, no averaging)
 //
-// No scaling. No averaging down.
 // ============================================================
 
 import { getV27Config, getAssetConfig } from './config.js';
@@ -36,6 +35,15 @@ export interface EntryDecision {
 export class EntryManager {
   // Track active positions to prevent duplicate entries
   private activePositions: Map<string, V27Position> = new Map();
+  
+  // Track pending orders (prevents duplicate orders while waiting for fill)
+  private pendingOrders: Map<string, number> = new Map(); // key -> timestamp
+  
+  // Cooldown period after placing an order (prevent spam)
+  private static readonly ORDER_COOLDOWN_MS = 5000; // 5 seconds between orders per market
+  
+  // Max shares per position
+  private static readonly MAX_SHARES_PER_POSITION = 5;
   
   /**
    * Decide whether to enter a trade
@@ -82,12 +90,24 @@ export class EntryManager {
       };
     }
     
-    // Already have position in this market
     const positionKey = `${marketId}:${mispricing.side}`;
+    
+    // Already have position in this market+side
     if (this.activePositions.has(positionKey)) {
       return {
         shouldEnter: false,
         reason: 'ALREADY_POSITIONED',
+        mispricingSignal: mispricing,
+        filterResult: filter,
+      };
+    }
+    
+    // Check for pending order (cooldown)
+    const pendingTs = this.pendingOrders.get(positionKey);
+    if (pendingTs && Date.now() - pendingTs < EntryManager.ORDER_COOLDOWN_MS) {
+      return {
+        shouldEnter: false,
+        reason: 'ORDER_PENDING',
         mispricingSignal: mispricing,
         filterResult: filter,
       };
@@ -108,7 +128,10 @@ export class EntryManager {
     const entryPrice = bestAsk;
     
     // Check notional limit
-    const shares = assetConfig?.probeShares || 5;
+    const shares = Math.min(
+      assetConfig?.probeShares || 5,
+      EntryManager.MAX_SHARES_PER_POSITION
+    );
     const notional = shares * entryPrice;
     const maxNotional = assetConfig?.maxProbeNotional || 5;
     
@@ -123,6 +146,9 @@ export class EntryManager {
     
     const tokenId = mispricing.side === 'UP' ? upTokenId : downTokenId;
     
+    // Mark order as pending BEFORE returning (prevents race condition)
+    this.pendingOrders.set(positionKey, Date.now());
+    
     return {
       shouldEnter: true,
       side: mispricing.side,
@@ -135,7 +161,7 @@ export class EntryManager {
   }
   
   /**
-   * Record an entry
+   * Record an entry (call after order is filled)
    */
   recordEntry(
     marketId: string,
@@ -145,6 +171,9 @@ export class EntryManager {
     avgPrice: number
   ): void {
     const positionKey = `${marketId}:${side}`;
+    
+    // Clear pending order
+    this.pendingOrders.delete(positionKey);
     
     this.activePositions.set(positionKey, {
       marketId,
@@ -156,6 +185,13 @@ export class EntryManager {
       correctionConfirmed: false,
       hedged: false,
     });
+  }
+  
+  /**
+   * Clear pending order (call on order failure)
+   */
+  clearPendingOrder(marketId: string, side: 'UP' | 'DOWN'): void {
+    this.pendingOrders.delete(`${marketId}:${side}`);
   }
   
   /**
@@ -206,6 +242,7 @@ export class EntryManager {
     const key = `${marketId}:${side}`;
     const position = this.activePositions.get(key);
     this.activePositions.delete(key);
+    this.pendingOrders.delete(key); // Clean up pending too
     return position;
   }
   
