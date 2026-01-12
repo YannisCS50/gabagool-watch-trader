@@ -28,6 +28,7 @@ import { ShadowCounterfactualPanel } from '@/components/v27/shadow/ShadowCounter
 import { ShadowExportButton } from '@/components/v27/shadow/ShadowExportButton';
 import { TimeRangeFilter, filterDataByTime, DEFAULT_TIME_FILTER, type TimeFilterType } from '@/components/v27/shadow/TimeRangeFilter';
 import { PriceLatencyChart } from '@/components/v27/PriceLatencyChart';
+import { LatencyTracker } from '@/components/v27/LatencyTracker';
 import { RealtimePriceMonitor } from '@/components/RealtimePriceMonitor';
 import { MarketConfigEditor } from '@/components/MarketConfigEditor';
 import PaperTraderDashboard from '@/components/v27/PaperTraderDashboard';
@@ -418,7 +419,8 @@ export default function V27Dashboard() {
           <ShadowHedgeAnalysis analysis={filteredPositionsData.hedgeAnalysis} />
         </TabsContent>
 
-        <TabsContent value="latency" className="mt-4">
+        <TabsContent value="latency" className="mt-4 space-y-6">
+          <LatencyTracker />
           <PriceLatencyChart />
         </TabsContent>
 
