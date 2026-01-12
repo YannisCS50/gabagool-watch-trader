@@ -12,8 +12,8 @@ import { usePriceLatencyComparison, Asset } from "@/hooks/usePriceLatencyCompari
 
 // Asset-specific decimal precision
 const ASSET_DECIMALS: Record<string, number> = {
-  BTC: 0,
-  ETH: 0,
+  BTC: 2,
+  ETH: 2,
   SOL: 2,
   XRP: 4,
 };
