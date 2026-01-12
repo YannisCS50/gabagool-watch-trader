@@ -19,6 +19,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { RefreshCw, TrendingUp, TrendingDown, Target, XCircle, Clock, Activity, Wifi } from 'lucide-react';
 import { toast } from 'sonner';
 import { PriceLatencyChart } from './PriceLatencyChart';
+import { TradeNotificationLog } from './TradeNotificationLog';
 
 function formatCents(value: number | null): string {
   if (value === null) return '-';
@@ -982,6 +983,9 @@ export default function PaperTraderDashboard() {
       <BotPriceFeedPanel />
       
       <StatsCards />
+      
+      {/* Trade Notification Log */}
+      <TradeNotificationLog />
       
       <Tabs defaultValue="logs">
         <TabsList>
