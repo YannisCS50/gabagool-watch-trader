@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Eye, RefreshCw, Wifi, WifiOff, Zap } from 'lucide-react';
+import { ArrowLeft, Eye, RefreshCw, Wifi, WifiOff, Zap, Settings2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -29,6 +29,7 @@ import { ShadowExportButton } from '@/components/v27/shadow/ShadowExportButton';
 import { TimeRangeFilter, filterDataByTime, DEFAULT_TIME_FILTER, type TimeFilterType } from '@/components/v27/shadow/TimeRangeFilter';
 import { PriceLatencyChart } from '@/components/v27/PriceLatencyChart';
 import { RealtimePriceMonitor } from '@/components/RealtimePriceMonitor';
+import { MarketConfigEditor } from '@/components/MarketConfigEditor';
 import PaperTraderDashboard from '@/components/v27/PaperTraderDashboard';
 import type { ShadowDailyPnL } from '@/hooks/useShadowPositions';
 
@@ -353,6 +354,10 @@ export default function V27Dashboard() {
             <TabsTrigger value="paper" className="text-xs sm:text-sm px-2 sm:px-3 bg-orange-500/20 text-orange-400">
               Paper
             </TabsTrigger>
+            <TabsTrigger value="config" className="text-xs sm:text-sm px-2 sm:px-3 bg-purple-500/20 text-purple-400">
+              <Settings2 className="h-3 w-3 mr-1" />
+              Config
+            </TabsTrigger>
           </TabsList>
           <ScrollBar orientation="horizontal" />
         </ScrollArea>
@@ -423,6 +428,10 @@ export default function V27Dashboard() {
 
         <TabsContent value="paper" className="mt-4">
           <PaperTraderDashboard />
+        </TabsContent>
+
+        <TabsContent value="config" className="mt-4">
+          <MarketConfigEditor />
         </TabsContent>
       </Tabs>
     </div>

@@ -1585,6 +1585,75 @@ export type Database = {
         }
         Relationships: []
       }
+      market_config: {
+        Row: {
+          asset: string
+          created_at: string
+          enabled: boolean
+          id: string
+          max_ask_price: number
+          max_combined_price: number
+          max_exposure_usd: number
+          max_notional_usd: number
+          max_seconds_remaining: number
+          max_shares: number
+          min_ask_price: number
+          min_delta_usd: number
+          min_edge_pct: number
+          min_seconds_remaining: number
+          shadow_only: boolean
+          stop_loss_pct: number
+          take_profit_pct: number
+          trailing_stop_enabled: boolean
+          trailing_stop_pct: number | null
+          updated_at: string
+        }
+        Insert: {
+          asset: string
+          created_at?: string
+          enabled?: boolean
+          id?: string
+          max_ask_price?: number
+          max_combined_price?: number
+          max_exposure_usd?: number
+          max_notional_usd?: number
+          max_seconds_remaining?: number
+          max_shares?: number
+          min_ask_price?: number
+          min_delta_usd?: number
+          min_edge_pct?: number
+          min_seconds_remaining?: number
+          shadow_only?: boolean
+          stop_loss_pct?: number
+          take_profit_pct?: number
+          trailing_stop_enabled?: boolean
+          trailing_stop_pct?: number | null
+          updated_at?: string
+        }
+        Update: {
+          asset?: string
+          created_at?: string
+          enabled?: boolean
+          id?: string
+          max_ask_price?: number
+          max_combined_price?: number
+          max_exposure_usd?: number
+          max_notional_usd?: number
+          max_seconds_remaining?: number
+          max_shares?: number
+          min_ask_price?: number
+          min_delta_usd?: number
+          min_edge_pct?: number
+          min_seconds_remaining?: number
+          shadow_only?: boolean
+          stop_loss_pct?: number
+          take_profit_pct?: number
+          trailing_stop_enabled?: boolean
+          trailing_stop_pct?: number | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
       market_history: {
         Row: {
           asset: string
