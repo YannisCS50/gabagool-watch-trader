@@ -107,6 +107,14 @@ const windowStartPrices: Record<Asset, { price: number; ts: number } | null> = {
 const activeSignals = new Map<string, { signal: V28Signal; tpSlInterval: NodeJS.Timeout | null; timeoutTimer: NodeJS.Timeout | null }>();
 const marketInfo: Record<Asset, MarketInfo | null> = { BTC: null, ETH: null, SOL: null, XRP: null };
 
+type PositionLock =
+  | { status: 'idle' }
+  | { status: 'pending'; asset: Asset; acquiredAt: number }
+  | { status: 'open'; asset: Asset; signalId: string; acquiredAt: number };
+
+// User requirement: only hold ONE position at a time (global lock).
+let positionLock: PositionLock = { status: 'idle' };
+
 let lastMarketRefresh = 0;
 let lastConfigReload = 0;
 
@@ -185,82 +193,84 @@ async function saveTpSlEvent(
 function handlePriceUpdate(asset: Asset, newPrice: number): void {
   const now = Date.now();
   priceState[asset].binance = newPrice;
-  
+
   if (!currentConfig.enabled) return;
   if (!currentConfig.assets.includes(asset)) return;
-  
+
+  // HARD RULE: only one active position globally.
+  // This also blocks duplicate triggers while a signal is being created (DB save, fill, etc.).
+  if (positionLock.status !== 'idle') return;
+
   // Add tick to rolling window
   const window = priceWindows[asset];
   window.push({ price: newPrice, ts: now });
-  
+
   // Initialize window start if needed
   if (!windowStartPrices[asset]) {
     windowStartPrices[asset] = { price: newPrice, ts: now };
     return;
   }
-  
+
   // Clean old ticks outside the window
   const cutoff = now - currentConfig.delta_window_ms;
   while (window.length > 0 && window[0].ts < cutoff) {
     window.shift();
   }
-  
+
   // Update window start to oldest tick in window
   if (window.length > 0) {
     windowStartPrices[asset] = { price: window[0].price, ts: window[0].ts };
   }
-  
+
   // Calculate cumulative delta over the window
   const windowStart = windowStartPrices[asset];
   if (!windowStart) return;
-  
+
   const delta = newPrice - windowStart.price;
   const windowDuration = now - windowStart.ts;
-  
+
   // Only check when we have a meaningful window (at least 50ms of data)
   if (windowDuration < 50) return;
-  
+
   // Check if cumulative delta exceeds threshold
   if (Math.abs(delta) < currentConfig.min_delta_usd) {
     return;
   }
-  
+
   // TRIGGER! We have a significant cumulative delta
   console.log(`[V28] 🎯 TRIGGER: ${asset} Δ$${delta.toFixed(2)} over ${windowDuration}ms`);
-  
+
   const direction: 'UP' | 'DOWN' = delta > 0 ? 'UP' : 'DOWN';
-  
+
   // Get share price
   const state = priceState[asset];
-  const sharePrice = direction === 'UP' 
-    ? (state.upBestAsk ?? state.upBestBid) 
+  const sharePrice = direction === 'UP'
+    ? (state.upBestAsk ?? state.upBestBid)
     : (state.downBestAsk ?? state.downBestBid);
-  
+
   if (sharePrice === null) {
     console.log(`[V28] No CLOB price for ${asset} ${direction}, skipping`);
     return;
   }
-  
+
   // Check share price bounds
   if (sharePrice < currentConfig.min_share_price || sharePrice > currentConfig.max_share_price) {
     console.log(`[V28] ${asset} ${direction} share ${(sharePrice * 100).toFixed(1)}¢ outside bounds`);
     return;
   }
-  
-  // Check if we already have an active signal for this asset
+
+  // Extra safety: avoid duplicate orders for the same asset/side if something slipped through.
   const hasActive = [...activeSignals.values()].some(
     s => s.signal.asset === asset && (s.signal.status === 'pending' || s.signal.status === 'filled')
   );
-  if (hasActive) {
-    return;
-  }
-  
+  if (hasActive) return;
+
   // Reset window after trigger to avoid re-triggering on same move
   priceWindows[asset] = [{ price: newPrice, ts: now }];
   windowStartPrices[asset] = { price: newPrice, ts: now };
-  
+
   // Create signal
-  createSignal(asset, direction, newPrice, delta, sharePrice);
+  void createSignal(asset, direction, newPrice, delta, sharePrice);
 }
 
 async function createSignal(
@@ -270,65 +280,80 @@ async function createSignal(
   binanceDelta: number,
   sharePrice: number
 ): Promise<void> {
-  const now = Date.now();
-  const market = marketInfo[asset];
+  // Global single-position lock (prevents rapid duplicate orders while we save/fill)
+  if (positionLock.status !== 'idle') return;
+  positionLock = { status: 'pending', asset, acquiredAt: Date.now() };
 
-  const rawChainlink = await fetchChainlinkPrice(asset);
-  const chainlinkPrice =
-    typeof rawChainlink === 'number'
-      ? rawChainlink
-      : rawChainlink && typeof rawChainlink === 'object' && typeof (rawChainlink as any).price === 'number'
-        ? Number((rawChainlink as any).price)
-        : null;
+  try {
+    const now = Date.now();
+    const market = marketInfo[asset];
 
-  const signal: V28Signal = {
-    run_id: RUN_ID,
-    asset,
-    direction,
-    signal_ts: now,
-    binance_price: binancePrice,
-    binance_delta: binanceDelta,
-    chainlink_price: chainlinkPrice,
-    share_price: sharePrice,
-    market_slug: market?.slug ?? null,
-    strike_price: market?.strikePrice ?? null,
-    status: 'pending',
-    entry_price: null,
-    exit_price: null,
-    fill_ts: null,
-    sell_ts: null,
-    order_type: null,
-    entry_fee: null,
-    exit_fee: null,
-    total_fees: null,
-    gross_pnl: null,
-    net_pnl: null,
-    tp_price: null,
-    tp_status: null,
-    sl_price: null,
-    sl_status: null,
-    exit_type: null,
-    trade_size_usd: currentConfig.trade_size_usd,
-    shares: null,
-    notes: `V28 Signal: ${direction} | Δ$${Math.abs(binanceDelta).toFixed(2)} | Share ${(sharePrice * 100).toFixed(1)}¢`,
-    config_snapshot: currentConfig,
-    is_live: currentConfig.is_live,
-  };
+    const rawChainlink = await fetchChainlinkPrice(asset);
+    const chainlinkPrice =
+      typeof rawChainlink === 'number'
+        ? rawChainlink
+        : rawChainlink && typeof rawChainlink === 'object' && typeof (rawChainlink as any).price === 'number'
+          ? Number((rawChainlink as any).price)
+          : null;
 
-  console.log(`[V28] 📊 Signal: ${asset} ${direction} @ ${(sharePrice * 100).toFixed(1)}¢ | Δ$${Math.abs(binanceDelta).toFixed(2)}`);
-  
-  const signalId = await saveSignal(signal);
-  if (signalId) {
+    const signal: V28Signal = {
+      run_id: RUN_ID,
+      asset,
+      direction,
+      signal_ts: now,
+      binance_price: binancePrice,
+      binance_delta: binanceDelta,
+      chainlink_price: chainlinkPrice,
+      share_price: sharePrice,
+      market_slug: market?.slug ?? null,
+      strike_price: market?.strikePrice ?? null,
+      status: 'pending',
+      entry_price: null,
+      exit_price: null,
+      fill_ts: null,
+      sell_ts: null,
+      order_type: null,
+      entry_fee: null,
+      exit_fee: null,
+      total_fees: null,
+      gross_pnl: null,
+      net_pnl: null,
+      tp_price: null,
+      tp_status: null,
+      sl_price: null,
+      sl_status: null,
+      exit_type: null,
+      trade_size_usd: currentConfig.trade_size_usd,
+      shares: null,
+      notes: `V28 Signal: ${direction} | Δ$${Math.abs(binanceDelta).toFixed(2)} | Share ${(sharePrice * 100).toFixed(1)}¢`,
+      config_snapshot: currentConfig,
+      is_live: currentConfig.is_live,
+    };
+
+    console.log(`[V28] 📊 Signal: ${asset} ${direction} @ ${(sharePrice * 100).toFixed(1)}¢ | Δ$${Math.abs(binanceDelta).toFixed(2)}`);
+
+    const signalId = await saveSignal(signal);
+    if (!signalId) {
+      console.warn('[V28] Signal save failed; releasing lock');
+      return;
+    }
+
     signal.id = signalId;
-  }
-  
-  // Simulate fill after small delay (paper mode) or execute real order (live mode)
-  if (currentConfig.is_live) {
-    // TODO: Implement real order execution via CLOB
-    console.log(`[V28] 🔴 LIVE MODE - Would place real order for ${asset} ${direction}`);
-    await simulateFill(signal);
-  } else {
-    setTimeout(() => simulateFill(signal), 50 + Math.random() * 50);
+    positionLock = { status: 'open', asset, signalId, acquiredAt: Date.now() };
+
+    // Simulate fill after small delay (paper mode) or execute real order (live mode)
+    if (currentConfig.is_live) {
+      // TODO: Implement real order execution via CLOB
+      console.log(`[V28] 🔴 LIVE MODE - Would place real order for ${asset} ${direction}`);
+      await simulateFill(signal);
+    } else {
+      setTimeout(() => void simulateFill(signal), 50 + Math.random() * 50);
+    }
+  } finally {
+    // If we never transitioned to open, drop the lock.
+    if (positionLock.status === 'pending') {
+      positionLock = { status: 'idle' };
+    }
   }
 }
 
@@ -404,21 +429,26 @@ function startTpSlMonitoring(signal: V28Signal): NodeJS.Timeout | null {
 async function handleExit(signal: V28Signal, exitType: 'tp' | 'sl' | 'timeout', exitPrice: number): Promise<void> {
   const active = activeSignals.get(signal.id!);
   if (!active) return;
-  
+
   if (active.tpSlInterval) clearInterval(active.tpSlInterval);
   if (active.timeoutTimer) clearTimeout(active.timeoutTimer);
   activeSignals.delete(signal.id!);
-  
+
+  // Release global lock (single-position mode)
+  if (positionLock.status === 'open' && positionLock.signalId === signal.id) {
+    positionLock = { status: 'idle' };
+  }
+
   const now = Date.now();
   const shares = signal.shares ?? 0;
   const entryPrice = signal.entry_price ?? 0;
   const entryFee = signal.entry_fee ?? 0;
-  
+
   const exitFee = exitType === 'tp' ? -shares * 0.005 : shares * 0.02;
   const totalFees = entryFee + exitFee;
   const grossPnl = (exitPrice - entryPrice) * shares;
   const netPnl = grossPnl - totalFees;
-  
+
   signal.status = 'sold';
   signal.exit_price = exitPrice;
   signal.sell_ts = now;
@@ -429,13 +459,13 @@ async function handleExit(signal: V28Signal, exitType: 'tp' | 'sl' | 'timeout', 
   signal.tp_status = exitType === 'tp' ? 'filled' : (signal.tp_price ? 'cancelled' : null);
   signal.sl_status = exitType === 'sl' ? 'filled' : (signal.sl_price ? 'cancelled' : null);
   signal.exit_type = exitType;
-  
+
   const emoji = exitType === 'tp' ? '✅' : exitType === 'sl' ? '❌' : '⏱️';
   const label = exitType === 'tp' ? 'TP' : exitType === 'sl' ? 'SL' : 'Timeout';
   signal.notes = `${emoji} ${label} @ ${(exitPrice * 100).toFixed(1)}¢ | Net: $${netPnl.toFixed(2)}`;
-  
+
   console.log(`[V28] ${emoji} ${label}: ${signal.asset} ${signal.direction} @ ${(exitPrice * 100).toFixed(1)}¢ | Net: $${netPnl.toFixed(2)}`);
-  
+
   await saveTpSlEvent(signal.id!, now, exitPrice, signal.tp_price, signal.sl_price, exitType === 'timeout' ? null : exitType);
   await saveSignal(signal);
 }
@@ -663,16 +693,18 @@ export async function startV28Runner(): Promise<void> {
 
 export async function stopV28Runner(): Promise<void> {
   console.log('[V28] Stopping...');
-  
+
   isRunning = false;
   await stopPriceFeedLogger();
-  
-  for (const [id, active] of activeSignals) {
+
+  for (const [_id, active] of activeSignals) {
     if (active.tpSlInterval) clearInterval(active.tpSlInterval);
     if (active.timeoutTimer) clearTimeout(active.timeoutTimer);
   }
   activeSignals.clear();
-  
+
+  positionLock = { status: 'idle' };
+
   console.log('[V28] Stopped');
 }
 
