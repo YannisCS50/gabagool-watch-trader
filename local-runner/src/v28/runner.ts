@@ -1402,7 +1402,7 @@ export async function startV28Runner(): Promise<void> {
   await startPriceFeedLogger(priceFeedCallbacks);
   
   // Start position monitor (every 10 seconds) - fetches real positions from Polymarket API
-  console.log(`[V28] Starting position monitor (10s interval, sell at >${MIN_PROFIT_PCT_TO_SELL}% profit)...`);
+  console.log(`[V28] Starting position monitor (10s interval, sell at +${MIN_PROFIT_CENTS_TO_SELL}¢ profit)...`);
   positionMonitorInterval = setInterval(monitorOpenPositions, 10_000);
   
   runLoop();
