@@ -250,6 +250,73 @@ export function useArbitrageSimulator() {
     setConfig(prev => ({ ...prev, ...updates }));
   }, []);
 
+  // Manual test trade function
+  const placeTestTrade = useCallback((asset: Asset, direction: 'UP' | 'DOWN') => {
+    const now = Date.now();
+    const signalId = `TEST-${asset}-${now}`;
+    const prices = getAllPrices();
+    const currentBinance = prices[asset].binance || 100000;
+    const currentChainlink = prices[asset].chainlink || currentBinance;
+    const estimatedSharePrice = 0.50;
+
+    const signal: ArbitrageSignal = {
+      id: signalId,
+      timestamp: now,
+      asset,
+      direction,
+      binancePrice: currentBinance,
+      binanceDelta: direction === 'UP' ? 15 : -15,
+      sharePrice: estimatedSharePrice,
+      chainlinkPrice: currentChainlink,
+      status: 'pending',
+      notes: `TEST TRADE: Manual ${direction} signal`,
+    };
+
+    console.log('[ArbitrageSimulator] Test trade placed:', signal);
+    setSignals(prev => [signal, ...prev].slice(0, 100));
+
+    // Simulate fill after 50-200ms
+    const fillDelay = 50 + Math.random() * 150;
+    setTimeout(() => {
+      const fillTime = Date.now();
+      const fillLatency = fillTime - now;
+      const entryPrice = estimatedSharePrice;
+
+      setSignals(prev => prev.map(s => 
+        s.id === signalId 
+          ? { ...s, status: 'filled', entryPrice, fillTime, notes: `Filled in ${fillLatency.toFixed(0)}ms` }
+          : s
+      ));
+
+      // Schedule sell after holdTime
+      const sellTimer = setTimeout(() => {
+        const sellTime = Date.now();
+        // Simulate random outcome (60% win rate for test)
+        const isWin = Math.random() < 0.6;
+        const exitPrice = entryPrice + (isWin ? 0.02 : -0.015);
+        const pnl = (exitPrice - entryPrice) * config.tradeSize;
+
+        setSignals(prev => prev.map(s => 
+          s.id === signalId 
+            ? { 
+                ...s, 
+                status: 'sold', 
+                exitPrice, 
+                sellTime, 
+                pnl,
+                notes: `Sold after ${config.holdTimeMs}ms. PnL: $${pnl.toFixed(2)}` 
+              }
+            : s
+        ));
+
+        pendingTradesRef.current.delete(signalId);
+      }, config.holdTimeMs);
+
+      pendingTradesRef.current.set(signalId, sellTimer);
+    }, fillDelay);
+  }, [getAllPrices, config.tradeSize, config.holdTimeMs]);
+
+
   return {
     // Simulator state
     config,
@@ -257,6 +324,7 @@ export function useArbitrageSimulator() {
     signals,
     clearSignals,
     simulatorStats,
+    placeTestTrade,
     
     // WebSocket state (pass through)
     binancePrice,
