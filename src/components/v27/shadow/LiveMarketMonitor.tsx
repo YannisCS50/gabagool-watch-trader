@@ -401,7 +401,15 @@ export function LiveMarketMonitor() {
                 <div className="text-center text-muted-foreground py-8 text-sm">No active markets</div>
               )}
               {markets.map((m) => {
-                const deltaForColor = m.deltaPct ?? 0;
+                // Get real-time spot price at render time
+                const liveSpot = getLiveSpotPrice(m.asset);
+                const spotPrice = liveSpot.price ?? m.spotPrice;
+                const isLiveSpot = liveSpot.isLive;
+                
+                // Recalculate delta with live price
+                const rawDelta = m.priceToBeat && m.priceToBeat > 0 ? (spotPrice - m.priceToBeat) / m.priceToBeat : null;
+                const deltaPct = rawDelta === null ? null : rawDelta * 100;
+                const deltaForColor = deltaPct ?? 0;
 
                 return (
                   <div
@@ -456,9 +464,9 @@ export function LiveMarketMonitor() {
                     <div className="grid grid-cols-3 gap-2 text-xs mb-2">
                       <div>
                         <span className="text-muted-foreground block text-[10px]">
-                          Actual {m.isLiveSpot && <Zap className="inline h-2.5 w-2.5 text-green-400" />}
+                          Actual {isLiveSpot && <Zap className="inline h-2.5 w-2.5 text-green-400" />}
                         </span>
-                        <span className="font-mono font-medium">${formatPriceWithDecimals(m.spotPrice, m.asset)}</span>
+                        <span className="font-mono font-medium">${formatPriceWithDecimals(spotPrice, m.asset)}</span>
                       </div>
                       <div>
                         <span className="text-muted-foreground block text-[10px]">To Beat</span>
@@ -476,7 +484,7 @@ export function LiveMarketMonitor() {
                                 : "text-muted-foreground",
                           )}
                         >
-                          {m.deltaPct === null ? "—" : `${m.deltaPct >= 0 ? "+" : ""}${m.deltaPct.toFixed(2)}%`}
+                          {deltaPct === null ? "—" : `${deltaPct >= 0 ? "+" : ""}${deltaPct.toFixed(2)}%`}
                         </span>
                       </div>
                     </div>
@@ -553,7 +561,15 @@ export function LiveMarketMonitor() {
                 </TableRow>
               )}
               {markets.map((m) => {
-                const deltaForColor = m.deltaPct ?? 0;
+                // Get real-time spot price at render time
+                const liveSpot = getLiveSpotPrice(m.asset);
+                const spotPrice = liveSpot.price ?? m.spotPrice;
+                const isLiveSpot = liveSpot.isLive;
+                
+                // Recalculate delta with live price
+                const rawDelta = m.priceToBeat && m.priceToBeat > 0 ? (spotPrice - m.priceToBeat) / m.priceToBeat : null;
+                const deltaPct = rawDelta === null ? null : rawDelta * 100;
+                const deltaForColor = deltaPct ?? 0;
 
                 return (
                   <TableRow
@@ -574,8 +590,8 @@ export function LiveMarketMonitor() {
                     <TableCell className="text-xs text-muted-foreground">{formatTime(m.timeRemaining)}</TableCell>
                     <TableCell className="text-right font-mono text-sm">
                       <span className="flex items-center justify-end gap-1">
-                        ${formatPriceWithDecimals(m.spotPrice, m.asset)}
-                        {m.isLiveSpot && <Zap className="h-3 w-3 text-green-400" />}
+                        ${formatPriceWithDecimals(spotPrice, m.asset)}
+                        {isLiveSpot && <Zap className="h-3 w-3 text-green-400" />}
                       </span>
                     </TableCell>
                     <TableCell className="text-right font-mono text-sm">${formatPriceWithDecimals(m.priceToBeat, m.asset)}</TableCell>
@@ -586,7 +602,7 @@ export function LiveMarketMonitor() {
                           deltaForColor > 0 ? "text-green-400" : deltaForColor < 0 ? "text-red-400" : "text-muted-foreground",
                         )}
                       >
-                        {m.deltaPct === null ? "—" : `${m.deltaPct >= 0 ? "+" : ""}${m.deltaPct.toFixed(2)}%`}
+                        {deltaPct === null ? "—" : `${deltaPct >= 0 ? "+" : ""}${deltaPct.toFixed(2)}%`}
                       </span>
                     </TableCell>
                     <TableCell className="text-right text-xs font-mono">
