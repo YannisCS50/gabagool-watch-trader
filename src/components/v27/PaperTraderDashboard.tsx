@@ -18,6 +18,7 @@ import {
 import { supabase } from '@/integrations/supabase/client';
 import { RefreshCw, TrendingUp, TrendingDown, Target, XCircle, Clock, Activity, Wifi } from 'lucide-react';
 import { toast } from 'sonner';
+import { PriceLatencyChart } from './PriceLatencyChart';
 
 function formatCents(value: number | null): string {
   if (value === null) return '-';
@@ -473,6 +474,9 @@ export default function PaperTraderDashboard() {
         <h2 className="text-2xl font-bold">Paper Trader</h2>
         <p className="text-muted-foreground">Monitor paper trading signals from the runner</p>
       </div>
+      
+      {/* Latency Charts */}
+      <PriceLatencyChart />
       
       <LivePriceMonitor />
       
