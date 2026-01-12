@@ -48,11 +48,13 @@ interface V28Signal {
   binance_price: number;
   binance_delta: number;
   chainlink_price: number | null;
-  share_price: number;
+  binance_chainlink_delta: number | null;  // Difference between Binance and Chainlink at trigger
+  binance_chainlink_latency_ms: number | null;  // Estimated latency difference
+  share_price: number;  // Share price at trigger moment
   market_slug: string | null;
   strike_price: number | null;
   status: 'pending' | 'filled' | 'sold' | 'expired' | 'failed';
-  entry_price: number | null;
+  entry_price: number | null;  // Actual buy price
   exit_price: number | null;
   fill_ts: number | null;
   sell_ts: number | null;
@@ -286,6 +288,16 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
     return;
   }
 
+  // NEW FILTER: Check Binance vs Chainlink delta is within ±$100
+  const chainlinkPrice = priceState[asset].chainlink;
+  if (chainlinkPrice !== null) {
+    const binanceChainlinkDelta = newPrice - chainlinkPrice;
+    if (Math.abs(binanceChainlinkDelta) > 100) {
+      console.log(`[V28] ⚠️ ${asset} Binance-Chainlink Δ$${binanceChainlinkDelta.toFixed(2)} outside ±$100 range, skipping`);
+      return;
+    }
+  }
+
   // Extra safety: avoid duplicate orders for the same asset/side if something slipped through.
   const hasActive = [...activeSignals.values()].some(
     s => s.signal.asset === asset && (s.signal.status === 'pending' || s.signal.status === 'filled')
@@ -318,6 +330,13 @@ async function createSignal(
     // SPEED OPTIMIZATION: Skip Chainlink fetch in hot path (saves ~50-100ms)
     // We'll fetch it async after order placement for logging
     const chainlinkPrice = priceState[asset].chainlink;
+    
+    // Calculate Binance vs Chainlink delta and estimated latency
+    const binanceChainlinkDelta = chainlinkPrice !== null ? binancePrice - chainlinkPrice : null;
+    // Estimate latency: ~$10/sec price movement → latency = delta / 10 * 1000ms
+    const estimatedLatencyMs = binanceChainlinkDelta !== null 
+      ? Math.round(Math.abs(binanceChainlinkDelta) / 10 * 1000) 
+      : null;
 
     const signal: V28Signal = {
       run_id: RUN_ID,
@@ -327,6 +346,8 @@ async function createSignal(
       binance_price: binancePrice,
       binance_delta: binanceDelta,
       chainlink_price: chainlinkPrice,
+      binance_chainlink_delta: binanceChainlinkDelta,
+      binance_chainlink_latency_ms: estimatedLatencyMs,
       share_price: sharePrice,
       market_slug: market?.slug ?? null,
       strike_price: market?.strikePrice ?? null,
@@ -348,7 +369,7 @@ async function createSignal(
       exit_type: null,
       trade_size_usd: currentConfig.trade_size_usd,
       shares: null,
-      notes: `V28 Signal: ${direction} | Δ$${Math.abs(binanceDelta).toFixed(2)} | Share ${(sharePrice * 100).toFixed(1)}¢`,
+      notes: `${direction} | Δ$${Math.abs(binanceDelta).toFixed(0)} | B-CL Δ$${binanceChainlinkDelta?.toFixed(0) ?? '?'} (~${estimatedLatencyMs ?? '?'}ms) | Trigger@${(sharePrice * 100).toFixed(1)}¢`,
       config_snapshot: currentConfig,
       is_live: currentConfig.is_live,
     };
@@ -551,8 +572,13 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
     signal.sl_price = null; // No SL in immediate-sell mode
     signal.sl_status = null;
     
+    // Update notes with full trade info
+    const bcDelta = signal.binance_chainlink_delta;
+    const latencyMs = signal.binance_chainlink_latency_ms;
+    signal.notes = `${signal.direction} | B-CL Δ$${bcDelta?.toFixed(0) ?? '?'} (~${latencyMs ?? '?'}ms) | Trigger@${(signal.share_price * 100).toFixed(1)}¢ → Entry@${(entryPrice * 100).toFixed(1)}¢`;
+    
     console.log(`[V28] ⏱️ LATENCY: Signal → BUY = ${totalLatency}ms (order took ${orderLatency}ms)`);
-    console.log(`[V28] ✅ LIVE FILL: ${signal.asset} ${signal.direction} @ ${(entryPrice * 100).toFixed(1)}¢ | ${filledSize.toFixed(2)} shares`);
+    console.log(`[V28] ✅ LIVE FILL: ${signal.asset} ${signal.direction} @ ${(entryPrice * 100).toFixed(1)}¢ | ${filledSize.toFixed(2)} shares | B-CL Δ$${bcDelta?.toFixed(0) ?? '?'} (~${latencyMs ?? '?'}ms)`);
     
     // ========================================
     // PLACE LIMIT SELL @ TP PRICE (with delay for settlement)
