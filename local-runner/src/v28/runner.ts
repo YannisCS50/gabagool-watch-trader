@@ -318,7 +318,19 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
   }
 
   // TRIGGER! We have a significant cumulative delta
-  console.log(`[V28] 🎯 TRIGGER: ${asset} Δ$${delta.toFixed(2)} over ${windowDuration}ms`);
+  const state = priceState[asset];
+  const chainlinkNow = state.chainlink;
+  const binanceChainlinkGap = chainlinkNow !== null ? (newPrice - chainlinkNow) : null;
+  
+  console.log(`\n[V28] ══════════════════════════════════════════════════════════════`);
+  console.log(`[V28] 🎯 SPIKE DETECTED: ${asset} ${delta > 0 ? '↑ UP' : '↓ DOWN'}`);
+  console.log(`[V28] ──────────────────────────────────────────────────────────────`);
+  console.log(`[V28] Binance:      $${newPrice.toFixed(2)} (Δ$${delta > 0 ? '+' : ''}${delta.toFixed(2)} in ${windowDuration}ms)`);
+  console.log(`[V28] Chainlink:    $${chainlinkNow?.toFixed(2) ?? '?'} (gap: $${binanceChainlinkGap !== null ? (binanceChainlinkGap > 0 ? '+' : '') + binanceChainlinkGap.toFixed(2) : '?'})`);
+  console.log(`[V28] Threshold:    $${currentConfig.min_delta_usd} (${((Math.abs(delta) / currentConfig.min_delta_usd) * 100).toFixed(0)}% met)`);
+  console.log(`[V28] UP ask/bid:   ${state.upBestAsk ? (state.upBestAsk * 100).toFixed(1) : '?'}¢ / ${state.upBestBid ? (state.upBestBid * 100).toFixed(1) : '?'}¢`);
+  console.log(`[V28] DOWN ask/bid: ${state.downBestAsk ? (state.downBestAsk * 100).toFixed(1) : '?'}¢ / ${state.downBestBid ? (state.downBestBid * 100).toFixed(1) : '?'}¢`);
+  console.log(`[V28] ══════════════════════════════════════════════════════════════\n`);
 
   // Check if market is LIVE (started and not expired)
   const market = marketInfo[asset];
@@ -409,6 +421,9 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
   // Reset window after trigger to avoid re-triggering on same move
   priceWindows[asset] = [{ price: newPrice, ts: now }];
   windowStartPrices[asset] = { price: newPrice, ts: now };
+
+  // Log decision to proceed
+  console.log(`[V28] ✅ PROCEEDING: ${asset} ${direction} @ ${(sharePrice * 100).toFixed(1)}¢ (all checks passed)`);
 
   // Create signal
   void createSignal(asset, direction, newPrice, delta, sharePrice);
