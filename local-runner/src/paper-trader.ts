@@ -774,6 +774,37 @@ async function fetchMarketInfo(): Promise<void> {
 // MAIN LOOP
 // ============================================
 
+// Track when we last refreshed markets
+let lastMarketRefresh = 0;
+const MARKET_REFRESH_INTERVAL_MS = 60_000; // Refresh every 60 seconds
+
+// Check if any market is expiring soon or has expired
+function shouldRefreshMarkets(): boolean {
+  const now = Date.now();
+  
+  // Refresh if we haven't in a while
+  if (now - lastMarketRefresh > MARKET_REFRESH_INTERVAL_MS) {
+    return true;
+  }
+  
+  // Check if any active market is expired or expiring within 30 seconds
+  for (const asset of Object.keys(marketInfo) as Asset[]) {
+    const info = marketInfo[asset];
+    if (!info) continue;
+    
+    const endTime = new Date(info.eventEndTime).getTime();
+    const timeUntilEnd = endTime - now;
+    
+    // If market ended or ends within 30 seconds, refresh
+    if (timeUntilEnd < 30_000) {
+      console.log(`[PaperTrader] 🔄 ${asset} market expired/expiring (${Math.floor(timeUntilEnd / 1000)}s left), refreshing...`);
+      return true;
+    }
+  }
+  
+  return false;
+}
+
 async function runLoop(): Promise<void> {
   while (isRunning) {
     try {
@@ -782,6 +813,13 @@ async function runLoop(): Promise<void> {
       if (!currentConfig.enabled) {
         await new Promise(r => setTimeout(r, 5000));
         continue;
+      }
+      
+      // Check if we need to refresh markets (expired or periodic)
+      if (shouldRefreshMarkets()) {
+        console.log('[PaperTrader] 🔄 Refreshing markets...');
+        await fetchActiveMarkets();
+        lastMarketRefresh = Date.now();
       }
       
       // Fetch CLOB prices for all assets
