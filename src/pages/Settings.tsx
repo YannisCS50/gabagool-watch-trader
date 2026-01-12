@@ -27,12 +27,20 @@ interface BotConfig {
   max_position_size: number | null;
 }
 
+interface PaperTradingConfig {
+  id: string;
+  enabled: boolean;
+  is_live: boolean;
+  trade_size_usd: number;
+}
+
 export default function Settings() {
   const { toast } = useToast();
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [config, setConfig] = useState<BotConfig | null>(null);
+  const [paperConfig, setPaperConfig] = useState<PaperTradingConfig | null>(null);
   const [user, setUser] = useState<any>(null);
 
   useEffect(() => {
@@ -62,14 +70,25 @@ export default function Settings() {
 
   const fetchConfig = async () => {
     try {
-      const { data, error } = await supabase
-        .from('bot_config')
-        .select('*')
-        .eq('id', '00000000-0000-0000-0000-000000000001')
-        .maybeSingle();
+      const [botRes, paperRes] = await Promise.all([
+        supabase
+          .from('bot_config')
+          .select('*')
+          .eq('id', '00000000-0000-0000-0000-000000000001')
+          .maybeSingle(),
+        supabase
+          .from('paper_trading_config')
+          .select('id, enabled, is_live, trade_size_usd')
+          .limit(1)
+          .maybeSingle()
+      ]);
 
-      if (error) throw error;
-      setConfig(data);
+      if (botRes.error) throw botRes.error;
+      setConfig(botRes.data);
+      
+      if (paperRes.data) {
+        setPaperConfig(paperRes.data);
+      }
     } catch (error) {
       console.error('Error fetching config:', error);
       toast({
@@ -131,6 +150,38 @@ export default function Settings() {
   const updateConfig = (field: keyof BotConfig, value: unknown) => {
     if (!config) return;
     setConfig({ ...config, [field]: value });
+  };
+
+  const updatePaperConfig = async (field: keyof PaperTradingConfig, value: unknown) => {
+    if (!paperConfig) return;
+    
+    const updated = { ...paperConfig, [field]: value };
+    setPaperConfig(updated);
+    
+    // Auto-save paper trading config changes
+    try {
+      const { error } = await supabase
+        .from('paper_trading_config')
+        .update({ [field]: value, updated_at: new Date().toISOString() })
+        .eq('id', paperConfig.id);
+      
+      if (error) throw error;
+      
+      toast({
+        title: field === 'is_live' && value ? '⚠️ Live Mode Enabled' : 'Updated',
+        description: field === 'is_live' && value 
+          ? 'V27 will now execute real trades with $' + updated.trade_size_usd
+          : 'Paper trading setting updated',
+        variant: field === 'is_live' && value ? 'destructive' : 'default',
+      });
+    } catch (error) {
+      console.error('Error updating paper config:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to update setting',
+        variant: 'destructive',
+      });
+    }
   };
 
   if (loading) {
@@ -332,11 +383,81 @@ export default function Settings() {
             </CardContent>
           </Card>
 
+          {/* V27 Paper/Live Trading */}
+          {paperConfig && (
+            <Card>
+              <CardHeader>
+                <div className="flex items-center gap-2">
+                  <TrendingUp className="h-5 w-5 text-primary" />
+                  <CardTitle>V27 Trading Mode</CardTitle>
+                </div>
+                <CardDescription>
+                  Control paper trading and live execution
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label>Paper Trading Enabled</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Log signals and simulate trades in database
+                    </p>
+                  </div>
+                  <Switch
+                    checked={paperConfig.enabled}
+                    onCheckedChange={(checked) => updatePaperConfig('enabled', checked)}
+                  />
+                </div>
+                <Separator />
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label className={paperConfig.is_live ? 'text-red-500 font-semibold' : ''}>
+                      Live Trading (Real Money)
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      Execute real ${paperConfig.trade_size_usd} trades when signals hit
+                    </p>
+                  </div>
+                  <Switch
+                    checked={paperConfig.is_live}
+                    onCheckedChange={(checked) => updatePaperConfig('is_live', checked)}
+                    className={paperConfig.is_live ? 'data-[state=checked]:bg-red-500' : ''}
+                  />
+                </div>
+                {paperConfig.is_live && (
+                  <Alert variant="destructive">
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertTitle>⚠️ LIVE MODE ACTIVE</AlertTitle>
+                    <AlertDescription>
+                      Real trades will be executed with ${paperConfig.trade_size_usd} per signal.
+                      Make sure your runner is configured correctly!
+                    </AlertDescription>
+                  </Alert>
+                )}
+                <div className="space-y-2">
+                  <Label htmlFor="trade_size">Trade Size ($)</Label>
+                  <Input
+                    id="trade_size"
+                    type="number"
+                    step="1"
+                    min="1"
+                    max="100"
+                    value={paperConfig.trade_size_usd}
+                    onChange={(e) => updatePaperConfig('trade_size_usd', parseFloat(e.target.value) || 5)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Position size per trade (used for both paper and live)
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           {/* Strategy Parameters */}
           <Card>
             <CardHeader>
               <div className="flex items-center gap-2">
-                <TrendingUp className="h-5 w-5 text-primary" />
+                <Settings2 className="h-5 w-5 text-primary" />
                 <CardTitle>Strategy Parameters</CardTitle>
               </div>
               <CardDescription>
