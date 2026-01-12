@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -285,6 +285,8 @@ interface DecisionLog {
 }
 
 function useDecisionLogs() {
+  const queryClient = useQueryClient();
+  
   const query = useQuery({
     queryKey: ['paper-trader-logs'],
     queryFn: async () => {
@@ -297,10 +299,10 @@ function useDecisionLogs() {
       if (error) throw error;
       return (data || []) as DecisionLog[];
     },
-    refetchInterval: 5000, // Fallback polling
+    refetchInterval: 10000, // Fallback polling (less frequent since realtime works)
   });
   
-  // Realtime subscription
+  // Realtime subscription - stable effect
   useEffect(() => {
     const channel = supabase
       .channel('paper-trader-logs-realtime')
@@ -311,16 +313,20 @@ function useDecisionLogs() {
           schema: 'public',
           table: 'paper_trader_logs',
         },
-        () => {
-          query.refetch();
+        (payload) => {
+          console.log('[DecisionLog] Realtime INSERT received:', payload);
+          // Use queryClient.invalidateQueries for stable reference
+          queryClient.invalidateQueries({ queryKey: ['paper-trader-logs'] });
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log('[DecisionLog] Realtime subscription status:', status);
+      });
     
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [query.refetch]);
+  }, [queryClient]);
   
   return query;
 }
