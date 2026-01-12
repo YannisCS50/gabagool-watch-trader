@@ -132,6 +132,7 @@ const DEFAULT_CONFIG: PaperTradingConfig = {
 
 let supabase: SupabaseClient | null = null;
 let binanceWs: WebSocket | null = null;
+let configSubscription: { unsubscribe: () => void } | null = null;
 let isRunning = false;
 let currentConfig: PaperTradingConfig = DEFAULT_CONFIG;
 
@@ -195,6 +196,65 @@ async function loadConfig(): Promise<PaperTradingConfig> {
     console.error('[PaperTrader] Failed to load config:', err);
     return DEFAULT_CONFIG;
   }
+}
+
+function subscribeToConfigChanges(): void {
+  if (!supabase) return;
+  
+  console.log('[PaperTrader] 🔄 Subscribing to config changes...');
+  
+  const channel = supabase
+    .channel('paper_trading_config_changes')
+    .on(
+      'postgres_changes',
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'paper_trading_config',
+      },
+      (payload) => {
+        console.log('[PaperTrader] 📨 Config update received');
+        
+        const newData = payload.new as Record<string, unknown>;
+        const oldEnabled = currentConfig.enabled;
+        const oldIsLive = currentConfig.is_live;
+        
+        currentConfig = {
+          id: String(newData.id ?? currentConfig.id),
+          enabled: Boolean(newData.enabled ?? currentConfig.enabled),
+          is_live: Boolean(newData.is_live ?? currentConfig.is_live),
+          trade_size_usd: Number(newData.trade_size_usd ?? currentConfig.trade_size_usd),
+          min_delta_usd: Number(newData.min_delta_usd ?? currentConfig.min_delta_usd),
+          min_share_price: Number(newData.min_share_price ?? currentConfig.min_share_price),
+          max_share_price: Number(newData.max_share_price ?? currentConfig.max_share_price),
+          tp_cents: Number(newData.tp_cents ?? currentConfig.tp_cents),
+          tp_enabled: Boolean(newData.tp_enabled ?? currentConfig.tp_enabled),
+          sl_cents: Number(newData.sl_cents ?? currentConfig.sl_cents),
+          sl_enabled: Boolean(newData.sl_enabled ?? currentConfig.sl_enabled),
+          timeout_ms: Number(newData.timeout_ms ?? currentConfig.timeout_ms),
+          assets: (newData.assets as Asset[]) ?? currentConfig.assets,
+        };
+        
+        // Log significant changes
+        if (oldEnabled !== currentConfig.enabled) {
+          console.log(`[PaperTrader] ${currentConfig.enabled ? '▶️ ENABLED' : '⏸️ DISABLED'}`);
+        }
+        if (oldIsLive !== currentConfig.is_live) {
+          console.log(`[PaperTrader] ${currentConfig.is_live ? '🔴 LIVE MODE ACTIVATED' : '📝 PAPER MODE'}`);
+        }
+        
+        console.log(`[PaperTrader] Config updated: enabled=${currentConfig.enabled}, is_live=${currentConfig.is_live}, trade_size=$${currentConfig.trade_size_usd}`);
+      }
+    )
+    .subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        console.log('[PaperTrader] ✅ Config subscription active');
+      } else if (status === 'CHANNEL_ERROR') {
+        console.error('[PaperTrader] ❌ Config subscription failed');
+      }
+    });
+  
+  configSubscription = { unsubscribe: () => supabase?.removeChannel(channel) };
 }
 
 async function saveSignal(signal: PaperSignal): Promise<string | null> {
@@ -601,8 +661,7 @@ async function fetchMarketInfo(): Promise<void> {
 async function runLoop(): Promise<void> {
   while (isRunning) {
     try {
-      // Reload config periodically
-      currentConfig = await loadConfig();
+      // Config is now updated via realtime subscription, no need to reload
       
       if (!currentConfig.enabled) {
         await new Promise(r => setTimeout(r, 5000));
@@ -645,9 +704,12 @@ export async function startPaperTrader(): Promise<void> {
   // Initialize Supabase
   supabase = initSupabase();
   
-  // Load config
+  // Load initial config
   currentConfig = await loadConfig();
   console.log(`[PaperTrader] Config loaded: enabled=${currentConfig.enabled}, is_live=${currentConfig.is_live}, size=$${currentConfig.trade_size_usd}`);
+  
+  // Subscribe to config changes for hot-reload
+  subscribeToConfigChanges();
   
   isRunning = true;
   
@@ -657,13 +719,19 @@ export async function startPaperTrader(): Promise<void> {
   // Start main loop
   runLoop();
   
-  console.log('[PaperTrader] Started successfully');
+  console.log('[PaperTrader] Started successfully (hot-reload enabled)');
 }
 
 export async function stopPaperTrader(): Promise<void> {
   console.log('[PaperTrader] Stopping...');
   
   isRunning = false;
+  
+  // Unsubscribe from config changes
+  if (configSubscription) {
+    configSubscription.unsubscribe();
+    configSubscription = null;
+  }
   
   // Close Binance WebSocket
   if (binanceWs) {
