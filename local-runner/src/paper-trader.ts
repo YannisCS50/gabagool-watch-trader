@@ -19,6 +19,7 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { config } from './config.js';
 import { getOrderbookDepth } from './polymarket.js';
 import { fetchChainlinkPrice } from './chain.js';
+import { startPriceFeedLogger, stopPriceFeedLogger, getPriceFeedLoggerStats, type PriceFeedCallback } from './price-feed-ws-logger.js';
 
 // ============================================
 // TYPES
@@ -852,9 +853,14 @@ async function runLoop(): Promise<void> {
         lastMarketRefresh = Date.now();
       }
       
-      // Fetch CLOB prices for all assets
+      // CLOB prices now come via WebSocket callback, so we skip the old HTTP polling.
+      // Only do a fallback fetch if WebSocket prices are stale (>10 seconds old)
       for (const asset of currentConfig.assets) {
-        await fetchClobPrices(asset);
+        const state = priceState[asset];
+        if (now - state.lastUpdate > 10_000) {
+          // Fallback to HTTP polling if WebSocket is stale
+          await fetchClobPrices(asset);
+        }
       }
       
       // Save price snapshots every 10 seconds
@@ -900,13 +906,41 @@ export async function startPaperTrader(): Promise<void> {
   
   isRunning = true;
   
-  // Connect to Binance
-  connectBinance();
+  // Start the unified price feed logger with callbacks
+  // This gives us real-time Binance + Polymarket CLOB prices via WebSocket
+  const priceFeedCallbacks: PriceFeedCallback = {
+    onBinancePrice: (asset: string, price: number, _timestamp: number) => {
+      if (['BTC', 'ETH', 'SOL', 'XRP'].includes(asset)) {
+        handlePriceUpdate(asset as Asset, price);
+      }
+    },
+    onPolymarketPrice: (assetOrMarketId: string, upMid: number, downMid: number, _timestamp: number) => {
+      // Update price state for the asset
+      for (const [asset, info] of Object.entries(marketInfo)) {
+        if (info && (info.slug === assetOrMarketId || asset === assetOrMarketId)) {
+          const typedAsset = asset as Asset;
+          // Use mid prices as approximate bid/ask (CLOB WS provides actual bids/asks)
+          if (upMid > 0) {
+            priceState[typedAsset].upBestBid = upMid - 0.005;
+            priceState[typedAsset].upBestAsk = upMid + 0.005;
+          }
+          if (downMid > 0) {
+            priceState[typedAsset].downBestBid = downMid - 0.005;
+            priceState[typedAsset].downBestAsk = downMid + 0.005;
+          }
+          priceState[typedAsset].lastUpdate = Date.now();
+        }
+      }
+    },
+  };
   
-  // Start main loop
+  console.log('[PaperTrader] Starting unified price feed (Binance + Polymarket CLOB WebSockets)...');
+  await startPriceFeedLogger(priceFeedCallbacks);
+  
+  // Start main loop (now only for config reload and market refresh, no more CLOB polling)
   runLoop();
   
-  console.log('[PaperTrader] Started successfully (hot-reload enabled)');
+  console.log('[PaperTrader] Started successfully with real-time WebSocket feeds');
 }
 
 // ============================================
@@ -990,7 +1024,10 @@ export async function stopPaperTrader(): Promise<void> {
     configSubscription = null;
   }
   
-  // Close Binance WebSocket
+  // Stop the unified price feed logger
+  await stopPriceFeedLogger();
+  
+  // Close legacy Binance WebSocket if still open (shouldn't be, but just in case)
   if (binanceWs) {
     binanceWs.close();
     binanceWs = null;
