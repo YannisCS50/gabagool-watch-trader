@@ -4513,6 +4513,54 @@ export type Database = {
         }
         Relationships: []
       }
+      v27_price_lookup: {
+        Row: {
+          asset: string
+          avg_down_price: number
+          avg_up_price: number
+          created_at: string
+          delta_bucket: string
+          id: string
+          max_up: number | null
+          min_up: number | null
+          sample_count: number
+          std_down: number | null
+          std_up: number | null
+          time_bucket: string
+          updated_at: string
+        }
+        Insert: {
+          asset: string
+          avg_down_price: number
+          avg_up_price: number
+          created_at?: string
+          delta_bucket: string
+          id?: string
+          max_up?: number | null
+          min_up?: number | null
+          sample_count?: number
+          std_down?: number | null
+          std_up?: number | null
+          time_bucket: string
+          updated_at?: string
+        }
+        Update: {
+          asset?: string
+          avg_down_price?: number
+          avg_up_price?: number
+          created_at?: string
+          delta_bucket?: string
+          id?: string
+          max_up?: number | null
+          min_up?: number | null
+          sample_count?: number
+          std_down?: number | null
+          std_up?: number | null
+          time_bucket?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
       v27_signal_tracking: {
         Row: {
           adverse_selection_10s: boolean | null

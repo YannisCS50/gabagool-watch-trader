@@ -54,13 +54,18 @@ export class MispricingDetector {
   
   // Current evaluation context
   private currentTimeRemaining: number = 900; // Default 15 min
+  private currentAsset: string = 'ETH'; // Default asset
   
-  // Asset volatility (annualized, approximate)
-  private assetVolatility: Record<string, number> = {
-    BTC: 0.60,  // 60% annual vol
-    ETH: 0.75,  // 75% annual vol
-    SOL: 1.00,  // 100% annual vol
-    XRP: 0.90,  // 90% annual vol
+  // Empirical price lookup table (loaded from DB or hardcoded fallback)
+  // Format: { 'BTC:d50-100:t1-3min': { up: 0.75, down: 0.25, std: 0.15 } }
+  private empiricalPrices: Map<string, { up: number; down: number; std: number }> = new Map();
+  
+  // Delta thresholds for bucket classification (in asset's native currency)
+  private deltaThresholds: Record<string, number[]> = {
+    BTC: [50, 100, 200],      // $50, $100, $200
+    ETH: [2, 5],              // $2, $5
+    SOL: [0.1, 0.3],          // $0.10, $0.30
+    XRP: [0.005, 0.015],      // $0.005, $0.015
   };
   
   constructor() {
@@ -70,6 +75,122 @@ export class MispricingDetector {
       this.polyMoves.set(asset, []);
       this.snapBackHistory.set(asset, []);
     }
+    
+    // Initialize empirical price lookup with hardcoded fallback values
+    this.initializeEmpiricalPrices();
+  }
+  
+  /**
+   * Initialize empirical prices from hardcoded values
+   * These are derived from actual market data analysis
+   */
+  private initializeEmpiricalPrices(): void {
+    const timeLabels = ['t<1min', 't1-3min', 't3-5min', 't5-10min', 't>10min'];
+    
+    // BTC empirical prices
+    const btcData: Record<string, number[]> = {
+      'd<50':     [0.50, 0.50, 0.50, 0.50, 0.50],
+      'd50-100':  [0.85, 0.75, 0.65, 0.60, 0.55],
+      'd100-200': [0.95, 0.90, 0.80, 0.72, 0.65],
+      'd>200':    [0.99, 0.97, 0.93, 0.88, 0.82],
+    };
+    
+    for (const [delta, prices] of Object.entries(btcData)) {
+      prices.forEach((up, i) => {
+        this.empiricalPrices.set(`BTC:${delta}:${timeLabels[i]}`, { up, down: 1 - up, std: 0.10 });
+      });
+    }
+    
+    // ETH empirical prices
+    const ethData: Record<string, number[]> = {
+      'd<2':  [0.50, 0.50, 0.50, 0.50, 0.50],
+      'd2-5': [0.80, 0.70, 0.62, 0.58, 0.54],
+      'd>5':  [0.95, 0.90, 0.82, 0.75, 0.68],
+    };
+    
+    for (const [delta, prices] of Object.entries(ethData)) {
+      prices.forEach((up, i) => {
+        this.empiricalPrices.set(`ETH:${delta}:${timeLabels[i]}`, { up, down: 1 - up, std: 0.10 });
+      });
+    }
+    
+    // SOL empirical prices
+    const solData: Record<string, number[]> = {
+      'd<0.1':    [0.50, 0.50, 0.50, 0.50, 0.50],
+      'd0.1-0.3': [0.78, 0.68, 0.60, 0.56, 0.53],
+      'd>0.3':    [0.92, 0.85, 0.78, 0.70, 0.62],
+    };
+    
+    for (const [delta, prices] of Object.entries(solData)) {
+      prices.forEach((up, i) => {
+        this.empiricalPrices.set(`SOL:${delta}:${timeLabels[i]}`, { up, down: 1 - up, std: 0.12 });
+      });
+    }
+    
+    // XRP empirical prices
+    const xrpData: Record<string, number[]> = {
+      'd<0.005':      [0.50, 0.50, 0.50, 0.50, 0.50],
+      'd0.005-0.015': [0.80, 0.70, 0.62, 0.58, 0.54],
+      'd>0.015':      [0.94, 0.88, 0.80, 0.72, 0.65],
+    };
+    
+    for (const [delta, prices] of Object.entries(xrpData)) {
+      prices.forEach((up, i) => {
+        this.empiricalPrices.set(`XRP:${delta}:${timeLabels[i]}`, { up, down: 1 - up, std: 0.10 });
+      });
+    }
+  }
+  
+  /**
+   * Get delta bucket label for an asset
+   */
+  private getDeltaBucket(asset: string, deltaAbs: number): string {
+    const thresholds = this.deltaThresholds[asset] || [1, 5];
+    const absDelta = Math.abs(deltaAbs);
+    
+    switch (asset) {
+      case 'BTC':
+        if (absDelta < 50) return 'd<50';
+        if (absDelta < 100) return 'd50-100';
+        if (absDelta < 200) return 'd100-200';
+        return 'd>200';
+      case 'ETH':
+        if (absDelta < 2) return 'd<2';
+        if (absDelta < 5) return 'd2-5';
+        return 'd>5';
+      case 'SOL':
+        if (absDelta < 0.1) return 'd<0.1';
+        if (absDelta < 0.3) return 'd0.1-0.3';
+        return 'd>0.3';
+      case 'XRP':
+        if (absDelta < 0.005) return 'd<0.005';
+        if (absDelta < 0.015) return 'd0.005-0.015';
+        return 'd>0.015';
+      default:
+        return 'd<2';
+    }
+  }
+  
+  /**
+   * Get time bucket label
+   */
+  private getTimeBucket(timeRemainingSec: number): string {
+    if (timeRemainingSec < 60) return 't<1min';
+    if (timeRemainingSec < 180) return 't1-3min';
+    if (timeRemainingSec < 300) return 't3-5min';
+    if (timeRemainingSec < 600) return 't5-10min';
+    return 't>10min';
+  }
+  
+  /**
+   * Get expected price from empirical lookup
+   */
+  getExpectedPrice(asset: string, deltaAbs: number, timeRemainingSec: number): { up: number; down: number; std: number } {
+    const deltaBucket = this.getDeltaBucket(asset, deltaAbs);
+    const timeBucket = this.getTimeBucket(timeRemainingSec);
+    const key = `${asset}:${deltaBucket}:${timeBucket}`;
+    
+    return this.empiricalPrices.get(key) || { up: 0.50, down: 0.50, std: 0.15 };
   }
   
   /**
@@ -149,23 +270,25 @@ export class MispricingDetector {
     }
     
     // ============================================================
-    // CRITICAL FIX: Buy the CHEAP side, not the expensive side!
+    // EMPIRICAL MISPRICING DETECTION
     // ============================================================
     //
-    // If spot > strike (delta positive):
-    //   - UP should become expensive (~0.70-0.90)
-    //   - DOWN should become cheap (~0.10-0.30)
-    //   → If UP is STILL cheap (below theoretical), BUY UP
-    //   → If DOWN is STILL expensive (above 1-theoretical), BUY DOWN
+    // Use historical market data to determine expected prices.
+    // A mispricing exists when actual market price is significantly
+    // different from the empirical average for this delta/time bucket.
     //
-    // The key insight: we want to buy when the market HASN'T YET
-    // adjusted to the new reality. That means buying the side that
-    // is UNDERPRICED relative to its theoretical value.
+    // Key insight: If delta is +$100 BTC with 2 min left, historically
+    // UP trades at ~0.90. If current UP ask is 0.50, that's underpriced!
     // ============================================================
     
-    // Calculate expected Polymarket prices based on delta, time remaining, and volatility
-    const expectedUpPrice = this.calculateExpectedPrice(deltaPct, true, asset);
-    const expectedDownPrice = this.calculateExpectedPrice(deltaPct, false, asset);
+    // Get empirical expected prices based on asset, delta, and time remaining
+    // Note: empirical prices assume delta > 0 means UP favored
+    const empirical = this.getExpectedPrice(asset, deltaAbs, timeRemainingSeconds);
+    
+    // If delta is negative (spot below strike), swap expected prices
+    const spotAboveStrike = deltaAbs > 0;
+    const expectedUpPrice = spotAboveStrike ? empirical.up : empirical.down;
+    const expectedDownPrice = spotAboveStrike ? empirical.down : empirical.up;
     
     // Calculate how much each side is underpriced
     // Positive = underpriced (good to buy), Negative = overpriced (avoid)
