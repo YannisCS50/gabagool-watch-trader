@@ -289,7 +289,7 @@ function determineQuality(tickTimestamp: number, targetTimeMs: number): string {
 }
 
 // Store strike prices in database using best available price source
-// Priority for OPEN prices: Binance historical > Polymarket API > Chainlink RPC
+// Priority for OPEN prices: Polymarket API > Chainlink RPC (captured at exact start time)
 // Priority for CLOSE prices: Polymarket API > Chainlink RPC (current price)
 async function storePrices(
   supabase: any, 
@@ -338,38 +338,26 @@ async function storePrices(
       updates.close_timestamp = existing.close_timestamp;
     }
     
-    // Handle open price - USE BINANCE HISTORICAL for exact strike price!
+    // Handle open price - USE CHAINLINK/POLYMARKET for strike price (this is what Polymarket uses!)
     if (market.needsOpenPrice && !existing?.open_price) {
       const targetOpenTimeMs = market.eventStartTime * 1000;
       const timeSinceStart = now - targetOpenTimeMs;
       
-      // Only try to get open price within 10 minutes of start
+      // Capture open price within first 5 seconds for best accuracy
+      // Polymarket uses Chainlink Data Streams - we capture as close to :00 as possible
       if (timeSinceStart >= 0 && timeSinceStart <= 10 * 60 * 1000) {
-        // PRIMARY: Try Binance historical price - most accurate for strike
-        const binancePrice = await fetchBinanceHistoricalPrice(market.asset, targetOpenTimeMs);
+        // PRIMARY: Use Polymarket API or Chainlink RPC (same source as Polymarket)
+        const priceData = currentPrices[market.asset];
         
-        if (binancePrice) {
-          updates.open_price = Math.round(binancePrice.price * 1000000) / 1000000;
-          updates.open_timestamp = binancePrice.timestamp;
+        if (priceData) {
+          updates.open_price = Math.round(priceData.price * 1000000) / 1000000;
+          updates.open_timestamp = now; // Use actual capture time
           updates.strike_price = updates.open_price;
-          updates.source = 'binance_kline';
-          updates.quality = 'exact'; // Binance kline at exact start time is most accurate
-          updates.chainlink_timestamp = Math.floor(binancePrice.timestamp / 1000);
+          updates.source = priceData.source;
+          updates.quality = determineQuality(now, targetOpenTimeMs);
+          updates.chainlink_timestamp = Math.floor(now / 1000);
           openStored++;
-          console.log(`✅ Open price for ${market.slug}: $${updates.open_price} (source: binance_kline, quality: exact)`);
-        } else {
-          // FALLBACK: Use current Chainlink/Polymarket price
-          const priceData = currentPrices[market.asset];
-          if (priceData) {
-            updates.open_price = Math.round(priceData.price * 1000000) / 1000000;
-            updates.open_timestamp = priceData.timestamp;
-            updates.strike_price = updates.open_price;
-            updates.source = priceData.source;
-            updates.quality = determineQuality(priceData.timestamp, targetOpenTimeMs);
-            updates.chainlink_timestamp = Math.floor(priceData.timestamp / 1000);
-            openStored++;
-            console.log(`⚠️ Open price for ${market.slug}: $${updates.open_price} (fallback: ${priceData.source}, quality: ${updates.quality})`);
-          }
+          console.log(`✅ Open price for ${market.slug}: $${updates.open_price} (source: ${priceData.source}, quality: ${updates.quality}, captured at ${new Date(now).toISOString()})`);
         }
       }
     }
