@@ -320,109 +320,118 @@ export function usePriceLatencyComparison() {
   }, []);
 
   const connect = useCallback(async () => {
-    if (binanceWsRef.current?.readyState === WebSocket.OPEN) return;
+    const isActive = (ws: WebSocket | null) =>
+      ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING;
 
-    setState(prev => ({ 
-      ...prev, 
-      connectionStatus: 'connecting', 
-      binanceWsStatus: 'connecting',
-      chainlinkWsStatus: 'connecting',
+    const binanceActive = isActive(binanceWsRef.current);
+    const chainlinkActive = isActive(chainlinkWsRef.current);
+
+    // If both streams are already up (or mid-connecting), nothing to do.
+    if (binanceActive && chainlinkActive) return;
+
+    setState(prev => ({
+      ...prev,
+      connectionStatus: 'connecting',
+      binanceWsStatus: binanceActive ? prev.binanceWsStatus : 'connecting',
+      chainlinkWsStatus: chainlinkActive ? prev.chainlinkWsStatus : 'connecting',
     }));
 
-    // 1. Connect to Binance WebSocket for real-time CEX prices
-    const streams = Object.values(SYMBOL_MAP).map(s => s.binanceWs).join('/');
-    const binanceWsUrl = `wss://stream.binance.com:9443/stream?streams=${streams}`;
-    
-    const binanceWs = new WebSocket(binanceWsUrl);
-    binanceWsRef.current = binanceWs;
+    // 1) Binance: real-time CEX prices
+    if (!binanceActive) {
+      const streams = Object.values(SYMBOL_MAP).map(s => s.binanceWs).join('/');
+      const binanceWsUrl = `wss://stream.binance.com:9443/stream?streams=${streams}`;
 
-    binanceWs.onopen = () => {
-      console.log('Binance WebSocket connected');
-      setState(prev => ({ ...prev, binanceWsStatus: 'connected' }));
-    };
+      const binanceWs = new WebSocket(binanceWsUrl);
+      binanceWsRef.current = binanceWs;
 
-    binanceWs.onmessage = (event) => {
-      try {
-        const wrapper = JSON.parse(event.data);
-        if (wrapper.data) {
-          handleBinanceMessage({ data: JSON.stringify(wrapper.data) } as MessageEvent);
-        }
-      } catch (err) {
-        console.error('WS message error:', err);
-      }
-    };
-
-    binanceWs.onerror = (error) => {
-      console.error('Binance WebSocket error:', error);
-      setState(prev => ({ ...prev, binanceWsStatus: 'error' }));
-    };
-
-    binanceWs.onclose = () => {
-      console.log('Binance WebSocket closed');
-      setState(prev => ({ ...prev, binanceWsStatus: 'disconnected' }));
-    };
-
-    // 2. Connect to Polymarket RTDS via backend proxy for Chainlink oracle prices
-    // This should match the same stream we use elsewhere in the app.
-    try {
-      if (!RTDS_PROXY_WS_URL) {
-        throw new Error('Missing backend base URL (VITE_SUPABASE_URL)');
-      }
-
-      console.log('Connecting to RTDS proxy for Chainlink prices...');
-      const chainlinkWs = new WebSocket(RTDS_PROXY_WS_URL);
-      chainlinkWsRef.current = chainlinkWs;
-
-      chainlinkWs.onopen = () => {
-        console.log('RTDS proxy WebSocket connected');
-        setState(prev => ({ ...prev, chainlinkWsStatus: 'connected' }));
+      binanceWs.onopen = () => {
+        console.log('Binance WebSocket connected');
+        setState(prev => ({ ...prev, binanceWsStatus: 'connected' }));
       };
 
-      chainlinkWs.onmessage = (event) => {
-        // Subscribe as soon as proxy confirms it connected upstream
+      binanceWs.onmessage = (event) => {
         try {
-          const msg = JSON.parse(event.data);
-          if (msg?.type === 'proxy_connected') {
-            chainlinkWs.send(
-              JSON.stringify({
-                action: 'subscribe',
-                subscriptions: [{ topic: 'crypto_prices_chainlink', type: '*', filters: '' }],
-              }),
-            );
-            return;
+          const wrapper = JSON.parse(event.data);
+          if (wrapper.data) {
+            handleBinanceMessage({ data: JSON.stringify(wrapper.data) } as MessageEvent);
           }
-        } catch {
-          // ignore
+        } catch (err) {
+          console.error('WS message error:', err);
         }
-
-        handleRtdsMessage(event);
       };
 
-      chainlinkWs.onerror = (error) => {
-        console.error('RTDS proxy WebSocket error:', error);
-        setState(prev => ({ ...prev, chainlinkWsStatus: 'error', lastError: 'RTDS proxy WebSocket error' }));
+      binanceWs.onerror = (error) => {
+        console.error('Binance WebSocket error:', error);
+        setState(prev => ({ ...prev, binanceWsStatus: 'error' }));
       };
 
-      chainlinkWs.onclose = () => {
-        console.log('RTDS proxy WebSocket closed');
-        setState(prev => ({ ...prev, chainlinkWsStatus: 'disconnected' }));
+      binanceWs.onclose = () => {
+        console.log('Binance WebSocket closed');
+        setState(prev => ({ ...prev, binanceWsStatus: 'disconnected' }));
       };
-    } catch (err) {
-      console.error('RTDS proxy connection error:', err);
-      setState(prev => ({
-        ...prev,
-        chainlinkWsStatus: 'error',
-        lastError: err instanceof Error ? err.message : 'RTDS proxy connection failed',
-      }));
     }
 
-    // Update overall connection status
+    // 2) Chainlink: via RTDS backend proxy
+    if (!chainlinkActive) {
+      try {
+        if (!RTDS_PROXY_WS_URL) {
+          throw new Error('Missing backend base URL (VITE_SUPABASE_URL)');
+        }
+
+        console.log('Connecting to RTDS proxy for Chainlink prices...');
+        const chainlinkWs = new WebSocket(RTDS_PROXY_WS_URL);
+        chainlinkWsRef.current = chainlinkWs;
+
+        chainlinkWs.onopen = () => {
+          console.log('RTDS proxy WebSocket connected');
+          setState(prev => ({ ...prev, chainlinkWsStatus: 'connected' }));
+        };
+
+        chainlinkWs.onmessage = (event) => {
+          // Subscribe as soon as proxy confirms it connected upstream
+          try {
+            const msg = JSON.parse(event.data);
+            if (msg?.type === 'proxy_connected') {
+              chainlinkWs.send(
+                JSON.stringify({
+                  action: 'subscribe',
+                  subscriptions: [{ topic: 'crypto_prices_chainlink', type: '*', filters: '' }],
+                }),
+              );
+              return;
+            }
+          } catch {
+            // ignore
+          }
+
+          handleRtdsMessage(event);
+        };
+
+        chainlinkWs.onerror = (error) => {
+          console.error('RTDS proxy WebSocket error:', error);
+          setState(prev => ({ ...prev, chainlinkWsStatus: 'error', lastError: 'RTDS proxy WebSocket error' }));
+        };
+
+        chainlinkWs.onclose = () => {
+          console.log('RTDS proxy WebSocket closed');
+          setState(prev => ({ ...prev, chainlinkWsStatus: 'disconnected' }));
+        };
+      } catch (err) {
+        console.error('RTDS proxy connection error:', err);
+        setState(prev => ({
+          ...prev,
+          chainlinkWsStatus: 'error',
+          lastError: err instanceof Error ? err.message : 'RTDS proxy connection failed',
+        }));
+      }
+    }
+
+    // Mark overall connection as active (individual statuses will reflect actual state)
     setState(prev => ({
       ...prev,
       connectionStatus: 'connected',
       lastError: null,
     }));
-
   }, [handleBinanceMessage, handleRtdsMessage]);
 
   const disconnect = useCallback(() => {

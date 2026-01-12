@@ -94,9 +94,11 @@ export function LiveMarketMonitor() {
     lastUpdateTime: orderbookLastUpdateTime,
   } = usePolymarketRealtime(true);
 
-  // Real-time spot prices from Binance WebSocket
+  // Real-time spot prices from Binance WebSocket + Chainlink via RTDS proxy
   const {
     connectionStatus: priceConnectionStatus,
+    binanceWsStatus,
+    chainlinkWsStatus,
     connect: connectPrices,
     getAllPrices,
   } = usePriceLatencyComparison();
@@ -104,12 +106,19 @@ export function LiveMarketMonitor() {
   // Trigger re-renders on price updates
   const [priceVersion, setPriceVersion] = useState(0);
 
-  // Auto-connect to real-time price feed
+  // Auto-connect / re-connect to real-time price feed
   useEffect(() => {
-    if (priceConnectionStatus === 'disconnected') {
+    const needsReconnect =
+      priceConnectionStatus === "disconnected" ||
+      binanceWsStatus === "disconnected" ||
+      binanceWsStatus === "error" ||
+      chainlinkWsStatus === "disconnected" ||
+      chainlinkWsStatus === "error";
+
+    if (needsReconnect) {
       connectPrices();
     }
-  }, [priceConnectionStatus, connectPrices]);
+  }, [priceConnectionStatus, binanceWsStatus, chainlinkWsStatus, connectPrices]);
 
   // Poll for price updates from the hook (since getAllPrices uses refs)
   useEffect(() => {
