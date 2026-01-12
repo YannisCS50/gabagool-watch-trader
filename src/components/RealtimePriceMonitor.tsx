@@ -246,7 +246,7 @@ export function RealtimePriceMonitor({ className }: RealtimePriceMonitorProps) {
                   )}
 
                   {/* Combined Edge */}
-                  {marketData?.combined !== null && marketData?.edge !== null && (
+                  {marketData && marketData.combined !== null && marketData.edge !== null && (
                     <div className="flex items-center justify-between text-sm pt-2 border-t border-border/50">
                       <span className="text-muted-foreground">Combined / Edge:</span>
                       <span className={cn(
