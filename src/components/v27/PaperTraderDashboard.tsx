@@ -117,6 +117,107 @@ function StatsCards() {
   );
 }
 
+interface DecisionLog {
+  id: string;
+  ts: number;
+  run_id: string | null;
+  asset: string;
+  event_type: string;
+  reason: string | null;
+  binance_price: number | null;
+  share_price: number | null;
+  delta_usd: number | null;
+  created_at: string;
+}
+
+function useDecisionLogs() {
+  return useQuery({
+    queryKey: ['paper-trader-logs'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('paper_trader_logs')
+        .select('*')
+        .order('ts', { ascending: false })
+        .limit(50);
+      
+      if (error) throw error;
+      return (data || []) as DecisionLog[];
+    },
+    refetchInterval: 3000,
+  });
+}
+
+function DecisionLogPanel() {
+  const { data: logs, isLoading, refetch } = useDecisionLogs();
+  
+  const eventColors: Record<string, string> = {
+    skip_delta: 'text-muted-foreground',
+    skip_bounds: 'text-yellow-400',
+    skip_no_clob: 'text-orange-400',
+    skip_active: 'text-blue-400',
+    signal: 'text-green-400',
+  };
+  
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex justify-between items-center">
+          <CardTitle className="text-lg">Decision Log</CardTitle>
+          <Button variant="ghost" size="sm" onClick={() => refetch()}>
+            <RefreshCw className="h-4 w-4" />
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="text-muted-foreground">Loading logs...</div>
+        ) : !logs || logs.length === 0 ? (
+          <div className="text-muted-foreground text-sm p-4 text-center border border-dashed rounded">
+            No decision logs yet. Restart the paper trader to see logs.
+          </div>
+        ) : (
+          <div className="max-h-[300px] overflow-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-20">Time</TableHead>
+                  <TableHead className="w-16">Asset</TableHead>
+                  <TableHead>Event</TableHead>
+                  <TableHead>Reason</TableHead>
+                  <TableHead className="text-right">Price</TableHead>
+                  <TableHead className="text-right">Share</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {logs.map((log) => (
+                  <TableRow key={log.id} className="text-xs">
+                    <TableCell className="font-mono">
+                      {new Date(log.ts).toLocaleTimeString()}
+                    </TableCell>
+                    <TableCell className="font-bold">{log.asset}</TableCell>
+                    <TableCell className={eventColors[log.event_type] || ''}>
+                      {log.event_type.replace('skip_', '')}
+                    </TableCell>
+                    <TableCell className="max-w-[200px] truncate" title={log.reason || ''}>
+                      {log.reason}
+                    </TableCell>
+                    <TableCell className="text-right font-mono">
+                      {log.binance_price ? `$${log.binance_price.toLocaleString()}` : '-'}
+                    </TableCell>
+                    <TableCell className="text-right font-mono">
+                      {log.share_price ? `${(log.share_price * 100).toFixed(1)}¢` : '-'}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 interface PriceSnapshot {
   id: string;
   asset: string;
@@ -482,11 +583,16 @@ export default function PaperTraderDashboard() {
       
       <StatsCards />
       
-      <Tabs defaultValue="signals">
+      <Tabs defaultValue="logs">
         <TabsList>
+          <TabsTrigger value="logs">Decision Log</TabsTrigger>
           <TabsTrigger value="signals">Signals</TabsTrigger>
           <TabsTrigger value="config">Config</TabsTrigger>
         </TabsList>
+        
+        <TabsContent value="logs" className="mt-4">
+          <DecisionLogPanel />
+        </TabsContent>
         
         <TabsContent value="signals" className="mt-4">
           <Card>

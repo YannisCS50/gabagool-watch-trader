@@ -409,6 +409,32 @@ async function fetchClobPrices(asset: Asset): Promise<void> {
 // SIGNAL DETECTION
 // ============================================
 
+async function logDecision(
+  asset: Asset,
+  eventType: string,
+  reason: string,
+  binancePrice: number | null,
+  sharePrice: number | null,
+  deltaUsd: number | null
+): Promise<void> {
+  if (!supabase) return;
+  try {
+    await supabase.from('paper_trader_logs').insert({
+      ts: Date.now(),
+      run_id: RUN_ID,
+      asset,
+      event_type: eventType,
+      reason,
+      binance_price: binancePrice,
+      share_price: sharePrice,
+      delta_usd: deltaUsd,
+      config_snapshot: currentConfig,
+    } as never);
+  } catch (err) {
+    // Silent fail - don't block trading for logging
+  }
+}
+
 function handlePriceUpdate(asset: Asset, newPrice: number): void {
   const prev = prevPrices[asset];
   prevPrices[asset] = newPrice;
@@ -420,7 +446,13 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
   const delta = newPrice - prev;
   
   // Check if delta is significant
-  if (Math.abs(delta) < currentConfig.min_delta_usd) return;
+  if (Math.abs(delta) < currentConfig.min_delta_usd) {
+    // Only log significant deltas (>$1) to avoid spam
+    if (Math.abs(delta) >= 1) {
+      logDecision(asset, 'skip_delta', `Delta $${Math.abs(delta).toFixed(2)} < min $${currentConfig.min_delta_usd}`, newPrice, null, delta);
+    }
+    return;
+  }
   
   const direction: 'UP' | 'DOWN' = delta > 0 ? 'UP' : 'DOWN';
   
@@ -432,12 +464,14 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
   
   if (sharePrice === null) {
     console.log(`[PaperTrader] No CLOB price for ${asset} ${direction}, skipping`);
+    logDecision(asset, 'skip_no_clob', `No CLOB price for ${direction}`, newPrice, null, delta);
     return;
   }
   
   // Check share price bounds
   if (sharePrice < currentConfig.min_share_price || sharePrice > currentConfig.max_share_price) {
-    console.log(`[PaperTrader] ${asset} ${direction} share ${(sharePrice * 100).toFixed(1)}¢ outside bounds`);
+    console.log(`[PaperTrader] ${asset} ${direction} share ${(sharePrice * 100).toFixed(1)}¢ outside bounds [${(currentConfig.min_share_price * 100).toFixed(0)}-${(currentConfig.max_share_price * 100).toFixed(0)}¢]`);
+    logDecision(asset, 'skip_bounds', `Share ${(sharePrice * 100).toFixed(1)}¢ outside [${(currentConfig.min_share_price * 100).toFixed(0)}-${(currentConfig.max_share_price * 100).toFixed(0)}¢]`, newPrice, sharePrice, delta);
     return;
   }
   
@@ -445,7 +479,10 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
   const hasActive = [...activeSignals.values()].some(
     s => s.signal.asset === asset && (s.signal.status === 'pending' || s.signal.status === 'filled')
   );
-  if (hasActive) return;
+  if (hasActive) {
+    logDecision(asset, 'skip_active', 'Already has active signal', newPrice, sharePrice, delta);
+    return;
+  }
   
   // Create signal
   createSignal(asset, direction, newPrice, delta, sharePrice);
