@@ -22,6 +22,9 @@ export interface V27AssetConfig {
   // Taker flow percentiles (calibrated)
   takerFillP90: number;
   takerVolumeP85: number;
+  
+  // Display decimals for logging
+  decimals?: number;
 }
 
 export interface V27Config {
@@ -63,46 +66,50 @@ export const V27_DEFAULT_CONFIG: V27Config = {
     BTC: {
       deltaThresholdMin: 45,
       deltaThresholdMax: 70,
-      deltaThreshold: 55, // Starting point
+      deltaThreshold: 55, // Starting point ($55)
       probeShares: 5,
       maxProbeNotional: 5,
       maxSpreadEmergency: 0.08,
       normalSpreadThreshold: 0.04,
       takerFillP90: 50,    // Shares - will be calibrated
       takerVolumeP85: 100, // Shares - will be calibrated
+      decimals: 2,  // Show 2 decimal places for BTC
     },
     ETH: {
       deltaThresholdMin: 0.18,
       deltaThresholdMax: 0.30,
-      deltaThreshold: 0.22,
+      deltaThreshold: 0.22,  // $0.22 threshold
       probeShares: 5,
       maxProbeNotional: 5,
       maxSpreadEmergency: 0.08,
       normalSpreadThreshold: 0.04,
       takerFillP90: 50,
       takerVolumeP85: 100,
+      decimals: 2,  // Show 2 decimal places for ETH
     },
     SOL: {
       deltaThresholdMin: 0.08,
       deltaThresholdMax: 0.15,
-      deltaThreshold: 0.10,
+      deltaThreshold: 0.10,  // $0.10 threshold
       probeShares: 5,
       maxProbeNotional: 5,
       maxSpreadEmergency: 0.08,
       normalSpreadThreshold: 0.04,
       takerFillP90: 50,
       takerVolumeP85: 100,
+      decimals: 4,  // Show 4 decimal places for SOL
     },
     XRP: {
       deltaThresholdMin: 0.003,
       deltaThresholdMax: 0.008,
-      deltaThreshold: 0.005,
+      deltaThreshold: 0.005,  // $0.005 threshold
       probeShares: 5,
       maxProbeNotional: 5,
       maxSpreadEmergency: 0.08,
       normalSpreadThreshold: 0.04,
       takerFillP90: 50,
       takerVolumeP85: 100,
+      decimals: 6,  // Show 6 decimal places for XRP
     },
   },
   
