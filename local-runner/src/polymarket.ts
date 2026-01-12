@@ -473,7 +473,7 @@ export async function ensureValidCredentials(): Promise<boolean> {
   }
 }
 
-async function getClient(): Promise<ClobClient> {
+export async function getClient(): Promise<ClobClient> {
   if (clobClient) {
     return clobClient;
   }
