@@ -1981,6 +1981,206 @@ export type Database = {
         }
         Relationships: []
       }
+      paper_price_snapshots: {
+        Row: {
+          asset: string
+          binance_price: number | null
+          chainlink_price: number | null
+          created_at: string
+          down_best_ask: number | null
+          down_best_bid: number | null
+          id: string
+          market_slug: string | null
+          strike_price: number | null
+          ts: number
+          up_best_ask: number | null
+          up_best_bid: number | null
+        }
+        Insert: {
+          asset: string
+          binance_price?: number | null
+          chainlink_price?: number | null
+          created_at?: string
+          down_best_ask?: number | null
+          down_best_bid?: number | null
+          id?: string
+          market_slug?: string | null
+          strike_price?: number | null
+          ts: number
+          up_best_ask?: number | null
+          up_best_bid?: number | null
+        }
+        Update: {
+          asset?: string
+          binance_price?: number | null
+          chainlink_price?: number | null
+          created_at?: string
+          down_best_ask?: number | null
+          down_best_bid?: number | null
+          id?: string
+          market_slug?: string | null
+          strike_price?: number | null
+          ts?: number
+          up_best_ask?: number | null
+          up_best_bid?: number | null
+        }
+        Relationships: []
+      }
+      paper_signals: {
+        Row: {
+          asset: string
+          binance_delta: number
+          binance_price: number
+          chainlink_price: number | null
+          config_snapshot: Json | null
+          created_at: string
+          direction: string
+          entry_fee: number | null
+          entry_price: number | null
+          exit_fee: number | null
+          exit_price: number | null
+          exit_type: string | null
+          fill_ts: number | null
+          gross_pnl: number | null
+          id: string
+          is_live: boolean | null
+          market_slug: string | null
+          net_pnl: number | null
+          notes: string | null
+          order_type: string | null
+          run_id: string | null
+          sell_ts: number | null
+          share_price: number
+          shares: number | null
+          signal_ts: number
+          sl_price: number | null
+          sl_status: string | null
+          status: string
+          strike_price: number | null
+          total_fees: number | null
+          tp_price: number | null
+          tp_status: string | null
+          trade_size_usd: number | null
+        }
+        Insert: {
+          asset: string
+          binance_delta: number
+          binance_price: number
+          chainlink_price?: number | null
+          config_snapshot?: Json | null
+          created_at?: string
+          direction: string
+          entry_fee?: number | null
+          entry_price?: number | null
+          exit_fee?: number | null
+          exit_price?: number | null
+          exit_type?: string | null
+          fill_ts?: number | null
+          gross_pnl?: number | null
+          id?: string
+          is_live?: boolean | null
+          market_slug?: string | null
+          net_pnl?: number | null
+          notes?: string | null
+          order_type?: string | null
+          run_id?: string | null
+          sell_ts?: number | null
+          share_price: number
+          shares?: number | null
+          signal_ts: number
+          sl_price?: number | null
+          sl_status?: string | null
+          status?: string
+          strike_price?: number | null
+          total_fees?: number | null
+          tp_price?: number | null
+          tp_status?: string | null
+          trade_size_usd?: number | null
+        }
+        Update: {
+          asset?: string
+          binance_delta?: number
+          binance_price?: number
+          chainlink_price?: number | null
+          config_snapshot?: Json | null
+          created_at?: string
+          direction?: string
+          entry_fee?: number | null
+          entry_price?: number | null
+          exit_fee?: number | null
+          exit_price?: number | null
+          exit_type?: string | null
+          fill_ts?: number | null
+          gross_pnl?: number | null
+          id?: string
+          is_live?: boolean | null
+          market_slug?: string | null
+          net_pnl?: number | null
+          notes?: string | null
+          order_type?: string | null
+          run_id?: string | null
+          sell_ts?: number | null
+          share_price?: number
+          shares?: number | null
+          signal_ts?: number
+          sl_price?: number | null
+          sl_status?: string | null
+          status?: string
+          strike_price?: number | null
+          total_fees?: number | null
+          tp_price?: number | null
+          tp_status?: string | null
+          trade_size_usd?: number | null
+        }
+        Relationships: []
+      }
+      paper_tp_sl_events: {
+        Row: {
+          created_at: string
+          current_bid: number
+          id: string
+          signal_id: string | null
+          sl_distance_cents: number | null
+          sl_price: number | null
+          tp_distance_cents: number | null
+          tp_price: number | null
+          triggered: string | null
+          ts: number
+        }
+        Insert: {
+          created_at?: string
+          current_bid: number
+          id?: string
+          signal_id?: string | null
+          sl_distance_cents?: number | null
+          sl_price?: number | null
+          tp_distance_cents?: number | null
+          tp_price?: number | null
+          triggered?: string | null
+          ts: number
+        }
+        Update: {
+          created_at?: string
+          current_bid?: number
+          id?: string
+          signal_id?: string | null
+          sl_distance_cents?: number | null
+          sl_price?: number | null
+          tp_distance_cents?: number | null
+          tp_price?: number | null
+          triggered?: string | null
+          ts?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "paper_tp_sl_events_signal_id_fkey"
+            columns: ["signal_id"]
+            isOneToOne: false
+            referencedRelation: "paper_signals"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       paper_trade_results: {
         Row: {
           asset: string
@@ -2119,6 +2319,60 @@ export type Database = {
           shares?: number
           total?: number
           trade_type?: string | null
+        }
+        Relationships: []
+      }
+      paper_trading_config: {
+        Row: {
+          assets: string[] | null
+          created_at: string
+          enabled: boolean | null
+          id: string
+          is_live: boolean | null
+          max_share_price: number | null
+          min_delta_usd: number | null
+          min_share_price: number | null
+          sl_cents: number | null
+          sl_enabled: boolean | null
+          timeout_ms: number | null
+          tp_cents: number | null
+          tp_enabled: boolean | null
+          trade_size_usd: number | null
+          updated_at: string
+        }
+        Insert: {
+          assets?: string[] | null
+          created_at?: string
+          enabled?: boolean | null
+          id?: string
+          is_live?: boolean | null
+          max_share_price?: number | null
+          min_delta_usd?: number | null
+          min_share_price?: number | null
+          sl_cents?: number | null
+          sl_enabled?: boolean | null
+          timeout_ms?: number | null
+          tp_cents?: number | null
+          tp_enabled?: boolean | null
+          trade_size_usd?: number | null
+          updated_at?: string
+        }
+        Update: {
+          assets?: string[] | null
+          created_at?: string
+          enabled?: boolean | null
+          id?: string
+          is_live?: boolean | null
+          max_share_price?: number | null
+          min_delta_usd?: number | null
+          min_share_price?: number | null
+          sl_cents?: number | null
+          sl_enabled?: boolean | null
+          timeout_ms?: number | null
+          tp_cents?: number | null
+          tp_enabled?: boolean | null
+          trade_size_usd?: number | null
+          updated_at?: string
         }
         Relationships: []
       }
