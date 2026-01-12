@@ -17,6 +17,13 @@ export interface ArbitrageSignal {
   fillTime?: number;
   sellTime?: number;
   notes?: string;
+  // New fields for fees and order type
+  orderType?: 'maker' | 'taker';
+  entryFee?: number;
+  exitFee?: number;
+  totalFees?: number;
+  grossPnl?: number;
+  netPnl?: number;
 }
 
 export interface SimulatorConfig {
@@ -280,11 +287,28 @@ export function useArbitrageSimulator() {
     setTimeout(() => {
       const fillTime = Date.now();
       const fillLatency = fillTime - now;
-      const entryPrice = estimatedSharePrice;
+      // Simulate entry price with slight slippage
+      const slippage = (Math.random() - 0.5) * 0.01; // ±0.5 cent
+      const entryPrice = estimatedSharePrice + slippage;
+      
+      // Determine order type: maker if fill > 100ms (limit order filled), taker if fast
+      const orderType: 'maker' | 'taker' = fillLatency > 100 ? 'maker' : 'taker';
+      // Polymarket fees: taker 0%, maker -0.5% rebate (we pay 0 but simplify)
+      // Actually: taker pays ~0.02 per share, maker gets rebate
+      const shares = config.tradeSize / entryPrice;
+      const entryFee = orderType === 'taker' ? shares * 0.02 : -shares * 0.005; // taker fee / maker rebate
 
       setSignals(prev => prev.map(s => 
         s.id === signalId 
-          ? { ...s, status: 'filled', entryPrice, fillTime, notes: `Filled in ${fillLatency.toFixed(0)}ms` }
+          ? { 
+              ...s, 
+              status: 'filled', 
+              entryPrice, 
+              fillTime, 
+              orderType,
+              entryFee,
+              notes: `Filled @ $${entryPrice.toFixed(3)} (${orderType}) in ${fillLatency.toFixed(0)}ms` 
+            }
           : s
       ));
 
@@ -293,8 +317,15 @@ export function useArbitrageSimulator() {
         const sellTime = Date.now();
         // Simulate random outcome (60% win rate for test)
         const isWin = Math.random() < 0.6;
-        const exitPrice = entryPrice + (isWin ? 0.02 : -0.015);
-        const pnl = (exitPrice - entryPrice) * config.tradeSize;
+        const priceMove = isWin ? (0.015 + Math.random() * 0.02) : -(0.01 + Math.random() * 0.015);
+        const exitPrice = entryPrice + priceMove;
+        
+        // Exit is usually taker (market order to close)
+        const exitFee = shares * 0.02;
+        const totalFees = entryFee + exitFee;
+        
+        const grossPnl = (exitPrice - entryPrice) * shares;
+        const netPnl = grossPnl - totalFees;
 
         setSignals(prev => prev.map(s => 
           s.id === signalId 
@@ -303,8 +334,12 @@ export function useArbitrageSimulator() {
                 status: 'sold', 
                 exitPrice, 
                 sellTime, 
-                pnl,
-                notes: `Sold after ${config.holdTimeMs}ms. PnL: $${pnl.toFixed(2)}` 
+                exitFee,
+                totalFees,
+                grossPnl,
+                netPnl,
+                pnl: netPnl,
+                notes: `Exit @ $${exitPrice.toFixed(3)} | Gross: $${grossPnl.toFixed(2)} | Fees: $${totalFees.toFixed(2)} | Net: $${netPnl.toFixed(2)}` 
               }
             : s
         ));

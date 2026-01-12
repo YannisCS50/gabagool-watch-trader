@@ -447,41 +447,57 @@ export function PriceLatencyChart() {
                 <Button variant="ghost" size="sm" onClick={clearSignals}>Clear</Button>
               </div>
             </div>
-            <div className="h-[300px] overflow-auto font-mono text-xs">
+            <div className="overflow-auto font-mono text-xs">
               <table className="w-full">
                 <thead className="sticky top-0 bg-background">
                   <tr className="border-b">
                     <th className="text-left py-1 px-2">Time</th>
                     <th className="text-left py-1 px-2">Asset</th>
                     <th className="text-left py-1 px-2">Dir</th>
-                    <th className="text-right py-1 px-2">Delta</th>
+                    <th className="text-center py-1 px-2">Type</th>
+                    <th className="text-right py-1 px-2">Entry $</th>
+                    <th className="text-right py-1 px-2">Exit $</th>
+                    <th className="text-right py-1 px-2">Fees</th>
                     <th className="text-center py-1 px-2">Status</th>
-                    <th className="text-right py-1 px-2">PnL</th>
-                    <th className="text-left py-1 px-2">Notes</th>
+                    <th className="text-right py-1 px-2">Gross</th>
+                    <th className="text-right py-1 px-2">Net PnL</th>
                   </tr>
                 </thead>
                 <tbody>
                   {signals.slice(0, 50).map((s) => (
                     <tr key={s.id} className="border-b border-muted/50 hover:bg-muted/30">
                       <td className="py-1 px-2">{formatTimestamp(s.timestamp)}</td>
-                      <td className="py-1 px-2">{s.asset}</td>
+                      <td className="py-1 px-2 font-bold">{s.asset}</td>
                       <td className="py-1 px-2">
                         {s.direction === 'UP' 
-                          ? <TrendingUp className="h-3 w-3 text-green-500" />
-                          : <TrendingDown className="h-3 w-3 text-red-500" />
+                          ? <span className="text-green-500 flex items-center gap-1"><TrendingUp className="h-3 w-3" /> UP</span>
+                          : <span className="text-red-500 flex items-center gap-1"><TrendingDown className="h-3 w-3" /> DN</span>
                         }
                       </td>
-                      <td className={`py-1 px-2 text-right ${s.binanceDelta > 0 ? 'text-green-500' : 'text-red-500'}`}>
-                        ${Math.abs(s.binanceDelta).toFixed(2)}
+                      <td className="py-1 px-2 text-center">
+                        {s.orderType ? (
+                          <Badge variant="outline" className={s.orderType === 'maker' ? 'border-blue-500 text-blue-500' : 'border-orange-500 text-orange-500'}>
+                            {s.orderType}
+                          </Badge>
+                        ) : '—'}
+                      </td>
+                      <td className="py-1 px-2 text-right text-yellow-500">
+                        {s.entryPrice ? `$${s.entryPrice.toFixed(3)}` : '—'}
+                      </td>
+                      <td className="py-1 px-2 text-right text-cyan-500">
+                        {s.exitPrice ? `$${s.exitPrice.toFixed(3)}` : '—'}
+                      </td>
+                      <td className={`py-1 px-2 text-right ${(s.totalFees || 0) > 0 ? 'text-orange-400' : 'text-green-400'}`}>
+                        {s.totalFees !== undefined ? `$${s.totalFees.toFixed(3)}` : '—'}
                       </td>
                       <td className="py-1 px-2 text-center">
                         <SignalStatusBadge status={s.status} />
                       </td>
-                      <td className={`py-1 px-2 text-right ${(s.pnl || 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                        {s.pnl !== undefined ? `$${s.pnl.toFixed(2)}` : '—'}
+                      <td className={`py-1 px-2 text-right ${(s.grossPnl || 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                        {s.grossPnl !== undefined ? `$${s.grossPnl.toFixed(2)}` : '—'}
                       </td>
-                      <td className="py-1 px-2 text-muted-foreground truncate max-w-[200px]">
-                        {s.notes}
+                      <td className={`py-1 px-2 text-right font-bold ${(s.netPnl || 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                        {s.netPnl !== undefined ? `$${s.netPnl.toFixed(2)}` : '—'}
                       </td>
                     </tr>
                   ))}
