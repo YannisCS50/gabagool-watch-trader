@@ -155,7 +155,8 @@ async function flushBuffer(): Promise<void> {
   
   if (success) {
     stats.flushCount++;
-    console.log(`[PriceFeedLogger] Flushed ${logsToSave.length} ticks (total: ${stats.totalLogged})`);
+    // Removed verbose logging - uncomment for debugging:
+    // console.log(`[PriceFeedLogger] Flushed ${logsToSave.length} ticks (total: ${stats.totalLogged})`);
   } else {
     // Put back failed logs
     logBuffer = [...logsToSave, ...logBuffer];
