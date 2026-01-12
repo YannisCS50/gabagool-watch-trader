@@ -36,6 +36,7 @@ interface PaperTradingConfig {
   min_share_price: number;
   max_share_price: number;
   tp_cents: number;
+  tp_pct?: number; // Take-profit as percentage (e.g., 0.04 = 4%), optional for backward compatibility
   tp_enabled: boolean;
   sl_cents: number;
   sl_enabled: boolean;
@@ -647,8 +648,11 @@ async function simulateFill(signal: PaperSignal): Promise<void> {
   const orderType: 'maker' | 'taker' = fillLatency > 100 ? 'maker' : 'taker';
   const entryFee = orderType === 'taker' ? shares * 0.02 : -shares * 0.005;
   
-  // Calculate TP/SL prices
-  const tpPrice = currentConfig.tp_enabled ? entryPrice + (currentConfig.tp_cents / 100) : null;
+  // Calculate TP/SL prices - use percentage-based TP (default 4% profit = sell immediately)
+  // TP: entry + X% of entry price (e.g., 0.34 * 1.04 = 0.3536)
+  // SL: use config sl_cents as fallback
+  const tpPct = currentConfig.tp_pct ?? 0.04; // Default 4% take-profit
+  const tpPrice = currentConfig.tp_enabled ? entryPrice * (1 + tpPct) : null;
   const slPrice = currentConfig.sl_enabled ? entryPrice - (currentConfig.sl_cents / 100) : null;
   
   // Update signal
@@ -662,9 +666,9 @@ async function simulateFill(signal: PaperSignal): Promise<void> {
   signal.tp_status = tpPrice ? 'pending' : null;
   signal.sl_price = slPrice;
   signal.sl_status = slPrice ? 'pending' : null;
-  signal.notes = `Filled @ ${(entryPrice * 100).toFixed(1)}¢ | TP: ${tpPrice ? (tpPrice * 100).toFixed(1) : '-'}¢ | SL: ${slPrice ? (slPrice * 100).toFixed(1) : '-'}¢`;
+  signal.notes = `Filled @ ${(entryPrice * 100).toFixed(1)}¢ | TP: ${tpPrice ? `${(tpPrice * 100).toFixed(1)}¢ (+${(tpPct * 100).toFixed(0)}%)` : '-'} | SL: ${slPrice ? (slPrice * 100).toFixed(1) : '-'}¢`;
   
-  console.log(`[PaperTrader] ✅ Filled ${signal.asset} ${signal.direction} @ ${(entryPrice * 100).toFixed(1)}¢ | TP: ${tpPrice ? (tpPrice * 100).toFixed(1) : '-'}¢ | SL: ${slPrice ? (slPrice * 100).toFixed(1) : '-'}¢`);
+  console.log(`[PaperTrader] ✅ Filled ${signal.asset} ${signal.direction} @ ${(entryPrice * 100).toFixed(1)}¢ | TP: ${tpPrice ? `${(tpPrice * 100).toFixed(1)}¢ (+${(tpPct * 100).toFixed(0)}%)` : '-'} | SL: ${slPrice ? (slPrice * 100).toFixed(1) : '-'}¢`);
   
   // Save updated signal
   await saveSignal(signal);
