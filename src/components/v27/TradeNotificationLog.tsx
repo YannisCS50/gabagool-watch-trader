@@ -38,6 +38,9 @@ export function TradeNotificationLog() {
           const signal = payload.new as PaperSignal;
           const dirEmoji = signal.direction === 'UP' ? '🟢' : '🔴';
           const price = signal.share_price ? `${(signal.share_price * 100).toFixed(1)}¢` : '—';
+          const bcDelta = signal.binance_chainlink_delta;
+          const latencyMs = signal.binance_chainlink_latency_ms;
+          const liveTag = signal.is_live ? '🔴 LIVE' : '📄 PAPER';
           
           addNotification({
             id: `${signal.id}-new`,
@@ -48,7 +51,7 @@ export function TradeNotificationLog() {
             price: signal.share_price,
             pnl: null,
             exitType: null,
-            message: `${dirEmoji} NEW ${signal.asset} ${signal.direction} @ ${price} | Delta: ${signal.binance_delta?.toFixed(1)}`,
+            message: `${liveTag} ${dirEmoji} NEW ${signal.asset} ${signal.direction} @ ${price} | B-CL Δ$${bcDelta?.toFixed(0) ?? '?'} (~${latencyMs ?? '?'}ms)`,
             signal,
           });
         }
@@ -65,6 +68,12 @@ export function TradeNotificationLog() {
           
           // Different notification based on status
           if (signal.status === 'filled' && payload.old.status !== 'filled') {
+            const triggerPrice = signal.share_price ? `${(signal.share_price * 100).toFixed(1)}¢` : '—';
+            const entryPrice = signal.entry_price ? `${(signal.entry_price * 100).toFixed(1)}¢` : '—';
+            const bcDelta = signal.binance_chainlink_delta;
+            const latencyMs = signal.binance_chainlink_latency_ms;
+            const liveTag = signal.is_live ? '🔴' : '📄';
+            
             addNotification({
               id: `${signal.id}-filled`,
               timestamp: Date.now(),
@@ -74,7 +83,7 @@ export function TradeNotificationLog() {
               price: signal.entry_price,
               pnl: null,
               exitType: null,
-              message: `📦 FILLED ${signal.asset} ${signal.direction} @ ${signal.entry_price ? (signal.entry_price * 100).toFixed(1) : '—'}¢`,
+              message: `${liveTag} 📦 FILLED ${signal.asset} ${signal.direction} | B-CL Δ$${bcDelta?.toFixed(0) ?? '?'} (~${latencyMs ?? '?'}ms) | Trigger@${triggerPrice} → Entry@${entryPrice}`,
               signal,
             });
           } else if (signal.status === 'sold') {

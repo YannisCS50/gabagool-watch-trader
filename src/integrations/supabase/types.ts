@@ -2098,6 +2098,8 @@ export type Database = {
       paper_signals: {
         Row: {
           asset: string
+          binance_chainlink_delta: number | null
+          binance_chainlink_latency_ms: number | null
           binance_delta: number
           binance_price: number
           chainlink_price: number | null
@@ -2133,6 +2135,8 @@ export type Database = {
         }
         Insert: {
           asset: string
+          binance_chainlink_delta?: number | null
+          binance_chainlink_latency_ms?: number | null
           binance_delta: number
           binance_price: number
           chainlink_price?: number | null
@@ -2168,6 +2172,8 @@ export type Database = {
         }
         Update: {
           asset?: string
+          binance_chainlink_delta?: number | null
+          binance_chainlink_latency_ms?: number | null
           binance_delta?: number
           binance_price?: number
           chainlink_price?: number | null

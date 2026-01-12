@@ -11,6 +11,8 @@ export interface PaperSignal {
   binance_price: number;
   binance_delta: number;
   chainlink_price: number | null;
+  binance_chainlink_delta: number | null;  // Difference between Binance and Chainlink at trigger
+  binance_chainlink_latency_ms: number | null;  // Estimated latency difference
   share_price: number;
   market_slug: string | null;
   strike_price: number | null;
