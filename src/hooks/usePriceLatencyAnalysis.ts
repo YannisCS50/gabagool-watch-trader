@@ -63,7 +63,7 @@ export function usePriceLatencyAnalysis(
         .gte('raw_timestamp', startTimestamp)
         .lte('raw_timestamp', endTimestamp)
         .order('raw_timestamp', { ascending: true })
-        .limit(5000);
+        .limit(10000);
 
       if (fetchError) throw fetchError;
       if (!ticks || ticks.length === 0) {
@@ -73,8 +73,9 @@ export function usePriceLatencyAnalysis(
         return;
       }
 
-      // Group ticks by second for synchronized view
-      const ticksBySecond = new Map<number, {
+      // Group ticks by 50ms buckets for high-resolution view
+      const BUCKET_MS = 50;
+      const ticksByBucket = new Map<number, {
         binance: number[];
         polymarket: number[];
         chainlink: number[];
@@ -86,10 +87,10 @@ export function usePriceLatencyAnalysis(
       let upShareCount = 0, downShareCount = 0;
 
       for (const tick of ticks) {
-        const second = Math.floor(tick.raw_timestamp / 1000) * 1000;
+        const bucket = Math.floor(tick.raw_timestamp / BUCKET_MS) * BUCKET_MS;
         
-        if (!ticksBySecond.has(second)) {
-          ticksBySecond.set(second, {
+        if (!ticksByBucket.has(bucket)) {
+          ticksByBucket.set(bucket, {
             binance: [],
             polymarket: [],
             chainlink: [],
@@ -98,27 +99,27 @@ export function usePriceLatencyAnalysis(
           });
         }
         
-        const bucket = ticksBySecond.get(second)!;
+        const bucketData = ticksByBucket.get(bucket)!;
         
         switch (tick.source) {
           case 'binance_ws':
-            bucket.binance.push(tick.price);
+            bucketData.binance.push(tick.price);
             binanceCount++;
             break;
           case 'polymarket_rtds':
-            bucket.polymarket.push(tick.price);
+            bucketData.polymarket.push(tick.price);
             polymarketCount++;
             break;
           case 'chainlink_rtds':
-            bucket.chainlink.push(tick.price);
+            bucketData.chainlink.push(tick.price);
             chainlinkCount++;
             break;
           case 'clob_shares':
             if (tick.outcome === 'up') {
-              bucket.upShare.push(tick.price);
+              bucketData.upShare.push(tick.price);
               upShareCount++;
             } else if (tick.outcome === 'down') {
-              bucket.downShare.push(tick.price);
+              bucketData.downShare.push(tick.price);
               downShareCount++;
             }
             break;
@@ -126,7 +127,7 @@ export function usePriceLatencyAnalysis(
       }
 
       // Convert to synchronized points
-      const sortedSeconds = Array.from(ticksBySecond.keys()).sort((a, b) => a - b);
+      const sortedBuckets = Array.from(ticksByBucket.keys()).sort((a, b) => a - b);
       const syncedPoints: SyncedPricePoint[] = [];
       
       let prevBinance: number | null = null;
@@ -135,19 +136,19 @@ export function usePriceLatencyAnalysis(
       let prevUpShare: number | null = null;
       let prevDownShare: number | null = null;
 
-      for (const second of sortedSeconds) {
-        const bucket = ticksBySecond.get(second)!;
+      for (const bucketTs of sortedBuckets) {
+        const bucketData = ticksByBucket.get(bucketTs)!;
         
         const avg = (arr: number[]) => arr.length > 0 ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
         
-        const binance = avg(bucket.binance);
-        const polymarket = avg(bucket.polymarket);
-        const chainlink = avg(bucket.chainlink);
-        const upShare = avg(bucket.upShare);
-        const downShare = avg(bucket.downShare);
+        const binance = avg(bucketData.binance);
+        const polymarket = avg(bucketData.polymarket);
+        const chainlink = avg(bucketData.chainlink);
+        const upShare = avg(bucketData.upShare);
+        const downShare = avg(bucketData.downShare);
 
         const point: SyncedPricePoint = {
-          timestamp: second,
+          timestamp: bucketTs,
           binance,
           polymarket,
           chainlink,
