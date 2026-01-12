@@ -233,6 +233,11 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
   // Only check when we have a meaningful window (at least 50ms of data)
   if (windowDuration < 50) return;
 
+  // Debug: Log significant deltas (> 50% of threshold)
+  if (Math.abs(delta) > currentConfig.min_delta_usd * 0.5) {
+    console.log(`[V28] 📈 ${asset} Δ$${delta.toFixed(2)} / $${currentConfig.min_delta_usd} threshold (${windowDuration}ms window)`);
+  }
+
   // Check if cumulative delta exceeds threshold
   if (Math.abs(delta) < currentConfig.min_delta_usd) {
     return;
@@ -910,10 +915,22 @@ export async function startV28Runner(): Promise<void> {
   isRunning = true;
   
   // Start unified price feed with callbacks
+  let binanceTickCount = 0;
+  let lastStatusLog = Date.now();
+  
   const priceFeedCallbacks: PriceFeedCallback = {
     onBinancePrice: (asset: string, price: number, _timestamp: number) => {
       if (['BTC', 'ETH', 'SOL', 'XRP'].includes(asset)) {
+        binanceTickCount++;
         handlePriceUpdate(asset as Asset, price);
+        
+        // Log status every 30 seconds
+        const now = Date.now();
+        if (now - lastStatusLog > 30_000) {
+          const activeMarkets = Object.entries(marketInfo).filter(([_, v]) => v !== null).map(([k]) => k);
+          console.log(`[V28] 📊 STATUS: ${binanceTickCount} ticks | Markets: ${activeMarkets.join(',')} | BTC $${priceState.BTC.binance.toFixed(0)} ETH $${priceState.ETH.binance.toFixed(0)}`);
+          lastStatusLog = now;
+        }
       }
     },
     onPolymarketPrice: (assetOrMarketId: string, upMid: number, downMid: number, _timestamp: number) => {
