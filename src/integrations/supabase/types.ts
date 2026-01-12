@@ -2241,6 +2241,48 @@ export type Database = {
         }
         Relationships: []
       }
+      paper_trader_logs: {
+        Row: {
+          asset: string
+          binance_price: number | null
+          config_snapshot: Json | null
+          created_at: string
+          delta_usd: number | null
+          event_type: string
+          id: string
+          reason: string | null
+          run_id: string | null
+          share_price: number | null
+          ts: number
+        }
+        Insert: {
+          asset: string
+          binance_price?: number | null
+          config_snapshot?: Json | null
+          created_at?: string
+          delta_usd?: number | null
+          event_type: string
+          id?: string
+          reason?: string | null
+          run_id?: string | null
+          share_price?: number | null
+          ts: number
+        }
+        Update: {
+          asset?: string
+          binance_price?: number | null
+          config_snapshot?: Json | null
+          created_at?: string
+          delta_usd?: number | null
+          event_type?: string
+          id?: string
+          reason?: string | null
+          run_id?: string | null
+          share_price?: number | null
+          ts?: number
+        }
+        Relationships: []
+      }
       paper_trades: {
         Row: {
           arbitrage_edge: number | null
