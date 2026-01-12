@@ -194,14 +194,24 @@ export class V27Runner {
       filter
     );
     
-    // 4. Log evaluation
+    // 4. Log evaluation with full book info
     const evalLog = await this.logger.logEvaluation(
       marketId,
       market.asset,
       market.strikePrice,
       spot.price,
       spot.timestamp,
-      book,
+      {
+        upMid: book.upMid,
+        downMid: book.downMid,
+        upAsk: book.upAsk,
+        upBid: book.upBid,
+        downAsk: book.downAsk,
+        downBid: book.downBid,
+        spreadUp: book.spreadUp,
+        spreadDown: book.spreadDown,
+        timestamp: book.timestamp,
+      },
       timeRemainingSeconds,
       mispricing,
       filter,
@@ -381,10 +391,11 @@ export class V27Runner {
   }
   
   /**
-   * Get stats
+   * Get stats including paper trades
    */
-  getStats(): V27Stats {
+  getStats(): V27Stats & { paperTrades?: ReturnType<typeof this.logger.getPaperTradeStats> } {
     const loggerStats = this.logger.getStats();
+    const paperTradeStats = this.logger.getPaperTradeStats();
     
     return {
       totalEvaluations: loggerStats.totalEvaluations,
@@ -394,6 +405,7 @@ export class V27Runner {
       hedgesExecuted: this.entryManager.getAllPositions().filter(p => p.hedged).length,
       totalPnl: loggerStats.totalPnl,
       winRate: loggerStats.winRate,
+      paperTrades: paperTradeStats,
     };
   }
   

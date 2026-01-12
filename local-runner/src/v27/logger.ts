@@ -141,9 +141,27 @@ export interface V27TradeLog {
   totalPayout?: number;
 }
 
+interface PaperTrade {
+  id: string;
+  evaluationId: string;
+  asset: string;
+  side: 'UP' | 'DOWN';
+  entryPrice: number;
+  shares: number;
+  cost: number;
+  expectedWinProb: number;
+  expectedPnL: number;
+  timestamp: number;
+  timeRemaining: number;
+  settled: boolean;
+  actualOutcome?: 'UP' | 'DOWN';
+  actualPnL?: number;
+}
+
 export class V27Logger {
   private evaluationLogs: V27EvaluationLog[] = [];
   private tradeLogs: Map<string, V27TradeLog> = new Map();
+  private paperTrades: PaperTrade[] = [];
   private runId?: string;
   
   // Supabase client for persistence
@@ -155,7 +173,7 @@ export class V27Logger {
   }
   
   /**
-   * Log an evaluation
+   * Log an evaluation with paper trade simulation
    */
   async logEvaluation(
     marketId: string,
@@ -163,7 +181,7 @@ export class V27Logger {
     strikePrice: number,
     spotPrice: number,
     spotTs: number,
-    book: { upMid: number; downMid: number; spreadUp: number; spreadDown: number; timestamp: number },
+    book: { upMid: number; downMid: number; upAsk: number; downAsk: number; upBid: number; downBid: number; spreadUp: number; spreadDown: number; timestamp: number },
     timeRemainingSeconds: number,
     mispricing: MispricingSignal,
     filter: FilterResult,
@@ -224,6 +242,53 @@ export class V27Logger {
       this.evaluationLogs.shift();
     }
     
+    // Calculate time remaining in human format
+    const mins = Math.floor(timeRemainingSeconds / 60);
+    const secs = Math.floor(timeRemainingSeconds % 60);
+    const timeStr = `${mins}m${secs}s`;
+    
+    // Get appropriate decimals for asset
+    const decimals = this.getDecimals(asset);
+    const deltaStr = Math.abs(mispricing.deltaAbs).toFixed(decimals);
+    const spotStr = spotPrice.toFixed(decimals);
+    const strikeStr = strikePrice.toFixed(decimals);
+    
+    // Determine direction indicator
+    const direction = mispricing.deltaAbs > 0 ? '📈' : mispricing.deltaAbs < 0 ? '📉' : '➖';
+    
+    // Build detailed log
+    const insertData = {
+      id: log.id,
+      ts: log.timestamp,
+      run_id: log.runId,
+      market_id: log.marketId,
+      asset: log.asset,
+      spot_price: log.spotPrice,
+      pm_up_ask: book.upAsk,
+      pm_up_bid: book.upBid,
+      pm_down_ask: book.downAsk,
+      pm_down_bid: book.downBid,
+      delta_up: mispricing.side === 'UP' ? mispricing.deltaAbs : 0,
+      delta_down: mispricing.side === 'DOWN' ? mispricing.deltaAbs : 0,
+      theoretical_up: mispricing.expectedPolyPrice,
+      theoretical_down: 1 - mispricing.expectedPolyPrice,
+      base_threshold: log.threshold,
+      dynamic_threshold: log.threshold,
+      threshold_source: 'config',
+      signal_valid: log.mispricingExists && log.filterPass,
+      adverse_blocked: !log.filterPass,
+      adverse_reason: log.failedFilter || null,
+      causality_passed: log.causalityPass,
+      spot_leading_ms: log.spotLeadMs,
+      book_imbalance: 0,
+      taker_flow_p90: log.aggressiveFlowMetrics.p90Threshold,
+      spread_expansion: log.spreadExpansionMetrics.expansionRatio,
+      action: log.decision,
+      skip_reason: log.decision === 'SKIP' ? log.reason : null,
+      mispricing_magnitude: log.priceLag,
+      mispricing_side: log.mispricedSide,
+    };
+
     // Persist to database (prefer direct client; fallback via runner-proxy)
     try {
       if (this.supabase) {
@@ -241,14 +306,179 @@ export class V27Logger {
       console.error('[V27] Failed to persist evaluation:', err);
     }
     
-    // Console log for real-time visibility
-    const emoji = log.decision === 'ENTER' ? '🎯' : '⏭️';
-    console.log(
-      `[V27] ${emoji} ${log.asset} | strike=${log.strikePrice} spot=${log.spotPrice.toFixed(2)} delta=${log.deltaAbs.toFixed(2)} | ` +
-      `mispricing=${log.mispricingExists} | filter=${log.filterPass} | ${log.decision}: ${log.reason || 'OK'}`
-    );
+    // ====================================================================
+    // ENHANCED CONSOLE LOGGING with Paper Trade Simulation
+    // ====================================================================
+    const divider = '─'.repeat(70);
+    
+    // Only log detailed output for potential signals or every 50th evaluation
+    const shouldLogDetailed = log.mispricingExists || this.evaluationLogs.length % 50 === 0;
+    
+    if (shouldLogDetailed) {
+      console.log('');
+      console.log(divider);
+      console.log(`[V27] ${direction} ${asset} EVALUATION @ ${new Date(now).toISOString()}`);
+      console.log(divider);
+      
+      // Market Info
+      console.log(`  📊 MARKET: ${marketId}`);
+      console.log(`     ├─ Time Remaining: ${timeStr} (${timeRemainingSeconds.toFixed(0)}s)`);
+      console.log(`     ├─ Strike Price:   $${strikeStr}`);
+      console.log(`     └─ Spot Price:     $${spotStr}`);
+      
+      // Delta Analysis
+      const deltaDirection = mispricing.deltaAbs > 0 ? 'ABOVE' : 'BELOW';
+      console.log(`  📐 DELTA: ${deltaDirection} strike by $${deltaStr} (${(mispricing.deltaPct * 100).toFixed(3)}%)`);
+      console.log(`     ├─ Threshold: $${mispricing.threshold.toFixed(decimals)}`);
+      console.log(`     └─ Exceeds:   ${Math.abs(mispricing.deltaAbs) > mispricing.threshold ? '✅ YES' : '❌ NO'}`);
+      
+      // Polymarket Orderbook
+      console.log(`  📈 POLYMARKET ORDERBOOK:`);
+      console.log(`     ├─ UP:   Bid $${book.upBid.toFixed(2)} | Ask $${book.upAsk.toFixed(2)} | Spread ${(book.spreadUp * 100).toFixed(1)}%`);
+      console.log(`     └─ DOWN: Bid $${book.downBid.toFixed(2)} | Ask $${book.downAsk.toFixed(2)} | Spread ${(book.spreadDown * 100).toFixed(1)}%`);
+      
+      // Empirical Pricing
+      if (log.mispricingExists) {
+        console.log(`  💰 MISPRICING DETECTED on ${log.mispricedSide}:`);
+        console.log(`     ├─ Expected Price: $${log.expectedPolyPrice.toFixed(3)}`);
+        console.log(`     ├─ Actual Ask:     $${log.actualPolyPrice.toFixed(3)}`);
+        console.log(`     ├─ Edge:           ${(log.priceLag * 100).toFixed(1)}% underpriced`);
+        console.log(`     └─ Confidence:     ${log.confidence}`);
+      } else {
+        console.log(`  ❌ NO MISPRICING: ${mispricing.reason || 'Market fairly priced'}`);
+      }
+      
+      // Causality Check
+      console.log(`  ⏱️  CAUSALITY: ${log.causalityPass ? '✅ PASS' : '❌ FAIL'} (spot leads by ${log.spotLeadMs}ms)`);
+      
+      // Adverse Selection Filter
+      console.log(`  🛡️ ADVERSE FILTER: ${log.filterPass ? '✅ PASS' : '❌ BLOCKED'}`);
+      if (!log.filterPass && log.failedFilter) {
+        console.log(`     └─ Reason: ${log.failedFilter}`);
+      }
+      
+      // Decision
+      console.log(divider);
+      if (log.decision === 'ENTER' && entry.shouldEnter) {
+        console.log(`  🎯 DECISION: BUY ${entry.shares} ${entry.side} @ $${entry.price?.toFixed(3)}`);
+        console.log(`     ├─ Notional:     $${((entry.shares || 0) * (entry.price || 0)).toFixed(2)}`);
+        console.log(`     └─ Expected Win: ${(log.expectedPolyPrice * 100).toFixed(0)}% probability`);
+        
+        // PAPER TRADE SIMULATION
+        this.logPaperTrade(asset, entry.side!, entry.price!, entry.shares!, log.expectedPolyPrice, timeRemainingSeconds, log.id);
+      } else {
+        console.log(`  ⏭️  DECISION: SKIP - ${log.reason}`);
+      }
+      console.log(divider);
+      console.log('');
+    } else {
+      // Brief log for non-signal evaluations
+      const brief = `[V27] ${direction} ${asset} t-${timeStr} | δ=$${deltaStr} | UP:${book.upAsk.toFixed(2)} DOWN:${book.downAsk.toFixed(2)} | ${log.decision}`;
+      console.log(brief);
+    }
     
     return log;
+  }
+  
+  /**
+   * Get appropriate decimal places for asset
+   */
+  private getDecimals(asset: string): number {
+    const decimalsMap: Record<string, number> = {
+      BTC: 2,
+      ETH: 2,
+      SOL: 4,
+      XRP: 6,
+    };
+    return decimalsMap[asset] || 2;
+  }
+  
+  /**
+   * Log a paper trade simulation
+   */
+  private logPaperTrade(
+    asset: string,
+    side: 'UP' | 'DOWN',
+    price: number,
+    shares: number,
+    expectedWinProb: number,
+    timeRemaining: number,
+    evaluationId: string
+  ): void {
+    const now = Date.now();
+    const cost = price * shares;
+    const expectedPayout = expectedWinProb * shares;
+    const expectedPnL = expectedPayout - cost;
+    const expectedROI = (expectedPnL / cost) * 100;
+    
+    console.log('');
+    console.log('  📝 PAPER TRADE SIMULATION:');
+    console.log('  ┌────────────────────────────────────────────────────────┐');
+    console.log(`  │ Asset: ${asset.padEnd(6)} │ Side: ${side.padEnd(4)} │ Time Left: ${Math.floor(timeRemaining)}s    │`);
+    console.log('  ├────────────────────────────────────────────────────────┤');
+    console.log(`  │ Entry Price:      $${price.toFixed(3).padStart(8)}                       │`);
+    console.log(`  │ Shares:           ${shares.toString().padStart(8)}                       │`);
+    console.log(`  │ Cost:             $${cost.toFixed(2).padStart(8)}                       │`);
+    console.log('  ├────────────────────────────────────────────────────────┤');
+    console.log(`  │ Win Probability:  ${(expectedWinProb * 100).toFixed(1).padStart(7)}%                       │`);
+    console.log(`  │ Expected Payout:  $${expectedPayout.toFixed(2).padStart(8)}                       │`);
+    console.log(`  │ Expected PnL:     ${expectedPnL >= 0 ? '+' : ''}$${expectedPnL.toFixed(2).padStart(7)}                       │`);
+    console.log(`  │ Expected ROI:     ${expectedROI >= 0 ? '+' : ''}${expectedROI.toFixed(1).padStart(7)}%                       │`);
+    console.log('  └────────────────────────────────────────────────────────┘');
+    
+    // Track paper trades in memory
+    this.paperTrades.push({
+      id: `paper_${now}_${Math.random().toString(36).slice(2, 6)}`,
+      evaluationId,
+      asset,
+      side,
+      entryPrice: price,
+      shares,
+      cost,
+      expectedWinProb,
+      expectedPnL,
+      timestamp: now,
+      timeRemaining,
+      settled: false,
+    });
+    
+    // Keep only last 500 paper trades
+    if (this.paperTrades.length > 500) {
+      this.paperTrades.shift();
+    }
+  }
+  
+  /**
+   * Get paper trade stats
+   */
+  getPaperTradeStats(): {
+    totalTrades: number;
+    totalCost: number;
+    expectedTotalPnL: number;
+    avgExpectedROI: number;
+    byAsset: Record<string, { count: number; cost: number; expectedPnL: number }>;
+  } {
+    const byAsset: Record<string, { count: number; cost: number; expectedPnL: number }> = {};
+    
+    for (const trade of this.paperTrades) {
+      if (!byAsset[trade.asset]) {
+        byAsset[trade.asset] = { count: 0, cost: 0, expectedPnL: 0 };
+      }
+      byAsset[trade.asset].count++;
+      byAsset[trade.asset].cost += trade.cost;
+      byAsset[trade.asset].expectedPnL += trade.expectedPnL;
+    }
+    
+    const totalCost = this.paperTrades.reduce((sum, t) => sum + t.cost, 0);
+    const totalExpectedPnL = this.paperTrades.reduce((sum, t) => sum + t.expectedPnL, 0);
+    
+    return {
+      totalTrades: this.paperTrades.length,
+      totalCost,
+      expectedTotalPnL: totalExpectedPnL,
+      avgExpectedROI: totalCost > 0 ? (totalExpectedPnL / totalCost) * 100 : 0,
+      byAsset,
+    };
   }
   
   /**

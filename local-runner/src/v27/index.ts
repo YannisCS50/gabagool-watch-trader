@@ -94,10 +94,17 @@ export interface V27Stats {
   hedgesExecuted: number;
   totalPnl: number;
   winRate: number;
+  paperTrades?: {
+    totalTrades: number;
+    totalCost: number;
+    expectedTotalPnL: number;
+    avgExpectedROI: number;
+    byAsset: Record<string, { count: number; cost: number; expectedPnL: number }>;
+  };
 }
 
 /**
- * Log V27 status
+ * Log V27 status with paper trade info
  */
 export function logV27Status(config: { enabled: boolean; assets: string[] }, stats: V27Stats): void {
   console.log('');
@@ -115,6 +122,23 @@ export function logV27Status(config: { enabled: boolean; assets: string[] }, sta
   console.log(`║  Hedges:       ${stats.hedgesExecuted}`.padEnd(66) + '║');
   console.log(`║  Total PnL:    $${stats.totalPnl.toFixed(2)}`.padEnd(66) + '║');
   console.log(`║  Win Rate:     ${(stats.winRate * 100).toFixed(1)}%`.padEnd(66) + '║');
+  
+  // Paper trade section
+  if (stats.paperTrades && stats.paperTrades.totalTrades > 0) {
+    console.log('╠══════════════════════════════════════════════════════════════╣');
+    console.log('║  📝 PAPER TRADES (Simulated)                                  ║');
+    console.log('╠══════════════════════════════════════════════════════════════╣');
+    console.log(`║  Total Simulated Trades: ${stats.paperTrades.totalTrades}`.padEnd(66) + '║');
+    console.log(`║  Total Simulated Cost:   $${stats.paperTrades.totalCost.toFixed(2)}`.padEnd(66) + '║');
+    console.log(`║  Expected Total PnL:     $${stats.paperTrades.expectedTotalPnL.toFixed(2)}`.padEnd(66) + '║');
+    console.log(`║  Expected Avg ROI:       ${stats.paperTrades.avgExpectedROI.toFixed(1)}%`.padEnd(66) + '║');
+    
+    // Per-asset breakdown
+    for (const [asset, data] of Object.entries(stats.paperTrades.byAsset)) {
+      console.log(`║    ${asset}: ${data.count} trades, $${data.cost.toFixed(2)} cost, $${data.expectedPnL.toFixed(2)} exp. PnL`.padEnd(66) + '║');
+    }
+  }
+  
   console.log('╚══════════════════════════════════════════════════════════════╝');
   console.log('');
 }
