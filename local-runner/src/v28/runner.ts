@@ -704,8 +704,15 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
     return;
   }
 
-  // SPEED: Minimal logging (save ~5-10ms)
-  console.log(`[V28] 📤 BUY ${shares.toFixed(4)} @ ${(price * 100).toFixed(0)}¢ ($${notionalUsd.toFixed(2)})`);
+  // ORDER PLACEMENT LOG
+  console.log(`[V28] ┌─────────────────────────────────────────────────────────────`);
+  console.log(`[V28] │ 📤 PLACING ORDER: ${signal.asset} ${signal.direction}`);
+  console.log(`[V28] │ Token:    ${tokenId.slice(0, 20)}...`);
+  console.log(`[V28] │ Side:     BUY (FOK)`);
+  console.log(`[V28] │ Shares:   ${shares}`);
+  console.log(`[V28] │ Price:    ${(price * 100).toFixed(1)}¢`);
+  console.log(`[V28] │ Notional: $${notionalUsd.toFixed(2)}`);
+  console.log(`[V28] └─────────────────────────────────────────────────────────────`);
 
   try {
     // SPEED: Use FOK for immediate fill (no waiting for resting orders)
@@ -722,7 +729,11 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
     const totalLatency = Date.now() - signal.signal_ts;
     
     if (!result.success) {
-      console.error(`[V28] ❌ LIVE ORDER FAILED: ${result.error}`);
+      console.log(`[V28] ┌─────────────────────────────────────────────────────────────`);
+      console.log(`[V28] │ ❌ ORDER FAILED`);
+      console.log(`[V28] │ Error:   ${result.error}`);
+      console.log(`[V28] │ Latency: ${orderLatency}ms`);
+      console.log(`[V28] └─────────────────────────────────────────────────────────────`);
       signal.status = 'failed';
       signal.notes = `Order failed: ${result.error} | Latency: ${orderLatency}ms`;
       await saveSignal(signal);
@@ -734,7 +745,12 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
     // Polymarket can return status=MATCHED but size_matched=0 for FOK orders that failed to match
     const filledSize = result.filledSize ?? 0;
     if (filledSize <= 0) {
-      console.error(`[V28] ❌ ORDER NOT FILLED: status=${result.status} but filledSize=${filledSize}`);
+      console.log(`[V28] ┌─────────────────────────────────────────────────────────────`);
+      console.log(`[V28] │ ❌ ORDER NOT FILLED (FOK killed)`);
+      console.log(`[V28] │ Status:     ${result.status}`);
+      console.log(`[V28] │ FilledSize: ${filledSize}`);
+      console.log(`[V28] │ Latency:    ${orderLatency}ms`);
+      console.log(`[V28] └─────────────────────────────────────────────────────────────`);
       signal.status = 'failed';
       signal.notes = `Order not filled (size_matched=0) despite status=${result.status} | Latency: ${orderLatency}ms`;
       await saveSignal(signal);
@@ -768,8 +784,15 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
     const latencyMs = signal.binance_chainlink_latency_ms;
     signal.notes = `${signal.direction} | B-CL Δ$${bcDelta?.toFixed(0) ?? '?'} (~${latencyMs ?? '?'}ms) | Entry@${(entryPrice * 100).toFixed(1)}¢ → TP@${tpPrice ? (tpPrice * 100).toFixed(1) : '-'}¢ (+${tpCents}¢)`;
     
-    console.log(`[V28] ⏱️ LATENCY: Signal → BUY = ${totalLatency}ms (order took ${orderLatency}ms)`);
-    console.log(`[V28] ✅ LIVE FILL: ${signal.asset} ${signal.direction} @ ${(entryPrice * 100).toFixed(1)}¢ | ${filledSize.toFixed(2)} shares | TP@${tpPrice ? (tpPrice * 100).toFixed(1) : '-'}¢ (+${tpCents}¢)`);
+    console.log(`[V28] ┌─────────────────────────────────────────────────────────────`);
+    console.log(`[V28] │ ✅ ORDER FILLED!`);
+    console.log(`[V28] │ Asset:      ${signal.asset} ${signal.direction}`);
+    console.log(`[V28] │ Shares:     ${filledSize.toFixed(2)}`);
+    console.log(`[V28] │ Entry:      ${(entryPrice * 100).toFixed(1)}¢`);
+    console.log(`[V28] │ TP Target:  ${tpPrice ? (tpPrice * 100).toFixed(1) : '-'}¢ (+${tpCents}¢)`);
+    console.log(`[V28] │ Order Type: ${orderType.toUpperCase()}`);
+    console.log(`[V28] │ Latency:    ${totalLatency}ms (order: ${orderLatency}ms)`);
+    console.log(`[V28] └─────────────────────────────────────────────────────────────`);
     
     // ========================================
     // PLACE LIMIT SELL @ TP PRICE (with delay for settlement)
