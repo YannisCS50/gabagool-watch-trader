@@ -633,6 +633,7 @@ function SignalsTable() {
               <TableHead>Time</TableHead>
               <TableHead>Asset</TableHead>
               <TableHead>Dir</TableHead>
+              <TableHead>Shares</TableHead>
               <TableHead>Entry</TableHead>
               <TableHead>Exit</TableHead>
               <TableHead>TP/SL</TableHead>
@@ -670,6 +671,9 @@ function SignalsTable() {
                     ) : (
                       <TrendingDown className="h-4 w-4 text-red-400" />
                     )}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {signal.shares !== null ? signal.shares.toFixed(1) : '-'}
                   </TableCell>
                   <TableCell className="font-mono">{formatCents(signal.entry_price)}</TableCell>
                   <TableCell className="font-mono">{formatCents(signal.exit_price)}</TableCell>
