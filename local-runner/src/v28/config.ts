@@ -13,6 +13,7 @@ export interface V28Config {
   
   // Trade sizing
   trade_size_usd: number;
+  max_shares: number;          // Hard cap on shares per order (e.g. 5)
   
   // Signal detection
   min_delta_usd: number;       // Minimum Binance price move to trigger
@@ -39,6 +40,7 @@ export const DEFAULT_V28_CONFIG: V28Config = {
   enabled: true,
   is_live: false,
   trade_size_usd: 5,
+  max_shares: 5,               // Hard cap: max 5 shares per order
   min_delta_usd: 10,
   delta_window_ms: 300,
   min_share_price: 0.35,
@@ -70,6 +72,7 @@ export async function loadV28Config(supabase: SupabaseClient): Promise<V28Config
       enabled: data.enabled ?? true,
       is_live: data.is_live ?? false,
       trade_size_usd: data.trade_size_usd ?? 5,
+      max_shares: data.max_shares ?? 5,
       min_delta_usd: data.min_delta_usd ?? 10,
       delta_window_ms: data.delta_window_ms ?? 300,
       min_share_price: data.min_share_price ?? 0.35,
