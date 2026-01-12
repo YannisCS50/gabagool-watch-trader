@@ -603,27 +603,52 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
   const state = priceState[signal.asset];
   const cachedBestAsk = signal.direction === 'UP' ? state.upBestAsk : state.downBestAsk;
   const bestAsk = freshBestAsk ?? cachedBestAsk;
-  
-  // BUG FIX: Be more aggressive - add 2 cents to bestAsk to ensure fill
-  // Previous: +0.5¢ was often not enough and FOK orders failed
-  // Also ensure we're at least at bestAsk (not below)
-  const aggressivePrice = bestAsk ? Math.round((bestAsk + 0.02) * 100) / 100 : signal.share_price;
-  const price = Math.min(aggressivePrice, currentConfig.max_share_price); // Cap at max_share_price from config
-  
-  // SAFETY CHECK: Don't place order if price is significantly higher than trigger
-  // This prevents overpaying when bestAsk spikes
-  const maxPriceAllowed = signal.share_price + 0.05; // Max 5 cents above trigger
-  if (price > maxPriceAllowed) {
-    console.warn(`[V28] ⚠️ Price too high: bestAsk=${bestAsk ? (bestAsk * 100).toFixed(1) : '?'}¢ → buy@${(price * 100).toFixed(1)}¢ > max ${(maxPriceAllowed * 100).toFixed(1)}¢`);
+
+  // PRICE FIX: For FOK BUYs we must be AT/ABOVE the real bestAsk.
+  // Previously we capped price to max_share_price even when bestAsk > max_share_price,
+  // which guarantees a non-fill (FOK) while still “placing” orders.
+  const tick = 0.01;
+  const roundUpToTick = (p: number) => Math.ceil(p * 100) / 100;
+
+  let price: number;
+  if (bestAsk !== null && bestAsk !== undefined) {
+    const bestAskTick = roundUpToTick(bestAsk);
+
+    // If the market is already above our allowed max, skip instead of submitting an unfillable FOK.
+    if (bestAskTick > currentConfig.max_share_price) {
+      console.warn(
+        `[V28] ⚠️ Skip: bestAsk ${(bestAskTick * 100).toFixed(1)}¢ > max_share_price ${(currentConfig.max_share_price * 100).toFixed(1)}¢`
+      );
+      signal.status = 'failed';
+      signal.notes = `Skip: bestAsk ${(bestAskTick * 100).toFixed(1)}¢ > max ${(currentConfig.max_share_price * 100).toFixed(1)}¢`;
+      void saveSignal(signal);
+      positionLock = { status: 'idle' };
+      return;
+    }
+
+    // Pay bestAsk (+1 tick) to maximize fill probability, but never exceed max_share_price.
+    price = Math.min(bestAskTick + tick, currentConfig.max_share_price);
+
+    console.log(
+      `[V28] 💹 Pricing: trigger=${(signal.share_price * 100).toFixed(1)}¢ bestAsk=${(bestAskTick * 100).toFixed(1)}¢ → buy@${(price * 100).toFixed(1)}¢`
+    );
+  } else {
+    // No bestAsk available (thin book). Fall back to trigger price, still respecting max_share_price.
+    price = Math.min(Math.round(signal.share_price * 100) / 100, currentConfig.max_share_price);
+    console.log(
+      `[V28] 💹 Pricing: trigger=${(signal.share_price * 100).toFixed(1)}¢ bestAsk=? → buy@${(price * 100).toFixed(1)}¢ (fallback)`
+    );
+  }
+
+  if (!Number.isFinite(price) || price <= 0) {
+    console.error(`[V28] ❌ Invalid computed price: ${price}`);
     signal.status = 'failed';
-    signal.notes = `Price too high: ${(price * 100).toFixed(1)}¢ > max ${(maxPriceAllowed * 100).toFixed(1)}¢`;
+    signal.notes = `Invalid computed price: ${price}`;
     void saveSignal(signal);
     positionLock = { status: 'idle' };
     return;
   }
-  
-  console.log(`[V28] 💹 Aggressive pricing: trigger=${(signal.share_price * 100).toFixed(1)}¢ bestAsk=${bestAsk ? (bestAsk * 100).toFixed(1) : '?'}¢ → buy@${(price * 100).toFixed(1)}¢ (+2¢ buffer)`);
-  
+
   // SIMPLE FIX: Round shares to 2 decimals so that shares * price always has ≤2 decimals
   // Example: 4.12 shares × $0.72 = $2.9664 → FAILS
   // Instead: 4.00 shares × $0.72 = $2.88 → OK (exactly 2 decimals)
