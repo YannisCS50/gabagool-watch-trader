@@ -476,35 +476,32 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
   const tokenId = signal.direction === 'UP' ? market.upTokenId : market.downTokenId;
 
   // CRITICAL: Polymarket enforces amount precision:
-  // - makerAmount (USDC) max 2 decimals
+  // - makerAmount (USDC) max 2 decimals  
   // - takerAmount (shares) max 4 decimals
-  // Since the SDK derives makerAmount = size * price for BUY orders, we must choose a share
-  // size that makes (size * price) land exactly on cents.
+  // For BUY orders: makerAmount = shares * price (in USDC cents internally)
+  // We need: (shares * price) to have at most 2 decimal places
+  
   const price = Math.round(signal.share_price * 100) / 100; // tickSize=0.01
-  const pCents = Math.round(price * 100);
-
-  const gcdInt = (a: number, b: number): number => {
-    let x = Math.abs(Math.trunc(a));
-    let y = Math.abs(Math.trunc(b));
-    while (y !== 0) {
-      const t = x % y;
-      x = y;
-      y = t;
-    }
-    return x;
-  };
-
-  // sizeUnits are 1e-4 shares (to satisfy takerAmount max 4 decimals)
-  // Constraint for cents: (sizeUnits * pCents) / 10000 must be integer
-  // => sizeUnits must be multiple of (10000 / gcd(10000, pCents))
-  const STEP_BASE = 10_000;
-  const stepUnits = STEP_BASE / gcdInt(STEP_BASE, pCents);
-
+  
+  // SIMPLE FIX: Round shares to 2 decimals so that shares * price always has ≤2 decimals
+  // Example: 4.12 shares × $0.72 = $2.9664 → FAILS
+  // Instead: 4.00 shares × $0.72 = $2.88 → OK (exactly 2 decimals)
+  // The safest is to use whole shares or shares with 2 decimals where shares*price lands on cents
+  
   const desiredShares = signal.trade_size_usd / price;
-  const desiredUnits = Math.floor(desiredShares * STEP_BASE);
-  const adjustedUnits = Math.floor(desiredUnits / stepUnits) * stepUnits;
-  const shares = adjustedUnits / STEP_BASE;
-
+  
+  // Round shares to whole numbers for simplicity (guarantees makerAmount has ≤2 decimals)
+  const shares = Math.floor(desiredShares);
+  
+  if (shares < 1) {
+    console.error(`[V28] ❌ Not enough shares: desired=${desiredShares.toFixed(2)} -> ${shares}`);
+    signal.status = 'failed';
+    signal.notes = 'Not enough shares after rounding';
+    void saveSignal(signal);
+    positionLock = { status: 'idle' };
+    return;
+  }
+  
   const notionalUsd = shares * price;
 
   if (!Number.isFinite(shares) || shares <= 0) {
