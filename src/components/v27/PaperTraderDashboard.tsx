@@ -117,6 +117,160 @@ function StatsCards() {
   );
 }
 
+// ============ Bot Price Feed (what the runner sees) ============
+
+interface PriceSnapshot {
+  id: string;
+  ts: number;
+  asset: string;
+  binance_price: number | null;
+  chainlink_price: number | null;
+  strike_price: number | null;
+  up_best_ask: number | null;
+  up_best_bid: number | null;
+  down_best_ask: number | null;
+  down_best_bid: number | null;
+  market_slug: string | null;
+  created_at: string;
+}
+
+function useBotPriceSnapshots() {
+  return useQuery({
+    queryKey: ['bot-price-snapshots'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('paper_price_snapshots')
+        .select('*')
+        .order('ts', { ascending: false })
+        .limit(100);
+      
+      if (error) throw error;
+      return (data || []) as PriceSnapshot[];
+    },
+    refetchInterval: 2000,
+  });
+}
+
+function BotPriceFeedPanel() {
+  const { data: snapshots, isLoading, refetch } = useBotPriceSnapshots();
+  
+  // Get latest snapshot per asset
+  const latestByAsset = snapshots?.reduce((acc, snap) => {
+    if (!acc[snap.asset] || snap.ts > acc[snap.asset].ts) {
+      acc[snap.asset] = snap;
+    }
+    return acc;
+  }, {} as Record<string, PriceSnapshot>);
+  
+  const assets = ['BTC', 'ETH', 'SOL', 'XRP'];
+  
+  // Calculate time since last update
+  const getAgeMs = (ts: number) => Date.now() - ts;
+  const formatAge = (ts: number) => {
+    const age = getAgeMs(ts);
+    if (age < 1000) return 'now';
+    if (age < 60000) return `${Math.floor(age / 1000)}s ago`;
+    return `${Math.floor(age / 60000)}m ago`;
+  };
+  
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex justify-between items-center">
+          <CardTitle className="text-lg flex items-center gap-2">
+            <Wifi className="h-4 w-4 text-green-400" />
+            Bot Price Feed
+          </CardTitle>
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="text-xs">
+              Runner Data
+            </Badge>
+            <Button variant="ghost" size="sm" onClick={() => refetch()}>
+              <RefreshCw className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="text-muted-foreground">Loading...</div>
+        ) : !snapshots || snapshots.length === 0 ? (
+          <div className="text-muted-foreground text-sm p-4 text-center border border-dashed rounded">
+            No price data from runner yet. Start the paper trader.
+          </div>
+        ) : (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {assets.map(asset => {
+              const snap = latestByAsset?.[asset];
+              const isStale = snap ? getAgeMs(snap.ts) > 15000 : true;
+              
+              return (
+                <div 
+                  key={asset} 
+                  className={`border rounded-lg p-3 ${isStale ? 'border-muted opacity-60' : 'border-primary/30'}`}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-bold text-lg">{asset}</span>
+                    {snap && (
+                      <span className={`text-xs ${isStale ? 'text-muted-foreground' : 'text-green-400'}`}>
+                        {formatAge(snap.ts)}
+                      </span>
+                    )}
+                  </div>
+                  
+                  {snap ? (
+                    <>
+                      {/* Binance price */}
+                      <div className="mb-2">
+                        <div className="text-xs text-muted-foreground">Binance</div>
+                        <div className="font-mono text-yellow-500 font-semibold">
+                          ${snap.binance_price?.toLocaleString() || '—'}
+                        </div>
+                      </div>
+                      
+                      {/* CLOB prices */}
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div>
+                          <span className="text-muted-foreground">UP Ask</span>
+                          <div className="font-mono text-green-400">
+                            {snap.up_best_ask ? `${(snap.up_best_ask * 100).toFixed(1)}¢` : '—'}
+                          </div>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">DN Ask</span>
+                          <div className="font-mono text-red-400">
+                            {snap.down_best_ask ? `${(snap.down_best_ask * 100).toFixed(1)}¢` : '—'}
+                          </div>
+                        </div>
+                      </div>
+                      
+                      {/* Combined cost */}
+                      {snap.up_best_ask && snap.down_best_ask && (
+                        <div className="mt-2 pt-2 border-t text-xs flex justify-between">
+                          <span className="text-muted-foreground">Combined</span>
+                          <span className={`font-mono font-bold ${
+                            snap.up_best_ask + snap.down_best_ask < 1 
+                              ? 'text-green-400' 
+                              : 'text-muted-foreground'
+                          }`}>
+                            {((snap.up_best_ask + snap.down_best_ask) * 100).toFixed(1)}¢
+                          </span>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="text-xs text-muted-foreground">No data</div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 interface DecisionLog {
   id: string;
   ts: number;
@@ -576,10 +730,11 @@ export default function PaperTraderDashboard() {
         <p className="text-muted-foreground">Monitor paper trading signals from the runner</p>
       </div>
       
-      {/* Latency Charts */}
+      {/* Browser-based price feed for comparison */}
       <PriceLatencyChart />
       
-      <LivePriceMonitor />
+      {/* What the runner actually sees */}
+      <BotPriceFeedPanel />
       
       <StatsCards />
       
