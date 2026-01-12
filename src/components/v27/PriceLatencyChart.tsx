@@ -1,11 +1,13 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, ComposedChart, Bar } from 'recharts';
-import { Activity, Settings, Zap } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, ComposedChart, Bar, Area } from 'recharts';
+import { Activity, Settings, Zap, Timer, TrendingUp } from 'lucide-react';
 import { usePriceLatencyComparison, Asset } from '@/hooks/usePriceLatencyComparison';
 import { usePaperTradingConfig } from '@/hooks/usePaperTraderData';
+import { supabase } from '@/integrations/supabase/client';
 
 const ASSETS: Asset[] = ['BTC', 'ETH', 'SOL', 'XRP'];
 
@@ -15,12 +17,30 @@ const COLORS = {
   positive: '#3FB950',
   negative: '#F85149',
   trigger: '#8B5CF6',
+  sharePrice: '#10B981',
 };
 
 function formatTimestamp(ts: number): string {
   const date = new Date(ts);
   return date.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) 
     + '.' + String(ts % 1000).padStart(3, '0');
+}
+
+interface ClobPrices {
+  upBid: number | null;
+  upAsk: number | null;
+  downBid: number | null;
+  downAsk: number | null;
+  lastUpdate: number;
+}
+
+interface LatencyTestResult {
+  testId: string;
+  startTime: number;
+  endTime: number | null;
+  duration: number | null;
+  status: 'pending' | 'success' | 'error';
+  error?: string;
 }
 
 export function PriceLatencyChart() {
@@ -38,8 +58,39 @@ export function PriceLatencyChart() {
   } = usePriceLatencyComparison();
   
   const { data: config } = usePaperTradingConfig();
+  const [clobPrices, setClobPrices] = useState<ClobPrices | null>(null);
+  const [latencyTests, setLatencyTests] = useState<LatencyTestResult[]>([]);
+  const [testingLatency, setTestingLatency] = useState(false);
 
   const [chartData, setChartData] = useState<{ binanceData: any[]; chainlinkData: any[] }>({ binanceData: [], chainlinkData: [] });
+
+  // Fetch CLOB prices for share price display
+  const fetchClobPrices = useCallback(async () => {
+    try {
+      const { data, error } = await supabase.functions.invoke('clob-prices', {
+        body: { asset: selectedAsset }
+      });
+      
+      if (!error && data) {
+        setClobPrices({
+          upBid: data.upBid ?? null,
+          upAsk: data.upAsk ?? null,
+          downBid: data.downBid ?? null,
+          downAsk: data.downAsk ?? null,
+          lastUpdate: Date.now(),
+        });
+      }
+    } catch (err) {
+      console.error('Failed to fetch CLOB prices:', err);
+    }
+  }, [selectedAsset]);
+
+  // Fetch CLOB prices periodically
+  useEffect(() => {
+    fetchClobPrices();
+    const interval = setInterval(fetchClobPrices, 2000);
+    return () => clearInterval(interval);
+  }, [fetchClobPrices]);
 
   // Auto-connect on mount
   useEffect(() => {
@@ -56,7 +107,7 @@ export function PriceLatencyChart() {
     return () => clearInterval(interval);
   }, [getChartData]);
 
-  // Combine chart data for dual-line chart
+  // Combine chart data for dual-line chart with share price
   const combinedChartData = useMemo(() => {
     const merged = [...chartData.binanceData, ...chartData.chainlinkData]
       .sort((a, b) => a.time - b.time)
@@ -73,11 +124,14 @@ export function PriceLatencyChart() {
     return merged.slice(-600);
   }, [chartData]);
 
-  // Calculate price deltas for delta chart
+  // Calculate price deltas for delta chart - include share price
   const deltaChartData = useMemo(() => {
-    const data: { time: number; binanceDelta: number | null; chainlinkDelta: number | null }[] = [];
+    const data: { time: number; binanceDelta: number | null; chainlinkDelta: number | null; upPrice: number | null }[] = [];
     let prevBinance: number | null = null;
     let prevChainlink: number | null = null;
+
+    // Scale share price to fit on delta chart (multiply by 100 to show as cents equivalent)
+    const scaledUpPrice = clobPrices?.upAsk ? clobPrices.upAsk * 100 : null;
 
     for (const point of combinedChartData) {
       const binanceDelta = point.binance && prevBinance ? point.binance - prevBinance : null;
@@ -88,6 +142,7 @@ export function PriceLatencyChart() {
           time: point.time,
           binanceDelta: binanceDelta && Math.abs(binanceDelta) > 0.01 ? binanceDelta : null,
           chainlinkDelta: chainlinkDelta && Math.abs(chainlinkDelta) > 0.01 ? chainlinkDelta : null,
+          upPrice: scaledUpPrice, // Constant line for current UP price
         });
       }
 
@@ -96,7 +151,7 @@ export function PriceLatencyChart() {
     }
 
     return data.slice(-300);
-  }, [combinedChartData]);
+  }, [combinedChartData, clobPrices]);
 
   return (
     <Card className="col-span-full">
@@ -184,11 +239,11 @@ export function PriceLatencyChart() {
                 <div className="font-mono font-bold">{config.timeout_ms / 1000}s</div>
               </div>
             </div>
-          </div>
+        </div>
         )}
         
         {/* Price Stats */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 mb-4">
           <div className="bg-muted rounded-lg p-3">
             <div className="text-xs text-muted-foreground flex items-center gap-1">
               <div className="w-2 h-2 rounded-full" style={{ backgroundColor: COLORS.binance }} />
@@ -205,6 +260,18 @@ export function PriceLatencyChart() {
             </div>
             <div className="text-lg font-mono font-bold" style={{ color: COLORS.chainlink }}>
               {chainlinkPrice ? `$${chainlinkPrice.toLocaleString('en-US', { minimumFractionDigits: 2 })}` : '—'}
+            </div>
+          </div>
+          <div className="bg-muted rounded-lg p-3">
+            <div className="text-xs text-muted-foreground flex items-center gap-1">
+              <TrendingUp className="h-3 w-3" style={{ color: COLORS.sharePrice }} />
+              UP Share
+            </div>
+            <div className="text-lg font-mono font-bold" style={{ color: COLORS.sharePrice }}>
+              {clobPrices?.upAsk ? `${(clobPrices.upAsk * 100).toFixed(1)}¢` : '—'}
+            </div>
+            <div className="text-[10px] text-muted-foreground">
+              bid: {clobPrices?.upBid ? `${(clobPrices.upBid * 100).toFixed(1)}¢` : '—'}
             </div>
           </div>
           <div className="bg-muted rounded-lg p-3">
@@ -336,7 +403,8 @@ export function PriceLatencyChart() {
             </div>
             <p className="text-xs text-muted-foreground mt-2 text-center">
               <span style={{ color: COLORS.trigger }}>■</span> Paarse lijnen = trigger threshold (±${config?.min_delta_usd || '?'}). 
-              Moves boven/onder triggeren trades.
+              Moves boven/onder triggeren trades. | 
+              <span style={{ color: COLORS.sharePrice }}> ■</span> UP share prijs: {clobPrices?.upAsk ? `${(clobPrices.upAsk * 100).toFixed(1)}¢` : '—'}
             </p>
           </TabsContent>
         </Tabs>
