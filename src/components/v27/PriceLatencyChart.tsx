@@ -120,6 +120,40 @@ export function PriceLatencyChart() {
     return data.slice(-300);
   }, [combinedChartData]);
 
+  // Group signals by asset for per-market overview
+  const signalsByMarket = useMemo(() => {
+    const grouped: Record<Asset, {
+      total: number;
+      filled: number;
+      sold: number;
+      failed: number;
+      totalPnl: number;
+      winCount: number;
+      signals: ArbitrageSignal[];
+    }> = {
+      BTC: { total: 0, filled: 0, sold: 0, failed: 0, totalPnl: 0, winCount: 0, signals: [] },
+      ETH: { total: 0, filled: 0, sold: 0, failed: 0, totalPnl: 0, winCount: 0, signals: [] },
+      SOL: { total: 0, filled: 0, sold: 0, failed: 0, totalPnl: 0, winCount: 0, signals: [] },
+      XRP: { total: 0, filled: 0, sold: 0, failed: 0, totalPnl: 0, winCount: 0, signals: [] },
+    };
+
+    for (const signal of signals) {
+      const market = grouped[signal.asset];
+      market.total++;
+      market.signals.push(signal);
+      
+      if (signal.status === 'filled' || signal.status === 'sold') market.filled++;
+      if (signal.status === 'sold') {
+        market.sold++;
+        market.totalPnl += signal.pnl || 0;
+        if ((signal.pnl || 0) > 0) market.winCount++;
+      }
+      if (signal.status === 'failed') market.failed++;
+    }
+
+    return grouped;
+  }, [signals]);
+
   return (
     <Card className="col-span-full">
       <CardHeader>
@@ -437,6 +471,64 @@ export function PriceLatencyChart() {
                   Wacht op prijsbewegingen &gt; ${config.minDeltaUsd}...
                 </div>
               )}
+            </div>
+
+            {/* Per-market overview */}
+            <div className="mt-6 grid grid-cols-2 md:grid-cols-4 gap-4">
+              {ASSETS.map(asset => {
+                const market = signalsByMarket[asset];
+                const winRate = market.sold > 0 ? (market.winCount / market.sold) * 100 : 0;
+                
+                return (
+                  <div key={asset} className="border rounded-lg p-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="font-bold">{asset}</span>
+                      <Badge variant={market.total > 0 ? 'default' : 'secondary'}>
+                        {market.total} trades
+                      </Badge>
+                    </div>
+                    
+                    <div className="grid grid-cols-2 gap-1 text-xs">
+                      <div className="text-muted-foreground">Filled:</div>
+                      <div className="text-right font-mono">{market.filled}</div>
+                      
+                      <div className="text-muted-foreground">Sold:</div>
+                      <div className="text-right font-mono">{market.sold}</div>
+                      
+                      <div className="text-muted-foreground">Failed:</div>
+                      <div className="text-right font-mono text-destructive">{market.failed}</div>
+                      
+                      <div className="text-muted-foreground">Win Rate:</div>
+                      <div className={`text-right font-mono ${winRate >= 50 ? 'text-green-500' : 'text-red-500'}`}>
+                        {winRate.toFixed(0)}%
+                      </div>
+                      
+                      <div className="text-muted-foreground font-semibold">PnL:</div>
+                      <div className={`text-right font-mono font-bold ${market.totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                        {market.totalPnl >= 0 ? '+' : ''}${market.totalPnl.toFixed(2)}
+                      </div>
+                    </div>
+
+                    {/* Last 3 trades for this market */}
+                    {market.signals.length > 0 && (
+                      <div className="mt-2 pt-2 border-t text-xs space-y-1">
+                        <div className="text-muted-foreground mb-1">Recent:</div>
+                        {market.signals.slice(0, 3).map(s => (
+                          <div key={s.id} className="flex items-center justify-between">
+                            <span className={s.direction === 'UP' ? 'text-green-400' : 'text-red-400'}>
+                              {s.direction}
+                            </span>
+                            <SignalStatusBadge status={s.status} />
+                            <span className={`font-mono ${(s.pnl || 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                              {s.pnl !== undefined ? `$${s.pnl.toFixed(2)}` : '—'}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </TabsContent>
         </Tabs>
