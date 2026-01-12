@@ -57,7 +57,7 @@ async function fetchChainlinkPrice(asset: string): Promise<{ price: number; time
   }
 }
 
-// Fetch price from Binance API
+// Fetch current price from Binance API
 async function fetchBinancePrice(symbol: string): Promise<{ price: number; timestamp: number } | null> {
   try {
     const response = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol}`);
@@ -66,10 +66,38 @@ async function fetchBinancePrice(symbol: string): Promise<{ price: number; times
     const data = await response.json();
     return {
       price: parseFloat(data.price),
-      timestamp: Date.now(), // Binance ticker doesn't include timestamp, use current
+      timestamp: Date.now(),
     };
   } catch (e) {
     console.error(`Binance fetch error for ${symbol}:`, e);
+    return null;
+  }
+}
+
+// Fetch historical Binance price at exact timestamp using klines (candles)
+// Returns the OPEN price of the 1-minute candle that started at the given timestamp
+async function fetchBinanceHistoricalPrice(symbol: string, timestampMs: number): Promise<{ price: number; timestamp: number } | null> {
+  try {
+    // Get the 1-minute kline that starts at the exact timestamp
+    const response = await fetch(
+      `https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1m&startTime=${timestampMs}&limit=1`
+    );
+    if (!response.ok) return null;
+    
+    const data = await response.json();
+    if (!data || data.length === 0) return null;
+    
+    // Kline format: [openTime, open, high, low, close, volume, closeTime, ...]
+    const kline = data[0];
+    const openTime = kline[0];
+    const openPrice = parseFloat(kline[1]);
+    
+    return {
+      price: openPrice,
+      timestamp: openTime,
+    };
+  } catch (e) {
+    console.error(`Binance historical fetch error for ${symbol}:`, e);
     return null;
   }
 }
@@ -90,8 +118,13 @@ serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const assets: string[] = body.assets || ['BTC', 'ETH', 'SOL', 'XRP'];
     const chainlinkOnly: boolean = body.chainlinkOnly || false;
+    const historicalTimestamp: number | null = body.timestamp ? Number(body.timestamp) : null;
 
-    console.log(`[price-feeds] Fetching ${chainlinkOnly ? 'Chainlink only' : 'all'} prices for: ${assets.join(', ')}`);
+    console.log(`[price-feeds] Body received:`, JSON.stringify(body));
+    console.log(`[price-feeds] Fetching ${chainlinkOnly ? 'Chainlink only' : 'all'} prices for: ${assets.join(', ')}${historicalTimestamp ? ` at ${new Date(historicalTimestamp).toISOString()}` : ''}`);
+    if (historicalTimestamp) {
+      console.log(`[price-feeds] Historical mode: timestamp=${historicalTimestamp}`);
+    }
 
     const results: Record<string, {
       binance?: number;
@@ -112,8 +145,21 @@ serve(async (req) => {
           chainlink: chainlinkData?.price,
           chainlink_ts: chainlinkData?.timestamp,
         };
+      } else if (historicalTimestamp) {
+        // Fetch historical prices at specific timestamp
+        const [binanceData, chainlinkData] = await Promise.all([
+          fetchBinanceHistoricalPrice(symbol, historicalTimestamp),
+          fetchChainlinkPrice(asset), // Chainlink doesn't support historical via simple RPC
+        ]);
+
+        results[asset] = {
+          binance: binanceData?.price,
+          binance_ts: binanceData?.timestamp,
+          chainlink: chainlinkData?.price,
+          chainlink_ts: chainlinkData?.timestamp,
+        };
       } else {
-        // Fetch both
+        // Fetch current prices from both
         const [binanceData, chainlinkData] = await Promise.all([
           fetchBinancePrice(symbol),
           fetchChainlinkPrice(asset),
@@ -133,6 +179,7 @@ serve(async (req) => {
     return new Response(JSON.stringify({
       success: true,
       timestamp: Date.now(),
+      requestedTimestamp: historicalTimestamp,
       prices: results,
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
