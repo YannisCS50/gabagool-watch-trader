@@ -527,57 +527,165 @@ export function PriceLatencyChart() {
               )}
             </div>
 
-            {/* Per-market overview */}
-            <div className="mt-6 grid grid-cols-2 md:grid-cols-4 gap-4">
+            {/* Per-market overview - Enhanced cards */}
+            <div className="mt-6 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
               {ASSETS.map(asset => {
                 const market = signalsByMarket[asset];
                 const winRate = market.sold > 0 ? (market.winCount / market.sold) * 100 : 0;
+                const marketInfo = polymarketPrices[asset];
+                const lastSignal = market.signals[0];
+                const avgEntry = market.signals.filter(s => s.entryPrice).length > 0
+                  ? market.signals.filter(s => s.entryPrice).reduce((sum, s) => sum + (s.entryPrice || 0), 0) / market.signals.filter(s => s.entryPrice).length
+                  : null;
+                const avgExit = market.signals.filter(s => s.exitPrice).length > 0
+                  ? market.signals.filter(s => s.exitPrice).reduce((sum, s) => sum + (s.exitPrice || 0), 0) / market.signals.filter(s => s.exitPrice).length
+                  : null;
+                const totalFees = market.signals.reduce((sum, s) => sum + (s.totalFees || 0), 0);
+                const grossPnl = market.signals.reduce((sum, s) => sum + (s.grossPnl || 0), 0);
                 
                 return (
-                  <div key={asset} className="border rounded-lg p-3">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="font-bold">{asset}</span>
+                  <div key={asset} className="border rounded-lg p-4 bg-card hover:border-primary/50 transition-colors">
+                    {/* Header */}
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xl font-bold">{asset}</span>
+                        {marketInfo && (
+                          <Badge variant="outline" className="text-xs border-purple-500/50 text-purple-400">
+                            ${marketInfo.strikePrice?.toLocaleString() || '?'}
+                          </Badge>
+                        )}
+                      </div>
                       <Badge variant={market.total > 0 ? 'default' : 'secondary'}>
                         {market.total} trades
                       </Badge>
                     </div>
-                    
-                    <div className="grid grid-cols-2 gap-1 text-xs">
-                      <div className="text-muted-foreground">Filled:</div>
-                      <div className="text-right font-mono">{market.filled}</div>
-                      
-                      <div className="text-muted-foreground">Sold:</div>
-                      <div className="text-right font-mono">{market.sold}</div>
-                      
-                      <div className="text-muted-foreground">Failed:</div>
-                      <div className="text-right font-mono text-destructive">{market.failed}</div>
-                      
-                      <div className="text-muted-foreground">Win Rate:</div>
-                      <div className={`text-right font-mono ${winRate >= 50 ? 'text-green-500' : 'text-red-500'}`}>
-                        {winRate.toFixed(0)}%
+
+                    {/* Live CLOB Prices */}
+                    {marketInfo && (
+                      <div className="grid grid-cols-2 gap-2 mb-3 p-2 bg-muted/50 rounded">
+                        <div>
+                          <div className="text-xs text-muted-foreground">UP Ask</div>
+                          <div className="font-mono text-green-500 font-semibold">
+                            {marketInfo.upBestAsk ? `${(marketInfo.upBestAsk * 100).toFixed(1)}¢` : '—'}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-muted-foreground">DOWN Ask</div>
+                          <div className="font-mono text-red-500 font-semibold">
+                            {marketInfo.downBestAsk ? `${(marketInfo.downBestAsk * 100).toFixed(1)}¢` : '—'}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-muted-foreground">UP Bid</div>
+                          <div className="font-mono text-green-400/70">
+                            {marketInfo.upBestBid ? `${(marketInfo.upBestBid * 100).toFixed(1)}¢` : '—'}
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-xs text-muted-foreground">DOWN Bid</div>
+                          <div className="font-mono text-red-400/70">
+                            {marketInfo.downBestBid ? `${(marketInfo.downBestBid * 100).toFixed(1)}¢` : '—'}
+                          </div>
+                        </div>
                       </div>
-                      
-                      <div className="text-muted-foreground font-semibold">PnL:</div>
-                      <div className={`text-right font-mono font-bold ${market.totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                        {market.totalPnl >= 0 ? '+' : ''}${market.totalPnl.toFixed(2)}
+                    )}
+                    
+                    {/* Trade Stats */}
+                    <div className="grid grid-cols-3 gap-2 text-xs mb-3">
+                      <div className="text-center p-2 bg-muted/30 rounded">
+                        <div className="text-muted-foreground">Filled</div>
+                        <div className="font-mono font-bold text-blue-400">{market.filled}</div>
+                      </div>
+                      <div className="text-center p-2 bg-muted/30 rounded">
+                        <div className="text-muted-foreground">Sold</div>
+                        <div className="font-mono font-bold text-green-400">{market.sold}</div>
+                      </div>
+                      <div className="text-center p-2 bg-muted/30 rounded">
+                        <div className="text-muted-foreground">Failed</div>
+                        <div className="font-mono font-bold text-destructive">{market.failed}</div>
                       </div>
                     </div>
 
-                    {/* Last 3 trades for this market */}
+                    {/* Performance Metrics */}
+                    <div className="space-y-1.5 text-xs">
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Win Rate</span>
+                        <span className={`font-mono font-bold ${winRate >= 50 ? 'text-green-500' : 'text-red-500'}`}>
+                          {winRate.toFixed(0)}%
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Avg Entry</span>
+                        <span className="font-mono text-yellow-500">
+                          {avgEntry ? `${(avgEntry * 100).toFixed(1)}¢` : '—'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Avg Exit</span>
+                        <span className="font-mono text-cyan-500">
+                          {avgExit ? `${(avgExit * 100).toFixed(1)}¢` : '—'}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Total Fees</span>
+                        <span className="font-mono text-orange-400">
+                          ${totalFees.toFixed(2)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between border-t pt-1.5 mt-1.5">
+                        <span className="text-muted-foreground">Gross PnL</span>
+                        <span className={`font-mono ${grossPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                          {grossPnl >= 0 ? '+' : ''}${grossPnl.toFixed(2)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="font-semibold">Net PnL</span>
+                        <span className={`font-mono font-bold ${market.totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                          {market.totalPnl >= 0 ? '+' : ''}${market.totalPnl.toFixed(2)}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Recent Trades */}
                     {market.signals.length > 0 && (
-                      <div className="mt-2 pt-2 border-t text-xs space-y-1">
-                        <div className="text-muted-foreground mb-1">Recent:</div>
-                        {market.signals.slice(0, 3).map(s => (
-                          <div key={s.id} className="flex items-center justify-between">
-                            <span className={s.direction === 'UP' ? 'text-green-400' : 'text-red-400'}>
-                              {s.direction}
-                            </span>
-                            <SignalStatusBadge status={s.status} />
-                            <span className={`font-mono ${(s.pnl || 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                              {s.pnl !== undefined ? `$${s.pnl.toFixed(2)}` : '—'}
-                            </span>
-                          </div>
-                        ))}
+                      <div className="mt-3 pt-3 border-t text-xs">
+                        <div className="text-muted-foreground mb-2 font-medium">Recent Trades</div>
+                        <div className="space-y-1.5">
+                          {market.signals.slice(0, 4).map(s => (
+                            <div key={s.id} className="flex items-center gap-2 p-1.5 bg-muted/20 rounded">
+                              <span className={`font-bold ${s.direction === 'UP' ? 'text-green-400' : 'text-red-400'}`}>
+                                {s.direction === 'UP' ? '▲' : '▼'}
+                              </span>
+                              <div className="flex-1 flex items-center gap-1">
+                                <span className="text-muted-foreground">
+                                  {s.entryPrice ? `${(s.entryPrice * 100).toFixed(1)}¢` : '—'}
+                                </span>
+                                <span className="text-muted-foreground">→</span>
+                                <span className={s.exitPrice && s.entryPrice && s.exitPrice > s.entryPrice ? 'text-green-400' : 'text-red-400'}>
+                                  {s.exitPrice ? `${(s.exitPrice * 100).toFixed(1)}¢` : '—'}
+                                </span>
+                              </div>
+                              <SignalStatusBadge status={s.status} />
+                              <span className={`font-mono font-bold min-w-[50px] text-right ${(s.pnl || 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                                {s.pnl !== undefined ? `${s.pnl >= 0 ? '+' : ''}$${s.pnl.toFixed(2)}` : '—'}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Market Link */}
+                    {lastSignal?.marketSlug && (
+                      <div className="mt-3 pt-2 border-t">
+                        <a 
+                          href={`https://polymarket.com/event/${lastSignal.marketSlug}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-xs text-primary hover:underline flex items-center gap-1"
+                        >
+                          🔗 View on Polymarket
+                        </a>
                       </div>
                     )}
                   </div>

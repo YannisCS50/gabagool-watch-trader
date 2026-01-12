@@ -155,6 +155,99 @@ export type Database = {
         }
         Relationships: []
       }
+      arbitrage_paper_trades: {
+        Row: {
+          asset: string
+          binance_price: number | null
+          chainlink_price: number | null
+          config_snapshot: Json | null
+          created_at: string
+          delta_usd: number | null
+          direction: string
+          entry_fee: number | null
+          entry_price: number | null
+          exit_fee: number | null
+          exit_price: number | null
+          fill_time_ms: number | null
+          fill_ts: number | null
+          gross_pnl: number | null
+          hold_time_ms: number | null
+          id: string
+          market_slug: string | null
+          net_pnl: number | null
+          order_type: string | null
+          reason: string | null
+          sell_ts: number | null
+          session_id: string | null
+          share_price: number | null
+          signal_id: string
+          signal_ts: number
+          status: string
+          strike_price: number | null
+          total_fees: number | null
+        }
+        Insert: {
+          asset: string
+          binance_price?: number | null
+          chainlink_price?: number | null
+          config_snapshot?: Json | null
+          created_at?: string
+          delta_usd?: number | null
+          direction: string
+          entry_fee?: number | null
+          entry_price?: number | null
+          exit_fee?: number | null
+          exit_price?: number | null
+          fill_time_ms?: number | null
+          fill_ts?: number | null
+          gross_pnl?: number | null
+          hold_time_ms?: number | null
+          id?: string
+          market_slug?: string | null
+          net_pnl?: number | null
+          order_type?: string | null
+          reason?: string | null
+          sell_ts?: number | null
+          session_id?: string | null
+          share_price?: number | null
+          signal_id: string
+          signal_ts: number
+          status?: string
+          strike_price?: number | null
+          total_fees?: number | null
+        }
+        Update: {
+          asset?: string
+          binance_price?: number | null
+          chainlink_price?: number | null
+          config_snapshot?: Json | null
+          created_at?: string
+          delta_usd?: number | null
+          direction?: string
+          entry_fee?: number | null
+          entry_price?: number | null
+          exit_fee?: number | null
+          exit_price?: number | null
+          fill_time_ms?: number | null
+          fill_ts?: number | null
+          gross_pnl?: number | null
+          hold_time_ms?: number | null
+          id?: string
+          market_slug?: string | null
+          net_pnl?: number | null
+          order_type?: string | null
+          reason?: string | null
+          sell_ts?: number | null
+          session_id?: string | null
+          share_price?: number | null
+          signal_id?: string
+          signal_ts?: number
+          status?: string
+          strike_price?: number | null
+          total_fees?: number | null
+        }
+        Relationships: []
+      }
       bot_config: {
         Row: {
           backend_url: string | null

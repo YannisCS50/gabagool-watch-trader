@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { usePriceLatencyComparison, Asset } from './usePriceLatencyComparison';
 import { usePolymarketPrices } from './usePolymarketPrices';
+import { supabase } from '@/integrations/supabase/client';
 
 export interface ArbitrageSignal {
   id: string;
@@ -38,6 +39,61 @@ export interface SimulatorConfig {
   holdTimeMs: number;         // 15000 (15 seconds)
   maxFillTimeMs: number;      // 1000 (must fill within 1 second)
   tradeSize: number;          // $25 notional
+  persistTrades: boolean;     // Save trades to database
+}
+
+// Session ID for grouping trades
+const SESSION_ID = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+// Helper to save trade to database
+async function saveTradeToDb(signal: ArbitrageSignal, config: SimulatorConfig) {
+  if (!config.persistTrades) return;
+  
+  try {
+    // Use insert for new trades, ignoring duplicates
+    const tradeData = {
+      session_id: SESSION_ID,
+      asset: signal.asset,
+      market_slug: signal.marketSlug || null,
+      strike_price: signal.strikePrice || null,
+      direction: signal.direction,
+      order_type: signal.orderType || null,
+      status: signal.status,
+      binance_price: signal.binancePrice,
+      chainlink_price: signal.chainlinkPrice,
+      delta_usd: signal.binanceDelta,
+      share_price: signal.sharePrice,
+      entry_price: signal.entryPrice || null,
+      exit_price: signal.exitPrice || null,
+      signal_ts: signal.timestamp,
+      fill_ts: signal.fillTime || null,
+      sell_ts: signal.sellTime || null,
+      fill_time_ms: signal.fillTime ? signal.fillTime - signal.timestamp : null,
+      hold_time_ms: signal.sellTime && signal.fillTime ? signal.sellTime - signal.fillTime : null,
+      gross_pnl: signal.grossPnl || null,
+      entry_fee: signal.entryFee || null,
+      exit_fee: signal.exitFee || null,
+      total_fees: signal.totalFees || null,
+      net_pnl: signal.netPnl || null,
+      reason: signal.notes || null,
+      config_snapshot: config as unknown as Record<string, unknown>,
+    };
+
+    // Only save when status is 'sold' (trade complete) to avoid duplicates
+    if (signal.status === 'sold') {
+      const { error } = await supabase
+        .from('arbitrage_paper_trades')
+        .insert(tradeData as never);
+      
+      if (error) {
+        console.warn('[ArbitrageSimulator] Failed to save trade:', error.message);
+      } else {
+        console.log('[ArbitrageSimulator] Trade saved to DB:', signal.id);
+      }
+    }
+  } catch (err) {
+    console.warn('[ArbitrageSimulator] Error saving trade:', err);
+  }
 }
 
 const DEFAULT_CONFIG: SimulatorConfig = {
@@ -48,6 +104,7 @@ const DEFAULT_CONFIG: SimulatorConfig = {
   holdTimeMs: 15000,
   maxFillTimeMs: 1000,
   tradeSize: 25,
+  persistTrades: true,
 };
 
 export function useArbitrageSimulator() {
@@ -251,22 +308,25 @@ export function useArbitrageSimulator() {
           const grossPnl = (exitPrice - entryPrice) * shares;
           const netPnl = grossPnl - totalFees;
 
+          const completedSignal: ArbitrageSignal = {
+            ...signal,
+            status: 'sold',
+            exitPrice,
+            sellTime,
+            exitFee,
+            totalFees,
+            grossPnl,
+            netPnl,
+            pnl: netPnl,
+            notes: `Exit @ ${(exitPrice * 100).toFixed(1)}¢ | Gross: $${grossPnl.toFixed(2)} | Net: $${netPnl.toFixed(2)}`
+          };
+
           setSignals(prev => prev.map(s => 
-            s.id === signalId 
-              ? { 
-                  ...s, 
-                  status: 'sold', 
-                  exitPrice, 
-                  sellTime,
-                  exitFee,
-                  totalFees,
-                  grossPnl,
-                  netPnl,
-                  pnl: netPnl,
-                  notes: `Exit @ ${(exitPrice * 100).toFixed(1)}¢ | Gross: $${grossPnl.toFixed(2)} | Net: $${netPnl.toFixed(2)}` 
-                }
-              : s
+            s.id === signalId ? completedSignal : s
           ));
+
+          // Save to database
+          saveTradeToDb(completedSignal, config);
 
           pendingTradesRef.current.delete(signalId);
         }, config.holdTimeMs);
@@ -396,22 +456,38 @@ export function useArbitrageSimulator() {
         const grossPnl = (exitPrice - entryPrice) * shares;
         const netPnl = grossPnl - totalFees;
 
+        const completedTestSignal: ArbitrageSignal = {
+          id: signalId,
+          timestamp: now,
+          asset,
+          direction,
+          binancePrice: currentBinance,
+          binanceDelta: direction === 'UP' ? 15 : -15,
+          sharePrice,
+          chainlinkPrice: currentChainlink,
+          status: 'sold',
+          entryPrice,
+          exitPrice,
+          sellTime,
+          fillTime,
+          orderType,
+          entryFee,
+          exitFee,
+          totalFees,
+          grossPnl,
+          netPnl,
+          pnl: netPnl,
+          marketSlug: marketInfo?.marketSlug,
+          strikePrice: marketInfo?.strikePrice,
+          notes: `Exit @ ${(exitPrice * 100).toFixed(1)}¢ | Gross: $${grossPnl.toFixed(2)} | Net: $${netPnl.toFixed(2)}`
+        };
+
         setSignals(prev => prev.map(s => 
-          s.id === signalId 
-            ? { 
-                ...s, 
-                status: 'sold', 
-                exitPrice, 
-                sellTime, 
-                exitFee,
-                totalFees,
-                grossPnl,
-                netPnl,
-                pnl: netPnl,
-                notes: `Exit @ ${(exitPrice * 100).toFixed(1)}¢ | Gross: $${grossPnl.toFixed(2)} | Net: $${netPnl.toFixed(2)}` 
-              }
-            : s
+          s.id === signalId ? completedTestSignal : s
         ));
+
+        // Save to database
+        saveTradeToDb(completedTestSignal, config);
 
         pendingTradesRef.current.delete(signalId);
       }, config.holdTimeMs);
