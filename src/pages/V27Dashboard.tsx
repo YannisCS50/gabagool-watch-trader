@@ -28,6 +28,7 @@ import { ShadowCounterfactualPanel } from '@/components/v27/shadow/ShadowCounter
 import { ShadowExportButton } from '@/components/v27/shadow/ShadowExportButton';
 import { TimeRangeFilter, filterDataByTime, DEFAULT_TIME_FILTER, type TimeFilterType } from '@/components/v27/shadow/TimeRangeFilter';
 import { PriceLatencyChart } from '@/components/v27/PriceLatencyChart';
+import PaperTraderDashboard from '@/components/v27/PaperTraderDashboard';
 import type { ShadowDailyPnL } from '@/hooks/useShadowPositions';
 
 export default function V27Dashboard() {
@@ -343,6 +344,9 @@ export default function V27Dashboard() {
             </TabsTrigger>
             <TabsTrigger value="counterfactual" className="text-xs sm:text-sm px-2 sm:px-3">
               Counter
+            </TabsTrigger>
+            <TabsTrigger value="paper" className="text-xs sm:text-sm px-2 sm:px-3 bg-orange-500/20 text-orange-400">
+              Paper
             </TabsTrigger>
           </TabsList>
           <ScrollBar orientation="horizontal" />

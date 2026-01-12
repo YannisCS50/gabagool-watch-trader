@@ -186,6 +186,15 @@ import {
   isPriceFeedLoggerRunning,
 } from './price-feed-ws-logger.js';
 
+// Paper Trader Module (v1.0.0)
+import {
+  startPaperTrader,
+  stopPaperTrader,
+  getPaperTraderStats,
+  setMarketInfo as setPaperTraderMarketInfo,
+  FEATURE_PAPER_TRADER,
+} from './paper-trader.js';
+
 // Feature flag for price feed logger
 const FEATURE_PRICE_LOGGER = process.env.FEATURE_PRICE_LOGGER === 'true';
 
@@ -3716,6 +3725,12 @@ async function main(): Promise<void> {
     startPriceFeedLogger();
   }
 
+  // Start paper trader if enabled
+  if (FEATURE_PAPER_TRADER) {
+    console.log('\n📝 Starting paper trader module...');
+    await startPaperTrader();
+  }
+
   console.log('\n✅ Live trader running with auto-claim! Press Ctrl+C to stop.\n');
 }
 
@@ -3723,6 +3738,12 @@ async function main(): Promise<void> {
 process.on('SIGINT', async () => {
   console.log('\n\n👋 Shutting down...');
   isRunning = false;
+  
+  // Stop paper trader first
+  if (FEATURE_PAPER_TRADER) {
+    console.log('📝 Stopping paper trader...');
+    await stopPaperTrader();
+  }
   
   // Stop price feed logger first (flush remaining data)
   if (isPriceFeedLoggerRunning()) {
