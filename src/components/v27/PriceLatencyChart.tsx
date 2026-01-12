@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -16,6 +16,7 @@ const ASSETS: Asset[] = ['BTC', 'ETH', 'SOL', 'XRP'];
 const COLORS = {
   binance: '#F0B90B',
   chainlink: '#375BD2',
+  polymarket: '#8B5CF6', // Purple for Polymarket share price
   positive: '#3FB950',
   negative: '#F85149',
 };
@@ -75,6 +76,34 @@ export function PriceLatencyChart() {
 
   const [chartData, setChartData] = useState<{ binanceData: any[]; chainlinkData: any[] }>({ binanceData: [], chainlinkData: [] });
   const [showSettings, setShowSettings] = useState(false);
+  
+  // Track Polymarket share price history
+  const shareHistoryRef = useRef<{ time: number; upAsk: number | null; downAsk: number | null }[]>([]);
+  
+  // Update share price history when polymarket prices change
+  useEffect(() => {
+    const marketInfo = polymarketPrices[selectedAsset];
+    if (marketInfo) {
+      const now = Date.now();
+      const lastEntry = shareHistoryRef.current[shareHistoryRef.current.length - 1];
+      
+      // Only add if price changed or 500ms passed
+      if (!lastEntry || 
+          now - lastEntry.time > 500 || 
+          lastEntry.upAsk !== marketInfo.upBestAsk ||
+          lastEntry.downAsk !== marketInfo.downBestAsk) {
+        shareHistoryRef.current.push({
+          time: now,
+          upAsk: marketInfo.upBestAsk,
+          downAsk: marketInfo.downBestAsk,
+        });
+        // Keep last 600 entries
+        if (shareHistoryRef.current.length > 600) {
+          shareHistoryRef.current = shareHistoryRef.current.slice(-600);
+        }
+      }
+    }
+  }, [polymarketPrices, selectedAsset]);
 
   // Update chart data at high frequency (50ms) for real-time feel
   useEffect(() => {
@@ -84,7 +113,7 @@ export function PriceLatencyChart() {
     return () => clearInterval(interval);
   }, [getChartData]);
 
-  // Combine chart data for dual-line chart with ms precision
+  // Combine chart data for dual-line chart with ms precision + share prices
   const combinedChartData = useMemo(() => {
     const merged = [...chartData.binanceData, ...chartData.chainlinkData]
       .sort((a, b) => a.time - b.time)
@@ -97,6 +126,30 @@ export function PriceLatencyChart() {
         }
         return acc;
       }, [] as any[]);
+    
+    // Merge in share price history
+    for (const sharePoint of shareHistoryRef.current) {
+      const existing = merged.find((p: any) => Math.abs(p.time - sharePoint.time) < 100);
+      if (existing) {
+        existing.sharePriceCents = sharePoint.upAsk !== null ? sharePoint.upAsk * 100 : null;
+      } else {
+        merged.push({
+          time: sharePoint.time,
+          sharePriceCents: sharePoint.upAsk !== null ? sharePoint.upAsk * 100 : null,
+        });
+      }
+    }
+    
+    // Sort and forward-fill share prices for smoother line
+    merged.sort((a, b) => a.time - b.time);
+    let lastShare: number | null = null;
+    for (const point of merged) {
+      if (point.sharePriceCents !== undefined && point.sharePriceCents !== null) {
+        lastShare = point.sharePriceCents;
+      } else if (lastShare !== null) {
+        point.sharePriceCents = lastShare;
+      }
+    }
     
     return merged.slice(-600);
   }, [chartData]);
@@ -345,9 +398,9 @@ export function PriceLatencyChart() {
           </TabsList>
 
           <TabsContent value="prices">
-            <div className="h-[300px]">
+            <div className="h-[350px]">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={combinedChartData}>
+                <ComposedChart data={combinedChartData}>
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                   <XAxis 
                     dataKey="time" 
@@ -355,17 +408,33 @@ export function PriceLatencyChart() {
                     tickFormatter={(t) => new Date(t).toLocaleTimeString('en-US', { hour12: false, minute: '2-digit', second: '2-digit' })}
                     interval="preserveStartEnd"
                   />
+                  {/* Left Y-axis for spot prices (USD) */}
                   <YAxis 
+                    yAxisId="spot"
                     domain={['auto', 'auto']}
                     tickFormatter={(v) => `$${v.toLocaleString()}`}
                     tick={{ fontSize: 10 }}
+                    orientation="left"
+                  />
+                  {/* Right Y-axis for share prices (cents) */}
+                  <YAxis 
+                    yAxisId="share"
+                    domain={[0, 100]}
+                    tickFormatter={(v) => `${v}¢`}
+                    tick={{ fontSize: 10, fill: COLORS.polymarket }}
+                    orientation="right"
                   />
                   <Tooltip 
                     labelFormatter={(t) => formatTimestamp(t as number)}
-                    formatter={(v: number, name: string) => [`$${v?.toLocaleString()}`, name === 'binance' ? 'Binance' : 'Chainlink']}
+                    formatter={(v: number, name: string) => {
+                      if (name === 'Share Price') return [`${v?.toFixed(1)}¢`, name];
+                      return [`$${v?.toLocaleString()}`, name === 'binance' ? 'Binance' : 'Chainlink'];
+                    }}
                   />
                   <Legend />
+                  {/* Spot price lines */}
                   <Line 
+                    yAxisId="spot"
                     type="stepAfter" 
                     dataKey="binance" 
                     stroke={COLORS.binance}
@@ -376,6 +445,7 @@ export function PriceLatencyChart() {
                     isAnimationActive={false}
                   />
                   <Line 
+                    yAxisId="spot"
                     type="stepAfter" 
                     dataKey="chainlink" 
                     stroke={COLORS.chainlink}
@@ -385,9 +455,41 @@ export function PriceLatencyChart() {
                     name="Chainlink"
                     isAnimationActive={false}
                   />
-                </LineChart>
+                  {/* Share price line */}
+                  <Line 
+                    yAxisId="share"
+                    type="stepAfter" 
+                    dataKey="sharePriceCents" 
+                    stroke={COLORS.polymarket}
+                    dot={false} 
+                    strokeWidth={2}
+                    strokeDasharray="5 2"
+                    connectNulls
+                    name="Share Price"
+                    isAnimationActive={false}
+                  />
+                  {/* Reference lines for share price bounds */}
+                  <ReferenceLine 
+                    yAxisId="share" 
+                    y={config.minSharePrice * 100} 
+                    stroke={COLORS.polymarket} 
+                    strokeDasharray="3 3" 
+                    strokeOpacity={0.5}
+                  />
+                  <ReferenceLine 
+                    yAxisId="share" 
+                    y={config.maxSharePrice * 100} 
+                    stroke={COLORS.polymarket} 
+                    strokeDasharray="3 3" 
+                    strokeOpacity={0.5}
+                  />
+                </ComposedChart>
               </ResponsiveContainer>
             </div>
+            <p className="text-xs text-muted-foreground mt-1 text-center">
+              <span style={{ color: COLORS.polymarket }}>■</span> Share price (¢, rechter as) | 
+              Stippellijnen = trading bounds ({(config.minSharePrice*100).toFixed(0)}-{(config.maxSharePrice*100).toFixed(0)}¢)
+            </p>
 
             {/* Market Cards under Live Prices */}
             <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
