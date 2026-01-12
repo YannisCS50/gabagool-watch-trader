@@ -454,6 +454,7 @@ export function PriceLatencyChart() {
                     <th className="text-left py-1 px-2">Time</th>
                     <th className="text-left py-1 px-2">Asset</th>
                     <th className="text-left py-1 px-2">Dir</th>
+                    <th className="text-right py-1 px-2">Share ¢</th>
                     <th className="text-center py-1 px-2">Type</th>
                     <th className="text-right py-1 px-2">Entry $</th>
                     <th className="text-right py-1 px-2">Exit $</th>
@@ -473,6 +474,9 @@ export function PriceLatencyChart() {
                           ? <span className="text-green-500 flex items-center gap-1"><TrendingUp className="h-3 w-3" /> UP</span>
                           : <span className="text-red-500 flex items-center gap-1"><TrendingDown className="h-3 w-3" /> DN</span>
                         }
+                      </td>
+                      <td className="py-1 px-2 text-right text-purple-400 font-mono">
+                        {s.sharePrice ? `${(s.sharePrice * 100).toFixed(1)}¢` : '—'}
                       </td>
                       <td className="py-1 px-2 text-center">
                         {s.orderType ? (
