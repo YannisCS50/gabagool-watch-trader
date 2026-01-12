@@ -536,8 +536,9 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
     const orderType: 'maker' | 'taker' = result.status === 'filled' ? 'taker' : 'maker';
     const entryFee = orderType === 'taker' ? filledSize * 0.02 : -filledSize * 0.005;
     
-    // Calculate TP price (take-profit = entry + 3¢)
-    const tpPrice = currentConfig.tp_enabled ? entryPrice + (currentConfig.tp_cents / 100) : null;
+    // Calculate TP price using percentage (default 4% = 0.04)
+    const tpPct = currentConfig.tp_pct ?? 0.04; // 4% take-profit
+    const tpPrice = currentConfig.tp_enabled ? entryPrice * (1 + tpPct) : null;
     
     signal.status = 'filled';
     signal.entry_price = entryPrice;
@@ -554,7 +555,7 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
     console.log(`[V28] ✅ LIVE FILL: ${signal.asset} ${signal.direction} @ ${(entryPrice * 100).toFixed(1)}¢ | ${filledSize.toFixed(2)} shares`);
     
     // ========================================
-    // IMMEDIATELY PLACE LIMIT SELL @ TP PRICE
+    // PLACE LIMIT SELL @ TP PRICE (with delay for settlement)
     // ========================================
     if (tpPrice && filledSize > 0) {
       const sellPrice = Math.round(tpPrice * 100) / 100; // tickSize=0.01
@@ -564,7 +565,13 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
       const sellShares = Math.floor(filledSize * 100) / 100;
       
       if (sellShares >= 1) { // Minimum 1 share
-        console.log(`[V28] 📤 IMMEDIATE LIMIT SELL ${sellShares.toFixed(2)} @ ${(sellPrice * 100).toFixed(0)}¢ (TP)`);
+        // CRITICAL: Wait for blockchain settlement before placing SELL
+        // After BUY fills, shares need ~2-5s to be available in wallet
+        const settlementDelay = 3000; // 3 seconds
+        console.log(`[V28] ⏳ Waiting ${settlementDelay}ms for share settlement before SELL...`);
+        await new Promise(resolve => setTimeout(resolve, settlementDelay));
+        
+        console.log(`[V28] 📤 LIMIT SELL ${sellShares.toFixed(2)} @ ${(sellPrice * 100).toFixed(0)}¢ (TP +${((tpPrice / entryPrice - 1) * 100).toFixed(1)}%)`);
         
         const sellResult = await placeOrder({
           tokenId,

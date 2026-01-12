@@ -23,7 +23,8 @@ export interface V28Config {
   max_share_price: number;     // Max acceptable share price (e.g. 0.65 = 65¢)
   
   // TP/SL settings
-  tp_cents: number;            // Take profit in cents
+  tp_cents: number;            // Take profit in cents (legacy, use tp_pct)
+  tp_pct: number;              // Take profit as percentage (0.04 = 4%)
   tp_enabled: boolean;
   sl_cents: number;            // Stop loss in cents
   sl_enabled: boolean;
@@ -43,6 +44,7 @@ export const DEFAULT_V28_CONFIG: V28Config = {
   min_share_price: 0.35,
   max_share_price: 0.65,
   tp_cents: 3,
+  tp_pct: 0.04,  // 4% take profit
   tp_enabled: true,
   sl_cents: 3,
   sl_enabled: true,
@@ -73,6 +75,7 @@ export async function loadV28Config(supabase: SupabaseClient): Promise<V28Config
       min_share_price: data.min_share_price ?? 0.35,
       max_share_price: data.max_share_price ?? 0.65,
       tp_cents: data.tp_cents ?? 3,
+      tp_pct: data.tp_pct ?? 0.04,  // 4% take profit
       tp_enabled: data.tp_enabled ?? true,
       sl_cents: data.sl_cents ?? 3,
       sl_enabled: data.sl_enabled ?? true,
