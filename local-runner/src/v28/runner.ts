@@ -288,13 +288,9 @@ async function createSignal(
     const now = Date.now();
     const market = marketInfo[asset];
 
-    const rawChainlink = await fetchChainlinkPrice(asset);
-    const chainlinkPrice =
-      typeof rawChainlink === 'number'
-        ? rawChainlink
-        : rawChainlink && typeof rawChainlink === 'object' && typeof (rawChainlink as any).price === 'number'
-          ? Number((rawChainlink as any).price)
-          : null;
+    // SPEED OPTIMIZATION: Skip Chainlink fetch in hot path (saves ~50-100ms)
+    // We'll fetch it async after order placement for logging
+    const chainlinkPrice = priceState[asset].chainlink;
 
     const signal: V28Signal = {
       run_id: RUN_ID,
@@ -332,20 +328,29 @@ async function createSignal(
 
     console.log(`[V28] 📊 Signal: ${asset} ${direction} @ ${(sharePrice * 100).toFixed(1)}¢ | Δ$${Math.abs(binanceDelta).toFixed(2)}`);
 
-    const signalId = await saveSignal(signal);
-    if (!signalId) {
-      console.warn('[V28] Signal save failed; releasing lock');
-      return;
-    }
-
-    signal.id = signalId;
-    positionLock = { status: 'open', asset, signalId, acquiredAt: Date.now() };
-
     // Execute fill - either real CLOB order (live) or simulated (paper)
     if (currentConfig.is_live) {
-      console.log(`[V28] 🔴 LIVE MODE - Placing real CLOB order for ${asset} ${direction}`);
+      // SPEED: Place order FIRST, save to DB in parallel (don't wait for save)
+      console.log(`[V28] 🔴 LIVE - Executing immediately...`);
+      
+      // Fire-and-forget DB save (don't block order execution)
+      const savePromise = saveSignal(signal).then(id => {
+        if (id) signal.id = id;
+      });
+      
       await executeLiveOrder(signal, market);
+      
+      // Ensure save completes
+      await savePromise;
+      positionLock = { status: 'open', asset, signalId: signal.id, acquiredAt: Date.now() };
     } else {
+      const signalId = await saveSignal(signal);
+      if (!signalId) {
+        console.warn('[V28] Signal save failed; releasing lock');
+        return;
+      }
+      signal.id = signalId;
+      positionLock = { status: 'open', asset, signalId, acquiredAt: Date.now() };
       setTimeout(() => void simulateFill(signal), 50 + Math.random() * 50);
     }
   } finally {
@@ -411,10 +416,10 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
   const orderStartTs = Date.now();
   
   if (!market) {
-    console.error(`[V28] ❌ LIVE ORDER FAILED: No market info for ${signal.asset}`);
+    console.error(`[V28] ❌ No market info for ${signal.asset}`);
     signal.status = 'failed';
     signal.notes = 'No market info available';
-    await saveSignal(signal);
+    void saveSignal(signal); // Fire-and-forget
     positionLock = { status: 'idle' };
     return;
   }
@@ -423,21 +428,17 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
   const tokenId = signal.direction === 'UP' ? market.upTokenId : market.downTokenId;
   const shares = signal.trade_size_usd / signal.share_price;
   
-  console.log(`[V28] 📤 Placing CLOB order:`);
-  console.log(`   Token: ${tokenId.slice(0, 20)}...`);
-  console.log(`   Side: BUY | Size: ${shares.toFixed(2)} | Price: ${(signal.share_price * 100).toFixed(1)}¢`);
+  // SPEED: Minimal logging (save ~5-10ms)
+  console.log(`[V28] 📤 BUY ${shares.toFixed(1)} @ ${(signal.share_price * 100).toFixed(1)}¢`);
   
   try {
-    // Initialize CLOB client if needed
-    await getClient();
-    
-    // Place the order
+    // SPEED: Use FOK for immediate fill (no waiting for resting orders)
     const result = await placeOrder({
       tokenId,
       side: 'BUY',
       price: signal.share_price,
       size: shares,
-      orderType: 'GTC',
+      orderType: 'FOK', // Fill-Or-Kill for speed
       intent: 'ENTRY',
     });
     
@@ -856,6 +857,17 @@ export async function startV28Runner(): Promise<void> {
   console.log('[V28] ✅ SINGLE POSITION LOCK - Max 1 position at a time');
   
   await fetchActiveMarkets();
+  
+  // Pre-init CLOB client at startup (saves ~100-200ms on first order)
+  if (currentConfig.is_live) {
+    console.log('[V28] 🔴 LIVE MODE - Pre-initializing CLOB client...');
+    try {
+      await getClient();
+      console.log('[V28] ✅ CLOB client ready');
+    } catch (e: any) {
+      console.error('[V28] ⚠️ CLOB client init failed:', e?.message);
+    }
+  }
   
   isRunning = true;
   
