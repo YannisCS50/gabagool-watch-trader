@@ -38,7 +38,34 @@ function parseTimestampFromSlug(slug: string): number | null {
   return null;
 }
 
-// Fetch current price from Chainlink via public RPC
+// Fetch current price from Polymarket RTDS (same source they use for settlement)
+async function fetchPolymarketChainlinkPrice(asset: string): Promise<{ price: number; timestamp: number } | null> {
+  try {
+    // Use Polymarket's data API which exposes their Chainlink prices
+    const assetLower = asset.toLowerCase();
+    const response = await fetch(`https://data-api.polymarket.com/prices?assets=${assetLower}`);
+    
+    if (!response.ok) {
+      console.log(`[polymarket] API error: ${response.status}`);
+      return null;
+    }
+
+    const data = await response.json();
+    const price = data?.[assetLower];
+    
+    if (typeof price === 'number' && price > 0) {
+      console.log(`[polymarket] ${asset} price: $${price.toFixed(6)}`);
+      return { price, timestamp: Date.now() };
+    }
+    
+    return null;
+  } catch (e) {
+    console.error(`[polymarket] Error fetching ${asset}:`, e);
+    return null;
+  }
+}
+
+// Fallback: Fetch current price from Chainlink via public RPC
 async function fetchChainlinkPrice(asset: string): Promise<{ price: number; timestamp: number } | null> {
   const feedAddress = CHAINLINK_FEEDS[asset];
   if (!feedAddress) {
@@ -92,6 +119,23 @@ async function fetchChainlinkPrice(asset: string): Promise<{ price: number; time
     console.error(`[chainlink] Error fetching ${asset}:`, e);
     return null;
   }
+}
+
+// Get price from best available source (prefer Polymarket's source)
+async function getPrice(asset: string): Promise<{ price: number; timestamp: number; source: string } | null> {
+  // Try Polymarket first (this is what they use for settlement)
+  const pmPrice = await fetchPolymarketChainlinkPrice(asset);
+  if (pmPrice) {
+    return { ...pmPrice, source: 'polymarket_api' };
+  }
+  
+  // Fallback to direct Chainlink RPC
+  const clPrice = await fetchChainlinkPrice(asset);
+  if (clPrice) {
+    return { ...clPrice, source: 'chainlink_rpc' };
+  }
+  
+  return null;
 }
 
 // Generate all active 15m market slugs deterministically based on time
@@ -197,20 +241,20 @@ function determineQuality(tickTimestamp: number, targetTimeMs: number): string {
   return 'estimated';
 }
 
-// Store strike prices in database using direct Chainlink RPC
-async function storePricesFromChainlink(
+// Store strike prices in database using best available price source
+async function storePrices(
   supabase: any, 
   markets: MarketToTrack[]
 ): Promise<{ openStored: number; closeStored: number }> {
   let openStored = 0;
   let closeStored = 0;
   
-  // Fetch current prices for all needed assets
+  // Fetch current prices for all needed assets (prefer Polymarket's source)
   const assetsNeeded = [...new Set(markets.map(m => m.asset))];
-  const currentPrices: Record<string, { price: number; timestamp: number }> = {};
+  const currentPrices: Record<string, { price: number; timestamp: number; source: string }> = {};
   
   for (const asset of assetsNeeded) {
-    const result = await fetchChainlinkPrice(asset);
+    const result = await getPrice(asset);
     if (result) {
       currentPrices[asset] = result;
     }
@@ -327,8 +371,8 @@ serve(async (req) => {
       });
     }
     
-    // 2. Fetch prices directly from Chainlink RPC and store them
-    const { openStored, closeStored } = await storePricesFromChainlink(supabase, marketsNeeding);
+    // 2. Fetch prices and store them
+    const { openStored, closeStored } = await storePrices(supabase, marketsNeeding);
     
     // 3. Return summary
     return new Response(JSON.stringify({

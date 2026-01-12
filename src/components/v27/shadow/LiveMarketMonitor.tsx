@@ -261,7 +261,9 @@ export function LiveMarketMonitor() {
           };
         });
 
-        // Fetch stable "To Beat" (strike/open) from strike_prices, so it never tracks the live price.
+        // Fetch stable "To Beat" (strike/open) from strike_prices table
+        // NOTE: This is our best approximation - Polymarket's exact strike comes from their
+        // internal Chainlink snapshot at eventStartTime which isn't publicly exposed
         const slugs = Array.from(new Set(base.map((b) => b.marketSlug))).filter(Boolean);
         const strikeBySlug: Record<string, number> = {};
 
