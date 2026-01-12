@@ -343,6 +343,27 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
 
   const direction: 'UP' | 'DOWN' = delta > 0 ? 'UP' : 'DOWN';
 
+  // NEW FILTER: Restrict direction based on Binance vs Strike price delta
+  // Delta between -70 and +70: can trade both UP and DOWN
+  // Delta < -70: can only trade DOWN
+  // Delta > +70: can only trade UP
+  const strikePrice = market.strikePrice;
+  if (strikePrice !== null && strikePrice !== undefined) {
+    const binanceVsStrikeDelta = newPrice - strikePrice;
+    
+    if (binanceVsStrikeDelta < -70 && direction === 'UP') {
+      console.log(`[V28] 🚫 ${asset} Binance-Strike Δ$${binanceVsStrikeDelta.toFixed(0)} < -70 → only DOWN allowed, skipping UP`);
+      return;
+    }
+    
+    if (binanceVsStrikeDelta > 70 && direction === 'DOWN') {
+      console.log(`[V28] 🚫 ${asset} Binance-Strike Δ$${binanceVsStrikeDelta.toFixed(0)} > +70 → only UP allowed, skipping DOWN`);
+      return;
+    }
+    
+    console.log(`[V28] ✅ ${asset} Binance-Strike Δ$${binanceVsStrikeDelta.toFixed(0)} → ${direction} allowed`);
+  }
+
   // Get share price
   const state = priceState[asset];
   const sharePrice = direction === 'UP'
