@@ -7,7 +7,7 @@
 import { SupabaseClient } from '@supabase/supabase-js';
 import { V28Config, Asset, loadV28Config, initSupabase, DEFAULT_V28_CONFIG } from './config.js';
 import { fetchChainlinkPrice } from '../chain.js';
-import { getOrderbookDepth } from '../polymarket.js';
+import { getOrderbookDepth, placeOrder, getClient } from '../polymarket.js';
 import { startPriceFeedLogger, stopPriceFeedLogger, type PriceFeedCallback } from '../price-feed-ws-logger.js';
 
 // ============================================
@@ -341,11 +341,10 @@ async function createSignal(
     signal.id = signalId;
     positionLock = { status: 'open', asset, signalId, acquiredAt: Date.now() };
 
-    // Simulate fill after small delay (paper mode) or execute real order (live mode)
+    // Execute fill - either real CLOB order (live) or simulated (paper)
     if (currentConfig.is_live) {
-      // TODO: Implement real order execution via CLOB
-      console.log(`[V28] 🔴 LIVE MODE - Would place real order for ${asset} ${direction}`);
-      await simulateFill(signal);
+      console.log(`[V28] 🔴 LIVE MODE - Placing real CLOB order for ${asset} ${direction}`);
+      await executeLiveOrder(signal, market);
     } else {
       setTimeout(() => void simulateFill(signal), 50 + Math.random() * 50);
     }
@@ -403,6 +402,202 @@ async function simulateFill(signal: V28Signal): Promise<void> {
   }, currentConfig.timeout_ms);
 
   activeSignals.set(signal.id!, { signal, tpSlInterval, timeoutTimer });
+}
+
+/**
+ * Execute a REAL order on Polymarket CLOB (live mode)
+ */
+async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefined): Promise<void> {
+  const orderStartTs = Date.now();
+  
+  if (!market) {
+    console.error(`[V28] ❌ LIVE ORDER FAILED: No market info for ${signal.asset}`);
+    signal.status = 'failed';
+    signal.notes = 'No market info available';
+    await saveSignal(signal);
+    positionLock = { status: 'idle' };
+    return;
+  }
+  
+  // Determine token ID based on direction
+  const tokenId = signal.direction === 'UP' ? market.upTokenId : market.downTokenId;
+  const shares = signal.trade_size_usd / signal.share_price;
+  
+  console.log(`[V28] 📤 Placing CLOB order:`);
+  console.log(`   Token: ${tokenId.slice(0, 20)}...`);
+  console.log(`   Side: BUY | Size: ${shares.toFixed(2)} | Price: ${(signal.share_price * 100).toFixed(1)}¢`);
+  
+  try {
+    // Initialize CLOB client if needed
+    await getClient();
+    
+    // Place the order
+    const result = await placeOrder({
+      tokenId,
+      side: 'BUY',
+      price: signal.share_price,
+      size: shares,
+      orderType: 'GTC',
+      intent: 'ENTRY',
+    });
+    
+    const orderLatency = Date.now() - orderStartTs;
+    const totalLatency = Date.now() - signal.signal_ts;
+    
+    if (!result.success) {
+      console.error(`[V28] ❌ LIVE ORDER FAILED: ${result.error}`);
+      signal.status = 'failed';
+      signal.notes = `Order failed: ${result.error} | Latency: ${orderLatency}ms`;
+      await saveSignal(signal);
+      positionLock = { status: 'idle' };
+      return;
+    }
+    
+    // Order succeeded
+    const entryPrice = result.avgPrice ?? signal.share_price;
+    const filledSize = result.filledSize ?? shares;
+    const orderType: 'maker' | 'taker' = result.status === 'filled' ? 'taker' : 'maker';
+    const entryFee = orderType === 'taker' ? filledSize * 0.02 : -filledSize * 0.005;
+    
+    // Calculate TP/SL prices
+    const tpPrice = currentConfig.tp_enabled ? entryPrice + (currentConfig.tp_cents / 100) : null;
+    const slPrice = currentConfig.sl_enabled ? entryPrice - (currentConfig.sl_cents / 100) : null;
+    
+    signal.status = 'filled';
+    signal.entry_price = entryPrice;
+    signal.fill_ts = Date.now();
+    signal.order_type = orderType;
+    signal.entry_fee = entryFee;
+    signal.shares = filledSize;
+    signal.tp_price = tpPrice;
+    signal.tp_status = tpPrice ? 'pending' : null;
+    signal.sl_price = slPrice;
+    signal.sl_status = slPrice ? 'pending' : null;
+    signal.notes = `🔴 LIVE FILL @ ${(entryPrice * 100).toFixed(1)}¢ | Order: ${orderLatency}ms | Total: ${totalLatency}ms | TP: ${tpPrice ? (tpPrice * 100).toFixed(1) : '-'}¢ | SL: ${slPrice ? (slPrice * 100).toFixed(1) : '-'}¢`;
+    
+    console.log(`[V28] ⏱️ LATENCY: Signal → Order = ${totalLatency}ms (order took ${orderLatency}ms)`);
+    console.log(`[V28] ✅ LIVE FILL: ${signal.asset} ${signal.direction} @ ${(entryPrice * 100).toFixed(1)}¢ | ${filledSize.toFixed(2)} shares`);
+    
+    await saveSignal(signal);
+    
+    // Start TP/SL monitoring (will place SELL orders when triggered)
+    const tpSlInterval = startLiveTpSlMonitoring(signal, tokenId);
+    
+    // Set timeout fallback
+    const timeoutTimer = setTimeout(() => {
+      handleLiveTimeout(signal, tokenId);
+    }, currentConfig.timeout_ms);
+    
+    activeSignals.set(signal.id!, { signal, tpSlInterval, timeoutTimer });
+    
+  } catch (error: any) {
+    console.error(`[V28] ❌ LIVE ORDER EXCEPTION: ${error?.message || error}`);
+    signal.status = 'failed';
+    signal.notes = `Exception: ${error?.message || 'Unknown error'}`;
+    await saveSignal(signal);
+    positionLock = { status: 'idle' };
+  }
+}
+
+/**
+ * Monitor TP/SL and place SELL orders when triggered (live mode)
+ */
+function startLiveTpSlMonitoring(signal: V28Signal, tokenId: string): NodeJS.Timeout | null {
+  if (!signal.tp_price && !signal.sl_price) return null;
+  
+  return setInterval(async () => {
+    const state = priceState[signal.asset];
+    const currentBid = signal.direction === 'UP' ? state.upBestBid : state.downBestBid;
+    
+    if (currentBid === null) return;
+    
+    await saveTpSlEvent(signal.id!, Date.now(), currentBid, signal.tp_price, signal.sl_price, null);
+    
+    // Check Take-Profit
+    if (signal.tp_price && currentBid >= signal.tp_price) {
+      await handleLiveExit(signal, tokenId, 'tp', signal.tp_price);
+      return;
+    }
+    
+    // Check Stop-Loss
+    if (signal.sl_price && currentBid <= signal.sl_price) {
+      await handleLiveExit(signal, tokenId, 'sl', signal.sl_price);
+      return;
+    }
+  }, 500);
+}
+
+/**
+ * Handle exit with real SELL order (live mode)
+ */
+async function handleLiveExit(signal: V28Signal, tokenId: string, exitType: 'tp' | 'sl' | 'timeout', exitPrice: number): Promise<void> {
+  const active = activeSignals.get(signal.id!);
+  if (!active) return;
+  
+  if (active.tpSlInterval) clearInterval(active.tpSlInterval);
+  if (active.timeoutTimer) clearTimeout(active.timeoutTimer);
+  activeSignals.delete(signal.id!);
+  
+  // Release global lock
+  if (positionLock.status === 'open' && positionLock.signalId === signal.id) {
+    positionLock = { status: 'idle' };
+  }
+  
+  const shares = signal.shares ?? 0;
+  
+  console.log(`[V28] 📤 Placing SELL order (${exitType}): ${shares.toFixed(2)} shares @ ${(exitPrice * 100).toFixed(1)}¢`);
+  
+  try {
+    const result = await placeOrder({
+      tokenId,
+      side: 'SELL',
+      price: exitPrice,
+      size: shares,
+      orderType: 'GTC',
+      intent: 'HEDGE', // Use HEDGE intent for exits
+    });
+    
+    const actualExitPrice = result.avgPrice ?? exitPrice;
+    const exitFee = exitType === 'tp' ? -shares * 0.005 : shares * 0.02;
+    const totalFees = (signal.entry_fee ?? 0) + exitFee;
+    const grossPnl = (actualExitPrice - (signal.entry_price ?? 0)) * shares;
+    const netPnl = grossPnl - totalFees;
+    
+    signal.status = 'sold';
+    signal.exit_price = actualExitPrice;
+    signal.sell_ts = Date.now();
+    signal.exit_fee = exitFee;
+    signal.total_fees = totalFees;
+    signal.gross_pnl = grossPnl;
+    signal.net_pnl = netPnl;
+    signal.tp_status = exitType === 'tp' ? 'filled' : (signal.tp_price ? 'cancelled' : null);
+    signal.sl_status = exitType === 'sl' ? 'filled' : (signal.sl_price ? 'cancelled' : null);
+    signal.exit_type = exitType;
+    
+    const emoji = exitType === 'tp' ? '✅' : exitType === 'sl' ? '❌' : '⏱️';
+    const label = exitType === 'tp' ? 'TP' : exitType === 'sl' ? 'SL' : 'Timeout';
+    signal.notes = `🔴 LIVE ${emoji} ${label} @ ${(actualExitPrice * 100).toFixed(1)}¢ | Net: $${netPnl.toFixed(2)}${!result.success ? ` | SELL failed: ${result.error}` : ''}`;
+    
+    console.log(`[V28] ${emoji} LIVE ${label}: ${signal.asset} ${signal.direction} @ ${(actualExitPrice * 100).toFixed(1)}¢ | Net: $${netPnl.toFixed(2)}`);
+    
+  } catch (error: any) {
+    console.error(`[V28] ❌ SELL ORDER EXCEPTION: ${error?.message || error}`);
+    signal.notes = `${signal.notes} | SELL exception: ${error?.message}`;
+  }
+  
+  await saveTpSlEvent(signal.id!, Date.now(), exitPrice, signal.tp_price, signal.sl_price, exitType === 'timeout' ? null : exitType);
+  await saveSignal(signal);
+}
+
+/**
+ * Handle timeout with real SELL order (live mode)
+ */
+async function handleLiveTimeout(signal: V28Signal, tokenId: string): Promise<void> {
+  const state = priceState[signal.asset];
+  const currentBid = signal.direction === 'UP' ? state.upBestBid : state.downBestBid;
+  const exitPrice = currentBid ?? (signal.entry_price ?? 0);
+  
+  await handleLiveExit(signal, tokenId, 'timeout', exitPrice);
 }
 
 function startTpSlMonitoring(signal: V28Signal): NodeJS.Timeout | null {
