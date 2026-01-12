@@ -136,6 +136,10 @@ interface OpenPosition {
 }
 const openPositions = new Map<string, OpenPosition>();
 
+// Track which token IDs have existing positions from Polymarket API
+// Updated by position monitor - prevents duplicate entries
+const existingPositionsInActiveMarkets = new Set<string>();
+
 // ============================================
 // DATABASE
 // ============================================
@@ -201,6 +205,59 @@ async function saveTpSlEvent(
     } as never);
   } catch (err) {
     console.error('[V28] Error saving TP/SL event:', err);
+  }
+}
+
+/**
+ * Cleanup expired signals - marks filled signals as expired when their market ends
+ * Also determines win/loss based on market result (if available)
+ */
+async function cleanupExpiredSignals(): Promise<void> {
+  if (!supabase) return;
+  
+  const now = Date.now();
+  
+  // Find signals that are still 'filled' (not sold) and check if their market expired
+  for (const [signalId, tracked] of activeSignals) {
+    const signal = tracked.signal;
+    if (signal.status !== 'filled') continue;
+    
+    // Check if market_slug contains a timestamp we can parse
+    const slug = signal.market_slug;
+    if (!slug) continue;
+    
+    // Format: btc-updown-15m-1768233600 - last part is start timestamp
+    const match = slug.match(/-(\d+)$/);
+    if (!match) continue;
+    
+    const marketStartTs = parseInt(match[1], 10) * 1000;
+    const marketEndTs = marketStartTs + 15 * 60 * 1000; // 15 minutes
+    
+    if (now > marketEndTs) {
+      console.log(`[V28] ⏰ Signal ${signalId} market expired at ${new Date(marketEndTs).toISOString()}`);
+      
+      // Clear timers
+      if (tracked.tpSlInterval) clearInterval(tracked.tpSlInterval);
+      if (tracked.timeoutTimer) clearTimeout(tracked.timeoutTimer);
+      
+      // Mark as expired
+      signal.status = 'expired';
+      signal.exit_type = 'timeout';
+      signal.sell_ts = now;
+      
+      // Determine result based on direction vs final price
+      // For now, mark as expired - result will be determined by settlement
+      signal.notes = `⏰ EXPIRED: Market ended before TP hit | Entry@${((signal.entry_price ?? 0) * 100).toFixed(1)}¢ | TP was@${((signal.tp_price ?? 0) * 100).toFixed(1)}¢`;
+      
+      await saveSignal(signal);
+      activeSignals.delete(signalId);
+      openPositions.delete(signalId);
+      
+      // Release position lock
+      if (positionLock.status === 'open' && positionLock.signalId === signalId) {
+        positionLock = { status: 'idle' };
+      }
+    }
   }
 }
 
@@ -318,6 +375,15 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
     s => s.signal.asset === asset && (s.signal.status === 'pending' || s.signal.status === 'filled')
   );
   if (hasActive) return;
+
+  // NEW CHECK: Don't place new orders if we already have a position in this market (from API)
+  // This prevents duplicate entries when signals arrive faster than position sync
+  const tokenIdToCheck = direction === 'UP' ? market.upTokenId : market.downTokenId;
+  const hasExistingPosition = existingPositionsInActiveMarkets.has(tokenIdToCheck);
+  if (hasExistingPosition) {
+    console.log(`[V28] ⏸️ ${asset} ${direction}: Already have position in this market, skipping new entry`);
+    return;
+  }
 
   // Reset window after trigger to avoid re-triggering on same move
   priceWindows[asset] = [{ price: newPrice, ts: now }];
@@ -883,7 +949,9 @@ const MIN_PROFIT_CENTS_TO_SELL = 4;
 
 /**
  * Position Monitor - runs every 10s to check REAL positions from Polymarket API
- * and sell if profitable (> 4%)
+ * and sell if profitable (> 4 cents)
+ * 
+ * Also updates existingPositionsInActiveMarkets to prevent duplicate entries
  */
 async function monitorOpenPositions(): Promise<void> {
   // Fetch real positions from Polymarket API
@@ -907,16 +975,39 @@ async function monitorOpenPositions(): Promise<void> {
   
   for (const [asset, info] of Object.entries(marketInfo)) {
     if (!info) continue;
+    
+    // Check if market is still active (not expired)
+    const now = Date.now();
+    const endTime = new Date(info.eventEndTime).getTime();
+    if (now > endTime) {
+      console.log(`[V28] ⏰ ${asset} market expired, skipping`);
+      continue;
+    }
+    
     activeTokenIds.add(info.upTokenId);
     activeTokenIds.add(info.downTokenId);
     tokenToMarket.set(info.upTokenId, { asset: asset as Asset, direction: 'UP', info });
     tokenToMarket.set(info.downTokenId, { asset: asset as Asset, direction: 'DOWN', info });
   }
 
+  // CRITICAL: Update the set of token IDs with existing positions
+  // This prevents duplicate entries when signals arrive faster than position sync
+  existingPositionsInActiveMarkets.clear();
+  
   // Filter positions that match our active markets
-  const relevantPositions = positions.filter(p => p.asset && activeTokenIds.has(p.asset));
+  const relevantPositions = positions.filter(p => {
+    if (!p.asset || !activeTokenIds.has(p.asset)) return false;
+    // Only track positions with actual shares
+    if (p.size >= 1) {
+      existingPositionsInActiveMarkets.add(p.asset);
+    }
+    return p.size >= 1;
+  });
   
   if (relevantPositions.length === 0) {
+    // Clear tracked positions for expired markets
+    await cleanupExpiredSignals();
+    
     // Also check tracked openPositions from our own trades
     if (openPositions.size > 0) {
       console.log(`[V28] 📋 Position monitor: no API positions, checking ${openPositions.size} tracked position(s)...`);
@@ -925,7 +1016,7 @@ async function monitorOpenPositions(): Promise<void> {
     return;
   }
 
-  console.log(`[V28] 📋 Position monitor: found ${relevantPositions.length} real position(s) from Polymarket API`);
+  console.log(`[V28] 📋 Position monitor: found ${relevantPositions.length} real position(s) in active markets`);
 
   for (const pos of relevantPositions) {
     const marketMatch = tokenToMarket.get(pos.asset);
@@ -1004,10 +1095,29 @@ async function monitorOpenPositions(): Promise<void> {
  * (in case API sync is delayed)
  */
 async function monitorTrackedPositions(): Promise<void> {
+  const now = Date.now();
+  
   for (const [signalId, position] of openPositions) {
     const state = priceState[position.asset];
     const market = marketInfo[position.asset];
     if (!market) continue;
+    
+    // Check if market is expired - stop trying to sell
+    const endTime = new Date(market.eventEndTime).getTime();
+    if (now > endTime) {
+      console.log(`[V28] ⏰ Tracked position ${position.asset} market expired, marking as expired`);
+      position.signal.status = 'expired';
+      position.signal.exit_type = 'timeout';
+      position.signal.sell_ts = now;
+      position.signal.notes = `⏰ EXPIRED: Market ended before sell | Entry@${(position.entryPrice * 100).toFixed(1)}¢`;
+      await saveSignal(position.signal);
+      openPositions.delete(signalId);
+      
+      if (positionLock.status === 'open' && positionLock.signalId === signalId) {
+        positionLock = { status: 'idle' };
+      }
+      continue;
+    }
     
     const currentBid = position.signal.direction === 'UP' ? state.upBestBid : state.downBestBid;
     if (currentBid === null) continue;
@@ -1017,6 +1127,7 @@ async function monitorTrackedPositions(): Promise<void> {
     const profitPct = ((currentBid / position.entryPrice) - 1) * 100;
     
     console.log(`[V28] 📊 Tracked ${position.asset} ${position.signal.direction}: Entry ${(position.entryPrice * 100).toFixed(1)}¢ → Current ${(currentBid * 100).toFixed(1)}¢ (+${profitCents}¢ / ${profitPct >= 0 ? '+' : ''}${profitPct.toFixed(1)}%)`);
+    
     
     // Sell when profit >= 4 CENTS
     if (profitCents >= MIN_PROFIT_CENTS_TO_SELL) {
