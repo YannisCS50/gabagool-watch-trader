@@ -68,6 +68,14 @@ export class MispricingDetector {
     XRP: [0.005, 0.015],      // $0.005, $0.015
   };
   
+  // Annualized volatility per asset (used for expected price calculation fallback)
+  private assetVolatility: Record<string, number> = {
+    BTC: 0.55,   // ~55% annual vol
+    ETH: 0.75,   // ~75% annual vol  
+    SOL: 1.10,   // ~110% annual vol (more volatile)
+    XRP: 1.00,   // ~100% annual vol
+  };
+  
   constructor() {
     // Initialize for supported assets
     for (const asset of ['BTC', 'ETH', 'SOL', 'XRP']) {
