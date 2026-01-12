@@ -765,21 +765,21 @@ async function fetchActiveMarkets(): Promise<void> {
       const asset = market.asset?.toUpperCase() as Asset;
       if (!asset || !['BTC', 'ETH', 'SOL', 'XRP'].includes(asset)) continue;
       
-      // Parse token IDs
-      const tokenIds = Array.isArray(market.clobTokenIds) 
-        ? market.clobTokenIds 
-        : typeof market.clobTokenIds === 'string'
-          ? JSON.parse(market.clobTokenIds)
-          : [];
+      // Edge function returns upTokenId/downTokenId directly
+      const upTokenId = market.upTokenId;
+      const downTokenId = market.downTokenId;
       
-      if (tokenIds.length < 2) continue;
+      if (!upTokenId || !downTokenId) {
+        console.log(`[PaperTrader] Skipping ${asset}: missing token IDs`);
+        continue;
+      }
       
       const info: MarketInfo = {
         asset,
         slug: market.slug,
         strikePrice: market.strikePrice || 0,
-        upTokenId: tokenIds[0],
-        downTokenId: tokenIds[1],
+        upTokenId,
+        downTokenId,
         eventEndTime: market.eventEndTime,
       };
       
