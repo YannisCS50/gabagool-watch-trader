@@ -708,6 +708,9 @@ export async function startPaperTrader(): Promise<void> {
   currentConfig = await loadConfig();
   console.log(`[PaperTrader] Config loaded: enabled=${currentConfig.enabled}, is_live=${currentConfig.is_live}, size=$${currentConfig.trade_size_usd}`);
   
+  // Fetch active markets for standalone mode
+  await fetchActiveMarkets();
+  
   // Subscribe to config changes for hot-reload
   subscribeToConfigChanges();
   
@@ -720,6 +723,76 @@ export async function startPaperTrader(): Promise<void> {
   runLoop();
   
   console.log('[PaperTrader] Started successfully (hot-reload enabled)');
+}
+
+// ============================================
+// MARKET FETCHING
+// ============================================
+
+async function fetchActiveMarkets(): Promise<void> {
+  if (!supabase) return;
+  
+  console.log('[PaperTrader] Fetching active markets...');
+  
+  try {
+    const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+    
+    if (!supabaseUrl || !supabaseKey) {
+      console.warn('[PaperTrader] Cannot fetch markets: missing Supabase credentials');
+      return;
+    }
+    
+    const response = await fetch(`${supabaseUrl}/functions/v1/get-market-tokens`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${supabaseKey}`,
+      },
+      body: JSON.stringify({ v26: true }),
+    });
+    
+    if (!response.ok) {
+      console.warn(`[PaperTrader] Failed to fetch markets: ${response.status}`);
+      return;
+    }
+    
+    const data = await response.json();
+    const markets = data.markets || [];
+    
+    let count = 0;
+    for (const market of markets) {
+      const asset = market.asset?.toUpperCase() as Asset;
+      if (!asset || !['BTC', 'ETH', 'SOL', 'XRP'].includes(asset)) continue;
+      
+      // Parse token IDs
+      const tokenIds = Array.isArray(market.clobTokenIds) 
+        ? market.clobTokenIds 
+        : typeof market.clobTokenIds === 'string'
+          ? JSON.parse(market.clobTokenIds)
+          : [];
+      
+      if (tokenIds.length < 2) continue;
+      
+      const info: MarketInfo = {
+        asset,
+        slug: market.slug,
+        strikePrice: market.strikePrice || 0,
+        upTokenId: tokenIds[0],
+        downTokenId: tokenIds[1],
+        eventEndTime: market.eventEndTime,
+      };
+      
+      marketInfo[asset] = info;
+      count++;
+      console.log(`[PaperTrader] ✓ ${asset}: ${market.slug} (strike: $${info.strikePrice})`);
+    }
+    
+    console.log(`[PaperTrader] Loaded ${count} active markets`);
+    
+  } catch (err) {
+    console.error('[PaperTrader] Error fetching markets:', err);
+  }
 }
 
 export async function stopPaperTrader(): Promise<void> {
