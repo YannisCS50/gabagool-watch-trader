@@ -266,7 +266,7 @@ async function cleanupExpiredSignals(): Promise<void> {
 // ============================================
 
 function handlePriceUpdate(asset: Asset, newPrice: number): void {
-  const now = Date.now();
+  const tickReceivedTs = Date.now();
   priceState[asset].binance = newPrice;
 
   if (!currentConfig.enabled) return;
@@ -278,6 +278,7 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
 
   // Add tick to rolling window
   const window = priceWindows[asset];
+  const now = tickReceivedTs;
   window.push({ price: newPrice, ts: now });
 
   // Initialize window start if needed
@@ -422,19 +423,25 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
   priceWindows[asset] = [{ price: newPrice, ts: now }];
   windowStartPrices[asset] = { price: newPrice, ts: now };
 
-  // Log decision to proceed
-  console.log(`[V28] ✅ PROCEEDING: ${asset} ${direction} @ ${(sharePrice * 100).toFixed(1)}¢ (all checks passed)`);
+  // Log decision to proceed - with timing
+  const detectionMs = Date.now() - tickReceivedTs;
+  console.log(`[V28] ✅ PROCEEDING: ${asset} ${direction} @ ${(sharePrice * 100).toFixed(1)}¢ (detection: ${detectionMs}ms, target: <10ms)`);
 
-  // Create signal
-  void createSignal(asset, direction, newPrice, delta, sharePrice);
+  // Create signal - pass the original tick timestamp for accurate latency tracking
+  void createSignalFast(asset, direction, newPrice, delta, sharePrice, tickReceivedTs);
 }
 
-async function createSignal(
+/**
+ * SPEED-OPTIMIZED signal creation
+ * Takes the original tick timestamp for accurate end-to-end latency tracking
+ */
+async function createSignalFast(
   asset: Asset,
   direction: 'UP' | 'DOWN',
   binancePrice: number,
   binanceDelta: number,
-  sharePrice: number
+  sharePrice: number,
+  tickReceivedTs: number
 ): Promise<void> {
   // Global single-position lock (prevents rapid duplicate orders while we save/fill)
   if (positionLock.status !== 'idle') return;
@@ -454,12 +461,16 @@ async function createSignal(
     const estimatedLatencyMs = binanceChainlinkDelta !== null 
       ? Math.round(Math.abs(binanceChainlinkDelta) / 10 * 1000) 
       : null;
+    
+    // Log pre-order latency
+    const preOrderLatency = now - tickReceivedTs;
+    console.log(`[V28] ⚡ LATENCY: Tick→CreateSignal = ${preOrderLatency}ms (target: <50ms)`);
 
     const signal: V28Signal = {
       run_id: RUN_ID,
       asset,
       direction,
-      signal_ts: now,
+      signal_ts: tickReceivedTs, // Use ORIGINAL tick timestamp for accurate e2e latency!
       binance_price: binancePrice,
       binance_delta: binanceDelta,
       chainlink_price: chainlinkPrice,
@@ -495,18 +506,18 @@ async function createSignal(
 
     // Execute fill - either real CLOB order (live) or simulated (paper)
     if (currentConfig.is_live) {
-      // SPEED: Place order FIRST, save to DB in parallel (don't wait for save)
-      console.log(`[V28] 🔴 LIVE - Executing immediately...`);
+      // SPEED: Place order IMMEDIATELY, DB save is truly fire-and-forget
+      console.log(`[V28] 🔴 LIVE - Executing IMMEDIATELY (zero blocking)...`);
       
-      // Fire-and-forget DB save (don't block order execution)
-      const savePromise = saveSignal(signal).then(id => {
+      // Fire-and-forget DB save - DON'T AWAIT! 
+      // This saves ~20-50ms by not waiting for Supabase roundtrip
+      saveSignal(signal).then(id => {
         if (id) signal.id = id;
-      });
+      }).catch(err => console.error('[V28] Signal save failed:', err));
       
+      // Execute order NOW - this is the critical path
       await executeLiveOrder(signal, market);
       
-      // Ensure save completes
-      await savePromise;
       positionLock = { status: 'open', asset, signalId: signal.id, acquiredAt: Date.now() };
     } else {
       const signalId = await saveSignal(signal);
@@ -582,6 +593,8 @@ async function simulateFill(signal: V28Signal): Promise<void> {
  */
 async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefined): Promise<void> {
   const orderStartTs = Date.now();
+  const signalToOrderMs = orderStartTs - signal.signal_ts;
+  console.log(`[V28] ⚡ LATENCY: Signal→OrderStart = ${signalToOrderMs}ms (target: <100ms)`);
   
   if (!market) {
     console.error(`[V28] ❌ No market info for ${signal.asset}`);
@@ -717,6 +730,7 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
     
     const orderLatency = Date.now() - orderStartTs;
     const totalLatency = Date.now() - signal.signal_ts;
+    console.log(`[V28] ⚡ LATENCY: Order HTTP = ${orderLatency}ms | Signal→Fill TOTAL = ${totalLatency}ms (target: <800ms)`);
     
     if (!result.success) {
       console.log(`[V28] ┌─────────────────────────────────────────────────────────────`);
@@ -769,10 +783,10 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
     signal.sl_price = null; // No SL in immediate-sell mode
     signal.sl_status = null;
     
-    // Update notes with full trade info including TP price
+    // Update notes with full trade info INCLUDING E2E LATENCY
     const bcDelta = signal.binance_chainlink_delta;
     const latencyMs = signal.binance_chainlink_latency_ms;
-    signal.notes = `${signal.direction} | B-CL Δ$${bcDelta?.toFixed(0) ?? '?'} (~${latencyMs ?? '?'}ms) | Entry@${(entryPrice * 100).toFixed(1)}¢ → TP@${tpPrice ? (tpPrice * 100).toFixed(1) : '-'}¢ (+${tpCents}¢)`;
+    signal.notes = `${signal.direction} | E2E: ${totalLatency}ms | B-CL Δ$${bcDelta?.toFixed(0) ?? '?'} (~${latencyMs ?? '?'}ms) | Entry@${(entryPrice * 100).toFixed(1)}¢ → TP@${tpPrice ? (tpPrice * 100).toFixed(1) : '-'}¢ (+${tpCents}¢)`;
     
     console.log(`[V28] ┌─────────────────────────────────────────────────────────────`);
     console.log(`[V28] │ ✅ ORDER FILLED!`);
