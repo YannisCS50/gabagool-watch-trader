@@ -2,10 +2,14 @@ import { useEffect, useState, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
+import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, ComposedChart, Bar } from 'recharts';
-import { RefreshCw, Activity, Play, Square, Wifi, WifiOff } from 'lucide-react';
-import { usePriceLatencyComparison, Asset } from '@/hooks/usePriceLatencyComparison';
+import { RefreshCw, Activity, Play, Square, Wifi, WifiOff, TrendingUp, TrendingDown, Zap, Settings } from 'lucide-react';
+import { useArbitrageSimulator, type ArbitrageSignal } from '@/hooks/useArbitrageSimulator';
+import { Asset } from '@/hooks/usePriceLatencyComparison';
 
 const ASSETS: Asset[] = ['BTC', 'ETH', 'SOL', 'XRP'];
 
@@ -22,46 +26,63 @@ function formatTimestamp(ts: number): string {
     + '.' + String(ts % 1000).padStart(3, '0');
 }
 
+function SignalStatusBadge({ status }: { status: ArbitrageSignal['status'] }) {
+  switch (status) {
+    case 'pending':
+      return <Badge variant="secondary" className="bg-yellow-500/20 text-yellow-400">Pending</Badge>;
+    case 'filled':
+      return <Badge variant="secondary" className="bg-blue-500/20 text-blue-400">Filled</Badge>;
+    case 'sold':
+      return <Badge variant="secondary" className="bg-green-500/20 text-green-400">Sold</Badge>;
+    case 'failed':
+      return <Badge variant="destructive">Failed</Badge>;
+    case 'expired':
+      return <Badge variant="secondary">Expired</Badge>;
+  }
+}
+
 export function PriceLatencyChart() {
   const {
+    config,
+    updateConfig,
+    signals,
+    clearSignals,
+    simulatorStats,
     selectedAsset,
     binancePrice,
     chainlinkPrice,
     binanceLastUpdate,
     chainlinkLastUpdate,
     connectionStatus,
-    eventLog,
-    stats,
-    setSelectedAsset,
-    clearEventLog,
-    resetSession,
-    connect,
-    disconnect,
-    getChartData,
-    getLatencyHistogram,
     binanceWsStatus,
     chainlinkWsStatus,
+    connect,
+    disconnect,
+    resetSession,
+    setSelectedAsset,
+    eventLog,
+    stats,
+    getChartData,
+    getLatencyHistogram,
     lastError,
-  } = usePriceLatencyComparison();
+  } = useArbitrageSimulator();
 
   const [chartData, setChartData] = useState<{ binanceData: any[]; chainlinkData: any[] }>({ binanceData: [], chainlinkData: [] });
-  const [histogramData, setHistogramData] = useState<{ range: string; count: number }[]>([]);
+  const [showSettings, setShowSettings] = useState(false);
 
   // Update chart data at high frequency (50ms) for real-time feel
   useEffect(() => {
     const interval = setInterval(() => {
       setChartData(getChartData());
-      setHistogramData(getLatencyHistogram());
     }, 50);
     return () => clearInterval(interval);
-  }, [getChartData, getLatencyHistogram]);
+  }, [getChartData]);
 
   // Combine chart data for dual-line chart with ms precision
   const combinedChartData = useMemo(() => {
     const merged = [...chartData.binanceData, ...chartData.chainlinkData]
       .sort((a, b) => a.time - b.time)
       .reduce((acc, point) => {
-        // Use smaller window (50ms) for matching points
         const existing = acc.find((p: any) => Math.abs(p.time - point.time) < 50);
         if (existing) {
           existing[point.source] = point.price;
@@ -71,7 +92,6 @@ export function PriceLatencyChart() {
         return acc;
       }, [] as any[]);
     
-    // Keep last 600 data points (approx 30 seconds at 50ms intervals)
     return merged.slice(-600);
   }, [chartData]);
 
@@ -100,54 +120,35 @@ export function PriceLatencyChart() {
     return data.slice(-300);
   }, [combinedChartData]);
 
-  // Calculate spread data
-  const spreadChartData = useMemo(() => {
-    return combinedChartData
-      .filter(p => p.binance && p.chainlink)
-      .map(p => ({
-        time: p.time,
-        spread: p.binance - p.chainlink,
-      }));
-  }, [combinedChartData]);
-
-  // Recent significant moves from event log
-  const significantMoves = useMemo(() => {
-    const moves: { time: number; source: string; price: number; latencyLead?: number }[] = [];
-    let prevPrice: Record<string, number> = {};
-
-    for (const event of eventLog.slice(0, 100)) {
-      const prev = prevPrice[event.source];
-      if (prev && Math.abs(event.price - prev) > (selectedAsset === 'BTC' ? 5 : 0.1)) {
-        moves.push({
-          time: event.timestamp,
-          source: event.source,
-          price: event.price,
-          latencyLead: event.latencyLead,
-        });
-      }
-      prevPrice[event.source] = event.price;
-    }
-
-    return moves.slice(0, 10);
-  }, [eventLog, selectedAsset]);
-
   return (
     <Card className="col-span-full">
       <CardHeader>
         <div className="flex items-center justify-between flex-wrap gap-4">
           <div>
             <CardTitle className="flex items-center gap-2">
-              <Activity className="h-5 w-5" />
-              Realtime Price Latency Analysis
+              <Zap className="h-5 w-5 text-yellow-400" />
+              Arbitrage Simulator
             </CardTitle>
             <CardDescription>
-              Live WebSocket vergelijking: Binance vs Chainlink RTDS (50ms resolution)
+              Live WebSocket + Paper Trading Simulator (50ms resolution)
             </CardDescription>
             {lastError && (
               <p className="text-xs text-destructive mt-1">{lastError}</p>
             )}
           </div>
           <div className="flex items-center gap-2 flex-wrap">
+            {/* Simulator toggle */}
+            <div className="flex items-center gap-2 mr-4">
+              <Switch 
+                id="simulator-enabled"
+                checked={config.enabled} 
+                onCheckedChange={(checked) => updateConfig({ enabled: checked })}
+              />
+              <Label htmlFor="simulator-enabled" className="text-sm">
+                {config.enabled ? 'Trading' : 'Paused'}
+              </Label>
+            </div>
+
             {/* Asset selector */}
             <Tabs value={selectedAsset} onValueChange={(v) => setSelectedAsset(v as Asset)}>
               <TabsList>
@@ -163,19 +164,22 @@ export function PriceLatencyChart() {
                 variant="outline"
                 className={`text-xs ${binanceWsStatus === 'connected' ? 'border-yellow-500 text-yellow-500' : 'border-muted'}`}
               >
-                <div className={`w-2 h-2 rounded-full mr-1 ${binanceWsStatus === 'connected' ? 'bg-yellow-500' : 'bg-muted'}`} />
+                <div className={`w-2 h-2 rounded-full mr-1 ${binanceWsStatus === 'connected' ? 'bg-yellow-500 animate-pulse' : 'bg-muted'}`} />
                 Binance
               </Badge>
               <Badge 
                 variant="outline"
                 className={`text-xs ${chainlinkWsStatus === 'connected' ? 'border-blue-500 text-blue-500' : 'border-muted'}`}
               >
-                <div className={`w-2 h-2 rounded-full mr-1 ${chainlinkWsStatus === 'connected' ? 'bg-blue-500' : 'bg-muted'}`} />
+                <div className={`w-2 h-2 rounded-full mr-1 ${chainlinkWsStatus === 'connected' ? 'bg-blue-500 animate-pulse' : 'bg-muted'}`} />
                 Chainlink
               </Badge>
             </div>
 
             {/* Controls */}
+            <Button variant="ghost" size="sm" onClick={() => setShowSettings(!showSettings)}>
+              <Settings className="h-4 w-4" />
+            </Button>
             {connectionStatus === 'connected' ? (
               <Button variant="outline" size="sm" onClick={disconnect}>
                 <Square className="h-4 w-4 mr-1" />
@@ -187,55 +191,99 @@ export function PriceLatencyChart() {
                 {connectionStatus === 'connecting' ? 'Connecting...' : 'Start'}
               </Button>
             )}
-            <Button variant="outline" size="sm" onClick={resetSession}>
-              <RefreshCw className="h-4 w-4" />
-            </Button>
           </div>
         </div>
+
+        {/* Settings panel */}
+        {showSettings && (
+          <div className="mt-4 p-4 bg-muted rounded-lg grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div>
+              <Label className="text-xs">Min Delta ($)</Label>
+              <Input 
+                type="number" 
+                value={config.minDeltaUsd} 
+                onChange={(e) => updateConfig({ minDeltaUsd: parseFloat(e.target.value) || 10 })}
+                className="h-8"
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Share Range (cents)</Label>
+              <div className="flex gap-1">
+                <Input 
+                  type="number" 
+                  value={config.minSharePrice * 100} 
+                  onChange={(e) => updateConfig({ minSharePrice: (parseFloat(e.target.value) || 35) / 100 })}
+                  className="h-8 w-16"
+                />
+                <span className="self-center">-</span>
+                <Input 
+                  type="number" 
+                  value={config.maxSharePrice * 100} 
+                  onChange={(e) => updateConfig({ maxSharePrice: (parseFloat(e.target.value) || 65) / 100 })}
+                  className="h-8 w-16"
+                />
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs">Hold Time (sec)</Label>
+              <Input 
+                type="number" 
+                value={config.holdTimeMs / 1000} 
+                onChange={(e) => updateConfig({ holdTimeMs: (parseFloat(e.target.value) || 15) * 1000 })}
+                className="h-8"
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Max Fill (ms)</Label>
+              <Input 
+                type="number" 
+                value={config.maxFillTimeMs} 
+                onChange={(e) => updateConfig({ maxFillTimeMs: parseInt(e.target.value) || 1000 })}
+                className="h-8"
+              />
+            </div>
+          </div>
+        )}
       </CardHeader>
       <CardContent>
-        {/* Live price cards */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+        {/* Simulator Stats */}
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-3 mb-6">
           <div className="bg-muted rounded-lg p-3">
             <div className="text-xs text-muted-foreground flex items-center gap-1">
               <div className="w-2 h-2 rounded-full" style={{ backgroundColor: COLORS.binance }} />
               Binance
             </div>
-            <div className="text-xl font-mono font-bold" style={{ color: COLORS.binance }}>
+            <div className="text-lg font-mono font-bold" style={{ color: COLORS.binance }}>
               {binancePrice ? `$${binancePrice.toLocaleString('en-US', { minimumFractionDigits: 2 })}` : '—'}
-            </div>
-            <div className="text-xs text-muted-foreground font-mono">
-              {binanceLastUpdate ? formatTimestamp(binanceLastUpdate) : '—'}
             </div>
           </div>
           <div className="bg-muted rounded-lg p-3">
             <div className="text-xs text-muted-foreground flex items-center gap-1">
               <div className="w-2 h-2 rounded-full" style={{ backgroundColor: COLORS.chainlink }} />
-              Chainlink (Price to Beat)
+              Chainlink
             </div>
-            <div className="text-xl font-mono font-bold" style={{ backgroundColor: COLORS.chainlink }}>
+            <div className="text-lg font-mono font-bold" style={{ color: COLORS.chainlink }}>
               {chainlinkPrice ? `$${chainlinkPrice.toLocaleString('en-US', { minimumFractionDigits: 2 })}` : '—'}
             </div>
-            <div className="text-xs text-muted-foreground font-mono">
-              {chainlinkLastUpdate ? formatTimestamp(chainlinkLastUpdate) : '—'}
+          </div>
+          <div className="bg-muted rounded-lg p-3">
+            <div className="text-xs text-muted-foreground">Signals</div>
+            <div className="text-lg font-mono font-bold">{simulatorStats.totalSignals}</div>
+          </div>
+          <div className="bg-muted rounded-lg p-3">
+            <div className="text-xs text-muted-foreground">Filled/Sold</div>
+            <div className="text-lg font-mono font-bold">{simulatorStats.filled}/{simulatorStats.sold}</div>
+          </div>
+          <div className="bg-muted rounded-lg p-3">
+            <div className="text-xs text-muted-foreground">Win Rate</div>
+            <div className={`text-lg font-mono font-bold ${simulatorStats.winRate >= 0.5 ? 'text-green-500' : 'text-red-500'}`}>
+              {(simulatorStats.winRate * 100).toFixed(0)}%
             </div>
           </div>
           <div className="bg-muted rounded-lg p-3">
-            <div className="text-xs text-muted-foreground">Current Latency</div>
-            <div className={`text-xl font-mono font-bold ${stats.currentLatency && stats.currentLatency > 0 ? 'text-green-500' : 'text-red-500'}`}>
-              {stats.currentLatency !== null ? `${stats.currentLatency > 0 ? '+' : ''}${stats.currentLatency.toFixed(0)}ms` : '—'}
-            </div>
-            <div className="text-xs text-muted-foreground">
-              {stats.currentLatency && stats.currentLatency > 0 ? 'Binance leads' : stats.currentLatency ? 'Chainlink leads' : ''}
-            </div>
-          </div>
-          <div className="bg-muted rounded-lg p-3">
-            <div className="text-xs text-muted-foreground">Price Diff</div>
-            <div className="text-xl font-mono font-bold">
-              {stats.priceDiff !== null ? `$${stats.priceDiff.toFixed(2)}` : '—'}
-            </div>
-            <div className="text-xs text-muted-foreground">
-              {stats.priceDiffPercent !== null ? `(${stats.priceDiffPercent.toFixed(4)}%)` : ''}
+            <div className="text-xs text-muted-foreground">Total PnL</div>
+            <div className={`text-lg font-mono font-bold ${simulatorStats.totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+              {simulatorStats.totalPnl >= 0 ? '+' : ''}${simulatorStats.totalPnl.toFixed(2)}
             </div>
           </div>
         </div>
@@ -244,20 +292,19 @@ export function PriceLatencyChart() {
         <Tabs defaultValue="prices" className="w-full">
           <TabsList className="mb-4">
             <TabsTrigger value="prices">Live Prices</TabsTrigger>
-            <TabsTrigger value="spread">Spread</TabsTrigger>
             <TabsTrigger value="deltas">Price Deltas</TabsTrigger>
-            <TabsTrigger value="log">Event Log</TabsTrigger>
+            <TabsTrigger value="signals">Trade Log</TabsTrigger>
           </TabsList>
 
           <TabsContent value="prices">
-            <div className="h-[350px]">
+            <div className="h-[300px]">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={combinedChartData}>
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
                   <XAxis 
                     dataKey="time" 
                     tick={{ fontSize: 9 }}
-                    tickFormatter={(t) => new Date(t).toLocaleTimeString('en-US', { hour12: false, minute: '2-digit', second: '2-digit' }) + '.' + String(t % 1000).padStart(3, '0').slice(0, 1)}
+                    tickFormatter={(t) => new Date(t).toLocaleTimeString('en-US', { hour12: false, minute: '2-digit', second: '2-digit' })}
                     interval="preserveStartEnd"
                   />
                   <YAxis 
@@ -295,42 +342,8 @@ export function PriceLatencyChart() {
             </div>
           </TabsContent>
 
-          <TabsContent value="spread">
-            <div className="h-[350px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <ComposedChart data={spreadChartData}>
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                  <XAxis 
-                    dataKey="time" 
-                    tick={{ fontSize: 9 }}
-                    tickFormatter={(t) => new Date(t).toLocaleTimeString('en-US', { hour12: false, minute: '2-digit', second: '2-digit' })}
-                    interval="preserveStartEnd"
-                  />
-                  <YAxis 
-                    tickFormatter={(v) => `$${v.toFixed(0)}`}
-                    tick={{ fontSize: 10 }}
-                  />
-                  <Tooltip 
-                    labelFormatter={(t) => formatTimestamp(t as number)}
-                    formatter={(v: number) => [`$${v?.toFixed(2)}`, 'Spread']}
-                  />
-                  <ReferenceLine y={0} stroke="hsl(var(--muted-foreground))" strokeDasharray="3 3" />
-                  <Bar 
-                    dataKey="spread" 
-                    fill="hsl(var(--chart-4))"
-                    name="Binance - Chainlink"
-                    isAnimationActive={false}
-                  />
-                </ComposedChart>
-              </ResponsiveContainer>
-            </div>
-            <p className="text-xs text-muted-foreground mt-2 text-center">
-              Spread = Binance - Chainlink. Positief = Binance hoger (bullish signal)
-            </p>
-          </TabsContent>
-
           <TabsContent value="deltas">
-            <div className="h-[350px]">
+            <div className="h-[300px]">
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={deltaChartData}>
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
@@ -350,6 +363,8 @@ export function PriceLatencyChart() {
                   />
                   <Legend />
                   <ReferenceLine y={0} stroke="hsl(var(--muted-foreground))" strokeDasharray="3 3" />
+                  <ReferenceLine y={config.minDeltaUsd} stroke={COLORS.positive} strokeDasharray="3 3" label="Trigger" />
+                  <ReferenceLine y={-config.minDeltaUsd} stroke={COLORS.negative} strokeDasharray="3 3" />
                   <Bar 
                     dataKey="binanceDelta" 
                     fill={COLORS.binance}
@@ -368,46 +383,60 @@ export function PriceLatencyChart() {
               </ResponsiveContainer>
             </div>
             <p className="text-xs text-muted-foreground mt-2 text-center">
-              Prijsverandering per tick. Binance moves die niet in Chainlink verschijnen = arbitrage window
+              Groene/rode lijnen = trigger threshold (${config.minDeltaUsd}). Moves boven threshold triggeren trades.
             </p>
           </TabsContent>
 
-          <TabsContent value="log">
+          <TabsContent value="signals">
             <div className="flex justify-between items-center mb-2">
-              <span className="text-sm text-muted-foreground">Laatste {eventLog.length} events</span>
-              <Button variant="ghost" size="sm" onClick={clearEventLog}>Clear</Button>
+              <span className="text-sm text-muted-foreground">{signals.length} signals logged</span>
+              <Button variant="ghost" size="sm" onClick={clearSignals}>Clear</Button>
             </div>
-            <div className="h-[350px] overflow-auto font-mono text-xs">
+            <div className="h-[300px] overflow-auto font-mono text-xs">
               <table className="w-full">
                 <thead className="sticky top-0 bg-background">
                   <tr className="border-b">
                     <th className="text-left py-1 px-2">Time</th>
-                    <th className="text-left py-1 px-2">Source</th>
-                    <th className="text-right py-1 px-2">Price</th>
-                    <th className="text-right py-1 px-2">Lead</th>
+                    <th className="text-left py-1 px-2">Asset</th>
+                    <th className="text-left py-1 px-2">Dir</th>
+                    <th className="text-right py-1 px-2">Delta</th>
+                    <th className="text-center py-1 px-2">Status</th>
+                    <th className="text-right py-1 px-2">PnL</th>
+                    <th className="text-left py-1 px-2">Notes</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {eventLog.slice(0, 100).map((e, i) => (
-                    <tr key={i} className="border-b border-muted/50 hover:bg-muted/30">
-                      <td className="py-1 px-2">{formatTimestamp(e.timestamp)}</td>
+                  {signals.slice(0, 50).map((s) => (
+                    <tr key={s.id} className="border-b border-muted/50 hover:bg-muted/30">
+                      <td className="py-1 px-2">{formatTimestamp(s.timestamp)}</td>
+                      <td className="py-1 px-2">{s.asset}</td>
                       <td className="py-1 px-2">
-                        <span style={{ color: e.source === 'binance' ? COLORS.binance : COLORS.chainlink }}>
-                          {e.source}
-                        </span>
+                        {s.direction === 'UP' 
+                          ? <TrendingUp className="h-3 w-3 text-green-500" />
+                          : <TrendingDown className="h-3 w-3 text-red-500" />
+                        }
                       </td>
-                      <td className="py-1 px-2 text-right">${e.price.toLocaleString('en-US', { minimumFractionDigits: 2 })}</td>
-                      <td className="py-1 px-2 text-right">
-                        {e.latencyLead !== undefined ? (
-                          <span className={e.latencyLead > 0 ? 'text-green-500' : 'text-red-500'}>
-                            {e.latencyLead > 0 ? '+' : ''}{e.latencyLead}ms
-                          </span>
-                        ) : '—'}
+                      <td className={`py-1 px-2 text-right ${s.binanceDelta > 0 ? 'text-green-500' : 'text-red-500'}`}>
+                        ${Math.abs(s.binanceDelta).toFixed(2)}
+                      </td>
+                      <td className="py-1 px-2 text-center">
+                        <SignalStatusBadge status={s.status} />
+                      </td>
+                      <td className={`py-1 px-2 text-right ${(s.pnl || 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                        {s.pnl !== undefined ? `$${s.pnl.toFixed(2)}` : '—'}
+                      </td>
+                      <td className="py-1 px-2 text-muted-foreground truncate max-w-[200px]">
+                        {s.notes}
                       </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
+              {signals.length === 0 && (
+                <div className="text-center text-muted-foreground py-8">
+                  Wacht op prijsbewegingen &gt; ${config.minDeltaUsd}...
+                </div>
+              )}
             </div>
           </TabsContent>
         </Tabs>
