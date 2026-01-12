@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Eye, RefreshCw, Wifi, WifiOff } from 'lucide-react';
+import { ArrowLeft, Eye, RefreshCw, Wifi, WifiOff, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -28,6 +28,7 @@ import { ShadowCounterfactualPanel } from '@/components/v27/shadow/ShadowCounter
 import { ShadowExportButton } from '@/components/v27/shadow/ShadowExportButton';
 import { TimeRangeFilter, filterDataByTime, DEFAULT_TIME_FILTER, type TimeFilterType } from '@/components/v27/shadow/TimeRangeFilter';
 import { PriceLatencyChart } from '@/components/v27/PriceLatencyChart';
+import { RealtimePriceMonitor } from '@/components/RealtimePriceMonitor';
 import PaperTraderDashboard from '@/components/v27/PaperTraderDashboard';
 import type { ShadowDailyPnL } from '@/hooks/useShadowPositions';
 
@@ -35,7 +36,7 @@ export default function V27Dashboard() {
   const navigate = useNavigate();
   const { data, loading, refetch, rawEvaluations, rawTrackings } = useShadowDashboard(1000);
   const positionsData = useShadowPositions(500);
-  const [activeTab, setActiveTab] = useState<string>('overview');
+  const [activeTab, setActiveTab] = useState<string>('realtime');
   const [timeFilter, setTimeFilter] = useState<TimeFilterType>(DEFAULT_TIME_FILTER);
 
   // Filter all data based on time selection
@@ -315,6 +316,10 @@ export default function V27Dashboard() {
       <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
         <ScrollArea className="w-full whitespace-nowrap pb-2">
           <TabsList className="inline-flex w-max gap-1 p-1">
+            <TabsTrigger value="realtime" className="text-xs sm:text-sm px-2 sm:px-3 bg-yellow-500/20 text-yellow-400">
+              <Zap className="h-3 w-3 mr-1" />
+              Live
+            </TabsTrigger>
             <TabsTrigger value="overview" className="text-xs sm:text-sm px-2 sm:px-3">
               Markets
             </TabsTrigger>
@@ -351,6 +356,10 @@ export default function V27Dashboard() {
           </TabsList>
           <ScrollBar orientation="horizontal" />
         </ScrollArea>
+
+        <TabsContent value="realtime" className="space-y-4 sm:space-y-6 mt-4">
+          <RealtimePriceMonitor />
+        </TabsContent>
 
         <TabsContent value="overview" className="space-y-4 sm:space-y-6 mt-4">
           <LiveMarketMonitor />
