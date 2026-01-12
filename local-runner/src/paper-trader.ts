@@ -778,6 +778,10 @@ async function fetchMarketInfo(): Promise<void> {
 let lastMarketRefresh = 0;
 const MARKET_REFRESH_INTERVAL_MS = 60_000; // Refresh every 60 seconds
 
+// Track when we last reloaded config
+let lastConfigReload = 0;
+const CONFIG_RELOAD_INTERVAL_MS = 10_000; // Reload config every 10 seconds as fallback
+
 // Check if any market is expiring soon or has expired
 function shouldRefreshMarkets(): boolean {
   const now = Date.now();
@@ -808,7 +812,24 @@ function shouldRefreshMarkets(): boolean {
 async function runLoop(): Promise<void> {
   while (isRunning) {
     try {
-      // Config is now updated via realtime subscription, no need to reload
+      const now = Date.now();
+      
+      // Periodically reload config as fallback (realtime may not work in Node.js)
+      if (now - lastConfigReload > CONFIG_RELOAD_INTERVAL_MS) {
+        const oldDelta = currentConfig.min_delta_usd;
+        const oldMinShare = currentConfig.min_share_price;
+        const oldMaxShare = currentConfig.max_share_price;
+        
+        currentConfig = await loadConfig();
+        lastConfigReload = now;
+        
+        // Log if config changed
+        if (oldDelta !== currentConfig.min_delta_usd || 
+            oldMinShare !== currentConfig.min_share_price || 
+            oldMaxShare !== currentConfig.max_share_price) {
+          console.log(`[PaperTrader] 📋 Config reloaded: delta=$${currentConfig.min_delta_usd}, shares=${(currentConfig.min_share_price * 100).toFixed(0)}-${(currentConfig.max_share_price * 100).toFixed(0)}¢`);
+        }
+      }
       
       if (!currentConfig.enabled) {
         await new Promise(r => setTimeout(r, 5000));
