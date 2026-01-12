@@ -1,118 +1,75 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { supabase } from '@/integrations/supabase/client';
 
 /**
- * Hook for real-time price data from Binance WebSocket + Polymarket CLOB
- * Provides millisecond-precision price updates for trading decisions
+ * Hook for real-time Binance spot prices via WebSocket
+ * Uses correct multi-stream URL format: wss://stream.binance.com:9443/stream?streams=...
+ * Implements exponential backoff for reconnection
  */
 
 interface SpotPrice {
   asset: string;
   price: number;
   timestamp: number;
-  source: 'binance' | 'chainlink' | 'polymarket';
 }
 
-interface OrderbookPrice {
-  asset: string;
-  outcome: 'up' | 'down';
-  bid: number | null;
-  ask: number | null;
-  timestamp: number;
-}
-
-interface RealtimeState {
+interface BinanceState {
   spotPrices: Map<string, SpotPrice>;
-  orderbooks: Map<string, { up: OrderbookPrice; down: OrderbookPrice }>;
   connected: boolean;
-  binanceConnected: boolean;
-  clobConnected: boolean;
   messageCount: number;
   lastUpdate: number;
 }
 
-const BINANCE_WS_URL = 'wss://stream.binance.com:9443/ws';
-const CLOB_WS_URL = 'wss://ws-subscriptions-clob.polymarket.com/ws/market';
 const ASSETS = ['BTC', 'ETH', 'SOL', 'XRP'];
 const BINANCE_SYMBOLS = ['btcusdt', 'ethusdt', 'solusdt', 'xrpusdt'];
 
 export function useRealtimePrices(enabled: boolean = true) {
-  const [state, setState] = useState<RealtimeState>({
+  const [state, setState] = useState<BinanceState>({
     spotPrices: new Map(),
-    orderbooks: new Map(),
     connected: false,
-    binanceConnected: false,
-    clobConnected: false,
     messageCount: 0,
     lastUpdate: Date.now(),
   });
 
-  const enabledRef = useRef(enabled);
-  const binanceWsRef = useRef<WebSocket | null>(null);
-  const clobWsRef = useRef<WebSocket | null>(null);
-  const tokenMapRef = useRef<Map<string, { asset: string; outcome: 'up' | 'down' }>>(new Map());
+  const wsRef = useRef<WebSocket | null>(null);
   const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const enabledRef = useRef(enabled);
+  const mountedRef = useRef(true);
 
-  // Fetch token IDs for CLOB subscription
-  const fetchTokenIds = useCallback(async () => {
-    try {
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/get-market-tokens`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({}),
-        }
-      );
+  // Connect to Binance WebSocket
+  const connect = useCallback(() => {
+    if (!enabledRef.current || !mountedRef.current) return;
+    if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
-      if (!response.ok) return [];
-
-      const data = await response.json();
-      if (!data?.success || !Array.isArray(data?.markets)) return [];
-
-      const tokenIds: string[] = [];
-      tokenMapRef.current.clear();
-
-      for (const m of data.markets) {
-        if (m.upTokenId) {
-          tokenIds.push(String(m.upTokenId));
-          tokenMapRef.current.set(String(m.upTokenId), { asset: m.asset, outcome: 'up' });
-        }
-        if (m.downTokenId) {
-          tokenIds.push(String(m.downTokenId));
-          tokenMapRef.current.set(String(m.downTokenId), { asset: m.asset, outcome: 'down' });
-        }
-      }
-
-      return tokenIds;
-    } catch {
-      return [];
-    }
-  }, []);
-
-  // Connect to Binance WebSocket for spot prices
-  const connectBinance = useCallback(() => {
-    if (!enabledRef.current) return;
-    if (binanceWsRef.current?.readyState === WebSocket.OPEN) return;
-
+    // Correct multi-stream format
     const streams = BINANCE_SYMBOLS.map((s) => `${s}@trade`).join('/');
-    const url = `${BINANCE_WS_URL}/${streams}`;
+    const url = `wss://stream.binance.com:9443/stream?streams=${streams}`;
 
-    console.log('[RealtimePrices] Connecting to Binance...');
+    console.log('[Binance] Connecting...');
 
     try {
       const ws = new WebSocket(url);
-      binanceWsRef.current = ws;
+      wsRef.current = ws;
 
       ws.onopen = () => {
-        console.log('[RealtimePrices] ✅ Binance connected');
-        setState((prev) => ({ ...prev, binanceConnected: true, connected: true }));
+        console.log('[Binance] ✅ Connected');
+        reconnectAttemptsRef.current = 0;
+
+        if (!mountedRef.current) {
+          ws.close();
+          return;
+        }
+
+        setState((prev) => ({ ...prev, connected: true }));
       };
 
       ws.onmessage = (event) => {
         try {
-          const msg = JSON.parse(event.data);
+          const wrapper = JSON.parse(event.data);
           const now = Date.now();
+
+          // Multi-stream format: { stream: "btcusdt@trade", data: { e: "trade", ... } }
+          const msg = wrapper.data || wrapper;
 
           if (msg.e === 'trade' && msg.s && msg.p) {
             const symbol = msg.s.replace('USDT', '').toUpperCase();
@@ -122,12 +79,7 @@ export function useRealtimePrices(enabled: boolean = true) {
 
               setState((prev) => {
                 const newSpotPrices = new Map(prev.spotPrices);
-                newSpotPrices.set(symbol, {
-                  asset: symbol,
-                  price,
-                  timestamp,
-                  source: 'binance',
-                });
+                newSpotPrices.set(symbol, { asset: symbol, price, timestamp });
                 return {
                   ...prev,
                   spotPrices: newSpotPrices,
@@ -143,169 +95,61 @@ export function useRealtimePrices(enabled: boolean = true) {
       };
 
       ws.onerror = (err) => {
-        console.error('[RealtimePrices] Binance error:', err);
-        setState((prev) => ({ ...prev, binanceConnected: false }));
+        console.error('[Binance] Error:', err);
+        setState((prev) => ({ ...prev, connected: false }));
       };
 
-      ws.onclose = () => {
-        console.log('[RealtimePrices] Binance disconnected');
-        setState((prev) => ({ ...prev, binanceConnected: false }));
-        binanceWsRef.current = null;
+      ws.onclose = (event) => {
+        console.log('[Binance] Disconnected:', event.code);
+        wsRef.current = null;
 
-        // Reconnect after 3s
+        if (!mountedRef.current) return;
+
+        setState((prev) => ({ ...prev, connected: false }));
+
+        // Exponential backoff
         if (enabledRef.current) {
-          reconnectTimeoutRef.current = setTimeout(connectBinance, 3000);
+          const attempts = reconnectAttemptsRef.current;
+          const delay = Math.min(1000 * Math.pow(2, attempts), 30000);
+          reconnectAttemptsRef.current = attempts + 1;
+
+          console.log(`[Binance] Reconnecting in ${delay}ms (attempt ${attempts + 1})`);
+          reconnectTimeoutRef.current = setTimeout(connect, delay);
         }
       };
     } catch (err) {
-      console.error('[RealtimePrices] Failed to create Binance WebSocket:', err);
+      console.error('[Binance] Failed to create WebSocket:', err);
     }
   }, []);
 
-  // Connect to CLOB WebSocket for orderbook prices
-  const connectCLOB = useCallback(async () => {
-    if (!enabledRef.current) return;
-    if (clobWsRef.current?.readyState === WebSocket.OPEN) return;
-
-    const tokenIds = await fetchTokenIds();
-    if (tokenIds.length === 0) {
-      console.log('[RealtimePrices] No token IDs found');
-      return;
-    }
-
-    console.log(`[RealtimePrices] Connecting to CLOB with ${tokenIds.length} tokens...`);
-
-    try {
-      const ws = new WebSocket(CLOB_WS_URL);
-      clobWsRef.current = ws;
-
-      ws.onopen = () => {
-        console.log('[RealtimePrices] ✅ CLOB connected');
-        setState((prev) => ({ ...prev, clobConnected: true, connected: true }));
-
-        // Subscribe to each token
-        for (const tokenId of tokenIds) {
-          ws.send(
-            JSON.stringify({
-              type: 'subscribe',
-              channel: 'market',
-              assets_ids: [tokenId],
-            })
-          );
-        }
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          const now = Date.now();
-
-          if (data.asset_id) {
-            const tokenId = String(data.asset_id);
-            const info = tokenMapRef.current.get(tokenId);
-
-            if (info) {
-              let bestBid: number | null = null;
-              let bestAsk: number | null = null;
-
-              if (Array.isArray(data.bids) && data.bids.length > 0) {
-                const firstBid = data.bids[0];
-                bestBid =
-                  typeof firstBid === 'object' && firstBid.price
-                    ? parseFloat(firstBid.price)
-                    : Array.isArray(firstBid)
-                    ? parseFloat(firstBid[0])
-                    : null;
-              }
-
-              if (Array.isArray(data.asks) && data.asks.length > 0) {
-                const firstAsk = data.asks[0];
-                bestAsk =
-                  typeof firstAsk === 'object' && firstAsk.price
-                    ? parseFloat(firstAsk.price)
-                    : Array.isArray(firstAsk)
-                    ? parseFloat(firstAsk[0])
-                    : null;
-              }
-
-              setState((prev) => {
-                const newOrderbooks = new Map(prev.orderbooks);
-                const existing = newOrderbooks.get(info.asset) || {
-                  up: { asset: info.asset, outcome: 'up', bid: null, ask: null, timestamp: 0 },
-                  down: { asset: info.asset, outcome: 'down', bid: null, ask: null, timestamp: 0 },
-                };
-
-                existing[info.outcome] = {
-                  asset: info.asset,
-                  outcome: info.outcome,
-                  bid: bestBid,
-                  ask: bestAsk,
-                  timestamp: now,
-                };
-
-                newOrderbooks.set(info.asset, existing);
-
-                return {
-                  ...prev,
-                  orderbooks: newOrderbooks,
-                  messageCount: prev.messageCount + 1,
-                  lastUpdate: now,
-                };
-              });
-            }
-          }
-        } catch {
-          // Ignore parse errors
-        }
-      };
-
-      ws.onerror = (err) => {
-        console.error('[RealtimePrices] CLOB error:', err);
-        setState((prev) => ({ ...prev, clobConnected: false }));
-      };
-
-      ws.onclose = () => {
-        console.log('[RealtimePrices] CLOB disconnected');
-        setState((prev) => ({ ...prev, clobConnected: false }));
-        clobWsRef.current = null;
-
-        // Reconnect after 3s
-        if (enabledRef.current) {
-          setTimeout(connectCLOB, 3000);
-        }
-      };
-    } catch (err) {
-      console.error('[RealtimePrices] Failed to create CLOB WebSocket:', err);
-    }
-  }, [fetchTokenIds]);
-
-  // Cleanup
-  const cleanup = useCallback(() => {
-    if (binanceWsRef.current) {
-      binanceWsRef.current.close();
-      binanceWsRef.current = null;
-    }
-    if (clobWsRef.current) {
-      clobWsRef.current.close();
-      clobWsRef.current = null;
-    }
+  // Disconnect and cleanup
+  const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
       reconnectTimeoutRef.current = null;
     }
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
   }, []);
 
-  // Connect on mount
+  // Lifecycle
   useEffect(() => {
+    mountedRef.current = true;
     enabledRef.current = enabled;
 
     if (enabled) {
-      connectBinance();
-      connectCLOB();
+      connect();
+    } else {
+      disconnect();
     }
 
-    return cleanup;
-  }, [enabled, connectBinance, connectCLOB, cleanup]);
+    return () => {
+      mountedRef.current = false;
+      disconnect();
+    };
+  }, [enabled, connect, disconnect]);
 
   // Helper functions
   const getSpotPrice = useCallback(
@@ -315,13 +159,20 @@ export function useRealtimePrices(enabled: boolean = true) {
     [state.spotPrices]
   );
 
-  const getOrderbook = useCallback(
-    (asset: string, outcome: 'up' | 'down'): { bid: number | null; ask: number | null } | null => {
-      const ob = state.orderbooks.get(asset);
-      if (!ob) return null;
-      return { bid: ob[outcome].bid, ask: ob[outcome].ask };
+  const getSpotTimestamp = useCallback(
+    (asset: string): number | null => {
+      return state.spotPrices.get(asset)?.timestamp ?? null;
     },
-    [state.orderbooks]
+    [state.spotPrices]
+  );
+
+  const isSpotStale = useCallback(
+    (asset: string, maxAgeMs: number = 5000): boolean => {
+      const ts = state.spotPrices.get(asset)?.timestamp;
+      if (!ts) return true;
+      return Date.now() - ts > maxAgeMs;
+    },
+    [state.spotPrices]
   );
 
   const getDelta = useCallback(
@@ -336,13 +187,16 @@ export function useRealtimePrices(enabled: boolean = true) {
 
   return {
     ...state,
+    binanceConnected: state.connected,
+    assets: ASSETS,
     getSpotPrice,
-    getOrderbook,
+    getSpotTimestamp,
+    isSpotStale,
     getDelta,
     reconnect: () => {
-      cleanup();
-      connectBinance();
-      connectCLOB();
+      disconnect();
+      reconnectAttemptsRef.current = 0;
+      connect();
     },
   };
 }
