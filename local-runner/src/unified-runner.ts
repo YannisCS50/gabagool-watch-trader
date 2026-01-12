@@ -18,7 +18,8 @@ import { enforceVpnOrExit } from './vpn-check.js';
 import { fetchChainlinkPrice } from './chain.js';
 import { startPriceFeedLogger, stopPriceFeedLogger, getPriceFeedLoggerStats } from './price-feed-ws-logger.js';
 import { V27Runner } from './v27/runner.js';
-import { getV27Config, loadV27Config } from './v27/config.js';
+import { getV27Config } from './v27/config.js';
+import type { V27Config } from './v27/config.js';
 import type { V27Market, V27OrderBook, V27SpotData } from './v27/index.js';
 
 // ============================================================
@@ -93,6 +94,60 @@ function setAssetPrice(asset: string, price: number): void {
     case 'ETH': lastEthPrice = price; break;
     case 'SOL': lastSolPrice = price; break;
     case 'XRP': lastXrpPrice = price; break;
+  }
+}
+
+// ============================================================
+// MARKET MANAGEMENT
+// ============================================================
+
+async function loadV27ConfigOverridesFromDb(
+  supabaseClient: any
+): Promise<Partial<V27Config> | null> {
+  if (!supabaseClient) return null;
+
+  try {
+    const { data, error } = await supabaseClient
+      .from('v27_config')
+      .select('*')
+      .eq('id', 'default')
+      .single();
+
+    if (error) throw error;
+    if (!data) return null;
+
+    const overrides: Partial<V27Config> = {};
+
+    if (typeof data.enabled === 'boolean') overrides.enabled = data.enabled;
+    if (typeof data.shadow_mode === 'boolean') overrides.shadowMode = data.shadow_mode;
+    if (Array.isArray(data.assets)) overrides.assets = data.assets;
+
+    // Map DB thresholds -> local-runner config shape
+    if (data.asset_thresholds && typeof data.asset_thresholds === 'object') {
+      const current = getV27Config();
+      const assetConfigs: Record<string, any> = { ...current.assetConfigs };
+
+      for (const [asset, th] of Object.entries<any>(data.asset_thresholds)) {
+        if (!assetConfigs[asset]) continue;
+        assetConfigs[asset] = {
+          ...assetConfigs[asset],
+          deltaThresholdMin: Number(th?.min ?? assetConfigs[asset].deltaThresholdMin),
+          deltaThresholdMax: Number(th?.max ?? assetConfigs[asset].deltaThresholdMax),
+          deltaThreshold: Number(th?.current ?? assetConfigs[asset].deltaThreshold),
+        };
+      }
+
+      overrides.assetConfigs = assetConfigs;
+    }
+
+    if (typeof data.causality_min_ms === 'number') overrides.causalityMinMs = data.causality_min_ms;
+    if (typeof data.causality_max_ms === 'number') overrides.causalityMaxMs = data.causality_max_ms;
+    if (typeof data.correction_threshold_pct === 'number') overrides.correctionThresholdPct = data.correction_threshold_pct;
+
+    return overrides;
+  } catch (err) {
+    logError('Failed to load V27 config from DB (falling back to defaults)', err);
+    return null;
   }
 }
 
@@ -375,11 +430,12 @@ async function main(): Promise<void> {
   const balance = await getBalance();
   log(`💰 Balance: $${normalizeUsdAmount(balance) ?? 'unknown'}`);
 
-  // 4. Initialize V27 runner with Supabase client for logging
-  loadV27Config();
+  // 4. Initialize V27 runner with database-backed config
   const supabaseClient = getSupabaseClient();
+  const dbOverrides = await loadV27ConfigOverridesFromDb(supabaseClient);
+
   v27Runner = new V27Runner(RUN_ID, supabaseClient);
-  v27Runner.initialize();
+  v27Runner.initialize(dbOverrides ?? undefined);
   v27Runner.setOrderCallback(executeOrder);
   v27Runner.start();
 
