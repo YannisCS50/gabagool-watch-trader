@@ -491,6 +491,45 @@ export function PriceLatencyChart() {
               Stippellijnen = trading bounds ({(config.minSharePrice*100).toFixed(0)}-{(config.maxSharePrice*100).toFixed(0)}¢)
             </p>
 
+            {/* Active Market Title */}
+            {(() => {
+              const marketInfo = polymarketPrices[selectedAsset];
+              if (!marketInfo) return null;
+              
+              const endTime = new Date(marketInfo.eventEndTime);
+              const now = new Date();
+              const diffMs = endTime.getTime() - now.getTime();
+              const diffMin = Math.floor(diffMs / 60000);
+              const diffSec = Math.floor((diffMs % 60000) / 1000);
+              const isExpired = diffMs <= 0;
+              
+              return (
+                <div className="mt-3 p-3 bg-muted/50 rounded-lg border">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-medium">
+                        {selectedAsset} • {marketInfo.strikePrice ? `Strike $${marketInfo.strikePrice.toLocaleString()}` : 'Loading...'}
+                      </p>
+                      <p className="text-xs text-muted-foreground truncate max-w-[300px]">
+                        {marketInfo.marketSlug}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <Badge variant={isExpired ? 'destructive' : 'secondary'} className="font-mono">
+                        {isExpired 
+                          ? 'Expired' 
+                          : `${diffMin}m ${diffSec}s`
+                        }
+                      </Badge>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Eindigt: {endTime.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' })}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Market Cards under Live Prices */}
             <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
               {ASSETS.map(asset => {
