@@ -204,6 +204,23 @@ function BotPriceFeedPanel() {
               const snap = latestByAsset?.[asset];
               const isStale = snap ? getAgeMs(snap.ts) > 15000 : true;
               
+              // Calculate delta and mispricing
+              const strikePrice = snap?.strike_price;
+              const binancePrice = snap?.binance_price;
+              const delta = binancePrice && strikePrice ? binancePrice - strikePrice : null;
+              const deltaPercent = delta && strikePrice ? (delta / strikePrice) * 100 : null;
+              const side = delta !== null ? (delta > 0 ? 'UP' : 'DOWN') : null;
+              
+              // Calculate combined cost and edge
+              const combined = snap?.up_best_ask && snap?.down_best_ask 
+                ? snap.up_best_ask + snap.down_best_ask 
+                : null;
+              const mispricing = combined ? (1 - combined) * 100 : null;
+              
+              // Calculate price to beat (the share price we need to pay)
+              const sharePrice = side === 'UP' ? snap?.up_best_ask : snap?.down_best_ask;
+              const priceToBeat = sharePrice ? 1 - sharePrice : null;
+              
               return (
                 <div 
                   key={asset} 
@@ -211,53 +228,100 @@ function BotPriceFeedPanel() {
                 >
                   <div className="flex items-center justify-between mb-2">
                     <span className="font-bold text-lg">{asset}</span>
-                    {snap && (
-                      <span className={`text-xs ${isStale ? 'text-muted-foreground' : 'text-green-400'}`}>
-                        {formatAge(snap.ts)}
-                      </span>
-                    )}
+                    <div className="flex items-center gap-1">
+                      {side && (
+                        <Badge 
+                          variant="outline" 
+                          className={`text-xs ${side === 'UP' ? 'text-green-400 border-green-400' : 'text-red-400 border-red-400'}`}
+                        >
+                          {side === 'UP' ? <TrendingUp className="h-3 w-3 mr-1" /> : <TrendingDown className="h-3 w-3 mr-1" />}
+                          {side}
+                        </Badge>
+                      )}
+                      {snap && (
+                        <span className={`text-xs ${isStale ? 'text-muted-foreground' : 'text-green-400'}`}>
+                          {formatAge(snap.ts)}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   
                   {snap ? (
-                    <>
-                      {/* Binance price */}
-                      <div className="mb-2">
-                        <div className="text-xs text-muted-foreground">Binance</div>
-                        <div className="font-mono text-yellow-500 font-semibold">
-                          ${snap.binance_price?.toLocaleString() || '—'}
+                    <div className="space-y-2">
+                      {/* Spot & Strike row */}
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div>
+                          <span className="text-muted-foreground">Spot</span>
+                          <div className="font-mono text-yellow-500 font-semibold">
+                            ${snap.binance_price?.toLocaleString(undefined, { maximumFractionDigits: 0 }) || '—'}
+                          </div>
+                        </div>
+                        <div>
+                          <span className="text-muted-foreground">Strike</span>
+                          <div className="font-mono text-blue-400">
+                            ${strikePrice?.toLocaleString(undefined, { maximumFractionDigits: 0 }) || '—'}
+                          </div>
                         </div>
                       </div>
+                      
+                      {/* Delta */}
+                      {delta !== null && (
+                        <div className="flex justify-between items-center text-xs">
+                          <span className="text-muted-foreground">Delta</span>
+                          <span className={`font-mono font-semibold ${delta > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {delta > 0 ? '+' : ''}{delta.toFixed(0)} ({deltaPercent?.toFixed(2)}%)
+                          </span>
+                        </div>
+                      )}
+                      
+                      {/* Price to Beat */}
+                      {priceToBeat !== null && (
+                        <div className="flex justify-between items-center text-xs border-t pt-2">
+                          <span className="text-muted-foreground">Price to Beat</span>
+                          <span className="font-mono font-bold text-primary">
+                            {(priceToBeat * 100).toFixed(1)}¢
+                          </span>
+                        </div>
+                      )}
                       
                       {/* CLOB prices */}
                       <div className="grid grid-cols-2 gap-2 text-xs">
                         <div>
                           <span className="text-muted-foreground">UP Ask</span>
-                          <div className="font-mono text-green-400">
+                          <div className={`font-mono ${side === 'UP' ? 'text-green-400 font-bold' : 'text-muted-foreground'}`}>
                             {snap.up_best_ask ? `${(snap.up_best_ask * 100).toFixed(1)}¢` : '—'}
                           </div>
                         </div>
                         <div>
                           <span className="text-muted-foreground">DN Ask</span>
-                          <div className="font-mono text-red-400">
+                          <div className={`font-mono ${side === 'DOWN' ? 'text-red-400 font-bold' : 'text-muted-foreground'}`}>
                             {snap.down_best_ask ? `${(snap.down_best_ask * 100).toFixed(1)}¢` : '—'}
                           </div>
                         </div>
                       </div>
                       
-                      {/* Combined cost */}
-                      {snap.up_best_ask && snap.down_best_ask && (
-                        <div className="mt-2 pt-2 border-t text-xs flex justify-between">
-                          <span className="text-muted-foreground">Combined</span>
-                          <span className={`font-mono font-bold ${
-                            snap.up_best_ask + snap.down_best_ask < 1 
-                              ? 'text-green-400' 
-                              : 'text-muted-foreground'
-                          }`}>
-                            {((snap.up_best_ask + snap.down_best_ask) * 100).toFixed(1)}¢
-                          </span>
+                      {/* Combined & Edge */}
+                      {combined && (
+                        <div className="border-t pt-2 space-y-1 text-xs">
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Combined</span>
+                            <span className={`font-mono ${combined < 1 ? 'text-green-400' : 'text-muted-foreground'}`}>
+                              {(combined * 100).toFixed(1)}¢
+                            </span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-muted-foreground">Edge</span>
+                            <span className={`font-mono font-bold ${
+                              mispricing && mispricing > 0 
+                                ? 'text-green-400' 
+                                : 'text-red-400'
+                            }`}>
+                              {mispricing?.toFixed(1)}¢
+                            </span>
+                          </div>
                         </div>
                       )}
-                    </>
+                    </div>
                   ) : (
                     <div className="text-xs text-muted-foreground">No data</div>
                   )}
