@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { usePriceLatencyComparison, Asset } from './usePriceLatencyComparison';
+import { usePolymarketPrices } from './usePolymarketPrices';
 
 export interface ArbitrageSignal {
   id: string;
@@ -24,6 +25,9 @@ export interface ArbitrageSignal {
   totalFees?: number;
   grossPnl?: number;
   netPnl?: number;
+  // Market context
+  marketSlug?: string;
+  strikePrice?: number;
 }
 
 export interface SimulatorConfig {
@@ -71,6 +75,15 @@ export function useArbitrageSimulator() {
     lastError,
     resetSession,
   } = usePriceLatencyComparison();
+
+  // Real Polymarket CLOB prices
+  const { 
+    prices: polymarketPrices, 
+    getSharePrice, 
+    getSellPrice,
+    loading: polymarketLoading,
+    error: polymarketError,
+  } = usePolymarketPrices();
 
   // Track previous prices for delta calculation
   const prevPricesRef = useRef<Record<Asset, number>>({
@@ -127,25 +140,31 @@ export function useArbitrageSimulator() {
       // Check if delta is significant
       if (Math.abs(delta) < config.minDeltaUsd) continue;
 
-      // We need share prices - for now, estimate based on direction
-      // In real implementation, you'd fetch from CLOB
-      // For simulation, we'll use a synthetic share price
-      const estimatedSharePrice = 0.50; // Would come from real CLOB data
+      const direction: 'UP' | 'DOWN' = delta > 0 ? 'UP' : 'DOWN';
+
+      // Get REAL share price from Polymarket CLOB
+      const realSharePrice = getSharePrice(asset, direction);
+      const marketInfo = polymarketPrices[asset];
       
-      // Check share price bounds
-      if (estimatedSharePrice < config.minSharePrice || estimatedSharePrice > config.maxSharePrice) {
+      // Use real price if available, otherwise skip
+      if (realSharePrice === null) {
+        console.log(`[ArbitrageSimulator] No CLOB price available for ${asset} ${direction}, skipping`);
         continue;
       }
 
-      const direction: 'UP' | 'DOWN' = delta > 0 ? 'UP' : 'DOWN';
-      
+      // Check share price bounds
+      if (realSharePrice < config.minSharePrice || realSharePrice > config.maxSharePrice) {
+        console.log(`[ArbitrageSimulator] ${asset} ${direction} share price ${realSharePrice.toFixed(2)} outside bounds [${config.minSharePrice}-${config.maxSharePrice}]`);
+        continue;
+      }
+
       // Check if we already have a pending signal for this asset
       const hasPending = signals.some(
         s => s.asset === asset && s.status === 'pending'
       );
       if (hasPending) continue;
 
-      // Create new signal
+      // Create new signal with REAL share price
       const signalId = `${asset}-${now}`;
       const signal: ArbitrageSignal = {
         id: signalId,
@@ -154,17 +173,20 @@ export function useArbitrageSimulator() {
         direction,
         binancePrice: currentBinance,
         binanceDelta: delta,
-        sharePrice: estimatedSharePrice,
+        sharePrice: realSharePrice,
         chainlinkPrice: currentChainlink || 0,
         status: 'pending',
-        notes: `Detected ${direction} signal: Binance moved $${Math.abs(delta).toFixed(2)}`,
+        notes: `Detected ${direction} signal: Binance Δ$${Math.abs(delta).toFixed(2)}, Share ${(realSharePrice * 100).toFixed(1)}¢`,
+        marketSlug: marketInfo?.marketSlug,
+        strikePrice: marketInfo?.strikePrice,
       };
 
       console.log('[ArbitrageSimulator] Signal detected:', signal);
 
       setSignals(prev => [signal, ...prev].slice(0, 100));
 
-      // Simulate fill (instant for paper trading)
+      // Simulate fill (instant for paper trading) - capture realSharePrice in closure
+      const entrySharePrice = realSharePrice;
       setTimeout(() => {
         const fillTime = Date.now();
         const fillLatency = fillTime - now;
@@ -179,29 +201,55 @@ export function useArbitrageSimulator() {
           return;
         }
 
-        // Filled successfully
-        const entryPrice = estimatedSharePrice;
+        // Filled successfully with slight slippage
+        const slippage = (Math.random() - 0.5) * 0.005;
+        const entryPrice = entrySharePrice + slippage;
+        
+        // Determine order type: maker if fill > 100ms, taker if fast
+        const orderType: 'maker' | 'taker' = fillLatency > 100 ? 'maker' : 'taker';
+        const shares = config.tradeSize / entryPrice;
+        const entryFee = orderType === 'taker' ? shares * 0.02 : -shares * 0.005;
+
         setSignals(prev => prev.map(s => 
           s.id === signalId 
-            ? { ...s, status: 'filled', entryPrice, fillTime, notes: `Filled in ${fillLatency}ms` }
+            ? { 
+                ...s, 
+                status: 'filled', 
+                entryPrice, 
+                fillTime, 
+                orderType,
+                entryFee,
+                notes: `Filled @ ${(entryPrice * 100).toFixed(1)}¢ (${orderType}) in ${fillLatency}ms` 
+              }
             : s
         ));
 
         // Schedule sell after holdTime
         const sellTimer = setTimeout(() => {
           const sellTime = Date.now();
-          // Simulate exit price (would come from real CLOB)
-          // For paper trading, assume small favorable move if direction was correct
-          const pricesAtSell = getAllPrices();
-          const binanceAtSell = pricesAtSell[asset].binance || currentBinance;
-          const binanceChange = binanceAtSell - currentBinance;
           
-          // If Binance continued in our direction, we likely profited
-          const correctDirection = (direction === 'UP' && binanceChange > 0) || 
-                                  (direction === 'DOWN' && binanceChange < 0);
+          // Get REAL exit price from CLOB if available
+          const realExitPrice = getSellPrice(asset, direction);
           
-          const exitPrice = entryPrice + (correctDirection ? 0.02 : -0.02);
-          const pnl = (exitPrice - entryPrice) * config.tradeSize;
+          // Use real price or simulate based on direction
+          let exitPrice: number;
+          if (realExitPrice !== null) {
+            exitPrice = realExitPrice;
+          } else {
+            // Fallback: simulate based on Binance movement
+            const pricesAtSell = getAllPrices();
+            const binanceAtSell = pricesAtSell[asset].binance || currentBinance;
+            const binanceChange = binanceAtSell - currentBinance;
+            const correctDirection = (direction === 'UP' && binanceChange > 0) || 
+                                    (direction === 'DOWN' && binanceChange < 0);
+            exitPrice = entryPrice + (correctDirection ? 0.02 : -0.02);
+          }
+          
+          // Calculate PnL with fees
+          const exitFee = shares * 0.02; // Exit is usually taker
+          const totalFees = entryFee + exitFee;
+          const grossPnl = (exitPrice - entryPrice) * shares;
+          const netPnl = grossPnl - totalFees;
 
           setSignals(prev => prev.map(s => 
             s.id === signalId 
@@ -209,9 +257,13 @@ export function useArbitrageSimulator() {
                   ...s, 
                   status: 'sold', 
                   exitPrice, 
-                  sellTime, 
-                  pnl,
-                  notes: `Sold after ${config.holdTimeMs}ms. PnL: $${pnl.toFixed(2)}` 
+                  sellTime,
+                  exitFee,
+                  totalFees,
+                  grossPnl,
+                  netPnl,
+                  pnl: netPnl,
+                  notes: `Exit @ ${(exitPrice * 100).toFixed(1)}¢ | Gross: $${grossPnl.toFixed(2)} | Net: $${netPnl.toFixed(2)}` 
                 }
               : s
           ));
@@ -222,7 +274,7 @@ export function useArbitrageSimulator() {
         pendingTradesRef.current.set(signalId, sellTimer);
       }, 50); // Simulate 50ms fill time
     }
-  }, [eventLog, config, connectionStatus, getAllPrices, signals]);
+  }, [eventLog, config, connectionStatus, getAllPrices, signals, getSharePrice, getSellPrice, polymarketPrices]);
 
   // Cleanup timers on unmount
   useEffect(() => {
@@ -257,14 +309,18 @@ export function useArbitrageSimulator() {
     setConfig(prev => ({ ...prev, ...updates }));
   }, []);
 
-  // Manual test trade function
+  // Manual test trade function - uses REAL CLOB prices
   const placeTestTrade = useCallback((asset: Asset, direction: 'UP' | 'DOWN') => {
     const now = Date.now();
     const signalId = `TEST-${asset}-${now}`;
     const prices = getAllPrices();
     const currentBinance = prices[asset].binance || 100000;
     const currentChainlink = prices[asset].chainlink || currentBinance;
-    const estimatedSharePrice = 0.50;
+    
+    // Get REAL share price from Polymarket CLOB
+    const realSharePrice = getSharePrice(asset, direction);
+    const marketInfo = polymarketPrices[asset];
+    const sharePrice = realSharePrice ?? 0.50; // Fallback if no CLOB data
 
     const signal: ArbitrageSignal = {
       id: signalId,
@@ -273,10 +329,14 @@ export function useArbitrageSimulator() {
       direction,
       binancePrice: currentBinance,
       binanceDelta: direction === 'UP' ? 15 : -15,
-      sharePrice: estimatedSharePrice,
+      sharePrice,
       chainlinkPrice: currentChainlink,
       status: 'pending',
-      notes: `TEST TRADE: Manual ${direction} signal`,
+      notes: realSharePrice 
+        ? `TEST: ${direction} @ ${(sharePrice * 100).toFixed(1)}¢ (LIVE)` 
+        : `TEST: ${direction} @ ${(sharePrice * 100).toFixed(1)}¢ (no CLOB)`,
+      marketSlug: marketInfo?.marketSlug,
+      strikePrice: marketInfo?.strikePrice,
     };
 
     console.log('[ArbitrageSimulator] Test trade placed:', signal);
@@ -284,19 +344,19 @@ export function useArbitrageSimulator() {
 
     // Simulate fill after 50-200ms
     const fillDelay = 50 + Math.random() * 150;
+    const entrySharePrice = sharePrice; // Capture in closure
+    
     setTimeout(() => {
       const fillTime = Date.now();
       const fillLatency = fillTime - now;
       // Simulate entry price with slight slippage
-      const slippage = (Math.random() - 0.5) * 0.01; // ±0.5 cent
-      const entryPrice = estimatedSharePrice + slippage;
+      const slippage = (Math.random() - 0.5) * 0.005;
+      const entryPrice = entrySharePrice + slippage;
       
       // Determine order type: maker if fill > 100ms (limit order filled), taker if fast
       const orderType: 'maker' | 'taker' = fillLatency > 100 ? 'maker' : 'taker';
-      // Polymarket fees: taker 0%, maker -0.5% rebate (we pay 0 but simplify)
-      // Actually: taker pays ~0.02 per share, maker gets rebate
       const shares = config.tradeSize / entryPrice;
-      const entryFee = orderType === 'taker' ? shares * 0.02 : -shares * 0.005; // taker fee / maker rebate
+      const entryFee = orderType === 'taker' ? shares * 0.02 : -shares * 0.005;
 
       setSignals(prev => prev.map(s => 
         s.id === signalId 
@@ -307,7 +367,7 @@ export function useArbitrageSimulator() {
               fillTime, 
               orderType,
               entryFee,
-              notes: `Filled @ $${entryPrice.toFixed(3)} (${orderType}) in ${fillLatency.toFixed(0)}ms` 
+              notes: `Filled @ ${(entryPrice * 100).toFixed(1)}¢ (${orderType}) in ${fillLatency.toFixed(0)}ms` 
             }
           : s
       ));
@@ -315,10 +375,19 @@ export function useArbitrageSimulator() {
       // Schedule sell after holdTime
       const sellTimer = setTimeout(() => {
         const sellTime = Date.now();
-        // Simulate random outcome (60% win rate for test)
-        const isWin = Math.random() < 0.6;
-        const priceMove = isWin ? (0.015 + Math.random() * 0.02) : -(0.01 + Math.random() * 0.015);
-        const exitPrice = entryPrice + priceMove;
+        
+        // Get REAL exit price from CLOB if available
+        const realExitPrice = getSellPrice(asset, direction);
+        
+        let exitPrice: number;
+        if (realExitPrice !== null) {
+          exitPrice = realExitPrice;
+        } else {
+          // Fallback: simulate random outcome (60% win rate)
+          const isWin = Math.random() < 0.6;
+          const priceMove = isWin ? (0.015 + Math.random() * 0.02) : -(0.01 + Math.random() * 0.015);
+          exitPrice = entryPrice + priceMove;
+        }
         
         // Exit is usually taker (market order to close)
         const exitFee = shares * 0.02;
@@ -339,7 +408,7 @@ export function useArbitrageSimulator() {
                 grossPnl,
                 netPnl,
                 pnl: netPnl,
-                notes: `Exit @ $${exitPrice.toFixed(3)} | Gross: $${grossPnl.toFixed(2)} | Fees: $${totalFees.toFixed(2)} | Net: $${netPnl.toFixed(2)}` 
+                notes: `Exit @ ${(exitPrice * 100).toFixed(1)}¢ | Gross: $${grossPnl.toFixed(2)} | Net: $${netPnl.toFixed(2)}` 
               }
             : s
         ));
@@ -349,7 +418,7 @@ export function useArbitrageSimulator() {
 
       pendingTradesRef.current.set(signalId, sellTimer);
     }, fillDelay);
-  }, [getAllPrices, config.tradeSize, config.holdTimeMs]);
+  }, [getAllPrices, config.tradeSize, config.holdTimeMs, getSharePrice, getSellPrice, polymarketPrices]);
 
 
   return {
@@ -360,6 +429,13 @@ export function useArbitrageSimulator() {
     clearSignals,
     simulatorStats,
     placeTestTrade,
+    
+    // Polymarket CLOB prices
+    polymarketPrices,
+    polymarketLoading,
+    polymarketError,
+    getSharePrice,
+    getSellPrice,
     
     // WebSocket state (pass through)
     binancePrice,

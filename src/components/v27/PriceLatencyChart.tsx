@@ -66,6 +66,11 @@ export function PriceLatencyChart() {
     getChartData,
     getLatencyHistogram,
     lastError,
+    // Polymarket CLOB prices
+    polymarketPrices,
+    polymarketLoading,
+    polymarketError,
+    getSharePrice,
   } = useArbitrageSimulator();
 
   const [chartData, setChartData] = useState<{ binanceData: any[]; chainlinkData: any[] }>({ binanceData: [], chainlinkData: [] });
@@ -208,6 +213,14 @@ export function PriceLatencyChart() {
               >
                 <div className={`w-2 h-2 rounded-full mr-1 ${chainlinkWsStatus === 'connected' ? 'bg-blue-500 animate-pulse' : 'bg-muted'}`} />
                 Chainlink
+              </Badge>
+              <Badge 
+                variant="outline"
+                className={`text-xs ${polymarketPrices[selectedAsset] ? 'border-purple-500 text-purple-500' : 'border-muted'}`}
+                title={polymarketError || (polymarketLoading ? 'Loading...' : 'CLOB prices')}
+              >
+                <div className={`w-2 h-2 rounded-full mr-1 ${polymarketPrices[selectedAsset] ? 'bg-purple-500 animate-pulse' : polymarketLoading ? 'bg-purple-300 animate-pulse' : 'bg-muted'}`} />
+                CLOB
               </Badge>
             </div>
 
