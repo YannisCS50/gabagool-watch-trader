@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -285,7 +285,7 @@ interface DecisionLog {
 }
 
 function useDecisionLogs() {
-  return useQuery({
+  const query = useQuery({
     queryKey: ['paper-trader-logs'],
     queryFn: async () => {
       const { data, error } = await supabase
@@ -297,8 +297,32 @@ function useDecisionLogs() {
       if (error) throw error;
       return (data || []) as DecisionLog[];
     },
-    refetchInterval: 3000,
+    refetchInterval: 5000, // Fallback polling
   });
+  
+  // Realtime subscription
+  useEffect(() => {
+    const channel = supabase
+      .channel('paper-trader-logs-realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'paper_trader_logs',
+        },
+        () => {
+          query.refetch();
+        }
+      )
+      .subscribe();
+    
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [query.refetch]);
+  
+  return query;
 }
 
 function DecisionLogPanel() {
