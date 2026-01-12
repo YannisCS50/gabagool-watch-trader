@@ -29,6 +29,9 @@ export interface ArbitrageSignal {
   // Market context
   marketSlug?: string;
   strikePrice?: number;
+  // Take-profit limit order
+  takeProfitPrice?: number;
+  takeProfitStatus?: 'pending' | 'filled' | 'cancelled';
 }
 
 export interface SimulatorConfig {
@@ -40,6 +43,8 @@ export interface SimulatorConfig {
   maxFillTimeMs: number;      // 1000 (must fill within 1 second)
   tradeSize: number;          // $25 notional
   persistTrades: boolean;     // Save trades to database
+  takeProfitCents: number;    // Take-profit offset in cents (e.g., 3 = entry + 3¢)
+  takeProfitEnabled: boolean; // Enable take-profit limit orders
 }
 
 // Session ID for grouping trades
@@ -105,6 +110,8 @@ const DEFAULT_CONFIG: SimulatorConfig = {
   maxFillTimeMs: 1000,
   tradeSize: 25,
   persistTrades: true,
+  takeProfitCents: 3,         // Default: take profit at entry + 3¢
+  takeProfitEnabled: true,    // Enable by default
 };
 
 export function useArbitrageSimulator() {
@@ -267,6 +274,11 @@ export function useArbitrageSimulator() {
         const shares = config.tradeSize / entryPrice;
         const entryFee = orderType === 'taker' ? shares * 0.02 : -shares * 0.005;
 
+        // Calculate take-profit price (entry + X cents)
+        const takeProfitPrice = config.takeProfitEnabled 
+          ? entryPrice + (config.takeProfitCents / 100)
+          : undefined;
+
         setSignals(prev => prev.map(s => 
           s.id === signalId 
             ? { 
@@ -276,24 +288,83 @@ export function useArbitrageSimulator() {
                 fillTime, 
                 orderType,
                 entryFee,
-                notes: `Filled @ ${(entryPrice * 100).toFixed(1)}¢ (${orderType}) in ${fillLatency}ms` 
+                takeProfitPrice,
+                takeProfitStatus: takeProfitPrice ? 'pending' as const : undefined,
+                notes: takeProfitPrice 
+                  ? `Filled @ ${(entryPrice * 100).toFixed(1)}¢ → TP @ ${(takeProfitPrice * 100).toFixed(1)}¢`
+                  : `Filled @ ${(entryPrice * 100).toFixed(1)}¢ (${orderType}) in ${fillLatency}ms`
               }
             : s
         ));
 
-        // Schedule sell after holdTime
-        const sellTimer = setTimeout(() => {
-          const sellTime = Date.now();
+        // Log take-profit order placement
+        if (takeProfitPrice) {
+          setTimeout(() => {
+            console.log(`[ArbitrageSimulator] TP limit sent: SELL ${direction} @ ${(takeProfitPrice * 100).toFixed(1)}¢ (entry was ${(entryPrice * 100).toFixed(1)}¢)`);
+          }, 300);
+        }
+
+        // Check for take-profit fill periodically
+        const checkInterval = 500;
+        let tpFilled = false;
+        
+        const tpChecker = takeProfitPrice ? setInterval(() => {
+          if (tpFilled) return;
           
-          // Get REAL exit price from CLOB if available
+          const currentBid = getSellPrice(asset, direction);
+          if (currentBid !== null && currentBid >= takeProfitPrice) {
+            tpFilled = true;
+            clearInterval(tpChecker);
+            
+            const sellTime = Date.now();
+            const exitPrice = takeProfitPrice;
+            const exitFee = -shares * 0.005; // Maker rebate
+            const totalFees = entryFee + exitFee;
+            const grossPnl = (exitPrice - entryPrice) * shares;
+            const netPnl = grossPnl - totalFees;
+
+            console.log(`[ArbitrageSimulator] ✅ TP filled! ${asset} ${direction} @ ${(exitPrice * 100).toFixed(1)}¢`);
+
+            const completedSignal: ArbitrageSignal = {
+              ...signal,
+              status: 'sold',
+              entryPrice,
+              exitPrice,
+              sellTime,
+              fillTime,
+              orderType,
+              entryFee,
+              exitFee,
+              totalFees,
+              grossPnl,
+              netPnl,
+              pnl: netPnl,
+              takeProfitPrice,
+              takeProfitStatus: 'filled',
+              notes: `✅ TP filled @ ${(exitPrice * 100).toFixed(1)}¢ | +${config.takeProfitCents}¢ | Net: $${netPnl.toFixed(2)}`
+            };
+
+            setSignals(prev => prev.map(s => 
+              s.id === signalId ? completedSignal : s
+            ));
+
+            saveTradeToDb(completedSignal, config);
+            pendingTradesRef.current.delete(signalId);
+          }
+        }, checkInterval) : null;
+
+        // Fallback sell after holdTime (if TP not hit)
+        const sellTimer = setTimeout(() => {
+          if (tpFilled) return;
+          if (tpChecker) clearInterval(tpChecker);
+          
+          const sellTime = Date.now();
           const realExitPrice = getSellPrice(asset, direction);
           
-          // Use real price or simulate based on direction
           let exitPrice: number;
           if (realExitPrice !== null) {
             exitPrice = realExitPrice;
           } else {
-            // Fallback: simulate based on Binance movement
             const pricesAtSell = getAllPrices();
             const binanceAtSell = pricesAtSell[asset].binance || currentBinance;
             const binanceChange = binanceAtSell - currentBinance;
@@ -302,8 +373,7 @@ export function useArbitrageSimulator() {
             exitPrice = entryPrice + (correctDirection ? 0.02 : -0.02);
           }
           
-          // Calculate PnL with fees
-          const exitFee = shares * 0.02; // Exit is usually taker
+          const exitFee = shares * 0.02;
           const totalFees = entryFee + exitFee;
           const grossPnl = (exitPrice - entryPrice) * shares;
           const netPnl = grossPnl - totalFees;
@@ -311,23 +381,29 @@ export function useArbitrageSimulator() {
           const completedSignal: ArbitrageSignal = {
             ...signal,
             status: 'sold',
+            entryPrice,
             exitPrice,
             sellTime,
+            fillTime,
+            orderType,
+            entryFee,
             exitFee,
             totalFees,
             grossPnl,
             netPnl,
             pnl: netPnl,
-            notes: `Exit @ ${(exitPrice * 100).toFixed(1)}¢ | Gross: $${grossPnl.toFixed(2)} | Net: $${netPnl.toFixed(2)}`
+            takeProfitPrice,
+            takeProfitStatus: takeProfitPrice ? 'cancelled' : undefined,
+            notes: takeProfitPrice 
+              ? `TP miss → Exit @ ${(exitPrice * 100).toFixed(1)}¢ | Net: $${netPnl.toFixed(2)}`
+              : `Exit @ ${(exitPrice * 100).toFixed(1)}¢ | Net: $${netPnl.toFixed(2)}`
           };
 
           setSignals(prev => prev.map(s => 
             s.id === signalId ? completedSignal : s
           ));
 
-          // Save to database
           saveTradeToDb(completedSignal, config);
-
           pendingTradesRef.current.delete(signalId);
         }, config.holdTimeMs);
 
@@ -418,6 +494,11 @@ export function useArbitrageSimulator() {
       const shares = config.tradeSize / entryPrice;
       const entryFee = orderType === 'taker' ? shares * 0.02 : -shares * 0.005;
 
+      // Calculate take-profit price
+      const takeProfitPrice = config.takeProfitEnabled 
+        ? entryPrice + (config.takeProfitCents / 100)
+        : undefined;
+
       setSignals(prev => prev.map(s => 
         s.id === signalId 
           ? { 
@@ -427,32 +508,95 @@ export function useArbitrageSimulator() {
               fillTime, 
               orderType,
               entryFee,
-              notes: `Filled @ ${(entryPrice * 100).toFixed(1)}¢ (${orderType}) in ${fillLatency.toFixed(0)}ms` 
+              takeProfitPrice,
+              takeProfitStatus: takeProfitPrice ? 'pending' as const : undefined,
+              notes: takeProfitPrice
+                ? `TEST: Filled @ ${(entryPrice * 100).toFixed(1)}¢ → TP @ ${(takeProfitPrice * 100).toFixed(1)}¢`
+                : `Filled @ ${(entryPrice * 100).toFixed(1)}¢ (${orderType}) in ${fillLatency.toFixed(0)}ms`
             }
           : s
       ));
 
-      // Schedule sell after holdTime
-      const sellTimer = setTimeout(() => {
-        const sellTime = Date.now();
+      // Log TP order
+      if (takeProfitPrice) {
+        setTimeout(() => {
+          console.log(`[ArbitrageSimulator] TEST TP limit: SELL ${direction} @ ${(takeProfitPrice * 100).toFixed(1)}¢`);
+        }, 300);
+      }
+
+      // Check for take-profit fill
+      let tpFilled = false;
+      const tpChecker = takeProfitPrice ? setInterval(() => {
+        if (tpFilled) return;
         
-        // Get REAL exit price from CLOB if available
+        const currentBid = getSellPrice(asset, direction);
+        if (currentBid !== null && currentBid >= takeProfitPrice) {
+          tpFilled = true;
+          clearInterval(tpChecker);
+          
+          const sellTime = Date.now();
+          const exitPrice = takeProfitPrice;
+          const exitFee = -shares * 0.005;
+          const totalFees = entryFee + exitFee;
+          const grossPnl = (exitPrice - entryPrice) * shares;
+          const netPnl = grossPnl - totalFees;
+
+          const completedTestSignal: ArbitrageSignal = {
+            id: signalId,
+            timestamp: now,
+            asset,
+            direction,
+            binancePrice: currentBinance,
+            binanceDelta: direction === 'UP' ? 15 : -15,
+            sharePrice,
+            chainlinkPrice: currentChainlink,
+            status: 'sold',
+            entryPrice,
+            exitPrice,
+            sellTime,
+            fillTime,
+            orderType,
+            entryFee,
+            exitFee,
+            totalFees,
+            grossPnl,
+            netPnl,
+            pnl: netPnl,
+            marketSlug: marketInfo?.marketSlug,
+            strikePrice: marketInfo?.strikePrice,
+            takeProfitPrice,
+            takeProfitStatus: 'filled',
+            notes: `✅ TEST TP @ ${(exitPrice * 100).toFixed(1)}¢ | +${config.takeProfitCents}¢ | Net: $${netPnl.toFixed(2)}`
+          };
+
+          setSignals(prev => prev.map(s => 
+            s.id === signalId ? completedTestSignal : s
+          ));
+
+          saveTradeToDb(completedTestSignal, config);
+          pendingTradesRef.current.delete(signalId);
+        }
+      }, 500) : null;
+
+      // Fallback sell after holdTime
+      const sellTimer = setTimeout(() => {
+        if (tpFilled) return;
+        if (tpChecker) clearInterval(tpChecker);
+        
+        const sellTime = Date.now();
         const realExitPrice = getSellPrice(asset, direction);
         
         let exitPrice: number;
         if (realExitPrice !== null) {
           exitPrice = realExitPrice;
         } else {
-          // Fallback: simulate random outcome (60% win rate)
           const isWin = Math.random() < 0.6;
           const priceMove = isWin ? (0.015 + Math.random() * 0.02) : -(0.01 + Math.random() * 0.015);
           exitPrice = entryPrice + priceMove;
         }
         
-        // Exit is usually taker (market order to close)
         const exitFee = shares * 0.02;
         const totalFees = entryFee + exitFee;
-        
         const grossPnl = (exitPrice - entryPrice) * shares;
         const netPnl = grossPnl - totalFees;
 
@@ -479,16 +623,18 @@ export function useArbitrageSimulator() {
           pnl: netPnl,
           marketSlug: marketInfo?.marketSlug,
           strikePrice: marketInfo?.strikePrice,
-          notes: `Exit @ ${(exitPrice * 100).toFixed(1)}¢ | Gross: $${grossPnl.toFixed(2)} | Net: $${netPnl.toFixed(2)}`
+          takeProfitPrice,
+          takeProfitStatus: takeProfitPrice ? 'cancelled' : undefined,
+          notes: takeProfitPrice 
+            ? `TEST TP miss → Exit @ ${(exitPrice * 100).toFixed(1)}¢ | Net: $${netPnl.toFixed(2)}`
+            : `Exit @ ${(exitPrice * 100).toFixed(1)}¢ | Net: $${netPnl.toFixed(2)}`
         };
 
         setSignals(prev => prev.map(s => 
           s.id === signalId ? completedTestSignal : s
         ));
 
-        // Save to database
         saveTradeToDb(completedTestSignal, config);
-
         pendingTradesRef.current.delete(signalId);
       }, config.holdTimeMs);
 
