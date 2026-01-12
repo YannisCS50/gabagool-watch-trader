@@ -121,8 +121,13 @@ export function PriceLatencyChart() {
         return acc;
       }, [] as any[]);
     
-    return merged.slice(-600);
-  }, [chartData]);
+    // Add share price to all data points for the chart
+    const upAskCents = clobPrices?.upAsk ? clobPrices.upAsk * 100 : null;
+    return merged.slice(-600).map(point => ({
+      ...point,
+      sharePrice: upAskCents,
+    }));
+  }, [chartData, clobPrices]);
 
   // Calculate price deltas for delta chart
   const deltaChartData = useMemo(() => {
@@ -322,16 +327,54 @@ export function PriceLatencyChart() {
                     interval="preserveStartEnd"
                   />
                   <YAxis 
+                    yAxisId="price"
                     domain={['auto', 'auto']}
                     tickFormatter={(v) => `$${v.toLocaleString()}`}
                     tick={{ fontSize: 10 }}
                   />
+                  <YAxis 
+                    yAxisId="share"
+                    orientation="right"
+                    domain={[0, 100]}
+                    tickFormatter={(v) => `${v}¢`}
+                    tick={{ fontSize: 10, fill: COLORS.sharePrice }}
+                  />
+                  {/* Share price bounds reference areas */}
+                  {config && (
+                    <>
+                      <ReferenceArea 
+                        yAxisId="share"
+                        y1={config.min_share_price * 100} 
+                        y2={config.max_share_price * 100} 
+                        fill={COLORS.sharePrice}
+                        fillOpacity={0.1}
+                      />
+                      <ReferenceLine 
+                        yAxisId="share"
+                        y={config.min_share_price * 100} 
+                        stroke={COLORS.sharePrice} 
+                        strokeDasharray="3 3"
+                        strokeOpacity={0.5}
+                      />
+                      <ReferenceLine 
+                        yAxisId="share"
+                        y={config.max_share_price * 100} 
+                        stroke={COLORS.sharePrice} 
+                        strokeDasharray="3 3"
+                        strokeOpacity={0.5}
+                      />
+                    </>
+                  )}
                   <Tooltip 
                     labelFormatter={(t) => formatTimestamp(t as number)}
-                    formatter={(v: number, name: string) => [`$${v?.toLocaleString()}`, name === 'binance' ? 'Binance' : 'Chainlink']}
+                    formatter={(v: number, name: string) => {
+                      if (name === 'UP Share') return [`${v?.toFixed(1)}¢`, name];
+                      return [`$${v?.toLocaleString()}`, name === 'binance' ? 'Binance' : 'Chainlink'];
+                    }}
                   />
                   <Legend />
                   <Line 
+                    yAxisId="price"
                     type="stepAfter" 
                     dataKey="binance" 
                     stroke={COLORS.binance}
@@ -342,6 +385,7 @@ export function PriceLatencyChart() {
                     isAnimationActive={false}
                   />
                   <Line 
+                    yAxisId="price"
                     type="stepAfter" 
                     dataKey="chainlink" 
                     stroke={COLORS.chainlink}
@@ -349,6 +393,17 @@ export function PriceLatencyChart() {
                     strokeWidth={2}
                     connectNulls
                     name="Chainlink"
+                    isAnimationActive={false}
+                  />
+                  <Line 
+                    yAxisId="share"
+                    type="monotone" 
+                    dataKey="sharePrice" 
+                    stroke={COLORS.sharePrice}
+                    dot={false} 
+                    strokeWidth={2}
+                    connectNulls
+                    name="UP Share"
                     isAnimationActive={false}
                   />
                 </ComposedChart>
