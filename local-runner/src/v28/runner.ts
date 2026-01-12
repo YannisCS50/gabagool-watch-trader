@@ -9,6 +9,8 @@ import { V28Config, Asset, loadV28Config, initSupabase, DEFAULT_V28_CONFIG } fro
 import { fetchChainlinkPrice } from '../chain.js';
 import { getOrderbookDepth, placeOrder, getClient } from '../polymarket.js';
 import { startPriceFeedLogger, stopPriceFeedLogger, type PriceFeedCallback } from '../price-feed-ws-logger.js';
+import { fetchPositions, type PolymarketPosition } from '../positions-sync.js';
+import { config } from '../config.js';
 
 // ============================================
 // TYPES
@@ -847,15 +849,131 @@ async function handleLiveTimeout(signal: V28Signal, tokenId: string): Promise<vo
   
   await handleLiveExit(signal, tokenId, 'timeout', exitPrice);
 }
+// Minimum profit % to trigger a sell
+const MIN_PROFIT_PCT_TO_SELL = 4.0;
 
 /**
- * Position Monitor - runs every 10s to check open positions and sell if profitable
+ * Position Monitor - runs every 10s to check REAL positions from Polymarket API
+ * and sell if profitable (> 4%)
  */
 async function monitorOpenPositions(): Promise<void> {
-  if (openPositions.size === 0) return;
+  // Fetch real positions from Polymarket API
+  const walletAddress = config.polymarket.address;
+  if (!walletAddress) {
+    console.log(`[V28] ⚠️ No wallet address configured, skipping position monitor`);
+    return;
+  }
+
+  let positions: PolymarketPosition[];
+  try {
+    positions = await fetchPositions(walletAddress);
+  } catch (err: any) {
+    console.error(`[V28] ❌ Failed to fetch positions: ${err?.message || err}`);
+    return;
+  }
+
+  // Filter to only our active 15m UP/DOWN markets
+  const activeTokenIds = new Set<string>();
+  const tokenToMarket = new Map<string, { asset: Asset; direction: 'UP' | 'DOWN'; info: MarketInfo }>();
   
-  console.log(`[V28] 📋 Position monitor: checking ${openPositions.size} open position(s)...`);
+  for (const [asset, info] of Object.entries(marketInfo)) {
+    if (!info) continue;
+    activeTokenIds.add(info.upTokenId);
+    activeTokenIds.add(info.downTokenId);
+    tokenToMarket.set(info.upTokenId, { asset: asset as Asset, direction: 'UP', info });
+    tokenToMarket.set(info.downTokenId, { asset: asset as Asset, direction: 'DOWN', info });
+  }
+
+  // Filter positions that match our active markets
+  const relevantPositions = positions.filter(p => p.asset && activeTokenIds.has(p.asset));
   
+  if (relevantPositions.length === 0) {
+    // Also check tracked openPositions from our own trades
+    if (openPositions.size > 0) {
+      console.log(`[V28] 📋 Position monitor: no API positions, checking ${openPositions.size} tracked position(s)...`);
+      await monitorTrackedPositions();
+    }
+    return;
+  }
+
+  console.log(`[V28] 📋 Position monitor: found ${relevantPositions.length} real position(s) from Polymarket API`);
+
+  for (const pos of relevantPositions) {
+    const marketMatch = tokenToMarket.get(pos.asset);
+    if (!marketMatch) continue;
+
+    const { asset, direction, info } = marketMatch;
+    const tokenId = pos.asset;
+    const shares = pos.size;
+    const avgCost = pos.avgPrice;
+    const currentPrice = pos.curPrice;
+    
+    if (shares < 1 || avgCost <= 0) continue;
+
+    // Calculate profit %
+    const profitPct = ((currentPrice / avgCost) - 1) * 100;
+    const profitUsd = (currentPrice - avgCost) * shares;
+
+    console.log(`[V28] 📊 ${asset} ${direction}: ${shares.toFixed(1)} shares @ ${(avgCost * 100).toFixed(1)}¢ → ${(currentPrice * 100).toFixed(1)}¢ (${profitPct >= 0 ? '+' : ''}${profitPct.toFixed(1)}% / $${profitUsd.toFixed(2)})`);
+
+    // Only sell if profit > 4%
+    if (profitPct >= MIN_PROFIT_PCT_TO_SELL) {
+      console.log(`[V28] 💰 PROFIT ${profitPct.toFixed(1)}% > ${MIN_PROFIT_PCT_TO_SELL}%! Selling ${shares.toFixed(1)} shares...`);
+
+      // Get current orderbook for best bid
+      const state = priceState[asset];
+      const currentBid = direction === 'UP' ? state.upBestBid : state.downBestBid;
+      
+      // AGGRESSIVE SELL: Use bestBid - 0.5¢ to ensure fill
+      const aggressiveSellPrice = currentBid ? Math.round((currentBid - 0.005) * 100) / 100 : Math.round(currentPrice * 100) / 100;
+      const sellPrice = Math.max(aggressiveSellPrice, 0.01); // Floor at 1¢
+      const sellShares = Math.floor(shares); // Whole shares only
+
+      if (sellShares < 1) {
+        console.log(`[V28] ⚠️ Shares too small after rounding: ${shares} -> ${sellShares}`);
+        continue;
+      }
+
+      console.log(`[V28] 📤 SELL ${sellShares} @ ${(sellPrice * 100).toFixed(0)}¢ (aggressive: bestBid=${currentBid ? (currentBid * 100).toFixed(0) : '?'}¢ - 0.5¢)`);
+
+      try {
+        const result = await placeOrder({
+          tokenId,
+          side: 'SELL',
+          price: sellPrice,
+          size: sellShares,
+          orderType: 'FOK', // Fill-or-kill for immediate exit
+          intent: 'HEDGE',
+        });
+
+        if (result.success) {
+          const actualExitPrice = result.avgPrice ?? sellPrice;
+          const netPnl = (actualExitPrice - avgCost) * sellShares;
+          console.log(`[V28] ✅ SOLD ${sellShares} ${asset} ${direction} @ ${(actualExitPrice * 100).toFixed(1)}¢ | Net: $${netPnl.toFixed(2)}`);
+          
+          // Release position lock if this was our tracked position
+          if (positionLock.status === 'open') {
+            positionLock = { status: 'idle' };
+          }
+        } else {
+          console.log(`[V28] ⚠️ SELL failed: ${result.error}`);
+        }
+      } catch (error: any) {
+        console.error(`[V28] ❌ SELL exception: ${error?.message || error}`);
+      }
+    } else if (profitPct > 0) {
+      console.log(`[V28] ⏳ Profit ${profitPct.toFixed(1)}% < ${MIN_PROFIT_PCT_TO_SELL}%, holding...`);
+    } else {
+      console.log(`[V28] 📉 Currently at ${profitPct.toFixed(1)}%, waiting for profit...`);
+    }
+  }
+}
+
+/**
+ * Fallback: Monitor positions we tracked from our own trades
+ * (in case API sync is delayed)
+ */
+async function monitorTrackedPositions(): Promise<void> {
   for (const [signalId, position] of openPositions) {
     const state = priceState[position.asset];
     const market = marketInfo[position.asset];
@@ -864,22 +982,20 @@ async function monitorOpenPositions(): Promise<void> {
     const currentBid = position.signal.direction === 'UP' ? state.upBestBid : state.downBestBid;
     if (currentBid === null) continue;
     
-    const profitCents = (currentBid - position.entryPrice) * 100;
     const profitPct = ((currentBid / position.entryPrice) - 1) * 100;
     
-    console.log(`[V28] 📊 ${position.asset} ${position.signal.direction}: Entry ${(position.entryPrice * 100).toFixed(1)}¢ → Current ${(currentBid * 100).toFixed(1)}¢ (${profitPct >= 0 ? '+' : ''}${profitPct.toFixed(1)}%)`);
+    console.log(`[V28] 📊 Tracked ${position.asset} ${position.signal.direction}: Entry ${(position.entryPrice * 100).toFixed(1)}¢ → Current ${(currentBid * 100).toFixed(1)}¢ (${profitPct >= 0 ? '+' : ''}${profitPct.toFixed(1)}%)`);
     
-    // Only try to sell if in profit (current bid > entry price)
-    if (currentBid > position.entryPrice) {
-      console.log(`[V28] 💰 PROFIT detected! Attempting to sell ${position.shares.toFixed(2)} shares @ ${(currentBid * 100).toFixed(0)}¢`);
+    // Only sell if profit > 4%
+    if (profitPct >= MIN_PROFIT_PCT_TO_SELL) {
+      console.log(`[V28] 💰 PROFIT ${profitPct.toFixed(1)}%! Selling tracked position...`);
       
-      const sellPrice = Math.round(currentBid * 100) / 100; // tickSize=0.01
-      const sellShares = Math.floor(position.shares * 100) / 100;
+      // AGGRESSIVE SELL: Use bestBid - 0.5¢
+      const aggressiveSellPrice = Math.round((currentBid - 0.005) * 100) / 100;
+      const sellPrice = Math.max(aggressiveSellPrice, 0.01);
+      const sellShares = Math.floor(position.shares);
       
-      if (sellShares < 1) {
-        console.log(`[V28] ⚠️ Shares too small to sell: ${sellShares}`);
-        continue;
-      }
+      if (sellShares < 1) continue;
       
       try {
         const result = await placeOrder({
@@ -887,18 +1003,17 @@ async function monitorOpenPositions(): Promise<void> {
           side: 'SELL',
           price: sellPrice,
           size: sellShares,
-          orderType: 'FOK', // Fill-or-kill for immediate exit
+          orderType: 'FOK',
           intent: 'HEDGE',
         });
         
         if (result.success) {
           const actualExitPrice = result.avgPrice ?? sellPrice;
-          const exitFee = -sellShares * 0.005; // maker rebate assumption
+          const exitFee = -sellShares * 0.005;
           const entryFee = position.signal.entry_fee ?? 0;
           const grossPnl = (actualExitPrice - position.entryPrice) * sellShares;
           const netPnl = grossPnl - (entryFee + exitFee);
           
-          // Update signal
           position.signal.status = 'sold';
           position.signal.exit_price = actualExitPrice;
           position.signal.sell_ts = Date.now();
@@ -908,25 +1023,22 @@ async function monitorOpenPositions(): Promise<void> {
           position.signal.net_pnl = netPnl;
           position.signal.tp_status = 'filled';
           position.signal.exit_type = 'tp';
-          position.signal.notes = `🔴 LIVE ✅ SOLD @ ${(actualExitPrice * 100).toFixed(1)}¢ | Net: $${netPnl.toFixed(2)} (monitor)`;
+          position.signal.notes = `🔴 LIVE ✅ SOLD @ ${(actualExitPrice * 100).toFixed(1)}¢ | Net: $${netPnl.toFixed(2)} (monitor ${profitPct.toFixed(1)}%)`;
           
           await saveSignal(position.signal);
           openPositions.delete(signalId);
           
-          // Release position lock
           if (positionLock.status === 'open' && positionLock.signalId === signalId) {
             positionLock = { status: 'idle' };
           }
           
-          console.log(`[V28] ✅ MONITOR SOLD: ${position.asset} ${position.signal.direction} @ ${(actualExitPrice * 100).toFixed(1)}¢ | Net: $${netPnl.toFixed(2)}`);
+          console.log(`[V28] ✅ MONITOR SOLD tracked: ${position.asset} ${position.signal.direction} @ ${(actualExitPrice * 100).toFixed(1)}¢ | Net: $${netPnl.toFixed(2)}`);
         } else {
-          console.log(`[V28] ⚠️ Monitor SELL failed: ${result.error}`);
+          console.log(`[V28] ⚠️ Tracked SELL failed: ${result.error}`);
         }
       } catch (error: any) {
-        console.error(`[V28] ❌ Monitor SELL exception: ${error?.message || error}`);
+        console.error(`[V28] ❌ Tracked SELL exception: ${error?.message || error}`);
       }
-    } else {
-      console.log(`[V28] ⏳ Not profitable yet, holding...`);
     }
   }
 }
@@ -1257,8 +1369,8 @@ export async function startV28Runner(): Promise<void> {
   console.log('[V28] Starting price feeds (Binance + Polymarket WebSockets)...');
   await startPriceFeedLogger(priceFeedCallbacks);
   
-  // Start position monitor (every 10 seconds)
-  console.log('[V28] Starting position monitor (10s interval)...');
+  // Start position monitor (every 10 seconds) - fetches real positions from Polymarket API
+  console.log(`[V28] Starting position monitor (10s interval, sell at >${MIN_PROFIT_PCT_TO_SELL}% profit)...`);
   positionMonitorInterval = setInterval(monitorOpenPositions, 10_000);
   
   runLoop();
