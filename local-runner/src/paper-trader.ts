@@ -103,6 +103,11 @@ interface PriceState {
 const RUN_ID = `paper-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const BINANCE_WS_URL = 'wss://stream.binance.com:9443/ws';
 
+// Rolling window for delta accumulation
+// We need to detect the move fast enough to place order before Chainlink catches up
+// Chainlink latency is ~1000-1500ms, so we use a 300ms window to leave ~700-1200ms for order execution
+const DELTA_WINDOW_MS = 300;
+
 const ASSET_SYMBOLS: Record<Asset, string> = {
   BTC: 'btcusdt',
   ETH: 'ethusdt',
@@ -143,7 +148,27 @@ const priceState: Record<Asset, PriceState> = {
   XRP: { binance: 0, chainlink: null, upBestBid: null, upBestAsk: null, downBestBid: null, downBestAsk: null, lastUpdate: 0 },
 };
 
-const prevPrices: Record<Asset, number> = { BTC: 0, ETH: 0, SOL: 0, XRP: 0 };
+// Rolling window state for each asset
+interface PriceTick {
+  price: number;
+  ts: number;
+}
+
+const priceWindows: Record<Asset, PriceTick[]> = {
+  BTC: [],
+  ETH: [],
+  SOL: [],
+  XRP: [],
+};
+
+// Track window start price for delta calculation
+const windowStartPrices: Record<Asset, { price: number; ts: number } | null> = {
+  BTC: null,
+  ETH: null,
+  SOL: null,
+  XRP: null,
+};
+
 const activeSignals = new Map<string, { signal: PaperSignal; tpSlInterval: NodeJS.Timeout | null; timeoutTimer: NodeJS.Timeout | null }>();
 const marketInfo: Record<Asset, MarketInfo | null> = { BTC: null, ETH: null, SOL: null, XRP: null };
 
@@ -436,23 +461,53 @@ async function logDecision(
 }
 
 function handlePriceUpdate(asset: Asset, newPrice: number): void {
-  const prev = prevPrices[asset];
-  prevPrices[asset] = newPrice;
+  const now = Date.now();
   priceState[asset].binance = newPrice;
   
-  if (prev === 0) return;
   if (!currentConfig.enabled) return;
   
-  const delta = newPrice - prev;
+  // Add tick to rolling window
+  const window = priceWindows[asset];
+  window.push({ price: newPrice, ts: now });
   
-  // Check if delta is significant
+  // Initialize window start if needed
+  if (!windowStartPrices[asset]) {
+    windowStartPrices[asset] = { price: newPrice, ts: now };
+    return;
+  }
+  
+  // Clean old ticks outside the window
+  const cutoff = now - DELTA_WINDOW_MS;
+  while (window.length > 0 && window[0].ts < cutoff) {
+    window.shift();
+  }
+  
+  // Update window start to oldest tick in window
+  if (window.length > 0) {
+    windowStartPrices[asset] = { price: window[0].price, ts: window[0].ts };
+  }
+  
+  // Calculate cumulative delta over the window
+  const windowStart = windowStartPrices[asset];
+  if (!windowStart) return;
+  
+  const delta = newPrice - windowStart.price;
+  const windowDuration = now - windowStart.ts;
+  
+  // Only check when we have a meaningful window (at least 50ms of data)
+  if (windowDuration < 50) return;
+  
+  // Check if cumulative delta exceeds threshold
   if (Math.abs(delta) < currentConfig.min_delta_usd) {
-    // Only log significant deltas (>$1) to avoid spam
-    if (Math.abs(delta) >= 1) {
-      logDecision(asset, 'skip_delta', `Delta $${Math.abs(delta).toFixed(2)} < min $${currentConfig.min_delta_usd}`, newPrice, null, delta);
+    // Only log significant deltas (>$2) to avoid spam
+    if (Math.abs(delta) >= 2) {
+      logDecision(asset, 'skip_delta', `Window delta $${Math.abs(delta).toFixed(2)} over ${windowDuration}ms < min $${currentConfig.min_delta_usd}`, newPrice, null, delta);
     }
     return;
   }
+  
+  // TRIGGER! We have a significant cumulative delta
+  console.log(`[PaperTrader] 🎯 TRIGGER: ${asset} cumulative Δ$${delta.toFixed(2)} over ${windowDuration}ms window`);
   
   const direction: 'UP' | 'DOWN' = delta > 0 ? 'UP' : 'DOWN';
   
@@ -483,6 +538,10 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
     logDecision(asset, 'skip_active', 'Already has active signal', newPrice, sharePrice, delta);
     return;
   }
+  
+  // Reset window after trigger to avoid re-triggering on same move
+  priceWindows[asset] = [{ price: newPrice, ts: now }];
+  windowStartPrices[asset] = { price: newPrice, ts: now };
   
   // Create signal
   createSignal(asset, direction, newPrice, delta, sharePrice);
