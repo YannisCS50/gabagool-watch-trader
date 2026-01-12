@@ -4806,6 +4806,7 @@ export type Database = {
           pm_down_bid: number | null
           pm_up_ask: number | null
           pm_up_bid: number | null
+          run_id: string | null
           signal_valid: boolean | null
           skip_reason: string | null
           spot_leading_ms: number | null
@@ -4838,6 +4839,7 @@ export type Database = {
           pm_down_bid?: number | null
           pm_up_ask?: number | null
           pm_up_bid?: number | null
+          run_id?: string | null
           signal_valid?: boolean | null
           skip_reason?: string | null
           spot_leading_ms?: number | null
@@ -4870,6 +4872,7 @@ export type Database = {
           pm_down_bid?: number | null
           pm_up_ask?: number | null
           pm_up_bid?: number | null
+          run_id?: string | null
           signal_valid?: boolean | null
           skip_reason?: string | null
           spot_leading_ms?: number | null
