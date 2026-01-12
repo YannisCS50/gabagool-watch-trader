@@ -636,43 +636,66 @@ function SignalsTable() {
               <TableHead>Entry</TableHead>
               <TableHead>Exit</TableHead>
               <TableHead>TP/SL</TableHead>
+              <TableHead>Fees</TableHead>
+              <TableHead>Hold Time</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Exit</TableHead>
               <TableHead className="text-right">PnL</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {signals?.map((signal) => (
-              <TableRow key={signal.id}>
-                <TableCell className="font-mono text-xs">
-                  {formatTime(signal.signal_ts)}
-                </TableCell>
-                <TableCell className="font-bold">{signal.asset}</TableCell>
-                <TableCell>
-                  {signal.direction === 'UP' ? (
-                    <TrendingUp className="h-4 w-4 text-green-400" />
-                  ) : (
-                    <TrendingDown className="h-4 w-4 text-red-400" />
-                  )}
-                </TableCell>
-                <TableCell className="font-mono">{formatCents(signal.entry_price)}</TableCell>
-                <TableCell className="font-mono">{formatCents(signal.exit_price)}</TableCell>
-                <TableCell className="font-mono text-xs">
-                  <span className="text-green-400">{formatCents(signal.tp_price)}</span>
-                  {' / '}
-                  <span className="text-red-400">{formatCents(signal.sl_price)}</span>
-                </TableCell>
-                <TableCell>
-                  <StatusBadge status={signal.status} />
-                </TableCell>
-                <TableCell>
-                  <ExitTypeBadge exitType={signal.exit_type} />
-                </TableCell>
-                <TableCell className={`text-right font-mono ${(signal.net_pnl ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                  {formatPnl(signal.net_pnl)}
-                </TableCell>
-              </TableRow>
-            ))}
+            {signals?.map((signal) => {
+              // Calculate hold time
+              const holdTimeMs = signal.fill_ts && signal.sell_ts 
+                ? signal.sell_ts - signal.fill_ts 
+                : null;
+              const formatHoldTime = (ms: number | null) => {
+                if (ms === null) return '-';
+                const seconds = Math.floor(ms / 1000);
+                if (seconds < 60) return `${seconds}s`;
+                const minutes = Math.floor(seconds / 60);
+                const remainingSecs = seconds % 60;
+                return `${minutes}m ${remainingSecs}s`;
+              };
+
+              return (
+                <TableRow key={signal.id}>
+                  <TableCell className="font-mono text-xs">
+                    {formatTime(signal.signal_ts)}
+                  </TableCell>
+                  <TableCell className="font-bold">{signal.asset}</TableCell>
+                  <TableCell>
+                    {signal.direction === 'UP' ? (
+                      <TrendingUp className="h-4 w-4 text-green-400" />
+                    ) : (
+                      <TrendingDown className="h-4 w-4 text-red-400" />
+                    )}
+                  </TableCell>
+                  <TableCell className="font-mono">{formatCents(signal.entry_price)}</TableCell>
+                  <TableCell className="font-mono">{formatCents(signal.exit_price)}</TableCell>
+                  <TableCell className="font-mono text-xs">
+                    <span className="text-green-400">{formatCents(signal.tp_price)}</span>
+                    {' / '}
+                    <span className="text-red-400">{formatCents(signal.sl_price)}</span>
+                  </TableCell>
+                  <TableCell className="font-mono text-xs text-muted-foreground">
+                    {signal.total_fees !== null ? `$${signal.total_fees.toFixed(3)}` : '-'}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {formatHoldTime(holdTimeMs)}
+                  </TableCell>
+                  <TableCell>
+                    <StatusBadge status={signal.status} />
+                  </TableCell>
+                  <TableCell>
+                    <ExitTypeBadge exitType={signal.exit_type} />
+                  </TableCell>
+                  <TableCell className={`text-right font-mono ${(signal.net_pnl ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {formatPnl(signal.net_pnl)}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       </div>
