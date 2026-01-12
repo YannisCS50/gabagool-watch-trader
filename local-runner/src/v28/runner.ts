@@ -601,23 +601,13 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
   // For BUY orders: makerAmount = shares * price (in USDC cents internally)
   // We need: (shares * price) to have at most 2 decimal places
   
-  // BUG FIX: Fetch FRESH orderbook before placing order
-  // The WebSocket cache can be stale (up to 500ms+ old) which causes pricing issues
-  let freshBestAsk: number | null = null;
-  try {
-    const book = await getOrderbookDepth(tokenId);
-    if (book && book.asks && book.asks.length > 0) {
-      freshBestAsk = parseFloat(book.asks[0].price);
-      console.log(`[V28] 📖 Fresh orderbook: bestAsk=${(freshBestAsk * 100).toFixed(1)}¢ (vs cached=${((signal.direction === 'UP' ? priceState[signal.asset].upBestAsk : priceState[signal.asset].downBestAsk) ?? 0) * 100}¢)`);
-    }
-  } catch (err) {
-    console.warn(`[V28] ⚠️ Failed to fetch fresh orderbook, using cached price`);
-  }
-  
-  // Use fresh orderbook price if available, otherwise fall back to cached
+  // SPEED: Do NOT fetch a fresh orderbook in the hot path.
+  // That extra round-trip commonly adds 200–800ms and makes us miss the ask.
+  // We price off the cached WS-derived bestAsk and compensate with AGGRESSIVE_BUFFER.
   const state = priceState[signal.asset];
   const cachedBestAsk = signal.direction === 'UP' ? state.upBestAsk : state.downBestAsk;
-  const bestAsk = freshBestAsk ?? cachedBestAsk;
+  const bestAsk = cachedBestAsk;
+
 
   // PRICE FIX: For FOK BUYs we must be AT/ABOVE the real bestAsk.
   // Previously we capped price to max_share_price even when bestAsk > max_share_price,
