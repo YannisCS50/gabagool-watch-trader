@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useRealtimePrices } from '@/hooks/useRealtimePrices';
+import { useClobOrderbook } from '@/hooks/useClobOrderbook';
 import { usePolymarketRealtime } from '@/hooks/usePolymarketRealtime';
 
 interface RealtimePriceMonitorProps {
@@ -21,29 +22,40 @@ interface RealtimePriceMonitorProps {
 }
 
 export function RealtimePriceMonitor({ className }: RealtimePriceMonitorProps) {
+  // Binance spot prices
   const { 
     spotPrices, 
-    orderbooks, 
-    binanceConnected, 
-    clobConnected,
-    messageCount,
-    lastUpdate,
+    binanceConnected,
+    messageCount: binanceMessageCount,
+    lastUpdate: binanceLastUpdate,
     getSpotPrice,
-    getOrderbook,
     getDelta,
-    reconnect
+    reconnect: reconnectBinance
   } = useRealtimePrices(true);
 
+  // CLOB orderbook data
+  const {
+    orderbooks,
+    connected: clobConnected,
+    messageCount: clobMessageCount,
+    lastUpdate: clobLastUpdate,
+    reconnect: reconnectClob
+  } = useClobOrderbook(true);
+
+  // Market metadata (for strike prices)
   const { markets } = usePolymarketRealtime(true);
 
   const assets = ['BTC', 'ETH', 'SOL', 'XRP'];
+
+  const totalMessageCount = binanceMessageCount + clobMessageCount;
+  const lastUpdate = Math.max(binanceLastUpdate, clobLastUpdate);
 
   const timeSinceUpdate = useMemo(() => {
     const diff = Date.now() - lastUpdate;
     if (diff < 1000) return 'just now';
     if (diff < 60000) return `${Math.floor(diff / 1000)}s ago`;
     return `${Math.floor(diff / 60000)}m ago`;
-  }, [lastUpdate, messageCount]);
+  }, [lastUpdate, totalMessageCount]);
 
   const formatSpotPrice = (asset: string): string => {
     const price = getSpotPrice(asset);
@@ -81,6 +93,7 @@ export function RealtimePriceMonitor({ className }: RealtimePriceMonitorProps) {
       combined,
       edge,
       lastUpdate: Math.max(ob.up.timestamp, ob.down.timestamp),
+      isRealBook: ob.up.isRealBook && ob.down.isRealBook,
     };
   };
 
@@ -90,6 +103,11 @@ export function RealtimePriceMonitor({ className }: RealtimePriceMonitorProps) {
     return market?.strikePrice ?? null;
   };
 
+  const handleReconnect = () => {
+    reconnectBinance();
+    reconnectClob();
+  };
+
   return (
     <Card className={cn('glass', className)}>
       <CardHeader className="flex flex-row items-center justify-between pb-2">
@@ -97,7 +115,7 @@ export function RealtimePriceMonitor({ className }: RealtimePriceMonitorProps) {
           <Zap className="h-5 w-5 text-yellow-400" />
           Real-Time Price Monitor
           <Badge variant="outline" className="text-xs">
-            {messageCount} ticks
+            {totalMessageCount} ticks
           </Badge>
         </CardTitle>
         <div className="flex items-center gap-2">
@@ -128,7 +146,7 @@ export function RealtimePriceMonitor({ className }: RealtimePriceMonitorProps) {
             </Badge>
           </div>
           <span className="text-xs text-muted-foreground">{timeSinceUpdate}</span>
-          <Button variant="ghost" size="sm" onClick={reconnect}>
+          <Button variant="ghost" size="sm" onClick={handleReconnect}>
             <RefreshCw className="h-4 w-4" />
           </Button>
         </div>
@@ -220,6 +238,9 @@ export function RealtimePriceMonitor({ className }: RealtimePriceMonitorProps) {
                         <div className="flex items-center gap-1 text-green-400 font-medium text-sm">
                           <TrendingUp className="h-4 w-4" />
                           UP
+                          {marketData.isRealBook && (
+                            <span className="h-1.5 w-1.5 rounded-full bg-green-400" title="Real book data" />
+                          )}
                         </div>
                         <div className="grid grid-cols-2 gap-1 text-xs">
                           <span className="text-muted-foreground">Bid:</span>
@@ -234,6 +255,9 @@ export function RealtimePriceMonitor({ className }: RealtimePriceMonitorProps) {
                         <div className="flex items-center gap-1 text-red-400 font-medium text-sm">
                           <TrendingDown className="h-4 w-4" />
                           DOWN
+                          {marketData.isRealBook && (
+                            <span className="h-1.5 w-1.5 rounded-full bg-green-400" title="Real book data" />
+                          )}
                         </div>
                         <div className="grid grid-cols-2 gap-1 text-xs">
                           <span className="text-muted-foreground">Bid:</span>
