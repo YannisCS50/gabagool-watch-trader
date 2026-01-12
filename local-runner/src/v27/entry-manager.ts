@@ -103,19 +103,30 @@ export class EntryManager {
       };
     }
     
-    // Calculate entry price: best_bid + 1 tick (passive limit)
+    // Calculate entry price
     const bestBid = mispricing.side === 'UP' ? book.upBid : book.downBid;
     const bestAsk = mispricing.side === 'UP' ? book.upAsk : book.downAsk;
-    const entryPrice = bestBid + config.tickSize;
+    const spread = bestAsk - bestBid;
     
-    // Don't cross the spread
-    if (entryPrice >= bestAsk) {
-      return {
-        shouldEnter: false,
-        reason: 'WOULD_CROSS_SPREAD',
-        mispricingSignal: mispricing,
-        filterResult: filter,
-      };
+    // If spread is tight (≤2 ticks), buy at the ask (taker)
+    // Otherwise place passive limit at bid + 1 tick
+    let entryPrice: number;
+    if (spread <= config.tickSize * 2) {
+      // Tight spread - take the ask for guaranteed fill
+      entryPrice = bestAsk;
+    } else {
+      // Wide spread - place passive limit
+      entryPrice = bestBid + config.tickSize;
+      
+      // Don't cross the spread
+      if (entryPrice >= bestAsk) {
+        return {
+          shouldEnter: false,
+          reason: 'WOULD_CROSS_SPREAD',
+          mispricingSignal: mispricing,
+          filterResult: filter,
+        };
+      }
     }
     
     // Check notional limit
