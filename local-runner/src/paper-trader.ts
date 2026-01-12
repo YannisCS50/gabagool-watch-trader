@@ -576,8 +576,17 @@ async function createSignal(
 ): Promise<void> {
   const now = Date.now();
   const market = marketInfo[asset];
-  const chainlinkPrice = await fetchChainlinkPrice(asset);
-  
+
+  // chain.ts may return either a number or an object like { price, timestamp }.
+  // Our DB column `paper_signals.chainlink_price` is numeric, so normalize here.
+  const rawChainlink = await fetchChainlinkPrice(asset);
+  const chainlinkPrice =
+    typeof rawChainlink === 'number'
+      ? rawChainlink
+      : rawChainlink && typeof rawChainlink === 'object' && typeof (rawChainlink as any).price === 'number'
+        ? Number((rawChainlink as any).price)
+        : null;
+
   const signal: PaperSignal = {
     run_id: RUN_ID,
     asset,
@@ -611,7 +620,7 @@ async function createSignal(
     config_snapshot: currentConfig,
     is_live: currentConfig.is_live,
   };
-  
+
   console.log(`[PaperTrader] 📊 Signal: ${asset} ${direction} @ ${(sharePrice * 100).toFixed(1)}¢ | Δ$${Math.abs(binanceDelta).toFixed(2)}`);
   
   // Save to database
