@@ -1,10 +1,11 @@
-import { useEffect, useState, useMemo, useRef } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, ComposedChart, Bar } from 'recharts';
-import { Activity } from 'lucide-react';
+import { Activity, Settings, Zap } from 'lucide-react';
 import { usePriceLatencyComparison, Asset } from '@/hooks/usePriceLatencyComparison';
+import { usePaperTradingConfig } from '@/hooks/usePaperTraderData';
 
 const ASSETS: Asset[] = ['BTC', 'ETH', 'SOL', 'XRP'];
 
@@ -13,6 +14,7 @@ const COLORS = {
   chainlink: '#375BD2',
   positive: '#3FB950',
   negative: '#F85149',
+  trigger: '#8B5CF6',
 };
 
 function formatTimestamp(ts: number): string {
@@ -34,6 +36,8 @@ export function PriceLatencyChart() {
     getChartData,
     stats,
   } = usePriceLatencyComparison();
+  
+  const { data: config } = usePaperTradingConfig();
 
   const [chartData, setChartData] = useState<{ binanceData: any[]; chainlinkData: any[] }>({ binanceData: [], chainlinkData: [] });
 
@@ -138,6 +142,51 @@ export function PriceLatencyChart() {
         </div>
       </CardHeader>
       <CardContent className="pt-2">
+        {/* Bot Settings Summary */}
+        {config && (
+          <div className="mb-4 p-3 bg-muted/50 rounded-lg border border-primary/20">
+            <div className="flex items-center gap-2 mb-2">
+              <Settings className="h-4 w-4 text-primary" />
+              <span className="text-sm font-medium">Paper Bot Settings</span>
+              <Badge variant={config.enabled ? 'default' : 'secondary'} className="ml-auto">
+                {config.enabled ? 'Enabled' : 'Disabled'}
+              </Badge>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs">
+              <div>
+                <span className="text-muted-foreground">Trigger Delta</span>
+                <div className="font-mono font-bold text-purple-400">${config.min_delta_usd}</div>
+              </div>
+              <div>
+                <span className="text-muted-foreground">Share Range</span>
+                <div className="font-mono font-bold">
+                  {(config.min_share_price * 100).toFixed(0)}-{(config.max_share_price * 100).toFixed(0)}¢
+                </div>
+              </div>
+              <div>
+                <span className="text-muted-foreground">TP / SL</span>
+                <div className="font-mono font-bold">
+                  <span className={config.tp_enabled ? 'text-green-400' : 'text-muted-foreground'}>
+                    {config.tp_enabled ? `+${config.tp_cents}¢` : 'off'}
+                  </span>
+                  {' / '}
+                  <span className={config.sl_enabled ? 'text-red-400' : 'text-muted-foreground'}>
+                    {config.sl_enabled ? `-${config.sl_cents}¢` : 'off'}
+                  </span>
+                </div>
+              </div>
+              <div>
+                <span className="text-muted-foreground">Trade Size</span>
+                <div className="font-mono font-bold">${config.trade_size_usd}</div>
+              </div>
+              <div>
+                <span className="text-muted-foreground">Timeout</span>
+                <div className="font-mono font-bold">{config.timeout_ms / 1000}s</div>
+              </div>
+            </div>
+          </div>
+        )}
+        
         {/* Price Stats */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
           <div className="bg-muted rounded-lg p-3">
@@ -165,9 +214,12 @@ export function PriceLatencyChart() {
             </div>
           </div>
           <div className="bg-muted rounded-lg p-3">
-            <div className="text-xs text-muted-foreground">Price Diff</div>
-            <div className={`text-lg font-mono font-bold ${stats.priceDiff >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-              {stats.priceDiff !== 0 ? `$${Math.abs(stats.priceDiff).toFixed(2)}` : '—'}
+            <div className="text-xs text-muted-foreground flex items-center gap-1">
+              <Zap className="h-3 w-3" />
+              Trigger
+            </div>
+            <div className="text-lg font-mono font-bold text-purple-400">
+              ${config?.min_delta_usd || '—'}
             </div>
           </div>
         </div>
@@ -246,6 +298,25 @@ export function PriceLatencyChart() {
                   />
                   <Legend />
                   <ReferenceLine y={0} stroke="hsl(var(--muted-foreground))" strokeDasharray="3 3" />
+                  {/* Trigger threshold lines */}
+                  {config && (
+                    <>
+                      <ReferenceLine 
+                        y={config.min_delta_usd} 
+                        stroke={COLORS.trigger} 
+                        strokeWidth={2}
+                        strokeDasharray="5 3"
+                        label={{ value: `+$${config.min_delta_usd} trigger`, position: 'right', fill: COLORS.trigger, fontSize: 10 }}
+                      />
+                      <ReferenceLine 
+                        y={-config.min_delta_usd} 
+                        stroke={COLORS.trigger} 
+                        strokeWidth={2}
+                        strokeDasharray="5 3"
+                        label={{ value: `-$${config.min_delta_usd} trigger`, position: 'right', fill: COLORS.trigger, fontSize: 10 }}
+                      />
+                    </>
+                  )}
                   <Bar 
                     dataKey="binanceDelta" 
                     fill={COLORS.binance}
@@ -264,7 +335,8 @@ export function PriceLatencyChart() {
               </ResponsiveContainer>
             </div>
             <p className="text-xs text-muted-foreground mt-2 text-center">
-              Price changes per tick (Δ &gt; $0.01 shown)
+              <span style={{ color: COLORS.trigger }}>■</span> Paarse lijnen = trigger threshold (±${config?.min_delta_usd || '?'}). 
+              Moves boven/onder triggeren trades.
             </p>
           </TabsContent>
         </Tabs>
