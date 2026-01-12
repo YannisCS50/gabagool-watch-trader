@@ -220,7 +220,14 @@ export class V27Runner {
     
     // 5. Execute entry if decided (and not in shadow mode)
     if (entry.shouldEnter && entry.side && entry.price && entry.shares && entry.tokenId) {
-      if (!config.shadowMode && this.onPlaceOrder) {
+      console.log(`[V27] ✅ Entry decision: ${market.asset} ${entry.side} ${entry.shares}@${entry.price.toFixed(3)}`);
+      
+      if (config.shadowMode) {
+        console.log(`[V27] 🔮 SHADOW MODE - not placing order`);
+      } else if (!this.onPlaceOrder) {
+        console.log(`[V27] ⚠️ No order callback set!`);
+      } else {
+        console.log(`[V27] 📝 Placing LIVE order...`);
         try {
           const result = await this.onPlaceOrder(
             marketId,
@@ -250,11 +257,17 @@ export class V27Runner {
               result.avgFillPrice || entry.price,
               entry.shares
             );
+            
+            console.log(`[V27] ✅ Order filled: ${result.orderId} @ ${result.avgFillPrice || entry.price}`);
+          } else {
+            console.log(`[V27] ⏳ Order placed but not filled: ${result.orderId}`);
           }
         } catch (err) {
           console.error(`[V27] Order placement failed:`, err);
         }
       }
+    } else if (entry.shouldEnter) {
+      console.log(`[V27] ⚠️ Entry decided but missing data: side=${entry.side} price=${entry.price} shares=${entry.shares} tokenId=${entry.tokenId ? 'set' : 'missing'}`);
     }
     
     // 6. Monitor existing positions for correction/hedge
