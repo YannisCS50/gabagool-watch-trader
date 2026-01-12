@@ -411,6 +411,10 @@ export default function V27Dashboard() {
         <TabsContent value="counterfactual" className="mt-4">
           <ShadowCounterfactualPanel positions={filteredPositionsData.positions} evaluations={filteredEvaluations} />
         </TabsContent>
+
+        <TabsContent value="paper" className="mt-4">
+          <PaperTraderDashboard />
+        </TabsContent>
       </Tabs>
     </div>
   );
