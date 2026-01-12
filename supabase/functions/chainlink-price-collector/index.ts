@@ -85,15 +85,56 @@ async function fetchBinanceHistoricalPrice(asset: string, timestampMs: number): 
   }
 }
 
-// Fetch current price from Polymarket RTDS (same source they use for settlement)
-async function fetchPolymarketChainlinkPrice(asset: string): Promise<{ price: number; timestamp: number } | null> {
+// Fetch the EXACT Chainlink Data Streams price from our realtime_price_logs table
+// This is the SAME source Polymarket uses for "Price to Beat"
+async function fetchChainlinkRtdsPrice(
+  supabase: any,
+  asset: string, 
+  targetTimestampMs: number
+): Promise<{ price: number; timestamp: number } | null> {
   try {
-    // Use Polymarket's data API which exposes their Chainlink prices
+    // Get the chainlink_rtds tick closest to the target timestamp (within ±2 seconds)
+    const { data, error } = await supabase
+      .from('realtime_price_logs')
+      .select('price, raw_timestamp')
+      .eq('source', 'chainlink_rtds')
+      .eq('asset', asset)
+      .gte('raw_timestamp', targetTimestampMs - 2000)
+      .lte('raw_timestamp', targetTimestampMs + 2000)
+      .order('raw_timestamp', { ascending: true })
+      .limit(1);
+    
+    if (error) {
+      console.log(`[chainlink_rtds] DB error for ${asset}:`, error.message);
+      return null;
+    }
+    
+    if (data && data.length > 0) {
+      const tick = data[0];
+      console.log(`[chainlink_rtds] ${asset} price at ${new Date(tick.raw_timestamp).toISOString()}: $${tick.price.toFixed(6)}`);
+      return {
+        price: tick.price,
+        timestamp: tick.raw_timestamp,
+      };
+    }
+    
+    console.log(`[chainlink_rtds] No tick found for ${asset} near ${new Date(targetTimestampMs).toISOString()}`);
+    return null;
+  } catch (e) {
+    console.error(`[chainlink_rtds] Error fetching ${asset}:`, e);
+    return null;
+  }
+}
+
+// Fetch current price from Polymarket RTDS API (fallback, less accurate for strike)
+async function fetchPolymarketApiPrice(asset: string): Promise<{ price: number; timestamp: number } | null> {
+  try {
+    // Use Polymarket's data API 
     const assetLower = asset.toLowerCase();
     const response = await fetch(`https://data-api.polymarket.com/prices?assets=${assetLower}`);
     
     if (!response.ok) {
-      console.log(`[polymarket] API error: ${response.status}`);
+      console.log(`[polymarket_api] API error: ${response.status}`);
       return null;
     }
 
@@ -101,13 +142,13 @@ async function fetchPolymarketChainlinkPrice(asset: string): Promise<{ price: nu
     const price = data?.[assetLower];
     
     if (typeof price === 'number' && price > 0) {
-      console.log(`[polymarket] ${asset} price: $${price.toFixed(6)}`);
+      console.log(`[polymarket_api] ${asset} price: $${price.toFixed(6)}`);
       return { price, timestamp: Date.now() };
     }
     
     return null;
   } catch (e) {
-    console.error(`[polymarket] Error fetching ${asset}:`, e);
+    console.error(`[polymarket_api] Error fetching ${asset}:`, e);
     return null;
   }
 }
@@ -168,10 +209,10 @@ async function fetchChainlinkPrice(asset: string): Promise<{ price: number; time
   }
 }
 
-// Get price from best available source (prefer Polymarket's source)
-async function getPrice(asset: string): Promise<{ price: number; timestamp: number; source: string } | null> {
-  // Try Polymarket first (this is what they use for settlement)
-  const pmPrice = await fetchPolymarketChainlinkPrice(asset);
+// Get current price from best available source (for close prices)
+async function getCurrentPrice(asset: string): Promise<{ price: number; timestamp: number; source: string } | null> {
+  // Try Polymarket API first
+  const pmPrice = await fetchPolymarketApiPrice(asset);
   if (pmPrice) {
     return { ...pmPrice, source: 'polymarket_api' };
   }
@@ -289,7 +330,7 @@ function determineQuality(tickTimestamp: number, targetTimeMs: number): string {
 }
 
 // Store strike prices in database using best available price source
-// Priority for OPEN prices: Polymarket API > Chainlink RPC (captured at exact start time)
+// Priority for OPEN prices: chainlink_rtds from realtime_price_logs (EXACT Polymarket "Price to Beat")
 // Priority for CLOSE prices: Polymarket API > Chainlink RPC (current price)
 async function storePrices(
   supabase: any, 
@@ -303,7 +344,7 @@ async function storePrices(
   const currentPrices: Record<string, { price: number; timestamp: number; source: string }> = {};
   
   for (const asset of assetsNeeded) {
-    const result = await getPrice(asset);
+    const result = await getCurrentPrice(asset);
     if (result) {
       currentPrices[asset] = result;
     }
@@ -338,26 +379,38 @@ async function storePrices(
       updates.close_timestamp = existing.close_timestamp;
     }
     
-    // Handle open price - USE CHAINLINK/POLYMARKET for strike price (this is what Polymarket uses!)
+    // Handle open price - USE chainlink_rtds from realtime_price_logs (EXACT "Price to Beat")
     if (market.needsOpenPrice && !existing?.open_price) {
       const targetOpenTimeMs = market.eventStartTime * 1000;
       const timeSinceStart = now - targetOpenTimeMs;
       
-      // Capture open price within first 5 seconds for best accuracy
-      // Polymarket uses Chainlink Data Streams - we capture as close to :00 as possible
+      // Only try to get open price if we're within 10 minutes of start
       if (timeSinceStart >= 0 && timeSinceStart <= 10 * 60 * 1000) {
-        // PRIMARY: Use Polymarket API or Chainlink RPC (same source as Polymarket)
-        const priceData = currentPrices[market.asset];
+        // PRIMARY: Get exact chainlink_rtds price from our logged ticks
+        const chainlinkRtdsPrice = await fetchChainlinkRtdsPrice(supabase, market.asset, targetOpenTimeMs);
         
-        if (priceData) {
-          updates.open_price = Math.round(priceData.price * 1000000) / 1000000;
-          updates.open_timestamp = now; // Use actual capture time
+        if (chainlinkRtdsPrice) {
+          updates.open_price = Math.round(chainlinkRtdsPrice.price * 1000000) / 1000000;
+          updates.open_timestamp = chainlinkRtdsPrice.timestamp;
           updates.strike_price = updates.open_price;
-          updates.source = priceData.source;
-          updates.quality = determineQuality(now, targetOpenTimeMs);
-          updates.chainlink_timestamp = Math.floor(now / 1000);
+          updates.source = 'chainlink_rtds';
+          updates.quality = determineQuality(chainlinkRtdsPrice.timestamp, targetOpenTimeMs);
+          updates.chainlink_timestamp = Math.floor(chainlinkRtdsPrice.timestamp / 1000);
           openStored++;
-          console.log(`✅ Open price for ${market.slug}: $${updates.open_price} (source: ${priceData.source}, quality: ${updates.quality}, captured at ${new Date(now).toISOString()})`);
+          console.log(`✅ Open price for ${market.slug}: $${updates.open_price} (source: chainlink_rtds, quality: ${updates.quality}, tick at ${new Date(chainlinkRtdsPrice.timestamp).toISOString()})`);
+        } else {
+          // FALLBACK: Use current API price if no logged tick found
+          const priceData = currentPrices[market.asset];
+          if (priceData) {
+            updates.open_price = Math.round(priceData.price * 1000000) / 1000000;
+            updates.open_timestamp = now;
+            updates.strike_price = updates.open_price;
+            updates.source = priceData.source + '_fallback';
+            updates.quality = 'estimated';
+            updates.chainlink_timestamp = Math.floor(now / 1000);
+            openStored++;
+            console.log(`⚠️ Open price for ${market.slug}: $${updates.open_price} (FALLBACK: ${priceData.source}, no chainlink_rtds tick found)`);
+          }
         }
       }
     }
