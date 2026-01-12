@@ -453,31 +453,66 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
   
   // Determine token ID based on direction
   const tokenId = signal.direction === 'UP' ? market.upTokenId : market.downTokenId;
-  
-  // CRITICAL: Round shares to 2 decimals (Polymarket CLOB requirement)
-  // Also round price to 2 decimals
-  const rawShares = signal.trade_size_usd / signal.share_price;
-  const shares = Math.floor(rawShares * 100) / 100; // Floor to 2 decimals
-  const price = Math.round(signal.share_price * 100) / 100; // Round to 2 decimals (cents)
-  
-  if (shares < 0.01) {
-    console.error(`[V28] ❌ Shares too small: ${rawShares.toFixed(4)} → ${shares}`);
+
+  // CRITICAL: Polymarket enforces amount precision:
+  // - makerAmount (USDC) max 2 decimals
+  // - takerAmount (shares) max 4 decimals
+  // Since the SDK derives makerAmount = size * price for BUY orders, we must choose a share
+  // size that makes (size * price) land exactly on cents.
+  const price = Math.round(signal.share_price * 100) / 100; // tickSize=0.01
+  const pCents = Math.round(price * 100);
+
+  const gcdInt = (a: number, b: number): number => {
+    let x = Math.abs(Math.trunc(a));
+    let y = Math.abs(Math.trunc(b));
+    while (y !== 0) {
+      const t = x % y;
+      x = y;
+      y = t;
+    }
+    return x;
+  };
+
+  // sizeUnits are 1e-4 shares (to satisfy takerAmount max 4 decimals)
+  // Constraint for cents: (sizeUnits * pCents) / 10000 must be integer
+  // => sizeUnits must be multiple of (10000 / gcd(10000, pCents))
+  const STEP_BASE = 10_000;
+  const stepUnits = STEP_BASE / gcdInt(STEP_BASE, pCents);
+
+  const desiredShares = signal.trade_size_usd / price;
+  const desiredUnits = Math.floor(desiredShares * STEP_BASE);
+  const adjustedUnits = Math.floor(desiredUnits / stepUnits) * stepUnits;
+  const shares = adjustedUnits / STEP_BASE;
+
+  const notionalUsd = shares * price;
+
+  if (!Number.isFinite(shares) || shares <= 0) {
+    console.error(`[V28] ❌ Invalid shares after quantization: desired=${desiredShares.toFixed(6)} shares -> ${shares}`);
     signal.status = 'failed';
-    signal.notes = 'Shares too small after rounding';
+    signal.notes = 'Invalid shares after quantization';
     void saveSignal(signal);
     positionLock = { status: 'idle' };
     return;
   }
-  
+
+  if (notionalUsd < 1.0) {
+    console.error(`[V28] ❌ Order notional too small after quantization: $${notionalUsd.toFixed(2)} (min $1)`);
+    signal.status = 'failed';
+    signal.notes = `Order notional too small after quantization: $${notionalUsd.toFixed(2)}`;
+    void saveSignal(signal);
+    positionLock = { status: 'idle' };
+    return;
+  }
+
   // SPEED: Minimal logging (save ~5-10ms)
-  console.log(`[V28] 📤 BUY ${shares.toFixed(2)} @ ${(price * 100).toFixed(0)}¢`);
-  
+  console.log(`[V28] 📤 BUY ${shares.toFixed(4)} @ ${(price * 100).toFixed(0)}¢ ($${notionalUsd.toFixed(2)})`);
+
   try {
     // SPEED: Use FOK for immediate fill (no waiting for resting orders)
     const result = await placeOrder({
       tokenId,
       side: 'BUY',
-      price: price,
+      price,
       size: shares,
       orderType: 'FOK', // Fill-Or-Kill for speed
       intent: 'ENTRY',
@@ -585,15 +620,36 @@ async function handleLiveExit(signal: V28Signal, tokenId: string, exitType: 'tp'
     positionLock = { status: 'idle' };
   }
   
-  const shares = signal.shares ?? 0;
-  
-  console.log(`[V28] 📤 Placing SELL order (${exitType}): ${shares.toFixed(2)} shares @ ${(exitPrice * 100).toFixed(1)}¢`);
+  const rawShares = signal.shares ?? 0;
+  const price = Math.round(exitPrice * 100) / 100; // tickSize=0.01
+  const pCents = Math.round(price * 100);
+
+  const gcdInt = (a: number, b: number): number => {
+    let x = Math.abs(Math.trunc(a));
+    let y = Math.abs(Math.trunc(b));
+    while (y !== 0) {
+      const t = x % y;
+      x = y;
+      y = t;
+    }
+    return x;
+  };
+
+  const STEP_BASE = 10_000; // 4 decimals for shares
+  const stepUnits = STEP_BASE / gcdInt(STEP_BASE, pCents);
+  const rawUnits = Math.floor(rawShares * STEP_BASE);
+  const sellUnits = Math.floor(rawUnits / stepUnits) * stepUnits;
+  const shares = sellUnits / STEP_BASE;
+
+  const notionalUsd = shares * price;
+
+  console.log(`[V28] 📤 Placing SELL order (${exitType}): ${shares.toFixed(4)} shares @ ${(price * 100).toFixed(0)}¢ ($${notionalUsd.toFixed(2)})`);
   
   try {
     const result = await placeOrder({
       tokenId,
       side: 'SELL',
-      price: exitPrice,
+      price,
       size: shares,
       orderType: 'GTC',
       intent: 'HEDGE', // Use HEDGE intent for exits
