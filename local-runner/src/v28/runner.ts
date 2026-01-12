@@ -11,6 +11,16 @@ import { getOrderbookDepth, placeOrder, getClient } from '../polymarket.js';
 import { startPriceFeedLogger, stopPriceFeedLogger, type PriceFeedCallback } from '../price-feed-ws-logger.js';
 import { fetchPositions, type PolymarketPosition } from '../positions-sync.js';
 import { config } from '../config.js';
+import {
+  initPreSignedCache,
+  stopPreSignedCache,
+  updateMarketCache,
+  executeOrderFast,
+  getCacheStats,
+  logCacheStats,
+  setEnabled as setPreSignEnabled,
+  type PreSignedOrder,
+} from './pre-signed-orders.js';
 
 // ============================================
 // TYPES
@@ -122,7 +132,9 @@ let positionLock: PositionLock = { status: 'idle' };
 
 let lastMarketRefresh = 0;
 let lastConfigReload = 0;
+let lastPreSignCacheRefresh = 0;
 let positionMonitorInterval: NodeJS.Timeout | null = null;
+let preSignCacheEnabled = false;
 
 // Track open positions (filled BUYs waiting for SELL)
 interface OpenPosition {
@@ -715,31 +727,81 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
   console.log(`[V28] │ Shares:   ${shares}`);
   console.log(`[V28] │ Price:    ${(price * 100).toFixed(1)}¢`);
   console.log(`[V28] │ Notional: $${notionalUsd.toFixed(2)}`);
+  console.log(`[V28] │ PreSign:  ${preSignCacheEnabled ? '✅ ENABLED' : '❌ DISABLED'}`);
   console.log(`[V28] └─────────────────────────────────────────────────────────────`);
 
   try {
-    // SPEED: Use FOK for immediate fill (no waiting for resting orders)
-    const result = await placeOrder({
-      tokenId,
-      side: 'BUY',
-      price,
-      size: shares,
-      orderType: 'FOK', // Fill-Or-Kill for speed
-      intent: 'ENTRY',
-    });
+    // ========================================
+    // SPEED OPTIMIZATION: Try pre-signed orders first!
+    // This eliminates ~50-100ms EIP-712 signing latency
+    // ========================================
     
-    const orderLatency = Date.now() - orderStartTs;
+    let result: { success: boolean; orderId?: string; avgPrice?: number; filledSize?: number; error?: string };
+    let usedPreSigned = false;
+    let orderLatency: number;
+    
+    if (preSignCacheEnabled) {
+      // FAST PATH: Use pre-signed order from cache
+      const fastResult = await executeOrderFast(
+        signal.asset,
+        signal.direction,
+        tokenId,
+        price,
+        shares,
+        'FOK'
+      );
+      
+      result = {
+        success: fastResult.success,
+        orderId: fastResult.orderId,
+        avgPrice: fastResult.avgPrice,
+        filledSize: fastResult.filledSize,
+        error: fastResult.error,
+      };
+      usedPreSigned = fastResult.usedPreSigned;
+      orderLatency = fastResult.latencyMs;
+      
+      if (usedPreSigned) {
+        console.log(`[V28] ⚡ PRE-SIGNED ORDER USED! Latency: ${orderLatency}ms (saved ~100ms)`);
+      } else {
+        console.log(`[V28] 📦 Cache miss - fell back to regular signing (${orderLatency}ms)`);
+      }
+    } else {
+      // REGULAR PATH: Sign and post order (slower)
+      const orderStartLocal = Date.now();
+      result = await placeOrder({
+        tokenId,
+        side: 'BUY',
+        price,
+        size: shares,
+        orderType: 'FOK', // Fill-Or-Kill for speed
+        intent: 'ENTRY',
+      });
+      orderLatency = Date.now() - orderStartLocal;
+    }
+    
     const totalLatency = Date.now() - signal.signal_ts;
-    console.log(`[V28] ⚡ LATENCY: Order HTTP = ${orderLatency}ms | Signal→Fill TOTAL = ${totalLatency}ms (target: <800ms)`);
+    
+    // Log latency with pre-sign indicator
+    const preSignLabel = usedPreSigned ? '⚡ PRE-SIGNED' : '📦 REGULAR';
+    console.log(`[V28] ${preSignLabel} LATENCY: Order = ${orderLatency}ms | Signal→Fill TOTAL = ${totalLatency}ms (target: <800ms)`);
+    
+    // Track cache performance
+    if (preSignCacheEnabled) {
+      const stats = getCacheStats();
+      if (stats.cacheHits + stats.cacheMisses > 0 && (stats.cacheHits + stats.cacheMisses) % 10 === 0) {
+        console.log(`[V28] 📊 Cache stats: ${stats.hitRate.toFixed(1)}% hit rate (${stats.cacheHits}/${stats.cacheHits + stats.cacheMisses})`);
+      }
+    }
     
     if (!result.success) {
       console.log(`[V28] ┌─────────────────────────────────────────────────────────────`);
       console.log(`[V28] │ ❌ ORDER FAILED`);
       console.log(`[V28] │ Error:   ${result.error}`);
-      console.log(`[V28] │ Latency: ${orderLatency}ms`);
+      console.log(`[V28] │ Latency: ${orderLatency}ms (${usedPreSigned ? 'pre-signed' : 'regular'})`);
       console.log(`[V28] └─────────────────────────────────────────────────────────────`);
       signal.status = 'failed';
-      signal.notes = `Order failed: ${result.error} | Latency: ${orderLatency}ms`;
+      signal.notes = `Order failed: ${result.error} | Latency: ${orderLatency}ms | PreSign: ${usedPreSigned}`;
       await saveSignal(signal);
       positionLock = { status: 'idle' };
       return;
@@ -751,12 +813,11 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
     if (filledSize <= 0) {
       console.log(`[V28] ┌─────────────────────────────────────────────────────────────`);
       console.log(`[V28] │ ❌ ORDER NOT FILLED (FOK killed)`);
-      console.log(`[V28] │ Status:     ${result.status}`);
       console.log(`[V28] │ FilledSize: ${filledSize}`);
-      console.log(`[V28] │ Latency:    ${orderLatency}ms`);
+      console.log(`[V28] │ Latency:    ${orderLatency}ms (${usedPreSigned ? 'pre-signed' : 'regular'})`);
       console.log(`[V28] └─────────────────────────────────────────────────────────────`);
       signal.status = 'failed';
-      signal.notes = `Order not filled (size_matched=0) despite status=${result.status} | Latency: ${orderLatency}ms`;
+      signal.notes = `Order not filled (size_matched=0) | Latency: ${orderLatency}ms | PreSign: ${usedPreSigned}`;
       await saveSignal(signal);
       positionLock = { status: 'idle' };
       return;
@@ -1451,8 +1512,94 @@ async function fetchActiveMarkets(): Promise<void> {
     
     console.log(`[V28] Loaded ${count} active markets`);
     
+    // Initialize or update pre-signed orders cache for active markets
+    if (currentConfig.is_live && count > 0) {
+      await initializePreSignedOrdersCache();
+    }
+    
   } catch (err) {
     console.error('[V28] Error fetching markets:', err);
+  }
+}
+
+/**
+ * Initialize or refresh the pre-signed orders cache for all active markets
+ * This runs in the background and doesn't block trading
+ */
+async function initializePreSignedOrdersCache(): Promise<void> {
+  const now = Date.now();
+  
+  // Don't refresh cache too often (max once per minute)
+  if (preSignCacheEnabled && now - lastPreSignCacheRefresh < 60_000) {
+    return;
+  }
+  
+  console.log('[V28] 🔐 Initializing pre-signed orders cache...');
+  
+  try {
+    // Collect active markets
+    const activeMarkets: Array<{
+      asset: Asset;
+      upTokenId: string;
+      downTokenId: string;
+      marketSlug: string;
+    }> = [];
+    
+    for (const [asset, info] of Object.entries(marketInfo)) {
+      if (info) {
+        activeMarkets.push({
+          asset: asset as Asset,
+          upTokenId: info.upTokenId,
+          downTokenId: info.downTokenId,
+          marketSlug: info.slug,
+        });
+      }
+    }
+    
+    if (activeMarkets.length === 0) {
+      console.log('[V28] No active markets for pre-signing');
+      return;
+    }
+    
+    // Configure price levels based on our trading range
+    const priceLevels: number[] = [];
+    const minPrice = currentConfig.min_share_price;
+    const maxPrice = currentConfig.max_share_price;
+    
+    // Generate price levels at 2-cent increments within our range
+    for (let p = minPrice; p <= maxPrice; p += 0.02) {
+      priceLevels.push(Math.round(p * 100) / 100);
+    }
+    
+    // Share sizes to pre-sign (based on typical trade sizes)
+    const maxShares = currentConfig.max_shares;
+    const shareSizes = [
+      Math.max(1, Math.floor(maxShares * 0.5)),  // Half max
+      maxShares,                                   // Full max
+      Math.min(10, maxShares + 2),                // A bit more for flexibility
+    ].filter((v, i, a) => a.indexOf(v) === i); // Unique only
+    
+    console.log(`[V28] Pre-signing at ${priceLevels.length} price levels: ${priceLevels[0]?.toFixed(2)}-${priceLevels[priceLevels.length - 1]?.toFixed(2)}`);
+    console.log(`[V28] Share sizes: ${shareSizes.join(', ')}`);
+    
+    // Initialize cache (runs in background with internal async)
+    await initPreSignedCache(activeMarkets, {
+      priceLevels,
+      shareSizes,
+      refreshIntervalMs: 5 * 60 * 1000, // Refresh every 5 minutes
+      maxOrderAgeMs: 30 * 60 * 1000,    // Orders valid for 30 minutes
+      enabled: true,
+    });
+    
+    preSignCacheEnabled = true;
+    lastPreSignCacheRefresh = now;
+    
+    // Log stats
+    logCacheStats();
+    
+  } catch (err) {
+    console.error('[V28] Failed to initialize pre-signed cache:', err);
+    // Don't fail startup - cache is an optimization, not a requirement
   }
 }
 
@@ -1564,6 +1711,7 @@ export async function startV28Runner(): Promise<void> {
   console.log(`[V28] Assets: ${currentConfig.assets.join(', ')}`);
   console.log('[V28] ✅ LATENCY TRACKING ENABLED - Will log signal→fill in ms');
   console.log('[V28] ✅ SINGLE POSITION LOCK - Max 1 position at a time');
+  console.log('[V28] ✅ PRE-SIGNED ORDERS - Eliminates ~100ms signing latency');
   
   await fetchActiveMarkets();
   
@@ -1573,6 +1721,12 @@ export async function startV28Runner(): Promise<void> {
     try {
       await getClient();
       console.log('[V28] ✅ CLOB client ready');
+      
+      // Pre-signed orders cache is initialized in fetchActiveMarkets()
+      // After CLOB client is ready, it will have access to sign orders
+      if (preSignCacheEnabled) {
+        console.log('[V28] ✅ Pre-signed orders cache ready');
+      }
     } catch (e: any) {
       console.error('[V28] ⚠️ CLOB client init failed:', e?.message);
     }
@@ -1635,6 +1789,13 @@ export async function stopV28Runner(): Promise<void> {
   isRunning = false;
   await stopPriceFeedLogger();
   
+  // Stop pre-signed orders cache
+  if (preSignCacheEnabled) {
+    console.log('[V28] Stopping pre-signed orders cache...');
+    stopPreSignedCache();
+    preSignCacheEnabled = false;
+  }
+  
   // Stop position monitor
   if (positionMonitorInterval) {
     clearInterval(positionMonitorInterval);
@@ -1660,7 +1821,9 @@ export function getV28Stats(): {
   activeSignals: number;
   prices: Record<Asset, PriceState>;
   markets: Record<Asset, MarketInfo | null>;
+  preSignCache: { enabled: boolean; hitRate: number; totalOrders: number };
 } {
+  const cacheStats = getCacheStats();
   return {
     isRunning,
     runId: RUN_ID,
@@ -1668,6 +1831,11 @@ export function getV28Stats(): {
     activeSignals: activeSignals.size,
     prices: priceState,
     markets: marketInfo,
+    preSignCache: {
+      enabled: preSignCacheEnabled,
+      hitRate: cacheStats.hitRate,
+      totalOrders: cacheStats.totalPreSigned,
+    },
   };
 }
 
