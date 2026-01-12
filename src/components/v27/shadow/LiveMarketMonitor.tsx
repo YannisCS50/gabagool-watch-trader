@@ -135,16 +135,19 @@ export function LiveMarketMonitor() {
   }, []);
 
   // Get current live prices (for use in fetchMarkets)
+  // IMPORTANT: Use Chainlink price as "Actual" because that's what Polymarket uses for settlement
   const getLiveSpotPrice = useCallback((asset: string): { price: number | null; isLive: boolean; ts: number | null } => {
     const prices = getAllPrices();
     const assetKey = asset as Asset;
     const data = prices[assetKey];
     
-    if (data?.binance && data.binanceTs) {
-      return { price: data.binance, isLive: true, ts: data.binanceTs };
-    }
+    // Prioritize Chainlink price (this is what Polymarket uses for settlement)
     if (data?.chainlink && data.chainlinkTs) {
       return { price: data.chainlink, isLive: true, ts: data.chainlinkTs };
+    }
+    // Fallback to Binance if Chainlink not available
+    if (data?.binance && data.binanceTs) {
+      return { price: data.binance, isLive: true, ts: data.binanceTs };
     }
     return { price: null, isLive: false, ts: null };
   }, [getAllPrices, priceVersion]); // priceVersion triggers re-evaluation
