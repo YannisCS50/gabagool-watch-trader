@@ -536,9 +536,8 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
     const orderType: 'maker' | 'taker' = result.status === 'filled' ? 'taker' : 'maker';
     const entryFee = orderType === 'taker' ? filledSize * 0.02 : -filledSize * 0.005;
     
-    // Calculate TP/SL prices
+    // Calculate TP price (take-profit = entry + 3¢)
     const tpPrice = currentConfig.tp_enabled ? entryPrice + (currentConfig.tp_cents / 100) : null;
-    const slPrice = currentConfig.sl_enabled ? entryPrice - (currentConfig.sl_cents / 100) : null;
     
     signal.status = 'filled';
     signal.entry_price = entryPrice;
@@ -548,24 +547,89 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
     signal.shares = filledSize;
     signal.tp_price = tpPrice;
     signal.tp_status = tpPrice ? 'pending' : null;
-    signal.sl_price = slPrice;
-    signal.sl_status = slPrice ? 'pending' : null;
-    signal.notes = `🔴 LIVE FILL @ ${(entryPrice * 100).toFixed(1)}¢ | Order: ${orderLatency}ms | Total: ${totalLatency}ms | TP: ${tpPrice ? (tpPrice * 100).toFixed(1) : '-'}¢ | SL: ${slPrice ? (slPrice * 100).toFixed(1) : '-'}¢`;
+    signal.sl_price = null; // No SL in immediate-sell mode
+    signal.sl_status = null;
     
-    console.log(`[V28] ⏱️ LATENCY: Signal → Order = ${totalLatency}ms (order took ${orderLatency}ms)`);
+    console.log(`[V28] ⏱️ LATENCY: Signal → BUY = ${totalLatency}ms (order took ${orderLatency}ms)`);
     console.log(`[V28] ✅ LIVE FILL: ${signal.asset} ${signal.direction} @ ${(entryPrice * 100).toFixed(1)}¢ | ${filledSize.toFixed(2)} shares`);
     
+    // ========================================
+    // IMMEDIATELY PLACE LIMIT SELL @ TP PRICE
+    // ========================================
+    if (tpPrice && filledSize > 0) {
+      const sellPrice = Math.round(tpPrice * 100) / 100; // tickSize=0.01
+      const sellPCents = Math.round(sellPrice * 100);
+      
+      // Quantize sell shares
+      const sellStepUnits = STEP_BASE / gcdInt(STEP_BASE, sellPCents);
+      const sellRawUnits = Math.floor(filledSize * STEP_BASE);
+      const sellAdjustedUnits = Math.floor(sellRawUnits / sellStepUnits) * sellStepUnits;
+      const sellShares = sellAdjustedUnits / STEP_BASE;
+      
+      if (sellShares > 0) {
+        console.log(`[V28] 📤 IMMEDIATE LIMIT SELL ${sellShares.toFixed(4)} @ ${(sellPrice * 100).toFixed(0)}¢ (TP)`);
+        
+        const sellResult = await placeOrder({
+          tokenId,
+          side: 'SELL',
+          price: sellPrice,
+          size: sellShares,
+          orderType: 'GTC', // Resting order - waits in book
+          intent: 'HEDGE',
+        });
+        
+        if (sellResult.success) {
+          console.log(`[V28] ✅ LIMIT SELL placed in orderbook @ ${(sellPrice * 100).toFixed(0)}¢`);
+          signal.notes = `🔴 LIVE BUY @ ${(entryPrice * 100).toFixed(1)}¢ | SELL @ ${(sellPrice * 100).toFixed(0)}¢ queued | ${totalLatency}ms`;
+          
+          // If already filled immediately
+          if (sellResult.status === 'filled') {
+            const actualExitPrice = sellResult.avgPrice ?? sellPrice;
+            const exitFee = -sellShares * 0.005; // maker rebate
+            const grossPnl = (actualExitPrice - entryPrice) * sellShares;
+            const netPnl = grossPnl - (entryFee + exitFee);
+            
+            signal.status = 'sold';
+            signal.exit_price = actualExitPrice;
+            signal.sell_ts = Date.now();
+            signal.exit_fee = exitFee;
+            signal.total_fees = entryFee + exitFee;
+            signal.gross_pnl = grossPnl;
+            signal.net_pnl = netPnl;
+            signal.tp_status = 'filled';
+            signal.exit_type = 'tp';
+            signal.notes = `🔴 LIVE ✅ TP @ ${(actualExitPrice * 100).toFixed(1)}¢ | Net: $${netPnl.toFixed(2)} | ${totalLatency}ms`;
+            console.log(`[V28] ✅ IMMEDIATE SELL FILLED! Net: $${netPnl.toFixed(2)}`);
+            
+            positionLock = { status: 'idle' };
+            await saveSignal(signal);
+            return;
+          }
+          
+          // SELL order is resting in book - monitor for fill via timeout only
+          const timeoutTimer = setTimeout(() => {
+            handleLiveTimeout(signal, tokenId);
+          }, currentConfig.timeout_ms);
+          
+          activeSignals.set(signal.id!, { signal, tpSlInterval: null, timeoutTimer });
+          await saveSignal(signal);
+          return;
+        } else {
+          console.error(`[V28] ❌ LIMIT SELL FAILED: ${sellResult.error}`);
+          signal.notes = `🔴 LIVE BUY @ ${(entryPrice * 100).toFixed(1)}¢ | SELL failed: ${sellResult.error}`;
+        }
+      }
+    }
+    
+    // Fallback: save signal, set timeout
+    signal.notes = `🔴 LIVE FILL @ ${(entryPrice * 100).toFixed(1)}¢ | No TP set | ${totalLatency}ms`;
     await saveSignal(signal);
     
-    // Start TP/SL monitoring (will place SELL orders when triggered)
-    const tpSlInterval = startLiveTpSlMonitoring(signal, tokenId);
-    
-    // Set timeout fallback
     const timeoutTimer = setTimeout(() => {
       handleLiveTimeout(signal, tokenId);
     }, currentConfig.timeout_ms);
     
-    activeSignals.set(signal.id!, { signal, tpSlInterval, timeoutTimer });
+    activeSignals.set(signal.id!, { signal, tpSlInterval: null, timeoutTimer });
     
   } catch (error: any) {
     console.error(`[V28] ❌ LIVE ORDER EXCEPTION: ${error?.message || error}`);
