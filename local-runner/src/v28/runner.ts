@@ -335,14 +335,16 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
   const chainlinkNow = state.chainlink;
   const binanceChainlinkGap = chainlinkNow !== null ? (newPrice - chainlinkNow) : null;
   
+  const signalId = `SIG-${Date.now().toString(36).toUpperCase()}`;
   console.log(`\n[V28] ══════════════════════════════════════════════════════════════`);
-  console.log(`[V28] 🎯 SPIKE DETECTED: ${asset} ${delta > 0 ? '↑ UP' : '↓ DOWN'}`);
+  console.log(`[V28] 🎯 SIGNAL ${signalId}: ${asset} ${delta > 0 ? '↑ UP' : '↓ DOWN'}`);
   console.log(`[V28] ──────────────────────────────────────────────────────────────`);
   console.log(`[V28] Binance:      $${newPrice.toFixed(2)} (Δ$${delta > 0 ? '+' : ''}${delta.toFixed(2)} in ${windowDuration}ms)`);
   console.log(`[V28] Chainlink:    $${chainlinkNow?.toFixed(2) ?? '?'} (gap: $${binanceChainlinkGap !== null ? (binanceChainlinkGap > 0 ? '+' : '') + binanceChainlinkGap.toFixed(2) : '?'})`);
   console.log(`[V28] Threshold:    $${currentConfig.min_delta_usd} (${((Math.abs(delta) / currentConfig.min_delta_usd) * 100).toFixed(0)}% met)`);
   console.log(`[V28] UP ask/bid:   ${state.upBestAsk ? (state.upBestAsk * 100).toFixed(1) : '?'}¢ / ${state.upBestBid ? (state.upBestBid * 100).toFixed(1) : '?'}¢`);
   console.log(`[V28] DOWN ask/bid: ${state.downBestAsk ? (state.downBestAsk * 100).toFixed(1) : '?'}¢ / ${state.downBestBid ? (state.downBestBid * 100).toFixed(1) : '?'}¢`);
+  console.log(`[V28] Mode:         ${currentConfig.is_live ? '🔴 LIVE' : '📝 PAPER'} | PreSign: ${preSignCacheEnabled ? '✅' : '❌'}`);
   console.log(`[V28] ══════════════════════════════════════════════════════════════\n`);
 
   // Check if market is LIVE (started and not expired)
@@ -357,12 +359,14 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
   const endTime = new Date(market.eventEndTime).getTime();
   
   if (now2 < startTime) {
-    console.log(`[V28] ⏳ ${asset} market not started yet (starts ${new Date(startTime).toISOString()})`);
+    console.log(`[V28] ⏳ ${signalId} SKIPPED: Market not started yet (starts ${new Date(startTime).toISOString()})`);
+    console.log(`[V28] ═════════════════════════════════════════════════════════════════\n`);
     return;
   }
   
   if (now2 > endTime) {
-    console.log(`[V28] ⏰ ${asset} market expired (ended ${new Date(endTime).toISOString()})`);
+    console.log(`[V28] ⏰ ${signalId} SKIPPED: Market expired (ended ${new Date(endTime).toISOString()})`);
+    console.log(`[V28] ═════════════════════════════════════════════════════════════════\n`);
     return;
   }
 
@@ -377,12 +381,14 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
     const binanceVsStrikeDelta = newPrice - strikePrice;
     
     if (binanceVsStrikeDelta < -70 && direction === 'UP') {
-      console.log(`[V28] 🚫 ${asset} Binance-Strike Δ$${binanceVsStrikeDelta.toFixed(0)} < -70 → only DOWN allowed, skipping UP`);
+      console.log(`[V28] 🚫 ${signalId} SKIPPED: Binance-Strike Δ$${binanceVsStrikeDelta.toFixed(0)} < -70 → only DOWN allowed`);
+      console.log(`[V28] ═════════════════════════════════════════════════════════════════\n`);
       return;
     }
     
     if (binanceVsStrikeDelta > 70 && direction === 'DOWN') {
-      console.log(`[V28] 🚫 ${asset} Binance-Strike Δ$${binanceVsStrikeDelta.toFixed(0)} > +70 → only UP allowed, skipping DOWN`);
+      console.log(`[V28] 🚫 ${signalId} SKIPPED: Binance-Strike Δ$${binanceVsStrikeDelta.toFixed(0)} > +70 → only UP allowed`);
+      console.log(`[V28] ═════════════════════════════════════════════════════════════════\n`);
       return;
     }
     
@@ -396,13 +402,15 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
     : (state.downBestAsk ?? state.downBestBid);
 
   if (sharePrice === null) {
-    console.log(`[V28] No CLOB price for ${asset} ${direction}, skipping`);
+    console.log(`[V28] ❌ ${signalId} SKIPPED: No CLOB price for ${direction} side`);
+    console.log(`[V28] ═════════════════════════════════════════════════════════════════\n`);
     return;
   }
 
   // Check share price bounds
   if (sharePrice < currentConfig.min_share_price || sharePrice > currentConfig.max_share_price) {
-    console.log(`[V28] ${asset} ${direction} share ${(sharePrice * 100).toFixed(1)}¢ outside bounds`);
+    console.log(`[V28] ❌ ${signalId} SKIPPED: Share ${(sharePrice * 100).toFixed(1)}¢ outside [${(currentConfig.min_share_price * 100).toFixed(0)}¢, ${(currentConfig.max_share_price * 100).toFixed(0)}¢]`);
+    console.log(`[V28] ═════════════════════════════════════════════════════════════════\n`);
     return;
   }
 
@@ -411,7 +419,8 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
   if (chainlinkPrice !== null) {
     const binanceChainlinkDelta = newPrice - chainlinkPrice;
     if (Math.abs(binanceChainlinkDelta) > 100) {
-      console.log(`[V28] ⚠️ ${asset} Binance-Chainlink Δ$${binanceChainlinkDelta.toFixed(2)} outside ±$100 range, skipping`);
+      console.log(`[V28] ⚠️ ${signalId} SKIPPED: Binance-Chainlink Δ$${binanceChainlinkDelta.toFixed(2)} outside ±$100`);
+      console.log(`[V28] ═════════════════════════════════════════════════════════════════\n`);
       return;
     }
   }
@@ -427,7 +436,8 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
   const tokenIdToCheck = direction === 'UP' ? market.upTokenId : market.downTokenId;
   const hasExistingPosition = existingPositionsInActiveMarkets.has(tokenIdToCheck);
   if (hasExistingPosition) {
-    console.log(`[V28] ⏸️ ${asset} ${direction}: Already have position in this market, skipping new entry`);
+    console.log(`[V28] ⏸️ ${signalId} SKIPPED: Already have position in this market`);
+    console.log(`[V28] ═════════════════════════════════════════════════════════════════\n`);
     return;
   }
 
@@ -435,9 +445,8 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
   priceWindows[asset] = [{ price: newPrice, ts: now }];
   windowStartPrices[asset] = { price: newPrice, ts: now };
 
-  // Log decision to proceed - with timing
-  const detectionMs = Date.now() - tickReceivedTs;
-  console.log(`[V28] ✅ PROCEEDING: ${asset} ${direction} @ ${(sharePrice * 100).toFixed(1)}¢ (detection: ${detectionMs}ms, target: <10ms)`);
+  console.log(`[V28] ✅ ${signalId} EXECUTING: ${asset} ${direction} @ ${(sharePrice * 100).toFixed(1)}¢ (detection: ${detectionMs}ms)`);
+  console.log(`[V28] ═════════════════════════════════════════════════════════════════\n`);
 
   // Create signal - pass the original tick timestamp for accurate latency tracking
   void createSignalFast(asset, direction, newPrice, delta, sharePrice, tickReceivedTs);
