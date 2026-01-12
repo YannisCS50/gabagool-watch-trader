@@ -558,16 +558,13 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
     // ========================================
     if (tpPrice && filledSize > 0) {
       const sellPrice = Math.round(tpPrice * 100) / 100; // tickSize=0.01
-      const sellPCents = Math.round(sellPrice * 100);
       
-      // Quantize sell shares
-      const sellStepUnits = STEP_BASE / gcdInt(STEP_BASE, sellPCents);
-      const sellRawUnits = Math.floor(filledSize * STEP_BASE);
-      const sellAdjustedUnits = Math.floor(sellRawUnits / sellStepUnits) * sellStepUnits;
-      const sellShares = sellAdjustedUnits / STEP_BASE;
+      // For SELL orders, use shares directly rounded to 2 decimals (simpler approach)
+      // The CLOB accepts 2-decimal shares for sell orders
+      const sellShares = Math.floor(filledSize * 100) / 100;
       
-      if (sellShares > 0) {
-        console.log(`[V28] 📤 IMMEDIATE LIMIT SELL ${sellShares.toFixed(4)} @ ${(sellPrice * 100).toFixed(0)}¢ (TP)`);
+      if (sellShares >= 1) { // Minimum 1 share
+        console.log(`[V28] 📤 IMMEDIATE LIMIT SELL ${sellShares.toFixed(2)} @ ${(sellPrice * 100).toFixed(0)}¢ (TP)`);
         
         const sellResult = await placeOrder({
           tokenId,
@@ -618,11 +615,16 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
           console.error(`[V28] ❌ LIMIT SELL FAILED: ${sellResult.error}`);
           signal.notes = `🔴 LIVE BUY @ ${(entryPrice * 100).toFixed(1)}¢ | SELL failed: ${sellResult.error}`;
         }
+      } else {
+        console.warn(`[V28] ⚠️ Sell shares too small after rounding: ${filledSize} -> ${sellShares}`);
+        signal.notes = `🔴 LIVE BUY @ ${(entryPrice * 100).toFixed(1)}¢ | SELL skipped (shares too small) | ${totalLatency}ms`;
       }
+    } else {
+      console.warn(`[V28] ⚠️ No TP price or no filled size: tpPrice=${tpPrice}, filledSize=${filledSize}`);
+      signal.notes = `🔴 LIVE FILL @ ${(entryPrice * 100).toFixed(1)}¢ | No TP configured | ${totalLatency}ms`;
     }
     
-    // Fallback: save signal, set timeout
-    signal.notes = `🔴 LIVE FILL @ ${(entryPrice * 100).toFixed(1)}¢ | No TP set | ${totalLatency}ms`;
+    // Fallback: save signal, set timeout for manual exit
     await saveSignal(signal);
     
     const timeoutTimer = setTimeout(() => {
