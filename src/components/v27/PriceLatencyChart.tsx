@@ -48,6 +48,7 @@ export function PriceLatencyChart() {
     signals,
     clearSignals,
     simulatorStats,
+    placeTestTrade,
     selectedAsset,
     binancePrice,
     chainlinkPrice,
@@ -424,7 +425,27 @@ export function PriceLatencyChart() {
           <TabsContent value="signals">
             <div className="flex justify-between items-center mb-2">
               <span className="text-sm text-muted-foreground">{signals.length} signals logged</span>
-              <Button variant="ghost" size="sm" onClick={clearSignals}>Clear</Button>
+              <div className="flex gap-2">
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => placeTestTrade(selectedAsset, 'UP')}
+                  className="text-green-500 border-green-500/50 hover:bg-green-500/10"
+                >
+                  <TrendingUp className="h-3 w-3 mr-1" />
+                  Test UP
+                </Button>
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => placeTestTrade(selectedAsset, 'DOWN')}
+                  className="text-red-500 border-red-500/50 hover:bg-red-500/10"
+                >
+                  <TrendingDown className="h-3 w-3 mr-1" />
+                  Test DOWN
+                </Button>
+                <Button variant="ghost" size="sm" onClick={clearSignals}>Clear</Button>
+              </div>
             </div>
             <div className="h-[300px] overflow-auto font-mono text-xs">
               <table className="w-full">
