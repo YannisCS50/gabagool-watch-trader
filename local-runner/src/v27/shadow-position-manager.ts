@@ -1009,7 +1009,7 @@ export class ShadowPositionManager {
     if (!this.supabase) return;
     
     try {
-      const { error } = await this.supabase.from('shadow_daily_pnl').insert({
+      const { error } = await this.supabase.from('shadow_daily_pnl').upsert({
         date: daily.date,
         realized_pnl: daily.pnl,
         unrealized_pnl: 0,
@@ -1020,7 +1020,7 @@ export class ShadowPositionManager {
         losses: daily.losses,
         total_fees: daily.fees,
         win_rate: daily.trades > 0 ? daily.wins / daily.trades : null,
-      });
+      }, { onConflict: 'date' });
 
       if (error) {
         // Non-critical, but surface useful info in logs
