@@ -328,7 +328,13 @@ export function useArbitrageSimulator() {
           if (exitTriggered) return;
           
           const currentBid = getSellPrice(asset, direction);
-          if (currentBid === null) return;
+          if (currentBid === null) {
+            console.log(`[ArbitrageSimulator] TP/SL check: No bid price for ${asset} ${direction}`);
+            return;
+          }
+
+          // Debug log
+          console.log(`[ArbitrageSimulator] TP/SL check: bid=${(currentBid * 100).toFixed(1)}¢ | TP=${takeProfitPrice ? (takeProfitPrice * 100).toFixed(1) : '-'}¢ | SL=${stopLossPrice ? (stopLossPrice * 100).toFixed(1) : '-'}¢`);
 
           // Check Take-Profit: bid >= TP price
           if (takeProfitPrice && currentBid >= takeProfitPrice) {

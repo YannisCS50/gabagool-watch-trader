@@ -37,6 +37,9 @@ export function usePolymarketPrices() {
 
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const isMountedRef = useRef(true);
+  
+  // Keep a ref to prices for real-time access in callbacks (avoids stale closures)
+  const pricesRef = useRef<Record<Asset, MarketPrice | null>>(state.prices);
 
   const fetchPrices = useCallback(async () => {
     if (!isMountedRef.current) return;
@@ -136,6 +139,7 @@ export function usePolymarketPrices() {
       }
 
       if (isMountedRef.current) {
+        pricesRef.current = newPrices; // Update ref for real-time access
         setState({
           prices: newPrices,
           loading: false,
@@ -196,9 +200,9 @@ export function usePolymarketPrices() {
     }
   }, [state.prices]);
 
-  // Get best bid/ask for selling
+  // Get best bid/ask for selling - uses ref for real-time access
   const getSellPrice = useCallback((asset: Asset, direction: 'UP' | 'DOWN'): number | null => {
-    const marketPrice = state.prices[asset];
+    const marketPrice = pricesRef.current[asset];
     if (!marketPrice) return null;
 
     if (direction === 'UP') {
@@ -206,7 +210,19 @@ export function usePolymarketPrices() {
     } else {
       return marketPrice.downBestBid ?? null;
     }
-  }, [state.prices]);
+  }, []);
+
+  // Also expose a real-time getter for share price
+  const getSharePriceRealtime = useCallback((asset: Asset, direction: 'UP' | 'DOWN'): number | null => {
+    const marketPrice = pricesRef.current[asset];
+    if (!marketPrice) return null;
+
+    if (direction === 'UP') {
+      return marketPrice.upMid ?? marketPrice.upBestAsk ?? null;
+    } else {
+      return marketPrice.downMid ?? marketPrice.downBestAsk ?? null;
+    }
+  }, []);
 
   return {
     ...state,
@@ -214,6 +230,7 @@ export function usePolymarketPrices() {
     startPolling,
     stopPolling,
     getSharePrice,
+    getSharePriceRealtime,
     getSellPrice,
   };
 }
