@@ -27,6 +27,7 @@ import { ShadowEquityCurve } from '@/components/v27/shadow/ShadowEquityCurve';
 import { ShadowCounterfactualPanel } from '@/components/v27/shadow/ShadowCounterfactualPanel';
 import { ShadowExportButton } from '@/components/v27/shadow/ShadowExportButton';
 import { TimeRangeFilter, filterDataByTime, DEFAULT_TIME_FILTER, type TimeFilterType } from '@/components/v27/shadow/TimeRangeFilter';
+import { PriceLatencyChart } from '@/components/v27/PriceLatencyChart';
 import type { ShadowDailyPnL } from '@/hooks/useShadowPositions';
 
 export default function V27Dashboard() {
@@ -337,6 +338,9 @@ export default function V27Dashboard() {
             <TabsTrigger value="positions" className="text-xs sm:text-sm px-2 sm:px-3">
               Positions
             </TabsTrigger>
+            <TabsTrigger value="latency" className="text-xs sm:text-sm px-2 sm:px-3">
+              Latency
+            </TabsTrigger>
             <TabsTrigger value="counterfactual" className="text-xs sm:text-sm px-2 sm:px-3">
               Counter
             </TabsTrigger>
@@ -394,6 +398,10 @@ export default function V27Dashboard() {
         <TabsContent value="positions" className="mt-4 space-y-4">
           <ShadowPositionTable positions={filteredPositionsData.positions} />
           <ShadowHedgeAnalysis analysis={filteredPositionsData.hedgeAnalysis} />
+        </TabsContent>
+
+        <TabsContent value="latency" className="mt-4">
+          <PriceLatencyChart />
         </TabsContent>
 
         <TabsContent value="counterfactual" className="mt-4">
