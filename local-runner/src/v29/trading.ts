@@ -455,6 +455,43 @@ export async function placeSellOrder(
 }
 
 /**
+ * Cancel an order by ID
+ */
+export async function cancelOrder(orderId: string): Promise<boolean> {
+  try {
+    const client = await getClient();
+    await client.cancelOrder(orderId);
+    log(`🗑️ Order cancelled: ${orderId}`);
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`⚠️ Cancel failed: ${msg}`);
+    return false;
+  }
+}
+
+/**
+ * Get order status to check if filled
+ */
+export async function getOrderStatus(orderId: string): Promise<{ filled: boolean; filledSize: number; status: string }> {
+  try {
+    const client = await getClient();
+    const order = await client.getOrder(orderId);
+    
+    const filledSize = parseFloat(order?.size_matched ?? '0') || 0;
+    const totalSize = parseFloat(order?.original_size ?? '0') || 0;
+    const status = order?.status ?? 'unknown';
+    
+    return {
+      filled: filledSize >= totalSize && totalSize > 0,
+      filledSize,
+      status,
+    };
+  } catch (err) {
+    log(`⚠️ Get order status failed: ${err}`);
+    return { filled: false, filledSize: 0, status: 'error' };
+  }
+}
  * Get current wallet balance
  */
 export async function getBalance(): Promise<number> {
