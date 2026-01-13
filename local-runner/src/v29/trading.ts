@@ -51,14 +51,18 @@ const orderCache = new Map<Asset, MarketOrderSet>();
 
 // Configuration
 const PRE_SIGN_CONFIG = {
-  // Price levels to pre-sign (likely buy prices)
-  priceLevels: [0.38, 0.40, 0.42, 0.44, 0.46, 0.48, 0.50, 0.52, 0.54, 0.56, 0.58, 0.60, 0.62],
-  // Share sizes to pre-sign
-  shareSizes: [3, 5, 10, 15],
-  // Refresh every 5 minutes
-  refreshIntervalMs: 5 * 60 * 1000,
+  // Price levels to pre-sign (full range 30-75¢)
+  priceLevels: [
+    0.30, 0.32, 0.34, 0.36, 0.38, 0.40, 0.42, 0.44, 0.46, 0.48,
+    0.50, 0.52, 0.54, 0.56, 0.58, 0.60, 0.62, 0.64, 0.66, 0.68,
+    0.70, 0.72, 0.74, 0.75
+  ],
+  // Share sizes to pre-sign (just 5 for V29 simple strategy)
+  shareSizes: [5],
+  // Refresh every 2 minutes for fresher orders
+  refreshIntervalMs: 2 * 60 * 1000,
   // Max age before order is considered stale
-  maxOrderAgeMs: 30 * 60 * 1000,
+  maxOrderAgeMs: 10 * 60 * 1000,
 };
 
 let isInitialized = false;
