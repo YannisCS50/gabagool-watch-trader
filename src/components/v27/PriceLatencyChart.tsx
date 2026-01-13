@@ -1,13 +1,13 @@
-import { useEffect, useState, useMemo, useCallback } from 'react';
+import { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, ComposedChart, Bar, Area, ReferenceArea, ReferenceDot } from 'recharts';
-import { Activity, Settings, Zap, Timer, TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react';
+import { Activity, Settings, Zap, Timer, TrendingUp, TrendingDown, AlertTriangle, Wifi } from 'lucide-react';
 import { usePriceLatencyComparison, Asset } from '@/hooks/usePriceLatencyComparison';
 import { usePaperTradingConfig } from '@/hooks/usePaperTraderData';
-import { supabase } from '@/integrations/supabase/client';
+import { useClobOrderbook } from '@/hooks/useClobOrderbook';
 
 const ASSETS: Asset[] = ['BTC', 'ETH', 'SOL', 'XRP'];
 
@@ -58,47 +58,44 @@ export function PriceLatencyChart() {
   } = usePriceLatencyComparison();
   
   const { data: config } = usePaperTradingConfig();
-  const [clobPrices, setClobPrices] = useState<ClobPrices | null>(null);
+  
+  // Use WebSocket-based CLOB orderbook for realtime share prices
+  const clob = useClobOrderbook(true);
+  
+  // Track share price history from WebSocket updates
   const [clobPriceHistory, setClobPriceHistory] = useState<{ time: number; upAsk: number | null; downAsk: number | null }[]>([]);
+  const lastClobUpdateRef = useRef<number>(0);
+  
   const [latencyTests, setLatencyTests] = useState<LatencyTestResult[]>([]);
   const [testingLatency, setTestingLatency] = useState(false);
 
   const [chartData, setChartData] = useState<{ binanceData: any[]; chainlinkData: any[] }>({ binanceData: [], chainlinkData: [] });
 
-  // Fetch CLOB prices for share price display
-  const fetchClobPrices = useCallback(async () => {
-    try {
-      const { data, error } = await supabase.functions.invoke('clob-prices', {
-        body: { asset: selectedAsset }
-      });
-      
-      if (!error && data) {
-        const now = Date.now();
-        setClobPrices({
-          upBid: data.upBid ?? null,
-          upAsk: data.upAsk ?? null,
-          downBid: data.downBid ?? null,
-          downAsk: data.downAsk ?? null,
-          lastUpdate: now,
-        });
-        // Add to history for chart
-        setClobPriceHistory(prev => {
-          const newEntry = { time: now, upAsk: data.upAsk ?? null, downAsk: data.downAsk ?? null };
-          const updated = [...prev, newEntry].slice(-600); // Keep last 600 points
-          return updated;
-        });
-      }
-    } catch (err) {
-      console.error('Failed to fetch CLOB prices:', err);
-    }
-  }, [selectedAsset]);
+  // Get current share prices from WebSocket CLOB
+  const clobPrices = useMemo(() => {
+    const upBook = clob.getOrderbook(selectedAsset, 'up');
+    const downBook = clob.getOrderbook(selectedAsset, 'down');
+    return {
+      upBid: upBook?.bid ?? null,
+      upAsk: upBook?.ask ?? null,
+      downBid: downBook?.bid ?? null,
+      downAsk: downBook?.ask ?? null,
+      lastUpdate: Math.max(upBook?.timestamp ?? 0, downBook?.timestamp ?? 0),
+    };
+  }, [clob, selectedAsset]);
 
-  // Fetch CLOB prices periodically
+  // Track share price history at high frequency (every 100ms if changed)
   useEffect(() => {
-    fetchClobPrices();
-    const interval = setInterval(fetchClobPrices, 2000);
-    return () => clearInterval(interval);
-  }, [fetchClobPrices]);
+    const now = Date.now();
+    // Only add if we have data and it's newer than last update
+    if (clobPrices.lastUpdate > lastClobUpdateRef.current) {
+      lastClobUpdateRef.current = clobPrices.lastUpdate;
+      setClobPriceHistory(prev => {
+        const newEntry = { time: now, upAsk: clobPrices.upAsk, downAsk: clobPrices.downAsk };
+        return [...prev, newEntry].slice(-1200); // Keep more history
+      });
+    }
+  }, [clobPrices]);
 
   // Auto-connect on mount
   useEffect(() => {
@@ -247,6 +244,13 @@ export function PriceLatencyChart() {
               >
                 <div className={`w-2 h-2 rounded-full mr-1 ${chainlinkWsStatus === 'connected' ? 'bg-blue-500 animate-pulse' : 'bg-muted'}`} />
                 Chainlink
+              </Badge>
+              <Badge 
+                variant="outline"
+                className={`text-xs ${clob.connected ? 'border-green-500 text-green-500' : clob.connecting ? 'border-orange-500 text-orange-500' : 'border-muted'}`}
+              >
+                <Wifi className={`h-3 w-3 mr-1 ${clob.connected ? 'text-green-500' : 'text-muted'}`} />
+                CLOB {clob.connected ? `(${clob.messageCount})` : clob.connecting ? '...' : '✗'}
               </Badge>
             </div>
           </div>
