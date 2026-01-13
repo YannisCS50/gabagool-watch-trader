@@ -494,3 +494,72 @@ async function flushLogs(): Promise<void> {
     // Silent fail
   }
 }
+
+// ============================================
+// FILL LOGGING - Track individual burst fills
+// ============================================
+
+export interface FillRecord {
+  signalId?: string;
+  runId: string;
+  asset: string;
+  direction: 'UP' | 'DOWN';
+  marketSlug: string;
+  orderId?: string;
+  price: number;
+  shares: number;
+  costUsd: number;
+  fillTs: number;
+}
+
+/**
+ * Log individual fills from burst orders
+ */
+export async function logFill(fill: FillRecord): Promise<void> {
+  const db = getDb();
+  
+  try {
+    await db.from('v29_fills').insert({
+      signal_id: fill.signalId || null,
+      run_id: fill.runId,
+      asset: fill.asset,
+      direction: fill.direction,
+      market_slug: fill.marketSlug,
+      order_id: fill.orderId || null,
+      price: fill.price,
+      shares: fill.shares,
+      cost_usd: fill.costUsd,
+      fill_ts: fill.fillTs,
+    });
+  } catch (err) {
+    log(`⚠️ Failed to log fill: ${err}`);
+  }
+}
+
+/**
+ * Log multiple fills at once (more efficient)
+ */
+export async function logFillsBatch(fills: FillRecord[]): Promise<void> {
+  if (fills.length === 0) return;
+  
+  const db = getDb();
+  
+  try {
+    await db.from('v29_fills').insert(
+      fills.map(f => ({
+        signal_id: f.signalId || null,
+        run_id: f.runId,
+        asset: f.asset,
+        direction: f.direction,
+        market_slug: f.marketSlug,
+        order_id: f.orderId || null,
+        price: f.price,
+        shares: f.shares,
+        cost_usd: f.costUsd,
+        fill_ts: f.fillTs,
+      }))
+    );
+  } catch (err) {
+    log(`⚠️ Failed to log ${fills.length} fills: ${err}`);
+  }
+}

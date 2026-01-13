@@ -2997,6 +2997,30 @@ export type Database = {
         }
         Relationships: []
       }
+      runner_leases: {
+        Row: {
+          acquired_at: string
+          expires_at: string
+          heartbeat_at: string
+          id: string
+          runner_id: string
+        }
+        Insert: {
+          acquired_at?: string
+          expires_at?: string
+          heartbeat_at?: string
+          id?: string
+          runner_id: string
+        }
+        Update: {
+          acquired_at?: string
+          expires_at?: string
+          heartbeat_at?: string
+          id?: string
+          runner_id?: string
+        }
+        Relationships: []
+      }
       settlement_failures: {
         Row: {
           asset: string
@@ -5270,6 +5294,51 @@ export type Database = {
           trailing_distance_cents?: number | null
           trailing_trigger_cents?: number | null
           updated_at?: string
+        }
+        Relationships: []
+      }
+      v29_fills: {
+        Row: {
+          asset: string
+          cost_usd: number
+          created_at: string
+          direction: string
+          fill_ts: number
+          id: string
+          market_slug: string
+          order_id: string | null
+          price: number
+          run_id: string
+          shares: number
+          signal_id: string | null
+        }
+        Insert: {
+          asset: string
+          cost_usd: number
+          created_at?: string
+          direction: string
+          fill_ts: number
+          id?: string
+          market_slug: string
+          order_id?: string | null
+          price: number
+          run_id: string
+          shares: number
+          signal_id?: string | null
+        }
+        Update: {
+          asset?: string
+          cost_usd?: number
+          created_at?: string
+          direction?: string
+          fill_ts?: number
+          id?: string
+          market_slug?: string
+          order_id?: string | null
+          price?: number
+          run_id?: string
+          shares?: number
+          signal_id?: string | null
         }
         Relationships: []
       }

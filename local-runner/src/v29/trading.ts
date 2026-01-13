@@ -9,6 +9,22 @@ import { getClient } from '../polymarket.js';
 import { ClobClient, Side, OrderType } from '@polymarket/clob-client';
 import type { SignedOrder } from '@polymarket/order-utils';
 import type { Asset } from './config.js';
+import { logFillsBatch, type FillRecord } from './db.js';
+
+// Global context for fill logging (set by caller)
+let currentFillContext: {
+  runId: string;
+  signalId?: string;
+  marketSlug: string;
+} | null = null;
+
+export function setFillContext(ctx: { runId: string; signalId?: string; marketSlug: string }): void {
+  currentFillContext = ctx;
+}
+
+export function clearFillContext(): void {
+  currentFillContext = null;
+}
 
 function log(msg: string): void {
   console.log(`[V29:Trade] ${msg}`);
@@ -510,6 +526,24 @@ export async function placeBuyOrder(
     
     if (totalFilled > 0) {
       log(`✅ Burst fill SUCCESS: ${totalFilled} shares @ avg ${(avgFillPrice * 100).toFixed(1)}¢ (${latencyMs}ms, ${filledOrders.length}/${burstCount} orders filled)`);
+      
+      // LOG EACH FILL SEPARATELY
+      if (currentFillContext && asset && direction) {
+        const fillRecords: FillRecord[] = filledOrders.map(o => ({
+          signalId: currentFillContext!.signalId,
+          runId: currentFillContext!.runId,
+          asset,
+          direction,
+          marketSlug: currentFillContext!.marketSlug,
+          orderId: o.orderId || undefined,
+          price: o.price,
+          shares: o.filledSize,
+          costUsd: o.price * o.filledSize,
+          fillTs: Date.now(),
+        }));
+        void logFillsBatch(fillRecords);
+      }
+      
       return {
         success: true,
         orderId: filledOrders[0]?.orderId || placedOrders[0].orderId,
@@ -559,6 +593,24 @@ export async function placeBuyOrder(
     
     if (totalFilled > 0) {
       log(`✅ Burst fill (delayed): ${totalFilled} shares @ avg ${(finalAvgPrice * 100).toFixed(1)}¢ (${finalLatencyMs}ms)`);
+      
+      // LOG EACH FILL SEPARATELY
+      if (currentFillContext && asset && direction) {
+        const fillRecords: FillRecord[] = finalFilledOrders.map(o => ({
+          signalId: currentFillContext!.signalId,
+          runId: currentFillContext!.runId,
+          asset,
+          direction,
+          marketSlug: currentFillContext!.marketSlug,
+          orderId: o.orderId || undefined,
+          price: o.price,
+          shares: o.filledSize,
+          costUsd: o.price * o.filledSize,
+          fillTs: Date.now(),
+        }));
+        void logFillsBatch(fillRecords);
+      }
+      
       return {
         success: true,
         orderId: finalFilledOrders[0]?.orderId || placedOrders[0].orderId,
