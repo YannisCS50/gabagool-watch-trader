@@ -35,10 +35,20 @@ async function fetchTokenOrderbook(tokenId: string): Promise<{ bestBid: number |
     }
     
     const data: OrderbookResponse = await res.json();
-    
-    const bestBid = data.bids?.length > 0 ? parseFloat(data.bids[0].price) : null;
-    const bestAsk = data.asks?.length > 0 ? parseFloat(data.asks[0].price) : null;
-    
+
+    // The CLOB API does not guarantee array ordering.
+    // Compute best levels defensively: bestBid = max(bids), bestAsk = min(asks).
+    const bidPrices = (data.bids ?? [])
+      .map((x) => Number.parseFloat(x.price))
+      .filter((p) => Number.isFinite(p) && p > 0);
+
+    const askPrices = (data.asks ?? [])
+      .map((x) => Number.parseFloat(x.price))
+      .filter((p) => Number.isFinite(p) && p > 0);
+
+    const bestBid = bidPrices.length > 0 ? Math.max(...bidPrices) : null;
+    const bestAsk = askPrices.length > 0 ? Math.min(...askPrices) : null;
+
     return { bestBid, bestAsk };
   } catch (err) {
     return { bestBid: null, bestAsk: null };
