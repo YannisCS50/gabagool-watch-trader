@@ -49,6 +49,17 @@ let tradesCount = 0;
 let lastMarketRefresh = 0;
 let lastConfigReload = 0;
 
+// Track active BUY orders per side (UP/DOWN) per asset - MAX 1 PER SIDE
+interface ActiveOrder {
+  orderId: string;
+  asset: Asset;
+  side: 'UP' | 'DOWN';
+  shares: number;
+  price: number;
+  placedAt: number;
+}
+const activeBuyOrders = new Map<string, ActiveOrder>(); // key: `${asset}-${side}`
+
 // Track previous market slugs to detect market changes
 const previousMarketSlugs: Record<Asset, string | null> = { BTC: null, ETH: null, SOL: null, XRP: null };
 
@@ -311,6 +322,7 @@ async function executeTrade(
   strikeActualDelta: number
 ): Promise<void> {
   const signalTs = Date.now();
+  const orderKey = `${asset}-${direction}`;
   
   // Get market
   const market = markets.get(asset);
@@ -356,6 +368,13 @@ async function executeTrade(
     return;
   }
   
+  // ========================================
+  // 1 ORDER PER SIDE RULE
+  // Check if there's already an active order for this side
+  // If so: place NEW order FIRST, then cancel OLD order
+  // ========================================
+  const existingOrder = activeBuyOrders.get(orderKey);
+  
   // Create signal
   const signal: Signal = {
     run_id: RUN_ID,
@@ -388,8 +407,8 @@ async function executeTrade(
   // Mark order time
   lastOrderTime = Date.now();
   
-  // Place order
-  log(`📤 PLACING ORDER: ${asset} ${direction} ${shares} shares @ ${(buyPrice * 100).toFixed(1)}¢`, 'order', asset, { direction, shares, price: buyPrice });
+  // Place NEW order FIRST
+  log(`📤 PLACING ORDER: ${asset} ${direction} ${shares} shares @ ${(buyPrice * 100).toFixed(1)}¢${existingOrder ? ` (replacing ${existingOrder.orderId})` : ''}`, 'order', asset, { direction, shares, price: buyPrice });
   
   const tokenId = direction === 'UP' ? market.upTokenId : market.downTokenId;
   const result = await placeBuyOrder(tokenId, buyPrice, shares, asset, direction);
@@ -397,7 +416,6 @@ async function executeTrade(
   const latency = Date.now() - signalTs;
   
   if (!result.success) {
-    // Order placement failed immediately
     signal.status = 'failed';
     signal.notes = `${result.error ?? 'Unknown error'} | Latency: ${latency}ms`;
     log(`❌ FAILED: ${result.error ?? 'Unknown'} (${latency}ms)`);
@@ -414,6 +432,22 @@ async function executeTrade(
     return;
   }
   
+  // NOW cancel the old order (after new one is placed)
+  if (existingOrder) {
+    log(`🗑️ Cancelling old order: ${existingOrder.orderId}`, 'order', asset);
+    void cancelOrder(existingOrder.orderId);
+  }
+  
+  // Track the new order
+  activeBuyOrders.set(orderKey, {
+    orderId,
+    asset,
+    side: direction,
+    shares,
+    price: buyPrice,
+    placedAt: Date.now(),
+  });
+  
   signal.order_id = orderId;
   log(`📋 Order placed: ${orderId} - waiting for fill...`, 'order', asset);
   
@@ -423,6 +457,7 @@ async function executeTrade(
   const startWait = Date.now();
   let filled = false;
   let filledSize = 0;
+  let actualPrice = buyPrice;
   
   while (Date.now() - startWait < FILL_TIMEOUT_MS) {
     await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
@@ -444,7 +479,9 @@ async function executeTrade(
   const totalLatency = Date.now() - signalTs;
   
   if (filled && filledSize > 0) {
-    // SUCCESS!
+    // SUCCESS! Remove from active orders
+    activeBuyOrders.delete(orderKey);
+    
     signal.status = 'filled';
     signal.entry_price = result.avgPrice ?? buyPrice;
     signal.shares = filledSize;
@@ -455,7 +492,7 @@ async function executeTrade(
     
     log(`✅ FILLED: ${asset} ${direction} ${filledSize} @ ${(signal.entry_price * 100).toFixed(1)}¢ (${totalLatency}ms)`, 'fill', asset, { direction, shares: filledSize, price: signal.entry_price, latencyMs: totalLatency });
     
-    // Create position
+    // Create position with trailing stop state
     activePosition = {
       signalId: signal.id!,
       asset,
@@ -463,25 +500,25 @@ async function executeTrade(
       tokenId,
       entryPrice: signal.entry_price,
       shares: filledSize,
-      tpPrice: config.tp_enabled ? signal.entry_price + (config.tp_cents / 100) : null,
-      slPrice: config.sl_enabled ? signal.entry_price - (config.sl_cents / 100) : null,
       startTime: Date.now(),
+      peakProfit: 0,
+      trailingActive: false,
+      sellOrderId: null,
     };
     activeSignal = signal;
     
-    log(`📊 Position open: TP=${activePosition.tpPrice ? (activePosition.tpPrice * 100).toFixed(1) + '¢' : 'off'} | SL=${activePosition.slPrice ? (activePosition.slPrice * 100).toFixed(1) + '¢' : 'off'}`, 'order', asset);
+    const minSellPrice = (signal.entry_price + config.min_profit_cents / 100);
+    log(`📊 Position open: Entry=${(signal.entry_price * 100).toFixed(1)}¢ | Min sell=${(minSellPrice * 100).toFixed(1)}¢ (+${config.min_profit_cents}¢) | Trailing trigger=+${config.trailing_trigger_cents}¢`, 'order', asset);
     
     // Start monitoring
     startPositionMonitor();
   } else {
-    // Not filled in time - CANCEL the order
-    log(`⏰ Order not filled in 5s - cancelling: ${orderId}`, 'order', asset);
-    const cancelled = await cancelOrder(orderId);
+    // Not filled in time - keep order active (don't cancel)
+    // It will be replaced by next signal if one fires
+    log(`⏰ Order not filled in 5s - keeping active: ${orderId}`, 'order', asset);
     
-    signal.status = 'cancelled';
-    signal.notes = `Not filled in 5s, cancelled=${cancelled} | Latency: ${totalLatency}ms`;
-    
-    log(`🗑️ Order cancelled: ${orderId} (cancelled=${cancelled})`);
+    signal.status = 'pending';
+    signal.notes = `Waiting for fill (${totalLatency}ms elapsed)`;
   }
   
   // Update signal in DB
@@ -521,30 +558,65 @@ function checkPositionExit(): void {
   
   if (!currentBid) return;
   
-  // Check TP
-  if (pos.tpPrice && currentBid >= pos.tpPrice) {
-    log(`🎯 TP HIT: ${pos.asset} ${pos.direction} | Bid ${(currentBid * 100).toFixed(1)}¢ >= TP ${(pos.tpPrice * 100).toFixed(1)}¢`);
+  // Calculate current profit in cents
+  const profitCents = (currentBid - pos.entryPrice) * 100;
+  
+  // Update peak profit
+  if (profitCents > pos.peakProfit) {
+    pos.peakProfit = profitCents;
+    if (profitCents >= config.trailing_trigger_cents && !pos.trailingActive) {
+      pos.trailingActive = true;
+      log(`📈 TRAILING ACTIVATED: ${pos.asset} ${pos.direction} | Peak profit: ${profitCents.toFixed(1)}¢ (>= trigger ${config.trailing_trigger_cents}¢)`);
+    }
+  }
+  
+  // Calculate minimum sell price (entry + min_profit)
+  const minSellPrice = pos.entryPrice + (config.min_profit_cents / 100);
+  
+  // TRAILING STOP LOGIC
+  if (pos.trailingActive) {
+    // Check if profit dropped from peak by trailing_distance
+    const dropFromPeak = pos.peakProfit - profitCents;
+    
+    if (dropFromPeak >= config.trailing_distance_cents) {
+      // Trailing stop triggered! Sell at minimum guaranteed price
+      log(`📉 TRAILING STOP: ${pos.asset} ${pos.direction} | Drop ${dropFromPeak.toFixed(1)}¢ from peak ${pos.peakProfit.toFixed(1)}¢ | Selling @ min ${(minSellPrice * 100).toFixed(1)}¢`);
+      void closePosition('TRAILING', minSellPrice);
+      return;
+    }
+  }
+  
+  // Check if we hit minimum profit (TP at min_profit if not trailing yet)
+  if (profitCents >= config.min_profit_cents && !pos.trailingActive) {
+    // If we're at min profit and price is stable, just take it
+    log(`🎯 MIN PROFIT HIT: ${pos.asset} ${pos.direction} | Profit ${profitCents.toFixed(1)}¢ >= min ${config.min_profit_cents}¢`);
     void closePosition('TP', currentBid);
     return;
   }
   
-  // Check SL
-  if (pos.slPrice && currentBid <= pos.slPrice) {
-    log(`🛑 SL HIT: ${pos.asset} ${pos.direction} | Bid ${(currentBid * 100).toFixed(1)}¢ <= SL ${(pos.slPrice * 100).toFixed(1)}¢`);
-    void closePosition('SL', currentBid);
+  // EMERGENCY STOP LOSS (actual loss - should rarely happen)
+  const lossCents = -profitCents;
+  if (lossCents >= config.emergency_sl_cents) {
+    log(`🚨 EMERGENCY SL: ${pos.asset} ${pos.direction} | Loss ${lossCents.toFixed(1)}¢ >= emergency ${config.emergency_sl_cents}¢`);
+    void closePosition('EMERGENCY', currentBid);
     return;
   }
   
-  // Check timeout
+  // Check timeout - try to sell at min profit, or emergency
   const elapsed = Date.now() - pos.startTime;
   if (elapsed >= config.timeout_ms) {
-    log(`⏰ TIMEOUT: ${pos.asset} ${pos.direction} after ${(elapsed / 1000).toFixed(1)}s`);
-    void closePosition('TIMEOUT', currentBid);
+    if (profitCents >= config.min_profit_cents) {
+      log(`⏰ TIMEOUT (profit): ${pos.asset} ${pos.direction} | Selling with ${profitCents.toFixed(1)}¢ profit`);
+      void closePosition('TIMEOUT', currentBid);
+    } else {
+      log(`⏰ TIMEOUT (no profit): ${pos.asset} ${pos.direction} | Current ${profitCents.toFixed(1)}¢ - selling at min price`);
+      void closePosition('TIMEOUT', minSellPrice);
+    }
     return;
   }
 }
 
-async function closePosition(exitType: 'TP' | 'SL' | 'TIMEOUT' | 'MANUAL', exitPrice: number): Promise<void> {
+async function closePosition(exitType: 'TP' | 'SL' | 'TRAILING' | 'TIMEOUT' | 'EMERGENCY' | 'MANUAL', sellPrice: number): Promise<void> {
   if (!activePosition || !activeSignal) return;
   
   const pos = activePosition;
@@ -553,9 +625,10 @@ async function closePosition(exitType: 'TP' | 'SL' | 'TIMEOUT' | 'MANUAL', exitP
   stopPositionMonitor();
   
   // Place sell order
-  const result = await placeSellOrder(pos.tokenId, exitPrice, pos.shares);
+  log(`📤 SELL ORDER: ${pos.asset} ${pos.direction} ${pos.shares} shares @ ${(sellPrice * 100).toFixed(1)}¢ (${exitType})`);
+  const result = await placeSellOrder(pos.tokenId, sellPrice, pos.shares);
   
-  const actualExitPrice = result.success ? (result.avgPrice ?? exitPrice) : exitPrice;
+  const actualExitPrice = result.success ? (result.avgPrice ?? sellPrice) : sellPrice;
   
   // Calculate PnL
   const grossPnl = (actualExitPrice - pos.entryPrice) * pos.shares;
@@ -570,9 +643,10 @@ async function closePosition(exitType: 'TP' | 'SL' | 'TIMEOUT' | 'MANUAL', exitP
   sig.gross_pnl = grossPnl;
   sig.net_pnl = netPnl;
   sig.fees = fees;
-  sig.notes = `${exitType} @ ${(actualExitPrice * 100).toFixed(1)}¢ | PnL: $${netPnl.toFixed(2)}`;
+  sig.notes = `${exitType} @ ${(actualExitPrice * 100).toFixed(1)}¢ | PnL: $${netPnl.toFixed(2)} | Peak: ${pos.peakProfit.toFixed(1)}¢`;
   
-  log(`📉 CLOSED: ${pos.asset} ${pos.direction} | ${exitType} @ ${(actualExitPrice * 100).toFixed(1)}¢ | PnL: $${netPnl.toFixed(2)}`);
+  const emoji = netPnl >= 0 ? '💰' : '📉';
+  log(`${emoji} CLOSED: ${pos.asset} ${pos.direction} | ${exitType} @ ${(actualExitPrice * 100).toFixed(1)}¢ | PnL: $${netPnl.toFixed(2)}`);
   
   void saveSignal(sig);
   

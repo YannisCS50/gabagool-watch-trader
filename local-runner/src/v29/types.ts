@@ -33,7 +33,7 @@ export interface Signal {
   share_price: number;
   market_slug: string | null;
   strike_price: number | null;
-  status: 'pending' | 'filled' | 'closed' | 'failed' | 'timeout';
+  status: 'pending' | 'filled' | 'closed' | 'failed' | 'timeout' | 'cancelled';
   signal_ts: number;
   entry_price: number | null;
   exit_price: number | null;
@@ -41,7 +41,7 @@ export interface Signal {
   order_id: string | null;
   fill_ts: number | null;
   close_ts: number | null;
-  exit_type: 'TP' | 'SL' | 'TIMEOUT' | 'MANUAL' | null;
+  exit_type: 'TP' | 'SL' | 'TRAILING' | 'TIMEOUT' | 'EMERGENCY' | 'MANUAL' | null;
   gross_pnl: number | null;
   net_pnl: number | null;
   fees: number | null;
@@ -55,7 +55,9 @@ export interface Position {
   tokenId: string;
   entryPrice: number;
   shares: number;
-  tpPrice: number | null;
-  slPrice: number | null;
   startTime: number;
+  // Trailing stop state
+  peakProfit: number;       // Highest profit seen (in cents)
+  trailingActive: boolean;  // True when trailing has been triggered
+  sellOrderId: string | null; // Active sell order (max 1)
 }
