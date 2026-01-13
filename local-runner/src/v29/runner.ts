@@ -16,7 +16,7 @@ import { startBinanceFeed, stopBinanceFeed } from './binance.js';
 import { startChainlinkFeed, stopChainlinkFeed, getChainlinkPrice } from './chainlink.js';
 import { fetchMarketOrderbook, fetchAllOrderbooks } from './orderbook.js';
 import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb } from './db.js';
-import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache } from './trading.js';
+import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache } from './trading.js';
 import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
 
@@ -47,6 +47,11 @@ let activePosition: Position | null = null;
 let activeSignal: Signal | null = null;
 let lastOrderTime = 0;
 let tradesCount = 0;
+let lastMarketRefresh = 0;
+let lastConfigReload = 0;
+
+// Track previous market slugs to detect market changes
+const previousMarketSlugs: Record<Asset, string | null> = { BTC: null, ETH: null, SOL: null, XRP: null };
 
 // ============================================
 // LOGGING
@@ -82,7 +87,8 @@ async function fetchMarkets(): Promise<void> {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${backendKey}`,
       },
-      body: JSON.stringify({ assets: config.assets }),
+      // v26 flag allows fetching upcoming markets (90s before start for 15m markets)
+      body: JSON.stringify({ assets: config.assets, v26: true }),
     });
     
     if (!res.ok) {
@@ -93,23 +99,55 @@ async function fetchMarkets(): Promise<void> {
     const data = await res.json();
     
     if (Array.isArray(data.markets)) {
-      markets.clear();
+      const now = Date.now();
+      const EARLY_15M_MS = 90_000; // 90s early entry for 15m markets
       
       for (const m of data.markets) {
-        if (m.asset && m.upTokenId && m.downTokenId) {
-          markets.set(m.asset as Asset, {
-            slug: m.slug,
-            asset: m.asset,
-            strikePrice: m.strikePrice,
-            upTokenId: m.upTokenId,
-            downTokenId: m.downTokenId,
-            endTime: new Date(m.endTime),
-          });
+        if (!m.asset || !m.upTokenId || !m.downTokenId) continue;
+        
+        const asset = m.asset as Asset;
+        const startMs = new Date(m.eventStartTime || m.event_start_time || '').getTime();
+        const endMs = new Date(m.eventEndTime || m.event_end_time || m.endTime || '').getTime();
+        
+        // Skip expired markets
+        if (endMs <= now - 60_000) continue;
+        
+        // Allow 90s early entry for 15m markets
+        const slug = String(m.slug || '');
+        const is15m = slug.toLowerCase().includes('-15m-');
+        const earlyMs = is15m ? EARLY_15M_MS : 60_000;
+        
+        // Skip if not started yet (with early buffer)
+        if (now < startMs - earlyMs) continue;
+        
+        const previousSlug = previousMarketSlugs[asset];
+        const isNewMarket = previousSlug !== slug;
+        
+        // Update market info
+        markets.set(asset, {
+          slug,
+          asset,
+          strikePrice: m.strikePrice ?? m.strike_price ?? 0,
+          upTokenId: m.upTokenId,
+          downTokenId: m.downTokenId,
+          endTime: new Date(endMs),
+        });
+        
+        // If market changed, update pre-signed cache immediately!
+        if (isNewMarket && previousSlug !== null) {
+          log(`🔁 ${asset} NEW MARKET: ${slug} (was: ${previousSlug}) → updating pre-sign cache`);
+          void updateMarketCache(asset, m.upTokenId, m.downTokenId);
+        } else if (isNewMarket) {
+          log(`📍 ${asset}: ${slug} @ strike $${m.strikePrice ?? m.strike_price ?? 0}`);
         }
+        
+        previousMarketSlugs[asset] = slug;
       }
       
-      log(`Loaded ${markets.size} markets`);
+      log(`Active: ${markets.size} markets`);
     }
+    
+    lastMarketRefresh = Date.now();
   } catch (err) {
     logError('Market fetch error', err);
   }
@@ -557,10 +595,26 @@ async function main(): Promise<void> {
     void pollOrderbooks();
   }, config.orderbook_poll_ms);
   
-  // Market refresh (every 5 minutes)
+  // Market refresh (every 30 seconds OR when market about to expire)
   setInterval(() => {
-    void fetchMarkets();
-  }, 5 * 60 * 1000);
+    const now = Date.now();
+    
+    // Check if any market is about to expire (< 30s remaining)
+    let needsRefresh = false;
+    for (const [asset, m] of markets) {
+      const timeUntilEnd = m.endTime.getTime() - now;
+      if (timeUntilEnd < 30_000 && timeUntilEnd > 0) {
+        log(`⏰ ${asset} market expiring in ${Math.floor(timeUntilEnd / 1000)}s → refreshing`);
+        needsRefresh = true;
+        break;
+      }
+    }
+    
+    // Refresh if expired/expiring or every 30 seconds
+    if (needsRefresh || now - lastMarketRefresh > 30_000) {
+      void fetchMarkets();
+    }
+  }, 5_000); // Check every 5 seconds for expiring markets
   
   // Heartbeat (every 30 seconds)
   setInterval(async () => {
