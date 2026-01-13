@@ -1,36 +1,28 @@
 /**
- * V29 Chainlink Price Feed
+ * V29 Chainlink Price Feed via Polymarket RTDS WebSocket
  * 
- * Uses HTTP polling since Polygon WebSocket RPC has aggressive rate limits (429).
- * Polls every 2 seconds for near-realtime updates.
+ * Uses Polymarket's Real-Time Data Stream (RTDS) which broadcasts
+ * Chainlink prices in real-time via WebSocket.
  * 
- * Chainlink on Polygon updates every ~27 seconds anyway, so polling is fine.
+ * Topic: crypto_prices_chainlink
+ * Format: { symbol: "btc/usd", value: 98765.43 }
  */
 
+import WebSocket from 'ws';
 import { Asset } from './config.js';
 
 type PriceCallback = (asset: Asset, price: number) => void;
 
-let pollInterval: NodeJS.Timeout | null = null;
+let ws: WebSocket | null = null;
+let reconnectTimeout: NodeJS.Timeout | null = null;
 let priceCallback: PriceCallback | null = null;
 let isRunning = false;
 let currentAssets: Asset[] = [];
+let reconnectAttempts = 0;
 
-// Use free public RPCs (rotate to avoid rate limits)
-const RPC_URLS = [
-  'https://polygon-rpc.com',
-  'https://polygon.llamarpc.com',
-  'https://rpc.ankr.com/polygon',
-];
-let rpcIndex = 0;
-
-// Chainlink Aggregator Proxy addresses on Polygon
-const CHAINLINK_AGGREGATORS: Record<Asset, string> = {
-  BTC: '0xc907E116054Ad103354f2D350FD2514433D57F6f', // BTC/USD
-  ETH: '0xF9680D99D6C9589e2a93a78A04A279e509205945', // ETH/USD
-  SOL: '0x10C8264C0935b3B9870013e057f330Ff3e9C56dC', // SOL/USD
-  XRP: '0x785ba89291f676b5386652eB12b30cF361020694', // XRP/USD
-};
+const RTDS_WS_URL = 'wss://ws-live-data.polymarket.com';
+const MAX_RECONNECT_ATTEMPTS = 10;
+const RECONNECT_DELAY = 3000;
 
 // Store current prices
 const currentPrices: Record<Asset, number> = {
@@ -44,80 +36,103 @@ function log(msg: string): void {
   console.log(`[V29:Chainlink] ${msg}`);
 }
 
-function getRpcUrl(): string {
-  const url = RPC_URLS[rpcIndex];
-  rpcIndex = (rpcIndex + 1) % RPC_URLS.length;
-  return url;
-}
-
-async function fetchPrice(asset: Asset): Promise<number | null> {
-  const feedAddress = CHAINLINK_AGGREGATORS[asset];
-  if (!feedAddress) return null;
-  
-  try {
-    // Call latestRoundData() - signature: 0xfeaf968c
-    const response = await fetch(getRpcUrl(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        method: 'eth_call',
-        params: [{
-          to: feedAddress,
-          data: '0xfeaf968c', // latestRoundData()
-        }, 'latest'],
-        id: 1,
-      }),
-    });
-    
-    const result = await response.json();
-    if (result.result && result.result !== '0x') {
-      // Parse answer (second 32-byte slot)
-      const hex = result.result.slice(2);
-      const answerHex = hex.slice(64, 128);
-      const rawPrice = BigInt('0x' + answerHex);
-      
-      // Chainlink uses 8 decimals for USD feeds
-      const price = Number(rawPrice) / 1e8;
-      
-      if (price > 0) {
-        return price;
-      }
-    }
-  } catch (err) {
-    // Silent fail, try next RPC on next poll
-  }
-  
+function symbolToAsset(symbol: string): Asset | null {
+  const lower = symbol.toLowerCase();
+  if (lower.includes('btc')) return 'BTC';
+  if (lower.includes('eth')) return 'ETH';
+  if (lower.includes('sol')) return 'SOL';
+  if (lower.includes('xrp')) return 'XRP';
   return null;
 }
 
-async function pollAllPrices(): Promise<void> {
+function connect(): void {
+  if (ws) {
+    ws.close();
+    ws = null;
+  }
+  
+  log(`Connecting to Polymarket RTDS WebSocket...`);
+  
+  ws = new WebSocket(RTDS_WS_URL);
+  
+  ws.on('open', () => {
+    log('✅ Connected to Polymarket RTDS');
+    reconnectAttempts = 0;
+    
+    // Subscribe to crypto_prices_chainlink topic
+    const subscribeMsg = {
+      action: 'subscribe',
+      subscriptions: [
+        { topic: 'crypto_prices_chainlink', type: '*', filters: '' }
+      ]
+    };
+    
+    ws?.send(JSON.stringify(subscribeMsg));
+    log('📡 Subscribed to crypto_prices_chainlink');
+  });
+  
+  ws.on('message', (data: Buffer) => {
+    try {
+      const msg = JSON.parse(data.toString());
+      
+      // Handle crypto price updates
+      // Format: { topic: "crypto_prices_chainlink", payload: { symbol: "btc/usd", value: 98765.43 } }
+      if (msg.topic === 'crypto_prices_chainlink' && msg.payload) {
+        const symbol = String(msg.payload.symbol || '');
+        const value = typeof msg.payload.value === 'number' ? msg.payload.value : 
+                      typeof msg.payload.price === 'number' ? msg.payload.price : null;
+        
+        if (value !== null) {
+          const asset = symbolToAsset(symbol);
+          if (asset && currentAssets.includes(asset)) {
+            const prevPrice = currentPrices[asset];
+            
+            if (value !== prevPrice) {
+              currentPrices[asset] = value;
+              
+              if (prevPrice > 0) {
+                const delta = value - prevPrice;
+                log(`📡 ${asset}: $${value.toFixed(2)} (${delta >= 0 ? '+' : ''}${delta.toFixed(2)})`);
+              } else {
+                log(`📡 ${asset}: $${value.toFixed(2)}`);
+              }
+              
+              if (priceCallback) {
+                priceCallback(asset, value);
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      // Ignore parse errors (PONG messages etc)
+    }
+  });
+  
+  ws.on('close', () => {
+    log('⚠️ Disconnected from Polymarket RTDS');
+    scheduleReconnect();
+  });
+  
+  ws.on('error', (err) => {
+    log(`❌ WebSocket error: ${err.message}`);
+  });
+}
+
+function scheduleReconnect(): void {
   if (!isRunning) return;
   
-  // Fetch all assets in parallel
-  const results = await Promise.all(
-    currentAssets.map(async (asset) => {
-      const price = await fetchPrice(asset);
-      return { asset, price };
-    })
-  );
+  if (reconnectTimeout) {
+    clearTimeout(reconnectTimeout);
+  }
   
-  for (const { asset, price } of results) {
-    if (price !== null && price !== currentPrices[asset]) {
-      const prevPrice = currentPrices[asset];
-      currentPrices[asset] = price;
-      
-      if (prevPrice > 0) {
-        const delta = price - prevPrice;
-        log(`📡 ${asset}: $${price.toFixed(2)} (${delta >= 0 ? '+' : ''}${delta.toFixed(2)})`);
-      } else {
-        log(`📡 ${asset}: $${price.toFixed(2)}`);
-      }
-      
-      if (priceCallback) {
-        priceCallback(asset, price);
-      }
-    }
+  if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+    reconnectAttempts++;
+    const delay = RECONNECT_DELAY * Math.min(reconnectAttempts, 5);
+    log(`Reconnecting in ${delay}ms (attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS})...`);
+    reconnectTimeout = setTimeout(connect, delay);
+  } else {
+    log('❌ Max reconnect attempts reached');
   }
 }
 
@@ -125,25 +140,24 @@ export function startChainlinkFeed(assets: Asset[], onPrice: PriceCallback): voi
   isRunning = true;
   priceCallback = onPrice;
   currentAssets = assets;
+  reconnectAttempts = 0;
   
-  log(`Starting HTTP polling for ${assets.join(', ')} (every 2s)`);
-  
-  // Initial fetch
-  void pollAllPrices();
-  
-  // Poll every 2 seconds (Chainlink updates every ~27s anyway)
-  pollInterval = setInterval(() => {
-    void pollAllPrices();
-  }, 2000);
+  log(`Starting RTDS feed for ${assets.join(', ')}`);
+  connect();
 }
 
 export function stopChainlinkFeed(): void {
   isRunning = false;
   priceCallback = null;
   
-  if (pollInterval) {
-    clearInterval(pollInterval);
-    pollInterval = null;
+  if (reconnectTimeout) {
+    clearTimeout(reconnectTimeout);
+    reconnectTimeout = null;
+  }
+  
+  if (ws) {
+    ws.close();
+    ws = null;
   }
   
   log('Stopped');
