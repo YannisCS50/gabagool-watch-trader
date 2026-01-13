@@ -43,8 +43,8 @@ export const DEFAULT_V28_CONFIG: V28Config = {
   max_shares: 5,               // Hard cap: max 5 shares per order
   min_delta_usd: 10,
   delta_window_ms: 300,
-  min_share_price: 0.35,
-  max_share_price: 0.65,
+  min_share_price: 0.25,
+  max_share_price: 0.75,
   tp_cents: 3,
   tp_pct: 0.04,  // 4% take profit
   tp_enabled: true,
