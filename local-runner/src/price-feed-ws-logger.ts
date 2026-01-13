@@ -619,10 +619,22 @@ async function connectClob(): Promise<void> {
       stats.clob.lastMessageAt = now;
       stats.clob.messageCount++;
       
-      // Skip PONG messages
+      // Skip plain-text control messages from CLOB
       if (msgStr === 'PONG') return;
+      if (msgStr === 'INVALID') {
+        // CLOB sends "INVALID" when it doesn't recognize a message format
+        // This is not fatal - just ignore it
+        console.warn('[PriceFeedLogger] ⚠️ CLOB returned INVALID (ignoring)');
+        return;
+      }
       
-      const msg = JSON.parse(msgStr);
+      // Skip non-JSON messages
+      const trimmed = msgStr.trimStart();
+      if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+        return;
+      }
+      
+      const msg = JSON.parse(trimmed);
       
       // Book event: { event_type: 'book', asset_id: '...', bids: [[price, size]...], asks: [[price, size]...] }
       if (msg.event_type === 'book' && msg.asset_id) {
