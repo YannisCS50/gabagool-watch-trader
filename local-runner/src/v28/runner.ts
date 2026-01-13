@@ -743,7 +743,7 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
   console.log(`[V28] ┌─────────────────────────────────────────────────────────────`);
   console.log(`[V28] │ 📤 PLACING ORDER: ${signal.asset} ${signal.direction}`);
   console.log(`[V28] │ Token:    ${tokenId.slice(0, 20)}...`);
-  console.log(`[V28] │ Side:     BUY (FOK)`);
+  console.log(`[V28] │ Side:     BUY (GTC)`);
   console.log(`[V28] │ Shares:   ${shares}`);
   console.log(`[V28] │ Price:    ${(price * 100).toFixed(1)}¢`);
   console.log(`[V28] │ Notional: $${notionalUsd.toFixed(2)}`);
@@ -762,13 +762,15 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
     
     if (preSignCacheEnabled) {
       // FAST PATH: Use pre-signed order from cache
+      // Changed from FOK to GTC - FOK fails if not enough liquidity for full fill
+      // GTC allows partial fills which is better for thin orderbooks
       const fastResult = await executeOrderFast(
         signal.asset,
         signal.direction,
         tokenId,
         price,
         shares,
-        'FOK'
+        'GTC'
       );
       
       result = {
@@ -788,13 +790,14 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
       }
     } else {
       // REGULAR PATH: Sign and post order (slower)
+      // Changed from FOK to GTC - allows partial fills on thin orderbooks
       const orderStartLocal = Date.now();
       result = await placeOrder({
         tokenId,
         side: 'BUY',
         price,
         size: shares,
-        orderType: 'FOK', // Fill-Or-Kill for speed
+        orderType: 'GTC', // Good-Till-Cancelled for partial fills
         intent: 'ENTRY',
       });
       orderLatency = Date.now() - orderStartLocal;
