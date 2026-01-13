@@ -28,8 +28,73 @@ let currentAssets: Asset[] = [];
 
 const BINANCE_WS_BASE = 'wss://stream.binance.com:9443/ws';
 
+// Buffer configuration - aggregate trades over 100ms windows
+const BUFFER_MS = 100;
+
+// Per-asset price buffer
+interface PriceBuffer {
+  windowStart: number;
+  firstPrice: number | null;
+  lastPrice: number | null;
+  lastTimestamp: number;
+  timeout: NodeJS.Timeout | null;
+}
+
+const priceBuffers: Record<Asset, PriceBuffer> = {
+  BTC: { windowStart: 0, firstPrice: null, lastPrice: null, lastTimestamp: 0, timeout: null },
+  ETH: { windowStart: 0, firstPrice: null, lastPrice: null, lastTimestamp: 0, timeout: null },
+  SOL: { windowStart: 0, firstPrice: null, lastPrice: null, lastTimestamp: 0, timeout: null },
+  XRP: { windowStart: 0, firstPrice: null, lastPrice: null, lastTimestamp: 0, timeout: null },
+};
+
+// Track last emitted price per asset (for delta calculation between windows)
+const lastEmittedPrice: Record<Asset, number | null> = {
+  BTC: null, ETH: null, SOL: null, XRP: null
+};
+
 function log(msg: string): void {
   console.log(`[V29:Binance] ${msg}`);
+}
+
+function emitBufferedPrice(asset: Asset): void {
+  const buffer = priceBuffers[asset];
+  
+  if (buffer.lastPrice === null) return;
+  
+  // Emit the aggregated price
+  if (priceCallback) {
+    priceCallback(asset, buffer.lastPrice, buffer.lastTimestamp);
+  }
+  
+  // Store for next window's delta calculation
+  lastEmittedPrice[asset] = buffer.lastPrice;
+  
+  // Reset buffer
+  buffer.firstPrice = null;
+  buffer.lastPrice = null;
+  buffer.timeout = null;
+}
+
+function bufferPrice(asset: Asset, price: number, timestamp: number): void {
+  const buffer = priceBuffers[asset];
+  const now = Date.now();
+  
+  // First price in this window
+  if (buffer.firstPrice === null) {
+    buffer.windowStart = now;
+    buffer.firstPrice = price;
+  }
+  
+  // Always update last price
+  buffer.lastPrice = price;
+  buffer.lastTimestamp = timestamp;
+  
+  // Schedule emit if not already scheduled
+  if (buffer.timeout === null) {
+    buffer.timeout = setTimeout(() => {
+      emitBufferedPrice(asset);
+    }, BUFFER_MS);
+  }
 }
 
 function symbolToAsset(symbol: string): Asset | null {
@@ -74,9 +139,9 @@ function connect(): void {
         const price = parseFloat(msg.p);
         const timestamp = msg.T ?? Date.now(); // Trade timestamp from Binance
 
-        if (asset && !isNaN(price) && priceCallback) {
-          // Emit EVERY trade immediately - matches UI behavior
-          priceCallback(asset, price, timestamp);
+        if (asset && !isNaN(price)) {
+          // Buffer trades and emit aggregated price every 100ms
+          bufferPrice(asset, price, timestamp);
         }
       }
     } catch {
