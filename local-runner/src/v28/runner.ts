@@ -1295,51 +1295,64 @@ async function monitorOpenPositions(): Promise<void> {
 
   console.log(`[V28] 📋 Position monitor: found ${relevantPositions.length} real position(s) in active markets`);
 
+  // ========================================
+  // PER-TRADE P&L: Only sell shares we tracked buying ourselves
+  // This prevents mixing old positions with new trades
+  // ========================================
+  
   for (const pos of relevantPositions) {
     const marketMatch = tokenToMarket.get(pos.asset);
     if (!marketMatch) continue;
 
     const { asset, direction, info } = marketMatch;
     const tokenId = pos.asset;
-    const shares = pos.size;
+    const totalShares = pos.size;
     const avgCost = pos.avgPrice;
     
-    // Use LIVE bid from priceState instead of stale curPrice from API!
+    // Use LIVE bid from priceState
     const state = priceState[asset];
     const liveBid = direction === 'UP' ? state.upBestBid : state.downBestBid;
     const liveAsk = direction === 'UP' ? state.upBestAsk : state.downBestAsk;
-    
-    // Use live bid as current value (what we can actually sell for)
     const currentPrice = liveBid ?? pos.curPrice;
-    const apiPrice = pos.curPrice;
     
-    if (shares < 1 || avgCost <= 0) continue;
+    if (totalShares < 0.5 || avgCost <= 0) continue;
 
-    // Calculate profit in CENTS (not percentage!)
-    const profitCents = Math.round((currentPrice - avgCost) * 100);
-    const profitPct = ((currentPrice / avgCost) - 1) * 100;
-    const profitUsd = (currentPrice - avgCost) * shares;
-
-    // Show both live bid and API price for debugging
+    // Show position info for debugging
     const bidAskInfo = liveBid !== null 
       ? `bid=${(liveBid * 100).toFixed(1)}¢ ask=${liveAsk ? (liveAsk * 100).toFixed(1) : '?'}¢` 
-      : `API=${(apiPrice * 100).toFixed(1)}¢`;
+      : `API=${(pos.curPrice * 100).toFixed(1)}¢`;
     
-    console.log(`[V28] 📊 ${asset} ${direction}: ${shares.toFixed(1)} shares @ ${(avgCost * 100).toFixed(1)}¢ → ${(currentPrice * 100).toFixed(1)}¢ (${bidAskInfo}) | ${profitCents >= 0 ? '+' : ''}${profitCents}¢ / ${profitPct >= 0 ? '+' : ''}${profitPct.toFixed(1)}% / $${profitUsd >= 0 ? '+' : ''}${profitUsd.toFixed(2)}`);
+    // Find our tracked position for this token
+    const trackedPosition = Array.from(openPositions.values()).find(
+      p => p.tokenId === tokenId
+    );
+    
+    if (!trackedPosition) {
+      // We have a position but didn't track buying it - could be from previous session
+      console.log(`[V28] 📊 ${asset} ${direction}: ${totalShares.toFixed(2)} shares (UNTRACKED - avg ${(avgCost * 100).toFixed(1)}¢ → ${(currentPrice * 100).toFixed(1)}¢) ${bidAskInfo}`);
+      continue; // Skip - we don't know the entry price for these shares
+    }
+    
+    // Calculate profit based on OUR entry price, not the blended average
+    const ourEntryPrice = trackedPosition.entryPrice;
+    const ourShares = trackedPosition.shares;
+    const profitCents = Math.round((currentPrice - ourEntryPrice) * 100);
+    const profitPct = ((currentPrice / ourEntryPrice) - 1) * 100;
+    const profitUsd = (currentPrice - ourEntryPrice) * ourShares;
+    
+    console.log(`[V28] 📊 ${asset} ${direction}: TRACKED ${ourShares.toFixed(2)}/${totalShares.toFixed(2)} shares @ ${(ourEntryPrice * 100).toFixed(1)}¢ → ${(currentPrice * 100).toFixed(1)}¢ (${bidAskInfo}) | ${profitCents >= 0 ? '+' : ''}${profitCents}¢ / ${profitPct >= 0 ? '+' : ''}${profitPct.toFixed(1)}% / $${profitUsd >= 0 ? '+' : ''}${profitUsd.toFixed(2)}`);
 
-
-    // Sell when profit >= 4 CENTS (user requirement)
+    // Sell when OUR trade has profit >= 4 CENTS
     if (profitCents >= MIN_PROFIT_CENTS_TO_SELL) {
-      console.log(`[V28] 💰 PROFIT +${profitCents}¢ >= +${MIN_PROFIT_CENTS_TO_SELL}¢! Selling ${shares.toFixed(1)} shares...`);
+      console.log(`[V28] 💰 PROFIT +${profitCents}¢ >= +${MIN_PROFIT_CENTS_TO_SELL}¢! Selling OUR ${ourShares.toFixed(2)} shares (not full ${totalShares.toFixed(2)})...`);
 
       // AGGRESSIVE SELL: Use bestBid - 0.5¢ to ensure fill
       const aggressiveSellPrice = liveBid ? Math.round((liveBid - 0.005) * 100) / 100 : Math.round(currentPrice * 100) / 100;
-      const sellPrice = Math.max(aggressiveSellPrice, 0.01); // Floor at 1¢
-      // Round to 2 decimals instead of floor - CLOB accepts fractional shares
-      const sellShares = Math.round(shares * 100) / 100;
+      const sellPrice = Math.max(aggressiveSellPrice, 0.01);
+      const sellShares = Math.round(ourShares * 100) / 100; // Only sell what WE bought
 
       if (sellShares < 0.5) {
-        console.log(`[V28] ⚠️ Shares too small: ${shares} -> ${sellShares}`);
+        console.log(`[V28] ⚠️ Shares too small: ${ourShares} -> ${sellShares}`);
         continue;
       }
 
@@ -1351,17 +1364,28 @@ async function monitorOpenPositions(): Promise<void> {
           side: 'SELL',
           price: sellPrice,
           size: sellShares,
-          orderType: 'FOK', // Fill-or-kill for immediate exit
+          orderType: 'FOK',
           intent: 'HEDGE',
         });
 
         if (result.success) {
           const actualExitPrice = result.avgPrice ?? sellPrice;
-          const netPnl = (actualExitPrice - avgCost) * sellShares;
+          const netPnl = (actualExitPrice - ourEntryPrice) * sellShares;
           console.log(`[V28] ✅ SOLD ${sellShares} ${asset} ${direction} @ ${(actualExitPrice * 100).toFixed(1)}¢ | Net: $${netPnl.toFixed(2)}`);
           
-          // Release position lock if this was our tracked position
-          if (positionLock.status === 'open') {
+          // Update signal and remove from tracked positions
+          trackedPosition.signal.status = 'sold';
+          trackedPosition.signal.exit_price = actualExitPrice;
+          trackedPosition.signal.sell_ts = Date.now();
+          trackedPosition.signal.gross_pnl = netPnl;
+          trackedPosition.signal.net_pnl = netPnl - (trackedPosition.signal.entry_fee ?? 0);
+          trackedPosition.signal.exit_type = 'tp';
+          trackedPosition.signal.notes = `🔴 LIVE ✅ SOLD @ ${(actualExitPrice * 100).toFixed(1)}¢ | Net: $${netPnl.toFixed(2)} (per-trade P&L)`;
+          await saveSignal(trackedPosition.signal);
+          
+          openPositions.delete(trackedPosition.signalId);
+          
+          if (positionLock.status === 'open' && positionLock.signalId === trackedPosition.signalId) {
             positionLock = { status: 'idle' };
           }
         } else {
