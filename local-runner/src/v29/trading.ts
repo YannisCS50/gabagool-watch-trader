@@ -343,32 +343,38 @@ function getPreSignedOrder(
 }
 
 // ============================================
-// AGGRESSIVE FILL CONFIGURATION
+// BURST FILL CONFIGURATION
 // ============================================
 
-const AGGRESSIVE_FILL_CONFIG = {
-  // Enable aggressive fill mode (sequential limit orders)
+const BURST_FILL_CONFIG = {
+  // Enable burst fill mode (parallel limit orders at different prices)
   enabled: true,
-  // How long to wait for fill before trying next price level (ms)
-  fillCheckDelayMs: 40,
-  // Max price steps to try (starting from best ask going down)
-  maxPriceSteps: 10,
-  // Price step size (1¢)
+  // Number of parallel orders to fire
+  burstCount: 3,
+  // Shares per order (total = burstCount * sharesPerOrder)
+  sharesPerOrder: 2,
+  // Price step between orders (1¢)
   priceStepCents: 0.01,
-  // Total timeout for aggressive fill attempt (ms)
-  totalTimeoutMs: 500,
+  // How long to wait before checking fills (ms)
+  fillCheckDelayMs: 50,
+  // How long to wait for fill before canceling unfilled orders (ms)
+  totalTimeoutMs: 200,
 };
 
 /**
- * Place a BUY order - uses aggressive fill mode for faster execution
+ * Place a BUY order - uses BURST FILL mode for faster execution
  * 
- * AGGRESSIVE FILL MODE:
- * 1. Post limit order at best ask
- * 2. Wait 40ms, check if filled
- * 3. If not filled: CANCEL, post at best ask - 1¢
- * 4. Repeat until filled or max steps reached
+ * BURST FILL MODE:
+ * 1. Fire 3 parallel limit orders at different price levels:
+ *    - Order 1: 2 shares @ bestAsk
+ *    - Order 2: 2 shares @ bestAsk - 1¢
+ *    - Order 3: 2 shares @ bestAsk - 2¢
+ * 2. Wait ~50ms for fills
+ * 3. Cancel any unfilled orders
+ * 4. Return total filled shares
  * 
- * This avoids the 500ms market order delay while ensuring only 1 order is live at a time
+ * Benefits: ~40ms per order (parallel) vs 500ms market order delay
+ * Risk: All 3 might fill = 6 shares, but that's acceptable
  */
 export async function placeBuyOrder(
   tokenId: string,
@@ -387,111 +393,192 @@ export async function placeBuyOrder(
       return { success: false, error: 'Shares < 1', latencyMs: Date.now() - start };
     }
     
-    // If aggressive fill is disabled, use simple order
-    if (!AGGRESSIVE_FILL_CONFIG.enabled) {
+    // If burst fill is disabled, use simple order
+    if (!BURST_FILL_CONFIG.enabled) {
       return await placeSingleBuyOrder(client, tokenId, price, roundedShares, asset, direction, start);
     }
     
-    // AGGRESSIVE FILL MODE
-    log(`🚀 Aggressive fill: ${asset} ${direction} ${roundedShares} shares starting @ ${(price * 100).toFixed(1)}¢`);
+    // BURST FILL MODE
+    const { burstCount, sharesPerOrder, priceStepCents, fillCheckDelayMs, totalTimeoutMs } = BURST_FILL_CONFIG;
     
+    log(`🚀 Burst fill: ${asset} ${direction} firing ${burstCount}x${sharesPerOrder} shares starting @ ${(price * 100).toFixed(1)}¢`);
+    
+    // Generate price levels for burst orders
+    const priceLevels: number[] = [];
     let currentPrice = Math.round(price * 100) / 100;
-    const minPrice = 0.01;
-    let attempts = 0;
-    
-    while (attempts < AGGRESSIVE_FILL_CONFIG.maxPriceSteps && 
-           currentPrice >= minPrice && 
-           (Date.now() - start) < AGGRESSIVE_FILL_CONFIG.totalTimeoutMs) {
-      
-      attempts++;
-      
-      // Get pre-signed order from cache if available
-      let signedOrder: SignedOrder;
-      let usedCache = false;
-      
-      if (asset && direction) {
-        const cached = getPreSignedOrder(asset, direction, currentPrice, roundedShares);
-        if (cached) {
-          signedOrder = cached.signedOrder;
-          usedCache = true;
-        }
-      }
-      
-      // Fallback to real-time signing
-      if (!usedCache) {
-        signedOrder = await client.createOrder(
-          { tokenID: tokenId, price: currentPrice, size: roundedShares, side: Side.BUY },
-          { tickSize: '0.01', negRisk: false }
-        );
-      }
-      
-      // POST the order
-      const response = await client.postOrder(signedOrder!, OrderType.GTC);
-      
-      if (!response.success) {
-        log(`⚠️ Order failed @ ${(currentPrice * 100).toFixed(1)}¢: ${response.errorMsg}`);
-        currentPrice -= AGGRESSIVE_FILL_CONFIG.priceStepCents;
-        continue;
-      }
-      
-      const orderId = response.orderID;
-      if (!orderId) {
-        log(`⚠️ No order ID returned`);
-        currentPrice -= AGGRESSIVE_FILL_CONFIG.priceStepCents;
-        continue;
-      }
-      
-      // Wait briefly for fill
-      await new Promise(resolve => setTimeout(resolve, AGGRESSIVE_FILL_CONFIG.fillCheckDelayMs));
-      
-      // Check if filled
-      const status = await getOrderStatus(orderId);
-      
-      if (status.filled || status.filledSize > 0) {
-        // SUCCESS! We got a fill
-        const latencyMs = Date.now() - start;
-        log(`✅ Aggressive fill SUCCESS: ${orderId} @ ${(currentPrice * 100).toFixed(1)}¢ (${latencyMs}ms, ${attempts} attempts, cache=${usedCache})`);
-        return {
-          success: true,
-          orderId,
-          avgPrice: currentPrice,
-          filledSize: status.filledSize || roundedShares,
-          latencyMs,
-        };
-      }
-      
-      // Not filled - cancel and try lower price
-      log(`⏳ Not filled @ ${(currentPrice * 100).toFixed(1)}¢ - cancelling and retrying...`);
-      
-      try {
-        await client.cancelOrder(orderId);
-      } catch (cancelErr) {
-        // Cancel failed - order might have filled in the meantime
-        const recheckStatus = await getOrderStatus(orderId);
-        if (recheckStatus.filled || recheckStatus.filledSize > 0) {
-          const latencyMs = Date.now() - start;
-          log(`✅ Order filled during cancel: ${orderId} (${latencyMs}ms)`);
-          return {
-            success: true,
-            orderId,
-            avgPrice: currentPrice,
-            filledSize: recheckStatus.filledSize || roundedShares,
-            latencyMs,
-          };
-        }
-      }
-      
-      // Move to next price level
-      currentPrice -= AGGRESSIVE_FILL_CONFIG.priceStepCents;
+    for (let i = 0; i < burstCount; i++) {
+      priceLevels.push(Math.max(currentPrice, 0.01));
+      currentPrice -= priceStepCents;
     }
     
-    // Aggressive fill exhausted - try one final order at current price
-    log(`⚠️ Aggressive fill exhausted after ${attempts} attempts, final attempt @ ${(currentPrice * 100).toFixed(1)}¢`);
-    return await placeSingleBuyOrder(client, tokenId, Math.max(currentPrice, minPrice), roundedShares, asset, direction, start);
+    // Fire all orders in parallel
+    const orderPromises = priceLevels.map(async (orderPrice, idx) => {
+      try {
+        // Try cache first
+        let signedOrder: SignedOrder;
+        let usedCache = false;
+        
+        if (asset && direction) {
+          const cached = getPreSignedOrder(asset, direction, orderPrice, sharesPerOrder);
+          if (cached) {
+            signedOrder = cached.signedOrder;
+            usedCache = true;
+          }
+        }
+        
+        // Fallback to real-time signing
+        if (!usedCache) {
+          signedOrder = await client.createOrder(
+            { tokenID: tokenId, price: orderPrice, size: sharesPerOrder, side: Side.BUY },
+            { tickSize: '0.01', negRisk: false }
+          );
+        }
+        
+        const response = await client.postOrder(signedOrder!, OrderType.GTC);
+        
+        return {
+          idx,
+          price: orderPrice,
+          orderId: response.orderID,
+          success: response.success,
+          error: response.errorMsg,
+          usedCache,
+        };
+      } catch (err) {
+        return {
+          idx,
+          price: orderPrice,
+          orderId: null,
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+          usedCache: false,
+        };
+      }
+    });
+    
+    // Wait for all orders to be placed
+    const orderResults = await Promise.all(orderPromises);
+    const placedOrders = orderResults.filter(o => o.success && o.orderId);
+    
+    if (placedOrders.length === 0) {
+      const errors = orderResults.map(o => o.error).join(', ');
+      log(`❌ All burst orders failed: ${errors}`);
+      return { success: false, error: `All burst orders failed: ${errors}`, latencyMs: Date.now() - start };
+    }
+    
+    log(`📤 Burst: ${placedOrders.length}/${burstCount} orders placed in ${Date.now() - start}ms`);
+    
+    // Wait for fills
+    await new Promise(resolve => setTimeout(resolve, fillCheckDelayMs));
+    
+    // Check fill status of all orders
+    const statusChecks = await Promise.all(
+      placedOrders.map(async (order) => {
+        const status = await getOrderStatus(order.orderId!);
+        return {
+          ...order,
+          filled: status.filled,
+          filledSize: status.filledSize || 0,
+        };
+      })
+    );
+    
+    // Calculate total filled
+    let totalFilled = 0;
+    let weightedPriceSum = 0;
+    const filledOrders = statusChecks.filter(o => o.filledSize > 0);
+    
+    for (const order of filledOrders) {
+      totalFilled += order.filledSize;
+      weightedPriceSum += order.price * order.filledSize;
+    }
+    
+    const avgFillPrice = totalFilled > 0 ? weightedPriceSum / totalFilled : price;
+    
+    // Cancel unfilled orders (fire and forget for speed)
+    const unfilledOrders = statusChecks.filter(o => !o.filled && o.filledSize === 0);
+    if (unfilledOrders.length > 0) {
+      log(`🗑️ Cancelling ${unfilledOrders.length} unfilled orders...`);
+      Promise.all(
+        unfilledOrders.map(o => 
+          client.cancelOrder(o.orderId!).catch(() => {/* ignore cancel errors */})
+        )
+      );
+    }
+    
+    const latencyMs = Date.now() - start;
+    
+    if (totalFilled > 0) {
+      log(`✅ Burst fill SUCCESS: ${totalFilled} shares @ avg ${(avgFillPrice * 100).toFixed(1)}¢ (${latencyMs}ms, ${filledOrders.length}/${burstCount} orders filled)`);
+      return {
+        success: true,
+        orderId: filledOrders[0]?.orderId || placedOrders[0].orderId,
+        avgPrice: avgFillPrice,
+        filledSize: totalFilled,
+        latencyMs,
+      };
+    }
+    
+    // No fills yet - wait a bit more and check again
+    log(`⏳ No fills yet, waiting ${totalTimeoutMs - fillCheckDelayMs}ms more...`);
+    await new Promise(resolve => setTimeout(resolve, totalTimeoutMs - fillCheckDelayMs));
+    
+    // Final fill check
+    const finalChecks = await Promise.all(
+      placedOrders.map(async (order) => {
+        const status = await getOrderStatus(order.orderId!);
+        return {
+          ...order,
+          filled: status.filled,
+          filledSize: status.filledSize || 0,
+        };
+      })
+    );
+    
+    totalFilled = 0;
+    weightedPriceSum = 0;
+    const finalFilledOrders = finalChecks.filter(o => o.filledSize > 0);
+    
+    for (const order of finalFilledOrders) {
+      totalFilled += order.filledSize;
+      weightedPriceSum += order.price * order.filledSize;
+    }
+    
+    const finalAvgPrice = totalFilled > 0 ? weightedPriceSum / totalFilled : price;
+    const finalLatencyMs = Date.now() - start;
+    
+    // Cancel any remaining unfilled orders
+    const finalUnfilled = finalChecks.filter(o => !o.filled && o.filledSize === 0);
+    if (finalUnfilled.length > 0) {
+      Promise.all(
+        finalUnfilled.map(o => 
+          client.cancelOrder(o.orderId!).catch(() => {})
+        )
+      );
+    }
+    
+    if (totalFilled > 0) {
+      log(`✅ Burst fill (delayed): ${totalFilled} shares @ avg ${(finalAvgPrice * 100).toFixed(1)}¢ (${finalLatencyMs}ms)`);
+      return {
+        success: true,
+        orderId: finalFilledOrders[0]?.orderId || placedOrders[0].orderId,
+        avgPrice: finalAvgPrice,
+        filledSize: totalFilled,
+        latencyMs: finalLatencyMs,
+      };
+    }
+    
+    // All orders unfilled after timeout - report failure
+    log(`⚠️ Burst fill timeout: no fills after ${finalLatencyMs}ms`);
+    return {
+      success: false,
+      error: `No fills after ${finalLatencyMs}ms (${placedOrders.length} orders placed)`,
+      latencyMs: finalLatencyMs,
+    };
     
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    log(`❌ Order error: ${msg}`);
+    log(`❌ Burst order error: ${msg}`);
     return { success: false, error: msg, latencyMs: Date.now() - start };
   }
 }
