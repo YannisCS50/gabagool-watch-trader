@@ -39,15 +39,20 @@ export interface V29Config {
   // Assets to trade
   assets: Asset[];
   
-  // Take Profit settings
-  tp_enabled: boolean;
-  tp_cents: number; // e.g., 4 = sell when price rises 4¢
+  // === TRAILING STOP WITH MINIMUM PROFIT ===
+  // Minimum profit per share (ALWAYS guaranteed, e.g., 4¢)
+  min_profit_cents: number;
   
-  // Stop Loss settings
-  sl_enabled: boolean;
-  sl_cents: number; // e.g., 5 = sell when price drops 5¢
+  // Trailing stop trigger: when unrealized profit reaches this, start trailing
+  trailing_trigger_cents: number; // e.g., 7¢ - start trailing when profit >= 7¢
   
-  // Timeout: auto-close position after X ms
+  // Trailing stop distance: once triggered, if price drops this much from peak, sell
+  trailing_distance_cents: number; // e.g., 3¢ - if profit drops 3¢ from peak, sell
+  
+  // Emergency stop loss (only in extreme cases - this IS a loss)
+  emergency_sl_cents: number; // e.g., 10¢ - absolute max loss before force-sell
+  
+  // Timeout: auto-close position after X ms (at min_profit if possible, else emergency)
   timeout_ms: number;
   
   // Polling intervals
@@ -68,10 +73,11 @@ export const DEFAULT_CONFIG: V29Config = {
   max_shares: 10,
   price_buffer_cents: 1,
   assets: ['BTC', 'ETH', 'SOL', 'XRP'],
-  tp_enabled: true,
-  tp_cents: 4,
-  sl_enabled: true,
-  sl_cents: 3,
+  // Trailing stop with minimum profit
+  min_profit_cents: 4,           // MINIMUM 4¢ profit guaranteed
+  trailing_trigger_cents: 7,     // Start trailing when profit >= 7¢
+  trailing_distance_cents: 3,    // Sell if profit drops 3¢ from peak
+  emergency_sl_cents: 10,        // Emergency loss limit (should rarely trigger)
   timeout_ms: 30_000,
   binance_poll_ms: 100,
   orderbook_poll_ms: 2000,
