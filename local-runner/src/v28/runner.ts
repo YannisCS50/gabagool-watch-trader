@@ -1335,14 +1335,15 @@ async function monitorOpenPositions(): Promise<void> {
       // AGGRESSIVE SELL: Use bestBid - 0.5¢ to ensure fill
       const aggressiveSellPrice = liveBid ? Math.round((liveBid - 0.005) * 100) / 100 : Math.round(currentPrice * 100) / 100;
       const sellPrice = Math.max(aggressiveSellPrice, 0.01); // Floor at 1¢
-      const sellShares = Math.floor(shares); // Whole shares only
+      // Round to 2 decimals instead of floor - CLOB accepts fractional shares
+      const sellShares = Math.round(shares * 100) / 100;
 
-      if (sellShares < 1) {
-        console.log(`[V28] ⚠️ Shares too small after rounding: ${shares} -> ${sellShares}`);
+      if (sellShares < 0.5) {
+        console.log(`[V28] ⚠️ Shares too small: ${shares} -> ${sellShares}`);
         continue;
       }
 
-      console.log(`[V28] 📤 SELL ${sellShares} @ ${(sellPrice * 100).toFixed(0)}¢ (aggressive: bestBid=${liveBid ? (liveBid * 100).toFixed(0) : '?'}¢ - 0.5¢)`);
+      console.log(`[V28] 📤 SELL ${sellShares.toFixed(2)} @ ${(sellPrice * 100).toFixed(0)}¢ (aggressive: bestBid=${liveBid ? (liveBid * 100).toFixed(0) : '?'}¢ - 0.5¢)`);
 
       try {
         const result = await placeOrder({
@@ -1423,9 +1424,10 @@ async function monitorTrackedPositions(): Promise<void> {
       // AGGRESSIVE SELL: Use bestBid - 0.5¢
       const aggressiveSellPrice = Math.round((currentBid - 0.005) * 100) / 100;
       const sellPrice = Math.max(aggressiveSellPrice, 0.01);
-      const sellShares = Math.floor(position.shares);
+      // Round to 2 decimals instead of floor - CLOB accepts fractional shares
+      const sellShares = Math.round(position.shares * 100) / 100;
       
-      if (sellShares < 1) continue;
+      if (sellShares < 0.5) continue;
       
       try {
         const result = await placeOrder({
