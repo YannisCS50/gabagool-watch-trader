@@ -635,8 +635,16 @@ async function main(): Promise<void> {
   startChainlinkFeed(config.assets, handleChainlinkPrice);
   log('✅ Chainlink WebSocket feed started');
   
-  // Start Binance feed
-  startBinanceFeed(config.assets, handleBinancePrice);
+  // Start Binance feed (emit latest price every binance_poll_ms, not every trade)
+  startBinanceFeed(config.assets, handleBinancePrice, config.binance_poll_ms, (evt) => {
+    if (evt.type === 'open') {
+      queueLog(RUN_ID, 'info', 'system', `Binance WS connected`, undefined, { url: evt.url });
+    } else if (evt.type === 'close') {
+      queueLog(RUN_ID, 'warn', 'system', `Binance WS disconnected`, undefined, { url: evt.url });
+    } else {
+      queueLog(RUN_ID, 'error', 'error', `Binance WS error: ${evt.message}`, undefined, { url: evt.url });
+    }
+  });
   log('✅ Binance price feed started');
   
   isRunning = true;
