@@ -235,29 +235,47 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
   const subscribeToTokens = useCallback((ws: WebSocket, tokenIds: string[]) => {
     if (ws.readyState !== WebSocket.OPEN || tokenIds.length === 0) return;
 
-    // Subscribe to each token's market channel
-    for (const tokenId of tokenIds) {
-      const subscribeMsg = {
-        type: "subscribe",
-        channel: "market",
-        assets_ids: [tokenId],
-      };
-      console.log("[CLOB WS] Subscribing to:", tokenId.slice(0, 20) + "...");
-      ws.send(JSON.stringify(subscribeMsg));
-    }
+    // The upstream CLOB market WS expects a single subscribe payload:
+    // { assets_ids: [...], type: "market" }
+    // (NOT per-token "subscribe" messages)
+    const subscribeMsg = {
+      assets_ids: tokenIds,
+      type: "market",
+    };
+
+    console.log("[CLOB WS] Subscribing to", tokenIds.length, "tokens");
+    ws.send(JSON.stringify(subscribeMsg));
   }, []);
 
   const handleWsMessage = useCallback((event: MessageEvent) => {
     try {
-      const data = JSON.parse(event.data);
+      const raw = event.data;
+
+      // Some frames can be non-string (binary); ignore.
+      if (typeof raw !== "string") return;
+
+      // Proxy / upstream can send plain-text control/error frames.
+      if (raw === "PONG") return;
+      if (raw === "INVALID") {
+        // This typically indicates an unsupported message format was sent.
+        // We ignore it to avoid breaking the stream + reconnect loop.
+        console.warn("[CLOB WS] Received INVALID message (ignoring)");
+        return;
+      }
+
+      const trimmed = raw.trimStart();
+      const firstChar = trimmed[0];
+      if (firstChar !== "{" && firstChar !== "[") return;
+
+      const data = JSON.parse(trimmed);
       const now = Date.now();
 
       // Handle price updates from CLOB WS
-      // Format: { asset_id, bids: [[price, size]], asks: [[price, size]], ... }
+      // Format: { event_type: 'book', asset_id, bids: [[price, size]], asks: [[price, size]], ... }
       if (data.asset_id) {
         const tokenId = String(data.asset_id);
         const marketInfo = tokenToMarketRef.current.get(tokenId);
-        
+
         if (marketInfo) {
           // Parse bids and asks
           let bestBid: number | null = null;
@@ -266,15 +284,15 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
           if (Array.isArray(data.bids) && data.bids.length > 0) {
             // Bids are sorted DESC, first is best
             const firstBid = data.bids[0];
-            bestBid = typeof firstBid === 'object' && firstBid.price 
-              ? parseFloat(firstBid.price) 
+            bestBid = typeof firstBid === "object" && firstBid.price
+              ? parseFloat(firstBid.price)
               : (Array.isArray(firstBid) ? parseFloat(firstBid[0]) : null);
           }
 
           if (Array.isArray(data.asks) && data.asks.length > 0) {
             // Asks are sorted ASC, first is best
             const firstAsk = data.asks[0];
-            bestAsk = typeof firstAsk === 'object' && firstAsk.price
+            bestAsk = typeof firstAsk === "object" && firstAsk.price
               ? parseFloat(firstAsk.price)
               : (Array.isArray(firstAsk) ? parseFloat(firstAsk[0]) : null);
           }
@@ -310,7 +328,7 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
 
           // Calculate latency if timestamp provided
           if (data.timestamp) {
-            const serverTs = typeof data.timestamp === 'number' ? data.timestamp : Date.parse(data.timestamp);
+            const serverTs = typeof data.timestamp === "number" ? data.timestamp : Date.parse(data.timestamp);
             if (!isNaN(serverTs)) {
               setLatencyMs(now - serverTs);
             }
@@ -367,16 +385,11 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
       console.log("[CLOB WS] Connected!");
       setIsConnected(true);
       setConnectionState("connected");
-      
+
       // Subscribe to all tokens
       subscribeToTokens(ws, tokenIds);
 
-      // Keep-alive ping every 30s
-      pingIntervalRef.current = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({ type: "ping" }));
-        }
-      }, 30000);
+      // Keep-alive is handled by the server-side proxy (sends plain "PING").
     };
 
     ws.onmessage = handleWsMessage;
@@ -390,7 +403,7 @@ export function usePolymarketRealtime(enabled: boolean = true): UsePolymarketRea
       console.log("[CLOB WS] Closed:", event.code, event.reason);
       setIsConnected(false);
       setConnectionState("disconnected");
-      
+
       if (pingIntervalRef.current) {
         clearInterval(pingIntervalRef.current);
         pingIntervalRef.current = null;
