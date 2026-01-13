@@ -91,7 +91,9 @@ export async function saveSignal(signal: Signal): Promise<string | null> {
  */
 export async function loadV29Config(): Promise<{
   enabled: boolean;
-  min_delta_usd: number;
+  tick_delta_usd: number;
+  delta_threshold: number;
+  min_share_price: number;
   max_share_price: number;
   trade_size_usd: number;
   max_shares: number;
@@ -122,7 +124,9 @@ export async function loadV29Config(): Promise<{
     
     return {
       enabled: data.enabled,
-      min_delta_usd: Number(data.min_delta_usd),
+      tick_delta_usd: Number(data.tick_delta_usd ?? data.min_delta_usd ?? 6),
+      delta_threshold: Number(data.delta_threshold ?? 70),
+      min_share_price: Number(data.min_share_price ?? 0.30),
       max_share_price: Number(data.max_share_price),
       trade_size_usd: Number(data.trade_size_usd),
       max_shares: Number(data.max_shares),
