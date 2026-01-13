@@ -340,24 +340,23 @@ async function executeTrade(
     return;
   }
   
-  // Calculate price with buffer
+  // ========================================
+  // PRICE RANGE CHECK - BLOCK if ask is outside min/max
+  // Do NOT place order at max_share_price if ask is higher!
+  // ========================================
+  if (bestAsk < config.min_share_price) {
+    log(`🚫 BLOCKED: ${asset} ${direction} ask ${(bestAsk * 100).toFixed(1)}¢ < min ${(config.min_share_price * 100).toFixed(1)}¢`, 'order', asset, { bestAsk, min: config.min_share_price, reason: 'ask_too_low' });
+    return;
+  }
+  
+  if (bestAsk > config.max_share_price) {
+    log(`🚫 BLOCKED: ${asset} ${direction} ask ${(bestAsk * 100).toFixed(1)}¢ > max ${(config.max_share_price * 100).toFixed(1)}¢`, 'order', asset, { bestAsk, max: config.max_share_price, reason: 'ask_too_high' });
+    return;
+  }
+  
+  // Calculate price with buffer (now safe since ask is within range)
   const priceBuffer = config.price_buffer_cents / 100;
-  const buyPrice = Math.min(
-    Math.ceil((bestAsk + priceBuffer) * 100) / 100,
-    config.max_share_price
-  );
-  
-  // Skip if price too low (min_share_price check)
-  if (buyPrice < config.min_share_price) {
-    log(`⚠️ Price ${(buyPrice * 100).toFixed(1)}¢ < min ${(config.min_share_price * 100).toFixed(1)}¢`);
-    return;
-  }
-  
-  // Skip if price too high
-  if (buyPrice > config.max_share_price) {
-    log(`⚠️ Price ${(buyPrice * 100).toFixed(1)}¢ > max ${(config.max_share_price * 100).toFixed(1)}¢`);
-    return;
-  }
+  const buyPrice = Math.ceil((bestAsk + priceBuffer) * 100) / 100;
   
   // Calculate shares
   const rawShares = config.trade_size_usd / buyPrice;
