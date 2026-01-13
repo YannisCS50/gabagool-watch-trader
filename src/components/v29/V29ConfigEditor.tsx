@@ -25,20 +25,17 @@ interface V29Config {
   max_shares: number;
   price_buffer_cents: number;
   assets: string[];
-  // Take Profit
-  tp_enabled: boolean;
-  tp_cents: number;
-  // Stop Loss
-  sl_enabled: boolean;
-  sl_cents: number;
+  // Trailing stop with minimum profit
+  min_profit_cents: number;
+  trailing_trigger_cents: number;
+  trailing_distance_cents: number;
+  emergency_sl_cents: number;
   // Timeout
   timeout_ms: number;
   // Polling
   binance_poll_ms: number;
   orderbook_poll_ms: number;
   order_cooldown_ms: number;
-  // Legacy field (not used in new logic)
-  min_delta_usd: number;
 }
 
 const DEFAULT_CONFIG: V29Config = {
@@ -52,15 +49,14 @@ const DEFAULT_CONFIG: V29Config = {
   max_shares: 10,
   price_buffer_cents: 1,
   assets: ['BTC', 'ETH', 'SOL', 'XRP'],
-  tp_enabled: true,
-  tp_cents: 4,
-  sl_enabled: true,
-  sl_cents: 3,
+  min_profit_cents: 4,
+  trailing_trigger_cents: 7,
+  trailing_distance_cents: 3,
+  emergency_sl_cents: 10,
   timeout_ms: 30000,
   binance_poll_ms: 100,
   orderbook_poll_ms: 2000,
   order_cooldown_ms: 3000,
-  min_delta_usd: 6,
 };
 
 const AVAILABLE_ASSETS = ['BTC', 'ETH', 'SOL', 'XRP'];
@@ -142,10 +138,10 @@ export function V29ConfigEditor() {
           max_shares: config.max_shares,
           price_buffer_cents: config.price_buffer_cents,
           assets: config.assets,
-          tp_enabled: config.tp_enabled,
-          tp_cents: config.tp_cents,
-          sl_enabled: config.sl_enabled,
-          sl_cents: config.sl_cents,
+          min_profit_cents: config.min_profit_cents,
+          trailing_trigger_cents: config.trailing_trigger_cents,
+          trailing_distance_cents: config.trailing_distance_cents,
+          emergency_sl_cents: config.emergency_sl_cents,
           timeout_ms: config.timeout_ms,
           binance_poll_ms: config.binance_poll_ms,
           orderbook_poll_ms: config.orderbook_poll_ms,
@@ -367,51 +363,74 @@ export function V29ConfigEditor() {
 
         <Separator />
 
-        {/* Take Profit & Stop Loss */}
+        {/* Trailing Stop Exit Settings */}
         <div className="space-y-4">
           <h4 className="font-medium text-sm text-muted-foreground flex items-center gap-2">
             <Shield className="h-4 w-4" />
-            Exit Instellingen
+            Exit Instellingen (Trailing Stop)
           </h4>
+          
+          {/* Explanation */}
+          <div className="p-3 rounded-lg bg-green-500/10 border border-green-500/20 text-sm">
+            <p className="font-medium text-green-400 mb-2">Trailing Stop Logica:</p>
+            <ul className="text-xs text-muted-foreground space-y-1">
+              <li>• <strong>Min Profit</strong>: Gegarandeerde minimum winst (altijd {config.min_profit_cents}¢)</li>
+              <li>• Profit stijgt naar <strong>≥{config.trailing_trigger_cents}¢</strong> → trailing actief</li>
+              <li>• Daalt <strong>{config.trailing_distance_cents}¢</strong> vanaf peak → verkoop</li>
+              <li>• Noodstop bij <strong>-{config.emergency_sl_cents}¢</strong> verlies</li>
+            </ul>
+          </div>
           
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-3 p-3 rounded-lg bg-green-500/5 border border-green-500/20">
-              <div className="flex items-center justify-between">
-                <Label className="text-sm text-green-400">Take Profit</Label>
-                <Switch
-                  checked={config.tp_enabled}
-                  onCheckedChange={(v) => updateField('tp_enabled', v)}
-                />
-              </div>
+              <Label className="text-sm text-green-400">Min Profit (¢)</Label>
               <Input
                 type="number"
-                value={config.tp_cents}
-                onChange={(e) => updateField('tp_cents', parseFloat(e.target.value) || 0)}
-                disabled={!config.tp_enabled}
+                value={config.min_profit_cents}
+                onChange={(e) => updateField('min_profit_cents', parseFloat(e.target.value) || 0)}
                 className="h-9"
               />
               <p className="text-xs text-muted-foreground">
-                Verkoop als prijs +{config.tp_cents}¢ stijgt
+                Gegarandeerde minimale winst per share
+              </p>
+            </div>
+            
+            <div className="space-y-3 p-3 rounded-lg bg-blue-500/5 border border-blue-500/20">
+              <Label className="text-sm text-blue-400">Trailing Trigger (¢)</Label>
+              <Input
+                type="number"
+                value={config.trailing_trigger_cents}
+                onChange={(e) => updateField('trailing_trigger_cents', parseFloat(e.target.value) || 0)}
+                className="h-9"
+              />
+              <p className="text-xs text-muted-foreground">
+                Start trailing stop bij ≥{config.trailing_trigger_cents}¢ winst
+              </p>
+            </div>
+            
+            <div className="space-y-3 p-3 rounded-lg bg-amber-500/5 border border-amber-500/20">
+              <Label className="text-sm text-amber-400">Trailing Distance (¢)</Label>
+              <Input
+                type="number"
+                value={config.trailing_distance_cents}
+                onChange={(e) => updateField('trailing_distance_cents', parseFloat(e.target.value) || 0)}
+                className="h-9"
+              />
+              <p className="text-xs text-muted-foreground">
+                Verkoop als profit {config.trailing_distance_cents}¢ daalt van peak
               </p>
             </div>
             
             <div className="space-y-3 p-3 rounded-lg bg-red-500/5 border border-red-500/20">
-              <div className="flex items-center justify-between">
-                <Label className="text-sm text-red-400">Stop Loss</Label>
-                <Switch
-                  checked={config.sl_enabled}
-                  onCheckedChange={(v) => updateField('sl_enabled', v)}
-                />
-              </div>
+              <Label className="text-sm text-red-400">Emergency Stop Loss (¢)</Label>
               <Input
                 type="number"
-                value={config.sl_cents}
-                onChange={(e) => updateField('sl_cents', parseFloat(e.target.value) || 0)}
-                disabled={!config.sl_enabled}
+                value={config.emergency_sl_cents}
+                onChange={(e) => updateField('emergency_sl_cents', parseFloat(e.target.value) || 0)}
                 className="h-9"
               />
               <p className="text-xs text-muted-foreground">
-                Verkoop als prijs -{config.sl_cents}¢ daalt
+                Noodstop bij -{config.emergency_sl_cents}¢ (met verlies)
               </p>
             </div>
           </div>
@@ -425,7 +444,7 @@ export function V29ConfigEditor() {
               className="h-9"
             />
             <p className="text-xs text-muted-foreground">
-              Auto-close positie na {(config.timeout_ms / 1000).toFixed(0)}s
+              Auto-close positie na {(config.timeout_ms / 1000).toFixed(0)}s (verkoopt op min_profit indien mogelijk)
             </p>
           </div>
         </div>
