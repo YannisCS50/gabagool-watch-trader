@@ -342,9 +342,33 @@ function getPreSignedOrder(
   return null;
 }
 
+// ============================================
+// AGGRESSIVE FILL CONFIGURATION
+// ============================================
+
+const AGGRESSIVE_FILL_CONFIG = {
+  // Enable aggressive fill mode (sequential limit orders)
+  enabled: true,
+  // How long to wait for fill before trying next price level (ms)
+  fillCheckDelayMs: 40,
+  // Max price steps to try (starting from best ask going down)
+  maxPriceSteps: 10,
+  // Price step size (1¢)
+  priceStepCents: 0.01,
+  // Total timeout for aggressive fill attempt (ms)
+  totalTimeoutMs: 500,
+};
+
 /**
- * Place a BUY order - uses pre-signed cache for speed
- * Falls back to real-time signing if no cache hit
+ * Place a BUY order - uses aggressive fill mode for faster execution
+ * 
+ * AGGRESSIVE FILL MODE:
+ * 1. Post limit order at best ask
+ * 2. Wait 40ms, check if filled
+ * 3. If not filled: CANCEL, post at best ask - 1¢
+ * 4. Repeat until filled or max steps reached
+ * 
+ * This avoids the 500ms market order delay while ensuring only 1 order is live at a time
  */
 export async function placeBuyOrder(
   tokenId: string,
@@ -357,36 +381,160 @@ export async function placeBuyOrder(
   
   try {
     const client = await getClient();
-    const roundedPrice = Math.round(price * 100) / 100;
     const roundedShares = Math.floor(shares);
     
     if (roundedShares < 1) {
       return { success: false, error: 'Shares < 1', latencyMs: Date.now() - start };
     }
     
+    // If aggressive fill is disabled, use simple order
+    if (!AGGRESSIVE_FILL_CONFIG.enabled) {
+      return await placeSingleBuyOrder(client, tokenId, price, roundedShares, asset, direction, start);
+    }
+    
+    // AGGRESSIVE FILL MODE
+    log(`🚀 Aggressive fill: ${asset} ${direction} ${roundedShares} shares starting @ ${(price * 100).toFixed(1)}¢`);
+    
+    let currentPrice = Math.round(price * 100) / 100;
+    const minPrice = 0.01;
+    let attempts = 0;
+    
+    while (attempts < AGGRESSIVE_FILL_CONFIG.maxPriceSteps && 
+           currentPrice >= minPrice && 
+           (Date.now() - start) < AGGRESSIVE_FILL_CONFIG.totalTimeoutMs) {
+      
+      attempts++;
+      
+      // Get pre-signed order from cache if available
+      let signedOrder: SignedOrder;
+      let usedCache = false;
+      
+      if (asset && direction) {
+        const cached = getPreSignedOrder(asset, direction, currentPrice, roundedShares);
+        if (cached) {
+          signedOrder = cached.signedOrder;
+          usedCache = true;
+        }
+      }
+      
+      // Fallback to real-time signing
+      if (!usedCache) {
+        signedOrder = await client.createOrder(
+          { tokenID: tokenId, price: currentPrice, size: roundedShares, side: Side.BUY },
+          { tickSize: '0.01', negRisk: false }
+        );
+      }
+      
+      // POST the order
+      const response = await client.postOrder(signedOrder!, OrderType.GTC);
+      
+      if (!response.success) {
+        log(`⚠️ Order failed @ ${(currentPrice * 100).toFixed(1)}¢: ${response.errorMsg}`);
+        currentPrice -= AGGRESSIVE_FILL_CONFIG.priceStepCents;
+        continue;
+      }
+      
+      const orderId = response.orderID;
+      if (!orderId) {
+        log(`⚠️ No order ID returned`);
+        currentPrice -= AGGRESSIVE_FILL_CONFIG.priceStepCents;
+        continue;
+      }
+      
+      // Wait briefly for fill
+      await new Promise(resolve => setTimeout(resolve, AGGRESSIVE_FILL_CONFIG.fillCheckDelayMs));
+      
+      // Check if filled
+      const status = await getOrderStatus(orderId);
+      
+      if (status.filled || status.filledSize > 0) {
+        // SUCCESS! We got a fill
+        const latencyMs = Date.now() - start;
+        log(`✅ Aggressive fill SUCCESS: ${orderId} @ ${(currentPrice * 100).toFixed(1)}¢ (${latencyMs}ms, ${attempts} attempts, cache=${usedCache})`);
+        return {
+          success: true,
+          orderId,
+          avgPrice: currentPrice,
+          filledSize: status.filledSize || roundedShares,
+          latencyMs,
+        };
+      }
+      
+      // Not filled - cancel and try lower price
+      log(`⏳ Not filled @ ${(currentPrice * 100).toFixed(1)}¢ - cancelling and retrying...`);
+      
+      try {
+        await client.cancelOrder(orderId);
+      } catch (cancelErr) {
+        // Cancel failed - order might have filled in the meantime
+        const recheckStatus = await getOrderStatus(orderId);
+        if (recheckStatus.filled || recheckStatus.filledSize > 0) {
+          const latencyMs = Date.now() - start;
+          log(`✅ Order filled during cancel: ${orderId} (${latencyMs}ms)`);
+          return {
+            success: true,
+            orderId,
+            avgPrice: currentPrice,
+            filledSize: recheckStatus.filledSize || roundedShares,
+            latencyMs,
+          };
+        }
+      }
+      
+      // Move to next price level
+      currentPrice -= AGGRESSIVE_FILL_CONFIG.priceStepCents;
+    }
+    
+    // Aggressive fill exhausted - try one final order at current price
+    log(`⚠️ Aggressive fill exhausted after ${attempts} attempts, final attempt @ ${(currentPrice * 100).toFixed(1)}¢`);
+    return await placeSingleBuyOrder(client, tokenId, Math.max(currentPrice, minPrice), roundedShares, asset, direction, start);
+    
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(`❌ Order error: ${msg}`);
+    return { success: false, error: msg, latencyMs: Date.now() - start };
+  }
+}
+
+/**
+ * Place a single limit buy order (original simple logic)
+ */
+async function placeSingleBuyOrder(
+  client: ClobClient,
+  tokenId: string,
+  price: number,
+  shares: number,
+  asset?: Asset,
+  direction?: 'UP' | 'DOWN',
+  startTime?: number
+): Promise<OrderResult> {
+  const start = startTime ?? Date.now();
+  const roundedPrice = Math.round(price * 100) / 100;
+  
+  try {
     let signedOrder: SignedOrder;
     let usedCache = false;
     
     // Try to get pre-signed order from cache
     if (asset && direction) {
-      const cached = getPreSignedOrder(asset, direction, roundedPrice, roundedShares);
+      const cached = getPreSignedOrder(asset, direction, roundedPrice, shares);
       if (cached) {
         signedOrder = cached.signedOrder;
         usedCache = true;
-        log(`⚡ Cache hit: ${asset} ${direction} ${roundedShares}@${roundedPrice}`);
+        log(`⚡ Cache hit: ${asset} ${direction} ${shares}@${roundedPrice}`);
       }
     }
     
     // Fallback to real-time signing
     if (!usedCache) {
-      log(`📝 Real-time sign: ${roundedShares}@${roundedPrice}`);
+      log(`📝 Real-time sign: ${shares}@${roundedPrice}`);
       signedOrder = await client.createOrder(
-        { tokenID: tokenId, price: roundedPrice, size: roundedShares, side: Side.BUY },
+        { tokenID: tokenId, price: roundedPrice, size: shares, side: Side.BUY },
         { tickSize: '0.01', negRisk: false }
       );
     }
     
-    // POST the order (this is the only network call if cached)
+    // POST the order
     const response = await client.postOrder(signedOrder!, OrderType.GTC);
     
     const latencyMs = Date.now() - start;
@@ -397,7 +545,7 @@ export async function placeBuyOrder(
         success: true,
         orderId: response.orderID,
         avgPrice: roundedPrice,
-        filledSize: roundedShares,
+        filledSize: shares,
         latencyMs,
       };
     } else {
