@@ -5171,6 +5171,135 @@ export type Database = {
           },
         ]
       }
+      v29_config: {
+        Row: {
+          assets: string[]
+          binance_poll_ms: number
+          created_at: string
+          enabled: boolean
+          id: string
+          max_share_price: number
+          max_shares: number
+          min_delta_usd: number
+          order_cooldown_ms: number
+          orderbook_poll_ms: number
+          price_buffer_cents: number
+          sl_cents: number
+          sl_enabled: boolean
+          timeout_ms: number
+          tp_cents: number
+          tp_enabled: boolean
+          trade_size_usd: number
+          updated_at: string
+        }
+        Insert: {
+          assets?: string[]
+          binance_poll_ms?: number
+          created_at?: string
+          enabled?: boolean
+          id?: string
+          max_share_price?: number
+          max_shares?: number
+          min_delta_usd?: number
+          order_cooldown_ms?: number
+          orderbook_poll_ms?: number
+          price_buffer_cents?: number
+          sl_cents?: number
+          sl_enabled?: boolean
+          timeout_ms?: number
+          tp_cents?: number
+          tp_enabled?: boolean
+          trade_size_usd?: number
+          updated_at?: string
+        }
+        Update: {
+          assets?: string[]
+          binance_poll_ms?: number
+          created_at?: string
+          enabled?: boolean
+          id?: string
+          max_share_price?: number
+          max_shares?: number
+          min_delta_usd?: number
+          order_cooldown_ms?: number
+          orderbook_poll_ms?: number
+          price_buffer_cents?: number
+          sl_cents?: number
+          sl_enabled?: boolean
+          timeout_ms?: number
+          tp_cents?: number
+          tp_enabled?: boolean
+          trade_size_usd?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      v29_signals: {
+        Row: {
+          asset: string
+          binance_price: number
+          created_at: string
+          delta_usd: number | null
+          direction: string
+          entry_price: number | null
+          exit_price: number | null
+          exit_reason: string | null
+          fill_ts: number | null
+          id: string
+          market_slug: string | null
+          net_pnl: number | null
+          run_id: string
+          sell_ts: number | null
+          share_price: number | null
+          shares: number | null
+          signal_ts: number
+          status: string
+          strike_price: number | null
+        }
+        Insert: {
+          asset: string
+          binance_price: number
+          created_at?: string
+          delta_usd?: number | null
+          direction: string
+          entry_price?: number | null
+          exit_price?: number | null
+          exit_reason?: string | null
+          fill_ts?: number | null
+          id?: string
+          market_slug?: string | null
+          net_pnl?: number | null
+          run_id: string
+          sell_ts?: number | null
+          share_price?: number | null
+          shares?: number | null
+          signal_ts: number
+          status?: string
+          strike_price?: number | null
+        }
+        Update: {
+          asset?: string
+          binance_price?: number
+          created_at?: string
+          delta_usd?: number | null
+          direction?: string
+          entry_price?: number | null
+          exit_price?: number | null
+          exit_reason?: string | null
+          fill_ts?: number | null
+          id?: string
+          market_slug?: string | null
+          net_pnl?: number | null
+          run_id?: string
+          sell_ts?: number | null
+          share_price?: number | null
+          shares?: number | null
+          signal_ts?: number
+          status?: string
+          strike_price?: number | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       v_daily_pnl_cumulative: {

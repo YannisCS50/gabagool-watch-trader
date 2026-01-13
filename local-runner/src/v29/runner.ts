@@ -14,7 +14,7 @@ import { Asset, V29Config, DEFAULT_CONFIG } from './config.js';
 import type { MarketInfo, PriceState, Signal, Position } from './types.js';
 import { startBinanceFeed, stopBinanceFeed } from './binance.js';
 import { fetchMarketOrderbook, fetchAllOrderbooks } from './orderbook.js';
-import { initDb, saveSignal, loadConfigFromDb, sendHeartbeat, getDb } from './db.js';
+import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb } from './db.js';
 import { placeBuyOrder, placeSellOrder, getBalance } from './trading.js';
 import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
@@ -432,11 +432,35 @@ async function main(): Promise<void> {
   // Init DB
   initDb();
   
-  // Load config from DB
-  const dbConfig = await loadConfigFromDb();
+  // Load config from DB (v29_config table)
+  const dbConfig = await loadV29Config();
   if (dbConfig) {
-    config = { ...config, ...dbConfig as Partial<V29Config> };
-    log('Loaded config from DB');
+    config = {
+      ...config,
+      enabled: dbConfig.enabled,
+      min_delta_usd: dbConfig.min_delta_usd,
+      max_share_price: dbConfig.max_share_price,
+      trade_size_usd: dbConfig.trade_size_usd,
+      max_shares: dbConfig.max_shares,
+      price_buffer_cents: dbConfig.price_buffer_cents,
+      assets: dbConfig.assets as Asset[],
+      tp_enabled: dbConfig.tp_enabled,
+      tp_cents: dbConfig.tp_cents,
+      sl_enabled: dbConfig.sl_enabled,
+      sl_cents: dbConfig.sl_cents,
+      timeout_ms: dbConfig.timeout_ms,
+      binance_poll_ms: dbConfig.binance_poll_ms,
+      orderbook_poll_ms: dbConfig.orderbook_poll_ms,
+      order_cooldown_ms: dbConfig.order_cooldown_ms,
+    };
+    log('✅ Loaded config from v29_config table');
+  } else {
+    log('⚠️ Using default config (no v29_config found)');
+  }
+  
+  if (!config.enabled) {
+    log('❌ Trading is DISABLED in config. Exiting.');
+    process.exit(0);
   }
   
   log(`Config: min_delta=$${config.min_delta_usd} | max_price=${(config.max_share_price * 100).toFixed(0)}¢ | trade_size=$${config.trade_size_usd}`);
