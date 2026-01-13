@@ -16,7 +16,7 @@ import { startBinanceFeed, stopBinanceFeed } from './binance.js';
 import { fetchMarketOrderbook, fetchAllOrderbooks } from './orderbook.js';
 import { initDb, saveSignal, loadConfigFromDb, sendHeartbeat, getDb } from './db.js';
 import { placeBuyOrder, placeSellOrder, getBalance } from './trading.js';
-import { checkVpn } from '../vpn-check.js';
+import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
 
 // ============================================
@@ -410,9 +410,11 @@ async function main(): Promise<void> {
   log(`Run ID: ${RUN_ID}`);
   
   // Check VPN
-  const vpnOk = await checkVpn();
-  if (!vpnOk) {
-    logError('VPN check failed - Cloudflare may block requests');
+  const vpnResult = await verifyVpnConnection();
+  if (!vpnResult.passed) {
+    logError(`VPN check failed: ${vpnResult.error} - Cloudflare may block requests`);
+  } else {
+    log(`✅ VPN OK: ${vpnResult.ip} (${vpnResult.provider})`);
   }
   
   // Test Polymarket connection
