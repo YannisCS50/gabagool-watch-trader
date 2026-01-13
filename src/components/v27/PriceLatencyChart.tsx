@@ -71,10 +71,10 @@ export function PriceLatencyChart() {
 
   const [chartData, setChartData] = useState<{ binanceData: any[]; chainlinkData: any[] }>({ binanceData: [], chainlinkData: [] });
 
-  // Get current share prices from WebSocket CLOB
+  // Get current share prices from WebSocket CLOB - use orderbooks directly for reactivity
   const clobPrices = useMemo(() => {
-    const upBook = clob.getOrderbook(selectedAsset, 'up');
-    const downBook = clob.getOrderbook(selectedAsset, 'down');
+    const upBook = clob.orderbooks.get(selectedAsset)?.up;
+    const downBook = clob.orderbooks.get(selectedAsset)?.down;
     return {
       upBid: upBook?.bid ?? null,
       upAsk: upBook?.ask ?? null,
@@ -82,17 +82,21 @@ export function PriceLatencyChart() {
       downAsk: downBook?.ask ?? null,
       lastUpdate: Math.max(upBook?.timestamp ?? 0, downBook?.timestamp ?? 0),
     };
-  }, [clob, selectedAsset]);
+  }, [clob.orderbooks, selectedAsset]);
 
-  // Track share price history at high frequency (every 100ms if changed)
+  // Track share price history at high frequency
   useEffect(() => {
     const now = Date.now();
-    // Only add if we have data and it's newer than last update
-    if (clobPrices.lastUpdate > lastClobUpdateRef.current) {
+    // Only add if we have valid data and it's newer than last update
+    if (clobPrices.lastUpdate > 0 && clobPrices.lastUpdate > lastClobUpdateRef.current) {
       lastClobUpdateRef.current = clobPrices.lastUpdate;
       setClobPriceHistory(prev => {
         const newEntry = { time: now, upAsk: clobPrices.upAsk, downAsk: clobPrices.downAsk };
-        return [...prev, newEntry].slice(-1200); // Keep more history
+        // Log for debugging
+        if (prev.length === 0 || prev.length % 50 === 0) {
+          console.log(`[PriceLatency] CLOB history: ${prev.length + 1} entries, upAsk=${clobPrices.upAsk}, downAsk=${clobPrices.downAsk}`);
+        }
+        return [...prev, newEntry].slice(-1200);
       });
     }
   }, [clobPrices]);
