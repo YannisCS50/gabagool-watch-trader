@@ -32,10 +32,10 @@ const markets = new Map<Asset, MarketInfo>();
 
 // Price state by asset
 const priceState: Record<Asset, PriceState> = {
-  BTC: { binance: null, upBestAsk: null, upBestBid: null, downBestAsk: null, downBestBid: null, lastUpdate: 0 },
-  ETH: { binance: null, upBestAsk: null, upBestBid: null, downBestAsk: null, downBestBid: null, lastUpdate: 0 },
-  SOL: { binance: null, upBestAsk: null, upBestBid: null, downBestAsk: null, downBestBid: null, lastUpdate: 0 },
-  XRP: { binance: null, upBestAsk: null, upBestBid: null, downBestAsk: null, downBestBid: null, lastUpdate: 0 },
+  BTC: { binance: null, chainlink: null, upBestAsk: null, upBestBid: null, downBestAsk: null, downBestBid: null, lastUpdate: 0 },
+  ETH: { binance: null, chainlink: null, upBestAsk: null, upBestBid: null, downBestAsk: null, downBestBid: null, lastUpdate: 0 },
+  SOL: { binance: null, chainlink: null, upBestAsk: null, upBestBid: null, downBestAsk: null, downBestBid: null, lastUpdate: 0 },
+  XRP: { binance: null, chainlink: null, upBestAsk: null, upBestBid: null, downBestAsk: null, downBestBid: null, lastUpdate: 0 },
 };
 
 // Previous tick price for delta calculation
@@ -115,6 +115,64 @@ async function fetchMarkets(): Promise<void> {
 }
 
 // ============================================
+// CHAINLINK PRICE FETCHING
+// ============================================
+
+// Chainlink feed addresses on Polygon (mainnet)
+const CHAINLINK_FEEDS: Record<Asset, string> = {
+  BTC: '0xc907E116054Ad103354f2D350FD2514433D57F6f', // BTC/USD
+  ETH: '0xF9680D99D6C9589e2a93a78A04A279e509205945', // ETH/USD
+  SOL: '0x10C8264C0935b3B9870013e057f330Ff3e9C56dC', // SOL/USD
+  XRP: '0x785ba89291f676b5386652eB12b30cF361020694', // XRP/USD
+};
+
+async function fetchChainlinkPrices(): Promise<void> {
+  // Use Polygon RPC to fetch Chainlink prices
+  const rpcUrl = 'https://polygon-rpc.com';
+  
+  for (const asset of config.assets) {
+    try {
+      const feedAddress = CHAINLINK_FEEDS[asset];
+      if (!feedAddress) continue;
+      
+      // Call latestRoundData() on Chainlink feed
+      // Function signature: 0xfeaf968c
+      const response = await fetch(rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method: 'eth_call',
+          params: [{
+            to: feedAddress,
+            data: '0xfeaf968c', // latestRoundData()
+          }, 'latest'],
+          id: 1,
+        }),
+      });
+      
+      const result = await response.json();
+      if (result.result && result.result !== '0x') {
+        // Parse the response - answer is at offset 32 bytes (index 1)
+        // Each value is 32 bytes = 64 hex chars
+        const hex = result.result.slice(2); // Remove 0x
+        const answerHex = hex.slice(64, 128); // Second 32-byte slot
+        const rawPrice = BigInt('0x' + answerHex);
+        
+        // Chainlink uses 8 decimals for most USD feeds
+        const price = Number(rawPrice) / 1e8;
+        
+        if (price > 0) {
+          priceState[asset].chainlink = price;
+        }
+      }
+    } catch (err) {
+      // Silently continue - Chainlink fetch failure shouldn't stop the bot
+    }
+  }
+}
+
+// ============================================
 // PRICE HANDLING
 // ============================================
 
@@ -151,11 +209,18 @@ function handleBinancePrice(asset: Asset, price: number): void {
     return;
   }
   
+  // Get Chainlink price for delta calculation (fallback to Binance if not available)
+  const chainlinkPrice = priceState[asset].chainlink;
+  const actualPrice = chainlinkPrice ?? price; // Use Chainlink, fallback to Binance
+  const priceSource = chainlinkPrice ? 'chainlink' : 'binance';
+  
   // Calculate actual-to-strike delta for direction logic
-  // delta = actual (binance/chainlink) - strike
+  // delta = chainlink price - strike
   // positive = actual price is ABOVE strike (likely to settle UP)
   // negative = actual price is BELOW strike (likely to settle DOWN)
-  const priceVsStrikeDelta = price - market.strikePrice;
+  const priceVsStrikeDelta = actualPrice - market.strikePrice;
+  
+  log(`📊 ${asset} delta calc: ${priceSource}=$${actualPrice.toFixed(2)} vs strike=$${market.strikePrice.toFixed(0)} → Δ$${priceVsStrikeDelta.toFixed(0)}`);
   
   // Determine direction based on tick movement
   const tickDirection: 'UP' | 'DOWN' = tickDelta > 0 ? 'UP' : 'DOWN';
@@ -516,6 +581,10 @@ async function main(): Promise<void> {
   // Initial orderbook fetch
   await pollOrderbooks();
   
+  // Initial Chainlink price fetch
+  await fetchChainlinkPrices();
+  log('✅ Initial Chainlink prices fetched');
+  
   // Start Binance feed
   startBinanceFeed(config.assets, handleBinancePrice);
   log('✅ Binance price feed started');
@@ -526,6 +595,11 @@ async function main(): Promise<void> {
   setInterval(() => {
     void pollOrderbooks();
   }, config.orderbook_poll_ms);
+  
+  // Chainlink price polling (every 2 seconds - faster than orderbook)
+  setInterval(() => {
+    void fetchChainlinkPrices();
+  }, 2000);
   
   // Market refresh (every 5 minutes)
   setInterval(() => {

@@ -15,6 +15,7 @@ export interface MarketInfo {
 
 export interface PriceState {
   binance: number | null;
+  chainlink: number | null; // Actual price from Chainlink oracle (for delta calculation)
   upBestAsk: number | null;
   upBestBid: number | null;
   downBestAsk: number | null;
