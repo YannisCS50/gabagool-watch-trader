@@ -256,6 +256,32 @@ const Index = () => {
           </div>
         </Link>
 
+        {/* V28 Live Dashboard Link */}
+        <Link to="/v28" className="block">
+          <div className="relative overflow-hidden rounded-xl border border-yellow-500/30 bg-gradient-to-r from-yellow-500/10 via-yellow-500/5 to-transparent hover:from-yellow-500/20 hover:border-yellow-500/50 p-4 transition-all group cursor-pointer">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-lg bg-yellow-500/20 flex items-center justify-center">
+                  <Zap className="w-5 h-5 text-yellow-400" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-lg flex items-center gap-2">
+                    V28 Live Trading
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400 font-mono flex items-center gap-1">
+                      <CheckCircle2 className="w-3 h-3" />
+                      LIVE
+                    </span>
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    Binance Delta Arbitrage • Real-time trades & latency
+                  </p>
+                </div>
+              </div>
+              <ArrowRight className="w-5 h-5 text-yellow-400 group-hover:translate-x-1 transition-transform" />
+            </div>
+          </div>
+        </Link>
+
         {/* Price Latency Analyzer Link */}
         <Link to="/price-latency" className="block">
           <div className="relative overflow-hidden rounded-xl border border-border/50 bg-gradient-to-r from-amber-500/10 via-amber-500/5 to-transparent hover:border-amber-500/30 p-4 transition-all group cursor-pointer">
