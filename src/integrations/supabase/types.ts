@@ -5177,22 +5177,22 @@ export type Database = {
           binance_poll_ms: number
           created_at: string
           delta_threshold: number | null
+          emergency_sl_cents: number | null
           enabled: boolean
           id: string
           max_share_price: number
           max_shares: number
           min_delta_usd: number
+          min_profit_cents: number | null
           min_share_price: number | null
           order_cooldown_ms: number
           orderbook_poll_ms: number
           price_buffer_cents: number
-          sl_cents: number
-          sl_enabled: boolean
           tick_delta_usd: number | null
           timeout_ms: number
-          tp_cents: number
-          tp_enabled: boolean
           trade_size_usd: number
+          trailing_distance_cents: number | null
+          trailing_trigger_cents: number | null
           updated_at: string
         }
         Insert: {
@@ -5200,22 +5200,22 @@ export type Database = {
           binance_poll_ms?: number
           created_at?: string
           delta_threshold?: number | null
+          emergency_sl_cents?: number | null
           enabled?: boolean
           id?: string
           max_share_price?: number
           max_shares?: number
           min_delta_usd?: number
+          min_profit_cents?: number | null
           min_share_price?: number | null
           order_cooldown_ms?: number
           orderbook_poll_ms?: number
           price_buffer_cents?: number
-          sl_cents?: number
-          sl_enabled?: boolean
           tick_delta_usd?: number | null
           timeout_ms?: number
-          tp_cents?: number
-          tp_enabled?: boolean
           trade_size_usd?: number
+          trailing_distance_cents?: number | null
+          trailing_trigger_cents?: number | null
           updated_at?: string
         }
         Update: {
@@ -5223,22 +5223,22 @@ export type Database = {
           binance_poll_ms?: number
           created_at?: string
           delta_threshold?: number | null
+          emergency_sl_cents?: number | null
           enabled?: boolean
           id?: string
           max_share_price?: number
           max_shares?: number
           min_delta_usd?: number
+          min_profit_cents?: number | null
           min_share_price?: number | null
           order_cooldown_ms?: number
           orderbook_poll_ms?: number
           price_buffer_cents?: number
-          sl_cents?: number
-          sl_enabled?: boolean
           tick_delta_usd?: number | null
           timeout_ms?: number
-          tp_cents?: number
-          tp_enabled?: boolean
           trade_size_usd?: number
+          trailing_distance_cents?: number | null
+          trailing_trigger_cents?: number | null
           updated_at?: string
         }
         Relationships: []
