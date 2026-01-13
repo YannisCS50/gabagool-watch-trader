@@ -15,7 +15,7 @@ import type { MarketInfo, PriceState, Signal, Position } from './types.js';
 import { startBinanceFeed, stopBinanceFeed } from './binance.js';
 import { startChainlinkFeed, stopChainlinkFeed, getChainlinkPrice } from './chainlink.js';
 import { fetchMarketOrderbook, fetchAllOrderbooks } from './orderbook.js';
-import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb } from './db.js';
+import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb, queueLog } from './db.js';
 import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache } from './trading.js';
 import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
@@ -60,14 +60,18 @@ const marketTimers: Record<Asset, NodeJS.Timeout | null> = { BTC: null, ETH: nul
 // LOGGING
 // ============================================
 
-function log(msg: string): void {
+function log(msg: string, category = 'system', asset?: string, data?: Record<string, unknown>): void {
   const ts = new Date().toISOString().slice(11, 23);
   console.log(`[${ts}] [V29] ${msg}`);
+  // Queue log to database
+  queueLog(RUN_ID, 'info', category, msg, asset, data);
 }
 
 function logError(msg: string, err?: unknown): void {
   const ts = new Date().toISOString().slice(11, 23);
   console.error(`[${ts}] [V29] ❌ ${msg}`, err ?? '');
+  // Queue error to database
+  queueLog(RUN_ID, 'error', 'error', msg, undefined, err ? { error: String(err) } : undefined);
 }
 
 // ============================================
@@ -187,10 +191,10 @@ function scheduleMarketRefresh(asset: Asset, endTimeMs: number): void {
     return;
   }
   
-  log(`⏰ ${asset} timer: refresh in ${Math.floor(refreshIn / 1000)}s (market ends in ${Math.floor(timeUntilEnd / 1000)}s)`);
+  log(`⏰ ${asset} timer: refresh in ${Math.floor(refreshIn / 1000)}s (market ends in ${Math.floor(timeUntilEnd / 1000)}s)`, 'market', asset);
   
   marketTimers[asset] = setTimeout(() => {
-    log(`🔄 ${asset} market expiring NOW → fetching next market`);
+    log(`🔄 ${asset} market expiring NOW → fetching next market`, 'market', asset);
     void fetchMarkets();
   }, refreshIn);
 }
@@ -200,8 +204,13 @@ function scheduleMarketRefresh(asset: Asset, endTimeMs: number): void {
 // ============================================
 
 function handleChainlinkPrice(asset: Asset, price: number): void {
+  const prev = priceState[asset].chainlink;
   priceState[asset].chainlink = price;
-  log(`📡 ${asset} chainlink: $${price.toFixed(2)}`);
+  
+  // Only log if price changed significantly
+  if (!prev || Math.abs(price - prev) > 0.5) {
+    queueLog(RUN_ID, 'info', 'price', `${asset} chainlink $${price.toFixed(2)}`, asset, { source: 'chainlink', price });
+  }
 }
 
 // ============================================
@@ -228,7 +237,7 @@ function handleBinancePrice(asset: Asset, price: number): void {
   
   // Log significant deltas (> 50% threshold)
   if (Math.abs(tickDelta) > config.tick_delta_usd * 0.5) {
-    log(`📈 ${asset} tick Δ$${tickDelta > 0 ? '+' : ''}${tickDelta.toFixed(2)} / $${config.tick_delta_usd} threshold`);
+    queueLog(RUN_ID, 'info', 'price', `${asset} tick Δ$${tickDelta > 0 ? '+' : ''}${tickDelta.toFixed(2)}`, asset, { tickDelta, threshold: config.tick_delta_usd, binancePrice: price });
   }
   
   // Check if tick delta exceeds threshold (e.g., $6 price move)
@@ -280,7 +289,7 @@ function handleBinancePrice(asset: Asset, price: number): void {
     return;
   }
   
-  log(`🎯 TRIGGER: ${asset} ${tickDirection} | tick Δ$${tickDelta.toFixed(2)} | price vs strike: $${priceVsStrikeDelta.toFixed(0)} | allowed: ${allowedDirection}`);
+  log(`🎯 TRIGGER: ${asset} ${tickDirection} | tick Δ$${tickDelta.toFixed(2)} | price vs strike: $${priceVsStrikeDelta.toFixed(0)} | allowed: ${allowedDirection}`, 'signal', asset, { tickDelta, priceVsStrikeDelta, direction: tickDirection });
   
   // Execute trade
   void executeTrade(asset, tickDirection, price, tickDelta, priceVsStrikeDelta);
@@ -376,7 +385,7 @@ async function executeTrade(
   lastOrderTime = Date.now();
   
   // Place order
-  log(`📤 PLACING ORDER: ${asset} ${direction} ${shares} shares @ ${(buyPrice * 100).toFixed(1)}¢`);
+  log(`📤 PLACING ORDER: ${asset} ${direction} ${shares} shares @ ${(buyPrice * 100).toFixed(1)}¢`, 'order', asset, { direction, shares, price: buyPrice });
   
   const tokenId = direction === 'UP' ? market.upTokenId : market.downTokenId;
   const result = await placeBuyOrder(tokenId, buyPrice, shares, asset, direction);
@@ -394,7 +403,7 @@ async function executeTrade(
     
     tradesCount++;
     
-    log(`✅ FILLED: ${asset} ${direction} ${result.filledSize} @ ${(signal.entry_price * 100).toFixed(1)}¢ (${latency}ms)`);
+    log(`✅ FILLED: ${asset} ${direction} ${result.filledSize} @ ${(signal.entry_price * 100).toFixed(1)}¢ (${latency}ms)`, 'fill', asset, { direction, shares: result.filledSize, price: signal.entry_price, latencyMs: latency });
     
     // Create position
     activePosition = {
@@ -410,7 +419,7 @@ async function executeTrade(
     };
     activeSignal = signal;
     
-    log(`📊 Position open: TP=${activePosition.tpPrice ? (activePosition.tpPrice * 100).toFixed(1) + '¢' : 'off'} | SL=${activePosition.slPrice ? (activePosition.slPrice * 100).toFixed(1) + '¢' : 'off'}`);
+    log(`📊 Position open: TP=${activePosition.tpPrice ? (activePosition.tpPrice * 100).toFixed(1) + '¢' : 'off'} | SL=${activePosition.slPrice ? (activePosition.slPrice * 100).toFixed(1) + '¢' : 'off'}`, 'order', asset);
     
     // Start monitoring
     startPositionMonitor();

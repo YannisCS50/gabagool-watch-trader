@@ -193,3 +193,91 @@ export async function sendHeartbeat(
     log(`⚠️ Heartbeat failed: ${err}`);
   }
 }
+
+/**
+ * Log an event to v29_logs table
+ */
+export async function logEvent(
+  runId: string,
+  level: 'info' | 'warn' | 'error' | 'debug',
+  category: string,
+  message: string,
+  asset?: string,
+  data?: Record<string, unknown>
+): Promise<void> {
+  const db = getDb();
+  
+  try {
+    await db.from('v29_logs').insert({
+      ts: Date.now(),
+      run_id: runId,
+      level,
+      category,
+      asset: asset || null,
+      message,
+      data: data || null,
+    });
+  } catch {
+    // Silent fail - don't spam console
+  }
+}
+
+/**
+ * Batch log multiple events (more efficient)
+ */
+let logBuffer: Array<{
+  ts: number;
+  run_id: string;
+  level: string;
+  category: string;
+  asset: string | null;
+  message: string;
+  data: Record<string, unknown> | null;
+}> = [];
+let flushTimeout: NodeJS.Timeout | null = null;
+
+export function queueLog(
+  runId: string,
+  level: 'info' | 'warn' | 'error' | 'debug',
+  category: string,
+  message: string,
+  asset?: string,
+  data?: Record<string, unknown>
+): void {
+  logBuffer.push({
+    ts: Date.now(),
+    run_id: runId,
+    level,
+    category,
+    asset: asset || null,
+    message,
+    data: data || null,
+  });
+  
+  // Flush every 2 seconds or when buffer reaches 50 items
+  if (logBuffer.length >= 50) {
+    void flushLogs();
+  } else if (!flushTimeout) {
+    flushTimeout = setTimeout(() => void flushLogs(), 2000);
+  }
+}
+
+async function flushLogs(): Promise<void> {
+  if (flushTimeout) {
+    clearTimeout(flushTimeout);
+    flushTimeout = null;
+  }
+  
+  if (logBuffer.length === 0) return;
+  
+  const batch = logBuffer;
+  logBuffer = [];
+  
+  const db = getDb();
+  
+  try {
+    await db.from('v29_logs').insert(batch);
+  } catch {
+    // Silent fail
+  }
+}

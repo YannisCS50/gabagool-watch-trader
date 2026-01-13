@@ -15,6 +15,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { format, formatDistanceToNow } from 'date-fns';
 import { nl } from 'date-fns/locale';
 import { V29ConfigEditor } from '@/components/v29/V29ConfigEditor';
+import { V29LogViewer } from '@/components/v29/V29LogViewer';
 import { LatencyTracker } from '@/components/v27/LatencyTracker';
 import { PriceLatencyChart } from '@/components/v27/PriceLatencyChart';
 import { RealtimePriceMonitor } from '@/components/RealtimePriceMonitor';
@@ -521,6 +522,10 @@ export default function V29Dashboard() {
               <Bell className="h-3 w-3 mr-1" />
               Alerts
             </TabsTrigger>
+            <TabsTrigger value="logs" className="text-xs sm:text-sm px-2 sm:px-3 bg-green-500/20 text-green-400">
+              <FileText className="h-3 w-3 mr-1" />
+              Logs
+            </TabsTrigger>
             <TabsTrigger value="config" className="text-xs sm:text-sm px-2 sm:px-3 bg-purple-500/20 text-purple-400">
               <Settings2 className="h-3 w-3 mr-1" />
               Config
@@ -802,6 +807,11 @@ export default function V29Dashboard() {
               </ScrollArea>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Logs Tab */}
+        <TabsContent value="logs" className="mt-4">
+          <V29LogViewer />
         </TabsContent>
 
         {/* Config Tab */}
