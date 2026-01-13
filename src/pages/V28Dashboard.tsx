@@ -2,18 +2,27 @@ import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
   ArrowLeft, TrendingUp, TrendingDown, DollarSign, Zap, Clock, 
-  Activity, Wifi, WifiOff, RefreshCw, Target, BarChart3
+  Activity, Wifi, WifiOff, RefreshCw, Target, BarChart3, Settings2,
+  Eye, Bell, FileText, ShoppingCart, ArrowUpDown
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { ScrollArea } from '@/components/ui/scroll-area';
+import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
 import { supabase } from '@/integrations/supabase/client';
 import { format, formatDistanceToNow } from 'date-fns';
 import { nl } from 'date-fns/locale';
 
+// Import V27 components that work for V28
+import { LatencyTracker } from '@/components/v27/LatencyTracker';
+import { PriceLatencyChart } from '@/components/v27/PriceLatencyChart';
+import { RealtimePriceMonitor } from '@/components/RealtimePriceMonitor';
+import { MarketConfigEditor } from '@/components/MarketConfigEditor';
+import { TimeRangeFilter, filterDataByTime, DEFAULT_TIME_FILTER, type TimeFilterType } from '@/components/v27/shadow/TimeRangeFilter';
+
+// Types
 interface V28Signal {
   id: string;
   created_at: string;
@@ -33,10 +42,75 @@ interface V28Signal {
   fill_ts: number | null;
   sell_ts: number | null;
   net_pnl: number | null;
+  gross_pnl: number | null;
   shares: number | null;
   is_live: boolean;
   binance_chainlink_delta: number | null;
   binance_chainlink_latency_ms: number | null;
+  notes: string | null;
+  entry_fee: number | null;
+  exit_fee: number | null;
+  order_type: string | null;
+}
+
+interface OrderQueueItem {
+  id: string;
+  created_at: string;
+  status: string;
+  market_slug: string;
+  asset: string;
+  outcome: string;
+  price: number;
+  shares: number;
+  order_type: string;
+  reasoning: string | null;
+  intent_type: string | null;
+  executed_at: string | null;
+  avg_fill_price: number | null;
+  error_message: string | null;
+  correlation_id: string | null;
+}
+
+interface FillLog {
+  id: string;
+  ts: number;
+  iso: string;
+  market_id: string;
+  asset: string;
+  side: string;
+  fill_qty: number;
+  fill_price: number;
+  fill_notional: number;
+  intent: string;
+  seconds_remaining: number;
+  spot_price: number | null;
+  strike_price: number | null;
+  delta: number | null;
+  hedge_lag_ms: number | null;
+  correlation_id: string | null;
+}
+
+interface DecisionSnapshot {
+  id: string;
+  created_at: string;
+  ts: number;
+  asset: string;
+  state: string;
+  intent: string;
+  reason_code: string;
+  chosen_side: string | null;
+  seconds_remaining: number;
+  up_shares: number;
+  down_shares: number;
+  paired_shares: number;
+  unpaired_shares: number;
+  best_bid_up: number | null;
+  best_ask_up: number | null;
+  best_bid_down: number | null;
+  best_ask_down: number | null;
+  projected_cpp_maker: number | null;
+  avg_up: number | null;
+  avg_down: number | null;
 }
 
 interface RunnerHeartbeat {
@@ -55,6 +129,7 @@ interface Stats {
   filled: number;
   sold: number;
   expired: number;
+  failed: number;
   wins: number;
   losses: number;
   winRate: number;
@@ -64,6 +139,7 @@ interface Stats {
   medianFillLatency: number;
   fastestFill: number;
   avgBinanceChainlinkDelta: number;
+  totalFees: number;
 }
 
 const ASSETS = ['ALL', 'BTC', 'ETH', 'SOL', 'XRP'] as const;
@@ -71,8 +147,13 @@ const ASSETS = ['ALL', 'BTC', 'ETH', 'SOL', 'XRP'] as const;
 export default function V28Dashboard() {
   const navigate = useNavigate();
   const [signals, setSignals] = useState<V28Signal[]>([]);
+  const [orders, setOrders] = useState<OrderQueueItem[]>([]);
+  const [fills, setFills] = useState<FillLog[]>([]);
+  const [decisions, setDecisions] = useState<DecisionSnapshot[]>([]);
   const [loading, setLoading] = useState(true);
   const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
+  const [timeFilter, setTimeFilter] = useState<TimeFilterType>(DEFAULT_TIME_FILTER);
+  const [activeTab, setActiveTab] = useState('trades');
   const [runnerStatus, setRunnerStatus] = useState<{
     isOnline: boolean;
     lastHeartbeat: string | null;
@@ -80,34 +161,50 @@ export default function V28Dashboard() {
     marketsCount: number;
     positionsCount: number;
   }>({ isOnline: false, lastHeartbeat: null, balance: null, marketsCount: 0, positionsCount: 0 });
-  const [recentLogs, setRecentLogs] = useState<string[]>([]);
+  const [recentNotifications, setRecentNotifications] = useState<string[]>([]);
 
-  // Fetch signals from paper_signals table
+  // Fetch all data
   const fetchData = async () => {
     setLoading(signals.length === 0);
 
-    const { data, error } = await supabase
-      .from('paper_signals')
-      .select('*')
-      .eq('is_live', true)
-      .order('signal_ts', { ascending: false })
-      .limit(200);
+    const [signalsRes, ordersRes, fillsRes, decisionsRes, heartbeatRes] = await Promise.all([
+      supabase
+        .from('paper_signals')
+        .select('*')
+        .eq('is_live', true)
+        .order('signal_ts', { ascending: false })
+        .limit(500),
+      supabase
+        .from('order_queue')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(200),
+      supabase
+        .from('fill_logs')
+        .select('*')
+        .order('ts', { ascending: false })
+        .limit(300),
+      supabase
+        .from('decision_snapshots')
+        .select('*')
+        .order('ts', { ascending: false })
+        .limit(200),
+      supabase
+        .from('runner_heartbeats')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(1),
+    ]);
 
-    if (data && !error) {
-      setSignals(data as V28Signal[]);
-    }
+    if (signalsRes.data) setSignals(signalsRes.data as V28Signal[]);
+    if (ordersRes.data) setOrders(ordersRes.data as OrderQueueItem[]);
+    if (fillsRes.data) setFills(fillsRes.data as FillLog[]);
+    if (decisionsRes.data) setDecisions(decisionsRes.data as DecisionSnapshot[]);
 
-    // Fetch runner heartbeat
-    const { data: heartbeatData } = await supabase
-      .from('runner_heartbeats')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(1);
-
-    if (heartbeatData && heartbeatData.length > 0) {
-      const hb = heartbeatData[0] as RunnerHeartbeat;
+    if (heartbeatRes.data && heartbeatRes.data.length > 0) {
+      const hb = heartbeatRes.data[0] as RunnerHeartbeat;
       const lastBeat = new Date(hb.created_at);
-      const isOnline = Date.now() - lastBeat.getTime() < 60000; // 60 sec timeout
+      const isOnline = Date.now() - lastBeat.getTime() < 60000;
       setRunnerStatus({
         isOnline,
         lastHeartbeat: hb.created_at,
@@ -122,21 +219,34 @@ export default function V28Dashboard() {
 
   useEffect(() => {
     fetchData();
-    const interval = setInterval(fetchData, 10000); // Refresh every 10s
+    const interval = setInterval(fetchData, 8000);
     return () => clearInterval(interval);
   }, []);
 
-  // Subscribe to realtime bot events for logs
+  // Subscribe to realtime signals for notifications
   useEffect(() => {
     const channel = supabase
-      .channel('v28-bot-events')
+      .channel('v28-signals-realtime')
       .on(
         'postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'bot_events' },
+        { event: 'INSERT', schema: 'public', table: 'paper_signals', filter: 'is_live=eq.true' },
         (payload) => {
-          const event = payload.new as { event_type: string; data: any; ts: number };
-          const logLine = `[${new Date(event.ts).toLocaleTimeString()}] ${event.event_type}: ${JSON.stringify(event.data).slice(0, 100)}`;
-          setRecentLogs(prev => [logLine, ...prev].slice(0, 50));
+          const sig = payload.new as V28Signal;
+          const notification = `[${format(new Date(sig.signal_ts), 'HH:mm:ss')}] ${sig.asset} ${sig.direction} @ ${(sig.share_price * 100).toFixed(1)}¢ (Δ${sig.binance_delta?.toFixed(2) ?? '?'})`;
+          setRecentNotifications(prev => [notification, ...prev].slice(0, 30));
+          setSignals(prev => [sig, ...prev].slice(0, 500));
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'paper_signals', filter: 'is_live=eq.true' },
+        (payload) => {
+          const sig = payload.new as V28Signal;
+          setSignals(prev => prev.map(s => s.id === sig.id ? sig : s));
+          if (sig.status === 'sold' && sig.net_pnl !== null) {
+            const notification = `[${format(new Date(), 'HH:mm:ss')}] ✅ SOLD ${sig.asset} ${sig.direction} | P&L: $${sig.net_pnl.toFixed(2)}`;
+            setRecentNotifications(prev => [notification, ...prev].slice(0, 30));
+          }
         }
       )
       .subscribe();
@@ -144,20 +254,54 @@ export default function V28Dashboard() {
     return () => { supabase.removeChannel(channel); };
   }, []);
 
+  // Filter by time and asset
+  const filteredSignals = useMemo(() => {
+    let filtered = signals;
+    if (assetFilter !== 'ALL') {
+      filtered = filtered.filter(s => s.asset === assetFilter);
+    }
+    // filterDataByTime uses 'ts' field, so we map signal_ts -> ts for filtering
+    const withTs = filtered.map(s => ({ ...s, ts: s.signal_ts }));
+    return filterDataByTime(withTs, timeFilter);
+  }, [signals, assetFilter, timeFilter]);
+
+  const filteredOrders = useMemo(() => {
+    let filtered = orders;
+    if (assetFilter !== 'ALL') {
+      filtered = filtered.filter(o => o.asset === assetFilter);
+    }
+    return filterDataByTime(filtered, timeFilter);
+  }, [orders, assetFilter, timeFilter]);
+
+  const filteredFills = useMemo(() => {
+    let filtered = fills;
+    if (assetFilter !== 'ALL') {
+      filtered = filtered.filter(f => f.asset === assetFilter);
+    }
+    return filterDataByTime(filtered, timeFilter);
+  }, [fills, assetFilter, timeFilter]);
+
+  const filteredDecisions = useMemo(() => {
+    let filtered = decisions;
+    if (assetFilter !== 'ALL') {
+      filtered = filtered.filter(d => d.asset === assetFilter);
+    }
+    return filterDataByTime(filtered, timeFilter);
+  }, [decisions, assetFilter, timeFilter]);
+
   // Calculate stats
   const stats = useMemo((): Stats => {
-    const filtered = assetFilter === 'ALL' ? signals : signals.filter(s => s.asset === assetFilter);
-    
-    const filled = filtered.filter(s => s.fill_ts !== null);
-    const sold = filtered.filter(s => s.status === 'sold');
-    const expired = filtered.filter(s => s.status === 'expired');
+    const filled = filteredSignals.filter(s => s.fill_ts !== null);
+    const sold = filteredSignals.filter(s => s.status === 'sold');
+    const expired = filteredSignals.filter(s => s.status === 'expired');
+    const failed = filteredSignals.filter(s => s.status === 'failed');
     const wins = sold.filter(s => (s.net_pnl ?? 0) > 0);
     const losses = sold.filter(s => (s.net_pnl ?? 0) <= 0);
     
     const totalPnl = sold.reduce((sum, s) => sum + (s.net_pnl ?? 0), 0);
+    const totalFees = sold.reduce((sum, s) => sum + Math.abs(s.entry_fee ?? 0) + Math.abs(s.exit_fee ?? 0), 0);
     const avgPnl = sold.length > 0 ? totalPnl / sold.length : 0;
     
-    // Fill latency stats
     const fillLatencies = filled
       .filter(s => s.fill_ts && s.signal_ts)
       .map(s => (s.fill_ts! - s.signal_ts));
@@ -173,18 +317,18 @@ export default function V28Dashboard() {
     
     const fastestFill = fillLatencies.length > 0 ? Math.min(...fillLatencies) : 0;
     
-    // Binance-Chainlink delta
-    const deltas = filtered
+    const deltas = filteredSignals
       .filter(s => s.binance_chainlink_delta !== null)
       .map(s => Math.abs(s.binance_chainlink_delta!));
     const avgDelta = deltas.length > 0 ? deltas.reduce((a, b) => a + b, 0) / deltas.length : 0;
 
     return {
-      totalSignals: filtered.length,
-      liveSignals: filtered.filter(s => s.is_live).length,
+      totalSignals: filteredSignals.length,
+      liveSignals: filteredSignals.filter(s => s.is_live).length,
       filled: filled.length,
       sold: sold.length,
       expired: expired.length,
+      failed: failed.length,
       wins: wins.length,
       losses: losses.length,
       winRate: sold.length > 0 ? (wins.length / sold.length) * 100 : 0,
@@ -194,12 +338,9 @@ export default function V28Dashboard() {
       medianFillLatency,
       fastestFill,
       avgBinanceChainlinkDelta: avgDelta,
+      totalFees,
     };
-  }, [signals, assetFilter]);
-
-  const filteredSignals = useMemo(() => {
-    return assetFilter === 'ALL' ? signals : signals.filter(s => s.asset === assetFilter);
-  }, [signals, assetFilter]);
+  }, [filteredSignals]);
 
   const formatMs = (ms: number) => {
     if (ms < 1000) return `${ms.toFixed(0)}ms`;
@@ -218,171 +359,248 @@ export default function V28Dashboard() {
         return <Badge className="bg-gray-500/20 text-gray-400 border-gray-500/30">PENDING</Badge>;
       case 'failed':
         return <Badge className="bg-red-500/20 text-red-400 border-red-500/30">FAILED</Badge>;
+      case 'executed':
+        return <Badge className="bg-green-500/20 text-green-400 border-green-500/30">EXECUTED</Badge>;
+      case 'queued':
+        return <Badge className="bg-blue-500/20 text-blue-400 border-blue-500/30">QUEUED</Badge>;
       default:
         return <Badge variant="outline">{status}</Badge>;
     }
   };
 
+  const getIntentBadge = (intent: string | null) => {
+    if (!intent) return null;
+    switch (intent.toUpperCase()) {
+      case 'ENTRY':
+        return <Badge className="bg-blue-500/20 text-blue-400 border-blue-500/30">ENTRY</Badge>;
+      case 'HEDGE':
+        return <Badge className="bg-purple-500/20 text-purple-400 border-purple-500/30">HEDGE</Badge>;
+      case 'EXIT':
+        return <Badge className="bg-orange-500/20 text-orange-400 border-orange-500/30">EXIT</Badge>;
+      default:
+        return <Badge variant="outline">{intent}</Badge>;
+    }
+  };
+
   return (
-    <div className="min-h-screen bg-background p-4 md:p-6">
+    <div className="min-h-screen bg-background p-3 sm:p-4 md:p-6">
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/')}>
+      <div className="flex flex-col gap-3 mb-4 sm:mb-6">
+        <div className="flex items-start gap-2">
+          <Button variant="ghost" size="icon" className="shrink-0 mt-0.5" onClick={() => navigate('/')}>
             <ArrowLeft className="h-5 w-5" />
           </Button>
-          <div>
-            <h1 className="text-2xl font-bold flex items-center gap-2">
-              V28 Live Dashboard
-              <Zap className="h-5 w-5 text-yellow-500" />
-            </h1>
-            <p className="text-muted-foreground text-sm">Binance Delta Arbitrage</p>
+          <div className="flex-1 min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-lg sm:text-xl md:text-2xl font-bold">
+                V28 Live Trading
+              </h1>
+              <Badge className="bg-red-500/20 text-red-400 border-red-500/30 text-xs shrink-0">
+                <Zap className="h-3 w-3 mr-1" />
+                LIVE
+              </Badge>
+            </div>
+            <p className="text-muted-foreground text-xs sm:text-sm mt-0.5 hidden sm:block">
+              Binance Delta Arbitrage • Per-trade P&L tracking
+            </p>
           </div>
         </div>
-        
-        <div className="flex items-center gap-3">
-          {/* Runner Status */}
-          <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-card border">
+
+        {/* Action row */}
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2">
             {runnerStatus.isOnline ? (
-              <Wifi className="h-4 w-4 text-green-500" />
+              <Badge className="bg-green-500/20 text-green-400 border-green-500/30 text-xs">
+                <Wifi className="h-3 w-3 mr-1" />
+                Online
+              </Badge>
             ) : (
-              <WifiOff className="h-4 w-4 text-red-500" />
+              <Badge variant="destructive" className="text-xs">
+                <WifiOff className="h-3 w-3 mr-1" />
+                Offline
+              </Badge>
             )}
-            <span className={`text-sm font-medium ${runnerStatus.isOnline ? 'text-green-500' : 'text-red-500'}`}>
-              {runnerStatus.isOnline ? 'LIVE' : 'OFFLINE'}
-            </span>
             {runnerStatus.balance !== null && (
-              <span className="text-sm text-muted-foreground ml-2">
+              <Badge variant="secondary" className="text-xs">
                 ${runnerStatus.balance.toFixed(2)}
+              </Badge>
+            )}
+            {runnerStatus.positionsCount > 0 && (
+              <Badge variant="outline" className="text-xs">
+                {runnerStatus.positionsCount} pos
+              </Badge>
+            )}
+            {runnerStatus.lastHeartbeat && (
+              <span className="text-xs text-muted-foreground hidden sm:inline">
+                {formatDistanceToNow(new Date(runnerStatus.lastHeartbeat), { addSuffix: true, locale: nl })}
               </span>
             )}
           </div>
-          
-          <Button variant="outline" size="sm" onClick={fetchData} disabled={loading}>
-            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
+
+          <div className="flex items-center gap-2">
+            <TimeRangeFilter value={timeFilter} onChange={setTimeFilter} />
+            <Button variant="outline" size="sm" onClick={fetchData} disabled={loading} className="h-8">
+              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline ml-1">Refresh</span>
+            </Button>
+          </div>
         </div>
       </div>
 
       {/* Asset Filter */}
-      <div className="flex gap-2 mb-6">
+      <div className="flex gap-2 mb-4 flex-wrap">
         {ASSETS.map(asset => (
           <Button
             key={asset}
             variant={assetFilter === asset ? 'default' : 'outline'}
             size="sm"
             onClick={() => setAssetFilter(asset)}
+            className="h-8"
           >
             {asset}
           </Button>
         ))}
       </div>
 
-      {/* Key Metrics */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4 mb-6">
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <Target className="h-4 w-4" /> Signalen
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{stats.totalSignals}</div>
-            <p className="text-xs text-muted-foreground">{stats.filled} filled</p>
-          </CardContent>
+      {/* Stats Summary Bar */}
+      <div className="mb-4 flex flex-wrap gap-2 text-xs">
+        <Badge variant="secondary" className="font-normal">
+          {stats.totalSignals} signalen
+        </Badge>
+        <Badge variant="secondary" className="font-normal">
+          {stats.filled} filled / {stats.sold} sold
+        </Badge>
+        <Badge variant="secondary" className="font-normal">
+          {stats.wins}W / {stats.losses}L ({stats.winRate.toFixed(0)}%)
+        </Badge>
+        <Badge variant={stats.totalPnl >= 0 ? "default" : "destructive"} className="font-normal">
+          {stats.totalPnl >= 0 ? '+' : ''}${stats.totalPnl.toFixed(2)} P&L
+        </Badge>
+        <Badge variant="outline" className="font-normal">
+          ${stats.totalFees.toFixed(2)} fees
+        </Badge>
+        <Badge variant="outline" className="font-normal">
+          {formatMs(stats.medianFillLatency)} latency
+        </Badge>
+      </div>
+
+      {/* Key Metrics Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 mb-6">
+        <Card className="p-3">
+          <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
+            <Target className="h-3 w-3" /> Signalen
+          </div>
+          <div className="text-xl font-bold">{stats.totalSignals}</div>
+          <p className="text-xs text-muted-foreground">{stats.filled} filled</p>
         </Card>
 
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <BarChart3 className="h-4 w-4" /> Win Rate
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-green-500">{stats.winRate.toFixed(1)}%</div>
-            <p className="text-xs text-muted-foreground">{stats.wins}W / {stats.losses}L</p>
-          </CardContent>
+        <Card className="p-3">
+          <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
+            <BarChart3 className="h-3 w-3" /> Win Rate
+          </div>
+          <div className="text-xl font-bold text-green-500">{stats.winRate.toFixed(1)}%</div>
+          <p className="text-xs text-muted-foreground">{stats.wins}W / {stats.losses}L</p>
         </Card>
 
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <DollarSign className="h-4 w-4" /> Net P&L
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className={`text-2xl font-bold ${stats.totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-              ${stats.totalPnl.toFixed(2)}
-            </div>
-            <p className="text-xs text-muted-foreground">Avg: ${stats.avgPnl.toFixed(2)}/trade</p>
-          </CardContent>
+        <Card className="p-3">
+          <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
+            <DollarSign className="h-3 w-3" /> Net P&L
+          </div>
+          <div className={`text-xl font-bold ${stats.totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+            ${stats.totalPnl.toFixed(2)}
+          </div>
+          <p className="text-xs text-muted-foreground">Avg: ${stats.avgPnl.toFixed(2)}</p>
         </Card>
 
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <Zap className="h-4 w-4" /> Fill Latency
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{formatMs(stats.medianFillLatency)}</div>
-            <p className="text-xs text-muted-foreground">Best: {formatMs(stats.fastestFill)}</p>
-          </CardContent>
+        <Card className="p-3">
+          <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
+            <Zap className="h-3 w-3" /> Fill Latency
+          </div>
+          <div className="text-xl font-bold">{formatMs(stats.medianFillLatency)}</div>
+          <p className="text-xs text-muted-foreground">Best: {formatMs(stats.fastestFill)}</p>
         </Card>
 
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <Activity className="h-4 w-4" /> Binance Δ
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">${stats.avgBinanceChainlinkDelta.toFixed(0)}</div>
-            <p className="text-xs text-muted-foreground">vs Chainlink avg</p>
-          </CardContent>
+        <Card className="p-3">
+          <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
+            <Activity className="h-3 w-3" /> Binance Δ
+          </div>
+          <div className="text-xl font-bold">${stats.avgBinanceChainlinkDelta.toFixed(0)}</div>
+          <p className="text-xs text-muted-foreground">vs Chainlink</p>
         </Card>
 
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-              <Clock className="h-4 w-4" /> Status
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{stats.sold}</div>
-            <p className="text-xs text-muted-foreground">{stats.expired} expired</p>
-          </CardContent>
+        <Card className="p-3">
+          <div className="flex items-center gap-2 text-muted-foreground text-xs mb-1">
+            <Clock className="h-3 w-3" /> Status
+          </div>
+          <div className="text-xl font-bold">{stats.sold}</div>
+          <p className="text-xs text-muted-foreground">{stats.expired} exp / {stats.failed} fail</p>
         </Card>
       </div>
 
-      {/* Tabs */}
-      <Tabs defaultValue="trades" className="space-y-4">
-        <TabsList>
-          <TabsTrigger value="trades">Trades</TabsTrigger>
-          <TabsTrigger value="latency">Latency</TabsTrigger>
-          <TabsTrigger value="logs">Logs</TabsTrigger>
-        </TabsList>
+      {/* Main Tabs */}
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+        <ScrollArea className="w-full whitespace-nowrap pb-2">
+          <TabsList className="inline-flex w-max gap-1 p-1">
+            <TabsTrigger value="realtime" className="text-xs sm:text-sm px-2 sm:px-3 bg-yellow-500/20 text-yellow-400">
+              <Zap className="h-3 w-3 mr-1" />
+              Live
+            </TabsTrigger>
+            <TabsTrigger value="trades" className="text-xs sm:text-sm px-2 sm:px-3">
+              <TrendingUp className="h-3 w-3 mr-1" />
+              Trades
+            </TabsTrigger>
+            <TabsTrigger value="orders" className="text-xs sm:text-sm px-2 sm:px-3">
+              <ShoppingCart className="h-3 w-3 mr-1" />
+              Orders
+            </TabsTrigger>
+            <TabsTrigger value="fills" className="text-xs sm:text-sm px-2 sm:px-3">
+              <ArrowUpDown className="h-3 w-3 mr-1" />
+              Fills
+            </TabsTrigger>
+            <TabsTrigger value="decisions" className="text-xs sm:text-sm px-2 sm:px-3">
+              <FileText className="h-3 w-3 mr-1" />
+              Decisions
+            </TabsTrigger>
+            <TabsTrigger value="latency" className="text-xs sm:text-sm px-2 sm:px-3">
+              <Activity className="h-3 w-3 mr-1" />
+              Latency
+            </TabsTrigger>
+            <TabsTrigger value="notifications" className="text-xs sm:text-sm px-2 sm:px-3">
+              <Bell className="h-3 w-3 mr-1" />
+              Alerts
+            </TabsTrigger>
+            <TabsTrigger value="config" className="text-xs sm:text-sm px-2 sm:px-3 bg-purple-500/20 text-purple-400">
+              <Settings2 className="h-3 w-3 mr-1" />
+              Config
+            </TabsTrigger>
+          </TabsList>
+          <ScrollBar orientation="horizontal" />
+        </ScrollArea>
+
+        {/* Live Tab - Real-time prices */}
+        <TabsContent value="realtime" className="space-y-4 mt-4">
+          <RealtimePriceMonitor />
+        </TabsContent>
 
         {/* Trades Tab */}
-        <TabsContent value="trades">
+        <TabsContent value="trades" className="mt-4">
           <Card>
-            <CardHeader>
-              <CardTitle>Recent Signals & Trades</CardTitle>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-lg">Signals & Trades ({filteredSignals.length})</CardTitle>
             </CardHeader>
             <CardContent>
               <ScrollArea className="h-[500px]">
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Time</TableHead>
+                      <TableHead className="w-[100px]">Time</TableHead>
                       <TableHead>Asset</TableHead>
-                      <TableHead>Direction</TableHead>
+                      <TableHead>Dir</TableHead>
                       <TableHead>Binance Δ</TableHead>
                       <TableHead>Entry</TableHead>
                       <TableHead>Exit</TableHead>
                       <TableHead>Shares</TableHead>
-                      <TableHead>Fill Latency</TableHead>
+                      <TableHead>Latency</TableHead>
                       <TableHead>P&L</TableHead>
                       <TableHead>Status</TableHead>
                     </TableRow>
@@ -437,88 +655,266 @@ export default function V28Dashboard() {
           </Card>
         </TabsContent>
 
-        {/* Latency Tab */}
-        <TabsContent value="latency">
-          <div className="grid md:grid-cols-2 gap-4">
-            <Card>
-              <CardHeader>
-                <CardTitle>Fill Latency Distribution</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  {['< 200ms', '200-500ms', '500ms-1s', '1-2s', '> 2s'].map((bucket, i) => {
-                    const ranges = [[0, 200], [200, 500], [500, 1000], [1000, 2000], [2000, Infinity]];
-                    const [min, max] = ranges[i];
-                    const count = signals.filter(s => {
-                      if (!s.fill_ts || !s.signal_ts) return false;
-                      const latency = s.fill_ts - s.signal_ts;
-                      return latency >= min && latency < max;
-                    }).length;
-                    const pct = signals.filter(s => s.fill_ts).length > 0 
-                      ? (count / signals.filter(s => s.fill_ts).length) * 100 
-                      : 0;
-                    
-                    return (
-                      <div key={bucket} className="flex items-center gap-3">
-                        <span className="text-sm w-20">{bucket}</span>
-                        <div className="flex-1 h-6 bg-muted rounded overflow-hidden">
-                          <div 
-                            className="h-full bg-primary transition-all"
-                            style={{ width: `${pct}%` }}
-                          />
-                        </div>
-                        <span className="text-sm w-16 text-right">{count} ({pct.toFixed(0)}%)</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Binance-Chainlink Gap</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Gemiddeld verschil</span>
-                    <span className="font-bold">${stats.avgBinanceChainlinkDelta.toFixed(2)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Geschatte latency</span>
-                    <span className="font-bold">~{(stats.avgBinanceChainlinkDelta / 10).toFixed(1)}s</span>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    Chainlink aggregeert prijzen van meerdere exchanges en update on-chain bij 0.5% deviation.
-                    Dit verschil is geen pure latency, maar een combinatie van aggregatie en update-frequentie.
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
+        {/* Orders Tab */}
+        <TabsContent value="orders" className="mt-4">
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-lg">Order Queue ({filteredOrders.length})</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ScrollArea className="h-[500px]">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-[100px]">Time</TableHead>
+                      <TableHead>Asset</TableHead>
+                      <TableHead>Outcome</TableHead>
+                      <TableHead>Intent</TableHead>
+                      <TableHead>Price</TableHead>
+                      <TableHead>Shares</TableHead>
+                      <TableHead>Fill Price</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="max-w-[200px]">Reasoning</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredOrders.map((order) => (
+                      <TableRow key={order.id}>
+                        <TableCell className="text-xs">
+                          {format(new Date(order.created_at), 'HH:mm:ss')}
+                          <br />
+                          <span className="text-muted-foreground">
+                            {formatDistanceToNow(new Date(order.created_at), { addSuffix: true, locale: nl })}
+                          </span>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="outline">{order.asset}</Badge>
+                        </TableCell>
+                        <TableCell>
+                          <Badge className={order.outcome === 'UP' 
+                            ? 'bg-green-500/20 text-green-400 border-green-500/30' 
+                            : 'bg-red-500/20 text-red-400 border-red-500/30'
+                          }>
+                            {order.outcome}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>{getIntentBadge(order.intent_type)}</TableCell>
+                        <TableCell>{(order.price * 100).toFixed(1)}¢</TableCell>
+                        <TableCell>{order.shares.toFixed(2)}</TableCell>
+                        <TableCell>
+                          {order.avg_fill_price ? `${(order.avg_fill_price * 100).toFixed(1)}¢` : '-'}
+                        </TableCell>
+                        <TableCell>{getStatusBadge(order.status)}</TableCell>
+                        <TableCell className="text-xs text-muted-foreground max-w-[200px] truncate" title={order.reasoning || undefined}>
+                          {order.reasoning || order.error_message || '-'}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </ScrollArea>
+            </CardContent>
+          </Card>
         </TabsContent>
 
-        {/* Logs Tab */}
-        <TabsContent value="logs">
+        {/* Fills Tab */}
+        <TabsContent value="fills" className="mt-4">
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-lg">Fill Logs ({filteredFills.length})</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ScrollArea className="h-[500px]">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-[100px]">Time</TableHead>
+                      <TableHead>Asset</TableHead>
+                      <TableHead>Side</TableHead>
+                      <TableHead>Intent</TableHead>
+                      <TableHead>Qty</TableHead>
+                      <TableHead>Price</TableHead>
+                      <TableHead>Notional</TableHead>
+                      <TableHead>Spot</TableHead>
+                      <TableHead>Delta</TableHead>
+                      <TableHead>Hedge Lag</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredFills.map((fill) => (
+                      <TableRow key={fill.id}>
+                        <TableCell className="text-xs">
+                          {format(new Date(fill.ts), 'HH:mm:ss')}
+                          <br />
+                          <span className="text-muted-foreground">{fill.seconds_remaining}s left</span>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="outline">{fill.asset}</Badge>
+                        </TableCell>
+                        <TableCell>
+                          <Badge className={fill.side === 'BUY' 
+                            ? 'bg-green-500/20 text-green-400 border-green-500/30' 
+                            : 'bg-red-500/20 text-red-400 border-red-500/30'
+                          }>
+                            {fill.side}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>{getIntentBadge(fill.intent)}</TableCell>
+                        <TableCell>{fill.fill_qty.toFixed(2)}</TableCell>
+                        <TableCell>{(fill.fill_price * 100).toFixed(1)}¢</TableCell>
+                        <TableCell>${fill.fill_notional.toFixed(2)}</TableCell>
+                        <TableCell>{fill.spot_price ? `$${fill.spot_price.toFixed(0)}` : '-'}</TableCell>
+                        <TableCell className={fill.delta && fill.delta > 0 ? 'text-green-400' : 'text-red-400'}>
+                          {fill.delta ? `$${fill.delta.toFixed(2)}` : '-'}
+                        </TableCell>
+                        <TableCell>{fill.hedge_lag_ms ? `${fill.hedge_lag_ms}ms` : '-'}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </ScrollArea>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Decisions Tab */}
+        <TabsContent value="decisions" className="mt-4">
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-lg">Decision Snapshots ({filteredDecisions.length})</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <ScrollArea className="h-[500px]">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-[100px]">Time</TableHead>
+                      <TableHead>Asset</TableHead>
+                      <TableHead>State</TableHead>
+                      <TableHead>Intent</TableHead>
+                      <TableHead>Side</TableHead>
+                      <TableHead>Reason</TableHead>
+                      <TableHead>Up</TableHead>
+                      <TableHead>Down</TableHead>
+                      <TableHead>Paired</TableHead>
+                      <TableHead>CPP</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {filteredDecisions.map((dec) => (
+                      <TableRow key={dec.id}>
+                        <TableCell className="text-xs">
+                          {format(new Date(dec.ts), 'HH:mm:ss')}
+                          <br />
+                          <span className="text-muted-foreground">{dec.seconds_remaining}s left</span>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="outline">{dec.asset}</Badge>
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant="secondary">{dec.state}</Badge>
+                        </TableCell>
+                        <TableCell>{getIntentBadge(dec.intent)}</TableCell>
+                        <TableCell>
+                          {dec.chosen_side ? (
+                            <Badge className={dec.chosen_side === 'UP' 
+                              ? 'bg-green-500/20 text-green-400 border-green-500/30' 
+                              : 'bg-red-500/20 text-red-400 border-red-500/30'
+                            }>
+                              {dec.chosen_side}
+                            </Badge>
+                          ) : '-'}
+                        </TableCell>
+                        <TableCell className="text-xs max-w-[150px] truncate" title={dec.reason_code}>
+                          {dec.reason_code}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {dec.up_shares.toFixed(1)}
+                          {dec.best_ask_up && <span className="text-muted-foreground"> @ {(dec.best_ask_up * 100).toFixed(0)}¢</span>}
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          {dec.down_shares.toFixed(1)}
+                          {dec.best_ask_down && <span className="text-muted-foreground"> @ {(dec.best_ask_down * 100).toFixed(0)}¢</span>}
+                        </TableCell>
+                        <TableCell>{dec.paired_shares.toFixed(1)}</TableCell>
+                        <TableCell>
+                          {dec.projected_cpp_maker ? `${(dec.projected_cpp_maker * 100).toFixed(0)}¢` : '-'}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </ScrollArea>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Latency Tab */}
+        <TabsContent value="latency" className="mt-4 space-y-6">
+          <LatencyTracker />
+          <PriceLatencyChart />
+          
+          {/* Fill Latency Distribution */}
           <Card>
             <CardHeader>
-              <CardTitle>Real-time Bot Logs</CardTitle>
+              <CardTitle>Fill Latency Distribution</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {['< 200ms', '200-500ms', '500ms-1s', '1-2s', '> 2s'].map((bucket, i) => {
+                  const ranges = [[0, 200], [200, 500], [500, 1000], [1000, 2000], [2000, Infinity]];
+                  const [min, max] = ranges[i];
+                  const count = filteredSignals.filter(s => {
+                    if (!s.fill_ts || !s.signal_ts) return false;
+                    const latency = s.fill_ts - s.signal_ts;
+                    return latency >= min && latency < max;
+                  }).length;
+                  const total = filteredSignals.filter(s => s.fill_ts).length;
+                  const pct = total > 0 ? (count / total) * 100 : 0;
+                  
+                  return (
+                    <div key={bucket} className="flex items-center gap-3">
+                      <span className="text-sm w-24">{bucket}</span>
+                      <div className="flex-1 h-6 bg-muted rounded overflow-hidden">
+                        <div 
+                          className={`h-full transition-all ${i < 2 ? 'bg-green-500' : i < 3 ? 'bg-yellow-500' : 'bg-red-500'}`}
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                      <span className="text-sm w-20 text-right">{count} ({pct.toFixed(0)}%)</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Notifications Tab */}
+        <TabsContent value="notifications" className="mt-4">
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-lg">Trade Alerts ({recentNotifications.length})</CardTitle>
             </CardHeader>
             <CardContent>
               <ScrollArea className="h-[400px] font-mono text-xs">
-                {recentLogs.length === 0 ? (
-                  <p className="text-muted-foreground">Wachten op bot events...</p>
+                {recentNotifications.length === 0 ? (
+                  <p className="text-muted-foreground">Wachten op live trades...</p>
                 ) : (
-                  recentLogs.map((log, i) => (
-                    <div key={i} className="py-1 border-b border-border/50">
-                      {log}
+                  recentNotifications.map((notification, i) => (
+                    <div key={i} className={`py-2 border-b border-border/50 ${notification.includes('✅') ? 'text-green-400' : ''}`}>
+                      {notification}
                     </div>
                   ))
                 )}
               </ScrollArea>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Config Tab */}
+        <TabsContent value="config" className="mt-4">
+          <MarketConfigEditor />
         </TabsContent>
       </Tabs>
     </div>
