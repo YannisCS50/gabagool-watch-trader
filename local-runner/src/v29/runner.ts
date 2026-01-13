@@ -151,25 +151,27 @@ function handleBinancePrice(asset: Asset, price: number): void {
     return;
   }
   
-  // Calculate strike-to-actual delta for direction logic
-  // delta = strike - binance (positive = binance below strike, negative = binance above strike)
-  const strikeActualDelta = market.strikePrice - price;
+  // Calculate actual-to-strike delta for direction logic
+  // delta = actual (binance/chainlink) - strike
+  // positive = actual price is ABOVE strike (likely to settle UP)
+  // negative = actual price is BELOW strike (likely to settle DOWN)
+  const priceVsStrikeDelta = price - market.strikePrice;
   
-  // Determine direction based on tick movement AND strike-actual delta
+  // Determine direction based on tick movement
   const tickDirection: 'UP' | 'DOWN' = tickDelta > 0 ? 'UP' : 'DOWN';
   
   // Apply direction filter based on delta_threshold
-  // delta between -threshold and +threshold: trade both directions
-  // delta < -threshold (binance way above strike): only trade DOWN
-  // delta > +threshold (binance way below strike): only trade UP
+  // If actual price is way ABOVE strike (+70): only trade UP (will likely settle UP)
+  // If actual price is way BELOW strike (-70): only trade DOWN (will likely settle DOWN)
+  // If within ±70 of strike: trade both directions
   
   let allowedDirection: 'UP' | 'DOWN' | 'BOTH';
-  if (strikeActualDelta < -config.delta_threshold) {
-    // Binance is way ABOVE strike - only trade DOWN
-    allowedDirection = 'DOWN';
-  } else if (strikeActualDelta > config.delta_threshold) {
-    // Binance is way BELOW strike - only trade UP
+  if (priceVsStrikeDelta > config.delta_threshold) {
+    // Actual is way ABOVE strike - only trade UP
     allowedDirection = 'UP';
+  } else if (priceVsStrikeDelta < -config.delta_threshold) {
+    // Actual is way BELOW strike - only trade DOWN
+    allowedDirection = 'DOWN';
   } else {
     // Within threshold range - trade both
     allowedDirection = 'BOTH';
@@ -177,14 +179,14 @@ function handleBinancePrice(asset: Asset, price: number): void {
   
   // Check if tick direction is allowed
   if (allowedDirection !== 'BOTH' && allowedDirection !== tickDirection) {
-    log(`⚠️ ${asset} direction ${tickDirection} blocked | delta=${strikeActualDelta.toFixed(0)} | only ${allowedDirection} allowed`);
+    log(`⚠️ ${asset} direction ${tickDirection} blocked | price vs strike: $${priceVsStrikeDelta.toFixed(0)} | only ${allowedDirection} allowed`);
     return;
   }
   
-  log(`🎯 TRIGGER: ${asset} ${tickDirection} | tick Δ$${tickDelta.toFixed(2)} | strike-actual Δ$${strikeActualDelta.toFixed(0)} | allowed: ${allowedDirection}`);
+  log(`🎯 TRIGGER: ${asset} ${tickDirection} | tick Δ$${tickDelta.toFixed(2)} | price vs strike: $${priceVsStrikeDelta.toFixed(0)} | allowed: ${allowedDirection}`);
   
   // Execute trade
-  void executeTrade(asset, tickDirection, price, tickDelta, strikeActualDelta);
+  void executeTrade(asset, tickDirection, price, tickDelta, priceVsStrikeDelta);
 }
 
 // ============================================
