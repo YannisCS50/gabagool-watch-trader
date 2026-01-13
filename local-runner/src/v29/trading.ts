@@ -179,12 +179,14 @@ export async function placeSellOrder(
 export async function getBalance(): Promise<number> {
   try {
     const client = await getClient();
-    const balances = await client.getBalanceAllowance();
+    // Must specify asset_type: 'COLLATERAL' for USDC balance
+    const result = await (client as any).getBalanceAllowance({ asset_type: 'COLLATERAL' });
     
-    // balances can be number or string
-    const available = typeof balances === 'number' 
-      ? balances 
-      : parseFloat(String(balances)) || 0;
+    // Result format: { balance: string, allowance: string }
+    const balance = result?.balance ?? result;
+    const available = typeof balance === 'number' 
+      ? balance 
+      : parseFloat(String(balance)) || 0;
     
     return available;
   } catch (err) {
