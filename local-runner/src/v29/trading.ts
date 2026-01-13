@@ -245,6 +245,36 @@ export function stopPreSignedCache(): void {
   log('Pre-signed cache stopped');
 }
 
+/**
+ * Update cache for a specific asset when market changes
+ * This is called when a new market is detected for an asset
+ */
+export async function updateMarketCache(
+  asset: Asset,
+  upTokenId: string,
+  downTokenId: string
+): Promise<void> {
+  if (!clobClient) {
+    log(`⚠️ Cannot update cache for ${asset}: no client`);
+    return;
+  }
+  
+  log(`🔐 Updating pre-signed cache for ${asset}...`);
+  
+  try {
+    const orderSet = await preSignMarketOrders(
+      clobClient,
+      asset,
+      upTokenId,
+      downTokenId
+    );
+    orderCache.set(asset, orderSet);
+    log(`✅ ${asset} cache updated with new market tokens`);
+  } catch (err) {
+    log(`❌ Failed to update cache for ${asset}: ${err}`);
+  }
+}
+
 // ============================================
 // FAST ORDER POSTING
 // ============================================
