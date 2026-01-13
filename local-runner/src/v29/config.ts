@@ -13,11 +13,19 @@ export interface V29Config {
   // Enable/disable trading
   enabled: boolean;
   
-  // Minimum delta (USD) to trigger a trade
-  min_delta_usd: number;
+  // Tick-to-tick delta (USD) - triggers trade when Binance price moves this much between ticks
+  tick_delta_usd: number;
   
-  // Maximum share price to buy (e.g., 0.55 = 55¢)
-  max_share_price: number;
+  // Delta threshold for direction logic
+  // delta = strike_price - binance_price
+  // -70 to +70: trade both directions
+  // < -70: only trade DOWN
+  // > +70: only trade UP
+  delta_threshold: number;
+  
+  // Share price range (only trade if share price is between these)
+  min_share_price: number; // e.g., 0.30 = 30¢
+  max_share_price: number; // e.g., 0.75 = 75¢
   
   // How much USD per trade
   trade_size_usd: number;
@@ -33,7 +41,7 @@ export interface V29Config {
   
   // Take Profit settings
   tp_enabled: boolean;
-  tp_cents: number; // e.g., 3 = sell when price rises 3¢
+  tp_cents: number; // e.g., 4 = sell when price rises 4¢
   
   // Stop Loss settings
   sl_enabled: boolean;
@@ -52,20 +60,22 @@ export interface V29Config {
 
 export const DEFAULT_CONFIG: V29Config = {
   enabled: true,
-  min_delta_usd: 6,
-  max_share_price: 0.55,
-  trade_size_usd: 3,
-  max_shares: 5,
-  price_buffer_cents: 2,
+  tick_delta_usd: 6,
+  delta_threshold: 70,
+  min_share_price: 0.30,
+  max_share_price: 0.75,
+  trade_size_usd: 5,
+  max_shares: 10,
+  price_buffer_cents: 1,
   assets: ['BTC', 'ETH', 'SOL', 'XRP'],
   tp_enabled: true,
-  tp_cents: 3,
+  tp_cents: 4,
   sl_enabled: true,
-  sl_cents: 5,
-  timeout_ms: 60_000, // 1 minute
+  sl_cents: 3,
+  timeout_ms: 30_000,
   binance_poll_ms: 100,
   orderbook_poll_ms: 2000,
-  order_cooldown_ms: 5000,
+  order_cooldown_ms: 3000,
 };
 
 // Binance WebSocket symbols

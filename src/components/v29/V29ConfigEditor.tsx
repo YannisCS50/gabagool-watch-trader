@@ -13,39 +13,54 @@ import { toast } from 'sonner';
 interface V29Config {
   id: string;
   enabled: boolean;
-  min_delta_usd: number;
+  // Tick-to-tick delta detection
+  tick_delta_usd: number;
+  // Delta threshold for direction logic (strike - actual)
+  delta_threshold: number;
+  // Share price range
+  min_share_price: number;
   max_share_price: number;
+  // Trade settings
   trade_size_usd: number;
   max_shares: number;
   price_buffer_cents: number;
   assets: string[];
+  // Take Profit
   tp_enabled: boolean;
   tp_cents: number;
+  // Stop Loss
   sl_enabled: boolean;
   sl_cents: number;
+  // Timeout
   timeout_ms: number;
+  // Polling
   binance_poll_ms: number;
   orderbook_poll_ms: number;
   order_cooldown_ms: number;
+  // Legacy field (not used in new logic)
+  min_delta_usd: number;
 }
 
 const DEFAULT_CONFIG: V29Config = {
   id: 'default',
   enabled: true,
-  min_delta_usd: 150,
-  max_share_price: 0.65,
+  tick_delta_usd: 6,
+  delta_threshold: 70,
+  min_share_price: 0.30,
+  max_share_price: 0.75,
   trade_size_usd: 5,
   max_shares: 10,
   price_buffer_cents: 1,
   assets: ['BTC', 'ETH', 'SOL', 'XRP'],
   tp_enabled: true,
-  tp_cents: 2,
+  tp_cents: 4,
   sl_enabled: true,
   sl_cents: 3,
   timeout_ms: 30000,
   binance_poll_ms: 100,
   orderbook_poll_ms: 2000,
   order_cooldown_ms: 3000,
+  min_delta_usd: 6,
 };
 
 const AVAILABLE_ASSETS = ['BTC', 'ETH', 'SOL', 'XRP'];
@@ -119,7 +134,9 @@ export function V29ConfigEditor() {
         .from('v29_config')
         .update({
           enabled: config.enabled,
-          min_delta_usd: config.min_delta_usd,
+          tick_delta_usd: config.tick_delta_usd,
+          delta_threshold: config.delta_threshold,
+          min_share_price: config.min_share_price,
           max_share_price: config.max_share_price,
           trade_size_usd: config.trade_size_usd,
           max_shares: config.max_shares,
@@ -241,17 +258,55 @@ export function V29ConfigEditor() {
             Entry Instellingen
           </h4>
           
+          {/* Delta-based Direction Logic Explanation */}
+          <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 text-sm">
+            <p className="font-medium text-blue-400 mb-2">Delta Richtingslogica:</p>
+            <ul className="text-xs text-muted-foreground space-y-1">
+              <li>• <strong>Delta = strike - binance prijs</strong></li>
+              <li>• Delta tussen -{config.delta_threshold} en +{config.delta_threshold}: trade beide richtingen</li>
+              <li>• Delta &lt; -{config.delta_threshold}: alleen DOWN trades</li>
+              <li>• Delta &gt; +{config.delta_threshold}: alleen UP trades</li>
+            </ul>
+          </div>
+          
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-2">
-              <Label className="text-xs">Min Delta (USD)</Label>
+              <Label className="text-xs">Tick Delta (USD)</Label>
               <Input
                 type="number"
-                value={config.min_delta_usd}
-                onChange={(e) => updateField('min_delta_usd', parseFloat(e.target.value) || 0)}
+                value={config.tick_delta_usd}
+                onChange={(e) => updateField('tick_delta_usd', parseFloat(e.target.value) || 0)}
                 className="h-9"
               />
               <p className="text-xs text-muted-foreground">
-                Binance moet ${config.min_delta_usd} van strike afwijken
+                Trigger trade bij ${config.tick_delta_usd} prijsverandering
+              </p>
+            </div>
+            
+            <div className="space-y-2">
+              <Label className="text-xs">Delta Threshold (USD)</Label>
+              <Input
+                type="number"
+                value={config.delta_threshold}
+                onChange={(e) => updateField('delta_threshold', parseFloat(e.target.value) || 0)}
+                className="h-9"
+              />
+              <p className="text-xs text-muted-foreground">
+                ±${config.delta_threshold} voor richtingslogica
+              </p>
+            </div>
+            
+            <div className="space-y-2">
+              <Label className="text-xs">Min Share Price</Label>
+              <Input
+                type="number"
+                step="0.01"
+                value={config.min_share_price}
+                onChange={(e) => updateField('min_share_price', parseFloat(e.target.value) || 0)}
+                className="h-9"
+              />
+              <p className="text-xs text-muted-foreground">
+                Minimaal {(config.min_share_price * 100).toFixed(0)}¢ per share
               </p>
             </div>
             
