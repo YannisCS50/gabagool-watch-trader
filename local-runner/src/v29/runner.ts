@@ -17,9 +17,10 @@ import { startBinanceFeed, stopBinanceFeed } from './binance.js';
 import { startChainlinkFeed, stopChainlinkFeed, getChainlinkPrice } from './chainlink.js';
 import { fetchMarketOrderbook, fetchAllOrderbooks } from './orderbook.js';
 import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb, queueLog } from './db.js';
-import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, getOrderStatus } from './trading.js';
+import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, getOrderStatus, setFillContext, clearFillContext } from './trading.js';
 import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
+import { acquireLease, releaseLease, validateLease } from './lease.js';
 
 // ============================================
 // STATE
@@ -407,7 +408,18 @@ async function executeTrade(
   log(`📤 BUY: ${asset} ${direction} ${shares} shares @ ${(buyPrice * 100).toFixed(1)}¢`, 'order', asset);
   
   const tokenId = direction === 'UP' ? market.upTokenId : market.downTokenId;
+  
+  // Set fill context for burst logging
+  setFillContext({
+    runId: RUN_ID,
+    signalId: signal.id,
+    marketSlug: market.slug,
+  });
+  
   const result = await placeBuyOrder(tokenId, buyPrice, shares, asset, direction);
+  
+  // Clear context after order
+  clearFillContext();
   
   const latency = Date.now() - signalTs;
   
@@ -633,9 +645,25 @@ async function main(): Promise<void> {
   log('🚀 V29 Simple Runner starting...');
   log(`📋 Run ID: ${RUN_ID}`);
   
+  // Init DB first (needed for lease)
+  initDb();
+  log('✅ DB initialized');
+  
+  // ============================================
+  // RUNNER LEASE - ONLY 1 RUNNER AT A TIME
+  // ============================================
+  const leaseAcquired = await acquireLease(RUN_ID);
+  if (!leaseAcquired) {
+    logError('❌ FAILED TO ACQUIRE LEASE - Another runner is already active!');
+    logError('   Stop the other runner first, or wait for it to timeout (30s).');
+    process.exit(1);
+  }
+  log('🔒 Lease acquired - this is the ONLY active runner');
+  
   // VPN check
   const vpnOk = await verifyVpnConnection();
   if (!vpnOk) {
+    await releaseLease(RUN_ID);
     logError('VPN verification failed! Exiting.');
     process.exit(1);
   }
@@ -658,9 +686,7 @@ async function main(): Promise<void> {
     logError('Balance check failed', err);
   }
   
-  // Init DB
-  await initDb();
-  log('✅ DB initialized');
+  // DB already initialized above for lease
   
   // Load config - merge with defaults to ensure all fields exist
   const loadedConfig = await loadV29Config();
@@ -732,8 +758,8 @@ async function main(): Promise<void> {
   log(`   Strategy: Buy ${config.shares_per_trade} shares → TP ${config.take_profit_cents}¢ → Timeout ${config.timeout_seconds}s`);
   log(`   Max 1 position at a time`);
   
-  // Handle shutdown
-  const cleanup = () => {
+  // Handle shutdown - release lease!
+  const cleanup = async () => {
     log('🛑 Shutting down...');
     isRunning = false;
     clearInterval(orderbookInterval);
@@ -743,11 +769,16 @@ async function main(): Promise<void> {
     stopBinanceFeed();
     stopChainlinkFeed();
     stopPreSignedCache();
+    
+    // CRITICAL: Release lease so another runner can start
+    await releaseLease(RUN_ID);
+    log('🔓 Lease released');
+    
     process.exit(0);
   };
   
-  process.on('SIGINT', cleanup);
-  process.on('SIGTERM', cleanup);
+  process.on('SIGINT', () => void cleanup());
+  process.on('SIGTERM', () => void cleanup());
 }
 
 main().catch(err => {
