@@ -235,9 +235,9 @@ function handleBinancePrice(asset: Asset, price: number): void {
   // Calculate tick-to-tick delta (Binance price change between ticks)
   const tickDelta = price - prevPrice;
   
-  // Log significant deltas (> 50% threshold)
-  if (Math.abs(tickDelta) > config.tick_delta_usd * 0.5) {
-    queueLog(RUN_ID, 'info', 'price', `${asset} tick Δ$${tickDelta > 0 ? '+' : ''}${tickDelta.toFixed(2)}`, asset, { tickDelta, threshold: config.tick_delta_usd, binancePrice: price });
+  // Log Binance tick deltas > $3
+  if (Math.abs(tickDelta) >= 3) {
+    queueLog(RUN_ID, 'info', 'price', `${asset} binance Δ$${tickDelta > 0 ? '+' : ''}${tickDelta.toFixed(2)} ($${price.toFixed(2)})`, asset, { source: 'binance', tickDelta, price, threshold: config.tick_delta_usd });
   }
   
   // Check if tick delta exceeds threshold (e.g., $6 price move)
