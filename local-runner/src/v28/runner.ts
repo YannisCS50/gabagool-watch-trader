@@ -395,8 +395,7 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
     console.log(`[V28] ✅ ${asset} Binance-Strike Δ$${binanceVsStrikeDelta.toFixed(0)} → ${direction} allowed`);
   }
 
-  // Get share price
-  const state = priceState[asset];
+  // Get share price (reuse state from above)
   const sharePrice = direction === 'UP'
     ? (state.upBestAsk ?? state.upBestBid)
     : (state.downBestAsk ?? state.downBestBid);
