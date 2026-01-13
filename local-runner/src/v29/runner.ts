@@ -156,10 +156,31 @@ async function fetchMarkets(): Promise<void> {
           endTime: new Date(endMs),
         });
         
-        // If market changed, update pre-signed cache immediately!
+        // If market changed, update pre-signed cache AND RESET ORDERBOOK DATA immediately!
         if (isNewMarket && previousSlug !== null) {
-          log(`🔁 ${asset} NEW MARKET: ${slug} (was: ${previousSlug}) → updating pre-sign cache`);
+          log(`🔁 ${asset} NEW MARKET: ${slug} (was: ${previousSlug}) → resetting orderbook + updating pre-sign cache`);
+          
+          // CRITICAL: Reset orderbook data to prevent stale prices from old market!
+          priceState[asset] = {
+            ...priceState[asset],
+            upBestAsk: null,
+            upBestBid: null,
+            downBestAsk: null,
+            downBestBid: null,
+            lastUpdate: 0,
+          };
+          
           void updateMarketCache(asset, m.upTokenId, m.downTokenId);
+          
+          // Immediately fetch fresh orderbook for new market
+          void fetchMarketOrderbook(markets.get(asset)!).then(book => {
+            if (book.upBestAsk !== undefined) priceState[asset].upBestAsk = book.upBestAsk;
+            if (book.upBestBid !== undefined) priceState[asset].upBestBid = book.upBestBid;
+            if (book.downBestAsk !== undefined) priceState[asset].downBestAsk = book.downBestAsk;
+            if (book.downBestBid !== undefined) priceState[asset].downBestBid = book.downBestBid;
+            if (book.lastUpdate !== undefined) priceState[asset].lastUpdate = book.lastUpdate;
+            log(`📖 ${asset} orderbook refreshed: UP ask ${((book.upBestAsk ?? 0) * 100).toFixed(1)}¢ | DOWN ask ${((book.downBestAsk ?? 0) * 100).toFixed(1)}¢`);
+          });
         } else if (isNewMarket) {
           log(`📍 ${asset}: ${slug} @ strike $${m.strikePrice ?? m.strike_price ?? 0}`);
         }
