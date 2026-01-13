@@ -16,7 +16,7 @@ import { startBinanceFeed, stopBinanceFeed } from './binance.js';
 import { startChainlinkFeed, stopChainlinkFeed, getChainlinkPrice } from './chainlink.js';
 import { fetchMarketOrderbook, fetchAllOrderbooks } from './orderbook.js';
 import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb, queueLog } from './db.js';
-import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache } from './trading.js';
+import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, cancelOrder, getOrderStatus } from './trading.js';
 import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
 
@@ -396,18 +396,64 @@ async function executeTrade(
   
   const latency = Date.now() - signalTs;
   
-  if (result.success && result.filledSize && result.filledSize > 0) {
+  if (!result.success) {
+    // Order placement failed immediately
+    signal.status = 'failed';
+    signal.notes = `${result.error ?? 'Unknown error'} | Latency: ${latency}ms`;
+    log(`❌ FAILED: ${result.error ?? 'Unknown'} (${latency}ms)`);
+    void saveSignal(signal);
+    return;
+  }
+  
+  const orderId = result.orderId;
+  if (!orderId) {
+    signal.status = 'failed';
+    signal.notes = `No order ID returned | Latency: ${latency}ms`;
+    log(`❌ FAILED: No order ID returned (${latency}ms)`);
+    void saveSignal(signal);
+    return;
+  }
+  
+  signal.order_id = orderId;
+  log(`📋 Order placed: ${orderId} - waiting for fill...`, 'order', asset);
+  
+  // Wait up to 5 seconds for fill, checking every 500ms
+  const FILL_TIMEOUT_MS = 5000;
+  const POLL_INTERVAL_MS = 500;
+  const startWait = Date.now();
+  let filled = false;
+  let filledSize = 0;
+  
+  while (Date.now() - startWait < FILL_TIMEOUT_MS) {
+    await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS));
+    
+    const status = await getOrderStatus(orderId);
+    if (status.filled || status.filledSize > 0) {
+      filled = true;
+      filledSize = status.filledSize || shares;
+      break;
+    }
+    
+    // If status is cancelled or dead, stop waiting
+    if (status.status === 'CANCELLED' || status.status === 'DEAD') {
+      log(`⚠️ Order ${orderId} was ${status.status}`);
+      break;
+    }
+  }
+  
+  const totalLatency = Date.now() - signalTs;
+  
+  if (filled && filledSize > 0) {
     // SUCCESS!
     signal.status = 'filled';
     signal.entry_price = result.avgPrice ?? buyPrice;
-    signal.shares = result.filledSize;
-    signal.order_id = result.orderId ?? null;
+    signal.shares = filledSize;
     signal.fill_ts = Date.now();
-    signal.notes = `Filled ${result.filledSize} @ ${(signal.entry_price * 100).toFixed(1)}¢ | Latency: ${latency}ms`;
+    signal.notes = `Filled ${filledSize} @ ${(signal.entry_price * 100).toFixed(1)}¢ | Latency: ${totalLatency}ms`;
     
     tradesCount++;
     
-    log(`✅ FILLED: ${asset} ${direction} ${result.filledSize} @ ${(signal.entry_price * 100).toFixed(1)}¢ (${latency}ms)`, 'fill', asset, { direction, shares: result.filledSize, price: signal.entry_price, latencyMs: latency });
+    log(`✅ FILLED: ${asset} ${direction} ${filledSize} @ ${(signal.entry_price * 100).toFixed(1)}¢ (${totalLatency}ms)`, 'fill', asset, { direction, shares: filledSize, price: signal.entry_price, latencyMs: totalLatency });
     
     // Create position
     activePosition = {
@@ -416,7 +462,7 @@ async function executeTrade(
       direction,
       tokenId,
       entryPrice: signal.entry_price,
-      shares: result.filledSize,
+      shares: filledSize,
       tpPrice: config.tp_enabled ? signal.entry_price + (config.tp_cents / 100) : null,
       slPrice: config.sl_enabled ? signal.entry_price - (config.sl_cents / 100) : null,
       startTime: Date.now(),
@@ -428,11 +474,14 @@ async function executeTrade(
     // Start monitoring
     startPositionMonitor();
   } else {
-    // FAILED
-    signal.status = 'failed';
-    signal.notes = `${result.error ?? 'Unknown error'} | Latency: ${latency}ms`;
+    // Not filled in time - CANCEL the order
+    log(`⏰ Order not filled in 5s - cancelling: ${orderId}`, 'order', asset);
+    const cancelled = await cancelOrder(orderId);
     
-    log(`❌ FAILED: ${result.error ?? 'Unknown'} (${latency}ms)`);
+    signal.status = 'cancelled';
+    signal.notes = `Not filled in 5s, cancelled=${cancelled} | Latency: ${totalLatency}ms`;
+    
+    log(`🗑️ Order cancelled: ${orderId} (cancelled=${cancelled})`);
   }
   
   // Update signal in DB
