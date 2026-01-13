@@ -337,10 +337,15 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
   const binanceChainlinkGap = chainlinkNow !== null ? (newPrice - chainlinkNow) : null;
   
   const signalId = `SIG-${Date.now().toString(36).toUpperCase()}`;
+  const market = marketInfo[asset];
+  const strikePrice = market?.strikePrice ?? null;
+  const binanceVsStrikeDelta = strikePrice !== null ? newPrice - strikePrice : null;
+  
   console.log(`\n[V28] ══════════════════════════════════════════════════════════════`);
   console.log(`[V28] 🎯 SIGNAL ${signalId}: ${asset} ${delta > 0 ? '↑ UP' : '↓ DOWN'}`);
   console.log(`[V28] ──────────────────────────────────────────────────────────────`);
   console.log(`[V28] Binance:      $${newPrice.toFixed(2)} (Δ$${delta > 0 ? '+' : ''}${delta.toFixed(2)} in ${windowDuration}ms)`);
+  console.log(`[V28] Strike:       $${strikePrice?.toFixed(2) ?? '?'} (Binance-Strike: $${binanceVsStrikeDelta !== null ? (binanceVsStrikeDelta > 0 ? '+' : '') + binanceVsStrikeDelta.toFixed(2) : '?'})`);
   console.log(`[V28] Chainlink:    $${chainlinkNow?.toFixed(2) ?? '?'} (gap: $${binanceChainlinkGap !== null ? (binanceChainlinkGap > 0 ? '+' : '') + binanceChainlinkGap.toFixed(2) : '?'})`);
   console.log(`[V28] Threshold:    $${currentConfig.min_delta_usd} (${((Math.abs(delta) / currentConfig.min_delta_usd) * 100).toFixed(0)}% met)`);
   console.log(`[V28] UP ask/bid:   ${state.upBestAsk ? (state.upBestAsk * 100).toFixed(1) : '?'}¢ / ${state.upBestBid ? (state.upBestBid * 100).toFixed(1) : '?'}¢`);
@@ -373,27 +378,27 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
 
   const direction: 'UP' | 'DOWN' = delta > 0 ? 'UP' : 'DOWN';
 
-  // NEW FILTER: Restrict direction based on Binance vs Strike price delta
+  // Direction filter based on Binance vs Strike price delta
   // Delta between -70 and +70: can trade both UP and DOWN
   // Delta < -70: can only trade DOWN
   // Delta > +70: can only trade UP
-  const strikePrice = market.strikePrice;
-  if (strikePrice !== null && strikePrice !== undefined) {
-    const binanceVsStrikeDelta = newPrice - strikePrice;
+  const strikePriceCheck = market.strikePrice;
+  if (strikePriceCheck !== null && strikePriceCheck !== undefined) {
+    const binanceVsStrikeDeltaCheck = newPrice - strikePriceCheck;
     
-    if (binanceVsStrikeDelta < -70 && direction === 'UP') {
-      console.log(`[V28] 🚫 ${signalId} SKIPPED: Binance-Strike Δ$${binanceVsStrikeDelta.toFixed(0)} < -70 → only DOWN allowed`);
+    if (binanceVsStrikeDeltaCheck < -70 && direction === 'UP') {
+      console.log(`[V28] 🚫 ${signalId} SKIPPED: Binance $${newPrice.toFixed(2)} vs Strike $${strikePriceCheck.toFixed(2)} = Δ$${binanceVsStrikeDeltaCheck.toFixed(0)} < -70 → only DOWN allowed`);
       console.log(`[V28] ═════════════════════════════════════════════════════════════════\n`);
       return;
     }
     
-    if (binanceVsStrikeDelta > 70 && direction === 'DOWN') {
-      console.log(`[V28] 🚫 ${signalId} SKIPPED: Binance-Strike Δ$${binanceVsStrikeDelta.toFixed(0)} > +70 → only UP allowed`);
+    if (binanceVsStrikeDeltaCheck > 70 && direction === 'DOWN') {
+      console.log(`[V28] 🚫 ${signalId} SKIPPED: Binance $${newPrice.toFixed(2)} vs Strike $${strikePriceCheck.toFixed(2)} = Δ$${binanceVsStrikeDeltaCheck.toFixed(0)} > +70 → only UP allowed`);
       console.log(`[V28] ═════════════════════════════════════════════════════════════════\n`);
       return;
     }
     
-    console.log(`[V28] ✅ ${asset} Binance-Strike Δ$${binanceVsStrikeDelta.toFixed(0)} → ${direction} allowed`);
+    console.log(`[V28] ✅ ${asset} Binance $${newPrice.toFixed(2)} vs Strike $${strikePriceCheck.toFixed(2)} = Δ$${binanceVsStrikeDeltaCheck.toFixed(0)} → ${direction} allowed`);
   }
 
   // Get share price (reuse state from above)
@@ -414,16 +419,16 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
     return;
   }
 
-  // NEW FILTER: Check Binance vs Chainlink delta is within ±$100
-  const chainlinkPrice = priceState[asset].chainlink;
-  if (chainlinkPrice !== null) {
-    const binanceChainlinkDelta = newPrice - chainlinkPrice;
-    if (Math.abs(binanceChainlinkDelta) > 100) {
-      console.log(`[V28] ⚠️ ${signalId} SKIPPED: Binance-Chainlink Δ$${binanceChainlinkDelta.toFixed(2)} outside ±$100`);
-      console.log(`[V28] ═════════════════════════════════════════════════════════════════\n`);
-      return;
-    }
-  }
+  // DISABLED: Binance vs Chainlink delta filter (was ±$100)
+  // const chainlinkPrice = priceState[asset].chainlink;
+  // if (chainlinkPrice !== null) {
+  //   const binanceChainlinkDelta = newPrice - chainlinkPrice;
+  //   if (Math.abs(binanceChainlinkDelta) > 100) {
+  //     console.log(`[V28] ⚠️ ${signalId} SKIPPED: Binance-Chainlink Δ$${binanceChainlinkDelta.toFixed(2)} outside ±$100`);
+  //     console.log(`[V28] ═════════════════════════════════════════════════════════════════\n`);
+  //     return;
+  //   }
+  // }
 
   // Extra safety: avoid duplicate orders for the same asset/side if something slipped through.
   const hasActive = [...activeSignals.values()].some(
