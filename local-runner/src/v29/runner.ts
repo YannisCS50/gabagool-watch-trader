@@ -229,15 +229,16 @@ function handleBinancePrice(asset: Asset, price: number, _timestamp: number): vo
   const prevPrice = lastBinancePrice[asset];
   lastBinancePrice[asset] = price;
   
-  // Calculate tick-to-tick delta (exactly like UI: current - previous)
+  // Calculate tick-to-tick delta (now based on 100ms buffered prices)
   const tickDelta = prevPrice !== null ? price - prevPrice : 0;
   
-  // Log EVERY Binance tick (like Chainlink does)
-  queueLog(RUN_ID, 'info', 'price', `${asset} binance $${price.toFixed(2)}${prevPrice !== null ? ` Δ${tickDelta >= 0 ? '+' : ''}${tickDelta.toFixed(2)}` : ''}`, asset, { 
+  // Log buffered Binance tick with delta
+  queueLog(RUN_ID, 'info', 'price', `${asset} binance $${price.toFixed(2)}${prevPrice !== null ? ` Δ${tickDelta >= 0 ? '+' : ''}${tickDelta.toFixed(2)}` : ' (first)'}`, asset, { 
     source: 'binance', 
     price,
     tickDelta, 
-    threshold: config.tick_delta_usd 
+    threshold: config.tick_delta_usd,
+    buffered: true
   });
   
   // Skip if disabled
