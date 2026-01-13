@@ -453,7 +453,10 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
   priceWindows[asset] = [{ price: newPrice, ts: now }];
   windowStartPrices[asset] = { price: newPrice, ts: now };
 
-  console.log(`[V28] ✅ ${signalId} EXECUTING: ${asset} ${direction} @ ${(sharePrice * 100).toFixed(1)}¢ (detection: ${detectionMs}ms)`);
+  // Fix: detectionMs was referenced but never defined (caused runtime crash and no trades)
+  const detectionMs = windowDuration;
+
+  console.log(`[V28] ✅ ${signalId} EXECUTING: ${asset} ${direction} @ ${(sharePrice * 100).toFixed(1)}¢ (window: ${detectionMs}ms)`);
   console.log(`[V28] ═════════════════════════════════════════════════════════════════\n`);
 
   // Create signal - pass the original tick timestamp for accurate latency tracking
