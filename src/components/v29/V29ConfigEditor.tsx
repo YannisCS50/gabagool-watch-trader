@@ -36,6 +36,13 @@ interface V29Config {
   binance_poll_ms: number;
   orderbook_poll_ms: number;
   order_cooldown_ms: number;
+  // Accumulation & Auto-Hedge
+  accumulation_enabled: boolean;
+  max_total_cost_usd: number;
+  max_total_shares: number;
+  auto_hedge_enabled: boolean;
+  hedge_trigger_cents: number;
+  hedge_min_profit_cents: number;
 }
 
 const DEFAULT_CONFIG: V29Config = {
@@ -57,6 +64,13 @@ const DEFAULT_CONFIG: V29Config = {
   binance_poll_ms: 100,
   orderbook_poll_ms: 2000,
   order_cooldown_ms: 3000,
+  // Accumulation & Hedge
+  accumulation_enabled: true,
+  max_total_cost_usd: 75,
+  max_total_shares: 300,
+  auto_hedge_enabled: true,
+  hedge_trigger_cents: 15,
+  hedge_min_profit_cents: 10,
 };
 
 const AVAILABLE_ASSETS = ['BTC', 'ETH', 'SOL', 'XRP'];
@@ -146,8 +160,27 @@ export function V29ConfigEditor() {
           binance_poll_ms: config.binance_poll_ms,
           orderbook_poll_ms: config.orderbook_poll_ms,
           order_cooldown_ms: config.order_cooldown_ms,
+          // Accumulation & Hedge
+          accumulation_enabled: config.accumulation_enabled,
+          max_total_cost_usd: config.max_total_cost_usd,
+          max_total_shares: config.max_total_shares,
+          auto_hedge_enabled: config.auto_hedge_enabled,
+          hedge_trigger_cents: config.hedge_trigger_cents,
+          hedge_min_profit_cents: config.hedge_min_profit_cents,
         })
         .eq('id', 'default');
+
+      if (error) throw error;
+
+      toast.success('V29 config opgeslagen! Runner pikt dit automatisch op.');
+      setHasChanges(false);
+    } catch (err) {
+      console.error('Failed to save config:', err);
+      toast.error('Kon config niet opslaan');
+    } finally {
+      setSaving(false);
+    }
+  };
 
       if (error) throw error;
 
@@ -446,6 +479,107 @@ export function V29ConfigEditor() {
             <p className="text-xs text-muted-foreground">
               Auto-close positie na {(config.timeout_ms / 1000).toFixed(0)}s (verkoopt op min_profit indien mogelijk)
             </p>
+          </div>
+        </div>
+
+        <Separator />
+
+        {/* Accumulation & Hedge Settings */}
+        <div className="space-y-4">
+          <h4 className="font-medium text-sm text-muted-foreground flex items-center gap-2">
+            <Shield className="h-4 w-4" />
+            Accumulatie & Auto-Hedge
+          </h4>
+          
+          {/* Explanation */}
+          <div className="p-3 rounded-lg bg-purple-500/10 border border-purple-500/20 text-sm">
+            <p className="font-medium text-purple-400 mb-2">Accumulatie Strategie:</p>
+            <ul className="text-xs text-muted-foreground space-y-1">
+              <li>• <strong>Accumulatie</strong>: Bouw posities op over tijd (niet-agressief)</li>
+              <li>• Max ${config.max_total_cost_usd} of {config.max_total_shares} shares per asset/side</li>
+              <li>• <strong>Auto-Hedge</strong>: Koop tegenovergestelde shares als het goedkoop is</li>
+              <li>• Hedge bij ask &lt; {config.hedge_trigger_cents}¢ EN unrealized profit ≥ {config.hedge_min_profit_cents}¢</li>
+            </ul>
+          </div>
+          
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-3 p-3 rounded-lg bg-purple-500/5 border border-purple-500/20">
+              <div className="flex items-center justify-between">
+                <Label className="text-sm text-purple-400">Accumulatie Enabled</Label>
+                <Switch
+                  checked={config.accumulation_enabled}
+                  onCheckedChange={(v) => updateField('accumulation_enabled', v)}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Bouw posities op i.p.v. enkele trades
+              </p>
+            </div>
+            
+            <div className="space-y-3 p-3 rounded-lg bg-blue-500/5 border border-blue-500/20">
+              <div className="flex items-center justify-between">
+                <Label className="text-sm text-blue-400">Auto-Hedge Enabled</Label>
+                <Switch
+                  checked={config.auto_hedge_enabled}
+                  onCheckedChange={(v) => updateField('auto_hedge_enabled', v)}
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Automatisch hedgen bij winst + goedkope tegenovergestelde
+              </p>
+            </div>
+            
+            <div className="space-y-2">
+              <Label className="text-xs">Max Totale Kosten (USD)</Label>
+              <Input
+                type="number"
+                value={config.max_total_cost_usd}
+                onChange={(e) => updateField('max_total_cost_usd', parseFloat(e.target.value) || 0)}
+                className="h-9"
+              />
+              <p className="text-xs text-muted-foreground">
+                Stop accumulatie bij ${config.max_total_cost_usd} per side
+              </p>
+            </div>
+            
+            <div className="space-y-2">
+              <Label className="text-xs">Max Totale Shares</Label>
+              <Input
+                type="number"
+                value={config.max_total_shares}
+                onChange={(e) => updateField('max_total_shares', parseInt(e.target.value) || 0)}
+                className="h-9"
+              />
+              <p className="text-xs text-muted-foreground">
+                Stop accumulatie bij {config.max_total_shares} shares per side
+              </p>
+            </div>
+            
+            <div className="space-y-2">
+              <Label className="text-xs">Hedge Trigger (¢)</Label>
+              <Input
+                type="number"
+                value={config.hedge_trigger_cents}
+                onChange={(e) => updateField('hedge_trigger_cents', parseInt(e.target.value) || 0)}
+                className="h-9"
+              />
+              <p className="text-xs text-muted-foreground">
+                Hedge als tegenovergestelde ask &lt; {config.hedge_trigger_cents}¢
+              </p>
+            </div>
+            
+            <div className="space-y-2">
+              <Label className="text-xs">Min Profit voor Hedge (¢)</Label>
+              <Input
+                type="number"
+                value={config.hedge_min_profit_cents}
+                onChange={(e) => updateField('hedge_min_profit_cents', parseInt(e.target.value) || 0)}
+                className="h-9"
+              />
+              <p className="text-xs text-muted-foreground">
+                Alleen hedgen bij ≥{config.hedge_min_profit_cents}¢ unrealized profit
+              </p>
+            </div>
           </div>
         </div>
 

@@ -5173,15 +5173,21 @@ export type Database = {
       }
       v29_config: {
         Row: {
+          accumulation_enabled: boolean | null
           assets: string[]
+          auto_hedge_enabled: boolean | null
           binance_poll_ms: number
           created_at: string
           delta_threshold: number | null
           emergency_sl_cents: number | null
           enabled: boolean
+          hedge_min_profit_cents: number | null
+          hedge_trigger_cents: number | null
           id: string
           max_share_price: number
           max_shares: number
+          max_total_cost_usd: number | null
+          max_total_shares: number | null
           min_delta_usd: number
           min_profit_cents: number | null
           min_share_price: number | null
@@ -5196,15 +5202,21 @@ export type Database = {
           updated_at: string
         }
         Insert: {
+          accumulation_enabled?: boolean | null
           assets?: string[]
+          auto_hedge_enabled?: boolean | null
           binance_poll_ms?: number
           created_at?: string
           delta_threshold?: number | null
           emergency_sl_cents?: number | null
           enabled?: boolean
+          hedge_min_profit_cents?: number | null
+          hedge_trigger_cents?: number | null
           id?: string
           max_share_price?: number
           max_shares?: number
+          max_total_cost_usd?: number | null
+          max_total_shares?: number | null
           min_delta_usd?: number
           min_profit_cents?: number | null
           min_share_price?: number | null
@@ -5219,15 +5231,21 @@ export type Database = {
           updated_at?: string
         }
         Update: {
+          accumulation_enabled?: boolean | null
           assets?: string[]
+          auto_hedge_enabled?: boolean | null
           binance_poll_ms?: number
           created_at?: string
           delta_threshold?: number | null
           emergency_sl_cents?: number | null
           enabled?: boolean
+          hedge_min_profit_cents?: number | null
+          hedge_trigger_cents?: number | null
           id?: string
           max_share_price?: number
           max_shares?: number
+          max_total_cost_usd?: number | null
+          max_total_shares?: number | null
           min_delta_usd?: number
           min_profit_cents?: number | null
           min_share_price?: number | null
@@ -5276,6 +5294,54 @@ export type Database = {
           message?: string
           run_id?: string | null
           ts?: number
+        }
+        Relationships: []
+      }
+      v29_positions: {
+        Row: {
+          asset: string
+          created_at: string | null
+          hedge_cost: number | null
+          hedge_shares: number | null
+          id: string
+          is_fully_hedged: boolean | null
+          market_slug: string
+          run_id: string | null
+          side: string
+          token_id: string | null
+          total_cost: number | null
+          total_shares: number | null
+          updated_at: string | null
+        }
+        Insert: {
+          asset: string
+          created_at?: string | null
+          hedge_cost?: number | null
+          hedge_shares?: number | null
+          id?: string
+          is_fully_hedged?: boolean | null
+          market_slug: string
+          run_id?: string | null
+          side: string
+          token_id?: string | null
+          total_cost?: number | null
+          total_shares?: number | null
+          updated_at?: string | null
+        }
+        Update: {
+          asset?: string
+          created_at?: string | null
+          hedge_cost?: number | null
+          hedge_shares?: number | null
+          id?: string
+          is_fully_hedged?: boolean | null
+          market_slug?: string
+          run_id?: string | null
+          side?: string
+          token_id?: string | null
+          total_cost?: number | null
+          total_shares?: number | null
+          updated_at?: string | null
         }
         Relationships: []
       }

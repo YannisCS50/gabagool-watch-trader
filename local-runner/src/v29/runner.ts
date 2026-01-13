@@ -11,11 +11,14 @@
 import 'dotenv/config';
 import { v4 as uuid } from 'crypto';
 import { Asset, V29Config, DEFAULT_CONFIG } from './config.js';
-import type { MarketInfo, PriceState, Signal, Position } from './types.js';
+import type { MarketInfo, PriceState, Signal, Position, AggregatePosition } from './types.js';
 import { startBinanceFeed, stopBinanceFeed } from './binance.js';
 import { startChainlinkFeed, stopChainlinkFeed, getChainlinkPrice } from './chainlink.js';
 import { fetchMarketOrderbook, fetchAllOrderbooks } from './orderbook.js';
-import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb, queueLog } from './db.js';
+import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb, queueLog, getAggregatePosition, upsertAggregatePosition, addHedgeToPosition, getAllPositionsForMarket, clearPositionsForMarket } from './db.js';
+import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, cancelOrder, getOrderStatus } from './trading.js';
+import { verifyVpnConnection } from '../vpn-check.js';
+import { testConnection } from '../polymarket.js';
 import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, cancelOrder, getOrderStatus } from './trading.js';
 import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
@@ -41,13 +44,16 @@ const priceState: Record<Asset, PriceState> = {
 
 // (prevPrices moved to handleBinancePrice as lastBinancePrice)
 
-// Current position (only one at a time)
+// Current position (only one at a time for trailing stop logic)
 let activePosition: Position | null = null;
 let activeSignal: Signal | null = null;
 let lastOrderTime = 0;
 let tradesCount = 0;
 let lastMarketRefresh = 0;
 let lastConfigReload = 0;
+
+// Track aggregate positions per asset/side (for accumulation strategy)
+const aggregatePositions = new Map<string, AggregatePosition>(); // key: `${asset}-${side}-${marketSlug}`
 
 // Track active BUY orders per side (UP/DOWN) per asset - MAX 1 PER SIDE
 interface ActiveOrder {
@@ -307,11 +313,17 @@ function handleBinancePrice(asset: Asset, price: number, _timestamp: number): vo
   log(`🎯 TRIGGER: ${asset} ${tickDirection} | tickΔ$${tickDelta.toFixed(2)} | price vs strike: $${priceVsStrikeDelta.toFixed(0)} | allowed: ${allowedDirection}`, 'signal', asset, { tickDelta, priceVsStrikeDelta, direction: tickDirection });
   
   // Execute trade
+  // Execute trade (accumulation mode)
   void executeTrade(asset, tickDirection, price, tickDelta, priceVsStrikeDelta);
+  
+  // Also check if we can hedge the OPPOSITE side
+  if (config.auto_hedge_enabled) {
+    void checkAndExecuteHedge(asset, tickDirection === 'UP' ? 'DOWN' : 'UP');
+  }
 }
 
 // ============================================
-// TRADE EXECUTION
+// TRADE EXECUTION (Accumulation Mode)
 // ============================================
 
 async function executeTrade(
@@ -331,6 +343,32 @@ async function executeTrade(
     return;
   }
   
+  // Check accumulation limits BEFORE placing order
+  if (config.accumulation_enabled) {
+    const posKey = `${asset}-${direction}-${market.slug}`;
+    const existingPos = aggregatePositions.get(posKey);
+    
+    if (existingPos) {
+      // Check if we've hit the max cost limit
+      if (existingPos.totalCost >= config.max_total_cost_usd) {
+        log(`⚠️ ${asset} ${direction} at max cost $${existingPos.totalCost.toFixed(2)} >= $${config.max_total_cost_usd}`, 'order', asset);
+        return;
+      }
+      
+      // Check if we've hit the max shares limit
+      if (existingPos.totalShares >= config.max_total_shares) {
+        log(`⚠️ ${asset} ${direction} at max shares ${existingPos.totalShares} >= ${config.max_total_shares}`, 'order', asset);
+        return;
+      }
+      
+      // Check if fully hedged (no need to accumulate more)
+      if (existingPos.isFullyHedged) {
+        log(`⚠️ ${asset} ${direction} already fully hedged, skipping accumulation`, 'order', asset);
+        return;
+      }
+    }
+  }
+  
   // Get current orderbook for this direction
   const state = priceState[asset];
   const bestAsk = direction === 'UP' ? state.upBestAsk : state.downBestAsk;
@@ -342,7 +380,6 @@ async function executeTrade(
   
   // ========================================
   // PRICE RANGE CHECK - BLOCK if ask is outside min/max
-  // Do NOT place order at max_share_price if ask is higher!
   // ========================================
   if (bestAsk < config.min_share_price) {
     log(`🚫 BLOCKED: ${asset} ${direction} ask ${(bestAsk * 100).toFixed(1)}¢ < min ${(config.min_share_price * 100).toFixed(1)}¢`, 'order', asset, { bestAsk, min: config.min_share_price, reason: 'ask_too_low' });
@@ -491,29 +528,52 @@ async function executeTrade(
     
     log(`✅ FILLED: ${asset} ${direction} ${filledSize} @ ${(signal.entry_price * 100).toFixed(1)}¢ (${totalLatency}ms)`, 'fill', asset, { direction, shares: filledSize, price: signal.entry_price, latencyMs: totalLatency });
     
-    // Create position with trailing stop state
-    activePosition = {
-      signalId: signal.id!,
-      asset,
-      direction,
-      tokenId,
-      entryPrice: signal.entry_price,
-      shares: filledSize,
-      startTime: Date.now(),
-      peakProfit: 0,
-      trailingActive: false,
-      sellOrderId: null,
-    };
-    activeSignal = signal;
-    
-    const minSellPrice = (signal.entry_price + config.min_profit_cents / 100);
-    log(`📊 Position open: Entry=${(signal.entry_price * 100).toFixed(1)}¢ | Min sell=${(minSellPrice * 100).toFixed(1)}¢ (+${config.min_profit_cents}¢) | Trailing trigger=+${config.trailing_trigger_cents}¢`, 'order', asset);
-    
-    // Start monitoring
-    startPositionMonitor();
+    // ACCUMULATION MODE: Update aggregate position in DB
+    if (config.accumulation_enabled) {
+      const tradeCost = filledSize * signal.entry_price;
+      const updated = await upsertAggregatePosition(
+        RUN_ID,
+        asset,
+        direction,
+        market.slug,
+        tokenId,
+        filledSize,
+        tradeCost
+      );
+      
+      if (updated) {
+        const posKey = `${asset}-${direction}-${market.slug}`;
+        aggregatePositions.set(posKey, updated);
+        log(`📊 ACCUMULATED: ${asset} ${direction} now ${updated.totalShares} shares @ avg ${(updated.avgEntryPrice * 100).toFixed(1)}¢ ($${updated.totalCost.toFixed(2)} total)`, 'accumulate', asset, {
+          totalShares: updated.totalShares,
+          totalCost: updated.totalCost,
+          avgEntry: updated.avgEntryPrice,
+        });
+      }
+    } else {
+      // Non-accumulation mode: Create single position with trailing stop state
+      activePosition = {
+        signalId: signal.id!,
+        asset,
+        direction,
+        tokenId,
+        entryPrice: signal.entry_price,
+        shares: filledSize,
+        startTime: Date.now(),
+        peakProfit: 0,
+        trailingActive: false,
+        sellOrderId: null,
+      };
+      activeSignal = signal;
+      
+      const minSellPrice = (signal.entry_price + config.min_profit_cents / 100);
+      log(`📊 Position open: Entry=${(signal.entry_price * 100).toFixed(1)}¢ | Min sell=${(minSellPrice * 100).toFixed(1)}¢ (+${config.min_profit_cents}¢) | Trailing trigger=+${config.trailing_trigger_cents}¢`, 'order', asset);
+      
+      // Start monitoring
+      startPositionMonitor();
+    }
   } else {
     // Not filled in time - keep order active (don't cancel)
-    // It will be replaced by next signal if one fires
     log(`⏰ Order not filled in 5s - keeping active: ${orderId}`, 'order', asset);
     
     signal.status = 'pending';
@@ -522,6 +582,122 @@ async function executeTrade(
   
   // Update signal in DB
   void saveSignal(signal);
+}
+
+// ============================================
+// AUTO-HEDGE LOGIC
+// ============================================
+
+async function checkAndExecuteHedge(asset: Asset, hedgeSide: 'UP' | 'DOWN'): Promise<void> {
+  const market = markets.get(asset);
+  if (!market) return;
+  
+  // Get the OPPOSITE side's position (the one we want to hedge)
+  const mainSide = hedgeSide === 'UP' ? 'DOWN' : 'UP';
+  const mainPosKey = `${asset}-${mainSide}-${market.slug}`;
+  const mainPos = aggregatePositions.get(mainPosKey);
+  
+  // No main position to hedge
+  if (!mainPos || mainPos.totalShares <= 0) return;
+  
+  // Already fully hedged
+  if (mainPos.isFullyHedged) return;
+  
+  // Get current orderbook for hedge side
+  const state = priceState[asset];
+  const hedgeAsk = hedgeSide === 'UP' ? state.upBestAsk : state.downBestAsk;
+  const mainBid = mainSide === 'UP' ? state.upBestBid : state.downBestBid;
+  
+  if (!hedgeAsk || !mainBid) return;
+  
+  // Check if hedge is cheap enough (below trigger)
+  const hedgeTrigger = config.hedge_trigger_cents / 100;
+  if (hedgeAsk > hedgeTrigger) {
+    return; // Hedge too expensive
+  }
+  
+  // Calculate unrealized profit on main position
+  const currentValue = mainPos.totalShares * mainBid;
+  const unrealizedProfit = currentValue - mainPos.totalCost;
+  const unrealizedProfitPerShare = unrealizedProfit / mainPos.totalShares;
+  const unrealizedProfitCents = unrealizedProfitPerShare * 100;
+  
+  // Check if we have enough profit to hedge
+  if (unrealizedProfitCents < config.hedge_min_profit_cents) {
+    return; // Not enough profit to justify hedging
+  }
+  
+  // Calculate how many shares we need to hedge
+  const sharesToHedge = mainPos.totalShares - mainPos.hedgeShares;
+  if (sharesToHedge <= 0) return;
+  
+  // Calculate expected locked profit after hedge
+  const hedgeCost = sharesToHedge * hedgeAsk;
+  const totalInvestment = mainPos.totalCost + hedgeCost;
+  const guaranteedReturn = mainPos.totalShares; // One side wins = $1 per share
+  const lockedProfit = guaranteedReturn - totalInvestment;
+  
+  // Only hedge if it locks in actual profit
+  if (lockedProfit <= 0) {
+    log(`⚠️ ${asset} hedge would not lock profit: return=$${guaranteedReturn.toFixed(2)} - investment=$${totalInvestment.toFixed(2)} = $${lockedProfit.toFixed(2)}`, 'hedge', asset);
+    return;
+  }
+  
+  log(`🔒 HEDGE OPPORTUNITY: ${asset} ${hedgeSide} ${sharesToHedge} @ ${(hedgeAsk * 100).toFixed(1)}¢ | Locks $${lockedProfit.toFixed(2)} profit!`, 'hedge', asset, {
+    mainSide,
+    mainShares: mainPos.totalShares,
+    mainCost: mainPos.totalCost,
+    hedgeSide,
+    hedgeAsk,
+    sharesToHedge,
+    hedgeCost,
+    lockedProfit,
+  });
+  
+  // Place hedge order
+  const tokenId = hedgeSide === 'UP' ? market.upTokenId : market.downTokenId;
+  const priceBuffer = config.price_buffer_cents / 100;
+  const hedgePrice = Math.ceil((hedgeAsk + priceBuffer) * 100) / 100;
+  
+  const result = await placeBuyOrder(tokenId, hedgePrice, sharesToHedge, asset, hedgeSide);
+  
+  if (result.success && result.orderId) {
+    log(`📤 HEDGE ORDER PLACED: ${asset} ${hedgeSide} ${sharesToHedge} @ ${(hedgePrice * 100).toFixed(1)}¢`, 'hedge', asset);
+    
+    // Wait briefly for fill
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    const status = await getOrderStatus(result.orderId);
+    
+    if (status.filled || status.filledSize > 0) {
+      const filledSize = status.filledSize || sharesToHedge;
+      const actualPrice = result.avgPrice ?? hedgePrice;
+      const actualHedgeCost = filledSize * actualPrice;
+      
+      // Update position with hedge info
+      const newHedgeShares = mainPos.hedgeShares + filledSize;
+      const newHedgeCost = mainPos.hedgeCost + actualHedgeCost;
+      const isFullyHedged = newHedgeShares >= mainPos.totalShares;
+      
+      await addHedgeToPosition(mainPos.id, newHedgeShares, newHedgeCost, isFullyHedged);
+      
+      // Update local cache
+      mainPos.hedgeShares = newHedgeShares;
+      mainPos.hedgeCost = newHedgeCost;
+      mainPos.isFullyHedged = isFullyHedged;
+      
+      const actualLockedProfit = mainPos.totalShares - (mainPos.totalCost + newHedgeCost);
+      
+      log(`🔒 HEDGED: ${asset} ${filledSize} ${hedgeSide} @ ${(actualPrice * 100).toFixed(1)}¢ | ${isFullyHedged ? 'FULLY HEDGED' : `${newHedgeShares}/${mainPos.totalShares} hedged`} | Locked profit: $${actualLockedProfit.toFixed(2)}`, 'hedge', asset, {
+        hedgeShares: newHedgeShares,
+        hedgeCost: newHedgeCost,
+        isFullyHedged,
+        lockedProfit: actualLockedProfit,
+      });
+    }
+  } else {
+    log(`❌ Hedge order failed: ${result.error}`, 'hedge', asset);
+  }
+}
 }
 
 // ============================================
@@ -729,6 +905,13 @@ async function main(): Promise<void> {
       binance_poll_ms: dbConfig.binance_poll_ms,
       orderbook_poll_ms: dbConfig.orderbook_poll_ms,
       order_cooldown_ms: dbConfig.order_cooldown_ms,
+      // Accumulation & hedge
+      accumulation_enabled: dbConfig.accumulation_enabled ?? true,
+      max_total_cost_usd: dbConfig.max_total_cost_usd ?? 75,
+      max_total_shares: dbConfig.max_total_shares ?? 300,
+      auto_hedge_enabled: dbConfig.auto_hedge_enabled ?? true,
+      hedge_trigger_cents: dbConfig.hedge_trigger_cents ?? 15,
+      hedge_min_profit_cents: dbConfig.hedge_min_profit_cents ?? 10,
     };
     log('✅ Loaded config from v29_config table');
   } else {

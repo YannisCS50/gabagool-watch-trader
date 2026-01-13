@@ -4,6 +4,24 @@
 
 import type { Asset } from './config.js';
 
+// Aggregate position for accumulation & hedge strategy
+export interface AggregatePosition {
+  id: string;
+  runId: string;
+  asset: Asset;
+  side: 'UP' | 'DOWN';
+  marketSlug: string;
+  tokenId: string;
+  totalShares: number;
+  totalCost: number;
+  avgEntryPrice: number;
+  hedgeShares: number;
+  hedgeCost: number;
+  isFullyHedged: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
 export interface MarketInfo {
   slug: string;
   asset: Asset;

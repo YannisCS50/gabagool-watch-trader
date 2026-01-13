@@ -61,6 +61,25 @@ export interface V29Config {
   
   // Minimum time between orders (prevent spam)
   order_cooldown_ms: number;
+  
+  // === ACCUMULATION & AUTO-HEDGE ===
+  // Enable accumulation mode (buy shares over time instead of single trades)
+  accumulation_enabled: boolean;
+  
+  // Maximum total cost per asset/side before stopping accumulation
+  max_total_cost_usd: number;
+  
+  // Maximum total shares per asset/side
+  max_total_shares: number;
+  
+  // Enable auto-hedging when profitable
+  auto_hedge_enabled: boolean;
+  
+  // Trigger hedge when opposing share price is below this (cents)
+  hedge_trigger_cents: number;
+  
+  // Only hedge when unrealized profit is at least this much (cents per share)
+  hedge_min_profit_cents: number;
 }
 
 export const DEFAULT_CONFIG: V29Config = {
@@ -82,6 +101,13 @@ export const DEFAULT_CONFIG: V29Config = {
   binance_poll_ms: 100,
   orderbook_poll_ms: 2000,
   order_cooldown_ms: 3000,
+  // Accumulation & auto-hedge (relaxed, not aggressive)
+  accumulation_enabled: true,
+  max_total_cost_usd: 75,        // Max $75 per asset/side
+  max_total_shares: 300,         // Max 300 shares per asset/side
+  auto_hedge_enabled: true,
+  hedge_trigger_cents: 15,       // Hedge when opposing ask < 15¢
+  hedge_min_profit_cents: 10,    // Only hedge with >= 10¢ unrealized profit
 };
 
 // Binance WebSocket symbols
