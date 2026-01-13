@@ -433,7 +433,11 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
   const hasActive = [...activeSignals.values()].some(
     s => s.signal.asset === asset && (s.signal.status === 'pending' || s.signal.status === 'filled')
   );
-  if (hasActive) return;
+  if (hasActive) {
+    console.log(`[V28] ⏸️ ${signalId} SKIPPED: Active signal exists for ${asset}`);
+    console.log(`[V28] ═════════════════════════════════════════════════════════════════\n`);
+    return;
+  }
 
   // NEW CHECK: Don't place new orders if we already have a position in this market (from API)
   // This prevents duplicate entries when signals arrive faster than position sync
