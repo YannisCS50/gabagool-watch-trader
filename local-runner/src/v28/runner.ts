@@ -1127,12 +1127,41 @@ async function handleLiveExit(signal: V28Signal, tokenId: string, exitType: 'tp'
 
 /**
  * Handle timeout with real SELL order (live mode)
+ * 
+ * CRITICAL FIX: Do NOT sell at a loss on timeout!
+ * Instead, let the position ride to market close for redemption.
+ * Only sell if we can exit at breakeven or better.
  */
 async function handleLiveTimeout(signal: V28Signal, tokenId: string): Promise<void> {
   const state = priceState[signal.asset];
   const currentBid = signal.direction === 'UP' ? state.upBestBid : state.downBestBid;
-  const exitPrice = currentBid ?? (signal.entry_price ?? 0);
+  const entryPrice = signal.entry_price ?? 0;
   
+  // Calculate if selling now would be profitable
+  const exitPrice = currentBid ?? entryPrice;
+  const profitCents = Math.round((exitPrice - entryPrice) * 100);
+  
+  // CRITICAL: Do NOT sell at a loss! 
+  // If current bid is below entry, let position ride to market close for redemption
+  if (profitCents < 0) {
+    console.log(`[V28] ⏱️ Timeout but bid (${(exitPrice * 100).toFixed(1)}¢) < entry (${(entryPrice * 100).toFixed(1)}¢) - HOLDING for redemption`);
+    signal.notes = `Timeout @ ${(exitPrice * 100).toFixed(1)}¢ - HOLDING (would lose ${Math.abs(profitCents)}¢)`;
+    await saveSignal(signal);
+    
+    // Keep the position in activeSignals for monitoring, extend timeout
+    const active = activeSignals.get(signal.id!);
+    if (active) {
+      // Re-check every 30 seconds
+      const newTimeout = setTimeout(() => {
+        handleLiveTimeout(signal, tokenId);
+      }, 30000);
+      activeSignals.set(signal.id!, { ...active, timeoutTimer: newTimeout });
+    }
+    return;
+  }
+  
+  // Profitable or breakeven - okay to exit
+  console.log(`[V28] ⏱️ Timeout: selling @ ${(exitPrice * 100).toFixed(1)}¢ (profit: +${profitCents}¢)`);
   await handleLiveExit(signal, tokenId, 'timeout', exitPrice);
 }
 // Minimum profit in CENTS to trigger a sell (not percentage!)
