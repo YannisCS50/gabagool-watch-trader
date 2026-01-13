@@ -620,6 +620,60 @@ async function simulateFill(signal: V28Signal): Promise<void> {
   activeSignals.set(signal.id!, { signal, tpSlInterval, timeoutTimer });
 }
 
+// NEW MARKET ORDERBOOK RETRY CONFIG
+const ORDERBOOK_RETRY_ATTEMPTS = 3;
+const ORDERBOOK_RETRY_DELAY_MS = 1000;
+
+/**
+ * Wait for orderbook to initialize on new markets
+ * Returns best ask or null if orderbook still not ready after retries
+ */
+async function waitForOrderbook(
+  asset: Asset,
+  tokenId: string,
+  direction: 'UP' | 'DOWN',
+  maxAttempts: number = ORDERBOOK_RETRY_ATTEMPTS
+): Promise<{ bestAsk: number | null; hasLiquidity: boolean }> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const state = priceState[asset];
+    const cachedBestAsk = direction === 'UP' ? state.upBestAsk : state.downBestAsk;
+    
+    if (cachedBestAsk !== null && cachedBestAsk !== undefined && cachedBestAsk > 0) {
+      return { bestAsk: cachedBestAsk, hasLiquidity: true };
+    }
+    
+    // On new markets, the orderbook might not be seeded yet
+    // Wait a bit and check again
+    if (attempt < maxAttempts) {
+      console.log(`[V28] ⏳ Orderbook not ready for ${asset} ${direction} (attempt ${attempt}/${maxAttempts}), waiting ${ORDERBOOK_RETRY_DELAY_MS}ms...`);
+      await new Promise(r => setTimeout(r, ORDERBOOK_RETRY_DELAY_MS));
+      
+      // Also try to refresh the orderbook cache via HTTP
+      try {
+        const { getOrderbookDepth } = await import('./polymarket.js');
+        const depth = await getOrderbookDepth(tokenId);
+        if (depth.topAsk !== null) {
+          // Update our price state with fresh data
+          if (direction === 'UP') {
+            priceState[asset].upBestAsk = depth.topAsk;
+            priceState[asset].upBestBid = depth.topBid ?? priceState[asset].upBestBid;
+          } else {
+            priceState[asset].downBestAsk = depth.topAsk;
+            priceState[asset].downBestBid = depth.topBid ?? priceState[asset].downBestBid;
+          }
+          console.log(`[V28] ✅ Orderbook seeded from HTTP: ${asset} ${direction} ask=${(depth.topAsk * 100).toFixed(1)}¢`);
+          return { bestAsk: depth.topAsk, hasLiquidity: depth.hasLiquidity };
+        }
+      } catch (err) {
+        console.warn(`[V28] ⚠️ HTTP orderbook fetch failed:`, err);
+      }
+    }
+  }
+  
+  console.warn(`[V28] ⚠️ Orderbook not ready after ${maxAttempts} attempts for ${asset} ${direction}`);
+  return { bestAsk: null, hasLiquidity: false };
+}
+
 /**
  * Execute a REAL order on Polymarket CLOB (live mode)
  */
@@ -646,49 +700,51 @@ async function executeLiveOrder(signal: V28Signal, market: MarketInfo | undefine
   // For BUY orders: makerAmount = shares * price (in USDC cents internally)
   // We need: (shares * price) to have at most 2 decimal places
   
-  // SPEED: Do NOT fetch a fresh orderbook in the hot path.
-  // That extra round-trip commonly adds 200–800ms and makes us miss the ask.
-  // We price off the cached WS-derived bestAsk and compensate with AGGRESSIVE_BUFFER.
-  const state = priceState[signal.asset];
-  const cachedBestAsk = signal.direction === 'UP' ? state.upBestAsk : state.downBestAsk;
-  const bestAsk = cachedBestAsk;
+  // NEW MARKET SUPPORT: Wait for orderbook to initialize if needed
+  // On new markets, the orderbook might not be seeded yet.
+  // We retry a few times with HTTP fetches to seed the cache.
+  const orderbookResult = await waitForOrderbook(
+    signal.asset,
+    tokenId,
+    signal.direction,
+    ORDERBOOK_RETRY_ATTEMPTS
+  );
+  const bestAsk = orderbookResult.bestAsk;
+
+  // If still no orderbook after retries, fail gracefully
+  if (bestAsk === null || !orderbookResult.hasLiquidity) {
+    console.warn(`[V28] ⚠️ No orderbook/liquidity for ${signal.asset} ${signal.direction} after retries`);
+    signal.status = 'failed';
+    signal.notes = `No orderbook liquidity after ${ORDERBOOK_RETRY_ATTEMPTS} attempts (new market?)`;
+    void saveSignal(signal);
+    positionLock = { status: 'idle' };
+    return;
+  }
 
 
-  // PRICE FIX: For FOK BUYs we must be AT/ABOVE the real bestAsk.
-  // Previously we capped price to max_share_price even when bestAsk > max_share_price,
-  // which guarantees a non-fill (FOK) while still “placing” orders.
+  // PRICE FIX: For BUYs we must be AT/ABOVE the real bestAsk.
   const AGGRESSIVE_BUFFER = 0.03; // 3 cents buffer for latency
   const roundUpToTick = (p: number) => Math.ceil(p * 100) / 100;
+  const bestAskTick = roundUpToTick(bestAsk);
 
-  let price: number;
-  if (bestAsk !== null && bestAsk !== undefined) {
-    const bestAskTick = roundUpToTick(bestAsk);
-
-    // If the market is already above our allowed max, skip instead of submitting an unfillable FOK.
-    if (bestAskTick > currentConfig.max_share_price) {
-      console.warn(
-        `[V28] ⚠️ Skip: bestAsk ${(bestAskTick * 100).toFixed(1)}¢ > max_share_price ${(currentConfig.max_share_price * 100).toFixed(1)}¢`
-      );
-      signal.status = 'failed';
-      signal.notes = `Skip: bestAsk ${(bestAskTick * 100).toFixed(1)}¢ > max ${(currentConfig.max_share_price * 100).toFixed(1)}¢`;
-      void saveSignal(signal);
-      positionLock = { status: 'idle' };
-      return;
-    }
-
-    // AGGRESSIVE: Pay bestAsk + 3¢ buffer to guarantee fill despite latency & price movement
-    price = Math.min(roundUpToTick(bestAskTick + AGGRESSIVE_BUFFER), currentConfig.max_share_price);
-
-    console.log(
-      `[V28] 💹 Pricing: bestAsk=${(bestAskTick * 100).toFixed(1)}¢ +3¢ buffer → buy@${(price * 100).toFixed(1)}¢`
+  // If the market is already above our allowed max, skip
+  if (bestAskTick > currentConfig.max_share_price) {
+    console.warn(
+      `[V28] ⚠️ Skip: bestAsk ${(bestAskTick * 100).toFixed(1)}¢ > max_share_price ${(currentConfig.max_share_price * 100).toFixed(1)}¢`
     );
-  } else {
-    // No bestAsk available (thin book). Fall back to trigger price, still respecting max_share_price.
-    price = Math.min(Math.round(signal.share_price * 100) / 100, currentConfig.max_share_price);
-    console.log(
-      `[V28] 💹 Pricing: trigger=${(signal.share_price * 100).toFixed(1)}¢ bestAsk=? → buy@${(price * 100).toFixed(1)}¢ (fallback)`
-    );
+    signal.status = 'failed';
+    signal.notes = `Skip: bestAsk ${(bestAskTick * 100).toFixed(1)}¢ > max ${(currentConfig.max_share_price * 100).toFixed(1)}¢`;
+    void saveSignal(signal);
+    positionLock = { status: 'idle' };
+    return;
   }
+
+  // AGGRESSIVE: Pay bestAsk + 3¢ buffer to guarantee fill despite latency & price movement
+  const price = Math.min(roundUpToTick(bestAskTick + AGGRESSIVE_BUFFER), currentConfig.max_share_price);
+
+  console.log(
+    `[V28] 💹 Pricing: bestAsk=${(bestAskTick * 100).toFixed(1)}¢ +3¢ buffer → buy@${(price * 100).toFixed(1)}¢`
+  );
 
   if (!Number.isFinite(price) || price <= 0) {
     console.error(`[V28] ❌ Invalid computed price: ${price}`);
