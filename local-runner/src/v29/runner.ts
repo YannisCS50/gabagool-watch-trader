@@ -662,10 +662,10 @@ async function main(): Promise<void> {
   await initDb();
   log('✅ DB initialized');
   
-  // Load config
+  // Load config - merge with defaults to ensure all fields exist
   const loadedConfig = await loadV29Config();
   if (loadedConfig) {
-    config = loadedConfig;
+    config = { ...DEFAULT_CONFIG, ...loadedConfig };
     log(`✅ Config loaded: enabled=${config.enabled}, shares=${config.shares_per_trade}, TP=${config.take_profit_cents}¢, timeout=${config.timeout_seconds}s`);
   } else {
     log(`⚠️ Using defaults: shares=${config.shares_per_trade}, TP=${config.take_profit_cents}¢`);
