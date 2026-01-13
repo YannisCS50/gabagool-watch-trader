@@ -278,60 +278,39 @@ async function cleanupExpiredSignals(): Promise<void> {
 // SIGNAL DETECTION
 // ============================================
 
+// Track previous prices for tick-to-tick delta (like UI logic)
+const previousPrices: Record<Asset, number | null> = { BTC: null, ETH: null, SOL: null, XRP: null };
+
 function handlePriceUpdate(asset: Asset, newPrice: number): void {
   const tickReceivedTs = Date.now();
+  const prevPrice = previousPrices[asset];
+  previousPrices[asset] = newPrice;
   priceState[asset].binance = newPrice;
 
   if (!currentConfig.enabled) return;
   if (!currentConfig.assets.includes(asset)) return;
 
   // HARD RULE: only one active position globally.
-  // This also blocks duplicate triggers while a signal is being created (DB save, fill, etc.).
   if (positionLock.status !== 'idle') return;
 
-  // Add tick to rolling window
-  const window = priceWindows[asset];
-  const now = tickReceivedTs;
-  window.push({ price: newPrice, ts: now });
+  // Need previous price to calculate delta
+  if (prevPrice === null) return;
 
-  // Initialize window start if needed
-  if (!windowStartPrices[asset]) {
-    windowStartPrices[asset] = { price: newPrice, ts: now };
-    return;
-  }
-
-  // Clean old ticks outside the window
-  const cutoff = now - currentConfig.delta_window_ms;
-  while (window.length > 0 && window[0].ts < cutoff) {
-    window.shift();
-  }
-
-  // Update window start to oldest tick in window
-  if (window.length > 0) {
-    windowStartPrices[asset] = { price: window[0].price, ts: window[0].ts };
-  }
-
-  // Calculate cumulative delta over the window
-  const windowStart = windowStartPrices[asset];
-  if (!windowStart) return;
-
-  const delta = newPrice - windowStart.price;
-  const windowDuration = now - windowStart.ts;
-
-  // Only check when we have a meaningful window (at least 50ms of data)
-  if (windowDuration < 50) return;
+  // SIMPLE TICK-TO-TICK DELTA (same as UI logic)
+  // This triggers on immediate spikes, not cumulative movement
+  const delta = newPrice - prevPrice;
 
   // Debug: Log significant deltas (> 50% of threshold)
   if (Math.abs(delta) > currentConfig.min_delta_usd * 0.5) {
-    console.log(`[V28] 📈 ${asset} Δ$${delta.toFixed(2)} / $${currentConfig.min_delta_usd} threshold (${windowDuration}ms window)`);
+    console.log(`[V28] 📈 ${asset} Δ$${delta > 0 ? '+' : ''}${delta.toFixed(2)} / $${currentConfig.min_delta_usd} threshold (tick-to-tick)`);
   }
 
-  // Check if cumulative delta exceeds threshold
+  // Check if delta exceeds threshold
   if (Math.abs(delta) < currentConfig.min_delta_usd) {
     return;
   }
 
-  // TRIGGER! We have a significant cumulative delta
+  // TRIGGER! We have a significant tick-to-tick delta (like UI logic)
   const state = priceState[asset];
   const chainlinkNow = state.chainlink;
   const binanceChainlinkGap = chainlinkNow !== null ? (newPrice - chainlinkNow) : null;
@@ -344,7 +323,7 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
   console.log(`\n[V28] ══════════════════════════════════════════════════════════════`);
   console.log(`[V28] 🎯 SIGNAL ${signalId}: ${asset} ${delta > 0 ? '↑ UP' : '↓ DOWN'}`);
   console.log(`[V28] ──────────────────────────────────────────────────────────────`);
-  console.log(`[V28] Binance:      $${newPrice.toFixed(2)} (Δ$${delta > 0 ? '+' : ''}${delta.toFixed(2)} in ${windowDuration}ms)`);
+  console.log(`[V28] Binance:      $${newPrice.toFixed(2)} (Δ$${delta > 0 ? '+' : ''}${delta.toFixed(2)} tick-to-tick)`);
   console.log(`[V28] Strike:       $${strikePrice?.toFixed(2) ?? '?'} (Binance-Strike: $${binanceVsStrikeDelta !== null ? (binanceVsStrikeDelta > 0 ? '+' : '') + binanceVsStrikeDelta.toFixed(2) : '?'})`);
   console.log(`[V28] Chainlink:    $${chainlinkNow?.toFixed(2) ?? '?'} (gap: $${binanceChainlinkGap !== null ? (binanceChainlinkGap > 0 ? '+' : '') + binanceChainlinkGap.toFixed(2) : '?'})`);
   console.log(`[V28] Threshold:    $${currentConfig.min_delta_usd} (${((Math.abs(delta) / currentConfig.min_delta_usd) * 100).toFixed(0)}% met)`);
