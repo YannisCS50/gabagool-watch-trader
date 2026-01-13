@@ -1546,85 +1546,116 @@ async function handleTimeout(signal: V28Signal): Promise<void> {
 
 async function fetchActiveMarkets(): Promise<void> {
   if (!supabase) return;
-  
+
   console.log('[V28] Fetching active markets...');
-  
+
   try {
     const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
-    
+
     if (!supabaseUrl || !supabaseKey) {
       console.warn('[V28] Cannot fetch markets: missing Supabase credentials');
       return;
     }
-    
+
     const response = await fetch(`${supabaseUrl}/functions/v1/get-market-tokens`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${supabaseKey}`,
       },
+      // v26 flag = allow upcoming markets soon; v28 will still pick the best "current" one per asset.
       body: JSON.stringify({ v26: true }),
     });
-    
+
     if (!response.ok) {
       console.warn(`[V28] Failed to fetch markets: ${response.status}`);
       return;
     }
-    
+
     const data = await response.json();
-    const markets = data.markets || [];
-    
-    let count = 0;
+    const markets = (data.markets || []) as any[];
+
+    // Pick the best market per asset deterministically.
+    // - ignore expired markets (with 60s buffer)
+    // - for 15m markets, allow selecting up to 90s before start (so we don't miss the opening)
+    const now = Date.now();
+    const EARLY_15M_MS = 90_000;
+    const EARLY_DEFAULT_MS = 60_000;
+
+    const candidates: Record<Asset, Array<{ info: MarketInfo; startMs: number; endMs: number }>> = {
+      BTC: [],
+      ETH: [],
+      SOL: [],
+      XRP: [],
+    };
+
     for (const market of markets) {
-      const asset = market.asset?.toUpperCase() as Asset;
-      if (!asset || !['BTC', 'ETH', 'SOL', 'XRP'].includes(asset)) continue;
-      
+      const asset = String(market.asset || '').toUpperCase() as Asset;
+      if (!asset || !(['BTC', 'ETH', 'SOL', 'XRP'] as const).includes(asset)) continue;
+
       const upTokenId = market.upTokenId;
       const downTokenId = market.downTokenId;
-      
-      if (!upTokenId || !downTokenId) {
-        console.log(`[V28] Skipping ${asset}: missing token IDs`);
-        continue;
-      }
-      
+      if (!upTokenId || !downTokenId) continue;
+
+      const slug = String(market.slug || '');
+      const eventStartTime = market.eventStartTime || market.event_start_time;
+      const eventEndTime = market.eventEndTime || market.event_end_time;
+
+      const startMs = new Date(eventStartTime || '').getTime();
+      const endMs = new Date(eventEndTime || '').getTime();
+      if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) continue;
+
+      // Expired?
+      if (endMs <= now - 60_000) continue;
+
+      const is15m = slug.toLowerCase().includes('-15m-') || market.marketType === '15min';
+      const earlyMs = is15m ? EARLY_15M_MS : EARLY_DEFAULT_MS;
+
+      // Not started yet (with early-entry buffer)?
+      if (now < startMs - earlyMs) continue;
+
       const info: MarketInfo = {
         asset,
-        slug: market.slug,
-        strikePrice: market.strikePrice || 0,
+        slug,
+        strikePrice: Number(market.strikePrice ?? market.strike_price ?? 0) || 0,
         upTokenId,
         downTokenId,
-        eventStartTime: market.eventStartTime || market.event_start_time || new Date().toISOString(),
-        eventEndTime: market.eventEndTime || market.event_end_time,
+        eventStartTime: new Date(startMs).toISOString(),
+        eventEndTime: new Date(endMs).toISOString(),
       };
-      
-      // Only add LIVE markets (started but not expired)
-      const now = Date.now();
-      const startTime = new Date(info.eventStartTime).getTime();
-      const endTime = new Date(info.eventEndTime).getTime();
-      
-      if (now < startTime) {
-        console.log(`[V28] ⏳ ${asset}: ${market.slug} not started yet, skipping`);
-        continue;
-      }
-      
-      if (now > endTime) {
-        console.log(`[V28] ⏰ ${asset}: ${market.slug} expired, skipping`);
-        continue;
-      }
-      
-      marketInfo[asset] = info;
-      count++;
-      console.log(`[V28] ✓ ${asset}: ${market.slug} (strike: $${info.strikePrice}) LIVE`);
+
+      candidates[asset].push({ info, startMs, endMs });
     }
-    
+
+    let count = 0;
+    for (const asset of Object.keys(marketInfo) as Asset[]) {
+      const prev = marketInfo[asset];
+
+      // Choose the most recent-starting candidate (highest startMs)
+      const list = candidates[asset];
+      list.sort((a, b) => b.startMs - a.startMs);
+      const chosen = list[0]?.info ?? null;
+
+      marketInfo[asset] = chosen;
+      if (chosen) {
+        count++;
+        if (!prev || prev.slug !== chosen.slug) {
+          console.log(`[V28] 🔁 ${asset} market → ${chosen.slug} (strike: $${chosen.strikePrice})`);
+        } else {
+          console.log(`[V28] ✓ ${asset}: ${chosen.slug} (strike: $${chosen.strikePrice})`);
+        }
+      } else if (prev) {
+        console.log(`[V28] ⏳ ${asset}: no active market (cleared ${prev.slug})`);
+      }
+    }
+
     console.log(`[V28] Loaded ${count} active markets`);
-    
+
     // Initialize or update pre-signed orders cache for active markets
     if (currentConfig.is_live && count > 0) {
       await initializePreSignedOrdersCache();
     }
-    
   } catch (err) {
     console.error('[V28] Error fetching markets:', err);
   }

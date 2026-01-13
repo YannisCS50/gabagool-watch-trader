@@ -95,6 +95,7 @@ let lastFlushTime = Date.now();
 let flushInterval: NodeJS.Timeout | null = null;
 let pingInterval: NodeJS.Timeout | null = null;
 let clobPingInterval: NodeJS.Timeout | null = null;
+let tokenRefreshInterval: NodeJS.Timeout | null = null;
 let healthCheckInterval: NodeJS.Timeout | null = null;
 let binanceReconnectTimer: NodeJS.Timeout | null = null;
 let polymarketReconnectTimer: NodeJS.Timeout | null = null;
@@ -491,39 +492,57 @@ function connectPolymarket(): void {
 
 async function fetchActiveTokenIds(): Promise<void> {
   console.log('[PriceFeedLogger] Fetching token IDs from backend...');
-  
+
   try {
-    tokenToAssetMap.clear();
-    activeTokenIds = [];
-    
+    // Build new mapping first, then swap it in (avoids transient empty map while WS messages arrive)
+    const nextTokenToAssetMap = new Map<string, { asset: string; outcome: 'up' | 'down' }>();
+    const nextActiveTokenIds: string[] = [];
+
     // Use our own backend which has all active markets with token IDs
     const result = await fetchMarkets();
-    
+
     if (!result.success || !result.markets) {
       console.error('[PriceFeedLogger] Failed to fetch markets from backend');
       return;
     }
-    
+
+    const now = Date.now();
     console.log(`[PriceFeedLogger] Backend returned ${result.markets.length} markets`);
-    
+
     for (const market of result.markets) {
       // Only include markets for tracked assets
       if (!ASSETS.includes(market.asset)) continue;
-      
+
+      // Filter out clearly expired markets (keep a small buffer)
+      const startMs = new Date((market as any).eventStartTime || (market as any).event_start_time || '').getTime();
+      const endMs = new Date((market as any).eventEndTime || (market as any).event_end_time || '').getTime();
+      if (Number.isFinite(endMs) && endMs <= now - 60_000) continue;
+
+      // For 15m epoch slugs, allow subscribing shortly before start so we don't miss opening liquidity
+      const slug = String((market as any).slug || '');
+      const is15m = slug.toLowerCase().includes('-15m-') || (market as any).marketType === '15min';
+      const earlyMs = is15m ? 90_000 : 60_000;
+      if (Number.isFinite(startMs) && now < startMs - earlyMs) continue;
+
       // Map UP token
       if (market.upTokenId) {
-        tokenToAssetMap.set(market.upTokenId, { asset: market.asset, outcome: 'up' });
-        activeTokenIds.push(market.upTokenId);
+        nextTokenToAssetMap.set(market.upTokenId, { asset: market.asset, outcome: 'up' });
+        nextActiveTokenIds.push(market.upTokenId);
       }
-      
+
       // Map DOWN token
       if (market.downTokenId) {
-        tokenToAssetMap.set(market.downTokenId, { asset: market.asset, outcome: 'down' });
-        activeTokenIds.push(market.downTokenId);
+        nextTokenToAssetMap.set(market.downTokenId, { asset: market.asset, outcome: 'down' });
+        nextActiveTokenIds.push(market.downTokenId);
       }
     }
-    
-    console.log(`[PriceFeedLogger] ✅ Found ${activeTokenIds.length} tokens for ${result.markets.length} markets`);
+
+    // Swap in
+    tokenToAssetMap.clear();
+    for (const [k, v] of nextTokenToAssetMap) tokenToAssetMap.set(k, v);
+    activeTokenIds = nextActiveTokenIds;
+
+    console.log(`[PriceFeedLogger] ✅ Found ${activeTokenIds.length} tokens (filtered) for ${result.markets.length} markets`);
   } catch (error) {
     console.error('[PriceFeedLogger] Error fetching token IDs:', error);
   }
@@ -849,6 +868,27 @@ export async function startPriceFeedLogger(callbackConfig?: PriceFeedCallback): 
   connectPolymarket();
   await connectClob();
 
+  // Refresh CLOB token subscriptions periodically so we pick up new 15m markets
+  tokenRefreshInterval = setInterval(async () => {
+    if (!isRunning) return;
+    if (!clobWs || clobWs.readyState !== WebSocket.OPEN) return;
+
+    const prevSig = [...activeTokenIds].sort().join(',');
+    await fetchActiveTokenIds();
+    const nextSig = [...activeTokenIds].sort().join(',');
+
+    if (!nextSig || nextSig === prevSig) return;
+
+    try {
+      const subscribeMsg = { assets_ids: [...activeTokenIds], type: 'market' };
+      clobWs.send(JSON.stringify(subscribeMsg));
+      console.log(`[PriceFeedLogger] 🔄 Updated CLOB subscription: ${activeTokenIds.length} tokens`);
+    } catch (e) {
+      console.error('[PriceFeedLogger] Failed to refresh CLOB subscription:', (e as any)?.message || e);
+      forceReconnectClob();
+    }
+  }, 60_000);
+
   // Periodic flush timer
   flushInterval = setInterval(() => {
     if (Date.now() - lastFlushTime > FLUSH_INTERVAL_MS && logBuffer.length > 0) {
@@ -892,6 +932,10 @@ export async function stopPriceFeedLogger(): Promise<void> {
   if (clobPingInterval) {
     clearInterval(clobPingInterval);
     clobPingInterval = null;
+  }
+  if (tokenRefreshInterval) {
+    clearInterval(tokenRefreshInterval);
+    tokenRefreshInterval = null;
   }
   if (healthCheckInterval) {
     clearInterval(healthCheckInterval);
