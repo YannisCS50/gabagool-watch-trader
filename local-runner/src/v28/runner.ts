@@ -280,11 +280,17 @@ async function cleanupExpiredSignals(): Promise<void> {
 
 // Track previous prices for tick-to-tick delta (like UI logic)
 const previousPrices: Record<Asset, number | null> = { BTC: null, ETH: null, SOL: null, XRP: null };
-
+// Track previous tick timestamps so we can report the tick-to-tick interval
+const previousPriceTs: Record<Asset, number | null> = { BTC: null, ETH: null, SOL: null, XRP: null };
 function handlePriceUpdate(asset: Asset, newPrice: number): void {
   const tickReceivedTs = Date.now();
   const prevPrice = previousPrices[asset];
+  const prevTs = previousPriceTs[asset];
+
+  // Update previous tick state first (even if config disabled) so delta stays consistent
   previousPrices[asset] = newPrice;
+  previousPriceTs[asset] = tickReceivedTs;
+
   priceState[asset].binance = newPrice;
 
   if (!currentConfig.enabled) return;
@@ -293,16 +299,19 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
   // HARD RULE: only one active position globally.
   if (positionLock.status !== 'idle') return;
 
-  // Need previous price to calculate delta
-  if (prevPrice === null) return;
+  // Need previous tick to calculate delta + interval
+  if (prevPrice === null || prevTs === null) return;
 
   // SIMPLE TICK-TO-TICK DELTA (same as UI logic)
   // This triggers on immediate spikes, not cumulative movement
   const delta = newPrice - prevPrice;
+  const tickDeltaMs = tickReceivedTs - prevTs;
 
   // Debug: Log significant deltas (> 50% of threshold)
   if (Math.abs(delta) > currentConfig.min_delta_usd * 0.5) {
-    console.log(`[V28] 📈 ${asset} Δ$${delta > 0 ? '+' : ''}${delta.toFixed(2)} / $${currentConfig.min_delta_usd} threshold (tick-to-tick)`);
+    console.log(
+      `[V28] 📈 ${asset} Δ$${delta > 0 ? '+' : ''}${delta.toFixed(2)} / $${currentConfig.min_delta_usd} threshold (tickΔ=${tickDeltaMs}ms)`
+    );
   }
 
   // Check if delta exceeds threshold
@@ -427,15 +436,9 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
     console.log(`[V28] ═════════════════════════════════════════════════════════════════\n`);
     return;
   }
+  const detectionMs = tickDeltaMs;
 
-  // Reset window after trigger to avoid re-triggering on same move
-  priceWindows[asset] = [{ price: newPrice, ts: now }];
-  windowStartPrices[asset] = { price: newPrice, ts: now };
-
-  // Fix: detectionMs was referenced but never defined (caused runtime crash and no trades)
-  const detectionMs = windowDuration;
-
-  console.log(`[V28] ✅ ${signalId} EXECUTING: ${asset} ${direction} @ ${(sharePrice * 100).toFixed(1)}¢ (window: ${detectionMs}ms)`);
+  console.log(`[V28] ✅ ${signalId} EXECUTING: ${asset} ${direction} @ ${(sharePrice * 100).toFixed(1)}¢ (tickΔ: ${detectionMs}ms)`);
   console.log(`[V28] ═════════════════════════════════════════════════════════════════\n`);
 
   // Create signal - pass the original tick timestamp for accurate latency tracking
