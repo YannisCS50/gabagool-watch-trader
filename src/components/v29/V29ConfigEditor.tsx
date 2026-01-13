@@ -6,71 +6,44 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
-import { Settings, Save, RotateCcw, AlertTriangle, Zap, Shield, Clock, DollarSign } from 'lucide-react';
+import { Settings, Save, RotateCcw, Zap, DollarSign, Clock } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 
 interface V29Config {
   id: string;
   enabled: boolean;
-  // Tick-to-tick delta detection
   tick_delta_usd: number;
-  // Delta threshold for direction logic (strike - actual)
   delta_threshold: number;
-  // Share price range
   min_share_price: number;
   max_share_price: number;
-  // Trade settings
-  trade_size_usd: number;
-  max_shares: number;
+  shares_per_trade: number;
+  take_profit_cents: number;
+  timeout_seconds: number;
+  max_sell_retries: number;
   price_buffer_cents: number;
   assets: string[];
-  // Trailing stop with minimum profit
-  min_profit_cents: number;
-  trailing_trigger_cents: number;
-  trailing_distance_cents: number;
-  emergency_sl_cents: number;
-  // Timeout
-  timeout_ms: number;
-  // Polling
   binance_poll_ms: number;
   orderbook_poll_ms: number;
   order_cooldown_ms: number;
-  // Accumulation & Auto-Hedge
-  accumulation_enabled: boolean;
-  max_total_cost_usd: number;
-  max_total_shares: number;
-  auto_hedge_enabled: boolean;
-  hedge_trigger_cents: number;
-  hedge_min_profit_cents: number;
 }
 
 const DEFAULT_CONFIG: V29Config = {
   id: 'default',
   enabled: true,
   tick_delta_usd: 6,
-  delta_threshold: 70,
+  delta_threshold: 75,
   min_share_price: 0.30,
   max_share_price: 0.75,
-  trade_size_usd: 5,
-  max_shares: 10,
+  shares_per_trade: 5,
+  take_profit_cents: 4,
+  timeout_seconds: 10,
+  max_sell_retries: 5,
   price_buffer_cents: 1,
   assets: ['BTC', 'ETH', 'SOL', 'XRP'],
-  min_profit_cents: 4,
-  trailing_trigger_cents: 7,
-  trailing_distance_cents: 3,
-  emergency_sl_cents: 10,
-  timeout_ms: 30000,
   binance_poll_ms: 100,
   orderbook_poll_ms: 2000,
   order_cooldown_ms: 3000,
-  // Accumulation & Hedge
-  accumulation_enabled: true,
-  max_total_cost_usd: 75,
-  max_total_shares: 300,
-  auto_hedge_enabled: true,
-  hedge_trigger_cents: 15,
-  hedge_min_profit_cents: 10,
 };
 
 const AVAILABLE_ASSETS = ['BTC', 'ETH', 'SOL', 'XRP'];
@@ -95,13 +68,30 @@ export function V29ConfigEditor() {
 
       if (error) {
         if (error.code === 'PGRST116') {
-          // No config exists, create default
           await createDefaultConfig();
         } else {
           throw error;
         }
       } else {
-        setConfig(data as V29Config);
+        // Map old fields to new fields if they exist
+        const mappedConfig: V29Config = {
+          id: data.id,
+          enabled: data.enabled ?? true,
+          tick_delta_usd: data.tick_delta_usd ?? 6,
+          delta_threshold: data.delta_threshold ?? 75,
+          min_share_price: data.min_share_price ?? 0.30,
+          max_share_price: data.max_share_price ?? 0.75,
+          shares_per_trade: data.shares_per_trade ?? data.max_shares ?? 5,
+          take_profit_cents: data.take_profit_cents ?? data.min_profit_cents ?? 4,
+          timeout_seconds: data.timeout_seconds ?? (data.timeout_ms ? data.timeout_ms / 1000 : 10),
+          max_sell_retries: data.max_sell_retries ?? 5,
+          price_buffer_cents: data.price_buffer_cents ?? 1,
+          assets: data.assets ?? ['BTC', 'ETH', 'SOL', 'XRP'],
+          binance_poll_ms: data.binance_poll_ms ?? 100,
+          orderbook_poll_ms: data.orderbook_poll_ms ?? 2000,
+          order_cooldown_ms: data.order_cooldown_ms ?? 3000,
+        };
+        setConfig(mappedConfig);
       }
     } catch (err) {
       console.error('Failed to load V29 config:', err);
@@ -148,25 +138,15 @@ export function V29ConfigEditor() {
           delta_threshold: config.delta_threshold,
           min_share_price: config.min_share_price,
           max_share_price: config.max_share_price,
-          trade_size_usd: config.trade_size_usd,
-          max_shares: config.max_shares,
+          shares_per_trade: config.shares_per_trade,
+          take_profit_cents: config.take_profit_cents,
+          timeout_seconds: config.timeout_seconds,
+          max_sell_retries: config.max_sell_retries,
           price_buffer_cents: config.price_buffer_cents,
           assets: config.assets,
-          min_profit_cents: config.min_profit_cents,
-          trailing_trigger_cents: config.trailing_trigger_cents,
-          trailing_distance_cents: config.trailing_distance_cents,
-          emergency_sl_cents: config.emergency_sl_cents,
-          timeout_ms: config.timeout_ms,
           binance_poll_ms: config.binance_poll_ms,
           orderbook_poll_ms: config.orderbook_poll_ms,
           order_cooldown_ms: config.order_cooldown_ms,
-          // Accumulation & Hedge
-          accumulation_enabled: config.accumulation_enabled,
-          max_total_cost_usd: config.max_total_cost_usd,
-          max_total_shares: config.max_total_shares,
-          auto_hedge_enabled: config.auto_hedge_enabled,
-          hedge_trigger_cents: config.hedge_trigger_cents,
-          hedge_min_profit_cents: config.hedge_min_profit_cents,
         })
         .eq('id', 'default');
 
@@ -181,7 +161,6 @@ export function V29ConfigEditor() {
       setSaving(false);
     }
   };
-
 
   const resetToDefaults = () => {
     setConfig(DEFAULT_CONFIG);
@@ -213,7 +192,7 @@ export function V29ConfigEditor() {
       <CardHeader>
         <CardTitle className="text-lg flex items-center gap-2">
           <Settings className="h-5 w-5" />
-          V29 Runner Configuratie
+          V29 Simple Strategy
           {hasChanges && (
             <Badge variant="outline" className="text-amber-500 border-amber-500">
               Unsaved
@@ -221,7 +200,7 @@ export function V29ConfigEditor() {
           )}
         </CardTitle>
         <CardDescription>
-          Tick-to-tick delta detectie • Realtime orderbook pricing
+          Buy {config.shares_per_trade} shares → TP {config.take_profit_cents}¢ → Timeout {config.timeout_seconds}s → 1 positie max
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -245,6 +224,18 @@ export function V29ConfigEditor() {
               LIVE
             </Badge>
           )}
+        </div>
+
+        {/* Strategy Summary */}
+        <div className="p-4 rounded-lg bg-green-500/10 border border-green-500/20">
+          <p className="font-medium text-green-400 mb-2">📋 Strategie:</p>
+          <ul className="text-sm text-muted-foreground space-y-1">
+            <li>1. Binance spike (${config.tick_delta_usd}) → Koop <strong>{config.shares_per_trade} shares</strong></li>
+            <li>2. Bij <strong>+{config.take_profit_cents}¢</strong> winst → Verkoop</li>
+            <li>3. Timeout: <strong>{config.timeout_seconds}s</strong> → Market sell</li>
+            <li>4. Max sell retries: <strong>{config.max_sell_retries}x</strong>, daarna force sell</li>
+            <li>5. <strong>Max 1 positie</strong> tegelijk (geen stacking!)</li>
+          </ul>
         </div>
 
         {/* Assets Selection */}
@@ -276,12 +267,11 @@ export function V29ConfigEditor() {
             Entry Instellingen
           </h4>
           
-          {/* Delta-based Direction Logic Explanation */}
+          {/* Delta Direction Logic */}
           <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 text-sm">
             <p className="font-medium text-blue-400 mb-2">Delta Richtingslogica:</p>
             <ul className="text-xs text-muted-foreground space-y-1">
-              <li>• <strong>Delta = strike - binance prijs</strong></li>
-              <li>• Delta tussen -{config.delta_threshold} en +{config.delta_threshold}: trade beide richtingen</li>
+              <li>• Delta tussen <strong>-{config.delta_threshold}</strong> en <strong>+{config.delta_threshold}</strong>: trade beide richtingen</li>
               <li>• Delta &lt; -{config.delta_threshold}: alleen DOWN trades</li>
               <li>• Delta &gt; +{config.delta_threshold}: alleen UP trades</li>
             </ul>
@@ -297,7 +287,7 @@ export function V29ConfigEditor() {
                 className="h-9"
               />
               <p className="text-xs text-muted-foreground">
-                Trigger trade bij ${config.tick_delta_usd} prijsverandering
+                Trigger bij ${config.tick_delta_usd} prijsverandering
               </p>
             </div>
             
@@ -310,7 +300,7 @@ export function V29ConfigEditor() {
                 className="h-9"
               />
               <p className="text-xs text-muted-foreground">
-                ±${config.delta_threshold} voor richtingslogica
+                ±${config.delta_threshold} richtingslogica
               </p>
             </div>
             
@@ -324,7 +314,7 @@ export function V29ConfigEditor() {
                 className="h-9"
               />
               <p className="text-xs text-muted-foreground">
-                Minimaal {(config.min_share_price * 100).toFixed(0)}¢ per share
+                Minimaal {(config.min_share_price * 100).toFixed(0)}¢
               </p>
             </div>
             
@@ -338,33 +328,20 @@ export function V29ConfigEditor() {
                 className="h-9"
               />
               <p className="text-xs text-muted-foreground">
-                Maximaal {(config.max_share_price * 100).toFixed(0)}¢ per share
+                Maximaal {(config.max_share_price * 100).toFixed(0)}¢
               </p>
             </div>
             
             <div className="space-y-2">
-              <Label className="text-xs">Trade Size (USD)</Label>
+              <Label className="text-xs">Shares per Trade</Label>
               <Input
                 type="number"
-                value={config.trade_size_usd}
-                onChange={(e) => updateField('trade_size_usd', parseFloat(e.target.value) || 0)}
+                value={config.shares_per_trade}
+                onChange={(e) => updateField('shares_per_trade', parseInt(e.target.value) || 5)}
                 className="h-9"
               />
               <p className="text-xs text-muted-foreground">
-                ${config.trade_size_usd} per trade
-              </p>
-            </div>
-            
-            <div className="space-y-2">
-              <Label className="text-xs">Max Shares</Label>
-              <Input
-                type="number"
-                value={config.max_shares}
-                onChange={(e) => updateField('max_shares', parseInt(e.target.value) || 0)}
-                className="h-9"
-              />
-              <p className="text-xs text-muted-foreground">
-                Maximum {config.max_shares} shares per order
+                Vaste {config.shares_per_trade} shares per trade
               </p>
             </div>
             
@@ -385,188 +362,63 @@ export function V29ConfigEditor() {
 
         <Separator />
 
-        {/* Trailing Stop Exit Settings */}
+        {/* Exit Settings */}
         <div className="space-y-4">
           <h4 className="font-medium text-sm text-muted-foreground flex items-center gap-2">
-            <Shield className="h-4 w-4" />
-            Exit Instellingen (Trailing Stop)
+            <Clock className="h-4 w-4" />
+            Exit Instellingen
           </h4>
-          
-          {/* Explanation */}
-          <div className="p-3 rounded-lg bg-green-500/10 border border-green-500/20 text-sm">
-            <p className="font-medium text-green-400 mb-2">Trailing Stop Logica:</p>
-            <ul className="text-xs text-muted-foreground space-y-1">
-              <li>• <strong>Min Profit</strong>: Gegarandeerde minimum winst (altijd {config.min_profit_cents}¢)</li>
-              <li>• Profit stijgt naar <strong>≥{config.trailing_trigger_cents}¢</strong> → trailing actief</li>
-              <li>• Daalt <strong>{config.trailing_distance_cents}¢</strong> vanaf peak → verkoop</li>
-              <li>• Noodstop bij <strong>-{config.emergency_sl_cents}¢</strong> verlies</li>
-            </ul>
-          </div>
           
           <div className="grid grid-cols-2 gap-4">
             <div className="space-y-3 p-3 rounded-lg bg-green-500/5 border border-green-500/20">
-              <Label className="text-sm text-green-400">Min Profit (¢)</Label>
+              <Label className="text-sm text-green-400">Take Profit (¢)</Label>
               <Input
                 type="number"
-                value={config.min_profit_cents}
-                onChange={(e) => updateField('min_profit_cents', parseFloat(e.target.value) || 0)}
+                value={config.take_profit_cents}
+                onChange={(e) => updateField('take_profit_cents', parseFloat(e.target.value) || 4)}
                 className="h-9"
               />
               <p className="text-xs text-muted-foreground">
-                Gegarandeerde minimale winst per share
-              </p>
-            </div>
-            
-            <div className="space-y-3 p-3 rounded-lg bg-blue-500/5 border border-blue-500/20">
-              <Label className="text-sm text-blue-400">Trailing Trigger (¢)</Label>
-              <Input
-                type="number"
-                value={config.trailing_trigger_cents}
-                onChange={(e) => updateField('trailing_trigger_cents', parseFloat(e.target.value) || 0)}
-                className="h-9"
-              />
-              <p className="text-xs text-muted-foreground">
-                Start trailing stop bij ≥{config.trailing_trigger_cents}¢ winst
+                Verkoop bij +{config.take_profit_cents}¢ winst
               </p>
             </div>
             
             <div className="space-y-3 p-3 rounded-lg bg-amber-500/5 border border-amber-500/20">
-              <Label className="text-sm text-amber-400">Trailing Distance (¢)</Label>
+              <Label className="text-sm text-amber-400">Timeout (sec)</Label>
               <Input
                 type="number"
-                value={config.trailing_distance_cents}
-                onChange={(e) => updateField('trailing_distance_cents', parseFloat(e.target.value) || 0)}
+                value={config.timeout_seconds}
+                onChange={(e) => updateField('timeout_seconds', parseInt(e.target.value) || 10)}
                 className="h-9"
               />
               <p className="text-xs text-muted-foreground">
-                Verkoop als profit {config.trailing_distance_cents}¢ daalt van peak
+                Na {config.timeout_seconds}s → market sell
               </p>
             </div>
             
             <div className="space-y-3 p-3 rounded-lg bg-red-500/5 border border-red-500/20">
-              <Label className="text-sm text-red-400">Emergency Stop Loss (¢)</Label>
+              <Label className="text-sm text-red-400">Max Sell Retries</Label>
               <Input
                 type="number"
-                value={config.emergency_sl_cents}
-                onChange={(e) => updateField('emergency_sl_cents', parseFloat(e.target.value) || 0)}
+                value={config.max_sell_retries}
+                onChange={(e) => updateField('max_sell_retries', parseInt(e.target.value) || 5)}
                 className="h-9"
               />
               <p className="text-xs text-muted-foreground">
-                Noodstop bij -{config.emergency_sl_cents}¢ (met verlies)
-              </p>
-            </div>
-          </div>
-          
-          <div className="space-y-2">
-            <Label className="text-xs">Timeout (ms)</Label>
-            <Input
-              type="number"
-              value={config.timeout_ms}
-              onChange={(e) => updateField('timeout_ms', parseInt(e.target.value) || 0)}
-              className="h-9"
-            />
-            <p className="text-xs text-muted-foreground">
-              Auto-close positie na {(config.timeout_ms / 1000).toFixed(0)}s (verkoopt op min_profit indien mogelijk)
-            </p>
-          </div>
-        </div>
-
-        <Separator />
-
-        {/* Accumulation & Hedge Settings */}
-        <div className="space-y-4">
-          <h4 className="font-medium text-sm text-muted-foreground flex items-center gap-2">
-            <Shield className="h-4 w-4" />
-            Accumulatie & Auto-Hedge
-          </h4>
-          
-          {/* Explanation */}
-          <div className="p-3 rounded-lg bg-purple-500/10 border border-purple-500/20 text-sm">
-            <p className="font-medium text-purple-400 mb-2">Accumulatie Strategie:</p>
-            <ul className="text-xs text-muted-foreground space-y-1">
-              <li>• <strong>Accumulatie</strong>: Bouw posities op over tijd (niet-agressief)</li>
-              <li>• Max ${config.max_total_cost_usd} of {config.max_total_shares} shares per asset/side</li>
-              <li>• <strong>Auto-Hedge</strong>: Koop tegenovergestelde shares als het goedkoop is</li>
-              <li>• Hedge bij ask &lt; {config.hedge_trigger_cents}¢ EN unrealized profit ≥ {config.hedge_min_profit_cents}¢</li>
-            </ul>
-          </div>
-          
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-3 p-3 rounded-lg bg-purple-500/5 border border-purple-500/20">
-              <div className="flex items-center justify-between">
-                <Label className="text-sm text-purple-400">Accumulatie Enabled</Label>
-                <Switch
-                  checked={config.accumulation_enabled}
-                  onCheckedChange={(v) => updateField('accumulation_enabled', v)}
-                />
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Bouw posities op i.p.v. enkele trades
+                Na {config.max_sell_retries}x → force sell
               </p>
             </div>
             
-            <div className="space-y-3 p-3 rounded-lg bg-blue-500/5 border border-blue-500/20">
-              <div className="flex items-center justify-between">
-                <Label className="text-sm text-blue-400">Auto-Hedge Enabled</Label>
-                <Switch
-                  checked={config.auto_hedge_enabled}
-                  onCheckedChange={(v) => updateField('auto_hedge_enabled', v)}
-                />
-              </div>
-              <p className="text-xs text-muted-foreground">
-                Automatisch hedgen bij winst + goedkope tegenovergestelde
-              </p>
-            </div>
-            
-            <div className="space-y-2">
-              <Label className="text-xs">Max Totale Kosten (USD)</Label>
+            <div className="space-y-3 p-3 rounded-lg bg-muted/30">
+              <Label className="text-sm">Order Cooldown (ms)</Label>
               <Input
                 type="number"
-                value={config.max_total_cost_usd}
-                onChange={(e) => updateField('max_total_cost_usd', parseFloat(e.target.value) || 0)}
+                value={config.order_cooldown_ms}
+                onChange={(e) => updateField('order_cooldown_ms', parseInt(e.target.value) || 3000)}
                 className="h-9"
               />
               <p className="text-xs text-muted-foreground">
-                Stop accumulatie bij ${config.max_total_cost_usd} per side
-              </p>
-            </div>
-            
-            <div className="space-y-2">
-              <Label className="text-xs">Max Totale Shares</Label>
-              <Input
-                type="number"
-                value={config.max_total_shares}
-                onChange={(e) => updateField('max_total_shares', parseInt(e.target.value) || 0)}
-                className="h-9"
-              />
-              <p className="text-xs text-muted-foreground">
-                Stop accumulatie bij {config.max_total_shares} shares per side
-              </p>
-            </div>
-            
-            <div className="space-y-2">
-              <Label className="text-xs">Hedge Trigger (¢)</Label>
-              <Input
-                type="number"
-                value={config.hedge_trigger_cents}
-                onChange={(e) => updateField('hedge_trigger_cents', parseInt(e.target.value) || 0)}
-                className="h-9"
-              />
-              <p className="text-xs text-muted-foreground">
-                Hedge als tegenovergestelde ask &lt; {config.hedge_trigger_cents}¢
-              </p>
-            </div>
-            
-            <div className="space-y-2">
-              <Label className="text-xs">Min Profit voor Hedge (¢)</Label>
-              <Input
-                type="number"
-                value={config.hedge_min_profit_cents}
-                onChange={(e) => updateField('hedge_min_profit_cents', parseInt(e.target.value) || 0)}
-                className="h-9"
-              />
-              <p className="text-xs text-muted-foreground">
-                Alleen hedgen bij ≥{config.hedge_min_profit_cents}¢ unrealized profit
+                {(config.order_cooldown_ms / 1000).toFixed(1)}s tussen orders
               </p>
             </div>
           </div>
@@ -574,20 +426,18 @@ export function V29ConfigEditor() {
 
         <Separator />
 
-        {/* Polling Settings */}
-        <div className="space-y-4">
-          <h4 className="font-medium text-sm text-muted-foreground flex items-center gap-2">
-            <Clock className="h-4 w-4" />
-            Polling Instellingen
-          </h4>
-          
-          <div className="grid grid-cols-3 gap-4">
+        {/* Polling Settings (collapsed) */}
+        <details className="space-y-4">
+          <summary className="cursor-pointer text-sm text-muted-foreground">
+            ⚙️ Geavanceerde Instellingen
+          </summary>
+          <div className="grid grid-cols-2 gap-4 mt-4">
             <div className="space-y-2">
               <Label className="text-xs">Binance Poll (ms)</Label>
               <Input
                 type="number"
                 value={config.binance_poll_ms}
-                onChange={(e) => updateField('binance_poll_ms', parseInt(e.target.value) || 0)}
+                onChange={(e) => updateField('binance_poll_ms', parseInt(e.target.value) || 100)}
                 className="h-9"
               />
             </div>
@@ -597,41 +447,40 @@ export function V29ConfigEditor() {
               <Input
                 type="number"
                 value={config.orderbook_poll_ms}
-                onChange={(e) => updateField('orderbook_poll_ms', parseInt(e.target.value) || 0)}
-                className="h-9"
-              />
-            </div>
-            
-            <div className="space-y-2">
-              <Label className="text-xs">Order Cooldown (ms)</Label>
-              <Input
-                type="number"
-                value={config.order_cooldown_ms}
-                onChange={(e) => updateField('order_cooldown_ms', parseInt(e.target.value) || 0)}
+                onChange={(e) => updateField('orderbook_poll_ms', parseInt(e.target.value) || 2000)}
                 className="h-9"
               />
             </div>
           </div>
-        </div>
+        </details>
+
+        <Separator />
 
         {/* Actions */}
-        <div className="flex gap-2 pt-4">
-          <Button onClick={saveConfig} disabled={saving || !hasChanges} className="flex-1">
-            <Save className="h-4 w-4 mr-2" />
-            {saving ? 'Opslaan...' : 'Opslaan'}
+        <div className="flex items-center gap-3">
+          <Button
+            onClick={saveConfig}
+            disabled={saving || !hasChanges}
+            className="flex-1"
+          >
+            {saving ? (
+              <>Opslaan...</>
+            ) : (
+              <>
+                <Save className="h-4 w-4 mr-2" />
+                Opslaan
+              </>
+            )}
           </Button>
-          <Button variant="outline" onClick={resetToDefaults}>
+          
+          <Button
+            variant="outline"
+            onClick={resetToDefaults}
+          >
             <RotateCcw className="h-4 w-4 mr-2" />
             Reset
           </Button>
         </div>
-        
-        {hasChanges && (
-          <p className="text-xs text-amber-500 flex items-center gap-1">
-            <AlertTriangle className="h-3 w-3" />
-            Wijzigingen niet opgeslagen. De runner laadt de nieuwe config automatisch na opslaan.
-          </p>
-        )}
       </CardContent>
     </Card>
   );

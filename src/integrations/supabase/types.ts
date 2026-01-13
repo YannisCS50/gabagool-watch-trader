@@ -5184,6 +5184,7 @@ export type Database = {
           hedge_min_profit_cents: number | null
           hedge_trigger_cents: number | null
           id: string
+          max_sell_retries: number | null
           max_share_price: number
           max_shares: number
           max_total_cost_usd: number | null
@@ -5194,8 +5195,11 @@ export type Database = {
           order_cooldown_ms: number
           orderbook_poll_ms: number
           price_buffer_cents: number
+          shares_per_trade: number | null
+          take_profit_cents: number | null
           tick_delta_usd: number | null
           timeout_ms: number
+          timeout_seconds: number | null
           trade_size_usd: number
           trailing_distance_cents: number | null
           trailing_trigger_cents: number | null
@@ -5213,6 +5217,7 @@ export type Database = {
           hedge_min_profit_cents?: number | null
           hedge_trigger_cents?: number | null
           id?: string
+          max_sell_retries?: number | null
           max_share_price?: number
           max_shares?: number
           max_total_cost_usd?: number | null
@@ -5223,8 +5228,11 @@ export type Database = {
           order_cooldown_ms?: number
           orderbook_poll_ms?: number
           price_buffer_cents?: number
+          shares_per_trade?: number | null
+          take_profit_cents?: number | null
           tick_delta_usd?: number | null
           timeout_ms?: number
+          timeout_seconds?: number | null
           trade_size_usd?: number
           trailing_distance_cents?: number | null
           trailing_trigger_cents?: number | null
@@ -5242,6 +5250,7 @@ export type Database = {
           hedge_min_profit_cents?: number | null
           hedge_trigger_cents?: number | null
           id?: string
+          max_sell_retries?: number | null
           max_share_price?: number
           max_shares?: number
           max_total_cost_usd?: number | null
@@ -5252,8 +5261,11 @@ export type Database = {
           order_cooldown_ms?: number
           orderbook_poll_ms?: number
           price_buffer_cents?: number
+          shares_per_trade?: number | null
+          take_profit_cents?: number | null
           tick_delta_usd?: number | null
           timeout_ms?: number
+          timeout_seconds?: number | null
           trade_size_usd?: number
           trailing_distance_cents?: number | null
           trailing_trigger_cents?: number | null
