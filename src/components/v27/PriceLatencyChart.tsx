@@ -3,8 +3,8 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, ComposedChart, Bar, Area, ReferenceArea } from 'recharts';
-import { Activity, Settings, Zap, Timer, TrendingUp } from 'lucide-react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ReferenceLine, ComposedChart, Bar, Area, ReferenceArea, ReferenceDot } from 'recharts';
+import { Activity, Settings, Zap, Timer, TrendingUp, TrendingDown, AlertTriangle } from 'lucide-react';
 import { usePriceLatencyComparison, Asset } from '@/hooks/usePriceLatencyComparison';
 import { usePaperTradingConfig } from '@/hooks/usePaperTraderData';
 import { supabase } from '@/integrations/supabase/client';
@@ -132,9 +132,18 @@ export function PriceLatencyChart() {
     }));
   }, [chartData, clobPrices]);
 
-  // Calculate price deltas for delta chart
+  // Calculate price deltas for delta chart with share prices and trigger markers
   const deltaChartData = useMemo(() => {
-    const data: { time: number; binanceDelta: number | null; chainlinkDelta: number | null }[] = [];
+    const triggerThreshold = config?.min_delta_usd ?? 20;
+    const data: { 
+      time: number; 
+      binanceDelta: number | null; 
+      chainlinkDelta: number | null;
+      upSharePrice: number | null;
+      downSharePrice: number | null;
+      triggered: boolean;
+      triggerDirection: 'UP' | 'DOWN' | null;
+    }[] = [];
     let prevBinance: number | null = null;
     let prevChainlink: number | null = null;
 
@@ -142,11 +151,19 @@ export function PriceLatencyChart() {
       const binanceDelta = point.binance && prevBinance ? point.binance - prevBinance : null;
       const chainlinkDelta = point.chainlink && prevChainlink ? point.chainlink - prevChainlink : null;
 
+      // Check if this delta would trigger a trade
+      const triggered = binanceDelta !== null && Math.abs(binanceDelta) >= triggerThreshold;
+      const triggerDirection = triggered ? (binanceDelta! > 0 ? 'UP' : 'DOWN') : null;
+
       if (binanceDelta !== null || chainlinkDelta !== null) {
         data.push({
           time: point.time,
           binanceDelta: binanceDelta && Math.abs(binanceDelta) > 0.01 ? binanceDelta : null,
           chainlinkDelta: chainlinkDelta && Math.abs(chainlinkDelta) > 0.01 ? chainlinkDelta : null,
+          upSharePrice: clobPrices?.upAsk ? clobPrices.upAsk * 100 : null,
+          downSharePrice: clobPrices?.downAsk ? clobPrices.downAsk * 100 : null,
+          triggered,
+          triggerDirection,
         });
       }
 
@@ -156,7 +173,7 @@ export function PriceLatencyChart() {
 
     // Increased from 300 to 600 for more delta data points
     return data.slice(-600);
-  }, [combinedChartData]);
+  }, [combinedChartData, config, clobPrices]);
 
   // Check if current share price is in bounds
   const sharePriceInBounds = useMemo(() => {
@@ -416,7 +433,30 @@ export function PriceLatencyChart() {
           </TabsContent>
 
           <TabsContent value="deltas">
-            <div className="h-[280px]">
+            {/* Trigger count summary */}
+            {(() => {
+              const triggers = deltaChartData.filter(d => d.triggered);
+              const upTriggers = triggers.filter(d => d.triggerDirection === 'UP').length;
+              const downTriggers = triggers.filter(d => d.triggerDirection === 'DOWN').length;
+              return triggers.length > 0 && (
+                <div className="mb-3 flex items-center gap-3 p-2 bg-purple-500/10 border border-purple-500/30 rounded-lg">
+                  <AlertTriangle className="h-4 w-4 text-purple-400" />
+                  <span className="text-sm font-medium text-purple-400">
+                    {triggers.length} trigger(s) in view
+                  </span>
+                  <Badge className="bg-green-500/20 text-green-400 border-green-500/30">
+                    <TrendingUp className="h-3 w-3 mr-1" />
+                    {upTriggers} UP
+                  </Badge>
+                  <Badge className="bg-red-500/20 text-red-400 border-red-500/30">
+                    <TrendingDown className="h-3 w-3 mr-1" />
+                    {downTriggers} DOWN
+                  </Badge>
+                </div>
+              );
+            })()}
+            
+            <div className="h-[320px]">
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart data={deltaChartData}>
                   <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
@@ -427,35 +467,92 @@ export function PriceLatencyChart() {
                     interval="preserveStartEnd"
                   />
                   <YAxis 
+                    yAxisId="delta"
                     tickFormatter={(v) => `$${v.toFixed(0)}`}
+                    tick={{ fontSize: 10 }}
+                  />
+                  <YAxis 
+                    yAxisId="share"
+                    orientation="right"
+                    domain={[0, 100]}
+                    tickFormatter={(v) => `${v}¢`}
                     tick={{ fontSize: 10 }}
                   />
                   <Tooltip 
                     labelFormatter={(t) => formatTimestamp(t as number)}
-                    formatter={(v: number, name: string) => [`$${v?.toFixed(2)}`, name]}
+                    formatter={(v: number, name: string) => {
+                      if (name.includes('Share')) return [`${v?.toFixed(1)}¢`, name];
+                      return [`$${v?.toFixed(2)}`, name];
+                    }}
+                    content={({ active, payload, label }) => {
+                      if (!active || !payload || payload.length === 0) return null;
+                      const data = payload[0]?.payload;
+                      return (
+                        <div className="bg-background border rounded-lg p-2 shadow-lg text-xs">
+                          <div className="font-mono text-muted-foreground mb-1">{formatTimestamp(label)}</div>
+                          {data?.triggered && (
+                            <div className="flex items-center gap-1 text-purple-400 font-bold mb-1">
+                              <AlertTriangle className="h-3 w-3" />
+                              TRIGGER! {data.triggerDirection}
+                            </div>
+                          )}
+                          {payload.map((p: any, i: number) => (
+                            <div key={i} className="flex justify-between gap-4">
+                              <span style={{ color: p.color }}>{p.name}:</span>
+                              <span className="font-mono">
+                                {p.name.includes('Share') ? `${p.value?.toFixed(1)}¢` : `$${p.value?.toFixed(2)}`}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      );
+                    }}
                   />
                   <Legend />
-                  <ReferenceLine y={0} stroke="hsl(var(--muted-foreground))" strokeDasharray="3 3" />
+                  <ReferenceLine yAxisId="delta" y={0} stroke="hsl(var(--muted-foreground))" strokeDasharray="3 3" />
                   {/* Trigger threshold lines */}
                   {config && (
                     <>
                       <ReferenceLine 
+                        yAxisId="delta"
                         y={config.min_delta_usd} 
                         stroke={COLORS.trigger} 
                         strokeWidth={2}
                         strokeDasharray="5 3"
-                        label={{ value: `+$${config.min_delta_usd} trigger`, position: 'right', fill: COLORS.trigger, fontSize: 10 }}
+                        label={{ value: `+$${config.min_delta_usd} UP trigger`, position: 'right', fill: COLORS.trigger, fontSize: 10 }}
                       />
                       <ReferenceLine 
+                        yAxisId="delta"
                         y={-config.min_delta_usd} 
                         stroke={COLORS.trigger} 
                         strokeWidth={2}
                         strokeDasharray="5 3"
-                        label={{ value: `-$${config.min_delta_usd} trigger`, position: 'right', fill: COLORS.trigger, fontSize: 10 }}
+                        label={{ value: `-$${config.min_delta_usd} DOWN trigger`, position: 'right', fill: COLORS.trigger, fontSize: 10 }}
                       />
                     </>
                   )}
+                  {/* Share price reference lines */}
+                  {clobPrices?.upAsk && (
+                    <ReferenceLine 
+                      yAxisId="share"
+                      y={clobPrices.upAsk * 100} 
+                      stroke={COLORS.positive} 
+                      strokeWidth={1}
+                      strokeDasharray="2 2"
+                    />
+                  )}
+                  {clobPrices?.downAsk && (
+                    <ReferenceLine 
+                      yAxisId="share"
+                      y={clobPrices.downAsk * 100} 
+                      stroke={COLORS.negative} 
+                      strokeWidth={1}
+                      strokeDasharray="2 2"
+                    />
+                  )}
+                  {/* Delta bars */}
                   <Bar 
+                    yAxisId="delta"
                     dataKey="binanceDelta" 
                     fill={COLORS.binance}
                     name="Binance Δ"
@@ -463,20 +560,56 @@ export function PriceLatencyChart() {
                     opacity={0.8}
                   />
                   <Bar 
+                    yAxisId="delta"
                     dataKey="chainlinkDelta" 
                     fill={COLORS.chainlink}
                     name="Chainlink Δ"
                     isAnimationActive={false}
                     opacity={0.8}
                   />
+                  {/* Share price lines */}
+                  <Line 
+                    yAxisId="share"
+                    type="monotone" 
+                    dataKey="upSharePrice" 
+                    stroke={COLORS.positive}
+                    dot={false} 
+                    strokeWidth={2}
+                    connectNulls
+                    name="UP Share"
+                    isAnimationActive={false}
+                  />
+                  <Line 
+                    yAxisId="share"
+                    type="monotone" 
+                    dataKey="downSharePrice" 
+                    stroke={COLORS.negative}
+                    dot={false} 
+                    strokeWidth={2}
+                    connectNulls
+                    name="DOWN Share"
+                    isAnimationActive={false}
+                  />
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
-            <p className="text-xs text-muted-foreground mt-2 text-center">
-              <span style={{ color: COLORS.trigger }}>■</span> Paarse lijnen = trigger threshold (±${config?.min_delta_usd || '?'}). 
-              Moves boven/onder triggeren trades. | 
-              <span style={{ color: COLORS.sharePrice }}> ■</span> UP share prijs: {clobPrices?.upAsk ? `${(clobPrices.upAsk * 100).toFixed(1)}¢` : '—'}
-            </p>
+            
+            {/* Trigger explanation */}
+            <div className="mt-3 p-3 bg-muted/50 rounded-lg text-xs space-y-1">
+              <div className="flex items-center gap-2">
+                <span style={{ color: COLORS.trigger }}>━━</span>
+                <span>Trigger threshold: ±${config?.min_delta_usd || '?'}</span>
+                <span className="text-muted-foreground">|</span>
+                <span style={{ color: COLORS.positive }}>━</span>
+                <span>UP: {clobPrices?.upAsk ? `${(clobPrices.upAsk * 100).toFixed(1)}¢` : '—'}</span>
+                <span style={{ color: COLORS.negative }}>━</span>
+                <span>DOWN: {clobPrices?.downAsk ? `${(clobPrices.downAsk * 100).toFixed(1)}¢` : '—'}</span>
+              </div>
+              <div className="text-muted-foreground">
+                <AlertTriangle className="h-3 w-3 inline mr-1" />
+                Trigger = Binance delta ≥ threshold. Als share price buiten {config ? `${(config.min_share_price * 100).toFixed(0)}-${(config.max_share_price * 100).toFixed(0)}¢` : '?'} range, wordt trade overgeslagen.
+              </div>
+            </div>
           </TabsContent>
         </Tabs>
       </CardContent>
