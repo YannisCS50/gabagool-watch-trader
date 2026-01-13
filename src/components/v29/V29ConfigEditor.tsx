@@ -182,17 +182,6 @@ export function V29ConfigEditor() {
     }
   };
 
-      if (error) throw error;
-
-      toast.success('V29 config opgeslagen! Runner pikt dit automatisch op.');
-      setHasChanges(false);
-    } catch (err) {
-      console.error('Failed to save config:', err);
-      toast.error('Kon config niet opslaan');
-    } finally {
-      setSaving(false);
-    }
-  };
 
   const resetToDefaults = () => {
     setConfig(DEFAULT_CONFIG);
