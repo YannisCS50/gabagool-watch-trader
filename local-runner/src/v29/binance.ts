@@ -1,17 +1,14 @@
 /**
  * V29 Binance WebSocket Price Feed
  *
- * NOTE: Binance emits a *trade* event for every fill, which is far more frequent
- * than our strategy "ticks". To match the intended "tick-to-tick" behavior
- * (and the UI), we:
- *  - listen to the trade stream to get the latest price
- *  - emit the latest price on a fixed cadence (pollMs)
+ * This implementation emits every trade event immediately to match the UI behavior.
+ * The strategy can then calculate tick-to-tick deltas identically to what's shown in PriceLatencyChart.
  */
 
 import WebSocket from 'ws';
 import { Asset, BINANCE_SYMBOLS } from './config.js';
 
-type PriceCallback = (asset: Asset, price: number) => void;
+type PriceCallback = (asset: Asset, price: number, timestamp: number) => void;
 
 type StatusEvent =
   | { type: 'open'; url: string }
@@ -22,17 +19,12 @@ type StatusCallback = (event: StatusEvent) => void;
 
 let ws: WebSocket | null = null;
 let reconnectTimeout: NodeJS.Timeout | null = null;
-let flushInterval: NodeJS.Timeout | null = null;
 
 let priceCallback: PriceCallback | null = null;
 let statusCallback: StatusCallback | null = null;
 let isRunning = false;
 
 let currentAssets: Asset[] = [];
-let currentPollMs = 100;
-
-const latestPrice: Record<Asset, number | null> = { BTC: null, ETH: null, SOL: null, XRP: null };
-const lastEmittedPrice: Record<Asset, number | null> = { BTC: null, ETH: null, SOL: null, XRP: null };
 
 const BINANCE_WS_BASE = 'wss://stream.binance.com:9443/ws';
 
@@ -52,30 +44,6 @@ function symbolToAsset(symbol: string): Asset | null {
 function buildUrl(assets: Asset[]): string {
   const streams = assets.map((a) => `${BINANCE_SYMBOLS[a]}@trade`).join('/');
   return `${BINANCE_WS_BASE}/${streams}`;
-}
-
-function startEmitter(): void {
-  if (flushInterval) return;
-  flushInterval = setInterval(() => {
-    if (!priceCallback) return;
-
-    for (const a of currentAssets) {
-      const p = latestPrice[a];
-      if (p == null) continue;
-
-      // Emit only when price changed since last emit (prevents spam and makes deltas meaningful)
-      if (lastEmittedPrice[a] !== p) {
-        lastEmittedPrice[a] = p;
-        priceCallback(a, p);
-      }
-    }
-  }, currentPollMs);
-}
-
-function stopEmitter(): void {
-  if (!flushInterval) return;
-  clearInterval(flushInterval);
-  flushInterval = null;
 }
 
 function connect(): void {
@@ -100,13 +68,15 @@ function connect(): void {
     try {
       const msg = JSON.parse(data.toString());
 
-      // Trade event format
+      // Trade event format: { e: 'trade', s: 'BTCUSDT', p: '92000.50', T: 1768302000000 }
       if (msg?.e === 'trade' && msg?.s && msg?.p) {
         const asset = symbolToAsset(msg.s);
         const price = parseFloat(msg.p);
+        const timestamp = msg.T ?? Date.now(); // Trade timestamp from Binance
 
-        if (asset && !isNaN(price)) {
-          latestPrice[asset] = price;
+        if (asset && !isNaN(price) && priceCallback) {
+          // Emit EVERY trade immediately - matches UI behavior
+          priceCallback(asset, price, timestamp);
         }
       }
     } catch {
@@ -139,24 +109,24 @@ function scheduleReconnect(): void {
   }, 3000);
 }
 
+/**
+ * Start the Binance WebSocket feed.
+ * @param assets - Assets to subscribe to
+ * @param onPrice - Callback for each trade (asset, price, timestamp)
+ * @param _pollMs - IGNORED (kept for backward compatibility)
+ * @param onStatus - Optional callback for connection status events
+ */
 export function startBinanceFeed(
   assets: Asset[],
   onPrice: PriceCallback,
-  pollMs?: number,
+  _pollMs?: number,
   onStatus?: StatusCallback
 ): void {
   isRunning = true;
   priceCallback = onPrice;
   statusCallback = onStatus ?? null;
   currentAssets = assets;
-  currentPollMs = Math.max(50, pollMs ?? 100);
 
-  // reset emit tracking
-  for (const a of assets) {
-    lastEmittedPrice[a] = null;
-  }
-
-  startEmitter();
   connect();
 }
 
@@ -164,8 +134,6 @@ export function stopBinanceFeed(): void {
   isRunning = false;
   priceCallback = null;
   statusCallback = null;
-
-  stopEmitter();
 
   if (reconnectTimeout) {
     clearTimeout(reconnectTimeout);

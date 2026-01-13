@@ -39,8 +39,7 @@ const priceState: Record<Asset, PriceState> = {
   XRP: { binance: null, chainlink: null, upBestAsk: null, upBestBid: null, downBestAsk: null, downBestBid: null, lastUpdate: 0 },
 };
 
-// Previous tick price for delta calculation
-const prevPrices: Record<Asset, number | null> = { BTC: null, ETH: null, SOL: null, XRP: null };
+// (prevPrices moved to handleBinancePrice as lastBinancePrice)
 
 // Current position (only one at a time)
 let activePosition: Position | null = null;
@@ -217,24 +216,18 @@ function handleChainlinkPrice(asset: Asset, price: number): void {
 // PRICE HANDLING
 // ============================================
 
-// Rolling price history for delta calculation (last N seconds)
-const DELTA_WINDOW_MS = 2000; // 2 second window for delta calculation
-const priceHistory: Record<Asset, Array<{ ts: number; price: number }>> = {
-  BTC: [], ETH: [], SOL: [], XRP: []
-};
+// Track previous price per asset for tick-to-tick delta (matches UI behavior)
+const lastBinancePrice: Record<Asset, number | null> = { BTC: null, ETH: null, SOL: null, XRP: null };
 
-function handleBinancePrice(asset: Asset, price: number): void {
+function handleBinancePrice(asset: Asset, price: number, _timestamp: number): void {
   const now = Date.now();
   
-  // Update state
+  // Update current state
   priceState[asset].binance = price;
   
-  // Add to price history
-  priceHistory[asset].push({ ts: now, price });
-  
-  // Prune old entries (keep only last DELTA_WINDOW_MS)
-  const cutoff = now - DELTA_WINDOW_MS;
-  priceHistory[asset] = priceHistory[asset].filter(p => p.ts >= cutoff);
+  // Get previous price for tick-to-tick delta
+  const prevPrice = lastBinancePrice[asset];
+  lastBinancePrice[asset] = price;
   
   // Skip if disabled
   if (!config.enabled) return;
@@ -245,33 +238,24 @@ function handleBinancePrice(asset: Asset, price: number): void {
   // Skip if in cooldown
   if (now - lastOrderTime < config.order_cooldown_ms) return;
   
-  // Need at least some history to calculate delta
-  const history = priceHistory[asset];
-  if (history.length < 2) return;
+  // Need previous price to calculate delta
+  if (prevPrice === null) return;
   
-  // Calculate delta over the window (oldest price in window vs current)
-  const oldestPrice = history[0].price;
-  const windowDelta = price - oldestPrice;
-  const windowMs = now - history[0].ts;
+  // Calculate tick-to-tick delta (exactly like UI: current - previous)
+  const tickDelta = price - prevPrice;
   
-  // Also track tick-to-tick for logging
-  const prevPrice = prevPrices[asset];
-  prevPrices[asset] = price;
-  const tickDelta = prevPrice !== null ? price - prevPrice : 0;
-  
-  // Log significant movements (window delta > $3)
-  if (Math.abs(windowDelta) >= 3) {
-    queueLog(RUN_ID, 'info', 'price', `${asset} binance Δ$${windowDelta > 0 ? '+' : ''}${windowDelta.toFixed(2)} over ${windowMs}ms ($${price.toFixed(2)})`, asset, { 
+  // Log significant movements (|delta| >= $3)
+  if (Math.abs(tickDelta) >= 3) {
+    queueLog(RUN_ID, 'info', 'price', `${asset} binance Δ$${tickDelta > 0 ? '+' : ''}${tickDelta.toFixed(2)} ($${price.toFixed(2)})`, asset, { 
       source: 'binance', 
-      windowDelta, 
-      windowMs,
+      tickDelta, 
       price, 
       threshold: config.tick_delta_usd 
     });
   }
   
-  // Check if window delta exceeds threshold (e.g., $6 price move over 2 seconds)
-  if (Math.abs(windowDelta) < config.tick_delta_usd) return;
+  // Check if tick delta exceeds threshold (e.g., $6 price move)
+  if (Math.abs(tickDelta) < config.tick_delta_usd) return;
   
   // Get market to check strike price
   const market = markets.get(asset);
@@ -288,10 +272,10 @@ function handleBinancePrice(asset: Asset, price: number): void {
   // Calculate actual-to-strike delta for direction logic
   const priceVsStrikeDelta = actualPrice - market.strikePrice;
   
-  log(`📊 ${asset} delta calc: ${priceSource}=$${actualPrice.toFixed(2)} vs strike=$${market.strikePrice.toFixed(0)} → Δ$${priceVsStrikeDelta.toFixed(0)}`);
+  log(`📊 ${asset} TRIGGER CHECK: tickΔ=$${tickDelta.toFixed(2)} (threshold=$${config.tick_delta_usd}) | ${priceSource}=$${actualPrice.toFixed(2)} vs strike=$${market.strikePrice.toFixed(0)} → Δ$${priceVsStrikeDelta.toFixed(0)}`);
   
-  // Determine direction based on window movement (not just last tick)
-  const moveDirection: 'UP' | 'DOWN' = windowDelta > 0 ? 'UP' : 'DOWN';
+  // Determine direction based on tick movement (exactly like UI)
+  const tickDirection: 'UP' | 'DOWN' = tickDelta > 0 ? 'UP' : 'DOWN';
   
   // Apply direction filter based on delta_threshold
   let allowedDirection: 'UP' | 'DOWN' | 'BOTH';
@@ -304,18 +288,15 @@ function handleBinancePrice(asset: Asset, price: number): void {
   }
   
   // Check if direction is allowed
-  if (allowedDirection !== 'BOTH' && allowedDirection !== moveDirection) {
-    log(`⚠️ ${asset} direction ${moveDirection} blocked | price vs strike: $${priceVsStrikeDelta.toFixed(0)} | only ${allowedDirection} allowed`);
+  if (allowedDirection !== 'BOTH' && allowedDirection !== tickDirection) {
+    log(`⚠️ ${asset} direction ${tickDirection} blocked | price vs strike: $${priceVsStrikeDelta.toFixed(0)} | only ${allowedDirection} allowed`);
     return;
   }
   
-  log(`🎯 TRIGGER: ${asset} ${moveDirection} | window Δ$${windowDelta.toFixed(2)} over ${windowMs}ms | price vs strike: $${priceVsStrikeDelta.toFixed(0)} | allowed: ${allowedDirection}`, 'signal', asset, { windowDelta, windowMs, priceVsStrikeDelta, direction: moveDirection });
-  
-  // Clear price history after triggering to prevent repeated signals
-  priceHistory[asset] = [{ ts: now, price }];
+  log(`🎯 TRIGGER: ${asset} ${tickDirection} | tickΔ$${tickDelta.toFixed(2)} | price vs strike: $${priceVsStrikeDelta.toFixed(0)} | allowed: ${allowedDirection}`, 'signal', asset, { tickDelta, priceVsStrikeDelta, direction: tickDirection });
   
   // Execute trade
-  void executeTrade(asset, moveDirection, price, windowDelta, priceVsStrikeDelta);
+  void executeTrade(asset, tickDirection, price, tickDelta, priceVsStrikeDelta);
 }
 
 // ============================================
