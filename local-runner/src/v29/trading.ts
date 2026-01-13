@@ -492,6 +492,8 @@ export async function getOrderStatus(orderId: string): Promise<{ filled: boolean
     return { filled: false, filledSize: 0, status: 'error' };
   }
 }
+
+/**
  * Get current wallet balance
  */
 export async function getBalance(): Promise<number> {
