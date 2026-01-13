@@ -1303,7 +1303,15 @@ async function monitorOpenPositions(): Promise<void> {
     const tokenId = pos.asset;
     const shares = pos.size;
     const avgCost = pos.avgPrice;
-    const currentPrice = pos.curPrice;
+    
+    // Use LIVE bid from priceState instead of stale curPrice from API!
+    const state = priceState[asset];
+    const liveBid = direction === 'UP' ? state.upBestBid : state.downBestBid;
+    const liveAsk = direction === 'UP' ? state.upBestAsk : state.downBestAsk;
+    
+    // Use live bid as current value (what we can actually sell for)
+    const currentPrice = liveBid ?? pos.curPrice;
+    const apiPrice = pos.curPrice;
     
     if (shares < 1 || avgCost <= 0) continue;
 
@@ -1312,18 +1320,20 @@ async function monitorOpenPositions(): Promise<void> {
     const profitPct = ((currentPrice / avgCost) - 1) * 100;
     const profitUsd = (currentPrice - avgCost) * shares;
 
-    console.log(`[V28] 📊 ${asset} ${direction}: ${shares.toFixed(1)} shares @ ${(avgCost * 100).toFixed(1)}¢ → ${(currentPrice * 100).toFixed(1)}¢ (+${profitCents}¢ / ${profitPct >= 0 ? '+' : ''}${profitPct.toFixed(1)}% / $${profitUsd.toFixed(2)})`);
+    // Show both live bid and API price for debugging
+    const bidAskInfo = liveBid !== null 
+      ? `bid=${(liveBid * 100).toFixed(1)}¢ ask=${liveAsk ? (liveAsk * 100).toFixed(1) : '?'}¢` 
+      : `API=${(apiPrice * 100).toFixed(1)}¢`;
+    
+    console.log(`[V28] 📊 ${asset} ${direction}: ${shares.toFixed(1)} shares @ ${(avgCost * 100).toFixed(1)}¢ → ${(currentPrice * 100).toFixed(1)}¢ (${bidAskInfo}) | ${profitCents >= 0 ? '+' : ''}${profitCents}¢ / ${profitPct >= 0 ? '+' : ''}${profitPct.toFixed(1)}% / $${profitUsd >= 0 ? '+' : ''}${profitUsd.toFixed(2)}`);
+
 
     // Sell when profit >= 4 CENTS (user requirement)
     if (profitCents >= MIN_PROFIT_CENTS_TO_SELL) {
       console.log(`[V28] 💰 PROFIT +${profitCents}¢ >= +${MIN_PROFIT_CENTS_TO_SELL}¢! Selling ${shares.toFixed(1)} shares...`);
 
-      // Get current orderbook for best bid
-      const state = priceState[asset];
-      const currentBid = direction === 'UP' ? state.upBestBid : state.downBestBid;
-      
       // AGGRESSIVE SELL: Use bestBid - 0.5¢ to ensure fill
-      const aggressiveSellPrice = currentBid ? Math.round((currentBid - 0.005) * 100) / 100 : Math.round(currentPrice * 100) / 100;
+      const aggressiveSellPrice = liveBid ? Math.round((liveBid - 0.005) * 100) / 100 : Math.round(currentPrice * 100) / 100;
       const sellPrice = Math.max(aggressiveSellPrice, 0.01); // Floor at 1¢
       const sellShares = Math.floor(shares); // Whole shares only
 
@@ -1332,7 +1342,7 @@ async function monitorOpenPositions(): Promise<void> {
         continue;
       }
 
-      console.log(`[V28] 📤 SELL ${sellShares} @ ${(sellPrice * 100).toFixed(0)}¢ (aggressive: bestBid=${currentBid ? (currentBid * 100).toFixed(0) : '?'}¢ - 0.5¢)`);
+      console.log(`[V28] 📤 SELL ${sellShares} @ ${(sellPrice * 100).toFixed(0)}¢ (aggressive: bestBid=${liveBid ? (liveBid * 100).toFixed(0) : '?'}¢ - 0.5¢)`);
 
       try {
         const result = await placeOrder({
