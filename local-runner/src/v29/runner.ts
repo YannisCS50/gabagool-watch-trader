@@ -16,7 +16,7 @@ import { startBinanceFeed, stopBinanceFeed } from './binance.js';
 import { startChainlinkFeed, stopChainlinkFeed, getChainlinkPrice } from './chainlink.js';
 import { fetchMarketOrderbook, fetchAllOrderbooks } from './orderbook.js';
 import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb } from './db.js';
-import { placeBuyOrder, placeSellOrder, getBalance } from './trading.js';
+import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache } from './trading.js';
 import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
 
@@ -269,7 +269,7 @@ async function executeTrade(
     asset,
     direction,
     binance_price: binancePrice,
-    binance_delta: delta,
+    binance_delta: tickDelta,
     share_price: buyPrice,
     market_slug: market.slug,
     strike_price: market.strikePrice,
@@ -285,7 +285,7 @@ async function executeTrade(
     gross_pnl: null,
     net_pnl: null,
     fees: null,
-    notes: `${direction} | Δ$${Math.abs(delta).toFixed(0)} | @${(buyPrice * 100).toFixed(1)}¢`,
+    notes: `${direction} | tickΔ$${Math.abs(tickDelta).toFixed(0)} | strikeΔ$${strikeActualDelta.toFixed(0)} | @${(buyPrice * 100).toFixed(1)}¢`,
   };
   
   // Save signal first (get ID)
@@ -299,7 +299,7 @@ async function executeTrade(
   log(`📤 PLACING ORDER: ${asset} ${direction} ${shares} shares @ ${(buyPrice * 100).toFixed(1)}¢`);
   
   const tokenId = direction === 'UP' ? market.upTokenId : market.downTokenId;
-  const result = await placeBuyOrder(tokenId, buyPrice, shares);
+  const result = await placeBuyOrder(tokenId, buyPrice, shares, asset, direction);
   
   const latency = Date.now() - signalTs;
   
@@ -530,6 +530,15 @@ async function main(): Promise<void> {
   // Fetch markets
   await fetchMarkets();
   
+  // Initialize pre-signed order cache for maximum speed
+  const marketsForCache = Array.from(markets.entries()).map(([asset, m]) => ({
+    asset,
+    upTokenId: m.upTokenId,
+    downTokenId: m.downTokenId,
+  }));
+  await initPreSignedCache(marketsForCache);
+  log('✅ Pre-signed order cache initialized');
+  
   // Initial orderbook fetch
   await pollOrderbooks();
   
@@ -568,6 +577,7 @@ async function main(): Promise<void> {
     isRunning = false;
     stopBinanceFeed();
     stopChainlinkFeed();
+    stopPreSignedCache();
     stopPositionMonitor();
     process.exit(0);
   };
