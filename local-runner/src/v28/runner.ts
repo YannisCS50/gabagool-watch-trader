@@ -354,7 +354,6 @@ function handlePriceUpdate(asset: Asset, newPrice: number): void {
   console.log(`[V28] ══════════════════════════════════════════════════════════════\n`);
 
   // Check if market is LIVE (started and not expired)
-  const market = marketInfo[asset];
   if (!market) {
     console.log(`[V28] No market info for ${asset}, skipping`);
     return;
