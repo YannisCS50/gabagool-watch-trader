@@ -88,7 +88,7 @@ export async function saveSignal(signal: Signal): Promise<string | null> {
 }
 
 /**
- * Load V29 config from database
+ * Load V29 config from database - SIMPLE STRATEGY
  */
 export async function loadV29Config(): Promise<{
   enabled: boolean;
@@ -96,25 +96,15 @@ export async function loadV29Config(): Promise<{
   delta_threshold: number;
   min_share_price: number;
   max_share_price: number;
-  trade_size_usd: number;
-  max_shares: number;
+  shares_per_trade: number;
+  take_profit_cents: number;
+  timeout_seconds: number;
+  max_sell_retries: number;
   price_buffer_cents: number;
   assets: string[];
-  tp_enabled: boolean;
-  tp_cents: number;
-  sl_enabled: boolean;
-  sl_cents: number;
-  timeout_ms: number;
   binance_poll_ms: number;
   orderbook_poll_ms: number;
   order_cooldown_ms: number;
-  // Accumulation & hedge config
-  accumulation_enabled: boolean;
-  max_total_cost_usd: number;
-  max_total_shares: number;
-  auto_hedge_enabled: boolean;
-  hedge_trigger_cents: number;
-  hedge_min_profit_cents: number;
 } | null> {
   const db = getDb();
   
@@ -131,30 +121,20 @@ export async function loadV29Config(): Promise<{
     }
     
     return {
-      enabled: data.enabled,
+      enabled: data.enabled ?? true,
       tick_delta_usd: Number(data.tick_delta_usd ?? data.min_delta_usd ?? 6),
-      delta_threshold: Number(data.delta_threshold ?? 70),
+      delta_threshold: Number(data.delta_threshold ?? 75),
       min_share_price: Number(data.min_share_price ?? 0.30),
-      max_share_price: Number(data.max_share_price),
-      trade_size_usd: Number(data.trade_size_usd),
-      max_shares: Number(data.max_shares),
-      price_buffer_cents: Number(data.price_buffer_cents),
-      assets: data.assets,
-      tp_enabled: data.tp_enabled,
-      tp_cents: Number(data.tp_cents),
-      sl_enabled: data.sl_enabled,
-      sl_cents: Number(data.sl_cents),
-      timeout_ms: Number(data.timeout_ms),
-      binance_poll_ms: Number(data.binance_poll_ms),
-      orderbook_poll_ms: Number(data.orderbook_poll_ms),
-      order_cooldown_ms: Number(data.order_cooldown_ms),
-      // Accumulation & hedge
-      accumulation_enabled: data.accumulation_enabled ?? true,
-      max_total_cost_usd: Number(data.max_total_cost_usd ?? 75),
-      max_total_shares: Number(data.max_total_shares ?? 300),
-      auto_hedge_enabled: data.auto_hedge_enabled ?? true,
-      hedge_trigger_cents: Number(data.hedge_trigger_cents ?? 15),
-      hedge_min_profit_cents: Number(data.hedge_min_profit_cents ?? 10),
+      max_share_price: Number(data.max_share_price ?? 0.75),
+      shares_per_trade: Number(data.shares_per_trade ?? 5),
+      take_profit_cents: Number(data.take_profit_cents ?? 4),
+      timeout_seconds: Number(data.timeout_seconds ?? 10),
+      max_sell_retries: Number(data.max_sell_retries ?? 5),
+      price_buffer_cents: Number(data.price_buffer_cents ?? 1),
+      assets: data.assets ?? ['BTC'],
+      binance_poll_ms: Number(data.binance_poll_ms ?? 100),
+      orderbook_poll_ms: Number(data.orderbook_poll_ms ?? 2000),
+      order_cooldown_ms: Number(data.order_cooldown_ms ?? 3000),
     };
   } catch (err) {
     log(`Config load error: ${err}`);
