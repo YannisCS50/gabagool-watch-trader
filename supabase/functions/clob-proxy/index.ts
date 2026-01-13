@@ -27,7 +27,8 @@ serve(async (req) => {
   const { socket: clientSocket, response } = Deno.upgradeWebSocket(req);
 
   let clobSocket: WebSocket | null = null;
-  let pingInterval: number | null = null;
+  let clobPingInterval: number | null = null;
+  let clientPingInterval: number | null = null;
 
   clientSocket.onopen = () => {
     console.log("[CLOB Proxy] Client connected, connecting to CLOB market WS...");
@@ -38,17 +39,27 @@ serve(async (req) => {
       console.log("[CLOB Proxy] Connected to CLOB market WS");
       clientSocket.send(JSON.stringify({ type: "proxy_connected" }));
 
-      // Keep-alive ping (CLOB expects plain "PING")
-      pingInterval = setInterval(() => {
+      // Keep-alive ping to CLOB (expects plain "PING")
+      clobPingInterval = setInterval(() => {
         try {
           if (clobSocket?.readyState === WebSocket.OPEN) {
             clobSocket.send("PING");
-            console.log("[CLOB Proxy] Sent PING");
           }
         } catch {
           // ignore
         }
       }, 10000);
+      
+      // Keep-alive ping to client (prevents edge function timeout)
+      clientPingInterval = setInterval(() => {
+        try {
+          if (clientSocket.readyState === WebSocket.OPEN) {
+            clientSocket.send(JSON.stringify({ type: "ping", ts: Date.now() }));
+          }
+        } catch {
+          // ignore
+        }
+      }, 5000);
     };
 
     clobSocket.onmessage = (event) => {
@@ -95,7 +106,8 @@ serve(async (req) => {
 
     clobSocket.onclose = (event) => {
       console.log("[CLOB Proxy] CLOB disconnected:", event.code, event.reason);
-      if (pingInterval) clearInterval(pingInterval);
+      if (clobPingInterval) clearInterval(clobPingInterval);
+      if (clientPingInterval) clearInterval(clientPingInterval);
       if (clientSocket.readyState === WebSocket.OPEN) {
         clientSocket.send(JSON.stringify({ type: "proxy_disconnected", code: event.code }));
         clientSocket.close();
@@ -124,7 +136,8 @@ serve(async (req) => {
 
   clientSocket.onclose = () => {
     console.log("[CLOB Proxy] Client disconnected");
-    if (pingInterval) clearInterval(pingInterval);
+    if (clobPingInterval) clearInterval(clobPingInterval);
+    if (clientPingInterval) clearInterval(clientPingInterval);
     if (clobSocket?.readyState === WebSocket.OPEN) {
       clobSocket.close();
     }
