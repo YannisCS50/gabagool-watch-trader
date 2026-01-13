@@ -206,9 +206,9 @@ function handleChainlinkPrice(asset: Asset, price: number): void {
   const prev = priceState[asset].chainlink;
   priceState[asset].chainlink = price;
   
-  // Only log if price changed significantly
-  if (!prev || Math.abs(price - prev) > 0.5) {
-    queueLog(RUN_ID, 'info', 'price', `${asset} chainlink $${price.toFixed(2)}`, asset, { source: 'chainlink', price });
+  // Only log chainlink when there's a significant move ($10+)
+  if (prev && Math.abs(price - prev) >= 10) {
+    queueLog(RUN_ID, 'info', 'price', `${asset} chainlink $${price.toFixed(2)} Δ${price > prev ? '+' : ''}${(price - prev).toFixed(2)}`, asset, { source: 'chainlink', price, delta: price - prev });
   }
 }
 
