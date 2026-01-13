@@ -229,6 +229,17 @@ function handleBinancePrice(asset: Asset, price: number, _timestamp: number): vo
   const prevPrice = lastBinancePrice[asset];
   lastBinancePrice[asset] = price;
   
+  // Calculate tick-to-tick delta (exactly like UI: current - previous)
+  const tickDelta = prevPrice !== null ? price - prevPrice : 0;
+  
+  // Log EVERY Binance tick (like Chainlink does)
+  queueLog(RUN_ID, 'info', 'price', `${asset} binance $${price.toFixed(2)}${prevPrice !== null ? ` Δ${tickDelta >= 0 ? '+' : ''}${tickDelta.toFixed(2)}` : ''}`, asset, { 
+    source: 'binance', 
+    price,
+    tickDelta, 
+    threshold: config.tick_delta_usd 
+  });
+  
   // Skip if disabled
   if (!config.enabled) return;
   
@@ -240,19 +251,6 @@ function handleBinancePrice(asset: Asset, price: number, _timestamp: number): vo
   
   // Need previous price to calculate delta
   if (prevPrice === null) return;
-  
-  // Calculate tick-to-tick delta (exactly like UI: current - previous)
-  const tickDelta = price - prevPrice;
-  
-  // Log significant movements (|delta| >= $3)
-  if (Math.abs(tickDelta) >= 3) {
-    queueLog(RUN_ID, 'info', 'price', `${asset} binance Δ$${tickDelta > 0 ? '+' : ''}${tickDelta.toFixed(2)} ($${price.toFixed(2)})`, asset, { 
-      source: 'binance', 
-      tickDelta, 
-      price, 
-      threshold: config.tick_delta_usd 
-    });
-  }
   
   // Check if tick delta exceeds threshold (e.g., $6 price move)
   if (Math.abs(tickDelta) < config.tick_delta_usd) return;
