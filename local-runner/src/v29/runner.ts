@@ -698,7 +698,6 @@ async function checkAndExecuteHedge(asset: Asset, hedgeSide: 'UP' | 'DOWN'): Pro
     log(`❌ Hedge order failed: ${result.error}`, 'hedge', asset);
   }
 }
-}
 
 // ============================================
 // POSITION MONITORING (TP/SL)
