@@ -133,24 +133,58 @@ function handleBinancePrice(asset: Asset, price: number): void {
   const now = Date.now();
   if (now - lastOrderTime < config.order_cooldown_ms) return;
   
-  // Calculate tick-to-tick delta (same as UI!)
-  const delta = price - prevPrice;
+  // Calculate tick-to-tick delta (Binance price change between ticks)
+  const tickDelta = price - prevPrice;
   
   // Log significant deltas (> 50% threshold)
-  if (Math.abs(delta) > config.min_delta_usd * 0.5) {
-    log(`📈 ${asset} Δ$${delta > 0 ? '+' : ''}${delta.toFixed(2)} / $${config.min_delta_usd} threshold`);
+  if (Math.abs(tickDelta) > config.tick_delta_usd * 0.5) {
+    log(`📈 ${asset} tick Δ$${tickDelta > 0 ? '+' : ''}${tickDelta.toFixed(2)} / $${config.tick_delta_usd} threshold`);
   }
   
-  // Check if delta exceeds threshold
-  if (Math.abs(delta) < config.min_delta_usd) return;
+  // Check if tick delta exceeds threshold (e.g., $6 price move)
+  if (Math.abs(tickDelta) < config.tick_delta_usd) return;
   
-  // TRIGGER! Determine direction
-  const direction: 'UP' | 'DOWN' = delta > 0 ? 'UP' : 'DOWN';
+  // Get market to check strike price
+  const market = markets.get(asset);
+  if (!market || !market.strikePrice) {
+    log(`⚠️ No market/strike for ${asset}`);
+    return;
+  }
   
-  log(`🎯 TRIGGER: ${asset} ${direction} | Δ$${delta.toFixed(2)}`);
+  // Calculate strike-to-actual delta for direction logic
+  // delta = strike - binance (positive = binance below strike, negative = binance above strike)
+  const strikeActualDelta = market.strikePrice - price;
+  
+  // Determine direction based on tick movement AND strike-actual delta
+  const tickDirection: 'UP' | 'DOWN' = tickDelta > 0 ? 'UP' : 'DOWN';
+  
+  // Apply direction filter based on delta_threshold
+  // delta between -threshold and +threshold: trade both directions
+  // delta < -threshold (binance way above strike): only trade DOWN
+  // delta > +threshold (binance way below strike): only trade UP
+  
+  let allowedDirection: 'UP' | 'DOWN' | 'BOTH';
+  if (strikeActualDelta < -config.delta_threshold) {
+    // Binance is way ABOVE strike - only trade DOWN
+    allowedDirection = 'DOWN';
+  } else if (strikeActualDelta > config.delta_threshold) {
+    // Binance is way BELOW strike - only trade UP
+    allowedDirection = 'UP';
+  } else {
+    // Within threshold range - trade both
+    allowedDirection = 'BOTH';
+  }
+  
+  // Check if tick direction is allowed
+  if (allowedDirection !== 'BOTH' && allowedDirection !== tickDirection) {
+    log(`⚠️ ${asset} direction ${tickDirection} blocked | delta=${strikeActualDelta.toFixed(0)} | only ${allowedDirection} allowed`);
+    return;
+  }
+  
+  log(`🎯 TRIGGER: ${asset} ${tickDirection} | tick Δ$${tickDelta.toFixed(2)} | strike-actual Δ$${strikeActualDelta.toFixed(0)} | allowed: ${allowedDirection}`);
   
   // Execute trade
-  void executeTrade(asset, direction, price, delta);
+  void executeTrade(asset, tickDirection, price, tickDelta, strikeActualDelta);
 }
 
 // ============================================
@@ -161,7 +195,8 @@ async function executeTrade(
   asset: Asset,
   direction: 'UP' | 'DOWN',
   binancePrice: number,
-  delta: number
+  tickDelta: number,
+  strikeActualDelta: number
 ): Promise<void> {
   const signalTs = Date.now();
   
@@ -187,6 +222,12 @@ async function executeTrade(
     Math.ceil((bestAsk + priceBuffer) * 100) / 100,
     config.max_share_price
   );
+  
+  // Skip if price too low (min_share_price check)
+  if (buyPrice < config.min_share_price) {
+    log(`⚠️ Price ${(buyPrice * 100).toFixed(1)}¢ < min ${(config.min_share_price * 100).toFixed(1)}¢`);
+    return;
+  }
   
   // Skip if price too high
   if (buyPrice > config.max_share_price) {
@@ -438,7 +479,9 @@ async function main(): Promise<void> {
     config = {
       ...config,
       enabled: dbConfig.enabled,
-      min_delta_usd: dbConfig.min_delta_usd,
+      tick_delta_usd: dbConfig.tick_delta_usd ?? 6,
+      delta_threshold: dbConfig.delta_threshold ?? 70,
+      min_share_price: dbConfig.min_share_price ?? 0.30,
       max_share_price: dbConfig.max_share_price,
       trade_size_usd: dbConfig.trade_size_usd,
       max_shares: dbConfig.max_shares,
@@ -463,7 +506,7 @@ async function main(): Promise<void> {
     process.exit(0);
   }
   
-  log(`Config: min_delta=$${config.min_delta_usd} | max_price=${(config.max_share_price * 100).toFixed(0)}¢ | trade_size=$${config.trade_size_usd}`);
+  log(`Config: tick_delta=$${config.tick_delta_usd} | delta_threshold=±$${config.delta_threshold} | price=${(config.min_share_price * 100).toFixed(0)}-${(config.max_share_price * 100).toFixed(0)}¢ | TP=${config.tp_cents}¢`);
   
   // Fetch markets
   await fetchMarkets();
