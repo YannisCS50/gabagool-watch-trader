@@ -217,31 +217,61 @@ function handleChainlinkPrice(asset: Asset, price: number): void {
 // PRICE HANDLING
 // ============================================
 
+// Rolling price history for delta calculation (last N seconds)
+const DELTA_WINDOW_MS = 2000; // 2 second window for delta calculation
+const priceHistory: Record<Asset, Array<{ ts: number; price: number }>> = {
+  BTC: [], ETH: [], SOL: [], XRP: []
+};
+
 function handleBinancePrice(asset: Asset, price: number): void {
-  const prevPrice = prevPrices[asset];
-  prevPrices[asset] = price;
+  const now = Date.now();
+  
+  // Update state
   priceState[asset].binance = price;
   
-  // Skip if disabled or no previous price
-  if (!config.enabled || prevPrice === null) return;
+  // Add to price history
+  priceHistory[asset].push({ ts: now, price });
+  
+  // Prune old entries (keep only last DELTA_WINDOW_MS)
+  const cutoff = now - DELTA_WINDOW_MS;
+  priceHistory[asset] = priceHistory[asset].filter(p => p.ts >= cutoff);
+  
+  // Skip if disabled
+  if (!config.enabled) return;
   
   // Skip if already in a position
   if (activePosition !== null) return;
   
   // Skip if in cooldown
-  const now = Date.now();
   if (now - lastOrderTime < config.order_cooldown_ms) return;
   
-  // Calculate tick-to-tick delta (Binance price change between ticks)
-  const tickDelta = price - prevPrice;
+  // Need at least some history to calculate delta
+  const history = priceHistory[asset];
+  if (history.length < 2) return;
   
-  // Log Binance tick deltas > $3
-  if (Math.abs(tickDelta) >= 3) {
-    queueLog(RUN_ID, 'info', 'price', `${asset} binance Δ$${tickDelta > 0 ? '+' : ''}${tickDelta.toFixed(2)} ($${price.toFixed(2)})`, asset, { source: 'binance', tickDelta, price, threshold: config.tick_delta_usd });
+  // Calculate delta over the window (oldest price in window vs current)
+  const oldestPrice = history[0].price;
+  const windowDelta = price - oldestPrice;
+  const windowMs = now - history[0].ts;
+  
+  // Also track tick-to-tick for logging
+  const prevPrice = prevPrices[asset];
+  prevPrices[asset] = price;
+  const tickDelta = prevPrice !== null ? price - prevPrice : 0;
+  
+  // Log significant movements (window delta > $3)
+  if (Math.abs(windowDelta) >= 3) {
+    queueLog(RUN_ID, 'info', 'price', `${asset} binance Δ$${windowDelta > 0 ? '+' : ''}${windowDelta.toFixed(2)} over ${windowMs}ms ($${price.toFixed(2)})`, asset, { 
+      source: 'binance', 
+      windowDelta, 
+      windowMs,
+      price, 
+      threshold: config.tick_delta_usd 
+    });
   }
   
-  // Check if tick delta exceeds threshold (e.g., $6 price move)
-  if (Math.abs(tickDelta) < config.tick_delta_usd) return;
+  // Check if window delta exceeds threshold (e.g., $6 price move over 2 seconds)
+  if (Math.abs(windowDelta) < config.tick_delta_usd) return;
   
   // Get market to check strike price
   const market = markets.get(asset);
@@ -256,43 +286,36 @@ function handleBinancePrice(asset: Asset, price: number): void {
   const priceSource = chainlinkPrice ? 'chainlink' : 'binance';
   
   // Calculate actual-to-strike delta for direction logic
-  // delta = chainlink price - strike
-  // positive = actual price is ABOVE strike (likely to settle UP)
-  // negative = actual price is BELOW strike (likely to settle DOWN)
   const priceVsStrikeDelta = actualPrice - market.strikePrice;
   
   log(`📊 ${asset} delta calc: ${priceSource}=$${actualPrice.toFixed(2)} vs strike=$${market.strikePrice.toFixed(0)} → Δ$${priceVsStrikeDelta.toFixed(0)}`);
   
-  // Determine direction based on tick movement
-  const tickDirection: 'UP' | 'DOWN' = tickDelta > 0 ? 'UP' : 'DOWN';
+  // Determine direction based on window movement (not just last tick)
+  const moveDirection: 'UP' | 'DOWN' = windowDelta > 0 ? 'UP' : 'DOWN';
   
   // Apply direction filter based on delta_threshold
-  // If actual price is way ABOVE strike (+70): only trade UP (will likely settle UP)
-  // If actual price is way BELOW strike (-70): only trade DOWN (will likely settle DOWN)
-  // If within ±70 of strike: trade both directions
-  
   let allowedDirection: 'UP' | 'DOWN' | 'BOTH';
   if (priceVsStrikeDelta > config.delta_threshold) {
-    // Actual is way ABOVE strike - only trade UP
     allowedDirection = 'UP';
   } else if (priceVsStrikeDelta < -config.delta_threshold) {
-    // Actual is way BELOW strike - only trade DOWN
     allowedDirection = 'DOWN';
   } else {
-    // Within threshold range - trade both
     allowedDirection = 'BOTH';
   }
   
-  // Check if tick direction is allowed
-  if (allowedDirection !== 'BOTH' && allowedDirection !== tickDirection) {
-    log(`⚠️ ${asset} direction ${tickDirection} blocked | price vs strike: $${priceVsStrikeDelta.toFixed(0)} | only ${allowedDirection} allowed`);
+  // Check if direction is allowed
+  if (allowedDirection !== 'BOTH' && allowedDirection !== moveDirection) {
+    log(`⚠️ ${asset} direction ${moveDirection} blocked | price vs strike: $${priceVsStrikeDelta.toFixed(0)} | only ${allowedDirection} allowed`);
     return;
   }
   
-  log(`🎯 TRIGGER: ${asset} ${tickDirection} | tick Δ$${tickDelta.toFixed(2)} | price vs strike: $${priceVsStrikeDelta.toFixed(0)} | allowed: ${allowedDirection}`, 'signal', asset, { tickDelta, priceVsStrikeDelta, direction: tickDirection });
+  log(`🎯 TRIGGER: ${asset} ${moveDirection} | window Δ$${windowDelta.toFixed(2)} over ${windowMs}ms | price vs strike: $${priceVsStrikeDelta.toFixed(0)} | allowed: ${allowedDirection}`, 'signal', asset, { windowDelta, windowMs, priceVsStrikeDelta, direction: moveDirection });
+  
+  // Clear price history after triggering to prevent repeated signals
+  priceHistory[asset] = [{ ts: now, price }];
   
   // Execute trade
-  void executeTrade(asset, tickDirection, price, tickDelta, priceVsStrikeDelta);
+  void executeTrade(asset, moveDirection, price, windowDelta, priceVsStrikeDelta);
 }
 
 // ============================================
