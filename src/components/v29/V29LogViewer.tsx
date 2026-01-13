@@ -23,6 +23,16 @@ interface LogEntry {
 const CATEGORIES = ['ALL', 'price', 'signal', 'order', 'fill', 'market', 'system', 'error'] as const;
 const LEVELS = ['ALL', 'debug', 'info', 'warn', 'error'] as const;
 
+const DEFAULT_LIMIT = 2000;
+
+function normalizeLog(row: any): LogEntry {
+  return {
+    ...row,
+    ts: typeof row.ts === 'string' ? Number(row.ts) : row.ts,
+    data: row?.data && typeof row.data === 'object' ? row.data : row?.data ?? null,
+  } as LogEntry;
+}
+
 export function V29LogViewer() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isPaused, setIsPaused] = useState(false);
@@ -35,17 +45,22 @@ export function V29LogViewer() {
   // Initial fetch
   useEffect(() => {
     const fetchLogs = async () => {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('v29_logs')
         .select('*')
         .order('ts', { ascending: false })
-        .limit(200);
-      
+        .limit(DEFAULT_LIMIT);
+
+      if (error) {
+        console.error('[V29LogViewer] Failed to fetch logs:', error);
+        return;
+      }
+
       if (data) {
-        setLogs(data.reverse() as LogEntry[]);
+        setLogs((data as any[]).reverse().map(normalizeLog));
       }
     };
-    
+
     fetchLogs();
   }, []);
 
@@ -59,8 +74,8 @@ export function V29LogViewer() {
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'v29_logs' },
         (payload) => {
-          const newLog = payload.new as LogEntry;
-          setLogs(prev => [...prev.slice(-499), newLog]);
+          const newLog = normalizeLog(payload.new);
+          setLogs((prev) => [...prev.slice(-(DEFAULT_LIMIT - 1)), newLog]);
         }
       )
       .subscribe();
