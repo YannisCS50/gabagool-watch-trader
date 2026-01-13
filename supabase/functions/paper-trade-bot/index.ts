@@ -452,11 +452,18 @@ Deno.serve(async (req) => {
   }
 
   // Authentication check
+  // - Runner calls: must include x-runner-secret (shared secret)
+  // - Dashboard calls (supabase.functions.invoke): allowed with apikey=anon key (paper bot is safe to expose)
   const runnerSecret = req.headers.get('x-runner-secret');
   const expectedSecret = Deno.env.get('RUNNER_SHARED_SECRET');
-  
-  if (!runnerSecret || runnerSecret !== expectedSecret) {
-    console.error('🔒 Unauthorized: Invalid or missing x-runner-secret');
+  const apikey = req.headers.get('apikey');
+  const anonKey = Deno.env.get('SUPABASE_ANON_KEY');
+
+  const isRunner = !!runnerSecret && !!expectedSecret && runnerSecret === expectedSecret;
+  const isDashboard = !!apikey && !!anonKey && apikey === anonKey;
+
+  if (!isRunner && !isDashboard) {
+    console.error('🔒 Unauthorized: Missing runner secret (runner) or apikey (dashboard)');
     return new Response(
       JSON.stringify({ success: false, error: 'Unauthorized' }),
       { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
