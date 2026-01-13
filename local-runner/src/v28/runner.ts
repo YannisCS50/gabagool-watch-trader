@@ -134,6 +134,7 @@ let lastMarketRefresh = 0;
 let lastConfigReload = 0;
 let lastPreSignCacheRefresh = 0;
 let positionMonitorInterval: NodeJS.Timeout | null = null;
+let chainlinkFetchInterval: NodeJS.Timeout | null = null;
 let preSignCacheEnabled = false;
 
 // Track open positions (filled BUYs waiting for SELL)
@@ -1782,6 +1783,27 @@ export async function startV28Runner(): Promise<void> {
   console.log('[V28] Starting price feeds (Binance + Polymarket WebSockets)...');
   await startPriceFeedLogger(priceFeedCallbacks);
   
+  // Start Chainlink price fetch loop (every 2 seconds for BTC/ETH)
+  console.log('[V28] Starting Chainlink price fetch (2s interval for BTC/ETH)...');
+  const fetchChainlinkPrices = async () => {
+    try {
+      const [btcResult, ethResult] = await Promise.all([
+        fetchChainlinkPrice('BTC'),
+        fetchChainlinkPrice('ETH'),
+      ]);
+      if (btcResult) {
+        priceState.BTC.chainlink = btcResult.price;
+      }
+      if (ethResult) {
+        priceState.ETH.chainlink = ethResult.price;
+      }
+    } catch (err) {
+      // Silent fail - Chainlink is optional enhancement
+    }
+  };
+  await fetchChainlinkPrices(); // Initial fetch
+  chainlinkFetchInterval = setInterval(fetchChainlinkPrices, 2000);
+  
   // Start position monitor (every 10 seconds) - fetches real positions from Polymarket API
   console.log(`[V28] Starting position monitor (10s interval, sell at +${MIN_PROFIT_CENTS_TO_SELL}¢ profit)...`);
   positionMonitorInterval = setInterval(monitorOpenPositions, 10_000);
@@ -1802,6 +1824,12 @@ export async function stopV28Runner(): Promise<void> {
     console.log('[V28] Stopping pre-signed orders cache...');
     stopPreSignedCache();
     preSignCacheEnabled = false;
+  }
+  
+  // Stop Chainlink fetch
+  if (chainlinkFetchInterval) {
+    clearInterval(chainlinkFetchInterval);
+    chainlinkFetchInterval = null;
   }
   
   // Stop position monitor
