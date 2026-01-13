@@ -59,6 +59,7 @@ export function PriceLatencyChart() {
   
   const { data: config } = usePaperTradingConfig();
   const [clobPrices, setClobPrices] = useState<ClobPrices | null>(null);
+  const [clobPriceHistory, setClobPriceHistory] = useState<{ time: number; upAsk: number | null; downAsk: number | null }[]>([]);
   const [latencyTests, setLatencyTests] = useState<LatencyTestResult[]>([]);
   const [testingLatency, setTestingLatency] = useState(false);
 
@@ -72,12 +73,19 @@ export function PriceLatencyChart() {
       });
       
       if (!error && data) {
+        const now = Date.now();
         setClobPrices({
           upBid: data.upBid ?? null,
           upAsk: data.upAsk ?? null,
           downBid: data.downBid ?? null,
           downAsk: data.downAsk ?? null,
-          lastUpdate: Date.now(),
+          lastUpdate: now,
+        });
+        // Add to history for chart
+        setClobPriceHistory(prev => {
+          const newEntry = { time: now, upAsk: data.upAsk ?? null, downAsk: data.downAsk ?? null };
+          const updated = [...prev, newEntry].slice(-600); // Keep last 600 points
+          return updated;
         });
       }
     } catch (err) {
@@ -147,6 +155,22 @@ export function PriceLatencyChart() {
     let prevBinance: number | null = null;
     let prevChainlink: number | null = null;
 
+    // Helper to find closest share price from history
+    const findClosestSharePrice = (time: number) => {
+      if (clobPriceHistory.length === 0) return { upAsk: null, downAsk: null };
+      // Find the closest entry by time (within 5s window)
+      let closest = clobPriceHistory[0];
+      let minDiff = Math.abs(time - closest.time);
+      for (const entry of clobPriceHistory) {
+        const diff = Math.abs(time - entry.time);
+        if (diff < minDiff) {
+          minDiff = diff;
+          closest = entry;
+        }
+      }
+      return closest;
+    };
+
     for (const point of combinedChartData) {
       const binanceDelta = point.binance && prevBinance ? point.binance - prevBinance : null;
       const chainlinkDelta = point.chainlink && prevChainlink ? point.chainlink - prevChainlink : null;
@@ -155,13 +179,16 @@ export function PriceLatencyChart() {
       const triggered = binanceDelta !== null && Math.abs(binanceDelta) >= triggerThreshold;
       const triggerDirection = triggered ? (binanceDelta! > 0 ? 'UP' : 'DOWN') : null;
 
+      // Get share prices from history for this time
+      const shareData = findClosestSharePrice(point.time);
+
       if (binanceDelta !== null || chainlinkDelta !== null) {
         data.push({
           time: point.time,
           binanceDelta: binanceDelta && Math.abs(binanceDelta) > 0.01 ? binanceDelta : null,
           chainlinkDelta: chainlinkDelta && Math.abs(chainlinkDelta) > 0.01 ? chainlinkDelta : null,
-          upSharePrice: clobPrices?.upAsk ? clobPrices.upAsk * 100 : null,
-          downSharePrice: clobPrices?.downAsk ? clobPrices.downAsk * 100 : null,
+          upSharePrice: shareData.upAsk !== null ? shareData.upAsk * 100 : null,
+          downSharePrice: shareData.downAsk !== null ? shareData.downAsk * 100 : null,
           triggered,
           triggerDirection,
         });
@@ -173,7 +200,7 @@ export function PriceLatencyChart() {
 
     // Increased from 300 to 600 for more delta data points
     return data.slice(-600);
-  }, [combinedChartData, config, clobPrices]);
+  }, [combinedChartData, config, clobPriceHistory]);
 
   // Check if current share price is in bounds
   const sharePriceInBounds = useMemo(() => {
