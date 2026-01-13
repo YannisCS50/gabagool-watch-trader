@@ -53,6 +53,9 @@ let lastConfigReload = 0;
 // Track previous market slugs to detect market changes
 const previousMarketSlugs: Record<Asset, string | null> = { BTC: null, ETH: null, SOL: null, XRP: null };
 
+// Market expiration timers - exact scheduling instead of polling
+const marketTimers: Record<Asset, NodeJS.Timeout | null> = { BTC: null, ETH: null, SOL: null, XRP: null };
+
 // ============================================
 // LOGGING
 // ============================================
@@ -142,6 +145,9 @@ async function fetchMarkets(): Promise<void> {
         }
         
         previousMarketSlugs[asset] = slug;
+        
+        // Schedule exact timer for market expiration
+        scheduleMarketRefresh(asset, endMs);
       }
       
       log(`Active: ${markets.size} markets`);
@@ -151,6 +157,42 @@ async function fetchMarkets(): Promise<void> {
   } catch (err) {
     logError('Market fetch error', err);
   }
+}
+
+// ============================================
+// SMART MARKET TIMER
+// ============================================
+
+/**
+ * Schedule exact refresh for when market expires.
+ * Instead of polling every 5 seconds, we set a timer for:
+ * - 5 seconds before market end (to fetch next market)
+ * - Market durations are fixed: 15m or 1h
+ */
+function scheduleMarketRefresh(asset: Asset, endTimeMs: number): void {
+  // Clear existing timer for this asset
+  if (marketTimers[asset]) {
+    clearTimeout(marketTimers[asset]!);
+    marketTimers[asset] = null;
+  }
+  
+  const now = Date.now();
+  const timeUntilEnd = endTimeMs - now;
+  
+  // Schedule refresh 5 seconds before market end
+  const refreshIn = Math.max(timeUntilEnd - 5_000, 1_000);
+  
+  // Don't schedule if market already expired or too far in future (> 2 hours)
+  if (timeUntilEnd <= 0 || timeUntilEnd > 2 * 60 * 60 * 1000) {
+    return;
+  }
+  
+  log(`⏰ ${asset} timer: refresh in ${Math.floor(refreshIn / 1000)}s (market ends in ${Math.floor(timeUntilEnd / 1000)}s)`);
+  
+  marketTimers[asset] = setTimeout(() => {
+    log(`🔄 ${asset} market expiring NOW → fetching next market`);
+    void fetchMarkets();
+  }, refreshIn);
 }
 
 // ============================================
@@ -595,26 +637,11 @@ async function main(): Promise<void> {
     void pollOrderbooks();
   }, config.orderbook_poll_ms);
   
-  // Market refresh (every 30 seconds OR when market about to expire)
+  // Market timers are now scheduled exactly per-asset in fetchMarkets()
+  // Fallback refresh every 5 minutes (safety net, normally timers handle it)
   setInterval(() => {
-    const now = Date.now();
-    
-    // Check if any market is about to expire (< 30s remaining)
-    let needsRefresh = false;
-    for (const [asset, m] of markets) {
-      const timeUntilEnd = m.endTime.getTime() - now;
-      if (timeUntilEnd < 30_000 && timeUntilEnd > 0) {
-        log(`⏰ ${asset} market expiring in ${Math.floor(timeUntilEnd / 1000)}s → refreshing`);
-        needsRefresh = true;
-        break;
-      }
-    }
-    
-    // Refresh if expired/expiring or every 30 seconds
-    if (needsRefresh || now - lastMarketRefresh > 30_000) {
-      void fetchMarkets();
-    }
-  }, 5_000); // Check every 5 seconds for expiring markets
+    void fetchMarkets();
+  }, 5 * 60 * 1000);
   
   // Heartbeat (every 30 seconds)
   setInterval(async () => {
