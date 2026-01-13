@@ -19,9 +19,6 @@ import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb, queueLog, getA
 import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, cancelOrder, getOrderStatus } from './trading.js';
 import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
-import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, cancelOrder, getOrderStatus } from './trading.js';
-import { verifyVpnConnection } from '../vpn-check.js';
-import { testConnection } from '../polymarket.js';
 
 // ============================================
 // STATE
@@ -124,43 +121,91 @@ async function fetchMarkets(): Promise<void> {
     if (Array.isArray(data.markets)) {
       const now = Date.now();
       const EARLY_15M_MS = 90_000; // 90s early entry for 15m markets
-      
+
+      type MarketCandidate = {
+        m: any;
+        slug: string;
+        startMs: number;
+        endMs: number;
+        actuallyStarted: boolean;
+      };
+
+      // The backend can return multiple markets per asset (especially when allowing upcoming).
+      // We must deterministically pick the "current" market to avoid flipping back/forth.
+      const candidatesByAsset = new Map<Asset, MarketCandidate[]>();
+
       for (const m of data.markets) {
         if (!m.asset || !m.upTokenId || !m.downTokenId) continue;
-        
+
         const asset = m.asset as Asset;
-        const startMs = new Date(m.eventStartTime || m.event_start_time || '').getTime();
-        const endMs = new Date(m.eventEndTime || m.event_end_time || m.endTime || '').getTime();
-        
+        const slug = String(m.slug || '');
+
+        let startMs = new Date(m.eventStartTime || m.event_start_time || '').getTime();
+        let endMs = new Date(m.eventEndTime || m.event_end_time || m.endTime || '').getTime();
+
+        // If times are missing/invalid, treat as started and skip strict filtering.
+        if (!Number.isFinite(startMs)) startMs = now;
+        if (!Number.isFinite(endMs)) continue;
+
         // Skip expired markets
         if (endMs <= now - 60_000) continue;
-        
-        // Allow 90s early entry for 15m markets
-        const slug = String(m.slug || '');
+
+        // Only allow early-entry windows for 15m markets (pre-opening), but don't let it replace the active market.
         const is15m = slug.toLowerCase().includes('-15m-');
         const earlyMs = is15m ? EARLY_15M_MS : 60_000;
-        
-        // Skip if not started yet (with early buffer)
+
+        // Skip if too early
         if (now < startMs - earlyMs) continue;
-        
+
+        const entry: MarketCandidate = {
+          m,
+          slug,
+          startMs,
+          endMs,
+          actuallyStarted: now >= startMs,
+        };
+
+        const list = candidatesByAsset.get(asset) ?? [];
+        list.push(entry);
+        candidatesByAsset.set(asset, list);
+      }
+
+      for (const [asset, list] of candidatesByAsset) {
+        if (list.length === 0) continue;
+
+        // Prefer markets that have actually started; otherwise pick the nearest upcoming.
+        const started = list.filter(x => x.actuallyStarted);
+        const chosen = (started.length > 0)
+          ? started.sort((a, b) => b.startMs - a.startMs)[0]
+          : list.sort((a, b) => a.startMs - b.startMs)[0];
+
+        const m = chosen.m;
+        const slug = chosen.slug;
+
         const previousSlug = previousMarketSlugs[asset];
         const isNewMarket = previousSlug !== slug;
-        
-        // Update market info
-        markets.set(asset, {
+
+        const marketInfo: MarketInfo = {
           slug,
           asset,
           strikePrice: m.strikePrice ?? m.strike_price ?? 0,
           upTokenId: m.upTokenId,
           downTokenId: m.downTokenId,
-          endTime: new Date(endMs),
-        });
-        
-        // If market changed, update pre-signed cache AND RESET ORDERBOOK DATA immediately!
-        if (isNewMarket && previousSlug !== null) {
-          log(`🔁 ${asset} NEW MARKET: ${slug} (was: ${previousSlug}) → resetting orderbook + updating pre-sign cache`);
-          
-          // CRITICAL: Reset orderbook data to prevent stale prices from old market!
+          endTime: new Date(chosen.endMs),
+        };
+
+        // Update market info
+        markets.set(asset, marketInfo);
+
+        // If market changed: reset stale orderbook + refresh pre-signed cache
+        if (isNewMarket) {
+          log(
+            `🔁 ${asset} NEW MARKET: ${slug} (was: ${previousSlug ?? 'none'}) → resetting orderbook + updating pre-sign cache`,
+            'market',
+            asset,
+            { candidates: list.map(x => ({ slug: x.slug, started: x.actuallyStarted, startMs: x.startMs, endMs: x.endMs })) }
+          );
+
           priceState[asset] = {
             ...priceState[asset],
             upBestAsk: null,
@@ -169,28 +214,33 @@ async function fetchMarkets(): Promise<void> {
             downBestBid: null,
             lastUpdate: 0,
           };
-          
+
           void updateMarketCache(asset, m.upTokenId, m.downTokenId);
-          
-          // Immediately fetch fresh orderbook for new market
-          void fetchMarketOrderbook(markets.get(asset)!).then(book => {
+
+          // Immediately fetch fresh orderbook for the chosen market (guard against race)
+          void fetchMarketOrderbook(marketInfo).then(book => {
+            if (markets.get(asset)?.slug !== slug) return;
             if (book.upBestAsk !== undefined) priceState[asset].upBestAsk = book.upBestAsk;
             if (book.upBestBid !== undefined) priceState[asset].upBestBid = book.upBestBid;
             if (book.downBestAsk !== undefined) priceState[asset].downBestAsk = book.downBestAsk;
             if (book.downBestBid !== undefined) priceState[asset].downBestBid = book.downBestBid;
             if (book.lastUpdate !== undefined) priceState[asset].lastUpdate = book.lastUpdate;
-            log(`📖 ${asset} orderbook refreshed: UP ask ${((book.upBestAsk ?? 0) * 100).toFixed(1)}¢ | DOWN ask ${((book.downBestAsk ?? 0) * 100).toFixed(1)}¢`);
+            log(
+              `📖 ${asset} orderbook refreshed: UP ask ${book.upBestAsk !== null && book.upBestAsk !== undefined ? ((book.upBestAsk) * 100).toFixed(1) : 'n/a'}¢ | DOWN ask ${book.downBestAsk !== null && book.downBestAsk !== undefined ? ((book.downBestAsk) * 100).toFixed(1) : 'n/a'}¢`,
+              'market',
+              asset
+            );
           });
-        } else if (isNewMarket) {
-          log(`📍 ${asset}: ${slug} @ strike $${m.strikePrice ?? m.strike_price ?? 0}`);
+        } else if (previousSlug === null) {
+          log(`📍 ${asset}: ${slug} @ strike $${marketInfo.strikePrice ?? 0}`, 'market', asset);
         }
-        
+
         previousMarketSlugs[asset] = slug;
-        
+
         // Schedule exact timer for market expiration
-        scheduleMarketRefresh(asset, endMs);
+        scheduleMarketRefresh(asset, chosen.endMs);
       }
-      
+
       log(`Active: ${markets.size} markets`);
     }
     
