@@ -232,14 +232,15 @@ function handleBinancePrice(asset: Asset, price: number, _timestamp: number): vo
   // Calculate tick-to-tick delta (now based on 100ms buffered prices)
   const tickDelta = prevPrice !== null ? price - prevPrice : 0;
   
-  // Log buffered Binance tick with delta
-  queueLog(RUN_ID, 'info', 'price', `${asset} binance $${price.toFixed(2)}${prevPrice !== null ? ` Δ${tickDelta >= 0 ? '+' : ''}${tickDelta.toFixed(2)}` : ' (first)'}`, asset, { 
-    source: 'binance', 
-    price,
-    tickDelta, 
-    threshold: config.tick_delta_usd,
-    buffered: true
-  });
+  // Only log significant movements (>= threshold)
+  if (Math.abs(tickDelta) >= config.tick_delta_usd) {
+    queueLog(RUN_ID, 'info', 'price', `${asset} binance $${price.toFixed(2)} Δ${tickDelta >= 0 ? '+' : ''}${tickDelta.toFixed(2)} 🎯`, asset, { 
+      source: 'binance', 
+      price,
+      tickDelta, 
+      threshold: config.tick_delta_usd
+    });
+  }
   
   // Skip if disabled
   if (!config.enabled) return;
