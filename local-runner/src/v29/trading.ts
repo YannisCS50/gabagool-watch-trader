@@ -755,20 +755,21 @@ export async function placeSellOrder(
   price: number,
   shares: number,
   asset?: Asset,
-  direction?: 'UP' | 'DOWN'
+  direction?: 'UP' | 'DOWN',
+  aggressiveDiscountCents: number = 2
 ): Promise<OrderResult> {
   const start = Date.now();
-  const AGGRESSIVE_DISCOUNT_CENTS = 2; // Sell 2¢ cheaper than bestBid
+  const AGGRESSIVE_DISCOUNT_CENTS = aggressiveDiscountCents; // Sell cheaper than bestBid to improve fill probability
   const FILL_CHECK_INTERVAL_MS = 150;
   const MAX_FILL_WAIT_MS = 3000;
-  
+
   try {
     const client = await getClient();
     // Aggressive pricing: sell cheaper to ensure fill
     const aggressivePrice = Math.max(0.01, price - (AGGRESSIVE_DISCOUNT_CENTS / 100));
     const roundedPrice = Math.round(aggressivePrice * 100) / 100;
     const roundedShares = Math.floor(shares);
-    
+
     if (roundedShares < 1) {
       return { success: false, error: 'Shares < 1', latencyMs: Date.now() - start };
     }
