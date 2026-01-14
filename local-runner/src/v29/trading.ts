@@ -488,7 +488,7 @@ export async function placeBuyOrder(
           );
         }
         
-        const response = await client.postOrder(signedOrder!, OrderType.GTC);
+        const response = await client.postOrder(signedOrder!, OrderType.FOK);
         
         return {
           idx,
@@ -800,21 +800,9 @@ export async function placeSellOrder(
       );
     }
     
-    // Try FOK first for instant fill
-    let response = await client.postOrder(signedOrder, OrderType.FOK);
-    let orderId = response.orderID;
-    
-    if (!response.success) {
-      // Fallback to GTC if FOK fails
-      log(`⚠️ FOK failed, trying GTC...`);
-      // Need to sign a new order for GTC if we used cache (order can't be reused)
-      const gtcOrder = await client.createOrder(
-        { tokenID: tokenId, price: roundedPrice, size: roundedShares, side: Side.SELL },
-        { tickSize: '0.01', negRisk: false }
-      );
-      response = await client.postOrder(gtcOrder, OrderType.GTC);
-      orderId = response.orderID;
-    }
+    // Use FOK for instant fill - no lingering orders!
+    const response = await client.postOrder(signedOrder, OrderType.FOK);
+    const orderId = response.orderID;
     
     if (!response.success || !orderId) {
       return { 
