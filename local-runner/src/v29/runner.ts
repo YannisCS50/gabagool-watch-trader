@@ -574,9 +574,16 @@ async function executeBuy(
   strikeActualDelta: number,
   market: MarketInfo
 ): Promise<void> {
-  // CRITICAL: Check if we're still the active runner before any trade
+  // CRITICAL: Check local flag first (fast path)
   if (!isRunnerActive()) {
     log(`🛑 BLOCKED: Buy attempt for ${asset} ${direction} - runner no longer active (takeover detected)`);
+    return;
+  }
+
+  // CRITICAL: Synchronous lease validation right before order - prevents race condition
+  const stillOwnsLease = await validateLease(RUN_ID);
+  if (!stillOwnsLease) {
+    log(`🛑 BLOCKED: Buy attempt for ${asset} ${direction} - lease validation failed (another runner took over)`);
     return;
   }
 
@@ -775,9 +782,16 @@ interface AggregatedPosition {
 }
 
 async function checkAndExecuteSells(): Promise<void> {
-  // CRITICAL: Check if we're still the active runner before any sell
+  // CRITICAL: Check local flag first (fast path)
   if (!isRunnerActive()) {
     log(`🛑 BLOCKED: Sell check - runner no longer active (takeover detected)`);
+    return;
+  }
+
+  // CRITICAL: Synchronous lease validation before sells
+  const stillOwnsLease = await validateLease(RUN_ID);
+  if (!stillOwnsLease) {
+    log(`🛑 BLOCKED: Sell check - lease validation failed (another runner took over)`);
     return;
   }
 
