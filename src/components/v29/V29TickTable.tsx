@@ -45,6 +45,7 @@ interface TickBucket {
   hasFill: boolean;
   // Aggregated values (last tick in bucket)
   lastBinancePrice: number | null;
+  lastChainlinkPrice: number | null;
   totalDelta: number;
   alertDirection: string | null;
   fillPrice: number | null;
@@ -123,6 +124,7 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTab
           hasAlert: false,
           hasFill: false,
           lastBinancePrice: null,
+          lastChainlinkPrice: null,
           totalDelta: 0,
           alertDirection: null,
           fillPrice: null,
@@ -135,6 +137,9 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTab
       
       if (tick.binance_price !== null) {
         bucket.lastBinancePrice = tick.binance_price;
+      }
+      if (tick.chainlink_price !== null) {
+        bucket.lastChainlinkPrice = tick.chainlink_price;
       }
       if (tick.binance_delta !== null) {
         bucket.totalDelta += tick.binance_delta;
@@ -216,6 +221,7 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTab
                 <TableHead className="w-[100px]">Tijd (50ms)</TableHead>
                 <TableHead className="w-[45px]">Asset</TableHead>
                 <TableHead className="text-right">Binance</TableHead>
+                <TableHead className="text-right">Chainlink</TableHead>
                 <TableHead className="text-right">Δ (sum)</TableHead>
                 <TableHead className="text-center">Alert</TableHead>
                 <TableHead className="text-center">Fill</TableHead>
@@ -242,6 +248,9 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTab
                     </TableCell>
                     <TableCell className="text-right font-mono">
                       {formatPrice(bucket.lastBinancePrice)}
+                    </TableCell>
+                    <TableCell className="text-right font-mono text-muted-foreground">
+                      {formatPrice(bucket.lastChainlinkPrice)}
                     </TableCell>
                     <TableCell className={`text-right font-mono ${
                       bucket.totalDelta > 0 ? 'text-green-500' : bucket.totalDelta < 0 ? 'text-red-500' : ''
@@ -280,7 +289,7 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTab
               })}
               {buckets.length === 0 && !loading && (
                 <TableRow>
-                  <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
+                  <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
                     Geen tick data. Start de V29 runner.
                   </TableCell>
                 </TableRow>
