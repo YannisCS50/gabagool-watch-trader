@@ -19,7 +19,7 @@ import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb, queueLog } fro
 import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, getOrderStatus, setFillContext, clearFillContext } from './trading.js';
 import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
-import { acquireLease, releaseLease, validateLease } from './lease.js';
+import { acquireLease, releaseLease, isRunnerActive } from './lease.js';
 
 // ============================================
 // POSITION TRACKING
@@ -678,15 +678,14 @@ async function main(): Promise<void> {
   log('✅ DB initialized');
   
   // ============================================
-  // RUNNER LEASE - ONLY 1 RUNNER AT A TIME
+  // RUNNER REGISTRATION - TAKEOVER ANY EXISTING
   // ============================================
-  const leaseAcquired = await acquireLease(RUN_ID);
-  if (!leaseAcquired) {
-    logError('❌ FAILED TO ACQUIRE LEASE - Another runner is already active!');
-    logError('   Stop the other runner first, or wait for it to timeout (30s).');
+  const registered = await acquireLease(RUN_ID);
+  if (!registered) {
+    logError('❌ Failed to register runner');
     process.exit(1);
   }
-  log('🔒 Lease acquired - this is the ONLY active runner');
+  log('🔒 Registered as active runner (any previous runner will auto-shutdown)');
   
   // VPN check
   const vpnOk = await verifyVpnConnection();
@@ -816,9 +815,9 @@ async function main(): Promise<void> {
     stopChainlinkFeed();
     stopPreSignedCache();
     
-    // CRITICAL: Release lease so another runner can start
+    // Release registration so we're not in the DB anymore
     await releaseLease(RUN_ID);
-    log('🔓 Lease released');
+    log('🔓 Registration released');
     
     // Final summary
     log(`📊 Final: Buys=${buysCount} Sells=${sellsCount} P&L=${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)}`);
