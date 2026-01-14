@@ -8,6 +8,8 @@
 // CRITICAL: Import HTTP agent FIRST to ensure axios is configured before SDK
 import './http-agent.js';
 
+import util from 'node:util';
+
 import { getClient } from '../polymarket.js';
 import { ClobClient, Side, OrderType } from '@polymarket/clob-client';
 import type { SignedOrder } from '@polymarket/order-utils';
@@ -31,6 +33,64 @@ export function clearFillContext(): void {
 
 function log(msg: string): void {
   console.log(`[V29:Trade] ${msg}`);
+}
+
+function asErrorMessage(err: unknown): string {
+  const candidates: unknown[] = [
+    err,
+    (err as any)?.cause,
+    (err as any)?.error,
+    (err as any)?.originalError,
+  ].filter(Boolean);
+
+  for (const c of candidates) {
+    // Strings
+    if (typeof c === 'string') return c;
+
+    // Native Error
+    if (c instanceof Error) {
+      // Prefer error message, but keep looking if it is the "circular JSON" wrapper
+      const msg = c.message;
+      if (msg && !msg.includes('Converting circular structure to JSON')) return msg;
+    }
+
+    // Axios-like error shapes (what clob-client uses under the hood)
+    const anyC = c as any;
+    const status = anyC?.response?.status;
+    const statusText = anyC?.response?.statusText;
+    const method = anyC?.config?.method;
+    const url = anyC?.config?.url;
+    const data = anyC?.response?.data;
+    const dataMsg =
+      (typeof data === 'string' && data) ||
+      (typeof data?.message === 'string' && data.message) ||
+      (typeof data?.error === 'string' && data.error) ||
+      (typeof data?.msg === 'string' && data.msg);
+
+    if (status || url) {
+      const head = `HTTP ${status ?? '?'}${statusText ? ` ${statusText}` : ''}`;
+      const req = method && url ? ` (${String(method).toUpperCase()} ${url})` : '';
+      const tail = dataMsg ? `: ${dataMsg}` : '';
+      return `${head}${req}${tail}`;
+    }
+
+    // Fallback: safe inspection (handles circular refs)
+    try {
+      const inspected = util.inspect(anyC, { depth: 2, breakLength: 140, maxStringLength: 300 });
+      if (inspected && inspected !== '[object Object]') return inspected;
+    } catch {
+      // ignore
+    }
+
+    try {
+      return String(c);
+    } catch {
+      // ignore
+    }
+  }
+
+  // If we got here, fall back to generic message
+  return 'Unknown error';
 }
 
 interface OrderResult {
@@ -489,27 +549,22 @@ export async function placeBuyOrder(
         }
         
         const response = await client.postOrder(signedOrder!, OrderType.FOK);
-        
+
         return {
           idx,
           price: orderPrice,
           orderId: response.orderID,
           success: response.success,
-          error: response.errorMsg,
+          error: response.success ? undefined : asErrorMessage(response.errorMsg),
           usedCache,
         };
       } catch (err: any) {
-        // Extract safe error message (avoid circular JSON from axios/socket errors)
-        const errMsg = err?.response?.data?.message 
-          || err?.response?.data?.error 
-          || err?.message 
-          || 'Unknown error';
         return {
           idx,
           price: orderPrice,
           orderId: null,
           success: false,
-          error: errMsg,
+          error: asErrorMessage(err),
           usedCache: false,
         };
       }
@@ -520,9 +575,13 @@ export async function placeBuyOrder(
     const placedOrders = orderResults.filter(o => o.success && o.orderId);
     
     if (placedOrders.length === 0) {
-      const errors = orderResults.map(o => o.error).join(', ');
-      log(`❌ All burst orders failed: ${errors}`);
-      return { success: false, error: `All burst orders failed: ${errors}`, latencyMs: Date.now() - start };
+      const errors = orderResults
+        .map(o => o.error)
+        .filter((e): e is string => Boolean(e && e.trim()))
+        .join(', ');
+      const errorMsg = errors || 'Unknown error';
+      log(`❌ All burst orders failed: ${errorMsg}`);
+      return { success: false, error: `All burst orders failed: ${errorMsg}`, latencyMs: Date.now() - start };
     }
     
     log(`📤 Burst: ${placedOrders.length}/${burstCount} orders placed in ${Date.now() - start}ms`);
@@ -685,7 +744,7 @@ export async function placeBuyOrder(
     };
     
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = asErrorMessage(err);
     log(`❌ Burst order error: ${msg}`);
     return { success: false, error: msg, latencyMs: Date.now() - start };
   }
@@ -744,11 +803,12 @@ async function placeSingleBuyOrder(
         latencyMs,
       };
     } else {
-      log(`❌ Order failed: ${response.errorMsg ?? 'unknown'}`);
-      return { success: false, error: response.errorMsg ?? 'Order rejected', latencyMs };
+      const msg = asErrorMessage(response.errorMsg) || 'Order rejected';
+      log(`❌ Order failed: ${msg}`);
+      return { success: false, error: msg, latencyMs };
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = asErrorMessage(err);
     log(`❌ Order error: ${msg}`);
     return { success: false, error: msg, latencyMs: Date.now() - start };
   }
@@ -810,10 +870,10 @@ export async function placeSellOrder(
     const orderId = response.orderID;
     
     if (!response.success || !orderId) {
-      return { 
-        success: false, 
-        error: response.errorMsg ?? 'Sell rejected', 
-        latencyMs: Date.now() - start 
+      return {
+        success: false,
+        error: asErrorMessage(response.errorMsg) || 'Sell rejected',
+        latencyMs: Date.now() - start,
       };
     }
     
@@ -873,7 +933,7 @@ export async function placeSellOrder(
       latencyMs 
     };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = asErrorMessage(err);
     return { success: false, error: msg, latencyMs: Date.now() - start };
   }
 }
@@ -889,7 +949,7 @@ export async function cancelOrder(orderId: string): Promise<boolean> {
     log(`🗑️ Order cancelled: ${orderId}`);
     return true;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = asErrorMessage(err);
     log(`⚠️ Cancel failed: ${msg}`);
     return false;
   }
@@ -913,7 +973,7 @@ export async function getOrderStatus(orderId: string): Promise<{ filled: boolean
       status,
     };
   } catch (err) {
-    log(`⚠️ Get order status failed: ${err}`);
+    log(`⚠️ Get order status failed: ${asErrorMessage(err)}`);
     return { filled: false, filledSize: 0, status: 'error' };
   }
 }
