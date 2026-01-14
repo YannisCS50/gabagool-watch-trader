@@ -546,7 +546,7 @@ export default function V29Dashboard() {
 
         {/* Tick-by-Tick Tab */}
         <TabsContent value="ticks" className="mt-4">
-          <V29TickTable assetFilter={assetFilter} maxRows={150} />
+          <V29TickTable assetFilter={assetFilter} maxRows={1000} />
         </TabsContent>
 
         {/* Signals Tab */}
