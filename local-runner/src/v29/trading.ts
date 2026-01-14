@@ -132,14 +132,15 @@ const orderCache = new Map<Asset, MarketOrderSet>();
 
 // Configuration
 const PRE_SIGN_CONFIG = {
-  // Price levels to pre-sign (full range 30-75¢)
+  // Price levels to pre-sign (extended range 10-90¢ with 2¢ steps)
   priceLevels: [
+    0.10, 0.12, 0.14, 0.16, 0.18, 0.20, 0.22, 0.24, 0.26, 0.28,
     0.30, 0.32, 0.34, 0.36, 0.38, 0.40, 0.42, 0.44, 0.46, 0.48,
     0.50, 0.52, 0.54, 0.56, 0.58, 0.60, 0.62, 0.64, 0.66, 0.68,
-    0.70, 0.72, 0.74, 0.75
+    0.70, 0.72, 0.74, 0.76, 0.78, 0.80, 0.82, 0.84, 0.86, 0.88, 0.90
   ],
-  // Share sizes to pre-sign (just 5 for V29 simple strategy)
-  shareSizes: [5],
+  // Share sizes to pre-sign (multiple for burst orders)
+  shareSizes: [2, 5],
   // Refresh every 2 minutes for fresher orders
   refreshIntervalMs: 2 * 60 * 1000,
   // Max age before order is considered stale
@@ -520,11 +521,14 @@ export async function placeBuyOrder(
       currentPrice -= priceStepCents;
     }
     
-    // Fire all orders in parallel
+    // Fire all orders in parallel with a timeout
+    const ORDER_TIMEOUT_MS = 5000; // 5 second max per order attempt
+    
     const orderPromises = priceLevels.map(async (orderPrice, idx) => {
+      const orderStart = Date.now();
       try {
         // Try cache first
-        let signedOrder: SignedOrder;
+        let signedOrder: SignedOrder | undefined;
         let usedCache = false;
         
         if (asset && direction) {
@@ -535,15 +539,27 @@ export async function placeBuyOrder(
           }
         }
         
-        // Fallback to real-time signing
+        // Fallback to real-time signing with timeout
         if (!usedCache) {
-          signedOrder = await client.createOrder(
+          const signPromise = client.createOrder(
             { tokenID: tokenId, price: orderPrice, size: sharesPerOrder, side: Side.BUY },
             { tickSize: '0.01', negRisk: false }
           );
+          const timeoutPromise = new Promise<never>((_, reject) => 
+            setTimeout(() => reject(new Error('Sign timeout')), ORDER_TIMEOUT_MS)
+          );
+          signedOrder = await Promise.race([signPromise, timeoutPromise]);
         }
         
-        const response = await client.postOrder(signedOrder!, OrderType.FOK);
+        // Post order with timeout
+        const postPromise = client.postOrder(signedOrder!, OrderType.FOK);
+        const postTimeoutPromise = new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Post timeout')), ORDER_TIMEOUT_MS)
+        );
+        const response = await Promise.race([postPromise, postTimeoutPromise]);
+        
+        const elapsed = Date.now() - orderStart;
+        log(`📤 Order ${idx + 1}: ${usedCache ? '⚡cache' : '🔧sign'} @ ${(orderPrice * 100).toFixed(0)}¢ → ${response.success ? '✅' : '❌'} (${elapsed}ms)`);
 
         return {
           idx,
@@ -554,19 +570,31 @@ export async function placeBuyOrder(
           usedCache,
         };
       } catch (err: any) {
+        const elapsed = Date.now() - orderStart;
+        const errMsg = asErrorMessage(err);
+        log(`⚠️ Order ${idx + 1} @ ${(orderPrice * 100).toFixed(0)}¢ failed: ${errMsg} (${elapsed}ms)`);
         return {
           idx,
           price: orderPrice,
           orderId: null,
           success: false,
-          error: asErrorMessage(err),
+          error: errMsg,
           usedCache: false,
         };
       }
     });
     
-    // Wait for all orders to be placed
-    const orderResults = await Promise.all(orderPromises);
+    // Wait for all orders with overall timeout
+    const TOTAL_TIMEOUT_MS = 8000; // 8 seconds max for entire burst
+    const allOrdersPromise = Promise.all(orderPromises);
+    const totalTimeoutPromise = new Promise<typeof orderPromises extends Promise<infer R>[] ? R[] : never>((resolve) => 
+      setTimeout(() => {
+        log(`⚠️ Burst timeout after ${TOTAL_TIMEOUT_MS}ms - returning partial results`);
+        resolve([]);
+      }, TOTAL_TIMEOUT_MS)
+    );
+    
+    const orderResults = await Promise.race([allOrdersPromise, totalTimeoutPromise]);
     const placedOrders = orderResults.filter(o => o.success && o.orderId);
     
     if (placedOrders.length === 0) {
