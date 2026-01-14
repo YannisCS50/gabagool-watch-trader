@@ -808,8 +808,7 @@ interface AggregatedPosition {
 async function checkAndExecuteSells(): Promise<void> {
   // CRITICAL: Check local flag (fast path - no DB call)
   if (!isRunnerActive()) {
-    log(`🛑 BLOCKED: Sell check - runner no longer active`);
-    return;
+    return; // Silent skip - takeover detected, shutting down
   }
 
   if (!config.enabled) return;
