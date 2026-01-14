@@ -5525,6 +5525,7 @@ export type Database = {
           sell_ts: number | null
           share_price: number | null
           shares: number | null
+          signal_key: string | null
           signal_ts: number
           status: string
           strike_price: number | null
@@ -5546,6 +5547,7 @@ export type Database = {
           sell_ts?: number | null
           share_price?: number | null
           shares?: number | null
+          signal_key?: string | null
           signal_ts: number
           status?: string
           strike_price?: number | null
@@ -5567,6 +5569,7 @@ export type Database = {
           sell_ts?: number | null
           share_price?: number | null
           shares?: number | null
+          signal_key?: string | null
           signal_ts?: number
           status?: string
           strike_price?: number | null
