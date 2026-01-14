@@ -640,69 +640,100 @@ async function checkAndExecuteSells(): Promise<void> {
       // Market changed, skip this position
       continue;
     }
-    
+
     const state = priceState[pos.asset];
-    const bestBid = pos.direction === 'UP' ? state.upBestBid : state.downBestBid;
-    
-    if (!bestBid || bestBid <= 0) continue;
-    
     const positionAgeMs = now - pos.entryTime;
     const positionAgeSec = positionAgeMs / 1000;
-    
-    // Calculate profit in cents
-    const sellPrice = bestBid;
-    const profitCents = (sellPrice - pos.entryPrice) * 100;  // Positive = profit
-    
+
+    // Best bid (needed to exit). If we are past max-hold, force a fresh book fetch.
+    let bestBid = pos.direction === 'UP' ? state.upBestBid : state.downBestBid;
+
+    if (!bestBid || bestBid <= 0) {
+      if (positionAgeSec < config.max_hold_before_loss_sell_sec) continue;
+
+      // Past max-hold: try a fresh fetch to avoid holding just because the cached bid is stale/null.
+      try {
+        const book = await fetchMarketOrderbook(market);
+        if (book.upBestBid !== undefined) state.upBestBid = book.upBestBid;
+        if (book.downBestBid !== undefined) state.downBestBid = book.downBestBid;
+        if (book.upBestAsk !== undefined) state.upBestAsk = book.upBestAsk;
+        if (book.downBestAsk !== undefined) state.downBestAsk = book.downBestAsk;
+        if (book.lastUpdate !== undefined) state.lastUpdate = book.lastUpdate;
+      } catch {
+        // ignore
+      }
+
+      bestBid = pos.direction === 'UP' ? state.upBestBid : state.downBestBid;
+
+      // Still no bid: attempt an emergency "market-like" exit at 1¢ (may still not fill if the book is empty).
+      if (!bestBid || bestBid <= 0) {
+        bestBid = 0.01;
+      }
+    }
+
     // === SELL RULES ===
-    // 1. Sell if profit >= min_profit_cents (e.g., 2¢)
-    // 2. NEVER sell at loss unless position age > max_hold_before_loss_sell_sec
-    // 3. After timeout, sell if loss <= stop_loss_cents
-    
+    // 1) Profit-taking: sell as soon as we can realize >= min_profit_cents.
+    // 2) Hard max-hold: once age >= max_hold_before_loss_sell_sec, ALWAYS try to exit (even at large loss).
     let shouldSell = false;
     let sellReason = '';
-    
-    if (profitCents >= config.min_profit_cents) {
-      // PROFIT! Sell immediately
+    let aggressiveDiscountCents = 0; // 0 = sell at the displayed bestBid
+
+    const profitCentsIfSellAtBid = (bestBid - pos.entryPrice) * 100;
+
+    if (profitCentsIfSellAtBid >= config.min_profit_cents) {
       shouldSell = true;
-      sellReason = `PROFIT +${profitCents.toFixed(1)}¢`;
+      sellReason = `PROFIT +${profitCentsIfSellAtBid.toFixed(1)}¢`;
+      aggressiveDiscountCents = 0;
     } else if (positionAgeSec >= config.max_hold_before_loss_sell_sec) {
-      // Position is old, check if we can accept the loss
-      if (profitCents >= -config.stop_loss_cents) {
-        // Loss is within acceptable range
-        shouldSell = true;
-        sellReason = `TIMEOUT (${positionAgeSec.toFixed(0)}s) ${profitCents >= 0 ? '+' : ''}${profitCents.toFixed(1)}¢`;
-      }
-      // If loss > stop_loss_cents, keep holding
+      shouldSell = true;
+      aggressiveDiscountCents = 2;
+      const effectiveSellPrice = Math.max(0.01, bestBid - aggressiveDiscountCents / 100);
+      const profitCentsEffective = (effectiveSellPrice - pos.entryPrice) * 100;
+      sellReason = `MAX_HOLD (${positionAgeSec.toFixed(0)}s) ${profitCentsEffective >= 0 ? '+' : ''}${profitCentsEffective.toFixed(1)}¢`;
     }
-    // else: Keep holding - waiting for profit
-    
+
     if (!shouldSell) continue;
-    
+
     // Check cooldown
     if (now - lastOrderTime < config.order_cooldown_ms) continue;
-    
-    log(`💰 SELL: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(sellPrice * 100).toFixed(1)}¢ | ${sellReason}`, 'sell', pos.asset);
-    
+
+    log(
+      `💰 SELL: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(bestBid * 100).toFixed(1)}¢ | ${sellReason}`,
+      'sell',
+      pos.asset
+    );
+
     lastOrderTime = now;
-    
+
     // Execute sell
-    const result = await placeSellOrder(pos.tokenId, sellPrice, pos.shares, pos.asset, pos.direction);
-    
+    const result = await placeSellOrder(
+      pos.tokenId,
+      bestBid,
+      pos.shares,
+      pos.asset,
+      pos.direction,
+      aggressiveDiscountCents
+    );
+
     if (result.success) {
-      const actualSellPrice = result.avgPrice || sellPrice;
+      const actualSellPrice = result.avgPrice || bestBid;
       const actualProfit = (actualSellPrice - pos.entryPrice) * pos.shares;
-      
+
       totalPnL += actualProfit;
       sellsCount++;
-      
+
       if (actualProfit >= 0) {
         profitableSells++;
       } else {
         lossSells++;
       }
-      
-      log(`✅ SOLD: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(actualSellPrice * 100).toFixed(1)}¢ | P&L: ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(3)} | Total: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)}`, 'sell', pos.asset);
-      
+
+      log(
+        `✅ SOLD: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(actualSellPrice * 100).toFixed(1)}¢ | P&L: ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(3)} | Total: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)}`,
+        'sell',
+        pos.asset
+      );
+
       // Remove from open positions
       openPositions.delete(posId);
     } else {
