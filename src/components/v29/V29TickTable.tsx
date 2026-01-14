@@ -108,74 +108,63 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTab
     const groups: AlertGroup[] = [];
     const sortedTicks = [...ticks].sort((a, b) => a.ts - b.ts); // oldest first for context
     
-    // Find all alert ticks (alert_triggered=true)
-    const alertTicks = sortedTicks.filter(t => t.alert_triggered);
-    
-    // Find all fill ticks (order_placed=true with fill_price)
-    const fillTicks = sortedTicks.filter(t => t.order_placed && t.fill_price !== null);
-    
-    // Set of fill tick IDs we've already matched
+    // Iterate through ticks chronologically so we match fills to the nearest subsequent alert
     const matchedFillIds = new Set<string>();
-    
-    for (const alertTick of alertTicks) {
-      const alertIdx = sortedTicks.indexOf(alertTick);
+
+    for (let alertIdx = 0; alertIdx < sortedTicks.length; alertIdx++) {
+      const alertTick = sortedTicks[alertIdx];
+      if (!alertTick.alert_triggered) continue;
+
       const beforeTicks: V29Tick[] = [];
       const afterTicks: V29Tick[] = [];
-      
-      // Find matching fill tick:
-      // 1. Same asset and market_slug
-      // 2. Occurs AFTER the alert (within 10 seconds)
-      // 3. Not already matched to another alert
+
+      // Find matching fill tick.
+      // Prefer a separate tick logged after the alert, but handle combined alert+fill rows too.
       let matchedFill: V29Tick | null = null;
-      
-      // Check if the alert tick itself has fill data (combined record)
+      let fillIdx: number = alertIdx;
+
       if (alertTick.fill_price !== null) {
         matchedFill = alertTick;
+        fillIdx = alertIdx;
       } else {
-        // Look for a separate fill tick
-        for (const fillTick of fillTicks) {
-          if (matchedFillIds.has(fillTick.id)) continue;
-          
-          // Must be same asset
-          if (fillTick.asset !== alertTick.asset) continue;
-          
-          // Must be same market (if available)
-          if (alertTick.market_slug && fillTick.market_slug && fillTick.market_slug !== alertTick.market_slug) continue;
-          
-          // Must occur AFTER alert and within 10 seconds
-          const timeDiff = fillTick.ts - alertTick.ts;
-          if (timeDiff >= 0 && timeDiff <= 10000) {
-            matchedFill = fillTick;
-            matchedFillIds.add(fillTick.id);
-            break;
-          }
+        // Scan forward from the alert to find the FIRST fill for the same asset/market within 10s.
+        for (let j = alertIdx + 1; j < sortedTicks.length; j++) {
+          const t = sortedTicks[j];
+          const dt = t.ts - alertTick.ts;
+          if (dt > 10_000) break;
+
+          if (matchedFillIds.has(t.id)) continue;
+          if (!t.order_placed || t.fill_price === null) continue;
+          if (t.asset !== alertTick.asset) continue;
+          if (alertTick.market_slug && t.market_slug && t.market_slug !== alertTick.market_slug) continue;
+
+          matchedFill = t;
+          fillIdx = j;
+          matchedFillIds.add(t.id);
+          break;
         }
       }
-      
+
       // Get 5 ticks before (same asset, not alert/fill ticks)
       let beforeCount = 0;
       for (let i = alertIdx - 1; i >= 0 && beforeCount < 5; i--) {
-        const tick = sortedTicks[i];
-        if (tick.asset === alertTick.asset && !tick.alert_triggered && !tick.order_placed) {
-          beforeTicks.unshift(tick);
+        const t = sortedTicks[i];
+        if (t.asset === alertTick.asset && !t.alert_triggered && !t.order_placed) {
+          beforeTicks.unshift(t);
           beforeCount++;
         }
       }
-      
+
       // Get 5 ticks after fill (or after alert if no fill)
-      const afterStartIdx = matchedFill && matchedFill !== alertTick 
-        ? sortedTicks.indexOf(matchedFill) 
-        : alertIdx;
-      
       let afterCount = 0;
-      for (let i = afterStartIdx + 1; i < sortedTicks.length && afterCount < 5; i++) {
-        const tick = sortedTicks[i];
-        if (tick.asset === alertTick.asset && !tick.alert_triggered && !tick.order_placed) {
-          afterTicks.push(tick);
+      for (let i = fillIdx + 1; i < sortedTicks.length && afterCount < 5; i++) {
+        const t = sortedTicks[i];
+        if (t.asset === alertTick.asset && !t.alert_triggered && !t.order_placed) {
+          afterTicks.push(t);
           afterCount++;
         }
       }
-      
+
       groups.push({
         id: alertTick.id,
         alertTick,
