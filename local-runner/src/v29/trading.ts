@@ -699,7 +699,8 @@ async function placeSingleBuyOrder(
 }
 
 /**
- * Place a SELL order to close a position
+ * Place a SELL order with aggressive pricing and fill checking
+ * Prices 2¢ below the provided price to ensure fill, uses FOK for instant execution
  */
 export async function placeSellOrder(
   tokenId: string,
@@ -707,38 +708,103 @@ export async function placeSellOrder(
   shares: number
 ): Promise<OrderResult> {
   const start = Date.now();
+  const AGGRESSIVE_DISCOUNT_CENTS = 2; // Sell 2¢ cheaper than bestBid
+  const FILL_CHECK_INTERVAL_MS = 150;
+  const MAX_FILL_WAIT_MS = 3000;
   
   try {
     const client = await getClient();
-    const roundedPrice = Math.round(price * 100) / 100;
+    // Aggressive pricing: sell cheaper to ensure fill
+    const aggressivePrice = Math.max(0.01, price - (AGGRESSIVE_DISCOUNT_CENTS / 100));
+    const roundedPrice = Math.round(aggressivePrice * 100) / 100;
     const roundedShares = Math.floor(shares);
     
     if (roundedShares < 1) {
       return { success: false, error: 'Shares < 1', latencyMs: Date.now() - start };
     }
     
-    log(`📤 SELL ${roundedShares} shares @ ${(roundedPrice * 100).toFixed(1)}¢`);
+    log(`📤 SELL ${roundedShares} shares @ ${(roundedPrice * 100).toFixed(1)}¢ (aggressive: -${AGGRESSIVE_DISCOUNT_CENTS}¢ from ${(price * 100).toFixed(1)}¢)`);
     
     const signedOrder = await client.createOrder(
       { tokenID: tokenId, price: roundedPrice, size: roundedShares, side: Side.SELL },
       { tickSize: '0.01', negRisk: false }
     );
     
-    const response = await client.postOrder(signedOrder, OrderType.GTC);
+    // Try FOK first for instant fill
+    let response = await client.postOrder(signedOrder, OrderType.FOK);
+    let orderId = response.orderID;
+    
+    if (!response.success) {
+      // Fallback to GTC if FOK fails
+      log(`⚠️ FOK failed, trying GTC...`);
+      const gtcOrder = await client.createOrder(
+        { tokenID: tokenId, price: roundedPrice, size: roundedShares, side: Side.SELL },
+        { tickSize: '0.01', negRisk: false }
+      );
+      response = await client.postOrder(gtcOrder, OrderType.GTC);
+      orderId = response.orderID;
+    }
+    
+    if (!response.success || !orderId) {
+      return { 
+        success: false, 
+        error: response.errorMsg ?? 'Sell rejected', 
+        latencyMs: Date.now() - start 
+      };
+    }
+    
+    // Fill check loop
+    let filledSize = 0;
+    let attempts = 0;
+    const maxAttempts = Math.ceil(MAX_FILL_WAIT_MS / FILL_CHECK_INTERVAL_MS);
+    
+    while (attempts < maxAttempts) {
+      await new Promise(r => setTimeout(r, FILL_CHECK_INTERVAL_MS));
+      const status = await getOrderStatus(orderId);
+      filledSize = status.filledSize;
+      
+      if (status.filled || filledSize >= roundedShares) {
+        const latencyMs = Date.now() - start;
+        log(`✅ Sell FILLED: ${filledSize} shares (${latencyMs}ms)`);
+        return {
+          success: true,
+          orderId,
+          avgPrice: roundedPrice,
+          filledSize,
+          latencyMs,
+        };
+      }
+      
+      if (status.status === 'CANCELLED' || status.status === 'EXPIRED') {
+        break;
+      }
+      
+      attempts++;
+    }
+    
+    // Partial or no fill - cancel remaining
+    if (filledSize < roundedShares && orderId) {
+      log(`⚠️ Sell partial: ${filledSize}/${roundedShares}, cancelling remainder`);
+      await cancelOrder(orderId);
+    }
+    
     const latencyMs = Date.now() - start;
     
-    if (response.success) {
-      log(`✅ Sell order: ${response.orderID ?? 'no-id'} (${latencyMs}ms)`);
+    if (filledSize > 0) {
       return {
         success: true,
-        orderId: response.orderID,
+        orderId,
         avgPrice: roundedPrice,
-        filledSize: roundedShares,
+        filledSize,
         latencyMs,
       };
-    } else {
-      return { success: false, error: response.errorMsg ?? 'Sell rejected', latencyMs };
     }
+    
+    return { 
+      success: false, 
+      error: `Sell timeout: 0/${roundedShares} filled`, 
+      latencyMs 
+    };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { success: false, error: msg, latencyMs: Date.now() - start };
