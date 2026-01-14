@@ -394,12 +394,14 @@ export async function sendHeartbeat(
   try {
     await db.from('runner_heartbeats').upsert({
       id: runId,
+      runner_id: runId,  // Also set runner_id for dashboard queries
       runner_type: 'v29-live',
       status,
       last_heartbeat: new Date().toISOString(),
       balance,
-      position_count: positionCount,
-      trade_count: tradesCount,
+      positions_count: positionCount,  // Match dashboard column name
+      trades_count: tradesCount,       // Match dashboard column name
+      markets_count: 4,                // V29 supports 4 assets
       version: 'v29.0.1',
     });
   } catch (err) {
