@@ -71,9 +71,9 @@ export const DEFAULT_CONFIG: V29Config = {
   max_share_price: 0.75,
   shares_per_trade: 5,
   
-  // Sell config - STRICT: only sell with 2¢+ profit unless holding > 60s
+  // Sell config - QUICK: max 15s hold, sell all shares at once
   min_profit_cents: 2,           // Sell when bestBid >= entryPrice - 2¢ 
-  max_hold_before_loss_sell_sec: 60,  // After 60s, allow loss selling
+  max_hold_before_loss_sell_sec: 15,  // After 15s, force sell (was 60s)
   stop_loss_cents: 10,           // After timeout, max 10¢ loss accepted
   
   max_exposure_per_asset: 100,
