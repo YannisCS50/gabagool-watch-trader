@@ -5279,6 +5279,7 @@ export type Database = {
       v29_config: {
         Row: {
           accumulation_enabled: boolean | null
+          aggregate_after_sec: number | null
           assets: string[]
           auto_hedge_enabled: boolean | null
           binance_poll_ms: number
@@ -5286,6 +5287,7 @@ export type Database = {
           delta_threshold: number | null
           emergency_sl_cents: number | null
           enabled: boolean
+          force_close_after_sec: number | null
           hedge_min_profit_cents: number | null
           hedge_trigger_cents: number | null
           id: string
@@ -5301,6 +5303,7 @@ export type Database = {
           orderbook_poll_ms: number
           price_buffer_cents: number
           shares_per_trade: number | null
+          stop_loss_cents: number | null
           take_profit_cents: number | null
           tick_delta_usd: number | null
           timeout_ms: number
@@ -5312,6 +5315,7 @@ export type Database = {
         }
         Insert: {
           accumulation_enabled?: boolean | null
+          aggregate_after_sec?: number | null
           assets?: string[]
           auto_hedge_enabled?: boolean | null
           binance_poll_ms?: number
@@ -5319,6 +5323,7 @@ export type Database = {
           delta_threshold?: number | null
           emergency_sl_cents?: number | null
           enabled?: boolean
+          force_close_after_sec?: number | null
           hedge_min_profit_cents?: number | null
           hedge_trigger_cents?: number | null
           id?: string
@@ -5334,6 +5339,7 @@ export type Database = {
           orderbook_poll_ms?: number
           price_buffer_cents?: number
           shares_per_trade?: number | null
+          stop_loss_cents?: number | null
           take_profit_cents?: number | null
           tick_delta_usd?: number | null
           timeout_ms?: number
@@ -5345,6 +5351,7 @@ export type Database = {
         }
         Update: {
           accumulation_enabled?: boolean | null
+          aggregate_after_sec?: number | null
           assets?: string[]
           auto_hedge_enabled?: boolean | null
           binance_poll_ms?: number
@@ -5352,6 +5359,7 @@ export type Database = {
           delta_threshold?: number | null
           emergency_sl_cents?: number | null
           enabled?: boolean
+          force_close_after_sec?: number | null
           hedge_min_profit_cents?: number | null
           hedge_trigger_cents?: number | null
           id?: string
@@ -5367,6 +5375,7 @@ export type Database = {
           orderbook_poll_ms?: number
           price_buffer_cents?: number
           shares_per_trade?: number | null
+          stop_loss_cents?: number | null
           take_profit_cents?: number | null
           tick_delta_usd?: number | null
           timeout_ms?: number
