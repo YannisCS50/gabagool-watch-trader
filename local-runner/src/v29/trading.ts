@@ -498,13 +498,18 @@ export async function placeBuyOrder(
           error: response.errorMsg,
           usedCache,
         };
-      } catch (err) {
+      } catch (err: any) {
+        // Extract safe error message (avoid circular JSON from axios/socket errors)
+        const errMsg = err?.response?.data?.message 
+          || err?.response?.data?.error 
+          || err?.message 
+          || 'Unknown error';
         return {
           idx,
           price: orderPrice,
           orderId: null,
           success: false,
-          error: err instanceof Error ? err.message : String(err),
+          error: errMsg,
           usedCache: false,
         };
       }
