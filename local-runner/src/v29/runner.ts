@@ -574,20 +574,18 @@ async function executeBuy(
   strikeActualDelta: number,
   market: MarketInfo
 ): Promise<void> {
-  // CRITICAL: Check local flag first (fast path)
+  // CRITICAL: Check local flag (fast path - no DB call)
   if (!isRunnerActive()) {
-    log(`🛑 BLOCKED: Buy attempt for ${asset} ${direction} - runner no longer active (takeover detected)`);
-    return;
-  }
-
-  // CRITICAL: Synchronous lease validation right before order - prevents race condition
-  const stillOwnsLease = await validateLease(RUN_ID);
-  if (!stillOwnsLease) {
-    log(`🛑 BLOCKED: Buy attempt for ${asset} ${direction} - lease validation failed (another runner took over)`);
+    log(`🛑 BLOCKED: Buy attempt for ${asset} ${direction} - runner no longer active`);
     return;
   }
 
   const signalTs = Date.now();
+  
+  // Generate deterministic signal ID to prevent duplicate orders from multiple runners
+  // Round timestamp to nearest second to catch same-tick races
+  const signalBucket = Math.floor(signalTs / 1000);
+  const signalId = `${asset}-${direction}-${strikeActualDelta.toFixed(2)}-${signalBucket}`;
   
   // Get orderbook
   const state = priceState[asset];
@@ -627,6 +625,19 @@ async function executeBuy(
     return;
   }
   
+  // RACE PREVENTION: Check if this exact signal was already processed (by another runner)
+  // Uses deterministic signalId to deduplicate across runners on same tick
+  const existingSignal = await db
+    .from('v29_signals')
+    .select('id')
+    .eq('signal_key', signalId)
+    .maybeSingle();
+  
+  if (existingSignal.data) {
+    log(`🛑 DUPLICATE: Signal ${signalId} already processed by another runner`);
+    return;
+  }
+  
   // Create signal for logging
   const signal: Signal = {
     run_id: RUN_ID,
@@ -649,11 +660,12 @@ async function executeBuy(
     gross_pnl: null,
     net_pnl: null,
     fees: null,
+    signal_key: signalId, // Add signal key for deduplication
     notes: `BUY ${direction} | tickΔ$${Math.abs(tickDelta).toFixed(0)} | @${(buyPrice * 100).toFixed(1)}¢`,
   };
   
-  const signalId = await saveSignal(signal);
-  if (signalId) signal.id = signalId;
+  const savedSignalId = await saveSignal(signal);
+  if (savedSignalId) signal.id = savedSignalId;
   
   lastBuyTime[`${asset}:${direction}`] = Date.now();
   
@@ -782,16 +794,9 @@ interface AggregatedPosition {
 }
 
 async function checkAndExecuteSells(): Promise<void> {
-  // CRITICAL: Check local flag first (fast path)
+  // CRITICAL: Check local flag (fast path - no DB call)
   if (!isRunnerActive()) {
-    log(`🛑 BLOCKED: Sell check - runner no longer active (takeover detected)`);
-    return;
-  }
-
-  // CRITICAL: Synchronous lease validation before sells
-  const stillOwnsLease = await validateLease(RUN_ID);
-  if (!stillOwnsLease) {
-    log(`🛑 BLOCKED: Sell check - lease validation failed (another runner took over)`);
+    log(`🛑 BLOCKED: Sell check - runner no longer active`);
     return;
   }
 

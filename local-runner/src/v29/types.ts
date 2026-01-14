@@ -63,6 +63,7 @@ export interface Signal {
   gross_pnl: number | null;
   net_pnl: number | null;
   fees: number | null;
+  signal_key?: string | null; // Deterministic key for deduplication across runners
   notes: string | null;
 }
 
