@@ -75,7 +75,7 @@ export interface V29Config {
 
 export const DEFAULT_CONFIG: V29Config = {
   enabled: true,
-  tick_delta_usd: 6,
+  tick_delta_usd: 12,
   delta_threshold: 75,
   min_share_price: 0.30,
   max_share_price: 0.75,
