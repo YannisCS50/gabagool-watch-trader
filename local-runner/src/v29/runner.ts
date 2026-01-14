@@ -565,7 +565,10 @@ async function executeBuy(
     return;
   }
   
-  // Log tick with order + fill info
+  // Log tick with order + fill info + LATENCY DATA
+  const fillTs = Date.now();
+  const signalToFillMs = fillTs - signalTs;
+  
   void logTick({
     runId: RUN_ID,
     asset,
@@ -584,6 +587,13 @@ async function executeBuy(
     fillSize: filledSize,
     marketSlug: market.slug,
     strikePrice: market.strikePrice,
+    // LATENCY TRACKING
+    orderLatencyMs: result.latencyMs,
+    fillLatencyMs: result.fillLatencyMs,
+    signalToFillMs,
+    signLatencyMs: result.signLatencyMs,
+    postLatencyMs: result.postLatencyMs,
+    usedCache: result.usedCache,
   });
   
   // FILLED! Create open position with SETTLED entry price

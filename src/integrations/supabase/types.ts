@@ -5583,18 +5583,24 @@ export type Database = {
           created_at: string
           down_best_ask: number | null
           down_best_bid: number | null
+          fill_latency_ms: number | null
           fill_price: number | null
           fill_size: number | null
           id: string
           market_slug: string | null
           order_id: string | null
+          order_latency_ms: number | null
           order_placed: boolean | null
+          post_latency_ms: number | null
           run_id: string | null
+          sign_latency_ms: number | null
           signal_direction: string | null
+          signal_to_fill_ms: number | null
           strike_price: number | null
           ts: number
           up_best_ask: number | null
           up_best_bid: number | null
+          used_cache: boolean | null
         }
         Insert: {
           alert_triggered?: boolean | null
@@ -5605,18 +5611,24 @@ export type Database = {
           created_at?: string
           down_best_ask?: number | null
           down_best_bid?: number | null
+          fill_latency_ms?: number | null
           fill_price?: number | null
           fill_size?: number | null
           id?: string
           market_slug?: string | null
           order_id?: string | null
+          order_latency_ms?: number | null
           order_placed?: boolean | null
+          post_latency_ms?: number | null
           run_id?: string | null
+          sign_latency_ms?: number | null
           signal_direction?: string | null
+          signal_to_fill_ms?: number | null
           strike_price?: number | null
           ts: number
           up_best_ask?: number | null
           up_best_bid?: number | null
+          used_cache?: boolean | null
         }
         Update: {
           alert_triggered?: boolean | null
@@ -5627,18 +5639,24 @@ export type Database = {
           created_at?: string
           down_best_ask?: number | null
           down_best_bid?: number | null
+          fill_latency_ms?: number | null
           fill_price?: number | null
           fill_size?: number | null
           id?: string
           market_slug?: string | null
           order_id?: string | null
+          order_latency_ms?: number | null
           order_placed?: boolean | null
+          post_latency_ms?: number | null
           run_id?: string | null
+          sign_latency_ms?: number | null
           signal_direction?: string | null
+          signal_to_fill_ms?: number | null
           strike_price?: number | null
           ts?: number
           up_best_ask?: number | null
           up_best_bid?: number | null
+          used_cache?: boolean | null
         }
         Relationships: []
       }
