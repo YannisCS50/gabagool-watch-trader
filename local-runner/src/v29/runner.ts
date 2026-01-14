@@ -15,7 +15,7 @@ import type { MarketInfo, PriceState, Signal } from './types.js';
 import { startBinanceFeed, stopBinanceFeed } from './binance.js';
 import { startChainlinkFeed, stopChainlinkFeed, getChainlinkPrice } from './chainlink.js';
 import { fetchMarketOrderbook, fetchAllOrderbooks } from './orderbook.js';
-import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb, queueLog } from './db.js';
+import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb, queueLog, logTick } from './db.js';
 import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, getOrderStatus, setFillContext, clearFillContext } from './trading.js';
 import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
@@ -317,6 +317,27 @@ function handleBinancePrice(asset: Asset, price: number, _timestamp: number): vo
   lastBinancePrice[asset] = price;
   
   const tickDelta = prevPrice !== null ? price - prevPrice : 0;
+  const state = priceState[asset];
+  const market = markets.get(asset);
+  const chainlinkPrice = state.chainlink;
+  
+  // Log tick for every price update with significant delta
+  if (Math.abs(tickDelta) >= 1) {
+    void logTick({
+      runId: RUN_ID,
+      asset,
+      binancePrice: price,
+      chainlinkPrice: chainlinkPrice ?? undefined,
+      binanceDelta: tickDelta,
+      upBestAsk: state.upBestAsk ?? undefined,
+      upBestBid: state.upBestBid ?? undefined,
+      downBestAsk: state.downBestAsk ?? undefined,
+      downBestBid: state.downBestBid ?? undefined,
+      alertTriggered: false,
+      marketSlug: market?.slug,
+      strikePrice: market?.strikePrice,
+    });
+  }
   
   if (Math.abs(tickDelta) >= config.tick_delta_usd) {
     queueLog(RUN_ID, 'info', 'price', `${asset} binance $${price.toFixed(2)} Δ${tickDelta >= 0 ? '+' : ''}${tickDelta.toFixed(2)} 🎯`, asset, { 
@@ -339,13 +360,11 @@ function handleBinancePrice(asset: Asset, price: number, _timestamp: number): vo
   if (Math.abs(tickDelta) < config.tick_delta_usd) return;
   
   // Get market
-  const market = markets.get(asset);
   if (!market || !market.strikePrice) {
     return;
   }
   
   // Use Chainlink for delta calculation, fallback to Binance
-  const chainlinkPrice = priceState[asset].chainlink;
   const actualPrice = chainlinkPrice ?? price;
   
   // Calculate price vs strike delta
@@ -370,6 +389,23 @@ function handleBinancePrice(asset: Asset, price: number, _timestamp: number): vo
     log(`⚠️ ${asset} ${tickDirection} blocked | Δ$${priceVsStrikeDelta.toFixed(0)} | only ${allowedDirection} allowed`);
     return;
   }
+  
+  // Log alert tick
+  void logTick({
+    runId: RUN_ID,
+    asset,
+    binancePrice: price,
+    chainlinkPrice: chainlinkPrice ?? undefined,
+    binanceDelta: tickDelta,
+    upBestAsk: state.upBestAsk ?? undefined,
+    upBestBid: state.upBestBid ?? undefined,
+    downBestAsk: state.downBestAsk ?? undefined,
+    downBestBid: state.downBestBid ?? undefined,
+    alertTriggered: true,
+    signalDirection: tickDirection,
+    marketSlug: market.slug,
+    strikePrice: market.strikePrice,
+  });
   
   log(`🎯 TRIGGER: ${asset} ${tickDirection} | tickΔ$${tickDelta.toFixed(2)} | allowed: ${allowedDirection}`, 'signal', asset);
   
@@ -528,6 +564,27 @@ async function executeBuy(
     void saveSignal(signal);
     return;
   }
+  
+  // Log tick with order + fill info
+  void logTick({
+    runId: RUN_ID,
+    asset,
+    binancePrice,
+    chainlinkPrice: priceState[asset].chainlink ?? undefined,
+    binanceDelta: tickDelta,
+    upBestAsk: priceState[asset].upBestAsk ?? undefined,
+    upBestBid: priceState[asset].upBestBid ?? undefined,
+    downBestAsk: priceState[asset].downBestAsk ?? undefined,
+    downBestBid: priceState[asset].downBestBid ?? undefined,
+    alertTriggered: true,
+    signalDirection: direction,
+    orderPlaced: true,
+    orderId,
+    fillPrice: avgPrice,
+    fillSize: filledSize,
+    marketSlug: market.slug,
+    strikePrice: market.strikePrice,
+  });
   
   // FILLED! Create open position with SETTLED entry price
   const positionId = `${RUN_ID}-${buysCount}`;
