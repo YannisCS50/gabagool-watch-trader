@@ -454,6 +454,11 @@ function handleChainlinkPrice(asset: Asset, price: number): void {
 // ============================================
 
 function handleBinancePrice(asset: Asset, price: number, _timestamp: number): void {
+  // CRITICAL: Skip processing if we're no longer the active runner
+  if (!isRunnerActive()) {
+    return; // Silent skip - takeover detected, shutting down
+  }
+
   const now = Date.now();
   
   priceState[asset].binance = price;
@@ -569,6 +574,12 @@ async function executeBuy(
   strikeActualDelta: number,
   market: MarketInfo
 ): Promise<void> {
+  // CRITICAL: Check if we're still the active runner before any trade
+  if (!isRunnerActive()) {
+    log(`🛑 BLOCKED: Buy attempt for ${asset} ${direction} - runner no longer active (takeover detected)`);
+    return;
+  }
+
   const signalTs = Date.now();
   
   // Get orderbook
@@ -764,6 +775,12 @@ interface AggregatedPosition {
 }
 
 async function checkAndExecuteSells(): Promise<void> {
+  // CRITICAL: Check if we're still the active runner before any sell
+  if (!isRunnerActive()) {
+    log(`🛑 BLOCKED: Sell check - runner no longer active (takeover detected)`);
+    return;
+  }
+
   if (!config.enabled) return;
   if (openPositions.size === 0) return;
   
