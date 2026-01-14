@@ -72,7 +72,7 @@ export const DEFAULT_CONFIG: V29Config = {
   delta_threshold: 75,
   min_share_price: 0.30,
   max_share_price: 0.75,
-  shares_per_trade: 5,
+  shares_per_trade: 2,  // Per burst order (3x burst = 6 shares total)
   
   // Sell config - TIERED: profit-take < 15s, aggregate 15-20s, force dump ≥ 20s
   min_profit_cents: 2,           // Sell when bestBid >= entryPrice + 2¢ 
@@ -83,7 +83,7 @@ export const DEFAULT_CONFIG: V29Config = {
   max_exposure_per_asset: 100,
   max_cost_per_asset: 50,
   
-  price_buffer_cents: 1,
+  price_buffer_cents: 2,  // Increased from 1 for more price tolerance
   assets: ['BTC', 'ETH', 'SOL', 'XRP'],
   binance_poll_ms: 100,
   orderbook_poll_ms: 2000,

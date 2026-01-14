@@ -459,11 +459,11 @@ function getPreSignedOrder(
 const BURST_FILL_CONFIG = {
   // Enable burst fill mode (parallel limit orders at different prices)
   enabled: true,
-  // Number of parallel orders to fire
+  // Number of parallel orders to fire (3x burst)
   burstCount: 3,
-  // Shares per order (total = burstCount * sharesPerOrder)
+  // Shares per order (total = burstCount * sharesPerOrder = 6 shares max)
   sharesPerOrder: 2,
-  // Price step between orders (1¢)
+  // Price step between orders (1¢) - spread across 3¢ range
   priceStepCents: 0.01,
   // How long to wait before checking fills (ms)
   fillCheckDelayMs: 50,
