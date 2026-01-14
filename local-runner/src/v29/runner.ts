@@ -19,7 +19,7 @@ import { startBinanceFeed, stopBinanceFeed } from './binance.js';
 import { startChainlinkFeed, stopChainlinkFeed, getChainlinkPrice } from './chainlink.js';
 import { fetchMarketOrderbook, fetchAllOrderbooks } from './orderbook.js';
 import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb, queueLog, logTick, queueTick } from './db.js';
-import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, getOrderStatus, setFillContext, clearFillContext } from './trading.js';
+import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, getOrderStatus, setFillContext, clearFillContext, cancelOrder } from './trading.js';
 import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
 import { acquireLease, releaseLease, isRunnerActive } from './lease.js';
@@ -564,7 +564,11 @@ async function executeBuy(
   if (!filled || filledSize <= 0) {
     signal.status = 'timeout';
     signal.notes = `Not filled in 5s`;
-    log(`⏰ Order not filled - cancelling`);
+    log(`⏰ Order not filled - cancelling ${orderId}`);
+    
+    // Actually cancel the unfilled order!
+    void cancelOrder(orderId);
+    
     void saveSignal(signal);
     return;
   }
