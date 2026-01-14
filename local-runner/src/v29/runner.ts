@@ -68,8 +68,9 @@ let buysCount = 0;
 let sellsCount = 0;
 let profitableSells = 0;
 let lossSells = 0;
-let lastBuyTime = 0;
-let lastSellTime = 0;
+// Cooldowns per asset+direction (UP/DOWN are independent markets)
+const lastBuyTime: Record<string, number> = {};  // key: "BTC:UP", "BTC:DOWN", etc.
+const lastSellTime: Record<string, number> = {};
 let lastMarketRefresh = 0;
 let lastConfigReload = 0;
 let totalPnL = 0;
@@ -349,8 +350,9 @@ function handleBinancePrice(asset: Asset, price: number, _timestamp: number): vo
   // Skip if disabled
   if (!config.enabled) return;
   
-  // Buy cooldown (separate from sell cooldown)
-  if (now - lastBuyTime < config.order_cooldown_ms) return;
+  // Buy cooldown per asset+direction (UP/DOWN are independent)
+  const cooldownKey = `${asset}:${tickDirection}`;
+  if (now - (lastBuyTime[cooldownKey] ?? 0) < config.order_cooldown_ms) return;
   
   // Need previous price
   if (prevPrice === null) return;
@@ -492,7 +494,7 @@ async function executeBuy(
   const signalId = await saveSignal(signal);
   if (signalId) signal.id = signalId;
   
-  lastBuyTime = Date.now();
+  lastBuyTime[`${asset}:${direction}`] = Date.now();
   
   log(`📤 BUY: ${asset} ${direction} ${shares} shares @ ${(buyPrice * 100).toFixed(1)}¢`, 'order', asset);
   
@@ -695,8 +697,9 @@ async function checkAndExecuteSells(): Promise<void> {
 
     if (!shouldSell) continue;
 
-    // Sell cooldown (separate from buy cooldown)
-    if (now - lastSellTime < config.order_cooldown_ms) continue;
+    // Sell cooldown per asset+direction (independent from buys and other directions)
+    const sellCooldownKey = `${pos.asset}:${pos.direction}`;
+    if (now - (lastSellTime[sellCooldownKey] ?? 0) < config.order_cooldown_ms) continue;
 
     log(
       `💰 SELL: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(bestBid * 100).toFixed(1)}¢ | ${sellReason}`,
@@ -704,7 +707,7 @@ async function checkAndExecuteSells(): Promise<void> {
       pos.asset
     );
 
-    lastSellTime = now;
+    lastSellTime[sellCooldownKey] = now;
 
     // Execute sell
     const result = await placeSellOrder(
