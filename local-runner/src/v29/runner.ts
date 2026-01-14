@@ -655,68 +655,37 @@ async function executeBuy(
   // Clear context after order
   clearFillContext();
   
-  const latency = Date.now() - signalTs;
+  // TIMING: fillTs is NOW - right after placeBuyOrder returns
+  // FOK orders fill instantly, so this is the true fill time
+  const fillTs = Date.now();
+  const signalToFillMs = fillTs - signalTs;
   
   if (!result.success) {
     signal.status = 'failed';
     signal.notes = `${result.error ?? 'Unknown error'}`;
-    log(`❌ FAILED: ${result.error ?? 'Unknown'}`);
+    log(`❌ FAILED: ${result.error ?? 'Unknown'} (${signalToFillMs}ms)`);
     void saveSignal(signal);
     return;
   }
   
   const orderId = result.orderId;
-  if (!orderId) {
-    signal.status = 'failed';
-    signal.notes = `No order ID returned`;
-    log(`❌ FAILED: No order ID`);
+  
+  // FOK orders: if success=true, it's already filled!
+  // No need to poll - use the filledSize from result directly
+  const filledSize = result.filledSize ?? shares;
+  const avgPrice = result.avgPrice ?? buyPrice;
+  
+  if (filledSize <= 0) {
+    signal.status = 'no_fill';
+    signal.notes = `FOK returned 0 shares`;
+    log(`⚠️ FOK order returned 0 shares (${signalToFillMs}ms)`);
     void saveSignal(signal);
     return;
   }
   
-  signal.order_id = orderId;
-  log(`📋 Order placed: ${orderId} - waiting for fill...`);
+  signal.order_id = orderId ?? null;
   
-  // Wait for fill (max 5 seconds)
-  const FILL_TIMEOUT_MS = 5000;
-  const startWait = Date.now();
-  let filled = false;
-  let filledSize = 0;
-  let avgPrice = buyPrice;
-  
-  while (Date.now() - startWait < FILL_TIMEOUT_MS) {
-    await new Promise(resolve => setTimeout(resolve, 500));
-    
-    const status = await getOrderStatus(orderId);
-    if (status.filled || status.filledSize > 0) {
-      filled = true;
-      filledSize = status.filledSize || shares;
-      avgPrice = status.avgPrice || buyPrice;
-      break;
-    }
-    
-    if (status.status === 'CANCELLED' || status.status === 'DEAD') {
-      log(`⚠️ Order ${orderId} was ${status.status}`);
-      break;
-    }
-  }
-  
-  if (!filled || filledSize <= 0) {
-    signal.status = 'timeout';
-    signal.notes = `Not filled in 5s`;
-    log(`⏰ Order not filled - cancelling ${orderId}`);
-    
-    // Actually cancel the unfilled order!
-    void cancelOrder(orderId);
-    
-    void saveSignal(signal);
-    return;
-  }
-  
-  // Log tick with order + fill info + LATENCY DATA
-  const fillTs = Date.now();
-  const signalToFillMs = fillTs - signalTs;
-  
+  // Log tick with REAL latency data
   void logTick({
     runId: RUN_ID,
     asset,
@@ -730,15 +699,15 @@ async function executeBuy(
     alertTriggered: true,
     signalDirection: direction,
     orderPlaced: true,
-    orderId,
+    orderId: orderId ?? undefined,
     fillPrice: avgPrice,
     fillSize: filledSize,
     marketSlug: market.slug,
     strikePrice: market.strikePrice,
-    // LATENCY TRACKING
+    // LATENCY TRACKING - now accurate!
     orderLatencyMs: result.latencyMs,
     fillLatencyMs: result.fillLatencyMs,
-    signalToFillMs,
+    signalToFillMs,  // This is now the REAL signal-to-fill time
     signLatencyMs: result.signLatencyMs,
     postLatencyMs: result.postLatencyMs,
     usedCache: result.usedCache,
@@ -756,8 +725,8 @@ async function executeBuy(
     shares: filledSize,
     entryPrice: avgPrice,  // SETTLED PRICE!
     totalCost: filledSize * avgPrice,
-    entryTime: Date.now(),
-    orderId,
+    entryTime: fillTs,  // Use actual fill time
+    orderId: orderId ?? undefined,
   };
   
   openPositions.set(positionId, openPos);
@@ -766,10 +735,10 @@ async function executeBuy(
   signal.status = 'filled';
   signal.entry_price = avgPrice;
   signal.shares = filledSize;
-  signal.fill_ts = Date.now();
-  signal.notes = `BOUGHT ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ (settled) - waiting for sell`;
+  signal.fill_ts = fillTs;
+  signal.notes = `BOUGHT ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ in ${signalToFillMs}ms`;
   
-  log(`✅ BOUGHT: ${asset} ${direction} ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ (${latency}ms) - target sell: ≥${((avgPrice + config.min_profit_cents / 100) * 100).toFixed(1)}¢`, 'fill', asset);
+  log(`✅ BOUGHT: ${asset} ${direction} ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ (${signalToFillMs}ms) - target: ≥${((avgPrice + config.min_profit_cents / 100) * 100).toFixed(1)}¢`, 'fill', asset);
   
   void saveSignal(signal);
 }
