@@ -628,6 +628,7 @@ async function executeBuy(
   
   // RACE PREVENTION: Check if this exact signal was already processed (by another runner)
   // Uses deterministic dedupKey to deduplicate across runners on same tick
+  const db = getDb();
   const existingSignal = await db
     .from('v29_signals')
     .select('id')
