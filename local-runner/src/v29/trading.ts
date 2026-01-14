@@ -45,27 +45,46 @@ function asErrorMessage(err: unknown): string {
 
   for (const c of candidates) {
     // Strings
-    if (typeof c === 'string') return c;
+    if (typeof c === 'string' && c.trim()) return c;
+
+    const anyC = c as any;
 
     // Axios-like error shapes (what clob-client uses under the hood)
-    // Check this FIRST before Error check to get the real API error
-    const anyC = c as any;
-    const data = anyC?.response?.data || anyC?.data;
-    const dataMsg =
+    const status = anyC?.response?.status;
+    const statusText = anyC?.response?.statusText;
+    const data = anyC?.response?.data ?? anyC?.data;
+
+    // Common API error fields
+    const apiMsg =
       (typeof data === 'string' && data) ||
       (typeof data?.message === 'string' && data.message) ||
       (typeof data?.error === 'string' && data.error) ||
-      (typeof data?.msg === 'string' && data.msg);
-    
-    // If we found an API error message, return it immediately (most specific)
-    if (dataMsg) {
-      return dataMsg;
+      (typeof data?.msg === 'string' && data.msg) ||
+      (typeof data?.detail === 'string' && data.detail) ||
+      (typeof data?.reason === 'string' && data.reason) ||
+      (typeof data?.code === 'string' && data.code) ||
+      (typeof data?.errors?.[0]?.message === 'string' && data.errors[0].message) ||
+      (typeof data?.errors?.[0]?.msg === 'string' && data.errors[0].msg);
+
+    if (apiMsg) {
+      return status ? `HTTP ${status}${statusText ? ` ${statusText}` : ''} - ${apiMsg}` : apiMsg;
     }
-    
-    const status = anyC?.response?.status;
-    const statusText = anyC?.response?.statusText;
-    
+
     if (status) {
+      // If there's a structured payload, include a short inspected snippet for debugging.
+      if (data && typeof data === 'object') {
+        try {
+          const snippet = util.inspect(data, {
+            depth: 2,
+            breakLength: 120,
+            maxStringLength: 240,
+            maxArrayLength: 20,
+          });
+          return `HTTP ${status}${statusText ? ` ${statusText}` : ''} - ${snippet}`;
+        } catch {
+          // ignore
+        }
+      }
       return `HTTP ${status}${statusText ? ` ${statusText}` : ''}`;
     }
 
@@ -77,14 +96,18 @@ function asErrorMessage(err: unknown): string {
 
     // Fallback: safe inspection (handles circular refs)
     try {
-      const inspected = util.inspect(anyC, { depth: 2, breakLength: 140, maxStringLength: 300 });
+      const inspected = util.inspect(anyC, {
+        depth: 2,
+        breakLength: 120,
+        maxStringLength: 240,
+        maxArrayLength: 20,
+      });
       if (inspected && inspected !== '[object Object]' && !inspected.includes('TLSSocket')) return inspected;
     } catch {
       // ignore
     }
   }
 
-  // If we got here, fall back to generic message
   return 'Unknown error';
 }
 
@@ -566,7 +589,7 @@ export async function placeBuyOrder(
           price: orderPrice,
           orderId: response.orderID,
           success: response.success,
-          error: response.success ? undefined : asErrorMessage(response.errorMsg),
+          error: response.success ? undefined : asErrorMessage((response as any).errorMsg ?? response),
           usedCache,
         };
       } catch (err: any) {
@@ -598,6 +621,12 @@ export async function placeBuyOrder(
     const placedOrders = orderResults.filter(o => o.success && o.orderId);
     
     if (placedOrders.length === 0) {
+      // If we timed out waiting for order results, say so explicitly (otherwise this looks like an API failure).
+      if (orderResults.length === 0) {
+        log(`❌ Burst failed: timeout/no results`);
+        return { success: false, error: 'Burst timeout/no results', latencyMs: Date.now() - start };
+      }
+
       const errors = orderResults
         .map(o => o.error)
         .filter((e): e is string => Boolean(e && e.trim()))
