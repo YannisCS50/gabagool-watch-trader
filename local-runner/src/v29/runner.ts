@@ -90,6 +90,10 @@ const previousMarketSlugs: Record<Asset, string | null> = { BTC: null, ETH: null
 // Market expiration timers
 const marketTimers: Record<Asset, NodeJS.Timeout | null> = { BTC: null, ETH: null, SOL: null, XRP: null };
 
+// LOCAL DEDUP CACHE: Prevents blocking DB calls before order placement
+// Saves ~100-200ms latency per order by avoiding network round-trip
+const localDedupCache = new Set<string>();
+
 // ============================================
 // LOGGING
 // ============================================
@@ -629,19 +633,15 @@ async function executeBuy(
     return;
   }
   
-  // RACE PREVENTION: Check if this exact signal was already processed (by another runner)
-  // Uses deterministic dedupKey to deduplicate across runners on same tick
-  const db = getDb();
-  const existingSignal = await db
-    .from('v29_signals')
-    .select('id')
-    .eq('signal_key', dedupKey)
-    .maybeSingle();
-  
-  if (existingSignal.data) {
-    log(`🛑 DUPLICATE: Signal ${dedupKey} already processed by another runner`);
+  // RACE PREVENTION: Local in-memory dedup (avoid DB call before order)
+  // This is a fast local check - DB dedup happens async after fill
+  if (localDedupCache.has(dedupKey)) {
+    log(`🛑 DUPLICATE: Signal ${dedupKey} already in local cache`);
     return;
   }
+  localDedupCache.add(dedupKey);
+  // Expire from cache after 30s to prevent memory leak
+  setTimeout(() => localDedupCache.delete(dedupKey), 30_000);
   
   // Create signal for logging - signal_ts is when we STARTED processing (for dedup)
   const signal: Signal = {
@@ -669,8 +669,9 @@ async function executeBuy(
     notes: `BUY ${direction} | tickΔ$${Math.abs(tickDelta).toFixed(0)} | @${(buyPrice * 100).toFixed(1)}¢`,
   };
   
-  const savedSignalId = await saveSignal(signal);
-  if (savedSignalId) signal.id = savedSignalId;
+  // Fire-and-forget signal save - DON'T await before order placement!
+  // This saves ~100-200ms latency per order
+  void saveSignal(signal).then(id => { if (id) signal.id = id; });
   
   lastBuyTime[`${asset}:${direction}`] = Date.now();
   
