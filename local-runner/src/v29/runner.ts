@@ -8,6 +8,9 @@
  * 4. NEVER sell at loss unless position age > 60 seconds
  */
 
+// CRITICAL: Import HTTP agent FIRST to configure axios before any SDK imports
+import './http-agent.js';
+
 import 'dotenv/config';
 import { v4 as uuid } from 'crypto';
 import { Asset, V29Config, DEFAULT_CONFIG } from './config.js';
