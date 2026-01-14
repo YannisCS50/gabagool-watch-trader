@@ -628,8 +628,20 @@ async function executeBuy(
 }
 
 // ============================================
-// SELL CHECK - PROFIT OR TIMEOUT
+// SELL CHECK - AGGREGATE BY ASSET+DIRECTION, SELL ALL AT ONCE
 // ============================================
+
+interface AggregatedPosition {
+  asset: Asset;
+  direction: 'UP' | 'DOWN';
+  marketSlug: string;
+  tokenId: string;
+  totalShares: number;
+  totalCost: number;
+  weightedEntryPrice: number;
+  oldestEntryTime: number;
+  positionIds: string[];
+}
 
 async function checkAndExecuteSells(): Promise<void> {
   if (!config.enabled) return;
@@ -637,24 +649,58 @@ async function checkAndExecuteSells(): Promise<void> {
   
   const now = Date.now();
   
+  // STEP 1: Aggregate positions by asset+direction
+  const aggregated = new Map<string, AggregatedPosition>();
+  
   for (const [posId, pos] of openPositions) {
-    const market = markets.get(pos.asset);
-    if (!market || market.slug !== pos.marketSlug) {
-      // Market changed, skip this position
+    const key = `${pos.asset}:${pos.direction}`;
+    
+    if (!aggregated.has(key)) {
+      aggregated.set(key, {
+        asset: pos.asset,
+        direction: pos.direction,
+        marketSlug: pos.marketSlug,
+        tokenId: pos.tokenId,
+        totalShares: 0,
+        totalCost: 0,
+        weightedEntryPrice: 0,
+        oldestEntryTime: pos.entryTime,
+        positionIds: [],
+      });
+    }
+    
+    const agg = aggregated.get(key)!;
+    agg.totalShares += pos.shares;
+    agg.totalCost += pos.totalCost;
+    agg.positionIds.push(posId);
+    if (pos.entryTime < agg.oldestEntryTime) {
+      agg.oldestEntryTime = pos.entryTime;
+    }
+  }
+  
+  // Calculate weighted average entry price
+  for (const agg of aggregated.values()) {
+    agg.weightedEntryPrice = agg.totalCost / agg.totalShares;
+  }
+  
+  // STEP 2: Check each aggregated position for sell
+  for (const [key, agg] of aggregated) {
+    const market = markets.get(agg.asset);
+    if (!market || market.slug !== agg.marketSlug) {
       continue;
     }
 
-    const state = priceState[pos.asset];
-    const positionAgeMs = now - pos.entryTime;
+    const state = priceState[agg.asset];
+    const positionAgeMs = now - agg.oldestEntryTime;
     const positionAgeSec = positionAgeMs / 1000;
 
     // Best bid (needed to exit). If we are past max-hold, force a fresh book fetch.
-    let bestBid = pos.direction === 'UP' ? state.upBestBid : state.downBestBid;
+    let bestBid = agg.direction === 'UP' ? state.upBestBid : state.downBestBid;
 
     if (!bestBid || bestBid <= 0) {
       if (positionAgeSec < config.max_hold_before_loss_sell_sec) continue;
 
-      // Past max-hold: try a fresh fetch to avoid holding just because the cached bid is stale/null.
+      // Past max-hold: try a fresh fetch
       try {
         const book = await fetchMarketOrderbook(market);
         if (book.upBestBid !== undefined) state.upBestBid = book.upBestBid;
@@ -666,22 +712,22 @@ async function checkAndExecuteSells(): Promise<void> {
         // ignore
       }
 
-      bestBid = pos.direction === 'UP' ? state.upBestBid : state.downBestBid;
+      bestBid = agg.direction === 'UP' ? state.upBestBid : state.downBestBid;
 
-      // Still no bid: attempt an emergency "market-like" exit at 1¢ (may still not fill if the book is empty).
+      // Still no bid: emergency exit at 1¢
       if (!bestBid || bestBid <= 0) {
         bestBid = 0.01;
       }
     }
 
     // === SELL RULES ===
-    // 1) Profit-taking: sell as soon as we can realize >= min_profit_cents.
-    // 2) Hard max-hold: once age >= max_hold_before_loss_sell_sec, ALWAYS try to exit (even at large loss).
+    // 1) Profit-taking: sell when we can realize >= min_profit_cents (based on weighted avg entry)
+    // 2) Hard max-hold: once oldest position age >= max_hold_before_loss_sell_sec, SELL ALL
     let shouldSell = false;
     let sellReason = '';
-    let aggressiveDiscountCents = 0; // 0 = sell at the displayed bestBid
+    let aggressiveDiscountCents = 0;
 
-    const profitCentsIfSellAtBid = (bestBid - pos.entryPrice) * 100;
+    const profitCentsIfSellAtBid = (bestBid - agg.weightedEntryPrice) * 100;
 
     if (profitCentsIfSellAtBid >= config.min_profit_cents) {
       shouldSell = true;
@@ -691,37 +737,37 @@ async function checkAndExecuteSells(): Promise<void> {
       shouldSell = true;
       aggressiveDiscountCents = 2;
       const effectiveSellPrice = Math.max(0.01, bestBid - aggressiveDiscountCents / 100);
-      const profitCentsEffective = (effectiveSellPrice - pos.entryPrice) * 100;
+      const profitCentsEffective = (effectiveSellPrice - agg.weightedEntryPrice) * 100;
       sellReason = `MAX_HOLD (${positionAgeSec.toFixed(0)}s) ${profitCentsEffective >= 0 ? '+' : ''}${profitCentsEffective.toFixed(1)}¢`;
     }
 
     if (!shouldSell) continue;
 
-    // Sell cooldown per asset+direction (independent from buys and other directions)
-    const sellCooldownKey = `${pos.asset}:${pos.direction}`;
+    // Sell cooldown per asset+direction
+    const sellCooldownKey = key;
     if (now - (lastSellTime[sellCooldownKey] ?? 0) < config.order_cooldown_ms) continue;
 
     log(
-      `💰 SELL: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(bestBid * 100).toFixed(1)}¢ | ${sellReason}`,
+      `💰 SELL ALL: ${agg.asset} ${agg.direction} ${agg.totalShares} shares @ ${(bestBid * 100).toFixed(1)}¢ | ${sellReason} | ${agg.positionIds.length} positions`,
       'sell',
-      pos.asset
+      agg.asset
     );
 
     lastSellTime[sellCooldownKey] = now;
 
-    // Execute sell
+    // Execute sell for ALL shares at once
     const result = await placeSellOrder(
-      pos.tokenId,
+      agg.tokenId,
       bestBid,
-      pos.shares,
-      pos.asset,
-      pos.direction,
+      agg.totalShares,
+      agg.asset,
+      agg.direction,
       aggressiveDiscountCents
     );
 
     if (result.success) {
       const actualSellPrice = result.avgPrice || bestBid;
-      const actualProfit = (actualSellPrice - pos.entryPrice) * pos.shares;
+      const actualProfit = (actualSellPrice - agg.weightedEntryPrice) * agg.totalShares;
 
       totalPnL += actualProfit;
       sellsCount++;
@@ -733,15 +779,17 @@ async function checkAndExecuteSells(): Promise<void> {
       }
 
       log(
-        `✅ SOLD: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(actualSellPrice * 100).toFixed(1)}¢ | P&L: ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(3)} | Total: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)}`,
+        `✅ SOLD ALL: ${agg.asset} ${agg.direction} ${agg.totalShares} @ ${(actualSellPrice * 100).toFixed(1)}¢ | P&L: ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(3)} | Total: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)}`,
         'sell',
-        pos.asset
+        agg.asset
       );
 
-      // Remove from open positions
-      openPositions.delete(posId);
+      // Remove ALL positions for this asset+direction
+      for (const posId of agg.positionIds) {
+        openPositions.delete(posId);
+      }
     } else {
-      log(`❌ Sell failed: ${result.error}`, 'error', pos.asset);
+      log(`❌ Sell failed: ${result.error}`, 'error', agg.asset);
     }
   }
 }
