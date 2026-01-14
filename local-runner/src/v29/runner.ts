@@ -77,6 +77,9 @@ let lossSells = 0;
 // Cooldowns per asset+direction (UP/DOWN are independent markets)
 const lastBuyTime: Record<string, number> = {};  // key: "BTC:UP", "BTC:DOWN", etc.
 const lastSellTime: Record<string, number> = {};
+// Rate-limit noisy force-close skip logs (sell check runs every ~200ms)
+const lastForceCloseSkipLogTime: Record<string, number> = {};
+const FORCE_CLOSE_SKIP_LOG_COOLDOWN_MS = 30_000;
 let lastMarketRefresh = 0;
 let lastConfigReload = 0;
 let totalPnL = 0;
@@ -946,9 +949,21 @@ async function checkAndExecuteSells(): Promise<void> {
       }
     }
     
+    // SKIP: Polymarket min order size is 1 share (avoid endless "Shares < 1" spam)
+    if (agg.totalShares < 1) {
+      if (now - (lastForceCloseSkipLogTime[key] ?? 0) >= FORCE_CLOSE_SKIP_LOG_COOLDOWN_MS) {
+        log(`⏭️ SKIP FORCE CLOSE: ${agg.asset} ${agg.direction} ${agg.totalShares.toFixed(4)} shares (<1) - cannot place order`, 'sell', agg.asset);
+        lastForceCloseSkipLogTime[key] = now;
+      }
+      continue;
+    }
+
     // SKIP: Shares at 99¢+ or ≤1¢ don't need force close - they'll settle at $1 or $0
     if (bestBid >= 0.99 || bestBid <= 0.01) {
-      log(`⏭️ SKIP FORCE CLOSE: ${agg.asset} ${agg.direction} @ ${(bestBid * 100).toFixed(0)}¢ - will settle naturally`, 'sell', agg.asset);
+      if (now - (lastForceCloseSkipLogTime[key] ?? 0) >= FORCE_CLOSE_SKIP_LOG_COOLDOWN_MS) {
+        log(`⏭️ SKIP FORCE CLOSE: ${agg.asset} ${agg.direction} @ ${(bestBid * 100).toFixed(0)}¢ - will settle naturally`, 'sell', agg.asset);
+        lastForceCloseSkipLogTime[key] = now;
+      }
       continue;
     }
     
