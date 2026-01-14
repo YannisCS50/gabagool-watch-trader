@@ -36,11 +36,14 @@ export interface V29Config {
   // Minimum profit before selling (in cents) - based on SETTLED entry price!
   min_profit_cents: number;  // e.g., 2 = only sell if bestBid >= entryPrice - 2¢
   
-  // Maximum hold time before allowing loss sell (seconds)
-  max_hold_before_loss_sell_sec: number;  // e.g., 60 = after 60s, allow selling at loss
+  // Aggregation threshold (seconds) - positions older than this get grouped
+  aggregate_after_sec: number;  // e.g., 15 = after 15s, mark for aggregation
+  
+  // Force close threshold (seconds) - aggregated positions get market dumped
+  force_close_after_sec: number;  // e.g., 20 = after 20s, force close at market
   
   // Stop loss threshold after timeout (cents) - max loss we'll accept after timeout
-  stop_loss_cents: number;  // e.g., 10 = after 60s, sell if bid >= entry - 10¢
+  stop_loss_cents: number;  // e.g., 10 = after force close, max 10¢ loss accepted
   
   // Maximum exposure per asset
   max_exposure_per_asset: number;  // shares
@@ -71,10 +74,11 @@ export const DEFAULT_CONFIG: V29Config = {
   max_share_price: 0.75,
   shares_per_trade: 5,
   
-  // Sell config - QUICK: max 15s hold, sell all shares at once
-  min_profit_cents: 2,           // Sell when bestBid >= entryPrice - 2¢ 
-  max_hold_before_loss_sell_sec: 15,  // After 15s, force sell (was 60s)
-  stop_loss_cents: 10,           // After timeout, max 10¢ loss accepted
+  // Sell config - TIERED: profit-take < 15s, aggregate 15-20s, force dump ≥ 20s
+  min_profit_cents: 2,           // Sell when bestBid >= entryPrice + 2¢ 
+  aggregate_after_sec: 15,       // After 15s, group positions for bulk exit
+  force_close_after_sec: 20,     // After 20s, force market close all aggregated
+  stop_loss_cents: 10,           // Max 10¢ loss accepted on force close
   
   max_exposure_per_asset: 100,
   max_cost_per_asset: 50,

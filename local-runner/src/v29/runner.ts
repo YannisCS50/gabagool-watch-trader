@@ -628,7 +628,11 @@ async function executeBuy(
 }
 
 // ============================================
-// SELL CHECK - AGGREGATE BY ASSET+DIRECTION, SELL ALL AT ONCE
+// SELL CHECK - TIERED: PROFIT-TAKE → AGGREGATE → FORCE CLOSE
+// ============================================
+// < 15s: individual profit-taking (try to sell each position at ≥2¢ profit)
+// 15-20s: aggregate (group positions, ready for bulk exit)
+// ≥ 20s: force close all aggregated at market
 // ============================================
 
 interface AggregatedPosition {
@@ -649,14 +653,83 @@ async function checkAndExecuteSells(): Promise<void> {
   
   const now = Date.now();
   
-  // STEP 1: Aggregate positions by asset+direction
-  const aggregated = new Map<string, AggregatedPosition>();
+  // ========================================
+  // PHASE 1: Individual profit-taking (< 15s)
+  // ========================================
+  for (const [posId, pos] of openPositions) {
+    const positionAgeSec = (now - pos.entryTime) / 1000;
+    
+    // Only profit-take on young positions
+    if (positionAgeSec >= config.aggregate_after_sec) continue;
+    
+    const market = markets.get(pos.asset);
+    if (!market || market.slug !== pos.marketSlug) continue;
+    
+    const state = priceState[pos.asset];
+    const bestBid = pos.direction === 'UP' ? state.upBestBid : state.downBestBid;
+    
+    if (!bestBid || bestBid <= 0) continue;
+    
+    const profitCents = (bestBid - pos.entryPrice) * 100;
+    
+    // Only sell if profitable
+    if (profitCents < config.min_profit_cents) continue;
+    
+    // Sell cooldown
+    const cooldownKey = `${pos.asset}:${pos.direction}`;
+    if (now - (lastSellTime[cooldownKey] ?? 0) < config.order_cooldown_ms) continue;
+    
+    log(
+      `💰 PROFIT-TAKE: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(bestBid * 100).toFixed(1)}¢ | +${profitCents.toFixed(1)}¢ | ${positionAgeSec.toFixed(0)}s`,
+      'sell',
+      pos.asset
+    );
+    
+    lastSellTime[cooldownKey] = now;
+    
+    const result = await placeSellOrder(
+      pos.tokenId,
+      bestBid,
+      pos.shares,
+      pos.asset,
+      pos.direction,
+      0 // no aggressive discount for profit-take
+    );
+    
+    if (result.success) {
+      const actualSellPrice = result.avgPrice || bestBid;
+      const actualProfit = (actualSellPrice - pos.entryPrice) * pos.shares;
+      
+      totalPnL += actualProfit;
+      sellsCount++;
+      profitableSells++;
+      
+      log(
+        `✅ PROFIT: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(actualSellPrice * 100).toFixed(1)}¢ | P&L: +$${actualProfit.toFixed(3)} | Total: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)}`,
+        'sell',
+        pos.asset
+      );
+      
+      openPositions.delete(posId);
+    }
+  }
+  
+  // ========================================
+  // PHASE 2: Force close aggregated (≥ 20s)
+  // ========================================
+  // First, aggregate all positions that are past the force_close threshold
+  const toForceClose = new Map<string, AggregatedPosition>();
   
   for (const [posId, pos] of openPositions) {
+    const positionAgeSec = (now - pos.entryTime) / 1000;
+    
+    // Only aggregate positions past force_close threshold
+    if (positionAgeSec < config.force_close_after_sec) continue;
+    
     const key = `${pos.asset}:${pos.direction}`;
     
-    if (!aggregated.has(key)) {
-      aggregated.set(key, {
+    if (!toForceClose.has(key)) {
+      toForceClose.set(key, {
         asset: pos.asset,
         direction: pos.direction,
         marketSlug: pos.marketSlug,
@@ -669,7 +742,7 @@ async function checkAndExecuteSells(): Promise<void> {
       });
     }
     
-    const agg = aggregated.get(key)!;
+    const agg = toForceClose.get(key)!;
     agg.totalShares += pos.shares;
     agg.totalCost += pos.totalCost;
     agg.positionIds.push(posId);
@@ -678,118 +751,83 @@ async function checkAndExecuteSells(): Promise<void> {
     }
   }
   
-  // Calculate weighted average entry price
-  for (const agg of aggregated.values()) {
+  // Calculate weighted average and execute force close
+  for (const [key, agg] of toForceClose) {
     agg.weightedEntryPrice = agg.totalCost / agg.totalShares;
-  }
-  
-  // STEP 2: Check each aggregated position for sell
-  for (const [key, agg] of aggregated) {
+    
     const market = markets.get(agg.asset);
-    if (!market || market.slug !== agg.marketSlug) {
-      continue;
-    }
-
+    if (!market || market.slug !== agg.marketSlug) continue;
+    
     const state = priceState[agg.asset];
-    const positionAgeMs = now - agg.oldestEntryTime;
-    const positionAgeSec = positionAgeMs / 1000;
-
-    // Best bid (needed to exit). If we are past max-hold, force a fresh book fetch.
     let bestBid = agg.direction === 'UP' ? state.upBestBid : state.downBestBid;
-
+    
+    // Force fetch if no bid
     if (!bestBid || bestBid <= 0) {
-      if (positionAgeSec < config.max_hold_before_loss_sell_sec) continue;
-
-      // Past max-hold: try a fresh fetch
       try {
         const book = await fetchMarketOrderbook(market);
         if (book.upBestBid !== undefined) state.upBestBid = book.upBestBid;
         if (book.downBestBid !== undefined) state.downBestBid = book.downBestBid;
         if (book.upBestAsk !== undefined) state.upBestAsk = book.upBestAsk;
         if (book.downBestAsk !== undefined) state.downBestAsk = book.downBestAsk;
-        if (book.lastUpdate !== undefined) state.lastUpdate = book.lastUpdate;
-      } catch {
-        // ignore
-      }
-
+      } catch { /* ignore */ }
+      
       bestBid = agg.direction === 'UP' ? state.upBestBid : state.downBestBid;
-
-      // Still no bid: emergency exit at 1¢
+      
+      // Emergency: sell at 1¢ if still no bid
       if (!bestBid || bestBid <= 0) {
         bestBid = 0.01;
       }
     }
-
-    // === SELL RULES ===
-    // 1) Profit-taking: sell when we can realize >= min_profit_cents (based on weighted avg entry)
-    // 2) Hard max-hold: once oldest position age >= max_hold_before_loss_sell_sec, SELL ALL
-    let shouldSell = false;
-    let sellReason = '';
-    let aggressiveDiscountCents = 0;
-
-    const profitCentsIfSellAtBid = (bestBid - agg.weightedEntryPrice) * 100;
-
-    if (profitCentsIfSellAtBid >= config.min_profit_cents) {
-      shouldSell = true;
-      sellReason = `PROFIT +${profitCentsIfSellAtBid.toFixed(1)}¢`;
-      aggressiveDiscountCents = 0;
-    } else if (positionAgeSec >= config.max_hold_before_loss_sell_sec) {
-      shouldSell = true;
-      aggressiveDiscountCents = 2;
-      const effectiveSellPrice = Math.max(0.01, bestBid - aggressiveDiscountCents / 100);
-      const profitCentsEffective = (effectiveSellPrice - agg.weightedEntryPrice) * 100;
-      sellReason = `MAX_HOLD (${positionAgeSec.toFixed(0)}s) ${profitCentsEffective >= 0 ? '+' : ''}${profitCentsEffective.toFixed(1)}¢`;
-    }
-
-    if (!shouldSell) continue;
-
-    // Sell cooldown per asset+direction
-    const sellCooldownKey = key;
-    if (now - (lastSellTime[sellCooldownKey] ?? 0) < config.order_cooldown_ms) continue;
-
+    
+    // Sell cooldown
+    if (now - (lastSellTime[key] ?? 0) < config.order_cooldown_ms) continue;
+    
+    const profitCents = (bestBid - agg.weightedEntryPrice) * 100;
+    const oldestAgeSec = (now - agg.oldestEntryTime) / 1000;
+    
     log(
-      `💰 SELL ALL: ${agg.asset} ${agg.direction} ${agg.totalShares} shares @ ${(bestBid * 100).toFixed(1)}¢ | ${sellReason} | ${agg.positionIds.length} positions`,
+      `🔥 FORCE CLOSE: ${agg.asset} ${agg.direction} ${agg.totalShares} shares @ ${(bestBid * 100).toFixed(1)}¢ | ${profitCents >= 0 ? '+' : ''}${profitCents.toFixed(1)}¢ | ${agg.positionIds.length} pos | ${oldestAgeSec.toFixed(0)}s old`,
       'sell',
       agg.asset
     );
-
-    lastSellTime[sellCooldownKey] = now;
-
-    // Execute sell for ALL shares at once
+    
+    lastSellTime[key] = now;
+    
+    // Aggressive discount for force close (2¢ below best bid to guarantee fill)
     const result = await placeSellOrder(
       agg.tokenId,
       bestBid,
       agg.totalShares,
       agg.asset,
       agg.direction,
-      aggressiveDiscountCents
+      2 // 2¢ aggressive discount
     );
-
+    
     if (result.success) {
       const actualSellPrice = result.avgPrice || bestBid;
       const actualProfit = (actualSellPrice - agg.weightedEntryPrice) * agg.totalShares;
-
+      
       totalPnL += actualProfit;
       sellsCount++;
-
+      
       if (actualProfit >= 0) {
         profitableSells++;
       } else {
         lossSells++;
       }
-
+      
       log(
-        `✅ SOLD ALL: ${agg.asset} ${agg.direction} ${agg.totalShares} @ ${(actualSellPrice * 100).toFixed(1)}¢ | P&L: ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(3)} | Total: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)}`,
+        `✅ CLOSED: ${agg.asset} ${agg.direction} ${agg.totalShares} @ ${(actualSellPrice * 100).toFixed(1)}¢ | P&L: ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(3)} | Total: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)}`,
         'sell',
         agg.asset
       );
-
-      // Remove ALL positions for this asset+direction
+      
+      // Remove all closed positions
       for (const posId of agg.positionIds) {
         openPositions.delete(posId);
       }
     } else {
-      log(`❌ Sell failed: ${result.error}`, 'error', agg.asset);
+      log(`❌ Force close failed: ${result.error}`, 'error', agg.asset);
     }
   }
 }
@@ -945,9 +983,9 @@ async function main(): Promise<void> {
   }, 30_000);
   
   log('🎯 V29 Buy-and-Sell Runner READY');
-  log(`   Strategy: Buy → Sell with ${config.min_profit_cents}¢ profit target`);
+  log(`   Strategy: Buy → Profit-take (≥${config.min_profit_cents}¢) → Force close (${config.force_close_after_sec}s)`);
   log(`   Shares: ${config.shares_per_trade} | Max Exposure: ${config.max_exposure_per_asset}`);
-  log(`   Loss sell: only after ${config.max_hold_before_loss_sell_sec}s, max ${config.stop_loss_cents}¢ loss`);
+  log(`   Aggregation: after ${config.aggregate_after_sec}s | Force close: after ${config.force_close_after_sec}s`);
   
   // Handle shutdown - release lease!
   const cleanup = async () => {
