@@ -5195,6 +5195,87 @@ export type Database = {
           },
         ]
       }
+      v29_aggregate_positions: {
+        Row: {
+          asset: string
+          avg_entry_price: number | null
+          avg_hedge_price: number | null
+          closed_ts: string | null
+          created_at: string
+          entry_count: number
+          first_entry_ts: string | null
+          first_hedge_ts: string | null
+          hedge_cost: number
+          hedge_count: number
+          hedge_shares: number
+          id: string
+          is_fully_hedged: boolean
+          last_entry_ts: string | null
+          last_hedge_ts: string | null
+          market_slug: string
+          realized_pnl: number | null
+          run_id: string
+          side: string
+          state: string
+          token_id: string
+          total_cost: number
+          total_shares: number
+          updated_at: string
+        }
+        Insert: {
+          asset: string
+          avg_entry_price?: number | null
+          avg_hedge_price?: number | null
+          closed_ts?: string | null
+          created_at?: string
+          entry_count?: number
+          first_entry_ts?: string | null
+          first_hedge_ts?: string | null
+          hedge_cost?: number
+          hedge_count?: number
+          hedge_shares?: number
+          id?: string
+          is_fully_hedged?: boolean
+          last_entry_ts?: string | null
+          last_hedge_ts?: string | null
+          market_slug: string
+          realized_pnl?: number | null
+          run_id: string
+          side: string
+          state?: string
+          token_id: string
+          total_cost?: number
+          total_shares?: number
+          updated_at?: string
+        }
+        Update: {
+          asset?: string
+          avg_entry_price?: number | null
+          avg_hedge_price?: number | null
+          closed_ts?: string | null
+          created_at?: string
+          entry_count?: number
+          first_entry_ts?: string | null
+          first_hedge_ts?: string | null
+          hedge_cost?: number
+          hedge_count?: number
+          hedge_shares?: number
+          id?: string
+          is_fully_hedged?: boolean
+          last_entry_ts?: string | null
+          last_hedge_ts?: string | null
+          market_slug?: string
+          realized_pnl?: number | null
+          run_id?: string
+          side?: string
+          state?: string
+          token_id?: string
+          total_cost?: number
+          total_shares?: number
+          updated_at?: string
+        }
+        Relationships: []
+      }
       v29_config: {
         Row: {
           accumulation_enabled: boolean | null

@@ -1,12 +1,16 @@
 /**
- * V29 Simple Live Runner - Configuration
+ * V29 Accumulator Strategy - Configuration
  * 
- * SIMPLE STRATEGY:
- * - Binance spike → buy 5 shares
- * - 4¢ profit → sell
- * - 10 sec timeout → market sell
- * - MAX 1 position at a time (no stacking)
- * - Delta rules: -75/+75
+ * HEDGE STRATEGY:
+ * - Binance spike → buy shares (accumulate)
+ * - Instead of selling → buy opposite side (hedge)
+ * - Lock in profit: UP + DOWN = 100¢
+ * - Keep optionality for further accumulation
+ * 
+ * Benefits:
+ * - No sell fees (only maker fees on buys)
+ * - Progressive hedging at lower prices
+ * - Keep exposure to winning side
  */
 
 export type Asset = 'BTC' | 'ETH' | 'SOL' | 'XRP';
@@ -29,17 +33,28 @@ export interface V29Config {
   min_share_price: number; // e.g., 0.30 = 30¢
   max_share_price: number; // e.g., 0.75 = 75¢
   
-  // Shares per trade (fixed at 5)
+  // Shares per trade (per burst order)
   shares_per_trade: number;
   
-  // Take profit in cents (e.g., 4¢)
-  take_profit_cents: number;
+  // === HEDGE CONFIG (replaces take_profit/timeout) ===
   
-  // Timeout in seconds before market sell
-  timeout_seconds: number;
+  // Minimum profit margin before hedging (in cents)
+  min_hedge_profit_cents: number;
   
-  // Max sell retry attempts before force market sell
-  max_sell_retries: number;
+  // Maximum hedge price (don't hedge if opposite side > this)
+  max_hedge_price: number;
+  
+  // Progressive hedge tiers: buy more hedge at lower prices
+  hedge_tier_1_price: number;  // e.g., 0.35 = 35¢
+  hedge_tier_1_pct: number;    // e.g., 0.33 = hedge 33%
+  hedge_tier_2_price: number;  // e.g., 0.25 = 25¢
+  hedge_tier_2_pct: number;    // e.g., 0.50 = hedge 50%
+  hedge_tier_3_price: number;  // e.g., 0.15 = 15¢
+  hedge_tier_3_pct: number;    // e.g., 1.00 = hedge 100%
+  
+  // Maximum exposure per asset
+  max_exposure_per_asset: number;  // shares
+  max_cost_per_asset: number;      // USD
   
   // Price buffer above best ask (to guarantee fill)
   price_buffer_cents: number;
@@ -53,6 +68,9 @@ export interface V29Config {
   
   // Minimum time between orders (prevent spam)
   order_cooldown_ms: number;
+  
+  // Hedge check interval (how often to check for hedge opportunities)
+  hedge_check_ms: number;
 }
 
 export const DEFAULT_CONFIG: V29Config = {
@@ -62,14 +80,25 @@ export const DEFAULT_CONFIG: V29Config = {
   min_share_price: 0.30,
   max_share_price: 0.75,
   shares_per_trade: 5,
-  take_profit_cents: 4,
-  timeout_seconds: 10,
-  max_sell_retries: 5,
+  
+  // Hedge config
+  min_hedge_profit_cents: 4,
+  max_hedge_price: 0.40,
+  hedge_tier_1_price: 0.35,
+  hedge_tier_1_pct: 0.33,
+  hedge_tier_2_price: 0.25,
+  hedge_tier_2_pct: 0.50,
+  hedge_tier_3_price: 0.15,
+  hedge_tier_3_pct: 1.00,
+  max_exposure_per_asset: 100,
+  max_cost_per_asset: 50,
+  
   price_buffer_cents: 1,
   assets: ['BTC', 'ETH', 'SOL', 'XRP'],
   binance_poll_ms: 100,
   orderbook_poll_ms: 2000,
   order_cooldown_ms: 3000,
+  hedge_check_ms: 500,
 };
 
 // Binance WebSocket symbols
