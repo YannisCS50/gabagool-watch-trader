@@ -916,7 +916,13 @@ async function checkAndExecuteSells(): Promise<void> {
     agg.weightedEntryPrice = agg.totalCost / agg.totalShares;
     
     const market = markets.get(agg.asset);
-    if (!market || market.slug !== agg.marketSlug) continue;
+    if (!market || market.slug !== agg.marketSlug) {
+      // Market mismatch - remove stale positions silently
+      for (const posId of agg.positionIds) {
+        openPositions.delete(posId);
+      }
+      continue;
+    }
     
     const state = priceState[agg.asset];
     let bestBid = agg.direction === 'UP' ? state.upBestBid : state.downBestBid;
@@ -987,7 +993,15 @@ async function checkAndExecuteSells(): Promise<void> {
         openPositions.delete(posId);
       }
     } else {
-      log(`❌ Force close failed: ${result.error}`, 'error', agg.asset);
+      // BALANCE ERROR = position doesn't exist anymore, remove from tracking
+      if (result.error?.includes('balance') || result.error?.includes('allowance')) {
+        log(`⚠️ Position gone (${result.error}) - removing from tracking`, 'warn', agg.asset);
+        for (const posId of agg.positionIds) {
+          openPositions.delete(posId);
+        }
+      } else {
+        log(`❌ Force close failed: ${result.error}`, 'error', agg.asset);
+      }
     }
   }
 }
