@@ -47,43 +47,38 @@ function asErrorMessage(err: unknown): string {
     // Strings
     if (typeof c === 'string') return c;
 
-    // Native Error
-    if (c instanceof Error) {
-      // Prefer error message, but keep looking if it is the "circular JSON" wrapper
-      const msg = c.message;
-      if (msg && !msg.includes('Converting circular structure to JSON')) return msg;
-    }
-
     // Axios-like error shapes (what clob-client uses under the hood)
+    // Check this FIRST before Error check to get the real API error
     const anyC = c as any;
-    const status = anyC?.response?.status;
-    const statusText = anyC?.response?.statusText;
-    const method = anyC?.config?.method;
-    const url = anyC?.config?.url;
-    const data = anyC?.response?.data;
+    const data = anyC?.response?.data || anyC?.data;
     const dataMsg =
       (typeof data === 'string' && data) ||
       (typeof data?.message === 'string' && data.message) ||
       (typeof data?.error === 'string' && data.error) ||
       (typeof data?.msg === 'string' && data.msg);
+    
+    // If we found an API error message, return it immediately (most specific)
+    if (dataMsg) {
+      return dataMsg;
+    }
+    
+    const status = anyC?.response?.status;
+    const statusText = anyC?.response?.statusText;
+    
+    if (status) {
+      return `HTTP ${status}${statusText ? ` ${statusText}` : ''}`;
+    }
 
-    if (status || url) {
-      const head = `HTTP ${status ?? '?'}${statusText ? ` ${statusText}` : ''}`;
-      const req = method && url ? ` (${String(method).toUpperCase()} ${url})` : '';
-      const tail = dataMsg ? `: ${dataMsg}` : '';
-      return `${head}${req}${tail}`;
+    // Native Error - but skip circular JSON errors
+    if (c instanceof Error) {
+      const msg = c.message;
+      if (msg && !msg.includes('Converting circular structure to JSON')) return msg;
     }
 
     // Fallback: safe inspection (handles circular refs)
     try {
       const inspected = util.inspect(anyC, { depth: 2, breakLength: 140, maxStringLength: 300 });
-      if (inspected && inspected !== '[object Object]') return inspected;
-    } catch {
-      // ignore
-    }
-
-    try {
-      return String(c);
+      if (inspected && inspected !== '[object Object]' && !inspected.includes('TLSSocket')) return inspected;
     } catch {
       // ignore
     }
