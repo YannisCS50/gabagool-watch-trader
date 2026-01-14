@@ -1,22 +1,17 @@
 /**
- * V29 Accumulator Runner
+ * V29 Buy-and-Sell Runner
  * 
- * HEDGE STRATEGY:
- * 1. Binance spike → accumulate shares (buy UP or DOWN)
- * 2. Instead of selling → buy opposite side to lock profit
- * 3. Progressive hedging: hedge more at lower prices
- * 4. No max 1 position - accumulate while delta is favorable
- * 
- * Benefits:
- * - No sell fees
- * - Keep optionality
- * - Lock profit with hedge instead of sell
+ * SIMPLE STRATEGY:
+ * 1. Binance tick delta → buy shares
+ * 2. Track SETTLED entry price per position
+ * 3. Sell as soon as bestBid >= entryPrice - 2¢ (profit!)
+ * 4. NEVER sell at loss unless position age > 60 seconds
  */
 
 import 'dotenv/config';
 import { v4 as uuid } from 'crypto';
 import { Asset, V29Config, DEFAULT_CONFIG } from './config.js';
-import type { MarketInfo, PriceState, Signal, AccumulatorConfigDerived } from './types.js';
+import type { MarketInfo, PriceState, Signal } from './types.js';
 import { startBinanceFeed, stopBinanceFeed } from './binance.js';
 import { startChainlinkFeed, stopChainlinkFeed, getChainlinkPrice } from './chainlink.js';
 import { fetchMarketOrderbook, fetchAllOrderbooks } from './orderbook.js';
@@ -25,18 +20,26 @@ import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreS
 import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
 import { acquireLease, releaseLease, validateLease } from './lease.js';
-import { 
-  loadAggregatePositions, 
-  accumulateShares, 
-  checkHedgeOpportunity, 
-  executeHedge, 
-  getPositionsSummary,
-  calculateCPP,
-  clearMarketPositions,
-  getPosition,
-  type AccumulatorConfig,
-  DEFAULT_ACCUMULATOR_CONFIG
-} from './accumulator.js';
+
+// ============================================
+// POSITION TRACKING
+// ============================================
+
+interface OpenPosition {
+  id: string;
+  asset: Asset;
+  direction: 'UP' | 'DOWN';
+  marketSlug: string;
+  tokenId: string;
+  shares: number;
+  entryPrice: number;  // SETTLED price!
+  totalCost: number;
+  entryTime: number;   // timestamp when filled
+  orderId: string;
+}
+
+// Open positions by ID
+const openPositions = new Map<string, OpenPosition>();
 
 // ============================================
 // STATE
@@ -45,21 +48,6 @@ import {
 const RUN_ID = `v29-${Date.now().toString(36)}`;
 let isRunning = false;
 let config: V29Config = { ...DEFAULT_CONFIG };
-
-// Derived accumulator config (built from V29Config)
-function getAccumulatorConfig(): AccumulatorConfig {
-  return {
-    min_hedge_profit_cents: config.min_hedge_profit_cents,
-    max_hedge_price: config.max_hedge_price,
-    hedge_tiers: [
-      { max_price: config.hedge_tier_1_price, share_pct: config.hedge_tier_1_pct },
-      { max_price: config.hedge_tier_2_price, share_pct: config.hedge_tier_2_pct },
-      { max_price: config.hedge_tier_3_price, share_pct: config.hedge_tier_3_pct },
-    ],
-    max_exposure_per_asset: config.max_exposure_per_asset,
-    max_cost_per_asset: config.max_cost_per_asset,
-  };
-}
 
 // Markets by asset
 const markets = new Map<Asset, MarketInfo>();
@@ -76,11 +64,14 @@ const priceState: Record<Asset, PriceState> = {
 const lastBinancePrice: Record<Asset, number | null> = { BTC: null, ETH: null, SOL: null, XRP: null };
 
 // Stats
-let tradesCount = 0;
-let hedgeCount = 0;
+let buysCount = 0;
+let sellsCount = 0;
+let profitableSells = 0;
+let lossSells = 0;
 let lastOrderTime = 0;
 let lastMarketRefresh = 0;
 let lastConfigReload = 0;
+let totalPnL = 0;
 
 // Track previous market slugs to detect market changes
 const previousMarketSlugs: Record<Asset, string | null> = { BTC: null, ETH: null, SOL: null, XRP: null };
@@ -102,6 +93,39 @@ function logError(msg: string, err?: unknown): void {
   const ts = new Date().toISOString().slice(11, 23);
   console.error(`[${ts}] [V29] ❌ ${msg}`, err ?? '');
   queueLog(RUN_ID, 'error', 'error', msg, undefined, err ? { error: String(err) } : undefined);
+}
+
+// ============================================
+// POSITION HELPERS
+// ============================================
+
+function getOpenPositionsForAsset(asset: Asset): OpenPosition[] {
+  return Array.from(openPositions.values()).filter(p => p.asset === asset);
+}
+
+function getTotalExposure(asset: Asset): { shares: number; cost: number } {
+  const positions = getOpenPositionsForAsset(asset);
+  return {
+    shares: positions.reduce((sum, p) => sum + p.shares, 0),
+    cost: positions.reduce((sum, p) => sum + p.totalCost, 0),
+  };
+}
+
+function getPositionsSummary(): string {
+  if (openPositions.size === 0) return 'No open positions';
+  
+  const byAsset: Record<string, { shares: number; cost: number; count: number }> = {};
+  
+  for (const pos of openPositions.values()) {
+    if (!byAsset[pos.asset]) byAsset[pos.asset] = { shares: 0, cost: 0, count: 0 };
+    byAsset[pos.asset].shares += pos.shares;
+    byAsset[pos.asset].cost += pos.totalCost;
+    byAsset[pos.asset].count++;
+  }
+  
+  return Object.entries(byAsset)
+    .map(([asset, data]) => `${asset}: ${data.count} pos, ${data.shares} shares, $${data.cost.toFixed(2)}`)
+    .join(' | ');
 }
 
 // ============================================
@@ -349,15 +373,15 @@ function handleBinancePrice(asset: Asset, price: number, _timestamp: number): vo
   
   log(`🎯 TRIGGER: ${asset} ${tickDirection} | tickΔ$${tickDelta.toFixed(2)} | allowed: ${allowedDirection}`, 'signal', asset);
   
-  // Execute accumulation trade
-  void executeAccumulation(asset, tickDirection, price, tickDelta, priceVsStrikeDelta, market);
+  // Execute buy trade
+  void executeBuy(asset, tickDirection, price, tickDelta, priceVsStrikeDelta, market);
 }
 
 // ============================================
-// ACCUMULATION EXECUTION
+// BUY EXECUTION
 // ============================================
 
-async function executeAccumulation(
+async function executeBuy(
   asset: Asset,
   direction: 'UP' | 'DOWN',
   binancePrice: number,
@@ -392,19 +416,16 @@ async function executeAccumulation(
   const buyPrice = Math.ceil((bestAsk + priceBuffer) * 100) / 100;
   const shares = config.shares_per_trade;
   
-  // Check exposure limits before placing order
-  const accConfig = getAccumulatorConfig();
-  const existingPos = getPosition(asset, direction, market.slug);
-  const currentShares = existingPos?.totalShares || 0;
-  const currentCost = existingPos?.totalCost || 0;
+  // Check exposure limits
+  const exposure = getTotalExposure(asset);
   
-  if (currentShares + shares > accConfig.max_exposure_per_asset) {
-    log(`🚫 ${asset} ${direction} exposure limit: ${currentShares + shares} > ${accConfig.max_exposure_per_asset}`);
+  if (exposure.shares + shares > config.max_exposure_per_asset) {
+    log(`🚫 ${asset} exposure limit: ${exposure.shares + shares} > ${config.max_exposure_per_asset}`);
     return;
   }
   
-  if (currentCost + (shares * buyPrice) > accConfig.max_cost_per_asset) {
-    log(`🚫 ${asset} ${direction} cost limit: $${(currentCost + shares * buyPrice).toFixed(2)} > $${accConfig.max_cost_per_asset}`);
+  if (exposure.cost + (shares * buyPrice) > config.max_cost_per_asset) {
+    log(`🚫 ${asset} cost limit: $${(exposure.cost + shares * buyPrice).toFixed(2)} > $${config.max_cost_per_asset}`);
     return;
   }
   
@@ -430,7 +451,7 @@ async function executeAccumulation(
     gross_pnl: null,
     net_pnl: null,
     fees: null,
-    notes: `ACCUMULATE ${direction} | tickΔ$${Math.abs(tickDelta).toFixed(0)} | @${(buyPrice * 100).toFixed(1)}¢`,
+    notes: `BUY ${direction} | tickΔ$${Math.abs(tickDelta).toFixed(0)} | @${(buyPrice * 100).toFixed(1)}¢`,
   };
   
   const signalId = await saveSignal(signal);
@@ -438,7 +459,7 @@ async function executeAccumulation(
   
   lastOrderTime = Date.now();
   
-  log(`📤 ACCUMULATE: ${asset} ${direction} ${shares} shares @ ${(buyPrice * 100).toFixed(1)}¢`, 'order', asset);
+  log(`📤 BUY: ${asset} ${direction} ${shares} shares @ ${(buyPrice * 100).toFixed(1)}¢`, 'order', asset);
   
   const tokenId = direction === 'UP' ? market.upTokenId : market.downTokenId;
   
@@ -508,86 +529,119 @@ async function executeAccumulation(
     return;
   }
   
-  // FILLED! Add to aggregate position
+  // FILLED! Create open position with SETTLED entry price
+  const positionId = `${RUN_ID}-${buysCount}`;
+  
+  const openPos: OpenPosition = {
+    id: positionId,
+    asset,
+    direction,
+    marketSlug: market.slug,
+    tokenId,
+    shares: filledSize,
+    entryPrice: avgPrice,  // SETTLED PRICE!
+    totalCost: filledSize * avgPrice,
+    entryTime: Date.now(),
+    orderId,
+  };
+  
+  openPositions.set(positionId, openPos);
+  buysCount++;
+  
   signal.status = 'filled';
   signal.entry_price = avgPrice;
   signal.shares = filledSize;
   signal.fill_ts = Date.now();
-  signal.notes = `Accumulated ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢`;
+  signal.notes = `BOUGHT ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ (settled) - waiting for sell`;
   
-  tradesCount++;
-  
-  log(`✅ ACCUMULATED: ${asset} ${direction} +${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ (${latency}ms)`, 'fill', asset);
-  
-  // Add to aggregate position
-  const accResult = await accumulateShares(RUN_ID, asset, direction, market, filledSize, avgPrice, accConfig);
-  
-  if (accResult.success) {
-    const pos = accResult.position;
-    log(`📊 ${asset} ${direction} TOTAL: ${pos.totalShares} @ avg ${(pos.avgEntryPrice * 100).toFixed(1)}¢ ($${pos.totalCost.toFixed(2)})`);
-    
-    // Show CPP if we have both sides
-    const cppInfo = calculateCPP(asset, market.slug);
-    if (cppInfo && cppInfo.pairedShares > 0) {
-      log(`🔒 ${asset} CPP: ${cppInfo.cpp.toFixed(1)}¢ | Paired: ${cppInfo.pairedShares} | Unpaired: ${cppInfo.unpairedShares}`);
-    }
-  }
+  log(`✅ BOUGHT: ${asset} ${direction} ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ (${latency}ms) - target sell: ≥${((avgPrice - config.min_profit_cents / 100) * 100).toFixed(1)}¢`, 'fill', asset);
   
   void saveSignal(signal);
 }
 
 // ============================================
-// HEDGE MONITORING
+// SELL CHECK - PROFIT OR TIMEOUT
 // ============================================
 
-async function checkAndExecuteHedges(): Promise<void> {
+async function checkAndExecuteSells(): Promise<void> {
   if (!config.enabled) return;
+  if (openPositions.size === 0) return;
   
-  const accConfig = getAccumulatorConfig();
+  const now = Date.now();
   
-  for (const asset of config.assets) {
-    const market = markets.get(asset);
-    if (!market) continue;
+  for (const [posId, pos] of openPositions) {
+    const market = markets.get(pos.asset);
+    if (!market || market.slug !== pos.marketSlug) {
+      // Market changed, skip this position
+      continue;
+    }
     
-    const state = priceState[asset];
+    const state = priceState[pos.asset];
+    const bestBid = pos.direction === 'UP' ? state.upBestBid : state.downBestBid;
     
-    // Check for hedge opportunity
-    const hedgeOpp = checkHedgeOpportunity(asset, market, state, accConfig);
+    if (!bestBid || bestBid <= 0) continue;
     
-    if (hedgeOpp && hedgeOpp.shouldHedge) {
-      log(`🛡️ HEDGE OPPORTUNITY: ${asset} ${hedgeOpp.hedgeSide} ${hedgeOpp.hedgeShares} @ ${(hedgeOpp.hedgePrice * 100).toFixed(1)}¢ | ${hedgeOpp.reason}`);
-      
-      // Don't spam hedges
-      if (Date.now() - lastOrderTime < config.order_cooldown_ms) {
-        log(`⏳ Hedge cooldown - waiting`);
-        continue;
+    const positionAgeMs = now - pos.entryTime;
+    const positionAgeSec = positionAgeMs / 1000;
+    
+    // Calculate profit in cents
+    const sellPrice = bestBid;
+    const profitCents = (sellPrice - pos.entryPrice) * 100;  // Positive = profit
+    
+    // === SELL RULES ===
+    // 1. Sell if profit >= min_profit_cents (e.g., 2¢)
+    // 2. NEVER sell at loss unless position age > max_hold_before_loss_sell_sec
+    // 3. After timeout, sell if loss <= stop_loss_cents
+    
+    let shouldSell = false;
+    let sellReason = '';
+    
+    if (profitCents >= config.min_profit_cents) {
+      // PROFIT! Sell immediately
+      shouldSell = true;
+      sellReason = `PROFIT +${profitCents.toFixed(1)}¢`;
+    } else if (positionAgeSec >= config.max_hold_before_loss_sell_sec) {
+      // Position is old, check if we can accept the loss
+      if (profitCents >= -config.stop_loss_cents) {
+        // Loss is within acceptable range
+        shouldSell = true;
+        sellReason = `TIMEOUT (${positionAgeSec.toFixed(0)}s) ${profitCents >= 0 ? '+' : ''}${profitCents.toFixed(1)}¢`;
       }
+      // If loss > stop_loss_cents, keep holding
+    }
+    // else: Keep holding - waiting for profit
+    
+    if (!shouldSell) continue;
+    
+    // Check cooldown
+    if (now - lastOrderTime < config.order_cooldown_ms) continue;
+    
+    log(`💰 SELL: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(sellPrice * 100).toFixed(1)}¢ | ${sellReason}`, 'sell', pos.asset);
+    
+    lastOrderTime = now;
+    
+    // Execute sell
+    const result = await placeSellOrder(pos.tokenId, sellPrice, pos.shares, pos.asset, pos.direction);
+    
+    if (result.success) {
+      const actualSellPrice = result.avgPrice || sellPrice;
+      const actualProfit = (actualSellPrice - pos.entryPrice) * pos.shares;
       
-      lastOrderTime = Date.now();
+      totalPnL += actualProfit;
+      sellsCount++;
       
-      const result = await executeHedge(
-        RUN_ID,
-        asset,
-        hedgeOpp.hedgeSide,
-        market,
-        hedgeOpp.hedgeShares,
-        hedgeOpp.hedgePrice + (config.price_buffer_cents / 100), // Add buffer
-        accConfig
-      );
-      
-      if (result.success) {
-        hedgeCount++;
-        log(`✅ HEDGED: ${asset} ${hedgeOpp.hedgeSide} +${result.filledShares} @ ${(result.avgPrice * 100).toFixed(1)}¢`);
-        
-        // Log new CPP
-        const cppInfo = calculateCPP(asset, market.slug);
-        if (cppInfo) {
-          const profitCents = 100 - cppInfo.cpp;
-          log(`🔒 ${asset} NEW CPP: ${cppInfo.cpp.toFixed(1)}¢ (+${profitCents.toFixed(1)}¢/share) | Paired: ${cppInfo.pairedShares}`);
-        }
+      if (actualProfit >= 0) {
+        profitableSells++;
       } else {
-        log(`❌ Hedge failed: ${result.error}`);
+        lossSells++;
       }
+      
+      log(`✅ SOLD: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(actualSellPrice * 100).toFixed(1)}¢ | P&L: ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(3)} | Total: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)}`, 'sell', pos.asset);
+      
+      // Remove from open positions
+      openPositions.delete(posId);
+    } else {
+      log(`❌ Sell failed: ${result.error}`, 'error', pos.asset);
     }
   }
 }
@@ -597,8 +651,6 @@ async function checkAndExecuteHedges(): Promise<void> {
 // ============================================
 
 async function pollOrderbooks(): Promise<void> {
-  const now = Date.now();
-  
   for (const asset of config.assets) {
     const market = markets.get(asset);
     if (!market) continue;
@@ -618,7 +670,7 @@ async function pollOrderbooks(): Promise<void> {
 // ============================================
 
 async function main(): Promise<void> {
-  log('🚀 V29 Accumulator Runner starting...');
+  log('🚀 V29 Buy-and-Sell Runner starting...');
   log(`📋 Run ID: ${RUN_ID}`);
   
   // Init DB first (needed for lease)
@@ -666,13 +718,10 @@ async function main(): Promise<void> {
   const loadedConfig = await loadV29Config();
   if (loadedConfig) {
     config = { ...DEFAULT_CONFIG, ...loadedConfig };
-    log(`✅ Config loaded: enabled=${config.enabled}, shares=${config.shares_per_trade}, hedge_profit=${config.min_hedge_profit_cents}¢`);
+    log(`✅ Config loaded: enabled=${config.enabled}, shares=${config.shares_per_trade}, min_profit=${config.min_profit_cents}¢`);
   } else {
-    log(`⚠️ Using defaults: shares=${config.shares_per_trade}, hedge_profit=${config.min_hedge_profit_cents}¢`);
+    log(`⚠️ Using defaults: shares=${config.shares_per_trade}, min_profit=${config.min_profit_cents}¢`);
   }
-  
-  // Load existing aggregate positions from previous runs
-  await loadAggregatePositions(RUN_ID);
   
   // Fetch markets
   await fetchMarkets();
@@ -705,10 +754,10 @@ async function main(): Promise<void> {
     void pollOrderbooks();
   }, config.orderbook_poll_ms);
   
-  // Hedge check interval - check for hedge opportunities
-  const hedgeInterval = setInterval(() => {
-    void checkAndExecuteHedges();
-  }, config.hedge_check_ms);
+  // Sell check interval - check for sell opportunities
+  const sellInterval = setInterval(() => {
+    void checkAndExecuteSells();
+  }, config.sell_check_ms);
   
   // Market refresh every 2 minutes
   const marketRefreshInterval = setInterval(() => {
@@ -722,7 +771,7 @@ async function main(): Promise<void> {
       const changed = JSON.stringify(config) !== JSON.stringify({ ...DEFAULT_CONFIG, ...newConfig });
       if (changed) {
         config = { ...DEFAULT_CONFIG, ...newConfig };
-        log(`🔧 Config updated: enabled=${config.enabled}, shares=${config.shares_per_trade}, hedge_profit=${config.min_hedge_profit_cents}¢`);
+        log(`🔧 Config updated: enabled=${config.enabled}, shares=${config.shares_per_trade}, min_profit=${config.min_profit_cents}¢`);
       }
     }
   }, 30_000);
@@ -731,8 +780,12 @@ async function main(): Promise<void> {
   const heartbeatInterval = setInterval(() => {
     const summary = getPositionsSummary();
     void sendHeartbeat(RUN_ID, 'trading', {
-      trades: tradesCount,
-      hedges: hedgeCount,
+      buys: buysCount,
+      sells: sellsCount,
+      profitable: profitableSells,
+      lossy: lossSells,
+      totalPnL: totalPnL.toFixed(2),
+      openPositions: openPositions.size,
       markets: markets.size,
       positions: summary,
     });
@@ -741,23 +794,20 @@ async function main(): Promise<void> {
   // Log position summary every 30 seconds
   const summaryInterval = setInterval(() => {
     const summary = getPositionsSummary();
-    if (summary) {
-      log(`📊 Positions: ${summary}`);
-    }
+    log(`📊 Positions: ${summary} | P&L: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)} | Buys: ${buysCount} | Sells: ${sellsCount} (${profitableSells}✅/${lossSells}❌)`);
   }, 30_000);
   
-  log('🎯 V29 Accumulator Runner READY');
-  log(`   Strategy: Accumulate + Progressive Hedge`);
-  log(`   Shares: ${config.shares_per_trade} | Min Hedge Profit: ${config.min_hedge_profit_cents}¢`);
-  log(`   Max Exposure: ${config.max_exposure_per_asset} shares | Max Cost: $${config.max_cost_per_asset}`);
-  log(`   Hedge Tiers: <${(config.hedge_tier_1_price * 100).toFixed(0)}¢ → ${(config.hedge_tier_1_pct * 100).toFixed(0)}% | <${(config.hedge_tier_2_price * 100).toFixed(0)}¢ → ${(config.hedge_tier_2_pct * 100).toFixed(0)}% | <${(config.hedge_tier_3_price * 100).toFixed(0)}¢ → ${(config.hedge_tier_3_pct * 100).toFixed(0)}%`);
+  log('🎯 V29 Buy-and-Sell Runner READY');
+  log(`   Strategy: Buy → Sell with ${config.min_profit_cents}¢ profit target`);
+  log(`   Shares: ${config.shares_per_trade} | Max Exposure: ${config.max_exposure_per_asset}`);
+  log(`   Loss sell: only after ${config.max_hold_before_loss_sell_sec}s, max ${config.stop_loss_cents}¢ loss`);
   
   // Handle shutdown - release lease!
   const cleanup = async () => {
     log('🛑 Shutting down...');
     isRunning = false;
     clearInterval(orderbookInterval);
-    clearInterval(hedgeInterval);
+    clearInterval(sellInterval);
     clearInterval(marketRefreshInterval);
     clearInterval(configReloadInterval);
     clearInterval(heartbeatInterval);
@@ -770,11 +820,8 @@ async function main(): Promise<void> {
     await releaseLease(RUN_ID);
     log('🔓 Lease released');
     
-    // Final position summary
-    const summary = getPositionsSummary();
-    if (summary) {
-      log(`📊 Final Positions: ${summary}`);
-    }
+    // Final summary
+    log(`📊 Final: Buys=${buysCount} Sells=${sellsCount} P&L=${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)}`);
     
     process.exit(0);
   };

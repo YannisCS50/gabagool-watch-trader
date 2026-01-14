@@ -1,16 +1,11 @@
 /**
- * V29 Accumulator Strategy - Configuration
+ * V29 Buy-and-Sell Strategy - Configuration
  * 
- * HEDGE STRATEGY:
- * - Binance spike → buy shares (accumulate)
- * - Instead of selling → buy opposite side (hedge)
- * - Lock in profit: UP + DOWN = 100¢
- * - Keep optionality for further accumulation
- * 
- * Benefits:
- * - No sell fees (only maker fees on buys)
- * - Progressive hedging at lower prices
- * - Keep exposure to winning side
+ * STRATEGY:
+ * - Binance tick delta → buy shares
+ * - Wait for fill confirmation with SETTLED price
+ * - Sell as soon as profit >= 2¢ (based on settled entry price)
+ * - NEVER sell at loss unless position age > 60 seconds
  */
 
 export type Asset = 'BTC' | 'ETH' | 'SOL' | 'XRP';
@@ -36,21 +31,16 @@ export interface V29Config {
   // Shares per trade (per burst order)
   shares_per_trade: number;
   
-  // === HEDGE CONFIG (replaces take_profit/timeout) ===
+  // === SELL CONFIG ===
   
-  // Minimum profit margin before hedging (in cents)
-  min_hedge_profit_cents: number;
+  // Minimum profit before selling (in cents) - based on SETTLED entry price!
+  min_profit_cents: number;  // e.g., 2 = only sell if bestBid >= entryPrice - 2¢
   
-  // Maximum hedge price (don't hedge if opposite side > this)
-  max_hedge_price: number;
+  // Maximum hold time before allowing loss sell (seconds)
+  max_hold_before_loss_sell_sec: number;  // e.g., 60 = after 60s, allow selling at loss
   
-  // Progressive hedge tiers: buy more hedge at lower prices
-  hedge_tier_1_price: number;  // e.g., 0.35 = 35¢
-  hedge_tier_1_pct: number;    // e.g., 0.33 = hedge 33%
-  hedge_tier_2_price: number;  // e.g., 0.25 = 25¢
-  hedge_tier_2_pct: number;    // e.g., 0.50 = hedge 50%
-  hedge_tier_3_price: number;  // e.g., 0.15 = 15¢
-  hedge_tier_3_pct: number;    // e.g., 1.00 = hedge 100%
+  // Stop loss threshold after timeout (cents) - max loss we'll accept after timeout
+  stop_loss_cents: number;  // e.g., 10 = after 60s, sell if bid >= entry - 10¢
   
   // Maximum exposure per asset
   max_exposure_per_asset: number;  // shares
@@ -69,8 +59,8 @@ export interface V29Config {
   // Minimum time between orders (prevent spam)
   order_cooldown_ms: number;
   
-  // Hedge check interval (how often to check for hedge opportunities)
-  hedge_check_ms: number;
+  // Sell check interval (how often to check for sell opportunities)
+  sell_check_ms: number;
 }
 
 export const DEFAULT_CONFIG: V29Config = {
@@ -81,15 +71,11 @@ export const DEFAULT_CONFIG: V29Config = {
   max_share_price: 0.75,
   shares_per_trade: 5,
   
-  // Hedge config - CONSERVATIVE: wait for very low prices before hedging
-  min_hedge_profit_cents: 6,
-  max_hedge_price: 0.18,
-  hedge_tier_1_price: 0.15,  // Hedge 25% at 15¢ or less
-  hedge_tier_1_pct: 0.25,
-  hedge_tier_2_price: 0.10,  // Hedge 50% at 10¢ or less
-  hedge_tier_2_pct: 0.50,
-  hedge_tier_3_price: 0.05,  // Full hedge at 5¢ or less
-  hedge_tier_3_pct: 1.00,
+  // Sell config - STRICT: only sell with 2¢+ profit unless holding > 60s
+  min_profit_cents: 2,           // Sell when bestBid >= entryPrice - 2¢ 
+  max_hold_before_loss_sell_sec: 60,  // After 60s, allow loss selling
+  stop_loss_cents: 10,           // After timeout, max 10¢ loss accepted
+  
   max_exposure_per_asset: 100,
   max_cost_per_asset: 50,
   
@@ -98,7 +84,7 @@ export const DEFAULT_CONFIG: V29Config = {
   binance_poll_ms: 100,
   orderbook_poll_ms: 2000,
   order_cooldown_ms: 3000,
-  hedge_check_ms: 500,
+  sell_check_ms: 200,
 };
 
 // Binance WebSocket symbols
