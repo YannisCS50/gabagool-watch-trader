@@ -234,6 +234,12 @@ export function useRealtimeLiveBot() {
 
       clearTimers();
 
+      // Don't reconnect if bot is explicitly disabled
+      if (event.reason?.includes('Bot disabled') || event.reason?.includes('DISABLED')) {
+        console.log('[LiveBot] Bot is disabled, not reconnecting');
+        return;
+      }
+
       // Exponential backoff with max delay
       reconnectAttemptsRef.current++;
       const delay = Math.min(1000 * Math.pow(1.5, reconnectAttemptsRef.current), maxReconnectDelay);
