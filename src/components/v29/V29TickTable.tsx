@@ -29,6 +29,13 @@ interface V29Tick {
   fill_size: number | null;
   market_slug: string | null;
   strike_price: number | null;
+  // Latency tracking
+  order_latency_ms: number | null;
+  fill_latency_ms: number | null;
+  signal_to_fill_ms: number | null;
+  sign_latency_ms: number | null;
+  post_latency_ms: number | null;
+  used_cache: boolean | null;
 }
 
 interface V29TickTableProps {
@@ -106,7 +113,15 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 100 }: V29TickTabl
     const alerts = ticks.filter(t => t.alert_triggered).length;
     const orders = ticks.filter(t => t.order_placed).length;
     const fills = ticks.filter(t => t.fill_price !== null).length;
-    return { alerts, orders, fills, total: ticks.length };
+    
+    // Calculate average latencies from fills
+    const fillsWithLatency = ticks.filter(t => t.signal_to_fill_ms !== null && t.signal_to_fill_ms > 0);
+    const avgSignalToFill = fillsWithLatency.length > 0 
+      ? fillsWithLatency.reduce((sum, t) => sum + (t.signal_to_fill_ms || 0), 0) / fillsWithLatency.length 
+      : null;
+    const cachedFills = ticks.filter(t => t.used_cache === true).length;
+    
+    return { alerts, orders, fills, total: ticks.length, avgSignalToFill, cachedFills };
   }, [ticks]);
 
   return (
@@ -133,6 +148,16 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 100 }: V29TickTabl
               <CheckCircle className="h-3 w-3 mr-1" />
               {stats.fills}
             </Badge>
+            {stats.avgSignalToFill !== null && (
+              <Badge variant="outline" className="text-xs bg-purple-500/10 text-purple-400 border-purple-500/30">
+                ⚡ {stats.avgSignalToFill.toFixed(0)}ms avg
+              </Badge>
+            )}
+            {stats.cachedFills > 0 && (
+              <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/30">
+                🔐 {stats.cachedFills} cached
+              </Badge>
+            )}
             <Button variant="ghost" size="icon" onClick={fetchTicks} disabled={loading} className="h-8 w-8">
               <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
             </Button>
@@ -147,13 +172,14 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 100 }: V29TickTabl
                 <TableHead className="w-[100px]">Tijd</TableHead>
                 <TableHead className="w-[50px]">Asset</TableHead>
                 <TableHead className="text-right">Binance</TableHead>
-                <TableHead className="text-right">Chainlink</TableHead>
                 <TableHead className="text-right">Delta</TableHead>
                 <TableHead className="text-center">Alert</TableHead>
                 <TableHead className="text-right">Up Ask</TableHead>
                 <TableHead className="text-right">Down Ask</TableHead>
                 <TableHead className="text-center">Order</TableHead>
                 <TableHead className="text-right">Fill</TableHead>
+                <TableHead className="text-right">Latency</TableHead>
+                <TableHead className="text-center">Cache</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -169,9 +195,6 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 100 }: V29TickTabl
                   </TableCell>
                   <TableCell className="text-right font-mono">
                     {formatPrice(tick.binance_price)}
-                  </TableCell>
-                  <TableCell className="text-right font-mono">
-                    {formatPrice(tick.chainlink_price)}
                   </TableCell>
                   <TableCell className={`text-right font-mono ${
                     tick.binance_delta !== null 
@@ -212,11 +235,33 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 100 }: V29TickTabl
                       <span className="text-muted-foreground">-</span>
                     )}
                   </TableCell>
+                  <TableCell className="text-right font-mono">
+                    {tick.signal_to_fill_ms !== null ? (
+                      <span className={tick.signal_to_fill_ms < 100 ? 'text-green-500' : tick.signal_to_fill_ms < 500 ? 'text-yellow-500' : 'text-red-500'}>
+                        {tick.signal_to_fill_ms}ms
+                      </span>
+                    ) : tick.order_latency_ms !== null ? (
+                      <span className="text-muted-foreground">
+                        {tick.order_latency_ms}ms
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">-</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-center">
+                    {tick.used_cache === true ? (
+                      <Badge className="bg-blue-500/20 text-blue-400 text-xs">⚡</Badge>
+                    ) : tick.used_cache === false && tick.order_placed ? (
+                      <Badge variant="outline" className="text-xs text-muted-foreground">sign</Badge>
+                    ) : (
+                      <span className="text-muted-foreground">-</span>
+                    )}
+                  </TableCell>
                 </TableRow>
               ))}
               {ticks.length === 0 && !loading && (
                 <TableRow>
-                  <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
+                  <TableCell colSpan={11} className="text-center text-muted-foreground py-8">
                     Geen tick data beschikbaar. Start de V29 runner om data te loggen.
                   </TableCell>
                 </TableRow>

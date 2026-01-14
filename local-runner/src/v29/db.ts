@@ -586,6 +586,13 @@ export interface TickRecord {
   fillSize?: number;
   marketSlug?: string;
   strikePrice?: number;
+  // Latency tracking
+  orderLatencyMs?: number;    // Time to place order
+  fillLatencyMs?: number;     // Time from order post to fill
+  signalToFillMs?: number;    // Total time from signal to fill
+  signLatencyMs?: number;     // Time to sign order (0 if cached)
+  postLatencyMs?: number;     // Time to post to exchange
+  usedCache?: boolean;        // Whether pre-signed cache was used
 }
 
 // Buffer for tick data (batch inserts for efficiency)
@@ -677,6 +684,13 @@ export async function logTick(tick: TickRecord): Promise<void> {
       fill_size: tick.fillSize ?? null,
       market_slug: tick.marketSlug ?? null,
       strike_price: tick.strikePrice ?? null,
+      // Latency fields
+      order_latency_ms: tick.orderLatencyMs ?? null,
+      fill_latency_ms: tick.fillLatencyMs ?? null,
+      signal_to_fill_ms: tick.signalToFillMs ?? null,
+      sign_latency_ms: tick.signLatencyMs ?? null,
+      post_latency_ms: tick.postLatencyMs ?? null,
+      used_cache: tick.usedCache ?? false,
     });
   } catch (err) {
     log(`⚠️ Failed to log tick: ${err}`);

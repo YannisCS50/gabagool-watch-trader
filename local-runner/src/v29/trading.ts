@@ -37,6 +37,11 @@ interface OrderResult {
   filledSize?: number;
   error?: string;
   latencyMs: number;
+  // Detailed latency breakdown
+  signLatencyMs?: number;   // Time to sign order
+  postLatencyMs?: number;   // Time to post to exchange
+  fillLatencyMs?: number;   // Time from post to fill confirmed
+  usedCache?: boolean;      // Whether pre-signed cache was used
 }
 
 // ============================================
@@ -574,12 +579,19 @@ export async function placeBuyOrder(
         void logFillsBatch(fillRecords);
       }
       
+      // Calculate how many used cache
+      const cachedCount = placedOrders.filter(o => o.usedCache).length;
+      
       return {
         success: true,
         orderId: filledOrders[0]?.orderId || placedOrders[0].orderId,
         avgPrice: avgFillPrice,
         filledSize: totalFilled,
         latencyMs,
+        usedCache: cachedCount > 0,
+        signLatencyMs: cachedCount > 0 ? 0 : undefined,
+        postLatencyMs: latencyMs,
+        fillLatencyMs: 0, // Fill was immediate
       };
     }
     
@@ -641,12 +653,18 @@ export async function placeBuyOrder(
         void logFillsBatch(fillRecords);
       }
       
+      const cachedCount = placedOrders.filter(o => o.usedCache).length;
+      const postTime = Date.now() - start - (totalTimeoutMs - fillCheckDelayMs);
+      
       return {
         success: true,
         orderId: finalFilledOrders[0]?.orderId || placedOrders[0].orderId,
         avgPrice: finalAvgPrice,
         filledSize: totalFilled,
         latencyMs: finalLatencyMs,
+        usedCache: cachedCount > 0,
+        postLatencyMs: postTime,
+        fillLatencyMs: totalTimeoutMs - fillCheckDelayMs,
       };
     }
     
