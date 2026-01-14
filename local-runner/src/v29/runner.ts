@@ -350,10 +350,6 @@ function handleBinancePrice(asset: Asset, price: number, _timestamp: number): vo
   // Skip if disabled
   if (!config.enabled) return;
   
-  // Buy cooldown per asset+direction (UP/DOWN are independent)
-  const cooldownKey = `${asset}:${tickDirection}`;
-  if (now - (lastBuyTime[cooldownKey] ?? 0) < config.order_cooldown_ms) return;
-  
   // Need previous price
   if (prevPrice === null) return;
   
@@ -375,6 +371,10 @@ function handleBinancePrice(asset: Asset, price: number, _timestamp: number): vo
   
   // Direction based on tick movement
   const tickDirection: 'UP' | 'DOWN' = tickDelta > 0 ? 'UP' : 'DOWN';
+  
+  // Buy cooldown per asset+direction (UP/DOWN are independent)
+  const cooldownKey = `${asset}:${tickDirection}`;
+  if (now - (lastBuyTime[cooldownKey] ?? 0) < config.order_cooldown_ms) return;
   
   // Apply direction filter (delta threshold = 75)
   let allowedDirection: 'UP' | 'DOWN' | 'BOTH';
