@@ -75,20 +75,20 @@ export interface V29Config {
 
 export const DEFAULT_CONFIG: V29Config = {
   enabled: true,
-  tick_delta_usd: 12,
+  tick_delta_usd: 8,
   delta_threshold: 75,
   min_share_price: 0.30,
   max_share_price: 0.75,
   shares_per_trade: 5,
   
-  // Hedge config
-  min_hedge_profit_cents: 4,
-  max_hedge_price: 0.40,
-  hedge_tier_1_price: 0.35,
-  hedge_tier_1_pct: 0.33,
-  hedge_tier_2_price: 0.25,
+  // Hedge config - CONSERVATIVE: wait for very low prices before hedging
+  min_hedge_profit_cents: 6,
+  max_hedge_price: 0.18,
+  hedge_tier_1_price: 0.15,  // Hedge 25% at 15¢ or less
+  hedge_tier_1_pct: 0.25,
+  hedge_tier_2_price: 0.10,  // Hedge 50% at 10¢ or less
   hedge_tier_2_pct: 0.50,
-  hedge_tier_3_price: 0.15,
+  hedge_tier_3_price: 0.05,  // Full hedge at 5¢ or less
   hedge_tier_3_pct: 1.00,
   max_exposure_per_asset: 100,
   max_cost_per_asset: 50,
