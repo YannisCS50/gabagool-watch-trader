@@ -1,135 +1,111 @@
 /**
- * V29 Runner Lease Manager
+ * V29 Runner Registration
  * 
- * Ensures only ONE runner can be active at a time using a database lease.
- * If another runner tries to start, it will fail to acquire the lease.
+ * Simple takeover system:
+ * 1. New runner registers itself with a timestamp
+ * 2. If another runner is active, it will see the new registration on next heartbeat and stop
+ * 3. No complex lease logic - just registration + heartbeat polling
  */
 
 import { getDb } from './db.js';
 
 const LEASE_ID = 'v29-live';
-const LEASE_DURATION_MS = 30_000; // 30 seconds
-const HEARTBEAT_INTERVAL_MS = 10_000; // Refresh every 10 seconds
+const HEARTBEAT_INTERVAL_MS = 5_000;
 
 let heartbeatInterval: NodeJS.Timeout | null = null;
 let currentRunnerId: string | null = null;
+let isActive = true;
 
 function log(msg: string): void {
   console.log(`[V29:LEASE] ${msg}`);
 }
 
 /**
- * Try to acquire the exclusive runner lease.
- * Returns true if successful, false if another runner holds the lease.
+ * Register as the active runner (takeover any existing)
  */
 export async function acquireLease(runnerId: string): Promise<boolean> {
   const db = getDb();
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + LEASE_DURATION_MS);
   
   try {
-    // First, check if there's an existing valid lease
-    const { data: existing, error: fetchError } = await db
+    // Check if there's an existing runner
+    const { data: existing } = await db
       .from('runner_leases')
       .select('*')
       .eq('id', LEASE_ID)
       .single();
     
-    if (fetchError && fetchError.code !== 'PGRST116') {
-      // PGRST116 = no rows found, that's OK
-      log(`❌ Failed to check lease: ${fetchError.message}`);
-      return false;
+    if (existing && existing.runner_id !== runnerId) {
+      log(`⚠️ Taking over from ${existing.runner_id}`);
     }
     
-    if (existing) {
-      const expiresAtTime = new Date(existing.expires_at).getTime();
-      
-      // Check if lease is still valid (not expired)
-      if (expiresAtTime > now.getTime()) {
-        // Lease is valid - check if it's ours
-        if (existing.runner_id === runnerId) {
-          log(`✅ Already holding lease`);
-          return true;
-        }
-        
-        // Another runner holds the lease
-        const remainingMs = expiresAtTime - now.getTime();
-        log(`🚫 Lease held by ${existing.runner_id}, expires in ${Math.round(remainingMs / 1000)}s`);
-        return false;
-      }
-      
-      // Lease expired - try to take over
-      log(`⏰ Lease from ${existing.runner_id} expired, taking over...`);
-    }
-    
-    // Try to upsert the lease
-    const { error: upsertError } = await db
+    // Upsert - always succeed, always takeover
+    const { error } = await db
       .from('runner_leases')
       .upsert({
         id: LEASE_ID,
         runner_id: runnerId,
         acquired_at: now.toISOString(),
-        expires_at: expiresAt.toISOString(),
+        expires_at: new Date(now.getTime() + 60_000).toISOString(),
         heartbeat_at: now.toISOString(),
       });
     
-    if (upsertError) {
-      log(`❌ Failed to acquire lease: ${upsertError.message}`);
-      return false;
-    }
-    
-    // Verify we actually got it (race condition check)
-    const { data: verify } = await db
-      .from('runner_leases')
-      .select('runner_id')
-      .eq('id', LEASE_ID)
-      .single();
-    
-    if (verify?.runner_id !== runnerId) {
-      log(`🚫 Lost race condition to ${verify?.runner_id}`);
+    if (error) {
+      log(`❌ Registration failed: ${error.message}`);
       return false;
     }
     
     currentRunnerId = runnerId;
-    log(`✅ Lease acquired by ${runnerId}`);
+    isActive = true;
+    log(`✅ Registered as active runner: ${runnerId}`);
     
-    // Start heartbeat
+    // Start heartbeat that also checks for takeover
     startHeartbeat(runnerId);
     
     return true;
     
   } catch (err) {
-    log(`❌ Lease error: ${err}`);
+    log(`❌ Registration error: ${err}`);
     return false;
   }
 }
 
 /**
- * Refresh the lease heartbeat
+ * Heartbeat: update timestamp AND check if we've been taken over
  */
-async function refreshLease(runnerId: string): Promise<boolean> {
+async function doHeartbeat(runnerId: string): Promise<boolean> {
   const db = getDb();
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + LEASE_DURATION_MS);
   
   try {
-    const { error } = await db
+    // First check if we're still the active runner
+    const { data } = await db
+      .from('runner_leases')
+      .select('runner_id')
+      .eq('id', LEASE_ID)
+      .single();
+    
+    if (!data || data.runner_id !== runnerId) {
+      // We've been taken over!
+      log(`🔄 TAKEOVER DETECTED - new runner: ${data?.runner_id ?? 'unknown'}`);
+      log(`🛑 This runner (${runnerId}) will now shutdown...`);
+      isActive = false;
+      return false;
+    }
+    
+    // Update heartbeat
+    await db
       .from('runner_leases')
       .update({
-        expires_at: expiresAt.toISOString(),
+        expires_at: new Date(now.getTime() + 60_000).toISOString(),
         heartbeat_at: now.toISOString(),
       })
       .eq('id', LEASE_ID)
       .eq('runner_id', runnerId);
     
-    if (error) {
-      log(`⚠️ Heartbeat failed: ${error.message}`);
-      return false;
-    }
-    
     return true;
   } catch {
-    return false;
+    return true; // Continue on error
   }
 }
 
@@ -142,10 +118,15 @@ function startHeartbeat(runnerId: string): void {
   }
   
   heartbeatInterval = setInterval(async () => {
-    const success = await refreshLease(runnerId);
-    if (!success) {
-      log(`⚠️ Lost lease - another runner may have taken over`);
+    const stillActive = await doHeartbeat(runnerId);
+    if (!stillActive && isActive) {
+      // We've been taken over - trigger shutdown
+      isActive = false;
       stopHeartbeat();
+      
+      // Trigger graceful shutdown by sending SIGINT to ourselves
+      log(`🛑 Initiating graceful shutdown due to takeover...`);
+      process.kill(process.pid, 'SIGINT');
     }
   }, HEARTBEAT_INTERVAL_MS);
 }
@@ -165,6 +146,7 @@ function stopHeartbeat(): void {
  */
 export async function releaseLease(runnerId: string): Promise<void> {
   stopHeartbeat();
+  isActive = false;
   
   const db = getDb();
   
@@ -176,15 +158,15 @@ export async function releaseLease(runnerId: string): Promise<void> {
       .eq('id', LEASE_ID)
       .eq('runner_id', runnerId);
     
-    log(`🔓 Lease released by ${runnerId}`);
+    log(`🔓 Released by ${runnerId}`);
     currentRunnerId = null;
   } catch (err) {
-    log(`⚠️ Failed to release lease: ${err}`);
+    log(`⚠️ Failed to release: ${err}`);
   }
 }
 
 /**
- * Check if we still hold the lease
+ * Check if we're still the active runner
  */
 export async function validateLease(runnerId: string): Promise<boolean> {
   const db = getDb();
@@ -192,46 +174,19 @@ export async function validateLease(runnerId: string): Promise<boolean> {
   try {
     const { data } = await db
       .from('runner_leases')
-      .select('runner_id, expires_at')
+      .select('runner_id')
       .eq('id', LEASE_ID)
       .single();
     
-    if (!data) return false;
-    
-    const isOurs = data.runner_id === runnerId;
-    const notExpired = new Date(data.expires_at).getTime() > Date.now();
-    
-    return isOurs && notExpired;
+    return data?.runner_id === runnerId;
   } catch {
     return false;
   }
 }
 
 /**
- * Get current lease holder info
+ * Check if this runner is still active (not taken over)
  */
-export async function getLeaseInfo(): Promise<{
-  holderId: string;
-  acquiredAt: Date;
-  expiresAt: Date;
-} | null> {
-  const db = getDb();
-  
-  try {
-    const { data } = await db
-      .from('runner_leases')
-      .select('*')
-      .eq('id', LEASE_ID)
-      .single();
-    
-    if (!data) return null;
-    
-    return {
-      holderId: data.runner_id,
-      acquiredAt: new Date(data.acquired_at),
-      expiresAt: new Date(data.expires_at),
-    };
-  } catch {
-    return null;
-  }
+export function isRunnerActive(): boolean {
+  return isActive;
 }
