@@ -707,7 +707,7 @@ async function placeSingleBuyOrder(
     
     // Try to get pre-signed order from cache
     if (asset && direction) {
-      const cached = getPreSignedOrder(asset, direction, roundedPrice, shares);
+      const cached = getPreSignedOrder(asset, direction, 'BUY', roundedPrice, shares);
       if (cached) {
         signedOrder = cached.signedOrder;
         usedCache = true;
