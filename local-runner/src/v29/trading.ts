@@ -5,6 +5,9 @@
  * Orders are signed during idle time and instantly posted when signals fire
  */
 
+// CRITICAL: Import HTTP agent FIRST to ensure axios is configured before SDK
+import './http-agent.js';
+
 import { getClient } from '../polymarket.js';
 import { ClobClient, Side, OrderType } from '@polymarket/clob-client';
 import type { SignedOrder } from '@polymarket/order-utils';
