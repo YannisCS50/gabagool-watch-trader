@@ -863,16 +863,30 @@ async function checkAndExecuteSells(): Promise<void> {
     if (result.success) {
       const actualSellPrice = result.avgPrice || bestBid;
       const actualProfit = (actualSellPrice - pos.entryPrice) * pos.shares;
+      const holdTimeMs = Date.now() - pos.entryTime;
       
       totalPnL += actualProfit;
       sellsCount++;
       profitableSells++;
       
       log(
-        `✅ PROFIT: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(actualSellPrice * 100).toFixed(1)}¢ | P&L: +$${actualProfit.toFixed(3)} | Total: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)}`,
+        `✅ PROFIT: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(actualSellPrice * 100).toFixed(1)}¢ | P&L: +$${actualProfit.toFixed(3)} | hold: ${(holdTimeMs / 1000).toFixed(1)}s | sellLatency: ${result.latencyMs}ms`,
         'sell',
         pos.asset
       );
+      
+      // Log sell tick with latency data
+      void logTick({
+        runId: RUN_ID,
+        asset: pos.asset,
+        orderPlaced: true,
+        orderId: result.orderId,
+        fillPrice: actualSellPrice,
+        fillSize: result.filledSize || pos.shares,
+        marketSlug: pos.marketSlug,
+        orderLatencyMs: result.latencyMs,
+        signalDirection: pos.direction,
+      });
       
       openPositions.delete(posId);
     }
@@ -1004,11 +1018,26 @@ async function checkAndExecuteSells(): Promise<void> {
         lossSells++;
       }
       
+      const holdTimeMs = Date.now() - agg.oldestEntryTime;
+      
       log(
-        `✅ CLOSED: ${agg.asset} ${agg.direction} ${agg.totalShares} @ ${(actualSellPrice * 100).toFixed(1)}¢ | P&L: ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(3)} | Total: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)}`,
+        `✅ CLOSED: ${agg.asset} ${agg.direction} ${agg.totalShares} @ ${(actualSellPrice * 100).toFixed(1)}¢ | P&L: ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(3)} | hold: ${(holdTimeMs / 1000).toFixed(1)}s | sellLatency: ${result.latencyMs}ms`,
         'sell',
         agg.asset
       );
+      
+      // Log sell tick with latency data
+      void logTick({
+        runId: RUN_ID,
+        asset: agg.asset,
+        orderPlaced: true,
+        orderId: result.orderId,
+        fillPrice: actualSellPrice,
+        fillSize: result.filledSize || agg.totalShares,
+        marketSlug: agg.marketSlug,
+        orderLatencyMs: result.latencyMs,
+        signalDirection: agg.direction,
+      });
       
       // Remove all closed positions
       for (const posId of agg.positionIds) {
