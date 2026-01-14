@@ -10,7 +10,7 @@
 import { getDb } from './db.js';
 
 const LEASE_ID = 'v29-live';
-const HEARTBEAT_INTERVAL_MS = 5_000;
+const HEARTBEAT_INTERVAL_MS = 2_000; // Check every 2s for faster takeover detection
 
 let heartbeatInterval: NodeJS.Timeout | null = null;
 let currentRunnerId: string | null = null;
