@@ -31,6 +31,11 @@ export interface V29Config {
   // Shares per trade (per burst order)
   shares_per_trade: number;
   
+  // === COUNTER-SCALPING PREVENTION ===
+  // If true: don't buy opposite direction when you already have a position in this market
+  // e.g., if you have UP shares, don't buy DOWN shares (prevents self-hedging)
+  prevent_counter_scalping: boolean;
+  
   // === SELL CONFIG ===
   
   // Minimum profit before selling (in cents) - based on SETTLED entry price!
@@ -73,6 +78,7 @@ export const DEFAULT_CONFIG: V29Config = {
   min_share_price: 0.30,
   max_share_price: 0.75,
   shares_per_trade: 2,  // Per burst order (3x burst = 6 shares total)
+  prevent_counter_scalping: true,  // Don't buy opposite side if position exists
   
   // Sell config - TIERED: profit-take < 15s, aggregate 15-20s, force dump ≥ 20s
   min_profit_cents: 4,           // Sell when bestBid >= entryPrice + 4¢

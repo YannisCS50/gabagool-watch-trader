@@ -97,6 +97,7 @@ export async function loadV29Config(): Promise<{
   min_share_price: number;
   max_share_price: number;
   shares_per_trade: number;
+  prevent_counter_scalping: boolean;
   take_profit_cents: number;
   timeout_seconds: number;
   max_sell_retries: number;
@@ -120,21 +121,25 @@ export async function loadV29Config(): Promise<{
       return null;
     }
     
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const cfg = data as any;
+    
     return {
-      enabled: data.enabled ?? true,
-      tick_delta_usd: Number(data.tick_delta_usd ?? data.min_delta_usd ?? 6),
-      delta_threshold: Number(data.delta_threshold ?? 75),
-      min_share_price: Number(data.min_share_price ?? 0.30),
-      max_share_price: Number(data.max_share_price ?? 0.75),
-      shares_per_trade: Number(data.shares_per_trade ?? 5),
-      take_profit_cents: Number(data.take_profit_cents ?? 4),
-      timeout_seconds: Number(data.timeout_seconds ?? 10),
-      max_sell_retries: Number(data.max_sell_retries ?? 5),
-      price_buffer_cents: Number(data.price_buffer_cents ?? 1),
-      assets: data.assets ?? ['BTC'],
-      binance_poll_ms: Number(data.binance_poll_ms ?? 100),
-      orderbook_poll_ms: Number(data.orderbook_poll_ms ?? 2000),
-      order_cooldown_ms: Number(data.order_cooldown_ms ?? 3000),
+      enabled: cfg.enabled ?? true,
+      tick_delta_usd: Number(cfg.tick_delta_usd ?? cfg.min_delta_usd ?? 6),
+      delta_threshold: Number(cfg.delta_threshold ?? 75),
+      min_share_price: Number(cfg.min_share_price ?? 0.30),
+      max_share_price: Number(cfg.max_share_price ?? 0.75),
+      shares_per_trade: Number(cfg.shares_per_trade ?? 5),
+      prevent_counter_scalping: cfg.prevent_counter_scalping ?? true,
+      take_profit_cents: Number(cfg.take_profit_cents ?? 4),
+      timeout_seconds: Number(cfg.timeout_seconds ?? 10),
+      max_sell_retries: Number(cfg.max_sell_retries ?? 5),
+      price_buffer_cents: Number(cfg.price_buffer_cents ?? 1),
+      assets: cfg.assets ?? ['BTC'],
+      binance_poll_ms: Number(cfg.binance_poll_ms ?? 100),
+      orderbook_poll_ms: Number(cfg.orderbook_poll_ms ?? 2000),
+      order_cooldown_ms: Number(cfg.order_cooldown_ms ?? 3000),
     };
   } catch (err) {
     log(`Config load error: ${err}`);

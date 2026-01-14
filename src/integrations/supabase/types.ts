@@ -5301,6 +5301,7 @@ export type Database = {
           min_share_price: number | null
           order_cooldown_ms: number
           orderbook_poll_ms: number
+          prevent_counter_scalping: boolean
           price_buffer_cents: number
           shares_per_trade: number | null
           stop_loss_cents: number | null
@@ -5337,6 +5338,7 @@ export type Database = {
           min_share_price?: number | null
           order_cooldown_ms?: number
           orderbook_poll_ms?: number
+          prevent_counter_scalping?: boolean
           price_buffer_cents?: number
           shares_per_trade?: number | null
           stop_loss_cents?: number | null
@@ -5373,6 +5375,7 @@ export type Database = {
           min_share_price?: number | null
           order_cooldown_ms?: number
           orderbook_poll_ms?: number
+          prevent_counter_scalping?: boolean
           price_buffer_cents?: number
           shares_per_trade?: number | null
           stop_loss_cents?: number | null
