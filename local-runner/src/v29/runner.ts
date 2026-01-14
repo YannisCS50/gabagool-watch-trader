@@ -619,7 +619,7 @@ async function executeBuy(
   signal.fill_ts = Date.now();
   signal.notes = `BOUGHT ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ (settled) - waiting for sell`;
   
-  log(`✅ BOUGHT: ${asset} ${direction} ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ (${latency}ms) - target sell: ≥${((avgPrice - config.min_profit_cents / 100) * 100).toFixed(1)}¢`, 'fill', asset);
+  log(`✅ BOUGHT: ${asset} ${direction} ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ (${latency}ms) - target sell: ≥${((avgPrice + config.min_profit_cents / 100) * 100).toFixed(1)}¢`, 'fill', asset);
   
   void saveSignal(signal);
 }
