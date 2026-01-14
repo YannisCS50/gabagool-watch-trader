@@ -101,37 +101,77 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTab
   }, [assetFilter, maxRows]);
 
   // Group ticks around alerts: 5 before, alert, fill, 5 after
+  // IMPORTANT: Alerts and fills can be SEPARATE records!
+  // - Alert tick: alert_triggered=true, fill_price=null
+  // - Fill tick: order_placed=true, fill_price not null (logged AFTER order execution)
   const alertGroups = useMemo((): AlertGroup[] => {
     const groups: AlertGroup[] = [];
     const sortedTicks = [...ticks].sort((a, b) => a.ts - b.ts); // oldest first for context
     
-    // Find all alerts WITH fills (alert_triggered=true AND fill_price IS NOT NULL)
-    // These are the "complete" alert+fill records
-    const alertsWithFills = sortedTicks.filter(t => t.alert_triggered && t.fill_price !== null);
+    // Find all alert ticks (alert_triggered=true)
+    const alertTicks = sortedTicks.filter(t => t.alert_triggered);
     
-    // Also find alerts without fills (blocked, skipped, etc.)
-    const alertsWithoutFills = sortedTicks.filter(t => t.alert_triggered && t.fill_price === null);
+    // Find all fill ticks (order_placed=true with fill_price)
+    const fillTicks = sortedTicks.filter(t => t.order_placed && t.fill_price !== null);
     
-    // Process alerts with fills first
-    for (const alertTick of alertsWithFills) {
+    // Set of fill tick IDs we've already matched
+    const matchedFillIds = new Set<string>();
+    
+    for (const alertTick of alertTicks) {
       const alertIdx = sortedTicks.indexOf(alertTick);
       const beforeTicks: V29Tick[] = [];
       const afterTicks: V29Tick[] = [];
       
-      // Get 5 ticks before (same asset, not alert ticks)
+      // Find matching fill tick:
+      // 1. Same asset and market_slug
+      // 2. Occurs AFTER the alert (within 10 seconds)
+      // 3. Not already matched to another alert
+      let matchedFill: V29Tick | null = null;
+      
+      // Check if the alert tick itself has fill data (combined record)
+      if (alertTick.fill_price !== null) {
+        matchedFill = alertTick;
+      } else {
+        // Look for a separate fill tick
+        for (const fillTick of fillTicks) {
+          if (matchedFillIds.has(fillTick.id)) continue;
+          
+          // Must be same asset
+          if (fillTick.asset !== alertTick.asset) continue;
+          
+          // Must be same market (if available)
+          if (alertTick.market_slug && fillTick.market_slug && fillTick.market_slug !== alertTick.market_slug) continue;
+          
+          // Must occur AFTER alert and within 10 seconds
+          const timeDiff = fillTick.ts - alertTick.ts;
+          if (timeDiff >= 0 && timeDiff <= 10000) {
+            matchedFill = fillTick;
+            matchedFillIds.add(fillTick.id);
+            break;
+          }
+        }
+      }
+      
+      // Get 5 ticks before (same asset, not alert/fill ticks)
       let beforeCount = 0;
       for (let i = alertIdx - 1; i >= 0 && beforeCount < 5; i--) {
-        if (sortedTicks[i].asset === alertTick.asset && !sortedTicks[i].alert_triggered) {
-          beforeTicks.unshift(sortedTicks[i]);
+        const tick = sortedTicks[i];
+        if (tick.asset === alertTick.asset && !tick.alert_triggered && !tick.order_placed) {
+          beforeTicks.unshift(tick);
           beforeCount++;
         }
       }
       
-      // Get 5 ticks after (same asset, not alert ticks)
+      // Get 5 ticks after fill (or after alert if no fill)
+      const afterStartIdx = matchedFill && matchedFill !== alertTick 
+        ? sortedTicks.indexOf(matchedFill) 
+        : alertIdx;
+      
       let afterCount = 0;
-      for (let i = alertIdx + 1; i < sortedTicks.length && afterCount < 5; i++) {
-        if (sortedTicks[i].asset === alertTick.asset && !sortedTicks[i].alert_triggered) {
-          afterTicks.push(sortedTicks[i]);
+      for (let i = afterStartIdx + 1; i < sortedTicks.length && afterCount < 5; i++) {
+        const tick = sortedTicks[i];
+        if (tick.asset === alertTick.asset && !tick.alert_triggered && !tick.order_placed) {
+          afterTicks.push(tick);
           afterCount++;
         }
       }
@@ -141,40 +181,7 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTab
         alertTick,
         beforeTicks,
         afterTicks,
-        fillTick: alertTick, // The alert tick IS the fill tick (same record)
-      });
-    }
-    
-    // Process alerts without fills (blocked/skipped)
-    for (const alertTick of alertsWithoutFills) {
-      const alertIdx = sortedTicks.indexOf(alertTick);
-      const beforeTicks: V29Tick[] = [];
-      const afterTicks: V29Tick[] = [];
-      
-      // Get 5 ticks before
-      let beforeCount = 0;
-      for (let i = alertIdx - 1; i >= 0 && beforeCount < 5; i--) {
-        if (sortedTicks[i].asset === alertTick.asset && !sortedTicks[i].alert_triggered) {
-          beforeTicks.unshift(sortedTicks[i]);
-          beforeCount++;
-        }
-      }
-      
-      // Get 5 ticks after
-      let afterCount = 0;
-      for (let i = alertIdx + 1; i < sortedTicks.length && afterCount < 5; i++) {
-        if (sortedTicks[i].asset === alertTick.asset && !sortedTicks[i].alert_triggered) {
-          afterTicks.push(sortedTicks[i]);
-          afterCount++;
-        }
-      }
-      
-      groups.push({
-        id: alertTick.id,
-        alertTick,
-        beforeTicks,
-        afterTicks,
-        fillTick: null, // No fill
+        fillTick: matchedFill,
       });
     }
     
@@ -359,7 +366,7 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTab
                                 </Badge>
                               )}
                               <span className="text-xs text-muted-foreground">
-                                {group.beforeTicks.length + 1 + (group.fillTick ? 1 : 0) + group.afterTicks.length} ticks
+                                {group.beforeTicks.length + 1 + (group.fillTick && group.fillTick.id !== group.alertTick.id ? 1 : 0) + group.afterTicks.length} ticks
                               </span>
                             </div>
                           </div>
@@ -373,8 +380,12 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTab
                           {group.beforeTicks.map((tick) => (
                             <TickRow key={tick.id} tick={tick} highlight="before" />
                           ))}
-                          {/* Alert + Fill tick (same record when filled) */}
-                          <TickRow tick={group.alertTick} highlight={group.fillTick ? "fill" : "alert"} />
+                          {/* Alert tick */}
+                          <TickRow tick={group.alertTick} highlight="alert" />
+                          {/* Fill tick (if separate from alert) */}
+                          {group.fillTick && group.fillTick.id !== group.alertTick.id && (
+                            <TickRow key={group.fillTick.id} tick={group.fillTick} highlight="fill" />
+                          )}
                           {/* After ticks */}
                           {group.afterTicks.map((tick) => (
                             <TickRow key={tick.id} tick={tick} highlight="after" />
