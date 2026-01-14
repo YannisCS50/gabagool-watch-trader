@@ -122,15 +122,27 @@ export default function V29Dashboard() {
   const [assetFilter, setAssetFilter] = useState<typeof ASSETS[number]>('ALL');
   const [timeFilter, setTimeFilter] = useState<TimeFilterType>(DEFAULT_TIME_FILTER);
   const [activeTab, setActiveTab] = useState('signals');
+  const [showAllRuns, setShowAllRuns] = useState(false);
   const [recentNotifications, setRecentNotifications] = useState<string[]>([]);
   const [runnerStatus, setRunnerStatus] = useState<{
     isOnline: boolean;
+    runnerId: string | null;
     lastHeartbeat: string | null;
     balance: number | null;
     marketsCount: number;
     positionsCount: number;
+    tradesCount: number;
     version: string | null;
-  }>({ isOnline: false, lastHeartbeat: null, balance: null, marketsCount: 0, positionsCount: 0, version: null });
+  }>({
+    isOnline: false,
+    runnerId: null,
+    lastHeartbeat: null,
+    balance: null,
+    marketsCount: 0,
+    positionsCount: 0,
+    tradesCount: 0,
+    version: null,
+  });
 
   const fetchData = async () => {
     setLoading(signals.length === 0);
@@ -169,10 +181,12 @@ export default function V29Dashboard() {
       const isOnline = Date.now() - lastBeat.getTime() < 60000;
       setRunnerStatus({
         isOnline,
+        runnerId: hb.runner_id,
         lastHeartbeat: hb.last_heartbeat || hb.created_at,
         balance: hb.balance,
         marketsCount: hb.markets_count,
         positionsCount: hb.positions_count,
+        tradesCount: hb.trades_count,
         version: hb.version,
       });
     }
@@ -195,7 +209,7 @@ export default function V29Dashboard() {
         { event: 'INSERT', schema: 'public', table: 'v29_signals' },
         (payload) => {
           const sig = payload.new as V29Signal;
-          const notification = `[${format(new Date(sig.signal_ts), 'HH:mm:ss')}] ${sig.asset} ${sig.direction} @ ${(sig.share_price * 100).toFixed(1)}¢ (Δ$${sig.delta_usd?.toFixed(0) ?? '?'})`;
+          const notification = `[${format(new Date(sig.signal_ts), 'HH:mm:ss')}] ${sig.asset} ${sig.direction} @ ${(sig.share_price * 100).toFixed(1)}¢ (Δ$${sig.delta_usd?.toFixed(0) ?? '?'}) — ${sig.run_id}`;
           setRecentNotifications(prev => [notification, ...prev].slice(0, 30));
           setSignals(prev => [sig, ...prev].slice(0, 500));
         }
@@ -207,7 +221,7 @@ export default function V29Dashboard() {
           const sig = payload.new as V29Signal;
           setSignals(prev => prev.map(s => s.id === sig.id ? sig : s));
           if (sig.status === 'sold' && sig.net_pnl !== null) {
-            const notification = `[${format(new Date(), 'HH:mm:ss')}] ✅ SOLD ${sig.asset} ${sig.direction} | P&L: $${sig.net_pnl.toFixed(3)} (${sig.exit_reason || 'exit'})`;
+            const notification = `[${format(new Date(), 'HH:mm:ss')}] ✅ SOLD ${sig.asset} ${sig.direction} | P&L: $${sig.net_pnl.toFixed(3)} (${sig.exit_reason || 'exit'}) — ${sig.run_id}`;
             setRecentNotifications(prev => [notification, ...prev].slice(0, 30));
           }
         }
@@ -217,15 +231,21 @@ export default function V29Dashboard() {
     return () => { supabase.removeChannel(channel); };
   }, []);
 
-  // Filter by time and asset
+  // Filter by time and asset (and optionally by active runner)
   const filteredSignals = useMemo(() => {
     let filtered = signals;
+
+    if (!showAllRuns && runnerStatus.runnerId) {
+      filtered = filtered.filter(s => s.run_id === runnerStatus.runnerId);
+    }
+
     if (assetFilter !== 'ALL') {
       filtered = filtered.filter(s => s.asset === assetFilter);
     }
+
     const withTs = filtered.map(s => ({ ...s, ts: s.signal_ts }));
     return filterDataByTime(withTs, timeFilter);
-  }, [signals, assetFilter, timeFilter]);
+  }, [signals, assetFilter, timeFilter, showAllRuns, runnerStatus.runnerId]);
 
   const filteredOrders = useMemo(() => {
     let filtered = orders;
@@ -401,6 +421,16 @@ export default function V29Dashboard() {
           </div>
 
           <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowAllRuns(v => !v)}
+              className="h-8"
+              title={showAllRuns ? 'Show only the active runner' : 'Show all runner instances'}
+            >
+              <span className="hidden sm:inline">{showAllRuns ? 'All runs' : 'Active run'}</span>
+              <span className="sm:hidden">{showAllRuns ? 'All' : 'Run'}</span>
+            </Button>
             <TimeRangeFilter value={timeFilter} onChange={setTimeFilter} />
             <Button variant="outline" size="sm" onClick={fetchData} disabled={loading} className="h-8">
               <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
@@ -555,7 +585,14 @@ export default function V29Dashboard() {
         <TabsContent value="signals" className="mt-4">
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-lg">V29 Signals & Trades ({filteredSignals.length})</CardTitle>
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="text-lg">V29 Signals & Trades ({filteredSignals.length})</CardTitle>
+                {runnerStatus.runnerId && (
+                  <Badge variant="outline" className="text-xs font-mono">
+                    {showAllRuns ? 'all runs' : runnerStatus.runnerId}
+                  </Badge>
+                )}
+              </div>
             </CardHeader>
             <CardContent>
               <ScrollArea className="h-[500px]">
@@ -563,6 +600,7 @@ export default function V29Dashboard() {
                   <TableHeader>
                     <TableRow>
                       <TableHead className="w-[100px]">Time</TableHead>
+                      <TableHead>Runner</TableHead>
                       <TableHead>Asset</TableHead>
                       <TableHead>Dir</TableHead>
                       <TableHead>Delta</TableHead>
@@ -578,7 +616,7 @@ export default function V29Dashboard() {
                   <TableBody>
                     {filteredSignals.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={11} className="text-center text-muted-foreground py-8">
+                        <TableCell colSpan={12} className="text-center text-muted-foreground py-8">
                           Nog geen V29 signals. Start de runner om te beginnen.
                         </TableCell>
                       </TableRow>
@@ -596,6 +634,11 @@ export default function V29Dashboard() {
                               <span className="text-muted-foreground">
                                 {formatDistanceToNow(new Date(signal.signal_ts), { addSuffix: true, locale: nl })}
                               </span>
+                            </TableCell>
+                            <TableCell className="text-xs">
+                              <Badge variant="outline" className="font-mono text-[10px] px-1 py-0">
+                                {signal.run_id.slice(-8)}
+                              </Badge>
                             </TableCell>
                             <TableCell>
                               <Badge variant="outline">{signal.asset}</Badge>
