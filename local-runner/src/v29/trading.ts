@@ -751,7 +751,8 @@ export async function placeSellOrder(
 export async function cancelOrder(orderId: string): Promise<boolean> {
   try {
     const client = await getClient();
-    await client.cancelOrder(orderId);
+    // CLOB SDK expects cancelOrder({ orderID: string }) not a raw string
+    await client.cancelOrder({ orderID: orderId });
     log(`🗑️ Order cancelled: ${orderId}`);
     return true;
   } catch (err) {
