@@ -108,44 +108,53 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTab
     const groups: AlertGroup[] = [];
     const sortedTicks = [...ticks].sort((a, b) => a.ts - b.ts); // oldest first for context
     
-    // Iterate through ticks chronologically so we match fills to the nearest subsequent alert
-    const matchedFillIds = new Set<string>();
+    const keyOf = (t: V29Tick) =>
+      `${t.run_id ?? ''}|${t.asset}|${t.market_slug ?? ''}|${t.signal_direction ?? ''}`;
 
-    for (let alertIdx = 0; alertIdx < sortedTicks.length; alertIdx++) {
-      const alertTick = sortedTicks[alertIdx];
-      if (!alertTick.alert_triggered) continue;
+    const isFillTick = (t: V29Tick) => t.order_placed && t.fill_price !== null;
+    const isPureAlertTick = (t: V29Tick) => t.alert_triggered && !t.order_placed && t.fill_price === null;
 
+    // Match fills to the MOST RECENT preceding alert (same run/asset/market/dir) within 10s.
+    // This avoids the confusing case where a fill row also appears as its own "alert group".
+    const pendingAlertByKey = new Map<string, { tick: V29Tick; idx: number }>();
+    const fillByAlertId = new Map<string, { tick: V29Tick; idx: number }>();
+    const orphanFillIdxs: number[] = [];
+
+    for (let i = 0; i < sortedTicks.length; i++) {
+      const t = sortedTicks[i];
+
+      if (isPureAlertTick(t)) {
+        pendingAlertByKey.set(keyOf(t), { tick: t, idx: i });
+        continue;
+      }
+
+      if (isFillTick(t)) {
+        const key = keyOf(t);
+        const pending = pendingAlertByKey.get(key);
+
+        if (!pending) {
+          orphanFillIdxs.push(i);
+          continue;
+        }
+
+        const dt = t.ts - pending.tick.ts;
+        if (dt >= 0 && dt <= 10_000) {
+          fillByAlertId.set(pending.tick.id, { tick: t, idx: i });
+          pendingAlertByKey.delete(key);
+        } else {
+          // Too late/early to be the fill for this alert
+          orphanFillIdxs.push(i);
+        }
+      }
+    }
+
+    const addGroup = (alertTick: V29Tick, alertIdx: number, fill: { tick: V29Tick; idx: number } | null) => {
       const beforeTicks: V29Tick[] = [];
       const afterTicks: V29Tick[] = [];
 
-      // Find matching fill tick.
-      // Prefer a separate tick logged after the alert, but handle combined alert+fill rows too.
-      let matchedFill: V29Tick | null = null;
-      let fillIdx: number = alertIdx;
+      const fillIdx = fill?.idx ?? alertIdx;
 
-      if (alertTick.fill_price !== null) {
-        matchedFill = alertTick;
-        fillIdx = alertIdx;
-      } else {
-        // Scan forward from the alert to find the FIRST fill for the same asset/market within 10s.
-        for (let j = alertIdx + 1; j < sortedTicks.length; j++) {
-          const t = sortedTicks[j];
-          const dt = t.ts - alertTick.ts;
-          if (dt > 10_000) break;
-
-          if (matchedFillIds.has(t.id)) continue;
-          if (!t.order_placed || t.fill_price === null) continue;
-          if (t.asset !== alertTick.asset) continue;
-          if (alertTick.market_slug && t.market_slug && t.market_slug !== alertTick.market_slug) continue;
-
-          matchedFill = t;
-          fillIdx = j;
-          matchedFillIds.add(t.id);
-          break;
-        }
-      }
-
-      // Get 5 ticks before (same asset, not alert/fill ticks)
+      // 5 ticks before (same asset, not alert/fill ticks)
       let beforeCount = 0;
       for (let i = alertIdx - 1; i >= 0 && beforeCount < 5; i--) {
         const t = sortedTicks[i];
@@ -155,7 +164,7 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTab
         }
       }
 
-      // Get 5 ticks after fill (or after alert if no fill)
+      // 5 ticks after (start after fill if present)
       let afterCount = 0;
       for (let i = fillIdx + 1; i < sortedTicks.length && afterCount < 5; i++) {
         const t = sortedTicks[i];
@@ -170,8 +179,25 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTab
         alertTick,
         beforeTicks,
         afterTicks,
-        fillTick: matchedFill,
+        fillTick: fill?.tick ?? null,
       });
+    };
+
+    // Build groups for alert-only rows (fills get attached here)
+    for (let i = 0; i < sortedTicks.length; i++) {
+      const t = sortedTicks[i];
+      if (!isPureAlertTick(t)) continue;
+      addGroup(t, i, fillByAlertId.get(t.id) ?? null);
+    }
+
+    // Also show fills that couldn't be matched to an alert (rare, but useful for debugging)
+    for (const idx of orphanFillIdxs) {
+      const t = sortedTicks[idx];
+      // If this fill was already attached to an alert, don't duplicate it
+      const alreadyAttached = Array.from(fillByAlertId.values()).some(v => v.tick.id === t.id);
+      if (alreadyAttached) continue;
+
+      addGroup(t, idx, { tick: t, idx });
     }
     
     // Sort by timestamp descending (newest first)
