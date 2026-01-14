@@ -55,8 +55,10 @@ interface PreSignedOrder {
 }
 
 interface MarketOrderSet {
-  upToken: Map<string, PreSignedOrder>;    // key: `${price}-${size}`
-  downToken: Map<string, PreSignedOrder>;  // key: `${price}-${size}`
+  upTokenBuy: Map<string, PreSignedOrder>;    // key: `${price}-${size}`
+  downTokenBuy: Map<string, PreSignedOrder>;  // key: `${price}-${size}`
+  upTokenSell: Map<string, PreSignedOrder>;   // key: `${price}-${size}`
+  downTokenSell: Map<string, PreSignedOrder>; // key: `${price}-${size}`
   upTokenId: string;
   downTokenId: string;
   lastRefresh: number;
@@ -156,8 +158,10 @@ async function preSignMarketOrders(
   const startTime = Date.now();
   
   const orderSet: MarketOrderSet = {
-    upToken: new Map(),
-    downToken: new Map(),
+    upTokenBuy: new Map(),
+    downTokenBuy: new Map(),
+    upTokenSell: new Map(),
+    downTokenSell: new Map(),
     upTokenId,
     downTokenId,
     lastRefresh: Date.now(),
@@ -165,20 +169,31 @@ async function preSignMarketOrders(
   
   let signedCount = 0;
   
+  // Pre-sign BUY and SELL orders for both UP and DOWN tokens
   for (const direction of ['UP', 'DOWN'] as const) {
     const tokenId = direction === 'UP' ? upTokenId : downTokenId;
-    const tokenMap = direction === 'UP' ? orderSet.upToken : orderSet.downToken;
+    const buyMap = direction === 'UP' ? orderSet.upTokenBuy : orderSet.downTokenBuy;
+    const sellMap = direction === 'UP' ? orderSet.upTokenSell : orderSet.downTokenSell;
     
     for (const price of PRE_SIGN_CONFIG.priceLevels) {
       for (const size of PRE_SIGN_CONFIG.shareSizes) {
         const key = `${price.toFixed(2)}-${size}`;
         
-        const preSignedOrder = await preSignOrder(
+        // Pre-sign BUY order
+        const buyOrder = await preSignOrder(
           client, tokenId, 'BUY', price, size, asset, direction
         );
+        if (buyOrder) {
+          buyMap.set(key, buyOrder);
+          signedCount++;
+        }
         
-        if (preSignedOrder) {
-          tokenMap.set(key, preSignedOrder);
+        // Pre-sign SELL order at same price level
+        const sellOrder = await preSignOrder(
+          client, tokenId, 'SELL', price, size, asset, direction
+        );
+        if (sellOrder) {
+          sellMap.set(key, sellOrder);
           signedCount++;
         }
         
@@ -189,7 +204,7 @@ async function preSignMarketOrders(
   }
   
   const duration = Date.now() - startTime;
-  log(`${asset}: Pre-signed ${signedCount} orders in ${duration}ms`);
+  log(`${asset}: Pre-signed ${signedCount} orders (BUY+SELL) in ${duration}ms`);
   
   return orderSet;
 }
@@ -302,6 +317,7 @@ export async function updateMarketCache(
 function getPreSignedOrder(
   asset: Asset,
   direction: 'UP' | 'DOWN',
+  side: 'BUY' | 'SELL',
   targetPrice: number,
   targetSize: number
 ): PreSignedOrder | null {
@@ -316,7 +332,13 @@ function getPreSignedOrder(
     return null;
   }
   
-  const tokenMap = direction === 'UP' ? orderSet.upToken : orderSet.downToken;
+  // Select appropriate map based on direction and side
+  let tokenMap: Map<string, PreSignedOrder>;
+  if (direction === 'UP') {
+    tokenMap = side === 'BUY' ? orderSet.upTokenBuy : orderSet.upTokenSell;
+  } else {
+    tokenMap = side === 'BUY' ? orderSet.downTokenBuy : orderSet.downTokenSell;
+  }
   
   // Try exact match first
   const exactKey = `${targetPrice.toFixed(2)}-${targetSize}`;
@@ -340,8 +362,16 @@ function getPreSignedOrder(
     const age = Date.now() - order.signedAt;
     if (age >= PRE_SIGN_CONFIG.maxOrderAgeMs) continue;
     
-    if (order.price >= targetPrice) {
+    // For BUY: prefer price >= targetPrice (willing to pay more)
+    // For SELL: prefer price <= targetPrice (willing to accept less)
+    if (side === 'BUY' && order.price >= targetPrice) {
       const priceDiff = order.price - targetPrice;
+      if (priceDiff < bestPriceDiff) {
+        bestPriceDiff = priceDiff;
+        bestMatch = order;
+      }
+    } else if (side === 'SELL' && order.price <= targetPrice) {
+      const priceDiff = targetPrice - order.price;
       if (priceDiff < bestPriceDiff) {
         bestPriceDiff = priceDiff;
         bestMatch = order;
@@ -435,7 +465,7 @@ export async function placeBuyOrder(
         let usedCache = false;
         
         if (asset && direction) {
-          const cached = getPreSignedOrder(asset, direction, orderPrice, sharesPerOrder);
+          const cached = getPreSignedOrder(asset, direction, 'BUY', orderPrice, sharesPerOrder);
           if (cached) {
             signedOrder = cached.signedOrder;
             usedCache = true;
@@ -699,13 +729,15 @@ async function placeSingleBuyOrder(
 }
 
 /**
- * Place a SELL order with aggressive pricing and fill checking
+ * Place a SELL order with aggressive pricing, caching, and fill checking
  * Prices 2¢ below the provided price to ensure fill, uses FOK for instant execution
  */
 export async function placeSellOrder(
   tokenId: string,
   price: number,
-  shares: number
+  shares: number,
+  asset?: Asset,
+  direction?: 'UP' | 'DOWN'
 ): Promise<OrderResult> {
   const start = Date.now();
   const AGGRESSIVE_DISCOUNT_CENTS = 2; // Sell 2¢ cheaper than bestBid
@@ -725,10 +757,26 @@ export async function placeSellOrder(
     
     log(`📤 SELL ${roundedShares} shares @ ${(roundedPrice * 100).toFixed(1)}¢ (aggressive: -${AGGRESSIVE_DISCOUNT_CENTS}¢ from ${(price * 100).toFixed(1)}¢)`);
     
-    const signedOrder = await client.createOrder(
-      { tokenID: tokenId, price: roundedPrice, size: roundedShares, side: Side.SELL },
-      { tickSize: '0.01', negRisk: false }
-    );
+    // Try to use cached pre-signed order first
+    let signedOrder: SignedOrder | null = null;
+    let usedCache = false;
+    
+    if (asset && direction) {
+      const cached = getPreSignedOrder(asset, direction, 'SELL', roundedPrice, roundedShares);
+      if (cached) {
+        signedOrder = cached.signedOrder;
+        usedCache = true;
+        log(`🔐 Using cached SELL order for ${asset} ${direction}`);
+      }
+    }
+    
+    // Fallback to real-time signing
+    if (!signedOrder) {
+      signedOrder = await client.createOrder(
+        { tokenID: tokenId, price: roundedPrice, size: roundedShares, side: Side.SELL },
+        { tickSize: '0.01', negRisk: false }
+      );
+    }
     
     // Try FOK first for instant fill
     let response = await client.postOrder(signedOrder, OrderType.FOK);
@@ -737,6 +785,7 @@ export async function placeSellOrder(
     if (!response.success) {
       // Fallback to GTC if FOK fails
       log(`⚠️ FOK failed, trying GTC...`);
+      // Need to sign a new order for GTC if we used cache (order can't be reused)
       const gtcOrder = await client.createOrder(
         { tokenID: tokenId, price: roundedPrice, size: roundedShares, side: Side.SELL },
         { tickSize: '0.01', negRisk: false }
@@ -753,6 +802,9 @@ export async function placeSellOrder(
       };
     }
     
+    const postLatency = Date.now() - start;
+    log(`📤 Sell order posted (${usedCache ? 'cached' : 'signed'}): ${orderId} in ${postLatency}ms`);
+    
     // Fill check loop
     let filledSize = 0;
     let attempts = 0;
@@ -765,7 +817,7 @@ export async function placeSellOrder(
       
       if (status.filled || filledSize >= roundedShares) {
         const latencyMs = Date.now() - start;
-        log(`✅ Sell FILLED: ${filledSize} shares (${latencyMs}ms)`);
+        log(`✅ Sell FILLED: ${filledSize} shares (${latencyMs}ms, ${usedCache ? 'cached' : 'signed'})`);
         return {
           success: true,
           orderId,
