@@ -23,6 +23,8 @@ import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreS
 import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
 import { acquireLease, releaseLease, isRunnerActive } from './lease.js';
+import { fetchPositions, type PolymarketPosition } from '../positions-sync.js';
+import { config as globalConfig } from '../config.js';
 
 // ============================================
 // POSITION TRACKING
@@ -131,6 +133,80 @@ function getPositionsSummary(): string {
   return Object.entries(byAsset)
     .map(([asset, data]) => `${asset}: ${data.count} pos, ${data.shares} shares, $${data.cost.toFixed(2)}`)
     .join(' | ');
+}
+
+// ============================================
+// LOAD EXISTING POSITIONS FROM POLYMARKET
+// ============================================
+
+/**
+ * Load existing positions from Polymarket API and add them to openPositions.
+ * This allows selling positions that were opened in previous sessions.
+ * 
+ * NOTE: Sell is ALWAYS allowed - no price range restrictions!
+ */
+async function loadExistingPositions(): Promise<void> {
+  const walletAddress = globalConfig.polymarket.address;
+  if (!walletAddress) {
+    log('⚠️ No wallet address configured, skipping position load');
+    return;
+  }
+  
+  log(`📥 Loading existing positions from Polymarket...`);
+  
+  try {
+    const positions = await fetchPositions(walletAddress);
+    
+    if (positions.length === 0) {
+      log('   No existing positions found');
+      return;
+    }
+    
+    // Build set of active token IDs from our markets
+    const activeTokenIds = new Map<string, { asset: Asset; direction: 'UP' | 'DOWN'; market: MarketInfo }>();
+    for (const [asset, market] of markets) {
+      activeTokenIds.set(market.upTokenId, { asset, direction: 'UP', market });
+      activeTokenIds.set(market.downTokenId, { asset, direction: 'DOWN', market });
+    }
+    
+    let loadedCount = 0;
+    
+    for (const pos of positions) {
+      // Skip positions with no shares
+      if (pos.size < 1) continue;
+      
+      // Check if this position matches one of our active markets
+      const matchedMarket = activeTokenIds.get(pos.asset);
+      if (!matchedMarket) continue;
+      
+      const { asset, direction, market } = matchedMarket;
+      
+      // Create synthetic position for sell tracking
+      const positionId = `loaded-${asset}-${direction}-${Date.now()}`;
+      
+      const openPos: OpenPosition = {
+        id: positionId,
+        asset,
+        direction,
+        marketSlug: market.slug,
+        tokenId: pos.asset,
+        shares: Math.floor(pos.size),
+        entryPrice: pos.avgPrice,
+        totalCost: pos.initialValue,
+        entryTime: Date.now() - 30000, // Assume 30s old (will be force-closed soon if needed)
+        orderId: `loaded-${positionId}`,
+      };
+      
+      openPositions.set(positionId, openPos);
+      loadedCount++;
+      
+      log(`   📋 Loaded: ${asset} ${direction} ${openPos.shares} shares @ ${(pos.avgPrice * 100).toFixed(1)}¢`);
+    }
+    
+    log(`✅ Loaded ${loadedCount} existing positions from Polymarket`);
+  } catch (err) {
+    logError('Failed to load existing positions', err);
+  }
 }
 
 // ============================================
@@ -930,6 +1006,9 @@ async function main(): Promise<void> {
     downTokenId: m.downTokenId,
   }));
   await initPreSignedCache(marketsList);
+  
+  // Load existing positions from Polymarket (so they can be sold!)
+  await loadExistingPositions();
   
   isRunning = true;
   
