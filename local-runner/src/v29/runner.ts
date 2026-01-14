@@ -946,6 +946,12 @@ async function checkAndExecuteSells(): Promise<void> {
       }
     }
     
+    // SKIP: Shares at 99¢+ or ≤1¢ don't need force close - they'll settle at $1 or $0
+    if (bestBid >= 0.99 || bestBid <= 0.01) {
+      log(`⏭️ SKIP FORCE CLOSE: ${agg.asset} ${agg.direction} @ ${(bestBid * 100).toFixed(0)}¢ - will settle naturally`, 'sell', agg.asset);
+      continue;
+    }
+    
     // Sell cooldown
     if (now - (lastSellTime[key] ?? 0) < config.order_cooldown_ms) continue;
     
