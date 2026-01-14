@@ -15,7 +15,7 @@ import type { MarketInfo, PriceState, Signal } from './types.js';
 import { startBinanceFeed, stopBinanceFeed } from './binance.js';
 import { startChainlinkFeed, stopChainlinkFeed, getChainlinkPrice } from './chainlink.js';
 import { fetchMarketOrderbook, fetchAllOrderbooks } from './orderbook.js';
-import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb, queueLog, logTick } from './db.js';
+import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb, queueLog, logTick, queueTick } from './db.js';
 import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, getOrderStatus, setFillContext, clearFillContext } from './trading.js';
 import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
@@ -321,23 +321,21 @@ function handleBinancePrice(asset: Asset, price: number, _timestamp: number): vo
   const market = markets.get(asset);
   const chainlinkPrice = state.chainlink;
   
-  // Log tick for every price update with significant delta
-  if (Math.abs(tickDelta) >= 1) {
-    void logTick({
-      runId: RUN_ID,
-      asset,
-      binancePrice: price,
-      chainlinkPrice: chainlinkPrice ?? undefined,
-      binanceDelta: tickDelta,
-      upBestAsk: state.upBestAsk ?? undefined,
-      upBestBid: state.upBestBid ?? undefined,
-      downBestAsk: state.downBestAsk ?? undefined,
-      downBestBid: state.downBestBid ?? undefined,
-      alertTriggered: false,
-      marketSlug: market?.slug,
-      strikePrice: market?.strikePrice,
-    });
-  }
+  // Log EVERY tick to database (queue for batch insert)
+  queueTick({
+    runId: RUN_ID,
+    asset,
+    binancePrice: price,
+    chainlinkPrice: chainlinkPrice ?? undefined,
+    binanceDelta: tickDelta,
+    upBestAsk: state.upBestAsk ?? undefined,
+    upBestBid: state.upBestBid ?? undefined,
+    downBestAsk: state.downBestAsk ?? undefined,
+    downBestBid: state.downBestBid ?? undefined,
+    alertTriggered: false,
+    marketSlug: market?.slug,
+    strikePrice: market?.strikePrice,
+  });
   
   if (Math.abs(tickDelta) >= config.tick_delta_usd) {
     queueLog(RUN_ID, 'info', 'price', `${asset} binance $${price.toFixed(2)} Δ${tickDelta >= 0 ? '+' : ''}${tickDelta.toFixed(2)} 🎯`, asset, { 
