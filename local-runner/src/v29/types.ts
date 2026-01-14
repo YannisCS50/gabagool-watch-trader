@@ -79,3 +79,18 @@ export interface Position {
   trailingActive: boolean;  // True when trailing has been triggered
   sellOrderId: string | null; // Active sell order (max 1)
 }
+
+// Hedge tier configuration
+export interface HedgeTier {
+  maxPrice: number;   // Trigger when opposite side price <= this
+  sharePct: number;   // Hedge this % of unhedged shares
+}
+
+// Accumulator config (derived from V29Config)
+export interface AccumulatorConfigDerived {
+  minHedgeProfitCents: number;
+  maxHedgePrice: number;
+  hedgeTiers: HedgeTier[];
+  maxExposurePerAsset: number;
+  maxCostPerAsset: number;
+}
