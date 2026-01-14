@@ -89,7 +89,9 @@ interface RunnerHeartbeat {
   balance: number | null;
   markets_count: number;
   positions_count: number;
+  trades_count: number;
   version: string | null;
+  last_heartbeat: string | null;
 }
 
 interface Stats {
@@ -152,8 +154,8 @@ export default function V29Dashboard() {
       supabase
         .from('runner_heartbeats')
         .select('*')
-        .ilike('runner_id', 'v29%')
-        .order('created_at', { ascending: false })
+        .or('runner_id.ilike.v29%,id.ilike.v29%,runner_type.eq.v29-live')
+        .order('last_heartbeat', { ascending: false })
         .limit(1),
     ]);
 
@@ -163,11 +165,11 @@ export default function V29Dashboard() {
 
     if (heartbeatRes.data && heartbeatRes.data.length > 0) {
       const hb = heartbeatRes.data[0] as RunnerHeartbeat;
-      const lastBeat = new Date(hb.created_at);
+      const lastBeat = new Date(hb.last_heartbeat || hb.created_at);
       const isOnline = Date.now() - lastBeat.getTime() < 60000;
       setRunnerStatus({
         isOnline,
-        lastHeartbeat: hb.created_at,
+        lastHeartbeat: hb.last_heartbeat || hb.created_at,
         balance: hb.balance,
         marketsCount: hb.markets_count,
         positionsCount: hb.positions_count,

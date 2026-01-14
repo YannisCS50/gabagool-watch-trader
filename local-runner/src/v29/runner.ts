@@ -1048,18 +1048,9 @@ async function main(): Promise<void> {
   }, 30_000);
   
   // Heartbeat every 10 seconds - include position summary
-  const heartbeatInterval = setInterval(() => {
-    const summary = getPositionsSummary();
-    void sendHeartbeat(RUN_ID, 'trading', {
-      buys: buysCount,
-      sells: sellsCount,
-      profitable: profitableSells,
-      lossy: lossSells,
-      totalPnL: totalPnL.toFixed(2),
-      openPositions: openPositions.size,
-      markets: markets.size,
-      positions: summary,
-    });
+  const heartbeatInterval = setInterval(async () => {
+    const balance = await getBalance().catch(() => 0);
+    void sendHeartbeat(RUN_ID, 'trading', balance, openPositions.size, buysCount);
   }, 10_000);
   
   // Log position summary every 30 seconds
