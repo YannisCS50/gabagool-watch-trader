@@ -111,7 +111,6 @@ async function doHeartbeat(runnerId: string): Promise<boolean> {
       // We've been taken over!
       log(`🔄 TAKEOVER DETECTED - new runner: ${data?.runner_id ?? 'unknown'}`);
       log(`🛑 This runner (${runnerId}) will now shutdown...`);
-      isActive = false;
       return false;
     }
     
@@ -141,7 +140,8 @@ function startHeartbeat(runnerId: string): void {
   
   heartbeatInterval = setInterval(async () => {
     const stillActive = await doHeartbeat(runnerId);
-    if (!stillActive && isActive) {
+    if (!stillActive) {
+      if (!isActive) return;
       // We've been taken over - trigger shutdown
       isActive = false;
       stopHeartbeat();
