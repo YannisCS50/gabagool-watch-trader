@@ -580,12 +580,13 @@ async function executeBuy(
     return;
   }
 
+  // signalTs is when we START processing - used for dedup key
   const signalTs = Date.now();
   
   // Generate deterministic signal ID to prevent duplicate orders from multiple runners
   // Round timestamp to nearest second to catch same-tick races
   const signalBucket = Math.floor(signalTs / 1000);
-  const signalId = `${asset}-${direction}-${strikeActualDelta.toFixed(2)}-${signalBucket}`;
+  const dedupKey = `${asset}-${direction}-${strikeActualDelta.toFixed(2)}-${signalBucket}`;
   
   // Get orderbook
   const state = priceState[asset];
@@ -626,19 +627,19 @@ async function executeBuy(
   }
   
   // RACE PREVENTION: Check if this exact signal was already processed (by another runner)
-  // Uses deterministic signalId to deduplicate across runners on same tick
+  // Uses deterministic dedupKey to deduplicate across runners on same tick
   const existingSignal = await db
     .from('v29_signals')
     .select('id')
-    .eq('signal_key', signalId)
+    .eq('signal_key', dedupKey)
     .maybeSingle();
   
   if (existingSignal.data) {
-    log(`🛑 DUPLICATE: Signal ${signalId} already processed by another runner`);
+    log(`🛑 DUPLICATE: Signal ${dedupKey} already processed by another runner`);
     return;
   }
   
-  // Create signal for logging
+  // Create signal for logging - signal_ts is when we STARTED processing (for dedup)
   const signal: Signal = {
     run_id: RUN_ID,
     asset,
@@ -649,7 +650,7 @@ async function executeBuy(
     market_slug: market.slug,
     strike_price: market.strikePrice,
     status: 'pending',
-    signal_ts: signalTs,
+    signal_ts: signalTs,  // Used for dedup + ordering
     entry_price: null,
     exit_price: null,
     shares: null,
@@ -660,7 +661,7 @@ async function executeBuy(
     gross_pnl: null,
     net_pnl: null,
     fees: null,
-    signal_key: signalId, // Add signal key for deduplication
+    signal_key: dedupKey, // Add signal key for deduplication
     notes: `BUY ${direction} | tickΔ$${Math.abs(tickDelta).toFixed(0)} | @${(buyPrice * 100).toFixed(1)}¢`,
   };
   
@@ -680,6 +681,9 @@ async function executeBuy(
     marketSlug: market.slug,
   });
   
+  // ⏱️ LATENCY: Start timer RIGHT BEFORE the API call - this is the TRUE order latency
+  const orderStartTs = Date.now();
+  
   const result = await placeBuyOrder(tokenId, buyPrice, shares, asset, direction);
   
   // Clear context after order
@@ -688,12 +692,12 @@ async function executeBuy(
   // TIMING: fillTs is NOW - right after placeBuyOrder returns
   // FOK orders fill instantly, so this is the true fill time
   const fillTs = Date.now();
-  const signalToFillMs = fillTs - signalTs;
+  const orderLatencyMs = fillTs - orderStartTs;  // TRUE order latency (API call only)
   
   if (!result.success) {
     signal.status = 'failed';
     signal.notes = `${result.error ?? 'Unknown error'}`;
-    log(`❌ FAILED: ${result.error ?? 'Unknown'} (${signalToFillMs}ms)`);
+    log(`❌ FAILED: ${result.error ?? 'Unknown'} (${orderLatencyMs}ms)`);
     void saveSignal(signal);
     return;
   }
@@ -708,7 +712,7 @@ async function executeBuy(
   if (filledSize <= 0) {
     signal.status = 'no_fill';
     signal.notes = `FOK returned 0 shares`;
-    log(`⚠️ FOK order returned 0 shares (${signalToFillMs}ms)`);
+    log(`⚠️ FOK order returned 0 shares (${orderLatencyMs}ms)`);
     void saveSignal(signal);
     return;
   }
@@ -734,10 +738,10 @@ async function executeBuy(
     fillSize: filledSize,
     marketSlug: market.slug,
     strikePrice: market.strikePrice,
-    // LATENCY TRACKING - now accurate!
-    orderLatencyMs: result.latencyMs,
+    // LATENCY TRACKING - orderLatencyMs = TRUE API call latency
+    orderLatencyMs: orderLatencyMs,
     fillLatencyMs: result.fillLatencyMs,
-    signalToFillMs,  // This is now the REAL signal-to-fill time
+    signalToFillMs: orderLatencyMs,  // Use orderLatencyMs as the key metric
     signLatencyMs: result.signLatencyMs,
     postLatencyMs: result.postLatencyMs,
     usedCache: result.usedCache,
@@ -766,9 +770,13 @@ async function executeBuy(
   signal.entry_price = avgPrice;
   signal.shares = filledSize;
   signal.fill_ts = fillTs;
-  signal.notes = `BOUGHT ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ in ${signalToFillMs}ms`;
+  // Store order latency in a way the dashboard can read it
+  // We need to calculate fill_ts - signal_ts = orderLatencyMs for dashboard
+  // But signal_ts includes DB overhead. So we adjust signal_ts to be orderStartTs
+  signal.signal_ts = orderStartTs;  // OVERRIDE: Use orderStartTs so fill_ts - signal_ts = orderLatencyMs
+  signal.notes = `BOUGHT ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ in ${orderLatencyMs}ms`;
   
-  log(`✅ BOUGHT: ${asset} ${direction} ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ (${signalToFillMs}ms) - target: ≥${((avgPrice + config.min_profit_cents / 100) * 100).toFixed(1)}¢`, 'fill', asset);
+  log(`✅ BOUGHT: ${asset} ${direction} ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ (${orderLatencyMs}ms) - target: ≥${((avgPrice + config.min_profit_cents / 100) * 100).toFixed(1)}¢`, 'fill', asset);
   
   void saveSignal(signal);
 }
