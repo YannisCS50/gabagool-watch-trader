@@ -105,50 +105,33 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTab
     const groups: AlertGroup[] = [];
     const sortedTicks = [...ticks].sort((a, b) => a.ts - b.ts); // oldest first for context
     
-    // Find all alerts
-    const alertIndices: number[] = [];
-    sortedTicks.forEach((tick, idx) => {
-      if (tick.alert_triggered) {
-        alertIndices.push(idx);
-      }
-    });
+    // Find all alerts WITH fills (alert_triggered=true AND fill_price IS NOT NULL)
+    // These are the "complete" alert+fill records
+    const alertsWithFills = sortedTicks.filter(t => t.alert_triggered && t.fill_price !== null);
     
-    for (const alertIdx of alertIndices) {
-      const alertTick = sortedTicks[alertIdx];
+    // Also find alerts without fills (blocked, skipped, etc.)
+    const alertsWithoutFills = sortedTicks.filter(t => t.alert_triggered && t.fill_price === null);
+    
+    // Process alerts with fills first
+    for (const alertTick of alertsWithFills) {
+      const alertIdx = sortedTicks.indexOf(alertTick);
       const beforeTicks: V29Tick[] = [];
       const afterTicks: V29Tick[] = [];
-      let fillTick: V29Tick | null = null;
       
-      // Get 5 ticks before (same asset)
+      // Get 5 ticks before (same asset, not alert ticks)
       let beforeCount = 0;
       for (let i = alertIdx - 1; i >= 0 && beforeCount < 5; i--) {
-        if (sortedTicks[i].asset === alertTick.asset) {
+        if (sortedTicks[i].asset === alertTick.asset && !sortedTicks[i].alert_triggered) {
           beforeTicks.unshift(sortedTicks[i]);
           beforeCount++;
         }
       }
       
-      // Get ticks after (including fill), max 10 ticks or until 5 after fill
+      // Get 5 ticks after (same asset, not alert ticks)
       let afterCount = 0;
-      let foundFill = false;
-      let ticksAfterFill = 0;
-      
-      for (let i = alertIdx + 1; i < sortedTicks.length && afterCount < 15; i++) {
-        if (sortedTicks[i].asset === alertTick.asset) {
-          const tick = sortedTicks[i];
-          
-          if (tick.fill_price !== null && !foundFill) {
-            fillTick = tick;
-            foundFill = true;
-            ticksAfterFill = 0;
-          } else if (foundFill) {
-            ticksAfterFill++;
-            if (ticksAfterFill > 5) break;
-          }
-          
-          if (!tick.fill_price) {
-            afterTicks.push(tick);
-          }
+      for (let i = alertIdx + 1; i < sortedTicks.length && afterCount < 5; i++) {
+        if (sortedTicks[i].asset === alertTick.asset && !sortedTicks[i].alert_triggered) {
+          afterTicks.push(sortedTicks[i]);
           afterCount++;
         }
       }
@@ -157,13 +140,46 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTab
         id: alertTick.id,
         alertTick,
         beforeTicks,
-        afterTicks: afterTicks.slice(0, 5),
-        fillTick,
+        afterTicks,
+        fillTick: alertTick, // The alert tick IS the fill tick (same record)
       });
     }
     
-    // Newest first
-    return groups.reverse();
+    // Process alerts without fills (blocked/skipped)
+    for (const alertTick of alertsWithoutFills) {
+      const alertIdx = sortedTicks.indexOf(alertTick);
+      const beforeTicks: V29Tick[] = [];
+      const afterTicks: V29Tick[] = [];
+      
+      // Get 5 ticks before
+      let beforeCount = 0;
+      for (let i = alertIdx - 1; i >= 0 && beforeCount < 5; i--) {
+        if (sortedTicks[i].asset === alertTick.asset && !sortedTicks[i].alert_triggered) {
+          beforeTicks.unshift(sortedTicks[i]);
+          beforeCount++;
+        }
+      }
+      
+      // Get 5 ticks after
+      let afterCount = 0;
+      for (let i = alertIdx + 1; i < sortedTicks.length && afterCount < 5; i++) {
+        if (sortedTicks[i].asset === alertTick.asset && !sortedTicks[i].alert_triggered) {
+          afterTicks.push(sortedTicks[i]);
+          afterCount++;
+        }
+      }
+      
+      groups.push({
+        id: alertTick.id,
+        alertTick,
+        beforeTicks,
+        afterTicks,
+        fillTick: null, // No fill
+      });
+    }
+    
+    // Sort by timestamp descending (newest first)
+    return groups.sort((a, b) => b.alertTick.ts - a.alertTick.ts);
   }, [ticks]);
 
   const toggleGroup = (id: string) => {
@@ -357,12 +373,8 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTab
                           {group.beforeTicks.map((tick) => (
                             <TickRow key={tick.id} tick={tick} highlight="before" />
                           ))}
-                          {/* Alert tick */}
-                          <TickRow tick={group.alertTick} highlight="alert" />
-                          {/* Fill tick */}
-                          {group.fillTick && (
-                            <TickRow tick={group.fillTick} highlight="fill" />
-                          )}
+                          {/* Alert + Fill tick (same record when filled) */}
+                          <TickRow tick={group.alertTick} highlight={group.fillTick ? "fill" : "alert"} />
                           {/* After ticks */}
                           {group.afterTicks.map((tick) => (
                             <TickRow key={tick.id} tick={tick} highlight="after" />
