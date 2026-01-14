@@ -12,7 +12,7 @@
 import './http-agent.js';
 
 import 'dotenv/config';
-import { v4 as uuid } from 'crypto';
+import { randomUUID } from 'crypto';
 import { Asset, V29Config, DEFAULT_CONFIG } from './config.js';
 import type { MarketInfo, PriceState, Signal } from './types.js';
 import { startBinanceFeed, stopBinanceFeed } from './binance.js';
@@ -51,6 +51,7 @@ const openPositions = new Map<string, OpenPosition>();
 // ============================================
 
 const RUN_ID = `v29-${Date.now().toString(36)}`;
+const HEARTBEAT_ID = randomUUID();
 let isRunning = false;
 let config: V29Config = { ...DEFAULT_CONFIG };
 
@@ -120,18 +121,19 @@ function getTotalExposure(asset: Asset): { shares: number; cost: number } {
 
 function getPositionsSummary(): string {
   if (openPositions.size === 0) return 'No open positions';
-  
-  const byAsset: Record<string, { shares: number; cost: number; count: number }> = {};
-  
+
+  const byKey: Record<string, { shares: number; cost: number; count: number }> = {};
+
   for (const pos of openPositions.values()) {
-    if (!byAsset[pos.asset]) byAsset[pos.asset] = { shares: 0, cost: 0, count: 0 };
-    byAsset[pos.asset].shares += pos.shares;
-    byAsset[pos.asset].cost += pos.totalCost;
-    byAsset[pos.asset].count++;
+    const key = `${pos.asset} ${pos.direction}`;
+    if (!byKey[key]) byKey[key] = { shares: 0, cost: 0, count: 0 };
+    byKey[key].shares += pos.shares;
+    byKey[key].cost += pos.totalCost;
+    byKey[key].count++;
   }
-  
-  return Object.entries(byAsset)
-    .map(([asset, data]) => `${asset}: ${data.count} pos, ${data.shares} shares, $${data.cost.toFixed(2)}`)
+
+  return Object.entries(byKey)
+    .map(([key, data]) => `${key}: ${data.shares.toFixed(2)} sh ($${data.cost.toFixed(2)})`)
     .join(' | ');
 }
 
@@ -145,67 +147,129 @@ function getPositionsSummary(): string {
  * 
  * NOTE: Sell is ALWAYS allowed - no price range restrictions!
  */
-async function loadExistingPositions(): Promise<void> {
+let positionSyncInFlight = false;
+
+async function loadExistingPositions(opts: { quiet?: boolean } = {}): Promise<void> {
+  const { quiet = false } = opts;
+
+  if (positionSyncInFlight) return;
+  positionSyncInFlight = true;
+
   const walletAddress = globalConfig.polymarket.address;
   if (!walletAddress) {
-    log('⚠️ No wallet address configured, skipping position load');
+    if (!quiet) log('⚠️ No wallet address configured, skipping position load');
+    positionSyncInFlight = false;
     return;
   }
-  
-  log(`📥 Loading existing positions from Polymarket...`);
-  
+
+  if (markets.size === 0) {
+    if (!quiet) log('⚠️ Markets not loaded yet, skipping position load');
+    positionSyncInFlight = false;
+    return;
+  }
+
+  if (!quiet) log('📥 Loading positions from Polymarket (wallet truth)...');
+
   try {
     const positions = await fetchPositions(walletAddress);
-    
-    if (positions.length === 0) {
-      log('   No existing positions found');
-      return;
-    }
-    
-    // Build set of active token IDs from our markets
-    const activeTokenIds = new Map<string, { asset: Asset; direction: 'UP' | 'DOWN'; market: MarketInfo }>();
+
+    // Only positions that match our CURRENT active markets (by slug)
+    const slugToMarket = new Map<string, { asset: Asset; market: MarketInfo }>();
     for (const [asset, market] of markets) {
-      activeTokenIds.set(market.upTokenId, { asset, direction: 'UP', market });
-      activeTokenIds.set(market.downTokenId, { asset, direction: 'DOWN', market });
+      slugToMarket.set(market.slug, { asset, market });
     }
-    
-    let loadedCount = 0;
-    
-    for (const pos of positions) {
-      // Skip positions with no shares
-      if (pos.size < 1) continue;
-      
-      // Check if this position matches one of our active markets
-      const matchedMarket = activeTokenIds.get(pos.asset);
-      if (!matchedMarket) continue;
-      
-      const { asset, direction, market } = matchedMarket;
-      
-      // Create synthetic position for sell tracking
-      const positionId = `loaded-${asset}-${direction}-${Date.now()}`;
-      
-      const openPos: OpenPosition = {
-        id: positionId,
-        asset,
+
+    const aggregates = new Map<string, {
+      asset: Asset;
+      direction: 'UP' | 'DOWN';
+      market: MarketInfo;
+      shares: number;
+      cost: number;
+    }>();
+
+    for (const p of positions) {
+      if (!p.eventSlug) continue;
+      const m = slugToMarket.get(p.eventSlug);
+      if (!m) continue;
+      if (p.size <= 0.0001) continue;
+
+      const outcome = (p.outcome || '').toLowerCase();
+      const direction: 'UP' | 'DOWN' = (outcome === 'up' || outcome === 'yes') ? 'UP' : 'DOWN';
+
+      const key = `${m.market.slug}:${direction}`;
+      const prev = aggregates.get(key);
+      const addShares = Number(p.size) || 0;
+      const addCost = Number(p.initialValue) || (Number(p.avgPrice) * addShares);
+
+      aggregates.set(key, {
+        asset: m.asset,
         direction,
-        marketSlug: market.slug,
-        tokenId: pos.asset,
-        shares: Math.floor(pos.size),
-        entryPrice: pos.avgPrice,
-        totalCost: pos.initialValue,
-        entryTime: Date.now() - 30000, // Assume 30s old (will be force-closed soon if needed)
-        orderId: `loaded-${positionId}`,
-      };
-      
-      openPositions.set(positionId, openPos);
-      loadedCount++;
-      
-      log(`   📋 Loaded: ${asset} ${direction} ${openPos.shares} shares @ ${(pos.avgPrice * 100).toFixed(1)}¢`);
+        market: m.market,
+        shares: (prev?.shares ?? 0) + addShares,
+        cost: (prev?.cost ?? 0) + addCost,
+      });
     }
-    
-    log(`✅ Loaded ${loadedCount} existing positions from Polymarket`);
+
+    // Remove stale wallet-derived positions first
+    const keepWalletKeys = new Set<string>();
+    for (const [key] of aggregates) keepWalletKeys.add(`wallet:${key}`);
+
+    for (const [posId] of openPositions) {
+      if (!posId.startsWith('wallet:')) continue;
+      if (!keepWalletKeys.has(posId)) openPositions.delete(posId);
+    }
+
+    // Upsert wallet-derived positions into openPositions
+    let loadedCount = 0;
+    for (const [key, agg] of aggregates) {
+      const positionId = `wallet:${key}`;
+
+      // Remove any in-memory positions for the same market+direction to avoid double-counting
+      for (const [posId, pos] of openPositions) {
+        if (pos.marketSlug === agg.market.slug && pos.direction === agg.direction && pos.asset === agg.asset) {
+          openPositions.delete(posId);
+        }
+      }
+
+      const avgPrice = agg.shares > 0 ? agg.cost / agg.shares : 0;
+      const tokenId = agg.direction === 'UP' ? agg.market.upTokenId : agg.market.downTokenId;
+
+      openPositions.set(positionId, {
+        id: positionId,
+        asset: agg.asset,
+        direction: agg.direction,
+        marketSlug: agg.market.slug,
+        tokenId,
+        shares: agg.shares,
+        entryPrice: avgPrice,
+        totalCost: agg.cost,
+        entryTime: Date.now() - 30_000,
+        orderId: `wallet-${positionId}`,
+      });
+
+      loadedCount++;
+
+      if (!quiet) {
+        log(`   📋 Wallet: ${agg.asset} ${agg.direction} ${agg.shares.toFixed(2)} sh @ ${(avgPrice * 100).toFixed(1)}¢ (${agg.market.slug})`);
+      }
+    }
+
+    if (!quiet) {
+      if (loadedCount === 0) {
+        log(`   No matching positions for active markets (wallet has ${positions.length} total positions).`);
+        const sample = positions
+          .filter(p => p.size > 0.0001)
+          .slice(0, 3)
+          .map(p => `${p.eventSlug ?? 'no-slug'} / ${p.outcome} / ${p.size}`)
+          .join(' | ');
+        if (sample) log(`   Sample wallet positions: ${sample}`);
+      }
+      log(`✅ Wallet sync done: ${loadedCount} active positions loaded`);
+    }
   } catch (err) {
-    logError('Failed to load existing positions', err);
+    if (!quiet) logError('Failed to load existing positions', err);
+  } finally {
+    positionSyncInFlight = false;
   }
 }
 
@@ -1009,32 +1073,37 @@ async function main(): Promise<void> {
   
   // Load existing positions from Polymarket (so they can be sold!)
   await loadExistingPositions();
-  
+
   isRunning = true;
-  
+
   // Start Binance feed
   startBinanceFeed(config.assets, handleBinancePrice, config.binance_poll_ms);
   log('✅ Binance feed started');
-  
+
   // Start Chainlink feed
   startChainlinkFeed(config.assets, handleChainlinkPrice);
   log('✅ Chainlink feed started');
-  
+
   // Orderbook polling
   const orderbookInterval = setInterval(() => {
     void pollOrderbooks();
   }, config.orderbook_poll_ms);
-  
+
   // Sell check interval - check for sell opportunities
   const sellInterval = setInterval(() => {
     void checkAndExecuteSells();
   }, config.sell_check_ms);
-  
+
+  // Reconcile positions from wallet every 45s (prevents "ghost positions" / missing positions)
+  const positionSyncInterval = setInterval(() => {
+    void loadExistingPositions({ quiet: true });
+  }, 45_000);
+
   // Market refresh every 2 minutes
   const marketRefreshInterval = setInterval(() => {
     void fetchMarkets();
   }, 2 * 60 * 1000);
-  
+
   // Config reload every 30 seconds
   const configReloadInterval = setInterval(async () => {
     const newConfig = await loadV29Config();
@@ -1046,30 +1115,31 @@ async function main(): Promise<void> {
       }
     }
   }, 30_000);
-  
-  // Heartbeat every 10 seconds - include position summary
+
+  // Heartbeat every 10 seconds
   const heartbeatInterval = setInterval(async () => {
     const balance = await getBalance().catch(() => 0);
-    void sendHeartbeat(RUN_ID, 'trading', balance, openPositions.size, buysCount);
+    void sendHeartbeat(HEARTBEAT_ID, RUN_ID, 'trading', balance, openPositions.size, buysCount);
   }, 10_000);
-  
+
   // Log position summary every 30 seconds
   const summaryInterval = setInterval(() => {
     const summary = getPositionsSummary();
     log(`📊 Positions: ${summary} | P&L: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)} | Buys: ${buysCount} | Sells: ${sellsCount} (${profitableSells}✅/${lossSells}❌)`);
   }, 30_000);
-  
+
   log('🎯 V29 Buy-and-Sell Runner READY');
   log(`   Strategy: Buy → Profit-take (≥${config.min_profit_cents}¢) → Force close (${config.force_close_after_sec}s)`);
   log(`   Shares: ${config.shares_per_trade} | Max Exposure: ${config.max_exposure_per_asset}`);
   log(`   Aggregation: after ${config.aggregate_after_sec}s | Force close: after ${config.force_close_after_sec}s`);
-  
+
   // Handle shutdown - release lease!
   const cleanup = async () => {
     log('🛑 Shutting down...');
     isRunning = false;
     clearInterval(orderbookInterval);
     clearInterval(sellInterval);
+    clearInterval(positionSyncInterval);
     clearInterval(marketRefreshInterval);
     clearInterval(configReloadInterval);
     clearInterval(heartbeatInterval);

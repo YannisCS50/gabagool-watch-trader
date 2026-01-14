@@ -383,25 +383,26 @@ export async function loadConfigFromDb(): Promise<Record<string, unknown> | null
  * Send heartbeat
  */
 export async function sendHeartbeat(
-  runId: string,
+  heartbeatId: string,
+  runnerId: string,
   status: string,
   balance: number,
   positionCount: number,
   tradesCount: number
 ): Promise<void> {
   const db = getDb();
-  
+
   try {
     await db.from('runner_heartbeats').upsert({
-      id: runId,
-      runner_id: runId,  // Also set runner_id for dashboard queries
+      id: heartbeatId,
+      runner_id: runnerId,
       runner_type: 'v29-live',
       status,
       last_heartbeat: new Date().toISOString(),
       balance,
-      positions_count: positionCount,  // Match dashboard column name
-      trades_count: tradesCount,       // Match dashboard column name
-      markets_count: 4,                // V29 supports 4 assets
+      positions_count: positionCount,
+      trades_count: tradesCount,
+      markets_count: 4,
       version: 'v29.0.1',
     });
   } catch (err) {

@@ -154,7 +154,7 @@ export default function V29Dashboard() {
       supabase
         .from('runner_heartbeats')
         .select('*')
-        .or('runner_id.ilike.v29%,id.ilike.v29%,runner_type.eq.v29-live')
+        .eq('runner_type', 'v29-live')
         .order('last_heartbeat', { ascending: false })
         .limit(1),
     ]);
