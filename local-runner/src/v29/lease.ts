@@ -20,8 +20,12 @@ function log(msg: string): void {
   console.log(`[V29:LEASE] ${msg}`);
 }
 
+// Grace period to let old runner shutdown before we start trading
+const TAKEOVER_GRACE_MS = 5_000;
+
 /**
  * Register as the active runner (takeover any existing)
+ * BLOCKS until old runner has had time to shutdown
  */
 export async function acquireLease(runnerId: string): Promise<boolean> {
   const db = getDb();
@@ -35,7 +39,9 @@ export async function acquireLease(runnerId: string): Promise<boolean> {
       .eq('id', LEASE_ID)
       .single();
     
-    if (existing && existing.runner_id !== runnerId) {
+    const hadExistingRunner = existing && existing.runner_id !== runnerId;
+    
+    if (hadExistingRunner) {
       log(`⚠️ Taking over from ${existing.runner_id}`);
     }
     
@@ -57,11 +63,27 @@ export async function acquireLease(runnerId: string): Promise<boolean> {
     
     currentRunnerId = runnerId;
     isActive = true;
-    log(`✅ Registered as active runner: ${runnerId}`);
     
     // Start heartbeat that also checks for takeover
     startHeartbeat(runnerId);
     
+    // CRITICAL: If we took over, wait for old runner to shutdown
+    if (hadExistingRunner) {
+      log(`⏳ Waiting ${TAKEOVER_GRACE_MS}ms for old runner to shutdown...`);
+      await new Promise(resolve => setTimeout(resolve, TAKEOVER_GRACE_MS));
+      
+      // Verify we still own the lease after grace period
+      const stillOwner = await validateLease(runnerId);
+      if (!stillOwner) {
+        log(`❌ Lost lease during grace period - another runner took over`);
+        isActive = false;
+        stopHeartbeat();
+        return false;
+      }
+      log(`✅ Grace period complete - we are the sole runner`);
+    }
+    
+    log(`✅ Registered as active runner: ${runnerId}`);
     return true;
     
   } catch (err) {
