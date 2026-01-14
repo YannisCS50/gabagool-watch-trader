@@ -27,10 +27,13 @@ const TAKEOVER_GRACE_MS = 5_000;
  * Register as the active runner (takeover any existing)
  * BLOCKS until old runner has had time to shutdown
  */
-export async function acquireLease(runnerId: string): Promise<boolean> {
+export async function acquireLease(
+  runnerId: string,
+  opts: { force?: boolean } = {}
+): Promise<boolean> {
   const db = getDb();
   const now = new Date();
-  
+
   try {
     // Check if there's an existing runner
     const { data: existing } = await db
@@ -38,14 +41,31 @@ export async function acquireLease(runnerId: string): Promise<boolean> {
       .select('*')
       .eq('id', LEASE_ID)
       .single();
-    
-    const hadExistingRunner = existing && existing.runner_id !== runnerId;
-    
-    if (hadExistingRunner) {
-      log(`⚠️ Taking over from ${existing.runner_id}`);
+
+    const existingRunnerId = existing?.runner_id as string | undefined;
+    const existingExpiresAt = (existing as any)?.expires_at as string | undefined;
+
+    const isExpired = (() => {
+      if (!existingExpiresAt) return true;
+      const exp = new Date(existingExpiresAt);
+      return Number.isNaN(exp.getTime()) || exp <= now;
+    })();
+
+    const heldByOther = Boolean(existingRunnerId && existingRunnerId !== runnerId && !isExpired);
+
+    if (heldByOther && !opts.force) {
+      log(`🛑 Lease is held by ${existingRunnerId} until ${existingExpiresAt} (no takeover).`);
+      log(`   Stop the other runner or start with FORCE_TAKEOVER=1 if you really want to replace it.`);
+      return false;
     }
-    
-    // Upsert - always succeed, always takeover
+
+    const isForcingTakeover = heldByOther && Boolean(opts.force);
+
+    if (isForcingTakeover) {
+      log(`⚡ FORCING takeover from ${existingRunnerId}`);
+    }
+
+    // Upsert - claim if expired OR forcing OR same runner id
     const { error } = await db
       .from('runner_leases')
       .upsert({
@@ -55,23 +75,23 @@ export async function acquireLease(runnerId: string): Promise<boolean> {
         expires_at: new Date(now.getTime() + 60_000).toISOString(),
         heartbeat_at: now.toISOString(),
       });
-    
+
     if (error) {
       log(`❌ Registration failed: ${error.message}`);
       return false;
     }
-    
+
     currentRunnerId = runnerId;
     isActive = true;
-    
+
     // Start heartbeat that also checks for takeover
     startHeartbeat(runnerId);
-    
-    // CRITICAL: If we took over, wait for old runner to shutdown
-    if (hadExistingRunner) {
+
+    // If we forced takeover, wait for old runner to shutdown
+    if (isForcingTakeover) {
       log(`⏳ Waiting ${TAKEOVER_GRACE_MS}ms for old runner to shutdown...`);
       await new Promise(resolve => setTimeout(resolve, TAKEOVER_GRACE_MS));
-      
+
       // Verify we still own the lease after grace period
       const stillOwner = await validateLease(runnerId);
       if (!stillOwner) {
@@ -82,10 +102,9 @@ export async function acquireLease(runnerId: string): Promise<boolean> {
       }
       log(`✅ Grace period complete - we are the sole runner`);
     }
-    
+
     log(`✅ Registered as active runner: ${runnerId}`);
     return true;
-    
   } catch (err) {
     log(`❌ Registration error: ${err}`);
     return false;

@@ -1104,14 +1104,14 @@ async function main(): Promise<void> {
   log('✅ DB initialized');
   
   // ============================================
-  // RUNNER REGISTRATION - TAKEOVER ANY EXISTING
+  // RUNNER REGISTRATION - NO TAKEOVER BY DEFAULT
   // ============================================
-  const registered = await acquireLease(RUN_ID);
+  const registered = await acquireLease(RUN_ID, { force: process.env.FORCE_TAKEOVER === '1' });
   if (!registered) {
-    logError('❌ Failed to register runner');
+    logError('❌ Failed to register runner (another runner is active)');
     process.exit(1);
   }
-  log('🔒 Registered as active runner (any previous runner will auto-shutdown)');
+  log('🔒 Registered as active runner');
   
   // VPN check
   const vpnOk = await verifyVpnConnection();
