@@ -18,6 +18,7 @@ interface V29Config {
   min_share_price: number;
   max_share_price: number;
   shares_per_trade: number;
+  prevent_counter_scalping: boolean;
   take_profit_cents: number;
   timeout_seconds: number;
   max_sell_retries: number;
@@ -36,6 +37,7 @@ const DEFAULT_CONFIG: V29Config = {
   min_share_price: 0.30,
   max_share_price: 0.75,
   shares_per_trade: 5,
+  prevent_counter_scalping: true,
   take_profit_cents: 4,
   timeout_seconds: 10,
   max_sell_retries: 5,
@@ -74,22 +76,25 @@ export function V29ConfigEditor() {
         }
       } else {
         // Map old fields to new fields if they exist
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const dbData = data as any;
         const mappedConfig: V29Config = {
-          id: data.id,
-          enabled: data.enabled ?? true,
-          tick_delta_usd: data.tick_delta_usd ?? 6,
-          delta_threshold: data.delta_threshold ?? 75,
-          min_share_price: data.min_share_price ?? 0.30,
-          max_share_price: data.max_share_price ?? 0.75,
-          shares_per_trade: data.shares_per_trade ?? data.max_shares ?? 5,
-          take_profit_cents: data.take_profit_cents ?? data.min_profit_cents ?? 4,
-          timeout_seconds: data.timeout_seconds ?? (data.timeout_ms ? data.timeout_ms / 1000 : 10),
-          max_sell_retries: data.max_sell_retries ?? 5,
-          price_buffer_cents: data.price_buffer_cents ?? 1,
-          assets: data.assets ?? ['BTC', 'ETH', 'SOL', 'XRP'],
-          binance_poll_ms: data.binance_poll_ms ?? 100,
-          orderbook_poll_ms: data.orderbook_poll_ms ?? 2000,
-          order_cooldown_ms: data.order_cooldown_ms ?? 3000,
+          id: dbData.id,
+          enabled: dbData.enabled ?? true,
+          tick_delta_usd: dbData.tick_delta_usd ?? 6,
+          delta_threshold: dbData.delta_threshold ?? 75,
+          min_share_price: dbData.min_share_price ?? 0.30,
+          max_share_price: dbData.max_share_price ?? 0.75,
+          shares_per_trade: dbData.shares_per_trade ?? dbData.max_shares ?? 5,
+          prevent_counter_scalping: dbData.prevent_counter_scalping ?? true,
+          take_profit_cents: dbData.take_profit_cents ?? dbData.min_profit_cents ?? 4,
+          timeout_seconds: dbData.timeout_seconds ?? (dbData.timeout_ms ? dbData.timeout_ms / 1000 : 10),
+          max_sell_retries: dbData.max_sell_retries ?? 5,
+          price_buffer_cents: dbData.price_buffer_cents ?? 1,
+          assets: dbData.assets ?? ['BTC', 'ETH', 'SOL', 'XRP'],
+          binance_poll_ms: dbData.binance_poll_ms ?? 100,
+          orderbook_poll_ms: dbData.orderbook_poll_ms ?? 2000,
+          order_cooldown_ms: dbData.order_cooldown_ms ?? 3000,
         };
         setConfig(mappedConfig);
       }
@@ -102,14 +107,16 @@ export function V29ConfigEditor() {
   };
 
   const createDefaultConfig = async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { data, error } = await supabase
       .from('v29_config')
-      .insert(DEFAULT_CONFIG)
+      .insert(DEFAULT_CONFIG as any)
       .select()
       .single();
 
     if (error) throw error;
-    setConfig(data as V29Config);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    setConfig(data as any as V29Config);
   };
 
   const updateField = <K extends keyof V29Config>(field: K, value: V29Config[K]) => {
@@ -130,6 +137,7 @@ export function V29ConfigEditor() {
     if (!config) return;
     setSaving(true);
     try {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const { error } = await supabase
         .from('v29_config')
         .update({
@@ -139,6 +147,7 @@ export function V29ConfigEditor() {
           min_share_price: config.min_share_price,
           max_share_price: config.max_share_price,
           shares_per_trade: config.shares_per_trade,
+          prevent_counter_scalping: config.prevent_counter_scalping,
           take_profit_cents: config.take_profit_cents,
           timeout_seconds: config.timeout_seconds,
           max_sell_retries: config.max_sell_retries,
@@ -147,7 +156,7 @@ export function V29ConfigEditor() {
           binance_poll_ms: config.binance_poll_ms,
           orderbook_poll_ms: config.orderbook_poll_ms,
           order_cooldown_ms: config.order_cooldown_ms,
-        })
+        } as any)
         .eq('id', 'default');
 
       if (error) throw error;
@@ -235,7 +244,33 @@ export function V29ConfigEditor() {
             <li>3. Timeout: <strong>{config.timeout_seconds}s</strong> → Market sell</li>
             <li>4. Max sell retries: <strong>{config.max_sell_retries}x</strong>, daarna force sell</li>
             <li>5. <strong>Max 1 positie</strong> tegelijk (geen stacking!)</li>
+            {config.prevent_counter_scalping && (
+              <li className="text-amber-400">6. 🛡️ <strong>Counter-scalp blocker ACTIEF</strong> - geen opposite trades!</li>
+            )}
           </ul>
+        </div>
+
+        {/* Counter-Scalping Toggle */}
+        <div className="flex items-center justify-between p-3 rounded-lg bg-amber-500/10 border border-amber-500/20">
+          <div className="flex items-center gap-3">
+            <Switch
+              checked={config.prevent_counter_scalping}
+              onCheckedChange={(v) => updateField('prevent_counter_scalping', v)}
+            />
+            <div>
+              <Label className="text-amber-400">Prevent Counter-Scalping</Label>
+              <p className="text-xs text-muted-foreground">
+                {config.prevent_counter_scalping 
+                  ? '🛡️ Blokkeert kopen van tegenovergestelde richting als je al positie hebt' 
+                  : '⚠️ Kan beide richtingen kopen in dezelfde markt'}
+              </p>
+            </div>
+          </div>
+          {config.prevent_counter_scalping && (
+            <Badge variant="outline" className="text-amber-400 border-amber-400">
+              BESCHERMD
+            </Badge>
+          )}
         </div>
 
         {/* Assets Selection */}

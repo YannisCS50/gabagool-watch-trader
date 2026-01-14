@@ -615,6 +615,21 @@ async function executeBuy(
     return;
   }
   
+  // === COUNTER-SCALPING PREVENTION ===
+  // Don't buy opposite direction if we already have a position in this market
+  if (config.prevent_counter_scalping) {
+    const oppositeDirection = direction === 'UP' ? 'DOWN' : 'UP';
+    const oppositePositions = Array.from(openPositions.values()).filter(
+      p => p.marketSlug === market.slug && p.direction === oppositeDirection
+    );
+    
+    if (oppositePositions.length > 0) {
+      const totalOppositeShares = oppositePositions.reduce((sum, p) => sum + p.shares, 0);
+      log(`🛑 COUNTER-SCALP BLOCKED: Already have ${totalOppositeShares.toFixed(2)} ${oppositeDirection} shares in ${market.slug} - won't buy ${direction}`, 'guard', asset);
+      return;
+    }
+  }
+  
   // Calculate price with buffer
   const priceBuffer = config.price_buffer_cents / 100;
   const buyPrice = Math.ceil((bestAsk + priceBuffer) * 100) / 100;
@@ -1128,9 +1143,9 @@ async function main(): Promise<void> {
   const loadedConfig = await loadV29Config();
   if (loadedConfig) {
     config = { ...DEFAULT_CONFIG, ...loadedConfig };
-    log(`✅ Config loaded: enabled=${config.enabled}, shares=${config.shares_per_trade}, min_profit=${config.min_profit_cents}¢`);
+    log(`✅ Config loaded: enabled=${config.enabled}, shares=${config.shares_per_trade}, counter-scalp-block=${config.prevent_counter_scalping}`);
   } else {
-    log(`⚠️ Using defaults: shares=${config.shares_per_trade}, min_profit=${config.min_profit_cents}¢`);
+    log(`⚠️ Using defaults: shares=${config.shares_per_trade}, counter-scalp-block=${config.prevent_counter_scalping}`);
   }
   
   // Fetch markets
@@ -1189,7 +1204,7 @@ async function main(): Promise<void> {
       const changed = JSON.stringify(config) !== JSON.stringify({ ...DEFAULT_CONFIG, ...newConfig });
       if (changed) {
         config = { ...DEFAULT_CONFIG, ...newConfig };
-        log(`🔧 Config updated: enabled=${config.enabled}, shares=${config.shares_per_trade}, min_profit=${config.min_profit_cents}¢`);
+        log(`🔧 Config updated: enabled=${config.enabled}, shares=${config.shares_per_trade}, counter-scalp-block=${config.prevent_counter_scalping}`);
       }
     }
   }, 30_000);
