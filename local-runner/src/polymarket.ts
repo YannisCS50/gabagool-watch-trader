@@ -1,3 +1,6 @@
+// CRITICAL: Import HTTP agent FIRST to configure axios before SDK
+import './v29/http-agent.js';
+
 import crypto from 'node:crypto';
 import { ClobClient, Side, OrderType } from '@polymarket/clob-client';
 import { Wallet } from 'ethers';
