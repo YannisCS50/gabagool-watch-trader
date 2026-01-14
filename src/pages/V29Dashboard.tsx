@@ -16,6 +16,7 @@ import { format, formatDistanceToNow } from 'date-fns';
 import { nl } from 'date-fns/locale';
 import { V29ConfigEditor } from '@/components/v29/V29ConfigEditor';
 import { V29LogViewer } from '@/components/v29/V29LogViewer';
+import { V29TickTable } from '@/components/v29/V29TickTable';
 import { LatencyTracker } from '@/components/v27/LatencyTracker';
 import { PriceLatencyChart } from '@/components/v27/PriceLatencyChart';
 import { RealtimePriceMonitor } from '@/components/RealtimePriceMonitor';
@@ -502,6 +503,10 @@ export default function V29Dashboard() {
               <Zap className="h-3 w-3 mr-1" />
               Live
             </TabsTrigger>
+            <TabsTrigger value="ticks" className="text-xs sm:text-sm px-2 sm:px-3 bg-cyan-500/20 text-cyan-400">
+              <Activity className="h-3 w-3 mr-1" />
+              Ticks
+            </TabsTrigger>
             <TabsTrigger value="signals" className="text-xs sm:text-sm px-2 sm:px-3">
               <TrendingUp className="h-3 w-3 mr-1" />
               Signals
@@ -537,6 +542,11 @@ export default function V29Dashboard() {
         {/* Live Tab - Real-time prices */}
         <TabsContent value="realtime" className="space-y-4 mt-4">
           <RealtimePriceMonitor />
+        </TabsContent>
+
+        {/* Tick-by-Tick Tab */}
+        <TabsContent value="ticks" className="mt-4">
+          <V29TickTable assetFilter={assetFilter} maxRows={150} />
         </TabsContent>
 
         {/* Signals Tab */}

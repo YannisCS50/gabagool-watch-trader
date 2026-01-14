@@ -5573,6 +5573,75 @@ export type Database = {
         }
         Relationships: []
       }
+      v29_ticks: {
+        Row: {
+          alert_triggered: boolean | null
+          asset: string
+          binance_delta: number | null
+          binance_price: number | null
+          chainlink_price: number | null
+          created_at: string
+          down_best_ask: number | null
+          down_best_bid: number | null
+          fill_price: number | null
+          fill_size: number | null
+          id: string
+          market_slug: string | null
+          order_id: string | null
+          order_placed: boolean | null
+          run_id: string | null
+          signal_direction: string | null
+          strike_price: number | null
+          ts: number
+          up_best_ask: number | null
+          up_best_bid: number | null
+        }
+        Insert: {
+          alert_triggered?: boolean | null
+          asset: string
+          binance_delta?: number | null
+          binance_price?: number | null
+          chainlink_price?: number | null
+          created_at?: string
+          down_best_ask?: number | null
+          down_best_bid?: number | null
+          fill_price?: number | null
+          fill_size?: number | null
+          id?: string
+          market_slug?: string | null
+          order_id?: string | null
+          order_placed?: boolean | null
+          run_id?: string | null
+          signal_direction?: string | null
+          strike_price?: number | null
+          ts: number
+          up_best_ask?: number | null
+          up_best_bid?: number | null
+        }
+        Update: {
+          alert_triggered?: boolean | null
+          asset?: string
+          binance_delta?: number | null
+          binance_price?: number | null
+          chainlink_price?: number | null
+          created_at?: string
+          down_best_ask?: number | null
+          down_best_bid?: number | null
+          fill_price?: number | null
+          fill_size?: number | null
+          id?: string
+          market_slug?: string | null
+          order_id?: string | null
+          order_placed?: boolean | null
+          run_id?: string | null
+          signal_direction?: string | null
+          strike_price?: number | null
+          ts?: number
+          up_best_ask?: number | null
+          up_best_bid?: number | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       v_daily_pnl_cumulative: {

@@ -563,3 +563,122 @@ export async function logFillsBatch(fills: FillRecord[]): Promise<void> {
     log(`⚠️ Failed to log ${fills.length} fills: ${err}`);
   }
 }
+
+// ============================================
+// TICK LOGGING - Tick-by-tick price and signal data
+// ============================================
+
+export interface TickRecord {
+  runId: string;
+  asset: string;
+  binancePrice?: number;
+  chainlinkPrice?: number;
+  binanceDelta?: number;
+  upBestAsk?: number;
+  upBestBid?: number;
+  downBestAsk?: number;
+  downBestBid?: number;
+  alertTriggered?: boolean;
+  signalDirection?: 'UP' | 'DOWN';
+  orderPlaced?: boolean;
+  orderId?: string;
+  fillPrice?: number;
+  fillSize?: number;
+  marketSlug?: string;
+  strikePrice?: number;
+}
+
+// Buffer for tick data (batch inserts for efficiency)
+let tickBuffer: TickRecord[] = [];
+let tickFlushTimeout: NodeJS.Timeout | null = null;
+
+/**
+ * Queue a tick record for batch insert
+ */
+export function queueTick(tick: TickRecord): void {
+  tickBuffer.push(tick);
+  
+  // Flush every 1 second or when buffer reaches 20 items
+  if (tickBuffer.length >= 20) {
+    void flushTicks();
+  } else if (!tickFlushTimeout) {
+    tickFlushTimeout = setTimeout(() => void flushTicks(), 1000);
+  }
+}
+
+/**
+ * Flush all queued ticks to database
+ */
+async function flushTicks(): Promise<void> {
+  if (tickFlushTimeout) {
+    clearTimeout(tickFlushTimeout);
+    tickFlushTimeout = null;
+  }
+  
+  if (tickBuffer.length === 0) return;
+  
+  const batch = tickBuffer;
+  tickBuffer = [];
+  
+  const db = getDb();
+  const ts = Date.now();
+  
+  try {
+    await db.from('v29_ticks').insert(
+      batch.map(t => ({
+        ts,
+        run_id: t.runId,
+        asset: t.asset,
+        binance_price: t.binancePrice ?? null,
+        chainlink_price: t.chainlinkPrice ?? null,
+        binance_delta: t.binanceDelta ?? null,
+        up_best_ask: t.upBestAsk ?? null,
+        up_best_bid: t.upBestBid ?? null,
+        down_best_ask: t.downBestAsk ?? null,
+        down_best_bid: t.downBestBid ?? null,
+        alert_triggered: t.alertTriggered ?? false,
+        signal_direction: t.signalDirection ?? null,
+        order_placed: t.orderPlaced ?? false,
+        order_id: t.orderId ?? null,
+        fill_price: t.fillPrice ?? null,
+        fill_size: t.fillSize ?? null,
+        market_slug: t.marketSlug ?? null,
+        strike_price: t.strikePrice ?? null,
+      }))
+    );
+  } catch (err) {
+    log(`⚠️ Failed to log ${batch.length} ticks: ${err}`);
+  }
+}
+
+/**
+ * Log a single tick immediately (for alerts/orders)
+ */
+export async function logTick(tick: TickRecord): Promise<void> {
+  const db = getDb();
+  
+  try {
+    await db.from('v29_ticks').insert({
+      ts: Date.now(),
+      run_id: tick.runId,
+      asset: tick.asset,
+      binance_price: tick.binancePrice ?? null,
+      chainlink_price: tick.chainlinkPrice ?? null,
+      binance_delta: tick.binanceDelta ?? null,
+      up_best_ask: tick.upBestAsk ?? null,
+      up_best_bid: tick.upBestBid ?? null,
+      down_best_ask: tick.downBestAsk ?? null,
+      down_best_bid: tick.downBestBid ?? null,
+      alert_triggered: tick.alertTriggered ?? false,
+      signal_direction: tick.signalDirection ?? null,
+      order_placed: tick.orderPlaced ?? false,
+      order_id: tick.orderId ?? null,
+      fill_price: tick.fillPrice ?? null,
+      fill_size: tick.fillSize ?? null,
+      market_slug: tick.marketSlug ?? null,
+      strike_price: tick.strikePrice ?? null,
+    });
+  } catch (err) {
+    log(`⚠️ Failed to log tick: ${err}`);
+  }
+}
