@@ -4,7 +4,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { RefreshCw, Bell, CheckCircle, Activity } from 'lucide-react';
+import { RefreshCw, Bell, CheckCircle, Activity, ChevronDown, ChevronUp } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { format } from 'date-fns';
 
@@ -37,19 +37,12 @@ interface V29Tick {
   used_cache: boolean | null;
 }
 
-// A 50ms bucket containing multiple ticks
-interface TickBucket {
-  bucketTs: number; // Start of 50ms window
-  ticks: V29Tick[];
-  hasAlert: boolean;
-  hasFill: boolean;
-  // Aggregated values (last tick in bucket)
-  lastBinancePrice: number | null;
-  lastChainlinkPrice: number | null;
-  totalDelta: number;
-  alertDirection: string | null;
-  fillPrice: number | null;
-  signalToFillMs: number | null;
+interface AlertGroup {
+  id: string;
+  alertTick: V29Tick;
+  beforeTicks: V29Tick[];
+  afterTicks: V29Tick[];
+  fillTick: V29Tick | null;
 }
 
 interface V29TickTableProps {
@@ -57,11 +50,10 @@ interface V29TickTableProps {
   maxRows?: number;
 }
 
-const BUCKET_MS = 50;
-
 export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTableProps) {
   const [ticks, setTicks] = useState<V29Tick[]>([]);
   const [loading, setLoading] = useState(true);
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   const fetchTicks = async () => {
     setLoading(ticks.length === 0);
@@ -108,56 +100,83 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTab
     return () => { supabase.removeChannel(channel); };
   }, [assetFilter, maxRows]);
 
-  // Group ticks into 50ms buckets
-  const buckets = useMemo((): TickBucket[] => {
-    const bucketMap = new Map<string, TickBucket>();
+  // Group ticks around alerts: 5 before, alert, fill, 5 after
+  const alertGroups = useMemo((): AlertGroup[] => {
+    const groups: AlertGroup[] = [];
+    const sortedTicks = [...ticks].sort((a, b) => a.ts - b.ts); // oldest first for context
     
-    for (const tick of ticks) {
-      // Round down to nearest 50ms
-      const bucketTs = Math.floor(tick.ts / BUCKET_MS) * BUCKET_MS;
-      const key = `${tick.asset}-${bucketTs}`;
-      
-      if (!bucketMap.has(key)) {
-        bucketMap.set(key, {
-          bucketTs,
-          ticks: [],
-          hasAlert: false,
-          hasFill: false,
-          lastBinancePrice: null,
-          lastChainlinkPrice: null,
-          totalDelta: 0,
-          alertDirection: null,
-          fillPrice: null,
-          signalToFillMs: null,
-        });
-      }
-      
-      const bucket = bucketMap.get(key)!;
-      bucket.ticks.push(tick);
-      
-      if (tick.binance_price !== null) {
-        bucket.lastBinancePrice = tick.binance_price;
-      }
-      if (tick.chainlink_price !== null) {
-        bucket.lastChainlinkPrice = tick.chainlink_price;
-      }
-      if (tick.binance_delta !== null) {
-        bucket.totalDelta += tick.binance_delta;
-      }
+    // Find all alerts
+    const alertIndices: number[] = [];
+    sortedTicks.forEach((tick, idx) => {
       if (tick.alert_triggered) {
-        bucket.hasAlert = true;
-        bucket.alertDirection = tick.signal_direction;
+        alertIndices.push(idx);
       }
-      if (tick.fill_price !== null) {
-        bucket.hasFill = true;
-        bucket.fillPrice = tick.fill_price;
-        bucket.signalToFillMs = tick.signal_to_fill_ms;
+    });
+    
+    for (const alertIdx of alertIndices) {
+      const alertTick = sortedTicks[alertIdx];
+      const beforeTicks: V29Tick[] = [];
+      const afterTicks: V29Tick[] = [];
+      let fillTick: V29Tick | null = null;
+      
+      // Get 5 ticks before (same asset)
+      let beforeCount = 0;
+      for (let i = alertIdx - 1; i >= 0 && beforeCount < 5; i--) {
+        if (sortedTicks[i].asset === alertTick.asset) {
+          beforeTicks.unshift(sortedTicks[i]);
+          beforeCount++;
+        }
       }
+      
+      // Get ticks after (including fill), max 10 ticks or until 5 after fill
+      let afterCount = 0;
+      let foundFill = false;
+      let ticksAfterFill = 0;
+      
+      for (let i = alertIdx + 1; i < sortedTicks.length && afterCount < 15; i++) {
+        if (sortedTicks[i].asset === alertTick.asset) {
+          const tick = sortedTicks[i];
+          
+          if (tick.fill_price !== null && !foundFill) {
+            fillTick = tick;
+            foundFill = true;
+            ticksAfterFill = 0;
+          } else if (foundFill) {
+            ticksAfterFill++;
+            if (ticksAfterFill > 5) break;
+          }
+          
+          if (!tick.fill_price) {
+            afterTicks.push(tick);
+          }
+          afterCount++;
+        }
+      }
+      
+      groups.push({
+        id: alertTick.id,
+        alertTick,
+        beforeTicks,
+        afterTicks: afterTicks.slice(0, 5),
+        fillTick,
+      });
     }
     
-    // Sort by timestamp descending (newest first)
-    return Array.from(bucketMap.values()).sort((a, b) => b.bucketTs - a.bucketTs);
+    // Newest first
+    return groups.reverse();
   }, [ticks]);
+
+  const toggleGroup = (id: string) => {
+    setExpandedGroups(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
 
   const formatPrice = (price: number | null, decimals = 2) => {
     if (price === null) return '-';
@@ -170,7 +189,7 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTab
   };
 
   const formatDelta = (delta: number | null) => {
-    if (delta === null || delta === 0) return '-';
+    if (delta === null) return '-';
     const sign = delta >= 0 ? '+' : '';
     return `${sign}$${delta.toFixed(2)}`;
   };
@@ -183,8 +202,57 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTab
       ? fillsWithLatency.reduce((sum, t) => sum + (t.signal_to_fill_ms || 0), 0) / fillsWithLatency.length 
       : null;
     
-    return { alerts, fills, total: ticks.length, buckets: buckets.length, avgSignalToFill };
-  }, [ticks, buckets]);
+    return { alerts, fills, total: ticks.length, avgSignalToFill };
+  }, [ticks]);
+
+  const TickRow = ({ tick, highlight }: { tick: V29Tick; highlight?: 'alert' | 'fill' | 'before' | 'after' }) => (
+    <TableRow className={`text-xs hover:bg-muted/50 ${
+      highlight === 'alert' ? 'bg-yellow-500/10 border-l-2 border-yellow-500' :
+      highlight === 'fill' ? 'bg-green-500/10 border-l-2 border-green-500' :
+      highlight === 'before' ? 'bg-muted/30' :
+      highlight === 'after' ? 'bg-muted/20' : ''
+    }`}>
+      <TableCell className="font-mono text-[10px]">
+        {format(new Date(tick.ts), 'HH:mm:ss.SSS')}
+      </TableCell>
+      <TableCell>
+        <Badge variant="outline" className="text-[10px]">{tick.asset}</Badge>
+      </TableCell>
+      <TableCell className="text-right font-mono">{formatPrice(tick.binance_price)}</TableCell>
+      <TableCell className="text-right font-mono text-muted-foreground">{formatPrice(tick.chainlink_price)}</TableCell>
+      <TableCell className={`text-right font-mono ${
+        tick.binance_delta !== null ? tick.binance_delta >= 0 ? 'text-green-500' : 'text-red-500' : ''
+      }`}>
+        {formatDelta(tick.binance_delta)}
+      </TableCell>
+      <TableCell className="text-center">
+        {tick.alert_triggered ? (
+          <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-500/30 text-[10px]">
+            <Bell className="h-2.5 w-2.5 mr-0.5" />{tick.signal_direction || 'Y'}
+          </Badge>
+        ) : '-'}
+      </TableCell>
+      <TableCell className="text-right font-mono">{formatCents(tick.up_best_ask)}</TableCell>
+      <TableCell className="text-right font-mono">{formatCents(tick.down_best_ask)}</TableCell>
+      <TableCell className="text-center">
+        {tick.order_placed ? <CheckCircle className="h-3 w-3 text-blue-400 mx-auto" /> : '-'}
+      </TableCell>
+      <TableCell className="text-right font-mono">
+        {tick.fill_price !== null ? (
+          <span className="text-green-500">{formatCents(tick.fill_price)}</span>
+        ) : '-'}
+      </TableCell>
+      <TableCell className="text-right font-mono">
+        {tick.signal_to_fill_ms !== null ? (
+          <span className={tick.signal_to_fill_ms < 100 ? 'text-green-500' : tick.signal_to_fill_ms < 500 ? 'text-yellow-500' : 'text-red-500'}>
+            {tick.signal_to_fill_ms}ms
+          </span>
+        ) : tick.order_latency_ms !== null ? (
+          <span className="text-muted-foreground">{tick.order_latency_ms}ms</span>
+        ) : '-'}
+      </TableCell>
+    </TableRow>
+  );
 
   return (
     <Card>
@@ -192,15 +260,15 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTab
         <div className="flex items-center justify-between">
           <CardTitle className="text-base flex items-center gap-2">
             <Activity className="h-4 w-4" />
-            Tick Log (50ms buckets)
+            Tick Log (per Alert)
           </CardTitle>
           <div className="flex items-center gap-2">
-            <Badge variant="outline" className="text-xs">{stats.total} ticks → {stats.buckets} buckets</Badge>
+            <Badge variant="outline" className="text-xs">{stats.total} ticks</Badge>
             <Badge variant="secondary" className="text-xs">
-              <Bell className="h-3 w-3 mr-1" />{stats.alerts}
+              <Bell className="h-3 w-3 mr-1" />{stats.alerts} alerts
             </Badge>
             <Badge className="bg-green-500/20 text-green-400 text-xs">
-              <CheckCircle className="h-3 w-3 mr-1" />{stats.fills}
+              <CheckCircle className="h-3 w-3 mr-1" />{stats.fills} fills
             </Badge>
             {stats.avgSignalToFill !== null && (
               <Badge variant="outline" className="text-xs bg-purple-500/10 text-purple-400 border-purple-500/30">
@@ -218,81 +286,92 @@ export function V29TickTable({ assetFilter = 'ALL', maxRows = 1000 }: V29TickTab
           <Table>
             <TableHeader>
               <TableRow className="text-xs">
-                <TableHead className="w-[100px]">Tijd (50ms)</TableHead>
+                <TableHead className="w-[90px]">Tijd</TableHead>
                 <TableHead className="w-[45px]">Asset</TableHead>
                 <TableHead className="text-right">Binance</TableHead>
                 <TableHead className="text-right">Chainlink</TableHead>
-                <TableHead className="text-right">Δ (sum)</TableHead>
+                <TableHead className="text-right">Delta</TableHead>
                 <TableHead className="text-center">Alert</TableHead>
-                <TableHead className="text-center">Fill</TableHead>
+                <TableHead className="text-right">Up Ask</TableHead>
+                <TableHead className="text-right">Down Ask</TableHead>
+                <TableHead className="text-center">Order</TableHead>
+                <TableHead className="text-right">Fill</TableHead>
                 <TableHead className="text-right">Latency</TableHead>
-                <TableHead className="text-right"># ticks</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {buckets.map((bucket) => {
-                const firstTick = bucket.ticks[0];
-                return (
-                  <TableRow 
-                    key={`${firstTick.asset}-${bucket.bucketTs}`} 
-                    className={`text-xs hover:bg-muted/50 ${
-                      bucket.hasAlert ? 'bg-yellow-500/10 border-l-2 border-yellow-500' :
-                      bucket.hasFill ? 'bg-green-500/10 border-l-2 border-green-500' : ''
-                    }`}
-                  >
-                    <TableCell className="font-mono text-[10px]">
-                      {format(new Date(bucket.bucketTs), 'HH:mm:ss.SSS')}
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline" className="text-[10px]">{firstTick.asset}</Badge>
-                    </TableCell>
-                    <TableCell className="text-right font-mono">
-                      {formatPrice(bucket.lastBinancePrice)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono text-muted-foreground">
-                      {formatPrice(bucket.lastChainlinkPrice)}
-                    </TableCell>
-                    <TableCell className={`text-right font-mono ${
-                      bucket.totalDelta > 0 ? 'text-green-500' : bucket.totalDelta < 0 ? 'text-red-500' : ''
-                    }`}>
-                      {formatDelta(bucket.totalDelta)}
-                    </TableCell>
-                    <TableCell className="text-center">
-                      {bucket.hasAlert ? (
-                        <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-500/30 text-[10px]">
-                          <Bell className="h-2.5 w-2.5 mr-0.5" />{bucket.alertDirection || 'Y'}
-                        </Badge>
-                      ) : '-'}
-                    </TableCell>
-                    <TableCell className="text-center">
-                      {bucket.hasFill ? (
-                        <Badge className="bg-green-500/20 text-green-400 border-green-500/30 text-[10px]">
-                          {formatCents(bucket.fillPrice)}
-                        </Badge>
-                      ) : '-'}
-                    </TableCell>
-                    <TableCell className="text-right font-mono">
-                      {bucket.signalToFillMs !== null ? (
-                        <span className={
-                          bucket.signalToFillMs < 100 ? 'text-green-500' : 
-                          bucket.signalToFillMs < 500 ? 'text-yellow-500' : 'text-red-500'
-                        }>
-                          {bucket.signalToFillMs}ms
-                        </span>
-                      ) : '-'}
-                    </TableCell>
-                    <TableCell className="text-right text-muted-foreground">
-                      {bucket.ticks.length}
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-              {buckets.length === 0 && !loading && (
+              {alertGroups.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
-                    Geen tick data. Start de V29 runner.
+                  <TableCell colSpan={11} className="text-center text-muted-foreground py-8">
+                    Geen alerts gevonden. {stats.total > 0 ? `${stats.total} ticks in database.` : 'Start de V29 runner.'}
                   </TableCell>
                 </TableRow>
+              ) : (
+                alertGroups.map((group) => {
+                  const isExpanded = expandedGroups.has(group.id);
+                  return (
+                    <tbody key={group.id}>
+                      {/* Group header */}
+                      <TableRow 
+                        className="cursor-pointer hover:bg-muted/50 border-t-2 border-border"
+                        onClick={() => toggleGroup(group.id)}
+                      >
+                        <TableCell colSpan={11} className="py-2">
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                              <Badge className="bg-yellow-500/20 text-yellow-400 border-yellow-500/30">
+                                <Bell className="h-3 w-3 mr-1" />
+                                {group.alertTick.asset} {group.alertTick.signal_direction}
+                              </Badge>
+                              <span className="font-mono text-xs">
+                                {format(new Date(group.alertTick.ts), 'HH:mm:ss.SSS')}
+                              </span>
+                              <span className="text-muted-foreground text-xs">
+                                Binance ${formatPrice(group.alertTick.binance_price)} | Δ{formatDelta(group.alertTick.binance_delta)}
+                              </span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {group.fillTick ? (
+                                <Badge className="bg-green-500/20 text-green-400 border-green-500/30 text-xs">
+                                  Filled @ {formatCents(group.fillTick.fill_price)}
+                                  {group.fillTick.signal_to_fill_ms && ` (${group.fillTick.signal_to_fill_ms}ms)`}
+                                </Badge>
+                              ) : (
+                                <Badge variant="outline" className="text-xs text-muted-foreground">
+                                  No fill
+                                </Badge>
+                              )}
+                              <span className="text-xs text-muted-foreground">
+                                {group.beforeTicks.length + 1 + (group.fillTick ? 1 : 0) + group.afterTicks.length} ticks
+                              </span>
+                            </div>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                      
+                      {/* Expanded content */}
+                      {isExpanded && (
+                        <>
+                          {/* Before ticks */}
+                          {group.beforeTicks.map((tick) => (
+                            <TickRow key={tick.id} tick={tick} highlight="before" />
+                          ))}
+                          {/* Alert tick */}
+                          <TickRow tick={group.alertTick} highlight="alert" />
+                          {/* Fill tick */}
+                          {group.fillTick && (
+                            <TickRow tick={group.fillTick} highlight="fill" />
+                          )}
+                          {/* After ticks */}
+                          {group.afterTicks.map((tick) => (
+                            <TickRow key={tick.id} tick={tick} highlight="after" />
+                          ))}
+                        </>
+                      )}
+                    </tbody>
+                  );
+                })
               )}
             </TableBody>
           </Table>
