@@ -19,6 +19,7 @@ type StatusCallback = (event: StatusEvent) => void;
 
 let ws: WebSocket | null = null;
 let reconnectTimeout: NodeJS.Timeout | null = null;
+let healthCheckInterval: NodeJS.Timeout | null = null;
 
 let priceCallback: PriceCallback | null = null;
 let statusCallback: StatusCallback | null = null;
@@ -27,6 +28,11 @@ let isRunning = false;
 let currentAssets: Asset[] = [];
 
 const BINANCE_WS_BASE = 'wss://stream.binance.com:9443/ws';
+
+// Health check: if no message received for 10 seconds, force reconnect
+const HEALTH_CHECK_INTERVAL_MS = 5000;  // Check every 5 seconds
+const STALE_THRESHOLD_MS = 10000;       // Consider stale after 10 seconds
+let lastMessageTime = 0;
 
 // Buffer configuration - DISABLED for lowest latency
 // Set to 0 to emit every trade immediately (no aggregation)
@@ -137,10 +143,13 @@ function connect(): void {
 
   ws.on('open', () => {
     log('✅ Connected to Binance');
+    lastMessageTime = Date.now();  // Reset health check timer
     statusCallback?.({ type: 'open', url });
+    startHealthCheck();  // Start health monitoring
   });
 
   ws.on('message', (data: Buffer) => {
+    lastMessageTime = Date.now();  // Update health check timer on every message
     try {
       const msg = JSON.parse(data.toString());
 
@@ -162,18 +171,50 @@ function connect(): void {
 
   ws.on('close', () => {
     log('⚠️ Disconnected from Binance');
+    stopHealthCheck();
     statusCallback?.({ type: 'close', url });
     scheduleReconnect();
   });
 
   ws.on('error', (err) => {
     log(`❌ WebSocket error: ${err.message}`);
+    stopHealthCheck();
     statusCallback?.({ type: 'error', url, message: err.message });
   });
 }
 
+// Health check: detect stale WebSocket connections
+function startHealthCheck(): void {
+  stopHealthCheck();  // Clear any existing interval
+  
+  healthCheckInterval = setInterval(() => {
+    if (!isRunning || !ws) return;
+    
+    const timeSinceLastMessage = Date.now() - lastMessageTime;
+    if (timeSinceLastMessage > STALE_THRESHOLD_MS) {
+      log(`⚠️ WebSocket stale (${Math.round(timeSinceLastMessage / 1000)}s without data), forcing reconnect...`);
+      
+      // Force close and reconnect
+      if (ws) {
+        ws.terminate();  // Use terminate() instead of close() for immediate disconnect
+        ws = null;
+      }
+      scheduleReconnect();
+    }
+  }, HEALTH_CHECK_INTERVAL_MS);
+}
+
+function stopHealthCheck(): void {
+  if (healthCheckInterval) {
+    clearInterval(healthCheckInterval);
+    healthCheckInterval = null;
+  }
+}
+
 function scheduleReconnect(): void {
   if (!isRunning) return;
+
+  stopHealthCheck();  // Stop health check during reconnect
 
   if (reconnectTimeout) {
     clearTimeout(reconnectTimeout);
@@ -210,6 +251,8 @@ export function stopBinanceFeed(): void {
   isRunning = false;
   priceCallback = null;
   statusCallback = null;
+
+  stopHealthCheck();
 
   if (reconnectTimeout) {
     clearTimeout(reconnectTimeout);
