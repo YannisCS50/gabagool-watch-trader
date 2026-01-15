@@ -587,7 +587,12 @@ async function main(): Promise<void> {
   }
   
   // Initialize pre-signed order cache
-  await initPreSignedCache();
+  const marketArray = Array.from(markets.entries()).map(([asset, market]) => ({
+    asset,
+    upTokenId: market.upTokenId,
+    downTokenId: market.downTokenId,
+  }));
+  await initPreSignedCache(marketArray);
   
   // Start price feeds
   startBinanceFeed((asset, price) => handleBinancePrice(asset, price));

@@ -257,48 +257,58 @@ export async function loadHistoricalData(limit: number = 10000): Promise<Array<{
 }>> {
   const supabase = getDb();
   
-  // Join v29_ticks with market_history to get outcomes
+  // First get market history for outcomes and end times
+  const { data: markets, error: marketsError } = await supabase
+    .from('market_history')
+    .select('slug, result, event_end_time')
+    .not('result', 'is', null);
+  
+  if (marketsError || !markets) {
+    console.error('[V30] Failed to load market history:', marketsError?.message);
+    return [];
+  }
+  
+  const marketMap = new Map<string, { result: string; endTime: number }>();
+  for (const m of markets) {
+    marketMap.set(m.slug, {
+      result: m.result,
+      endTime: new Date(m.event_end_time).getTime(),
+    });
+  }
+  
+  // Get v29_ticks
   const { data, error } = await supabase
     .from('v29_ticks')
     .select(`
       asset,
       binance_price,
       strike_price,
-      market_end_epoch,
       ts,
       market_slug
     `)
     .not('strike_price', 'is', null)
     .not('binance_price', 'is', null)
+    .not('market_slug', 'is', null)
     .order('ts', { ascending: false })
     .limit(limit);
   
   if (error || !data) {
-    console.error('[V30] Failed to load historical data:', error?.message);
+    console.error('[V30] Failed to load historical ticks:', error?.message);
     return [];
-  }
-  
-  // Get market outcomes
-  const slugs = [...new Set(data.map(d => d.market_slug).filter(Boolean))];
-  
-  const { data: outcomes } = await supabase
-    .from('market_history')
-    .select('slug, result')
-    .in('slug', slugs);
-  
-  const outcomeMap = new Map<string, string>();
-  for (const o of outcomes || []) {
-    outcomeMap.set(o.slug, o.result);
   }
   
   // Transform data
   return data
-    .filter(d => d.market_slug && outcomeMap.has(d.market_slug))
-    .map(d => ({
-      asset: d.asset as Asset,
-      deltaToStrike: Number(d.binance_price) - Number(d.strike_price),
-      secRemaining: Math.max(0, (Number(d.market_end_epoch) - d.ts) / 1000),
-      upWon: outcomeMap.get(d.market_slug!) === 'UP',
-      ts: d.ts,
-    }));
+    .filter(d => d.market_slug && marketMap.has(d.market_slug))
+    .map(d => {
+      const market = marketMap.get(d.market_slug!)!;
+      return {
+        asset: d.asset as Asset,
+        deltaToStrike: Number(d.binance_price) - Number(d.strike_price),
+        secRemaining: Math.max(0, (market.endTime - d.ts) / 1000),
+        upWon: market.result === 'UP',
+        ts: d.ts,
+      };
+    });
+}
 }
