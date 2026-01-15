@@ -550,6 +550,70 @@ const BURST_FILL_CONFIG = {
   totalTimeoutMs: 200,
 };
 
+// ============================================
+// BURST FILL STATISTICS TRACKING
+// ============================================
+
+interface BurstFillStats {
+  // Tracks fills by price level offset (0 = bestAsk, 1 = bestAsk-1¢, 2 = bestAsk-2¢)
+  fillsByLevel: Record<number, { attempts: number; fills: number; shares: number }>;
+  totalBursts: number;
+  totalFills: number;
+  lastReset: number;
+}
+
+const burstStats: BurstFillStats = {
+  fillsByLevel: {},
+  totalBursts: 0,
+  totalFills: 0,
+  lastReset: Date.now(),
+};
+
+function recordBurstFill(levelIdx: number, shares: number): void {
+  if (!burstStats.fillsByLevel[levelIdx]) {
+    burstStats.fillsByLevel[levelIdx] = { attempts: 0, fills: 0, shares: 0 };
+  }
+  burstStats.fillsByLevel[levelIdx].fills++;
+  burstStats.fillsByLevel[levelIdx].shares += shares;
+  burstStats.totalFills++;
+}
+
+function recordBurstAttempt(levelIdx: number): void {
+  if (!burstStats.fillsByLevel[levelIdx]) {
+    burstStats.fillsByLevel[levelIdx] = { attempts: 0, fills: 0, shares: 0 };
+  }
+  burstStats.fillsByLevel[levelIdx].attempts++;
+}
+
+export function getBurstFillStats(): BurstFillStats & { summary: string } {
+  const levels = Object.entries(burstStats.fillsByLevel)
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([level, stats]) => {
+      const fillRate = stats.attempts > 0 ? ((stats.fills / stats.attempts) * 100).toFixed(1) : '0';
+      const levelName = Number(level) === 0 ? 'bestAsk' : `bestAsk-${level}¢`;
+      return `${levelName}: ${stats.fills}/${stats.attempts} (${fillRate}%) = ${stats.shares} shares`;
+    });
+  
+  return {
+    ...burstStats,
+    summary: levels.length > 0 ? levels.join(' | ') : 'No data yet',
+  };
+}
+
+export function logBurstStats(): void {
+  const stats = getBurstFillStats();
+  log(`📊 BURST STATS: ${stats.totalBursts} bursts, ${stats.totalFills} fills`);
+  log(`📊 BY LEVEL: ${stats.summary}`);
+}
+
+export function resetBurstStats(): void {
+  burstStats.fillsByLevel = {};
+  burstStats.totalBursts = 0;
+  burstStats.totalFills = 0;
+  burstStats.lastReset = Date.now();
+  log('📊 Burst stats reset');
+}
+
 /**
  * Place a BUY order - uses BURST FILL mode for faster execution
  * 
@@ -590,6 +654,9 @@ export async function placeBuyOrder(
     // BURST FILL MODE
     const { burstCount, priceStepCents, fillCheckDelayMs, totalTimeoutMs } = BURST_FILL_CONFIG;
     
+    // Track this burst attempt
+    burstStats.totalBursts++;
+    
     // DYNAMIC SHARES: Each burst order must be ≥ $1 (Polymarket minimum)
     const MIN_ORDER_VALUE = 1.0; // $1 minimum
     const sharesPerOrder = Math.max(BURST_FILL_CONFIG.sharesPerOrder, Math.ceil(MIN_ORDER_VALUE / price));
@@ -602,6 +669,8 @@ export async function placeBuyOrder(
     for (let i = 0; i < burstCount; i++) {
       priceLevels.push(Math.max(currentPrice, 0.01));
       currentPrice -= priceStepCents;
+      // Record attempt for this level
+      recordBurstAttempt(i);
     }
     
     // Fire all orders in parallel with a timeout
@@ -721,6 +790,8 @@ export async function placeBuyOrder(
     for (const order of filledOrders) {
       totalFilled += order.filledSize;
       weightedPriceSum += order.price * order.filledSize;
+      // Track which price level got filled
+      recordBurstFill(order.idx, order.filledSize);
     }
     
     const avgFillPrice = totalFilled > 0 ? weightedPriceSum / totalFilled : price;
@@ -797,6 +868,8 @@ export async function placeBuyOrder(
     for (const order of finalFilledOrders) {
       totalFilled += order.filledSize;
       weightedPriceSum += order.price * order.filledSize;
+      // Track which price level got filled (delayed fills)
+      recordBurstFill(order.idx, order.filledSize);
     }
     
     const finalAvgPrice = totalFilled > 0 ? weightedPriceSum / totalFilled : price;
