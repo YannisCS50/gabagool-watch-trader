@@ -594,9 +594,10 @@ async function main(): Promise<void> {
   }));
   await initPreSignedCache(marketArray);
   
-  // Start price feeds
-  startBinanceFeed((asset, price) => handleBinancePrice(asset, price));
-  startChainlinkFeed((asset, price) => handleChainlinkPrice(asset, price));
+  // Start price feeds with configured assets
+  const assets = config.assets;
+  startBinanceFeed(assets, (asset, price) => handleBinancePrice(asset, price));
+  startChainlinkFeed(assets, (asset, price) => handleChainlinkPrice(asset, price));
   
   // Start orderbook WebSocket
   const tokenIds: string[] = [];
