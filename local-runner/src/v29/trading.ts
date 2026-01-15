@@ -532,7 +532,11 @@ export async function placeBuyOrder(
     }
     
     // BURST FILL MODE
-    const { burstCount, sharesPerOrder, priceStepCents, fillCheckDelayMs, totalTimeoutMs } = BURST_FILL_CONFIG;
+    const { burstCount, priceStepCents, fillCheckDelayMs, totalTimeoutMs } = BURST_FILL_CONFIG;
+    
+    // DYNAMIC SHARES: Each burst order must be ≥ $1 (Polymarket minimum)
+    const MIN_ORDER_VALUE = 1.0; // $1 minimum
+    const sharesPerOrder = Math.max(BURST_FILL_CONFIG.sharesPerOrder, Math.ceil(MIN_ORDER_VALUE / price));
     
     log(`🚀 Burst fill: ${asset} ${direction} firing ${burstCount}x${sharesPerOrder} shares starting @ ${(price * 100).toFixed(1)}¢`);
     
