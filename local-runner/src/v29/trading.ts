@@ -1020,12 +1020,16 @@ async function placeSingleBuyOrder(
 }
 
 /**
- * Place a SELL order with aggressive pricing, caching, and fill checking
+ * Place a SELL order - LIMIT ORDER AT BEST BID
  * 
- * RETRY STRATEGY:
- * 1. Try FOK at bestBid - aggressiveDiscount (default 2¢)
- * 2. If FOK fails, retry at bestBid - 4¢ 
- * 3. If still fails, use GTC order at bestBid - 5¢ and wait for fill
+ * CRITICAL FIX: We use the bestBid price AS-IS, not discounted!
+ * The aggressiveDiscountCents is IGNORED for SELL orders because
+ * discounting the bid means we're selling for LESS than market price.
+ * 
+ * STRATEGY:
+ * 1. Place GTC limit sell at bestBid (the price passed in)
+ * 2. Wait for fill with polling
+ * 3. Cancel if not filled within timeout
  */
 export async function placeSellOrder(
   tokenId: string,
@@ -1033,15 +1037,11 @@ export async function placeSellOrder(
   shares: number,
   asset?: Asset,
   direction?: 'UP' | 'DOWN',
-  aggressiveDiscountCents: number = 2
+  _aggressiveDiscountCents: number = 0 // IGNORED - kept for API compatibility
 ): Promise<OrderResult> {
   const start = Date.now();
   const FILL_CHECK_INTERVAL_MS = 150;
   const MAX_FILL_WAIT_MS = 3000;
-  
-  // Retry config: each attempt uses more aggressive pricing
-  const RETRY_DISCOUNTS = [aggressiveDiscountCents, 4, 5];
-  const USE_GTC_ON_LAST_RETRY = true;
 
   try {
     const client = await getClient();
@@ -1051,144 +1051,107 @@ export async function placeSellOrder(
       return { success: false, error: 'Shares < 1', latencyMs: Date.now() - start };
     }
     
-    let lastError = '';
+    // CRITICAL: Use the EXACT price passed in - this is bestBid!
+    // DO NOT discount it - that would mean selling for less than market price!
+    const roundedPrice = Math.round(price * 100) / 100;
     
-    // Try each discount level
-    for (let attempt = 0; attempt < RETRY_DISCOUNTS.length; attempt++) {
-      const discountCents = RETRY_DISCOUNTS[attempt];
-      const isLastAttempt = attempt === RETRY_DISCOUNTS.length - 1;
-      const useGtc = isLastAttempt && USE_GTC_ON_LAST_RETRY;
-      
-      const aggressivePrice = Math.max(0.01, price - (discountCents / 100));
-      const roundedPrice = Math.round(aggressivePrice * 100) / 100;
-      
-      if (attempt === 0) {
-        log(`📤 SELL ${roundedShares} shares @ ${(roundedPrice * 100).toFixed(1)}¢ (aggressive: -${discountCents}¢ from ${(price * 100).toFixed(1)}¢)`);
-      } else {
-        log(`🔄 SELL RETRY #${attempt + 1}: ${roundedShares} @ ${(roundedPrice * 100).toFixed(1)}¢ (-${discountCents}¢) ${useGtc ? '[GTC]' : '[FOK]'}`);
+    log(`📤 SELL ${roundedShares} shares @ ${(roundedPrice * 100).toFixed(1)}¢ (bestBid, NO discount)`);
+    
+    // Try to use cached pre-signed order first
+    let signedOrder: SignedOrder | null = null;
+    let usedCache = false;
+    
+    if (asset && direction) {
+      const cached = getPreSignedOrder(asset, direction, 'SELL', roundedPrice, roundedShares);
+      if (cached) {
+        signedOrder = cached.signedOrder;
+        usedCache = true;
       }
-      
-      // Try to use cached pre-signed order first
-      let signedOrder: SignedOrder | null = null;
-      let usedCache = false;
-      
-      if (asset && direction) {
-        const cached = getPreSignedOrder(asset, direction, 'SELL', roundedPrice, roundedShares);
-        if (cached) {
-          signedOrder = cached.signedOrder;
-          usedCache = true;
-        }
-      }
-      
-      // Fallback to real-time signing
-      if (!signedOrder) {
-        try {
-          signedOrder = await client.createOrder(
-            { tokenID: tokenId, price: roundedPrice, size: roundedShares, side: Side.SELL },
-            { tickSize: '0.01', negRisk: false }
-          );
-        } catch (signErr) {
-          lastError = asErrorMessage(signErr);
-          log(`⚠️ Sign failed: ${lastError}`);
-          continue; // Try next discount level
-        }
-      }
-      
-      // Post order: FOK for fast fill, GTC on last retry for guaranteed placement
-      const orderType = useGtc ? OrderType.GTC : OrderType.FOK;
-      
-      let response;
+    }
+    
+    // Fallback to real-time signing
+    if (!signedOrder) {
       try {
-        response = await client.postOrder(signedOrder, orderType);
-      } catch (postErr) {
-        lastError = asErrorMessage(postErr);
-        log(`⚠️ Post failed (${useGtc ? 'GTC' : 'FOK'}): ${lastError}`);
-        continue; // Try next discount level
+        signedOrder = await client.createOrder(
+          { tokenID: tokenId, price: roundedPrice, size: roundedShares, side: Side.SELL },
+          { tickSize: '0.01', negRisk: false }
+        );
+      } catch (signErr) {
+        const errMsg = asErrorMessage(signErr);
+        log(`⚠️ Sign failed: ${errMsg}`);
+        return { success: false, error: errMsg, latencyMs: Date.now() - start };
       }
+    }
+    
+    // Post GTC order - we want the order to stay open at our price
+    let response;
+    try {
+      response = await client.postOrder(signedOrder, OrderType.GTC);
+    } catch (postErr) {
+      const errMsg = asErrorMessage(postErr);
+      log(`⚠️ Post failed (GTC): ${errMsg}`);
+      return { success: false, error: errMsg, latencyMs: Date.now() - start };
+    }
+    
+    const orderId = response.orderID;
+    
+    if (!response.success || !orderId) {
+      const errMsg = asErrorMessage(response.errorMsg) || 'Sell rejected';
+      log(`⚠️ Order rejected: ${errMsg}`);
+      return { success: false, error: errMsg, latencyMs: Date.now() - start };
+    }
+    
+    const postLatency = Date.now() - start;
+    log(`📤 Sell order posted (${usedCache ? 'cached' : 'signed'}, GTC): ${orderId} in ${postLatency}ms`);
+    
+    // GTC order - wait for fill with polling
+    let filledSize = 0;
+    let attempts = 0;
+    const maxAttempts = Math.ceil(MAX_FILL_WAIT_MS / FILL_CHECK_INTERVAL_MS);
+    
+    while (attempts < maxAttempts) {
+      await new Promise(r => setTimeout(r, FILL_CHECK_INTERVAL_MS));
+      const status = await getOrderStatus(orderId);
+      filledSize = status.filledSize;
       
-      const orderId = response.orderID;
-      
-      if (!response.success || !orderId) {
-        lastError = asErrorMessage(response.errorMsg) || 'Sell rejected';
-        log(`⚠️ Order rejected: ${lastError}`);
-        continue; // Try next discount level
-      }
-      
-      const postLatency = Date.now() - start;
-      log(`📤 Sell order posted (${usedCache ? 'cached' : 'signed'}, ${useGtc ? 'GTC' : 'FOK'}): ${orderId} in ${postLatency}ms`);
-      
-      // For FOK orders, check immediate fill
-      if (!useGtc) {
-        // FOK either fills immediately or is cancelled
-        const status = await getOrderStatus(orderId);
-        if (status.filledSize >= roundedShares) {
-          const latencyMs = Date.now() - start;
-          log(`✅ Sell FILLED (FOK): ${status.filledSize} shares (${latencyMs}ms)`);
-          return {
-            success: true,
-            orderId,
-            avgPrice: roundedPrice,
-            filledSize: status.filledSize,
-            latencyMs,
-          };
-        }
-        // FOK didn't fill, try next discount
-        lastError = `FOK not filled at ${(roundedPrice * 100).toFixed(1)}¢`;
-        continue;
-      }
-      
-      // GTC order - wait for fill with polling
-      let filledSize = 0;
-      let attempts = 0;
-      const maxAttempts = Math.ceil(MAX_FILL_WAIT_MS / FILL_CHECK_INTERVAL_MS);
-      
-      while (attempts < maxAttempts) {
-        await new Promise(r => setTimeout(r, FILL_CHECK_INTERVAL_MS));
-        const status = await getOrderStatus(orderId);
-        filledSize = status.filledSize;
-        
-        if (status.filled || filledSize >= roundedShares) {
-          const latencyMs = Date.now() - start;
-          log(`✅ Sell FILLED (GTC): ${filledSize} shares (${latencyMs}ms)`);
-          return {
-            success: true,
-            orderId,
-            avgPrice: roundedPrice,
-            filledSize,
-            latencyMs,
-          };
-        }
-        
-        if (status.status === 'CANCELLED' || status.status === 'EXPIRED') {
-          break;
-        }
-        
-        attempts++;
-      }
-      
-      // Partial or no fill - cancel remaining
-      if (filledSize < roundedShares && orderId) {
-        log(`⚠️ Sell partial: ${filledSize}/${roundedShares}, cancelling remainder`);
-        await cancelOrder(orderId);
-      }
-      
-      if (filledSize > 0) {
+      if (status.filled || filledSize >= roundedShares) {
+        const latencyMs = Date.now() - start;
+        log(`✅ Sell FILLED (GTC): ${filledSize} shares (${latencyMs}ms)`);
         return {
           success: true,
           orderId,
           avgPrice: roundedPrice,
           filledSize,
-          latencyMs: Date.now() - start,
+          latencyMs,
         };
       }
       
-      lastError = `GTC timeout: 0/${roundedShares} filled at ${(roundedPrice * 100).toFixed(1)}¢`;
+      if (status.status === 'CANCELLED' || status.status === 'EXPIRED') {
+        break;
+      }
+      
+      attempts++;
     }
     
-    // All retries failed
+    // Partial or no fill - cancel remaining
+    if (filledSize < roundedShares && orderId) {
+      log(`⚠️ Sell partial: ${filledSize}/${roundedShares}, cancelling remainder`);
+      await cancelOrder(orderId);
+    }
+    
+    if (filledSize > 0) {
+      return {
+        success: true,
+        orderId,
+        avgPrice: roundedPrice,
+        filledSize,
+        latencyMs: Date.now() - start,
+      };
+    }
+    
     return { 
       success: false, 
-      error: lastError || 'All sell attempts failed', 
+      error: `GTC timeout: 0/${roundedShares} filled at ${(roundedPrice * 100).toFixed(1)}¢`, 
       latencyMs: Date.now() - start 
     };
   } catch (err) {
