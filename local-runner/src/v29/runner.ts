@@ -851,15 +851,18 @@ async function checkAndExecuteSells(): Promise<void> {
     
     const profitCents = (bestBid - pos.entryPrice) * 100;
     
-    // Only sell if profitable
-    if (profitCents < config.min_profit_cents) continue;
+    // STOP-LOSS: Exit if loss exceeds threshold
+    const isStopLoss = profitCents <= -config.stop_loss_cents;
+    
+    // Only sell if profitable OR stop-loss triggered
+    if (profitCents < config.min_profit_cents && !isStopLoss) continue;
     
     // Sell cooldown
     const cooldownKey = `${pos.asset}:${pos.direction}`;
     if (now - (lastSellTime[cooldownKey] ?? 0) < config.order_cooldown_ms) continue;
     
     log(
-      `💰 PROFIT-TAKE: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(bestBid * 100).toFixed(1)}¢ | +${profitCents.toFixed(1)}¢ | ${positionAgeSec.toFixed(0)}s`,
+      `${isStopLoss ? '🛑 STOP-LOSS' : '💰 PROFIT-TAKE'}: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(bestBid * 100).toFixed(1)}¢ | ${profitCents >= 0 ? '+' : ''}${profitCents.toFixed(1)}¢ | ${positionAgeSec.toFixed(0)}s`,
       'sell',
       pos.asset
     );
