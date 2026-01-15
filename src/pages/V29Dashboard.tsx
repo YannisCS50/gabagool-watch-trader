@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { 
   ArrowLeft, TrendingUp, TrendingDown, DollarSign, Zap, Clock, 
   Activity, Wifi, WifiOff, RefreshCw, Target, Settings2, BarChart3,
-  Bell, FileText, ShoppingCart, ArrowUpDown
+  Bell, FileText, ShoppingCart, ArrowUpDown, Power
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -21,6 +21,7 @@ import { LatencyTracker } from '@/components/v27/LatencyTracker';
 import { PriceLatencyChart } from '@/components/v27/PriceLatencyChart';
 import { RealtimePriceMonitor } from '@/components/RealtimePriceMonitor';
 import { TimeRangeFilter, filterDataByTime, DEFAULT_TIME_FILTER, type TimeFilterType } from '@/components/v27/shadow/TimeRangeFilter';
+import { toast } from 'sonner';
 
 interface V29Signal {
   id: string;
@@ -143,6 +144,36 @@ export default function V29Dashboard() {
     tradesCount: 0,
     version: null,
   });
+  const [forceRestarting, setForceRestarting] = useState(false);
+
+  const forceRestartRunner = async () => {
+    if (!confirm('Weet je zeker dat je de runner wilt forceren om te stoppen? De nieuwe runner moet handmatig gestart worden.')) {
+      return;
+    }
+    
+    setForceRestarting(true);
+    try {
+      // Expire the lease immediately
+      const { error } = await supabase
+        .from('runner_leases' as any)
+        .update({ 
+          expires_at: new Date(Date.now() - 60000).toISOString() // Expired 1 minute ago
+        })
+        .eq('id', 'v29-main');
+      
+      if (error) {
+        toast.error('Kon lease niet vrijgeven: ' + error.message);
+      } else {
+        toast.success('Lease vrijgegeven! Start de runner opnieuw met: docker compose up -d runner');
+        // Refresh status
+        setTimeout(fetchData, 1000);
+      }
+    } catch (err) {
+      toast.error('Fout bij vrijgeven lease');
+    } finally {
+      setForceRestarting(false);
+    }
+  };
 
   const fetchData = async () => {
     setLoading(signals.length === 0);
@@ -435,6 +466,17 @@ export default function V29Dashboard() {
             <Button variant="outline" size="sm" onClick={fetchData} disabled={loading} className="h-8">
               <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
               <span className="hidden sm:inline ml-1">Refresh</span>
+            </Button>
+            <Button 
+              variant="destructive" 
+              size="sm" 
+              onClick={forceRestartRunner} 
+              disabled={forceRestarting}
+              className="h-8"
+              title="Stop de huidige runner zodat een nieuwe kan starten"
+            >
+              <Power className={`h-4 w-4 ${forceRestarting ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline ml-1">Force Stop</span>
             </Button>
           </div>
         </div>
