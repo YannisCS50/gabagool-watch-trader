@@ -375,12 +375,25 @@ async function fetchMarkets(): Promise<void> {
         const previousSlug = previousMarketSlugs[asset];
         const isNewMarket = previousSlug !== slug;
 
+        // VALIDATE token IDs - must be 70+ chars numeric (not condition IDs which are ~66 chars)
+        const upTokenId = m.upTokenId;
+        const downTokenId = m.downTokenId;
+        
+        if (!upTokenId || upTokenId.length < 70 || !/^\d+$/.test(upTokenId)) {
+          log(`⚠️ ${asset} INVALID upTokenId (len=${upTokenId?.length}): ${upTokenId?.slice(0, 30)}...`, 'error', asset);
+          continue;
+        }
+        if (!downTokenId || downTokenId.length < 70 || !/^\d+$/.test(downTokenId)) {
+          log(`⚠️ ${asset} INVALID downTokenId (len=${downTokenId?.length}): ${downTokenId?.slice(0, 30)}...`, 'error', asset);
+          continue;
+        }
+
         const marketInfo: MarketInfo = {
           slug,
           asset,
           strikePrice: m.strikePrice ?? m.strike_price ?? 0,
-          upTokenId: m.upTokenId,
-          downTokenId: m.downTokenId,
+          upTokenId,
+          downTokenId,
           endTime: new Date(chosen.endMs),
         };
 
