@@ -4,24 +4,7 @@
  * Tracks individual orders with P&L and aggregates per 15-min bet window.
  */
 
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
-
-let supabase: SupabaseClient | null = null;
-
-function getDb(): SupabaseClient {
-  if (!supabase) {
-    // Use same env vars as db.ts - SUPABASE_URL (not VITE_SUPABASE_URL)
-    const supabaseUrl = process.env.SUPABASE_URL || '';
-    const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || '';
-    if (!supabaseUrl || !supabaseKey) {
-      console.error('[OrderTracker] Missing env vars. Available:', Object.keys(process.env).filter(k => k.includes('SUPABASE')));
-      throw new Error('Supabase URL and key are required for order tracker');
-    }
-    supabase = createClient(supabaseUrl, supabaseKey);
-    console.log('[OrderTracker] Initialized Supabase client');
-  }
-  return supabase;
-}
+import { getDb } from './db.js';
 
 export interface OrderRecord {
   id?: string;
