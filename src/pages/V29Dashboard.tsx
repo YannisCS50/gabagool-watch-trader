@@ -17,6 +17,8 @@ import { nl } from 'date-fns/locale';
 import { V29ConfigEditor } from '@/components/v29/V29ConfigEditor';
 import { V29LogViewer } from '@/components/v29/V29LogViewer';
 import { V29TickTable } from '@/components/v29/V29TickTable';
+import { V29BetsTable } from '@/components/v29/V29BetsTable';
+import { V29OrdersTable } from '@/components/v29/V29OrdersTable';
 import { LatencyTracker } from '@/components/v27/LatencyTracker';
 import { PriceLatencyChart } from '@/components/v27/PriceLatencyChart';
 import { RealtimePriceMonitor } from '@/components/RealtimePriceMonitor';
@@ -613,9 +615,15 @@ export default function V29Dashboard() {
           <ScrollBar orientation="horizontal" />
         </ScrollArea>
 
-        {/* Live Tab - Real-time prices */}
+        {/* Live Tab - Real-time prices + Bets/Orders */}
         <TabsContent value="realtime" className="space-y-4 mt-4">
           <RealtimePriceMonitor />
+          
+          {/* Bets & Orders P&L Tracking */}
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            <V29BetsTable />
+            <V29OrdersTable assetFilter={assetFilter === 'ALL' ? undefined : assetFilter} />
+          </div>
         </TabsContent>
 
         {/* Tick-by-Tick Tab */}
