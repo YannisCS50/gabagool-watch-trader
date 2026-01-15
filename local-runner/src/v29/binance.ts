@@ -34,9 +34,9 @@ const HEALTH_CHECK_INTERVAL_MS = 5000;  // Check every 5 seconds
 const STALE_THRESHOLD_MS = 10000;       // Consider stale after 10 seconds
 let lastMessageTime = 0;
 
-// Buffer configuration - DISABLED for lowest latency
-// Set to 0 to emit every trade immediately (no aggregation)
-const BUFFER_MS = 0;
+// Buffer configuration - aggregate trades over this window
+// Set to 100ms to match UI visualization and get meaningful deltas
+const BUFFER_MS = 100;
 
 // Per-asset price buffer
 interface PriceBuffer {
