@@ -19,7 +19,7 @@ import { startBinanceFeed, stopBinanceFeed } from './binance.js';
 import { startChainlinkFeed, stopChainlinkFeed, getChainlinkPrice } from './chainlink.js';
 import { fetchMarketOrderbook, fetchAllOrderbooks } from './orderbook.js';
 import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb, queueLog, logTick, queueTick } from './db.js';
-import { placeBuyOrder, placeSellOrder, placeTakeProfitSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, getOrderStatus, setFillContext, clearFillContext, cancelOrder } from './trading.js';
+import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, getOrderStatus, setFillContext, clearFillContext, cancelOrder } from './trading.js';
 import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
 import { acquireLease, releaseLease, isRunnerActive } from './lease.js';
@@ -40,12 +40,8 @@ interface OpenPosition {
   entryPrice: number;  // SETTLED price!
   totalCost: number;
   entryTime: number;   // timestamp when filled
-  orderId: string;
-  // TAKE-PROFIT TRACKING
-  takeProfitOrderId?: string;        // Active sell order ID
-  takeProfitPrice?: number;          // Target sell price
-  takeProfitPlacedAt?: number;       // When we placed the TP order
-  takeProfitStatus?: 'pending' | 'filled' | 'cancelled' | 'expired';
+  orderId?: string;
+  takeProfitPrice: number;  // Target sell price = entry + TP cents
 }
 
 // Open positions by ID
@@ -789,8 +785,7 @@ async function executeBuy(
     totalCost: filledSize * avgPrice,
     entryTime: fillTs,  // Use actual fill time
     orderId: orderId ?? undefined,
-    takeProfitPrice,
-    takeProfitStatus: 'pending',
+    takeProfitPrice,  // Will monitor and sell when price hits this
   };
   
   openPositions.set(positionId, openPos);
@@ -803,80 +798,20 @@ async function executeBuy(
   signal.signal_ts = orderStartTs;
   signal.notes = `BOUGHT ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ in ${orderLatencyMs}ms`;
   
-  log(`✅ BOUGHT: ${asset} ${direction} ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ (${orderLatencyMs}ms) - placing TP @ ${(takeProfitPrice * 100).toFixed(1)}¢`, 'fill', asset);
+  log(`✅ BOUGHT: ${asset} ${direction} ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ (${orderLatencyMs}ms) - TP target: ${(takeProfitPrice * 100).toFixed(1)}¢`, 'fill', asset);
   
   void saveSignal(signal);
-  
-  // IMMEDIATELY PLACE TAKE-PROFIT SELL ORDER
-  // This runs in the background so we don't block the main flow
-  void placeTakeProfitOrder(positionId, openPos);
+  // No GTC order - we monitor price and fire sell when TP hit
 }
 
 // ============================================
-// TAKE-PROFIT ORDER PLACEMENT
+// SELL CHECK - PRICE MONITORING + INSTANT TP SELL
 // ============================================
-// Places a GTC limit sell order immediately after buy fill
-// This ensures we capture profit as soon as market moves in our favor
-// ============================================
-
-async function placeTakeProfitOrder(positionId: string, position: OpenPosition): Promise<void> {
-  const { asset, direction, tokenId, shares, entryPrice, takeProfitPrice } = position;
-  
-  if (!takeProfitPrice) {
-    log(`⚠️ No TP price for position ${positionId}`, 'warn', asset);
-    return;
-  }
-  
-  // Ensure price is valid (above entry)
-  if (takeProfitPrice <= entryPrice) {
-    log(`⚠️ Invalid TP price ${(takeProfitPrice * 100).toFixed(1)}¢ <= entry ${(entryPrice * 100).toFixed(1)}¢`, 'warn', asset);
-    return;
-  }
-  
-  // Polymarket min order is 1 share
-  const roundedShares = Math.floor(shares);
-  if (roundedShares < 1) {
-    log(`⚠️ Not enough shares for TP order: ${shares}`, 'warn', asset);
-    return;
-  }
-  
-  log(`📤 TP ORDER: ${asset} ${direction} SELL ${roundedShares} @ ${(takeProfitPrice * 100).toFixed(1)}¢ (entry: ${(entryPrice * 100).toFixed(1)}¢, target: +${config.min_profit_cents}¢)`, 'order', asset);
-  
-  try {
-    const result = await placeTakeProfitSellOrder(tokenId, takeProfitPrice, roundedShares, asset, direction);
-    
-    if (result.success && result.orderId) {
-      // Update position with TP order info
-      const pos = openPositions.get(positionId);
-      if (pos) {
-        pos.takeProfitOrderId = result.orderId;
-        pos.takeProfitPlacedAt = Date.now();
-        pos.takeProfitStatus = 'pending';
-        openPositions.set(positionId, pos);
-      }
-      
-      log(`✅ TP ORDER PLACED: ${result.orderId} for ${asset} ${direction} @ ${(takeProfitPrice * 100).toFixed(1)}¢`, 'order', asset);
-    } else {
-      log(`❌ TP ORDER FAILED: ${result.error ?? 'Unknown error'}`, 'error', asset);
-      
-      // Mark position as needing passive monitoring instead
-      const pos = openPositions.get(positionId);
-      if (pos) {
-        pos.takeProfitStatus = 'cancelled';
-        openPositions.set(positionId, pos);
-      }
-    }
-  } catch (err) {
-    log(`❌ TP ORDER ERROR: ${err}`, 'error', asset);
-  }
-}
-
-// ============================================
-// SELL CHECK - ACTIVE TP MONITORING + FORCE CLOSE
-// ============================================
-// 1. Check if any TP orders have filled → remove position
-// 2. STOP-LOSS: if price drops too much → cancel TP + market sell
-// 3. FORCE CLOSE: if position too old → cancel TP + aggressive sell
+// Strategy:
+// 1. Monitor bestBid for each position
+// 2. When bestBid >= takeProfitPrice → FIRE MARKET SELL IMMEDIATELY
+// 3. STOP-LOSS: if price drops too much → market sell
+// 4. FORCE CLOSE: if position too old → aggressive sell
 // ============================================
 
 interface AggregatedPosition {
@@ -903,69 +838,13 @@ async function checkAndExecuteSells(): Promise<void> {
   const now = Date.now();
   
   // ========================================
-  // PHASE 1: CHECK ACTIVE TAKE-PROFIT ORDERS
+  // PHASE 1: TAKE-PROFIT + STOP-LOSS MONITORING
   // ========================================
-  // For each position with a TP order, check if it's been filled
-  const positionsToCheck = Array.from(openPositions.entries()).filter(
-    ([_, pos]) => pos.takeProfitOrderId && pos.takeProfitStatus === 'pending'
-  );
-  
-  // Check TP orders in parallel (max 5 at a time to avoid rate limits)
-  const batchSize = 5;
-  for (let i = 0; i < positionsToCheck.length; i += batchSize) {
-    const batch = positionsToCheck.slice(i, i + batchSize);
-    
-    await Promise.all(batch.map(async ([posId, pos]) => {
-      try {
-        const status = await getOrderStatus(pos.takeProfitOrderId!);
-        
-        if (status.filledSize >= pos.shares * 0.95) {
-          // TP FILLED! 
-          const actualSellPrice = pos.takeProfitPrice || pos.entryPrice;
-          const actualProfit = (actualSellPrice - pos.entryPrice) * pos.shares;
-          const holdTimeMs = now - pos.entryTime;
-          
-          totalPnL += actualProfit;
-          sellsCount++;
-          profitableSells++;
-          
-          log(
-            `💰 TP FILLED: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(actualSellPrice * 100).toFixed(1)}¢ | P&L: +$${actualProfit.toFixed(3)} | hold: ${(holdTimeMs / 1000).toFixed(1)}s`,
-            'sell',
-            pos.asset
-          );
-          
-          void logTick({
-            runId: RUN_ID,
-            asset: pos.asset,
-            orderPlaced: true,
-            orderId: pos.takeProfitOrderId,
-            fillPrice: actualSellPrice,
-            fillSize: status.filledSize,
-            marketSlug: pos.marketSlug,
-            signalDirection: pos.direction,
-          });
-          
-          openPositions.delete(posId);
-        } else if (status.status === 'CANCELLED' || status.status === 'EXPIRED') {
-          // TP was cancelled/expired - mark for passive monitoring
-          pos.takeProfitStatus = 'cancelled';
-          openPositions.set(posId, pos);
-          log(`⚠️ TP order ${pos.takeProfitOrderId} ${status.status} for ${pos.asset} ${pos.direction}`, 'warn', pos.asset);
-        }
-      } catch (err) {
-        // Ignore status check errors - will retry next cycle
-      }
-    }));
-  }
-  
-  // ========================================
-  // PHASE 1b: STOP-LOSS + RETRY TP FOR POSITIONS WITHOUT ACTIVE TP
-  // ========================================
+  // For each position, check if bestBid hits TP or SL
   for (const [posId, pos] of openPositions) {
     const positionAgeSec = (now - pos.entryTime) / 1000;
     
-    // Skip if too old (will be force closed)
+    // Skip if too old (will be force closed in phase 2)
     if (positionAgeSec >= config.force_close_after_sec) continue;
     
     const market = markets.get(pos.asset);
@@ -977,16 +856,65 @@ async function checkAndExecuteSells(): Promise<void> {
     if (!bestBid || bestBid <= 0) continue;
     
     const profitCents = (bestBid - pos.entryPrice) * 100;
+    const cooldownKey = `${pos.asset}:${pos.direction}`;
+    
+    // TAKE-PROFIT: bestBid >= takeProfitPrice → SELL NOW!
+    if (bestBid >= pos.takeProfitPrice) {
+      if (now - (lastSellTime[cooldownKey] ?? 0) < config.order_cooldown_ms) continue;
+      
+      log(
+        `🎯 TP HIT: ${pos.asset} ${pos.direction} ${pos.shares} @ bid ${(bestBid * 100).toFixed(1)}¢ >= TP ${(pos.takeProfitPrice * 100).toFixed(1)}¢ | +${profitCents.toFixed(1)}¢`,
+        'sell',
+        pos.asset
+      );
+      
+      lastSellTime[cooldownKey] = now;
+      
+      // Fire market sell at current bid
+      const result = await placeSellOrder(
+        pos.tokenId,
+        bestBid,
+        pos.shares,
+        pos.asset,
+        pos.direction,
+        1 // Small discount for fast fill
+      );
+      
+      if (result.success) {
+        const actualSellPrice = result.avgPrice || bestBid;
+        const actualProfit = (actualSellPrice - pos.entryPrice) * pos.shares;
+        const holdTimeMs = now - pos.entryTime;
+        
+        totalPnL += actualProfit;
+        sellsCount++;
+        if (actualProfit > 0) profitableSells++;
+        else lossSells++;
+        
+        log(
+          `💰 TP SOLD: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(actualSellPrice * 100).toFixed(1)}¢ | P&L: ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(3)} | hold: ${(holdTimeMs / 1000).toFixed(1)}s`,
+          'sell',
+          pos.asset
+        );
+        
+        void logTick({
+          runId: RUN_ID,
+          asset: pos.asset,
+          orderPlaced: true,
+          orderId: result.orderId,
+          fillPrice: actualSellPrice,
+          fillSize: result.filledSize || pos.shares,
+          marketSlug: pos.marketSlug,
+          signalDirection: pos.direction,
+        });
+        
+        openPositions.delete(posId);
+      }
+      continue;
+    }
     
     // STOP-LOSS: Exit immediately if loss exceeds threshold
     if (profitCents <= -config.stop_loss_cents) {
-      const cooldownKey = `${pos.asset}:${pos.direction}`;
       if (now - (lastSellTime[cooldownKey] ?? 0) < config.order_cooldown_ms) continue;
-      
-      // Cancel any pending TP order first
-      if (pos.takeProfitOrderId && pos.takeProfitStatus === 'pending') {
-        void cancelOrder(pos.takeProfitOrderId).catch(() => {});
-      }
       
       log(
         `🛑 STOP-LOSS: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(bestBid * 100).toFixed(1)}¢ | ${profitCents.toFixed(1)}¢ | ${positionAgeSec.toFixed(0)}s`,
@@ -1023,16 +951,6 @@ async function checkAndExecuteSells(): Promise<void> {
       }
       continue;
     }
-    
-    // RETRY TP: If position doesn't have active TP order, try to place one
-    if (!pos.takeProfitOrderId || pos.takeProfitStatus === 'cancelled') {
-      // Only retry after some time to avoid spam
-      const timeSinceEntry = now - pos.entryTime;
-      if (timeSinceEntry > 5000 && (!pos.takeProfitPlacedAt || now - pos.takeProfitPlacedAt > 30000)) {
-        log(`🔄 Retrying TP order for ${pos.asset} ${pos.direction} @ ${((pos.takeProfitPrice || 0) * 100).toFixed(1)}¢`, 'order', pos.asset);
-        void placeTakeProfitOrder(posId, pos);
-      }
-    }
   }
   
   // ========================================
@@ -1046,12 +964,6 @@ async function checkAndExecuteSells(): Promise<void> {
     
     // Only aggregate positions past force_close threshold
     if (positionAgeSec < config.force_close_after_sec) continue;
-    
-    // Cancel any pending TP order before force close
-    if (pos.takeProfitOrderId && pos.takeProfitStatus === 'pending') {
-      log(`🗑️ Cancelling TP order ${pos.takeProfitOrderId} before force close`, 'order', pos.asset);
-      void cancelOrder(pos.takeProfitOrderId).catch(() => {});
-    }
     
     const key = `${pos.asset}:${pos.direction}`;
     
