@@ -311,4 +311,3 @@ export async function loadHistoricalData(limit: number = 10000): Promise<Array<{
       };
     });
 }
-}
