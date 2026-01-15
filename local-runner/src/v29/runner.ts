@@ -952,8 +952,20 @@ async function checkAndExecuteSells(): Promise<void> {
     agg.weightedEntryPrice = agg.totalCost / agg.totalShares;
     
     const market = markets.get(agg.asset);
+    
+    // CRITICAL: Skip positions from expired/different markets
+    // These are stale wallet positions that should be removed from tracking
     if (!market || market.slug !== agg.marketSlug) {
-      // Market mismatch - remove stale positions silently
+      log(`🗑️ Removing stale positions from ${agg.marketSlug} (current: ${market?.slug ?? 'none'}) - ${agg.totalShares} shares`, 'system', agg.asset);
+      for (const posId of agg.positionIds) {
+        openPositions.delete(posId);
+      }
+      continue;
+    }
+    
+    // Also skip if market has expired
+    if (market.endTime && market.endTime.getTime() < now) {
+      log(`🗑️ Removing positions from expired market ${agg.marketSlug} - ${agg.totalShares} shares`, 'system', agg.asset);
       for (const posId of agg.positionIds) {
         openPositions.delete(posId);
       }
@@ -1063,13 +1075,20 @@ async function checkAndExecuteSells(): Promise<void> {
       }
     } else {
       // BALANCE ERROR = position doesn't exist anymore, remove from tracking
-      if (result.error?.includes('balance') || result.error?.includes('allowance')) {
-        log(`⚠️ Position gone (${result.error}) - removing from tracking`, 'warn', agg.asset);
+      const errMsg = result.error || 'Unknown error';
+      if (errMsg.includes('balance') || errMsg.includes('allowance') || errMsg.includes('insufficient')) {
+        log(`⚠️ Position gone (${errMsg}) - removing from tracking`, 'warn', agg.asset);
+        for (const posId of agg.positionIds) {
+          openPositions.delete(posId);
+        }
+      } else if (errMsg.includes('min size') || errMsg.includes('invalid amount')) {
+        // Min order size error - position is too small, remove it
+        log(`⚠️ Position too small to sell (${errMsg}) - removing ${agg.totalShares} shares`, 'warn', agg.asset);
         for (const posId of agg.positionIds) {
           openPositions.delete(posId);
         }
       } else {
-        log(`❌ Force close failed: ${result.error}`, 'error', agg.asset);
+        log(`❌ Force close failed: ${errMsg}`, 'error', agg.asset);
       }
     }
   }
