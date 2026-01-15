@@ -4,11 +4,21 @@
  * Tracks individual orders with P&L and aggregates per 15-min bet window.
  */
 
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
-const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
-const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY || '';
-const supabase = createClient(supabaseUrl, supabaseKey);
+let supabase: SupabaseClient | null = null;
+
+function getDb(): SupabaseClient {
+  if (!supabase) {
+    const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
+    const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY || '';
+    if (!supabaseUrl || !supabaseKey) {
+      throw new Error('Supabase URL and key are required for order tracker');
+    }
+    supabase = createClient(supabaseUrl, supabaseKey);
+  }
+  return supabase;
+}
 
 export interface OrderRecord {
   id?: string;
@@ -106,7 +116,7 @@ export async function getOrCreateBet(
   }
 
   // Check database
-  const { data: existing } = await supabase
+  const { data: existing } = await getDb()
     .from('v29_bets')
     .select('*')
     .eq('market_id', marketId)
@@ -143,7 +153,7 @@ export async function getOrCreateBet(
     result: 'pending',
   };
 
-  const { data: inserted, error } = await supabase
+  const { data: inserted, error } = await getDb()
     .from('v29_bets')
     .insert(newBet)
     .select()
@@ -171,7 +181,7 @@ export async function recordOrder(order: Omit<OrderRecord, 'id'>): Promise<strin
     cost: order.side === 'BUY' ? order.shares * order.price : undefined,
   };
 
-  const { data, error } = await supabase
+  const { data, error } = await getDb()
     .from('v29_orders')
     .insert(record)
     .select('id')
@@ -197,7 +207,7 @@ export async function updateOrderFill(
 ): Promise<void> {
   const fillCost = fillShares * fillPrice;
 
-  const { error } = await supabase
+  const { error } = await getDb()
     .from('v29_orders')
     .update({
       status: 'filled',
@@ -260,7 +270,7 @@ export async function recordBuyFill(
     bet.total_cost = (bet.total_cost || 0) + cost;
 
     // Persist to database
-    await supabase
+    await getDb()
       .from('v29_bets')
       .update({
         up_shares: bet.up_shares,
@@ -321,7 +331,7 @@ export async function recordSellFill(
     bet.realized_pnl = (bet.realized_pnl || 0) + pnl;
 
     // Persist to database
-    await supabase
+    await getDb()
       .from('v29_bets')
       .update({
         up_shares: bet.up_shares,
@@ -338,7 +348,7 @@ export async function recordSellFill(
 
   // Update order with P&L
   if (orderId) {
-    await supabase
+    await getDb()
       .from('v29_orders')
       .update({ pnl })
       .eq('order_id', orderId);
@@ -368,7 +378,7 @@ export async function updateUnrealizedPnL(
   bet.unrealized_pnl = totalUnrealized;
 
   // Persist (throttled - only update every few seconds)
-  await supabase
+  await getDb()
     .from('v29_bets')
     .update({ unrealized_pnl: totalUnrealized })
     .eq('id', bet.id);
@@ -406,7 +416,7 @@ export async function closeBet(
   else if (finalPnL < -0.01) result = 'loss';
 
   // Update bet
-  await supabase
+  await getDb()
     .from('v29_bets')
     .update({
       status: 'settled',
