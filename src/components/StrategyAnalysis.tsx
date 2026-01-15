@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import React, { useMemo, forwardRef } from 'react';
 import { Trade, MarketPosition } from '@/types/trade';
 import { format, getHours, getDay, differenceInMinutes } from 'date-fns';
 import { 
@@ -1596,7 +1596,8 @@ interface LiveOpenPositionsProps {
   trades: Trade[];
 }
 
-export function LiveOpenPositions({ positions, trades }: LiveOpenPositionsProps) {
+export const LiveOpenPositions = forwardRef<HTMLDivElement, LiveOpenPositionsProps>(
+  function LiveOpenPositions({ positions, trades }, ref) {
   // Group positions by market and pair Yes/No or Up/Down
   const groupedPositions = useMemo(() => {
     const marketMap: Record<string, { 
@@ -1831,4 +1832,6 @@ export function LiveOpenPositions({ positions, trades }: LiveOpenPositionsProps)
       )}
     </div>
   );
-}
+});
+
+LiveOpenPositions.displayName = 'LiveOpenPositions';
