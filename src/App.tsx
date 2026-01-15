@@ -19,6 +19,7 @@ import V26Dashboard from "./pages/V26Dashboard";
 import V27Dashboard from "./pages/V27Dashboard";
 import V28Dashboard from "./pages/V28Dashboard";
 import V29Dashboard from "./pages/V29Dashboard";
+import V30Dashboard from "./pages/V30Dashboard";
 import PriceLatencyAnalyzer from "./pages/PriceLatencyAnalyzer";
 import NotFound from "./pages/NotFound";
 
@@ -53,6 +54,7 @@ const App = () => (
           <Route path="/v27" element={<V27Dashboard />} />
           <Route path="/v28" element={<V28Dashboard />} />
           <Route path="/v29" element={<V29Dashboard />} />
+          <Route path="/v30" element={<V30Dashboard />} />
           <Route path="/price-latency" element={<PriceLatencyAnalyzer />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
