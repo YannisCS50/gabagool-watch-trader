@@ -26,6 +26,7 @@ import { acquireLease, releaseLease, isRunnerActive } from './lease.js';
 import { fetchPositions, type PolymarketPosition } from '../positions-sync.js';
 import { config as globalConfig } from '../config.js';
 import { startUserChannel, stopUserChannel, type TradeEvent, isUserChannelConnected } from './user-ws.js';
+import { startPriceFeedLogger, stopPriceFeedLogger, isPriceFeedLoggerRunning } from '../price-feed-ws-logger.js';
 import { 
   initTracker, 
   getOrCreateBet, 
@@ -1423,6 +1424,14 @@ async function main(): Promise<void> {
     log('⚠️ User Channel not started (no API credentials) - using 45s polling fallback');
   }
 
+  // Start Price Feed Logger for chainlink_rtds ticks (strike price source)
+  try {
+    await startPriceFeedLogger();
+    log('✅ Price Feed Logger started (chainlink_rtds ticks for exact strike prices)');
+  } catch (err) {
+    log(`⚠️ Price Feed Logger failed to start: ${(err as Error).message} - fallback prices will be used`);
+  }
+
   // Orderbook polling
   const orderbookInterval = setInterval(() => {
     void pollOrderbooks();
@@ -1494,6 +1503,7 @@ async function main(): Promise<void> {
     stopChainlinkFeed();
     stopUserChannel();
     stopPreSignedCache();
+    await stopPriceFeedLogger();
     
     // Log final burst stats
     logBurstStats();
