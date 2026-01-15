@@ -22,23 +22,48 @@ interface MarketToken {
 }
 
 /**
+ * Validate a Polymarket token ID
+ * Valid token IDs are:
+ * - 77+ character numeric strings (main format)
+ * - Must NOT be a conditionId (those are typically 66 chars and can cause "orderbook does not exist" errors)
+ */
+function isValidTokenId(id: string): boolean {
+  if (typeof id !== 'string') return false;
+  // Token IDs are long numeric strings, typically 77+ chars
+  // Condition IDs are typically 66 chars - we want to REJECT those
+  if (id.length < 70) return false;
+  // Must be all digits
+  if (!/^\d+$/.test(id)) return false;
+  return true;
+}
+
+/**
  * Parse clobTokenIds which can be a string, array, or JSON string
+ * Now with stricter validation to reject condition IDs
  */
 function parseClobTokenIds(raw: any): string[] {
   if (!raw) return [];
   
   if (Array.isArray(raw)) {
-    return raw.filter(id => typeof id === 'string' && id.length > 10);
+    const valid = raw.filter(isValidTokenId);
+    if (valid.length !== raw.length) {
+      console.log(`[Parse] Filtered out ${raw.length - valid.length} invalid token IDs (too short or not numeric)`);
+    }
+    return valid;
   }
   
   if (typeof raw === 'string') {
     try {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
-        return parsed.filter(id => typeof id === 'string' && id.length > 10);
+        const valid = parsed.filter(isValidTokenId);
+        if (valid.length !== parsed.length) {
+          console.log(`[Parse] Filtered out ${parsed.length - valid.length} invalid token IDs from JSON array`);
+        }
+        return valid;
       }
     } catch {
-      if (raw.length > 10) return [raw];
+      if (isValidTokenId(raw)) return [raw];
     }
   }
   
