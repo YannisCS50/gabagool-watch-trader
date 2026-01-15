@@ -153,30 +153,26 @@ interface MarketOrderSet {
 // Cache of pre-signed orders by asset
 const orderCache = new Map<Asset, MarketOrderSet>();
 
-// Configuration - AGGRESSIVE CACHING for high-frequency trading
+// Configuration - LEAN CACHING for fast startup and actual trading
+// REDUCED: Was 2592 orders taking 10+ min, now ~160 orders taking <30s
 const PRE_SIGN_CONFIG = {
-  // Price levels to pre-sign (extended range 10-90¢ with 1¢ steps for finer granularity)
+  // Price levels: 15-85¢ range with 5¢ steps (15 levels vs 81 before)
   priceLevels: [
-    0.10, 0.11, 0.12, 0.13, 0.14, 0.15, 0.16, 0.17, 0.18, 0.19,
-    0.20, 0.21, 0.22, 0.23, 0.24, 0.25, 0.26, 0.27, 0.28, 0.29,
-    0.30, 0.31, 0.32, 0.33, 0.34, 0.35, 0.36, 0.37, 0.38, 0.39,
-    0.40, 0.41, 0.42, 0.43, 0.44, 0.45, 0.46, 0.47, 0.48, 0.49,
-    0.50, 0.51, 0.52, 0.53, 0.54, 0.55, 0.56, 0.57, 0.58, 0.59,
-    0.60, 0.61, 0.62, 0.63, 0.64, 0.65, 0.66, 0.67, 0.68, 0.69,
-    0.70, 0.71, 0.72, 0.73, 0.74, 0.75, 0.76, 0.77, 0.78, 0.79,
-    0.80, 0.81, 0.82, 0.83, 0.84, 0.85, 0.86, 0.87, 0.88, 0.89, 0.90
+    0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50,
+    0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85
   ],
-  // Share sizes to pre-sign - BIGGER CACHE: 5x 2-share + 3x 5-share orders per price
-  shareSizes: [2, 2, 2, 2, 2, 5, 5, 5],  // 5x 2-share + 3x 5-share = 8 orders per price!
-  // Refresh every 60 seconds to keep orders fresh
-  refreshIntervalMs: 60 * 1000,
-  // Max age before order is considered stale (4 min)
-  maxOrderAgeMs: 4 * 60 * 1000,
+  // Share sizes: just 2 common sizes (vs 8 before)
+  shareSizes: [2, 5],
+  // Refresh every 5 minutes (vs 60s before) - cache rebuilds take time!
+  refreshIntervalMs: 5 * 60 * 1000,
+  // Max age before order is considered stale (8 min to match longer refresh)
+  maxOrderAgeMs: 8 * 60 * 1000,
 };
 
 let isInitialized = false;
 let refreshInterval: NodeJS.Timeout | null = null;
 let clobClient: ClobClient | null = null;
+let isRebuilding = false;  // Prevent overlapping rebuilds
 
 // Stats
 const stats = {
@@ -343,20 +339,31 @@ function startBackgroundRefresh(): void {
   refreshInterval = setInterval(async () => {
     if (!clobClient) return;
     
+    // CRITICAL: Skip if rebuild already in progress
+    if (isRebuilding) {
+      log('⏳ Background refresh skipped - rebuild in progress');
+      return;
+    }
+    
+    isRebuilding = true;
     log('🔄 Background refresh of pre-signed orders...');
     
-    for (const [asset, orderSet] of orderCache) {
-      try {
-        const newOrderSet = await preSignMarketOrders(
-          clobClient,
-          asset,
-          orderSet.upTokenId,
-          orderSet.downTokenId
-        );
-        orderCache.set(asset, newOrderSet);
-      } catch (err) {
-        log(`❌ Refresh failed for ${asset}: ${err}`);
+    try {
+      for (const [asset, orderSet] of orderCache) {
+        try {
+          const newOrderSet = await preSignMarketOrders(
+            clobClient,
+            asset,
+            orderSet.upTokenId,
+            orderSet.downTokenId
+          );
+          orderCache.set(asset, newOrderSet);
+        } catch (err) {
+          log(`❌ Refresh failed for ${asset}: ${err}`);
+        }
       }
+    } finally {
+      isRebuilding = false;
     }
   }, PRE_SIGN_CONFIG.refreshIntervalMs);
 }
@@ -411,23 +418,31 @@ let pendingCacheRebuild: Map<Asset, NodeJS.Timeout> = new Map();
 /**
  * Trigger async cache rebuild for an asset
  * Debounced to prevent multiple rebuilds in quick succession
+ * NOW: Also respects global isRebuilding flag
  */
 function triggerAsyncCacheRebuild(asset: Asset): void {
+  // Skip if global rebuild already in progress
+  if (isRebuilding) {
+    return;  // Silent skip - don't queue more rebuilds
+  }
+  
   // Clear any pending rebuild for this asset
   const existing = pendingCacheRebuild.get(asset);
   if (existing) {
     clearTimeout(existing);
   }
   
-  // Schedule rebuild in 500ms (debounce multiple triggers)
+  // Schedule rebuild in 2000ms (longer debounce to batch multiple order uses)
   const timeout = setTimeout(async () => {
     pendingCacheRebuild.delete(asset);
     
     if (!clobClient) return;
+    if (isRebuilding) return;  // Double-check before starting
     
     const orderSet = orderCache.get(asset);
     if (!orderSet) return;
     
+    isRebuilding = true;
     log(`🔄 Async cache rebuild for ${asset}...`);
     try {
       const newOrderSet = await preSignMarketOrders(
@@ -440,8 +455,10 @@ function triggerAsyncCacheRebuild(asset: Asset): void {
       log(`✅ ${asset} cache rebuilt with fresh orders`);
     } catch (err) {
       log(`❌ Cache rebuild failed for ${asset}: ${err}`);
+    } finally {
+      isRebuilding = false;
     }
-  }, 500);
+  }, 2000);
   
   pendingCacheRebuild.set(asset, timeout);
 }
