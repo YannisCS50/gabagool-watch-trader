@@ -140,6 +140,9 @@ export async function loadV29Config(): Promise<{
       binance_poll_ms: Number(cfg.binance_poll_ms ?? 100),
       orderbook_poll_ms: Number(cfg.orderbook_poll_ms ?? 2000),
       order_cooldown_ms: Number(cfg.order_cooldown_ms ?? 3000),
+      // EXPOSURE LIMITS - map from DB column names
+      max_exposure_per_asset: Number(cfg.max_total_shares ?? cfg.max_exposure_per_asset ?? 300),
+      max_cost_per_asset: Number(cfg.max_total_cost_usd ?? cfg.max_cost_per_asset ?? 100),
     };
   } catch (err) {
     log(`Config load error: ${err}`);
