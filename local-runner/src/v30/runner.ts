@@ -1,0 +1,686 @@
+/**
+ * V30 Market-Maker Runner
+ * 
+ * STRATEGY:
+ * 1. Calculate fair value p_t = P(UP wins | C_t, Z_t, τ)
+ * 2. Calculate edge: Δ = market_price - fair_value
+ * 3. Buy when edge < -θ (price is undervalued)
+ * 4. Trade BOTH sides (UP and DOWN) for spread capture
+ * 5. Active inventory management with forced counter-bets
+ * 6. Aggressive exit near expiry
+ */
+
+// CRITICAL: Import HTTP agent FIRST
+import './http-agent.js';
+
+import 'dotenv/config';
+import { randomUUID } from 'crypto';
+import type { Asset, V30Config, MarketInfo, PriceState, V30Tick, TradeAction } from './types.js';
+import { DEFAULT_V30_CONFIG, BINANCE_SYMBOLS } from './config.js';
+import { EmpiricalFairValue, getFairValueModel } from './fair-value.js';
+import { EdgeCalculator } from './edge-calculator.js';
+import { InventoryManager } from './inventory.js';
+import { 
+  initDb, 
+  loadV30Config, 
+  saveV30Config, 
+  queueTick, 
+  flushTicks, 
+  loadPositions, 
+  upsertPosition, 
+  clearMarketPositions, 
+  sendHeartbeat,
+  loadHistoricalData 
+} from './db.js';
+import { startBinanceFeed, stopBinanceFeed } from './binance.js';
+import { startChainlinkFeed, stopChainlinkFeed, getChainlinkPrice } from './chainlink.js';
+import { fetchMarketOrderbook, fetchAllOrderbooks } from './orderbook.js';
+import { startOrderbookWs, stopOrderbookWs, updateMarkets as updateOrderbookWsMarkets } from './orderbook-ws.js';
+import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, cancelOrder } from './trading.js';
+import { verifyVpnConnection } from '../vpn-check.js';
+import { testConnection } from '../polymarket.js';
+import { acquireLease, releaseLease, isRunnerActive } from './lease.js';
+import { config as globalConfig } from '../config.js';
+
+// ============================================
+// STATE
+// ============================================
+
+const RUN_ID = `v30-${Date.now().toString(36)}`;
+let isRunning = false;
+let config: V30Config = { ...DEFAULT_V30_CONFIG };
+
+// Core components
+let fairValueModel: EmpiricalFairValue;
+let edgeCalculator: EdgeCalculator;
+let inventoryManager: InventoryManager;
+
+// Markets by asset
+const markets = new Map<Asset, MarketInfo>();
+
+// Price state by asset
+const priceState: Record<Asset, PriceState> = {
+  BTC: { binance: null, chainlink: null, upBestAsk: null, upBestBid: null, downBestAsk: null, downBestBid: null, lastUpdate: 0 },
+  ETH: { binance: null, chainlink: null, upBestAsk: null, upBestBid: null, downBestAsk: null, downBestBid: null, lastUpdate: 0 },
+  SOL: { binance: null, chainlink: null, upBestAsk: null, upBestBid: null, downBestAsk: null, downBestBid: null, lastUpdate: 0 },
+  XRP: { binance: null, chainlink: null, upBestAsk: null, upBestBid: null, downBestAsk: null, downBestBid: null, lastUpdate: 0 },
+};
+
+// Stats
+let buysUpCount = 0;
+let buysDownCount = 0;
+let forceCounterCount = 0;
+let aggressiveExitCount = 0;
+let lastMarketRefresh = 0;
+let lastConfigReload = 0;
+let totalPnL = 0;
+
+// Intervals
+const TICK_INTERVAL_MS = 500;        // Evaluate every 500ms
+const MARKET_REFRESH_MS = 60_000;    // Refresh markets every minute
+const CONFIG_RELOAD_MS = 30_000;     // Reload config every 30s
+const HEARTBEAT_MS = 10_000;         // Heartbeat every 10s
+const CALIBRATION_INTERVAL_MS = 300_000; // Recalibrate fair value every 5 min
+
+// ============================================
+// LOGGING
+// ============================================
+
+function log(msg: string, category = 'system', asset?: string): void {
+  const ts = new Date().toISOString().slice(11, 23);
+  console.log(`[${ts}] [V30] ${msg}`);
+}
+
+function logError(msg: string, err?: unknown): void {
+  const ts = new Date().toISOString().slice(11, 23);
+  console.error(`[${ts}] [V30] ❌ ${msg}`, err ?? '');
+}
+
+// ============================================
+// MARKET LOADING
+// ============================================
+
+async function fetchMarkets(): Promise<void> {
+  const backendUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+  const backendKey = process.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY;
+  
+  if (!backendUrl || !backendKey) {
+    log('⚠️ No backend URL/key configured');
+    return;
+  }
+  
+  try {
+    const res = await fetch(`${backendUrl}/functions/v1/get-market-tokens`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${backendKey}`,
+      },
+      body: JSON.stringify({ assets: config.assets, v26: true }),
+    });
+    
+    if (!res.ok) {
+      log(`⚠️ Market fetch failed: ${res.status}`);
+      return;
+    }
+    
+    const data = await res.json();
+    
+    if (Array.isArray(data.markets)) {
+      const now = Date.now();
+      
+      for (const m of data.markets) {
+        const asset = m.asset as Asset;
+        if (!config.assets.includes(asset)) continue;
+        
+        const endMs = new Date(m.eventEndTime || m.event_end_time).getTime();
+        if (endMs <= now) continue;
+        
+        const strikePrice = parseFloat(m.strikePrice || m.strike_price);
+        if (isNaN(strikePrice)) continue;
+        
+        const marketInfo: MarketInfo = {
+          slug: m.slug,
+          asset,
+          strikePrice,
+          upTokenId: m.upTokenId || m.up_token_id,
+          downTokenId: m.downTokenId || m.down_token_id,
+          endTime: new Date(endMs),
+        };
+        
+        markets.set(asset, marketInfo);
+        log(`📊 Market: ${asset} | Strike $${strikePrice.toFixed(0)} | Ends ${marketInfo.endTime.toISOString().slice(11, 19)}`);
+      }
+      
+      // Update pre-signed order cache
+      for (const [asset, market] of markets) {
+        await updateMarketCache(market.upTokenId, market.downTokenId);
+      }
+      
+      // Update orderbook WS subscriptions
+      const allTokenIds: string[] = [];
+      for (const market of markets.values()) {
+        allTokenIds.push(market.upTokenId, market.downTokenId);
+      }
+      updateOrderbookWsMarkets(allTokenIds);
+    }
+    
+    lastMarketRefresh = Date.now();
+  } catch (err) {
+    logError('Market fetch error', err);
+  }
+}
+
+// ============================================
+// PRICE HANDLERS
+// ============================================
+
+function handleBinancePrice(asset: Asset, price: number): void {
+  priceState[asset].binance = price;
+  priceState[asset].lastUpdate = Date.now();
+}
+
+function handleChainlinkPrice(asset: Asset, price: number): void {
+  priceState[asset].chainlink = price;
+}
+
+// ============================================
+// ORDERBOOK UPDATES
+// ============================================
+
+async function refreshOrderbooks(): Promise<void> {
+  for (const [asset, market] of markets) {
+    try {
+      const book = await fetchMarketOrderbook(market);
+      if (book) {
+        const state = priceState[asset];
+        state.upBestAsk = book.upBestAsk ?? null;
+        state.upBestBid = book.upBestBid ?? null;
+        state.downBestAsk = book.downBestAsk ?? null;
+        state.downBestBid = book.downBestBid ?? null;
+        state.lastUpdate = Date.now();
+      }
+    } catch (err) {
+      // Ignore individual failures
+    }
+  }
+}
+
+// ============================================
+// MAIN TICK EVALUATION
+// ============================================
+
+async function evaluateTick(): Promise<void> {
+  if (!isRunning) return;
+  
+  for (const asset of config.assets) {
+    await evaluateAsset(asset);
+  }
+}
+
+async function evaluateAsset(asset: Asset): Promise<void> {
+  const market = markets.get(asset);
+  if (!market) return;
+  
+  const state = priceState[asset];
+  const now = Date.now();
+  
+  // Check we have required data
+  const C_t = state.binance;
+  if (!C_t) return;
+  
+  const upAsk = state.upBestAsk;
+  const downAsk = state.downBestAsk;
+  if (!upAsk || !downAsk) return;
+  
+  // Calculate time remaining
+  const secRemaining = Math.max(0, (market.endTime.getTime() - now) / 1000);
+  if (secRemaining <= 0) return;
+  
+  // Calculate delta to strike
+  const deltaToStrike = C_t - market.strikePrice;
+  
+  // Get fair value
+  const fairValue = fairValueModel.getFairP(asset, deltaToStrike, secRemaining);
+  
+  // Get inventory
+  const inventory = inventoryManager.getInventory(asset, market.slug, secRemaining);
+  
+  // Calculate edges
+  const edgeResult = edgeCalculator.calculateEdge(
+    upAsk,
+    downAsk,
+    fairValue,
+    inventory,
+    secRemaining
+  );
+  
+  // Log tick
+  const tick: V30Tick = {
+    ts: now,
+    run_id: RUN_ID,
+    asset,
+    market_slug: market.slug,
+    c_price: C_t,
+    z_price: state.chainlink,
+    strike_price: market.strikePrice,
+    seconds_remaining: Math.floor(secRemaining),
+    delta_to_strike: deltaToStrike,
+    up_best_ask: upAsk,
+    up_best_bid: state.upBestBid,
+    down_best_ask: downAsk,
+    down_best_bid: state.downBestBid,
+    fair_p_up: fairValue.p_up,
+    edge_up: edgeResult.edge_up,
+    edge_down: edgeResult.edge_down,
+    theta_current: edgeResult.theta,
+    inventory_up: inventory.up,
+    inventory_down: inventory.down,
+    inventory_net: inventory.net,
+    action_taken: null,
+  };
+  
+  // Check for aggressive exit
+  if (edgeCalculator.shouldAggressiveExit(secRemaining)) {
+    const action = await handleAggressiveExit(asset, market, inventory);
+    tick.action_taken = action;
+    queueTick(tick);
+    return;
+  }
+  
+  // Check for forced counter-bet
+  const forceCheck = edgeCalculator.shouldForceCounter(inventory);
+  if (forceCheck.force && forceCheck.direction) {
+    const action = await handleForceCounter(asset, market, forceCheck.direction, forceCheck.reason);
+    tick.action_taken = action;
+    queueTick(tick);
+    return;
+  }
+  
+  // Normal edge-based trading
+  let action: TradeAction = 'none';
+  
+  // Check UP signal
+  if (edgeResult.signal_up && canTrade(asset, 'UP', upAsk)) {
+    const space = inventoryManager.getAvailableSpace(asset, market.slug, 'UP', secRemaining);
+    if (space > 0) {
+      const size = Math.min(
+        edgeCalculator.calculateBetSize(),
+        space
+      );
+      
+      const success = await executeBuy(asset, 'UP', market, upAsk, size);
+      if (success) {
+        action = 'buy_up';
+        buysUpCount++;
+        log(`🟢 BUY UP: ${asset} | ${size} sh @ ${(upAsk * 100).toFixed(1)}¢ | edge ${(edgeResult.edge_up * 100).toFixed(1)}% | θ ${(edgeResult.theta * 100).toFixed(1)}%`);
+      }
+    }
+  }
+  
+  // Check DOWN signal (can trade both in same tick!)
+  if (edgeResult.signal_down && canTrade(asset, 'DOWN', downAsk)) {
+    const space = inventoryManager.getAvailableSpace(asset, market.slug, 'DOWN', secRemaining);
+    if (space > 0) {
+      const size = Math.min(
+        edgeCalculator.calculateBetSize(),
+        space
+      );
+      
+      const success = await executeBuy(asset, 'DOWN', market, downAsk, size);
+      if (success) {
+        action = action === 'buy_up' ? 'buy_up' : 'buy_down'; // Keep first if both
+        buysDownCount++;
+        log(`🔴 BUY DOWN: ${asset} | ${size} sh @ ${(downAsk * 100).toFixed(1)}¢ | edge ${(edgeResult.edge_down * 100).toFixed(1)}% | θ ${(edgeResult.theta * 100).toFixed(1)}%`);
+      }
+    }
+  }
+  
+  tick.action_taken = action;
+  queueTick(tick);
+}
+
+// ============================================
+// TRADE GUARDS
+// ============================================
+
+function canTrade(asset: Asset, direction: 'UP' | 'DOWN', price: number): boolean {
+  // Price range check
+  if (price < config.min_share_price || price > config.max_share_price) {
+    return false;
+  }
+  
+  // TODO: Add cooldown, rate limiting
+  return true;
+}
+
+// ============================================
+// TRADE EXECUTION
+// ============================================
+
+async function executeBuy(
+  asset: Asset,
+  direction: 'UP' | 'DOWN',
+  market: MarketInfo,
+  price: number,
+  shares: number
+): Promise<boolean> {
+  if (!isRunnerActive()) {
+    log(`🛑 Runner not active, skipping buy`);
+    return false;
+  }
+  
+  const tokenId = direction === 'UP' ? market.upTokenId : market.downTokenId;
+  const buyPrice = Math.ceil((price + 0.01) * 100) / 100; // 1¢ buffer
+  
+  try {
+    const result = await placeBuyOrder(tokenId, shares, buyPrice);
+    
+    if (result && result.orderId) {
+      // Track position
+      const pos = inventoryManager.addPosition(
+        RUN_ID,
+        asset,
+        market.slug,
+        direction,
+        shares,
+        buyPrice
+      );
+      
+      // Persist to DB
+      await upsertPosition(pos);
+      
+      return true;
+    }
+    
+    return false;
+  } catch (err) {
+    logError(`Buy ${asset} ${direction} failed`, err);
+    return false;
+  }
+}
+
+async function executeSell(
+  asset: Asset,
+  direction: 'UP' | 'DOWN',
+  market: MarketInfo,
+  price: number,
+  shares: number
+): Promise<boolean> {
+  const tokenId = direction === 'UP' ? market.upTokenId : market.downTokenId;
+  const sellPrice = Math.floor((price - 0.01) * 100) / 100; // 1¢ below bid
+  
+  try {
+    const result = await placeSellOrder(tokenId, shares, sellPrice);
+    
+    if (result && result.orderId) {
+      // Update inventory
+      inventoryManager.reducePosition(asset, market.slug, direction, shares);
+      return true;
+    }
+    
+    return false;
+  } catch (err) {
+    logError(`Sell ${asset} ${direction} failed`, err);
+    return false;
+  }
+}
+
+// ============================================
+// SPECIAL HANDLERS
+// ============================================
+
+async function handleForceCounter(
+  asset: Asset,
+  market: MarketInfo,
+  direction: 'UP' | 'DOWN',
+  reason: string
+): Promise<TradeAction> {
+  log(`⚠️ FORCE COUNTER: ${asset} ${direction} | ${reason}`);
+  
+  const state = priceState[asset];
+  const price = direction === 'UP' ? state.upBestAsk : state.downBestAsk;
+  
+  if (!price) return 'none';
+  
+  const size = edgeCalculator.calculateBetSize();
+  const success = await executeBuy(asset, direction, market, price, size);
+  
+  if (success) {
+    forceCounterCount++;
+    return direction === 'UP' ? 'force_counter_up' : 'force_counter_down';
+  }
+  
+  return 'none';
+}
+
+async function handleAggressiveExit(
+  asset: Asset,
+  market: MarketInfo,
+  inventory: { up: number; down: number; net: number }
+): Promise<TradeAction> {
+  const state = priceState[asset];
+  
+  // Sell all positions at market bid
+  let soldAny = false;
+  
+  if (inventory.up > 0 && state.upBestBid) {
+    const success = await executeSell(asset, 'UP', market, state.upBestBid, inventory.up);
+    if (success) {
+      log(`🏃 AGGRESSIVE EXIT: Sold ${inventory.up} UP @ ${(state.upBestBid * 100).toFixed(1)}¢`);
+      soldAny = true;
+    }
+  }
+  
+  if (inventory.down > 0 && state.downBestBid) {
+    const success = await executeSell(asset, 'DOWN', market, state.downBestBid, inventory.down);
+    if (success) {
+      log(`🏃 AGGRESSIVE EXIT: Sold ${inventory.down} DOWN @ ${(state.downBestBid * 100).toFixed(1)}¢`);
+      soldAny = true;
+    }
+  }
+  
+  if (soldAny) {
+    aggressiveExitCount++;
+    return 'aggressive_exit';
+  }
+  
+  return 'none';
+}
+
+// ============================================
+// CALIBRATION
+// ============================================
+
+async function calibrateFairValue(): Promise<void> {
+  log('📚 Calibrating fair value model from historical data...');
+  
+  try {
+    const history = await loadHistoricalData(10000);
+    
+    if (history.length > 0) {
+      fairValueModel.loadFromHistory(history);
+      const stats = fairValueModel.getStats();
+      log(`✅ Fair value calibrated: ${stats.trustedCells}/${stats.totalCells} trusted cells, avg ${stats.avgSamples.toFixed(1)} samples`);
+    } else {
+      log('⚠️ No historical data for calibration, using heuristics');
+    }
+  } catch (err) {
+    logError('Fair value calibration failed', err);
+  }
+}
+
+// ============================================
+// MAIN LOOP
+// ============================================
+
+async function main(): Promise<void> {
+  log('🚀 V30 Market-Maker starting...');
+  
+  // Initialize DB
+  initDb();
+  
+  // Load config
+  config = await loadV30Config();
+  log(`📋 Config: enabled=${config.enabled}, assets=${config.assets.join(',')}, θ=${config.base_theta}`);
+  
+  if (!config.enabled) {
+    log('⚠️ V30 is disabled in config. Set enabled=true to start trading.');
+    log('   Continuing in monitor mode...');
+  }
+  
+  // VPN check
+  try {
+    const vpnOk = await verifyVpnConnection();
+    if (!vpnOk) {
+      log('⚠️ VPN check failed, continuing anyway...');
+    }
+  } catch {
+    log('⚠️ VPN check skipped');
+  }
+  
+  // Test Polymarket connection
+  try {
+    await testConnection();
+    log('✅ Polymarket connection OK');
+  } catch (err) {
+    logError('Polymarket connection failed', err);
+    return;
+  }
+  
+  // Get initial balance
+  try {
+    const balance = await getBalance();
+    log(`💰 Balance: $${balance.toFixed(2)}`);
+  } catch {
+    log('⚠️ Could not fetch balance');
+  }
+  
+  // Initialize components
+  fairValueModel = getFairValueModel();
+  edgeCalculator = new EdgeCalculator(config);
+  inventoryManager = new InventoryManager(config);
+  
+  // Calibrate fair value model
+  await calibrateFairValue();
+  
+  // Load existing positions
+  const existingPositions = await loadPositions(RUN_ID);
+  if (existingPositions.length > 0) {
+    inventoryManager.loadPositions(existingPositions);
+    log(`📋 Loaded ${existingPositions.length} existing positions`);
+  }
+  
+  // Acquire lease
+  const leaseOk = await acquireLease(RUN_ID, 'v30-market-maker');
+  if (!leaseOk) {
+    log('⚠️ Could not acquire lease, another runner may be active');
+    log('   Continuing in monitor mode...');
+  }
+  
+  // Load markets
+  await fetchMarkets();
+  
+  if (markets.size === 0) {
+    log('⚠️ No active markets found');
+  }
+  
+  // Initialize pre-signed order cache
+  await initPreSignedCache();
+  
+  // Start price feeds
+  startBinanceFeed((asset, price) => handleBinancePrice(asset, price));
+  startChainlinkFeed((asset, price) => handleChainlinkPrice(asset, price));
+  
+  // Start orderbook WebSocket
+  const tokenIds: string[] = [];
+  for (const market of markets.values()) {
+    tokenIds.push(market.upTokenId, market.downTokenId);
+  }
+  startOrderbookWs(tokenIds, (tokenId, asks, bids) => {
+    // Update price state from WS
+    for (const [asset, market] of markets) {
+      if (market.upTokenId === tokenId) {
+        priceState[asset].upBestAsk = asks[0]?.[0] ?? null;
+        priceState[asset].upBestBid = bids[0]?.[0] ?? null;
+      }
+      if (market.downTokenId === tokenId) {
+        priceState[asset].downBestAsk = asks[0]?.[0] ?? null;
+        priceState[asset].downBestBid = bids[0]?.[0] ?? null;
+      }
+    }
+  });
+  
+  isRunning = true;
+  
+  // Main tick loop
+  setInterval(evaluateTick, TICK_INTERVAL_MS);
+  
+  // Market refresh
+  setInterval(async () => {
+    await fetchMarkets();
+  }, MARKET_REFRESH_MS);
+  
+  // Config reload
+  setInterval(async () => {
+    const newConfig = await loadV30Config();
+    if (newConfig.enabled !== config.enabled) {
+      log(`📋 Config updated: enabled=${newConfig.enabled}`);
+    }
+    config = newConfig;
+    edgeCalculator.updateConfig(config);
+    inventoryManager.updateConfig(config);
+  }, CONFIG_RELOAD_MS);
+  
+  // Heartbeat
+  setInterval(async () => {
+    const balance = await getBalance().catch(() => null);
+    await sendHeartbeat(
+      RUN_ID,
+      isRunning ? 'running' : 'stopped',
+      markets.size,
+      inventoryManager.getAllPositions().length,
+      balance
+    );
+  }, HEARTBEAT_MS);
+  
+  // Recalibrate fair value periodically
+  setInterval(calibrateFairValue, CALIBRATION_INTERVAL_MS);
+  
+  // Periodic orderbook refresh (backup for WS)
+  setInterval(refreshOrderbooks, 5000);
+  
+  // Flush ticks periodically
+  setInterval(flushTicks, 5000);
+  
+  log('✅ V30 Market-Maker running');
+  log(`   Tick interval: ${TICK_INTERVAL_MS}ms`);
+  log(`   Fair value model: ${config.fair_value_model}`);
+  log(`   Base θ: ${(config.base_theta * 100).toFixed(1)}%`);
+  log(`   Max inventory: ${config.i_max_base} shares`);
+  
+  // Graceful shutdown
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+}
+
+async function shutdown(): Promise<void> {
+  log('🛑 Shutting down...');
+  isRunning = false;
+  
+  stopBinanceFeed();
+  stopChainlinkFeed();
+  stopOrderbookWs();
+  stopPreSignedCache();
+  await flushTicks();
+  await releaseLease();
+  
+  log('👋 V30 stopped');
+  process.exit(0);
+}
+
+// Start
+main().catch(err => {
+  logError('Fatal error', err);
+  process.exit(1);
+});

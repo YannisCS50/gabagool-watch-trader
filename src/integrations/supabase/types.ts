@@ -5831,6 +5831,180 @@ export type Database = {
         }
         Relationships: []
       }
+      v30_config: {
+        Row: {
+          aggressive_exit_sec: number | null
+          assets: string[] | null
+          base_theta: number | null
+          bet_size_base: number | null
+          bet_size_vol_factor: number | null
+          created_at: string | null
+          enabled: boolean | null
+          fair_value_model: string | null
+          force_counter_at_pct: number | null
+          i_max_base: number | null
+          id: string
+          max_share_price: number | null
+          min_share_price: number | null
+          theta_inventory_factor: number | null
+          theta_time_decay_factor: number | null
+          updated_at: string | null
+        }
+        Insert: {
+          aggressive_exit_sec?: number | null
+          assets?: string[] | null
+          base_theta?: number | null
+          bet_size_base?: number | null
+          bet_size_vol_factor?: number | null
+          created_at?: string | null
+          enabled?: boolean | null
+          fair_value_model?: string | null
+          force_counter_at_pct?: number | null
+          i_max_base?: number | null
+          id?: string
+          max_share_price?: number | null
+          min_share_price?: number | null
+          theta_inventory_factor?: number | null
+          theta_time_decay_factor?: number | null
+          updated_at?: string | null
+        }
+        Update: {
+          aggressive_exit_sec?: number | null
+          assets?: string[] | null
+          base_theta?: number | null
+          bet_size_base?: number | null
+          bet_size_vol_factor?: number | null
+          created_at?: string | null
+          enabled?: boolean | null
+          fair_value_model?: string | null
+          force_counter_at_pct?: number | null
+          i_max_base?: number | null
+          id?: string
+          max_share_price?: number | null
+          min_share_price?: number | null
+          theta_inventory_factor?: number | null
+          theta_time_decay_factor?: number | null
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
+      v30_positions: {
+        Row: {
+          asset: string
+          avg_entry_price: number | null
+          created_at: string | null
+          direction: string
+          id: string
+          market_slug: string
+          run_id: string
+          shares: number | null
+          total_cost: number | null
+          updated_at: string | null
+        }
+        Insert: {
+          asset: string
+          avg_entry_price?: number | null
+          created_at?: string | null
+          direction: string
+          id?: string
+          market_slug: string
+          run_id: string
+          shares?: number | null
+          total_cost?: number | null
+          updated_at?: string | null
+        }
+        Update: {
+          asset?: string
+          avg_entry_price?: number | null
+          created_at?: string | null
+          direction?: string
+          id?: string
+          market_slug?: string
+          run_id?: string
+          shares?: number | null
+          total_cost?: number | null
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
+      v30_ticks: {
+        Row: {
+          action_taken: string | null
+          asset: string
+          c_price: number | null
+          created_at: string | null
+          delta_to_strike: number | null
+          down_best_ask: number | null
+          down_best_bid: number | null
+          edge_down: number | null
+          edge_up: number | null
+          fair_p_up: number | null
+          id: string
+          inventory_down: number | null
+          inventory_net: number | null
+          inventory_up: number | null
+          market_slug: string | null
+          run_id: string | null
+          seconds_remaining: number | null
+          strike_price: number | null
+          theta_current: number | null
+          ts: number
+          up_best_ask: number | null
+          up_best_bid: number | null
+          z_price: number | null
+        }
+        Insert: {
+          action_taken?: string | null
+          asset: string
+          c_price?: number | null
+          created_at?: string | null
+          delta_to_strike?: number | null
+          down_best_ask?: number | null
+          down_best_bid?: number | null
+          edge_down?: number | null
+          edge_up?: number | null
+          fair_p_up?: number | null
+          id?: string
+          inventory_down?: number | null
+          inventory_net?: number | null
+          inventory_up?: number | null
+          market_slug?: string | null
+          run_id?: string | null
+          seconds_remaining?: number | null
+          strike_price?: number | null
+          theta_current?: number | null
+          ts: number
+          up_best_ask?: number | null
+          up_best_bid?: number | null
+          z_price?: number | null
+        }
+        Update: {
+          action_taken?: string | null
+          asset?: string
+          c_price?: number | null
+          created_at?: string | null
+          delta_to_strike?: number | null
+          down_best_ask?: number | null
+          down_best_bid?: number | null
+          edge_down?: number | null
+          edge_up?: number | null
+          fair_p_up?: number | null
+          id?: string
+          inventory_down?: number | null
+          inventory_net?: number | null
+          inventory_up?: number | null
+          market_slug?: string | null
+          run_id?: string | null
+          seconds_remaining?: number | null
+          strike_price?: number | null
+          theta_current?: number | null
+          ts?: number
+          up_best_ask?: number | null
+          up_best_bid?: number | null
+          z_price?: number | null
+        }
+        Relationships: []
+      }
     }
     Views: {
       v_daily_pnl_cumulative: {
