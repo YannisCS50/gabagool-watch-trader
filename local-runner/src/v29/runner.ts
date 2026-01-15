@@ -27,17 +27,8 @@ import { fetchPositions, type PolymarketPosition } from '../positions-sync.js';
 import { config as globalConfig } from '../config.js';
 import { startUserChannel, stopUserChannel, type TradeEvent, isUserChannelConnected } from './user-ws.js';
 import { startPriceFeedLogger, stopPriceFeedLogger, isPriceFeedLoggerRunning } from '../price-feed-ws-logger.js';
-import { 
-  initTracker, 
-  getOrCreateBet, 
-  recordOrder, 
-  updateOrderFill, 
-  recordBuyFill, 
-  recordSellFill, 
-  updateUnrealizedPnL, 
-  closeBet,
-  getActiveBetsSummary 
-} from './order-tracker.js';
+// Order tracker disabled (was causing runner crashes when env vars were missing)
+
 
 // ============================================
 // POSITION TRACKING
@@ -941,18 +932,6 @@ async function executeBuy(
   
   void saveSignal(signal);
   
-  // === ORDER TRACKING ===
-  // Record buy fill in order tracker for P&L calculation
-  void getOrCreateBet(
-    asset,
-    market.conditionId,
-    market.slug,
-    market.strikePrice,
-    market.startTime,
-    market.endTime!
-  ).then(() => {
-    void recordBuyFill(asset, market.conditionId, direction, filledSize, avgPrice, orderId ?? undefined);
-  });
   
   // No GTC order - we monitor price and fire sell when TP hit
 }
@@ -1060,11 +1039,6 @@ async function checkAndExecuteSells(): Promise<void> {
           signalDirection: pos.direction,
         });
         
-        // === ORDER TRACKING: Record sell with P&L ===
-        const market = markets.get(pos.asset);
-        if (market) {
-          void recordSellFill(pos.asset, market.conditionId, pos.direction, pos.shares, actualSellPrice, result.orderId ?? undefined);
-        }
         
         openPositions.delete(posId);
       }
@@ -1106,11 +1080,6 @@ async function checkAndExecuteSells(): Promise<void> {
           pos.asset
         );
         
-        // === ORDER TRACKING: Record stop-loss sell ===
-        const market = markets.get(pos.asset);
-        if (market) {
-          void recordSellFill(pos.asset, market.conditionId, pos.direction, pos.shares, actualSellPrice, result.orderId ?? undefined);
-        }
         
         openPositions.delete(posId);
       }
@@ -1277,11 +1246,6 @@ async function checkAndExecuteSells(): Promise<void> {
         signalDirection: agg.direction,
       });
       
-      // === ORDER TRACKING: Record force-close sell ===
-      const market = markets.get(agg.asset);
-      if (market) {
-        void recordSellFill(agg.asset, market.conditionId, agg.direction, agg.totalShares, actualSellPrice, result.orderId ?? undefined);
-      }
       
       // Remove all closed positions
       for (const posId of agg.positionIds) {
@@ -1338,9 +1302,6 @@ async function main(): Promise<void> {
   // Init DB first (needed for lease)
   initDb();
   log('✅ DB initialized');
-  
-  // Init order tracker
-  initTracker(RUN_ID);
   
   // ============================================
   // RUNNER REGISTRATION - NO TAKEOVER BY DEFAULT
