@@ -80,11 +80,11 @@ export const DEFAULT_CONFIG: V29Config = {
   shares_per_trade: 5,  // Per burst order - ensures min $1 order at any price
   prevent_counter_scalping: false,  // DISABLED - allow buying both sides
   
-  // Sell config - profit-take OR stop-loss, force close only as safety net
-  min_profit_cents: 4,           // Sell when bestBid >= entryPrice + 4¢
-  aggregate_after_sec: 300,      // After 5min, mark for aggregation (safety net)
-  force_close_after_sec: 600,    // After 10min, force close (forgotten positions only)
-  stop_loss_cents: 10,           // Exit if price drops 10¢ below entry
+  // Sell config - ACTIVE TAKE-PROFIT ORDERS
+  min_profit_cents: 2,           // TP target: entry + 2¢ (small but frequent profits!)
+  aggregate_after_sec: 60,       // After 60s, consider position for passive monitoring
+  force_close_after_sec: 120,    // After 2min, force close (safety net)
+  stop_loss_cents: 8,            // Exit if price drops 8¢ below entry
   
   max_exposure_per_asset: 100,
   max_cost_per_asset: 50,

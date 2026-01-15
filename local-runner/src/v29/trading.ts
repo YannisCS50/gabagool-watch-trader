@@ -1104,6 +1104,81 @@ export async function getBalance(): Promise<number> {
 }
 
 /**
+ * Place a TAKE-PROFIT sell order as GTC (Good Till Cancelled)
+ * This order sits on the book waiting to be filled when price reaches target
+ */
+export async function placeTakeProfitSellOrder(
+  tokenId: string,
+  price: number,
+  shares: number,
+  asset?: Asset,
+  direction?: 'UP' | 'DOWN'
+): Promise<OrderResult> {
+  const start = Date.now();
+  
+  try {
+    const client = await getClient();
+    const roundedShares = Math.floor(shares);
+    const roundedPrice = Math.round(price * 100) / 100;
+    
+    if (roundedShares < 1) {
+      return { success: false, error: 'Shares < 1', latencyMs: Date.now() - start };
+    }
+    
+    if (roundedPrice <= 0.01 || roundedPrice >= 0.99) {
+      return { success: false, error: `Invalid price ${roundedPrice}`, latencyMs: Date.now() - start };
+    }
+    
+    // Try to use cached pre-signed order first
+    let signedOrder: SignedOrder | null = null;
+    let usedCache = false;
+    
+    if (asset && direction) {
+      const cached = getPreSignedOrder(asset, direction, 'SELL', roundedPrice, roundedShares);
+      if (cached) {
+        signedOrder = cached.signedOrder;
+        usedCache = true;
+        log(`⚡ TP Cache hit: ${asset} ${direction} SELL ${roundedShares}@${roundedPrice}`);
+      }
+    }
+    
+    // Fallback to real-time signing
+    if (!signedOrder) {
+      log(`📝 TP Real-time sign: SELL ${roundedShares}@${roundedPrice}`);
+      signedOrder = await client.createOrder(
+        { tokenID: tokenId, price: roundedPrice, size: roundedShares, side: Side.SELL },
+        { tickSize: '0.01', negRisk: false }
+      );
+    }
+    
+    // Post as GTC - order stays on book until filled or cancelled
+    const response = await client.postOrder(signedOrder, OrderType.GTC);
+    
+    const latencyMs = Date.now() - start;
+    
+    if (response.success && response.orderID) {
+      log(`✅ TP order placed: ${response.orderID} @ ${(roundedPrice * 100).toFixed(1)}¢ (${latencyMs}ms, cache=${usedCache})`);
+      return {
+        success: true,
+        orderId: response.orderID,
+        avgPrice: roundedPrice,
+        filledSize: 0, // Not filled yet - it's a limit order
+        latencyMs,
+        usedCache,
+      };
+    } else {
+      const msg = asErrorMessage(response.errorMsg) || 'TP order rejected';
+      log(`❌ TP order failed: ${msg}`);
+      return { success: false, error: msg, latencyMs };
+    }
+  } catch (err) {
+    const msg = asErrorMessage(err);
+    log(`❌ TP order error: ${msg}`);
+    return { success: false, error: msg, latencyMs: Date.now() - start };
+  }
+}
+
+/**
  * Get cache stats for monitoring
  */
 export function getCacheStats() {
