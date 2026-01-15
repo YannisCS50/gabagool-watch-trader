@@ -57,7 +57,8 @@ export function V29LogViewer() {
       }
 
       if (data) {
-        setLogs((data as any[]).reverse().map(normalizeLog));
+        // Keep descending order (newest first)
+        setLogs((data as any[]).map(normalizeLog));
       }
     };
 
@@ -75,7 +76,8 @@ export function V29LogViewer() {
         { event: 'INSERT', schema: 'public', table: 'v29_logs' },
         (payload) => {
           const newLog = normalizeLog(payload.new);
-          setLogs((prev) => [...prev.slice(-(DEFAULT_LIMIT - 1)), newLog]);
+          // Prepend new logs at the top (newest first)
+          setLogs((prev) => [newLog, ...prev.slice(0, DEFAULT_LIMIT - 1)]);
         }
       )
       .subscribe();
@@ -85,17 +87,18 @@ export function V29LogViewer() {
     };
   }, [isPaused]);
 
-  // Auto-scroll to bottom
+  // Auto-scroll to top (newest logs are at top now)
   useEffect(() => {
     if (autoScrollRef.current && scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+      scrollRef.current.scrollTop = 0;
     }
   }, [logs]);
 
   const handleScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const el = e.currentTarget;
-    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
-    autoScrollRef.current = isAtBottom;
+    // Check if at top (for newest-first layout)
+    const isAtTop = el.scrollTop < 50;
+    autoScrollRef.current = isAtTop;
   };
 
   const clearLogs = () => {
