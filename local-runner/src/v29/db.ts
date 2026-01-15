@@ -52,11 +52,14 @@ export async function saveSignal(signal: Signal): Promise<string | null> {
           shares: signal.shares,
           fill_ts: signal.fill_ts,
           sell_ts: signal.close_ts,
-          exit_reason: signal.exit_type,
+          // v29_signals has a single text field `exit_reason`.
+          // We store human-readable notes/errors there so the dashboard can show *why* it failed.
+          exit_reason: signal.notes ?? (signal.exit_type ? `exit_type=${signal.exit_type}` : null),
           net_pnl: signal.net_pnl,
+          signal_key: signal.signal_key ?? null,
         })
         .eq('id', signal.id);
-      
+
       if (error) throw error;
       return signal.id;
     } else {
@@ -74,10 +77,12 @@ export async function saveSignal(signal: Signal): Promise<string | null> {
           strike_price: signal.strike_price,
           status: signal.status,
           signal_ts: signal.signal_ts,
+          signal_key: signal.signal_key ?? null,
+          exit_reason: signal.notes ?? null,
         })
         .select('id')
         .single();
-      
+
       if (error) throw error;
       return data?.id ?? null;
     }
