@@ -5276,6 +5276,93 @@ export type Database = {
         }
         Relationships: []
       }
+      v29_bets: {
+        Row: {
+          asset: string
+          buy_count: number | null
+          created_at: string
+          down_avg_price: number | null
+          down_cost: number | null
+          down_shares: number | null
+          id: string
+          market_id: string
+          market_slug: string | null
+          payout: number | null
+          realized_pnl: number | null
+          result: string | null
+          run_id: string | null
+          sell_count: number | null
+          settled_outcome: string | null
+          status: string
+          strike_price: number | null
+          total_cost: number | null
+          total_revenue: number | null
+          unrealized_pnl: number | null
+          up_avg_price: number | null
+          up_cost: number | null
+          up_shares: number | null
+          updated_at: string
+          window_end: string
+          window_start: string
+        }
+        Insert: {
+          asset: string
+          buy_count?: number | null
+          created_at?: string
+          down_avg_price?: number | null
+          down_cost?: number | null
+          down_shares?: number | null
+          id?: string
+          market_id: string
+          market_slug?: string | null
+          payout?: number | null
+          realized_pnl?: number | null
+          result?: string | null
+          run_id?: string | null
+          sell_count?: number | null
+          settled_outcome?: string | null
+          status?: string
+          strike_price?: number | null
+          total_cost?: number | null
+          total_revenue?: number | null
+          unrealized_pnl?: number | null
+          up_avg_price?: number | null
+          up_cost?: number | null
+          up_shares?: number | null
+          updated_at?: string
+          window_end: string
+          window_start: string
+        }
+        Update: {
+          asset?: string
+          buy_count?: number | null
+          created_at?: string
+          down_avg_price?: number | null
+          down_cost?: number | null
+          down_shares?: number | null
+          id?: string
+          market_id?: string
+          market_slug?: string | null
+          payout?: number | null
+          realized_pnl?: number | null
+          result?: string | null
+          run_id?: string | null
+          sell_count?: number | null
+          settled_outcome?: string | null
+          status?: string
+          strike_price?: number | null
+          total_cost?: number | null
+          total_revenue?: number | null
+          unrealized_pnl?: number | null
+          up_avg_price?: number | null
+          up_cost?: number | null
+          up_shares?: number | null
+          updated_at?: string
+          window_end?: string
+          window_start?: string
+        }
+        Relationships: []
+      }
       v29_config: {
         Row: {
           accumulation_enabled: boolean | null
@@ -5468,6 +5555,75 @@ export type Database = {
           message?: string
           run_id?: string | null
           ts?: number
+        }
+        Relationships: []
+      }
+      v29_orders: {
+        Row: {
+          asset: string
+          cost: number | null
+          created_at: string
+          direction: string
+          fill_cost: number | null
+          fill_price: number | null
+          fill_shares: number | null
+          filled_at: string | null
+          id: string
+          market_id: string
+          notes: string | null
+          order_id: string | null
+          pnl: number | null
+          price: number
+          run_id: string | null
+          shares: number
+          side: string
+          signal_id: string | null
+          status: string
+          token_id: string | null
+        }
+        Insert: {
+          asset: string
+          cost?: number | null
+          created_at?: string
+          direction: string
+          fill_cost?: number | null
+          fill_price?: number | null
+          fill_shares?: number | null
+          filled_at?: string | null
+          id?: string
+          market_id: string
+          notes?: string | null
+          order_id?: string | null
+          pnl?: number | null
+          price: number
+          run_id?: string | null
+          shares: number
+          side: string
+          signal_id?: string | null
+          status?: string
+          token_id?: string | null
+        }
+        Update: {
+          asset?: string
+          cost?: number | null
+          created_at?: string
+          direction?: string
+          fill_cost?: number | null
+          fill_price?: number | null
+          fill_shares?: number | null
+          filled_at?: string | null
+          id?: string
+          market_id?: string
+          notes?: string | null
+          order_id?: string | null
+          pnl?: number | null
+          price?: number
+          run_id?: string | null
+          shares?: number
+          side?: string
+          signal_id?: string | null
+          status?: string
+          token_id?: string | null
         }
         Relationships: []
       }
