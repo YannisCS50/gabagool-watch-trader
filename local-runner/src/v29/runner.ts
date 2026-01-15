@@ -808,7 +808,43 @@ async function executeBuy(
   // Calculate price with buffer
   const priceBuffer = config.price_buffer_cents / 100;
   const buyPrice = Math.ceil((bestAsk + priceBuffer) * 100) / 100;
-  const shares = config.shares_per_trade;
+  
+  // === DELTA TRAP: Calculate shares based on delta direction ===
+  let shares = config.shares_per_trade;
+  
+  if (config.delta_trap_enabled) {
+    const absDelta = Math.abs(strikeActualDelta);
+    
+    // Determine if this direction is "favored" (matches delta direction)
+    // Positive delta (price > strike) → UP is favored
+    // Negative delta (price < strike) → DOWN is favored
+    const favoredDirection: 'UP' | 'DOWN' = strikeActualDelta >= 0 ? 'UP' : 'DOWN';
+    const isFavored = direction === favoredDirection;
+    
+    // Calculate scaling factor based on delta magnitude
+    if (absDelta >= config.delta_trap_min_delta) {
+      // Linear interpolation from min_delta to full_scale_delta
+      const scalingProgress = Math.min(
+        (absDelta - config.delta_trap_min_delta) / 
+        (config.delta_trap_full_scale_delta - config.delta_trap_min_delta),
+        1.0
+      );
+      
+      if (isFavored) {
+        // Favored direction: scale UP from 1.0 to max_multiplier
+        const multiplier = 1.0 + scalingProgress * (config.delta_trap_max_multiplier - 1.0);
+        shares = Math.max(5, Math.round(config.shares_per_trade * multiplier));
+        log(`🎯 DELTA TRAP: ${asset} ${direction} FAVORED | Δ$${strikeActualDelta.toFixed(0)} | ${multiplier.toFixed(2)}x → ${shares} shares`);
+      } else {
+        // Unfavored direction: scale DOWN from 1.0 to min_multiplier
+        const multiplier = 1.0 - scalingProgress * (1.0 - config.delta_trap_min_multiplier);
+        shares = Math.max(5, Math.round(config.shares_per_trade * multiplier));
+        log(`⚖️ DELTA TRAP: ${asset} ${direction} unfavored | Δ$${strikeActualDelta.toFixed(0)} | ${multiplier.toFixed(2)}x → ${shares} shares`);
+      }
+    } else {
+      log(`📊 DELTA TRAP: ${asset} |Δ|=$${absDelta.toFixed(0)} < min $${config.delta_trap_min_delta} → no scaling`);
+    }
+  }
   
   // Check exposure limits
   const exposure = getTotalExposure(asset);

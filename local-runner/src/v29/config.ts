@@ -31,6 +31,23 @@ export interface V29Config {
   // Shares per trade (per burst order)
   shares_per_trade: number;
   
+  // === DELTA TRAP STRATEGY ===
+  // When enabled, buy MORE shares in the direction of the delta
+  // e.g., if price is $200 above strike → buy 2x UP shares, 0.5x DOWN shares
+  delta_trap_enabled: boolean;
+  
+  // Minimum delta to start scaling (below this, buy 1x both directions)
+  delta_trap_min_delta: number;  // e.g., 50 = start scaling at $50 delta
+  
+  // Maximum multiplier for favored direction
+  delta_trap_max_multiplier: number;  // e.g., 2.5 = buy up to 2.5x shares in favored direction
+  
+  // Minimum multiplier for unfavored direction (can be 0 to skip entirely)
+  delta_trap_min_multiplier: number;  // e.g., 0.3 = buy 0.3x shares in unfavored direction
+  
+  // Delta at which max scaling is reached
+  delta_trap_full_scale_delta: number;  // e.g., 200 = at $200 delta, use max multipliers
+  
   // === COUNTER-SCALPING PREVENTION ===
   // If true: don't buy opposite direction when you already have a position in this market
   // e.g., if you have UP shares, don't buy DOWN shares (prevents self-hedging)
@@ -78,6 +95,14 @@ export const DEFAULT_CONFIG: V29Config = {
   min_share_price: 0.08,          // WIDENED: Trade 8¢-92¢ range (was 15-85)
   max_share_price: 0.92,          // WIDENED: allows trading when price is far from strike
   shares_per_trade: 5,            // FIXED: Polymarket minimum is 5 shares!
+  
+  // DELTA TRAP: Buy more in direction of delta
+  delta_trap_enabled: true,       // Enable proportional buying
+  delta_trap_min_delta: 50,       // Start scaling at $50 delta
+  delta_trap_max_multiplier: 2.0, // Favored direction: up to 2x shares
+  delta_trap_min_multiplier: 0.5, // Unfavored direction: 0.5x shares (still buy some)
+  delta_trap_full_scale_delta: 200, // Full scaling at $200 delta
+  
   prevent_counter_scalping: false,
   
   // Sell config - MONITOR AND FIRE
