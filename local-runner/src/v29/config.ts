@@ -73,11 +73,11 @@ export interface V29Config {
 
 export const DEFAULT_CONFIG: V29Config = {
   enabled: true,
-  tick_delta_usd: 6,              // LOWERED: trigger on smaller moves ($6 instead of $8)
-  delta_threshold: 200,           // RAISED: allow both directions until delta > $200
-  min_share_price: 0.15,          // LOWERED: trade wider price range (15¢-85¢)
-  max_share_price: 0.85,          // RAISED: trade wider price range
-  shares_per_trade: 2,            // SMALLER: 2 shares for faster stacking
+  tick_delta_usd: 6,              // Trigger on $6 moves
+  delta_threshold: 75,            // Direction filter: < -75 = DOWN only, > +75 = UP only
+  min_share_price: 0.15,          // Trade 15¢-85¢ range
+  max_share_price: 0.85,
+  shares_per_trade: 2,            // 2 shares, but ensure min $1 order in code
   prevent_counter_scalping: false,
   
   // Sell config - MONITOR AND FIRE
@@ -86,15 +86,15 @@ export const DEFAULT_CONFIG: V29Config = {
   force_close_after_sec: 120,     // After 2min, force close
   stop_loss_cents: 8,             // Exit if 8¢ below entry
   
-  max_exposure_per_asset: 200,    // RAISED: allow more stacking
-  max_cost_per_asset: 100,        // RAISED: allow more cost
+  max_exposure_per_asset: 200,
+  max_cost_per_asset: 100,
   
   price_buffer_cents: 2,
   assets: ['BTC', 'ETH', 'SOL', 'XRP'],
   binance_poll_ms: 100,
-  orderbook_poll_ms: 1500,        // FASTER: update orderbook more often
-  order_cooldown_ms: 500,         // MUCH FASTER: only 500ms between buys per direction!
-  sell_check_ms: 150,             // FASTER: check sells more often
+  orderbook_poll_ms: 1500,
+  order_cooldown_ms: 1500,        // 1.5 second cooldown
+  sell_check_ms: 150,
 };
 
 // Binance WebSocket symbols
