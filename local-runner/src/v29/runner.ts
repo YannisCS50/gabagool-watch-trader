@@ -19,7 +19,7 @@ import { startBinanceFeed, stopBinanceFeed } from './binance.js';
 import { startChainlinkFeed, stopChainlinkFeed, getChainlinkPrice } from './chainlink.js';
 import { fetchMarketOrderbook, fetchAllOrderbooks } from './orderbook.js';
 import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb, queueLog, logTick, queueTick } from './db.js';
-import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, getOrderStatus, setFillContext, clearFillContext, cancelOrder } from './trading.js';
+import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, getOrderStatus, setFillContext, clearFillContext, cancelOrder, logBurstStats } from './trading.js';
 import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
 import { acquireLease, releaseLease, isRunnerActive } from './lease.js';
@@ -1290,6 +1290,11 @@ async function main(): Promise<void> {
     log(`📊 Positions: ${summary} | P&L: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)} | Buys: ${buysCount} | Sells: ${sellsCount} (${profitableSells}✅/${lossSells}❌)`);
   }, 30_000);
 
+  // Log burst fill stats every 60 seconds
+  const burstStatsInterval = setInterval(() => {
+    logBurstStats();
+  }, 60_000);
+
   log('🎯 V29 Buy-and-Sell Runner READY');
   log(`   Strategy: Buy → Profit-take (≥${config.min_profit_cents}¢) → Force close (${config.force_close_after_sec}s)`);
   log(`   Shares: ${config.shares_per_trade} | Max Exposure: ${config.max_exposure_per_asset}`);
@@ -1306,9 +1311,13 @@ async function main(): Promise<void> {
     clearInterval(configReloadInterval);
     clearInterval(heartbeatInterval);
     clearInterval(summaryInterval);
+    clearInterval(burstStatsInterval);
     stopBinanceFeed();
     stopChainlinkFeed();
     stopPreSignedCache();
+    
+    // Log final burst stats
+    logBurstStats();
     
     // Release registration so we're not in the DB anymore
     await releaseLease(RUN_ID);
