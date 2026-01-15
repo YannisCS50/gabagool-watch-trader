@@ -542,12 +542,14 @@ const BURST_FILL_CONFIG = {
   burstCount: 3,
   // Shares per order (total = burstCount * sharesPerOrder = 6 shares max)
   sharesPerOrder: 2,
-  // Price step between orders (1¢) - spread across 3¢ range
-  priceStepCents: 0.01,
+  // Price step between orders - INCREASED to 2¢ for more aggressive fills
+  priceStepCents: 0.02,
   // How long to wait before checking fills (ms)
-  fillCheckDelayMs: 50,
+  fillCheckDelayMs: 100,
   // How long to wait for fill before canceling unfilled orders (ms)
-  totalTimeoutMs: 200,
+  totalTimeoutMs: 500,
+  // Use GTC instead of FOK for better fill rates (FOK fails on low liquidity)
+  useGtc: true,
 };
 
 // ============================================
@@ -652,7 +654,8 @@ export async function placeBuyOrder(
     }
     
     // BURST FILL MODE
-    const { burstCount, priceStepCents, fillCheckDelayMs, totalTimeoutMs } = BURST_FILL_CONFIG;
+    const { burstCount, priceStepCents, fillCheckDelayMs, totalTimeoutMs, useGtc } = BURST_FILL_CONFIG;
+    const orderType = useGtc ? OrderType.GTC : OrderType.FOK;
     
     // Track this burst attempt
     burstStats.totalBursts++;
@@ -703,15 +706,15 @@ export async function placeBuyOrder(
           signedOrder = await Promise.race([signPromise, timeoutPromise]);
         }
         
-        // Post order with timeout
-        const postPromise = client.postOrder(signedOrder!, OrderType.FOK);
+        // Post order with timeout - use GTC for better fills on low liquidity
+        const postPromise = client.postOrder(signedOrder!, orderType);
         const postTimeoutPromise = new Promise<never>((_, reject) => 
           setTimeout(() => reject(new Error('Post timeout')), ORDER_TIMEOUT_MS)
         );
         const response = await Promise.race([postPromise, postTimeoutPromise]);
         
         const elapsed = Date.now() - orderStart;
-        log(`📤 Order ${idx + 1}: ${usedCache ? '⚡cache' : '🔧sign'} @ ${(orderPrice * 100).toFixed(0)}¢ → ${response.success ? '✅' : '❌'} (${elapsed}ms)`);
+        log(`📤 Order ${idx + 1}: ${usedCache ? '⚡cache' : '🔧sign'} @ ${(orderPrice * 100).toFixed(0)}¢ [${useGtc ? 'GTC' : 'FOK'}] → ${response.success ? '✅' : '❌'} (${elapsed}ms)`);
 
         return {
           idx,
