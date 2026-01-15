@@ -75,8 +75,8 @@ export const DEFAULT_CONFIG: V29Config = {
   enabled: true,
   tick_delta_usd: 6,              // Trigger on $6 moves
   delta_threshold: 75,            // Direction filter: < -75 = DOWN only, > +75 = UP only
-  min_share_price: 0.15,          // Trade 15¢-85¢ range
-  max_share_price: 0.85,
+  min_share_price: 0.08,          // WIDENED: Trade 8¢-92¢ range (was 15-85)
+  max_share_price: 0.92,          // WIDENED: allows trading when price is far from strike
   shares_per_trade: 2,            // 2 shares, but ensure min $1 order in code
   prevent_counter_scalping: false,
   
