@@ -513,7 +513,7 @@ async function fetchMarkets(): Promise<void> {
         markets.set(asset, marketInfo);
 
         if (isNewMarket) {
-          log(`🔁 ${asset} NEW MARKET: ${slug}`, 'market', asset);
+          log(`🔁 ${asset} NEW MARKET: ${slug} - fetching orderbook NOW`, 'market', asset);
 
           priceState[asset] = {
             ...priceState[asset],
@@ -526,15 +526,20 @@ async function fetchMarkets(): Promise<void> {
 
           void updateMarketCache(asset, m.upTokenId, m.downTokenId);
 
-          void fetchMarketOrderbook(marketInfo).then(book => {
-            if (markets.get(asset)?.slug !== slug) return;
-            if (book.upBestAsk !== undefined) priceState[asset].upBestAsk = book.upBestAsk;
-            if (book.upBestBid !== undefined) priceState[asset].upBestBid = book.upBestBid;
-            if (book.downBestAsk !== undefined) priceState[asset].downBestAsk = book.downBestAsk;
-            if (book.downBestBid !== undefined) priceState[asset].downBestBid = book.downBestBid;
-            if (book.lastUpdate !== undefined) priceState[asset].lastUpdate = book.lastUpdate;
-            log(`📖 ${asset} orderbook: UP ask ${book.upBestAsk ? (book.upBestAsk * 100).toFixed(1) : 'n/a'}¢ | DOWN ask ${book.downBestAsk ? (book.downBestAsk * 100).toFixed(1) : 'n/a'}¢`, 'market', asset);
-          });
+          // SYNC orderbook fetch - wait for it before trading!
+          try {
+            const book = await fetchMarketOrderbook(marketInfo);
+            if (markets.get(asset)?.slug === slug) {
+              if (book.upBestAsk !== undefined) priceState[asset].upBestAsk = book.upBestAsk;
+              if (book.upBestBid !== undefined) priceState[asset].upBestBid = book.upBestBid;
+              if (book.downBestAsk !== undefined) priceState[asset].downBestAsk = book.downBestAsk;
+              if (book.downBestBid !== undefined) priceState[asset].downBestBid = book.downBestBid;
+              if (book.lastUpdate !== undefined) priceState[asset].lastUpdate = book.lastUpdate;
+              log(`📖 ${asset} orderbook READY: UP ask ${book.upBestAsk ? (book.upBestAsk * 100).toFixed(1) : 'n/a'}¢ | DOWN ask ${book.downBestAsk ? (book.downBestAsk * 100).toFixed(1) : 'n/a'}¢`, 'market', asset);
+            }
+          } catch (err) {
+            log(`⚠️ ${asset} initial orderbook fetch failed - will retry on poll`, 'error', asset);
+          }
         } else if (previousSlug === null) {
           log(`📍 ${asset}: ${slug} @ strike $${marketInfo.strikePrice ?? 0}`, 'market', asset);
         }
@@ -560,17 +565,25 @@ function scheduleMarketRefresh(asset: Asset, endTimeMs: number): void {
   
   const now = Date.now();
   const timeUntilEnd = endTimeMs - now;
-  const refreshIn = Math.max(timeUntilEnd - 5_000, 1_000);
   
   if (timeUntilEnd <= 0 || timeUntilEnd > 2 * 60 * 60 * 1000) {
     return;
   }
   
-  log(`⏰ ${asset} timer: refresh in ${Math.floor(refreshIn / 1000)}s`, 'market', asset);
+  // Schedule refresh 10 seconds BEFORE market ends to catch the next one early
+  const refreshIn = Math.max(timeUntilEnd - 10_000, 1_000);
+  
+  log(`⏰ ${asset} timer: refresh in ${Math.floor(refreshIn / 1000)}s (ends in ${Math.floor(timeUntilEnd / 1000)}s)`, 'market', asset);
   
   marketTimers[asset] = setTimeout(() => {
     log(`🔄 ${asset} market expiring → fetching next`, 'market', asset);
     void fetchMarkets();
+    
+    // Also schedule a follow-up refresh 5 seconds AFTER market end (in case next market isn't ready yet)
+    setTimeout(() => {
+      log(`🔄 ${asset} post-expiry refresh`, 'market', asset);
+      void fetchMarkets();
+    }, timeUntilEnd + 5_000 - refreshIn);
   }, refreshIn);
 }
 
@@ -1434,10 +1447,10 @@ async function main(): Promise<void> {
     void loadExistingPositions({ quiet: true });
   }, 120_000);
 
-  // Market refresh every 2 minutes
+  // Market refresh every 30 seconds - critical for catching new markets fast!
   const marketRefreshInterval = setInterval(() => {
     void fetchMarkets();
-  }, 2 * 60 * 1000);
+  }, 30 * 1000);
 
   // Config reload every 30 seconds
   const configReloadInterval = setInterval(async () => {
