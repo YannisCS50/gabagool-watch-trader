@@ -226,53 +226,76 @@ async function loadExistingPositions(opts: { quiet?: boolean } = {}): Promise<vo
       });
     }
 
-    // Remove stale wallet-derived positions first
-    const keepWalletKeys = new Set<string>();
-    for (const [key] of aggregates) keepWalletKeys.add(`wallet:${key}`);
+    // Remove stale wallet-derived positions that don't match any current market
+    const activeMarketKeys = new Set<string>();
+    for (const [key] of aggregates) activeMarketKeys.add(key);  // e.g., "btc-up-12345:UP"
 
-    for (const [posId] of openPositions) {
+    for (const [posId, pos] of openPositions) {
       if (!posId.startsWith('wallet:')) continue;
-      if (!keepWalletKeys.has(posId)) openPositions.delete(posId);
+      const marketKey = `${pos.marketSlug}:${pos.direction}`;
+      if (!activeMarketKeys.has(marketKey)) {
+        if (!quiet) log(`   🗑️ Removing stale wallet position: ${posId} (market no longer active)`);
+        openPositions.delete(posId);
+      }
     }
 
-    // Upsert wallet-derived positions into openPositions
+    // PRESERVE individual positions! Only add wallet-derived position if we have NO in-memory positions
+    // This ensures trailing stop works per-order, not aggregated
     let loadedCount = 0;
     for (const [key, agg] of aggregates) {
-      const positionId = `wallet:${key}`;
-
-      // Remove any in-memory positions for the same market+direction to avoid double-counting
-      for (const [posId, pos] of openPositions) {
-        if (pos.marketSlug === agg.market.slug && pos.direction === agg.direction && pos.asset === agg.asset) {
-          openPositions.delete(posId);
-        }
-      }
-
-      const avgPrice = agg.shares > 0 ? agg.cost / agg.shares : 0;
       const tokenId = agg.direction === 'UP' ? agg.market.upTokenId : agg.market.downTokenId;
       
-      // Calculate take-profit target price (entry + TP cents) - CRITICAL for sell logic!
-      const takeProfitPrice = Math.round((avgPrice + config.min_profit_cents / 100) * 100) / 100;
-
-      openPositions.set(positionId, {
-        id: positionId,
-        asset: agg.asset,
-        direction: agg.direction,
-        marketSlug: agg.market.slug,
-        tokenId,
-        shares: agg.shares,
-        entryPrice: avgPrice,
-        totalCost: agg.cost,
-        entryTime: Date.now() - 30_000,
-        orderId: `wallet-${positionId}`,
-        takeProfitPrice,  // Was missing! This caused TP checks to fail
-        peakBidSeen: avgPrice,    // Start at entry price (will update on first tick)
-        trailingActive: false,    // Will activate when bid >= entry + 2¢
-      });
-
-      loadedCount++;
-
-      if (!quiet) {
-        log(`   📋 Wallet: ${agg.asset} ${agg.direction} ${agg.shares.toFixed(2)} sh @ ${(avgPrice * 100).toFixed(1)}¢ (${agg.market.slug})`);
+      // Count in-memory shares for this market+direction
+      let inMemoryShares = 0;
+      for (const [, pos] of openPositions) {
+        if (pos.marketSlug === agg.market.slug && pos.direction === agg.direction && pos.asset === agg.asset) {
+          inMemoryShares += pos.shares;
+        }
+      }
+      
+      // Compare wallet truth vs in-memory
+      const walletShares = agg.shares;
+      const difference = walletShares - inMemoryShares;
+      
+      if (difference > 0.5) {
+        // Wallet has MORE shares than we're tracking - add a new position for the difference
+        // This handles positions opened in previous sessions
+        const positionId = `wallet:${key}:${Date.now()}`;
+        const avgPrice = agg.shares > 0 ? agg.cost / agg.shares : 0;
+        const takeProfitPrice = Math.round((avgPrice + config.min_profit_cents / 100) * 100) / 100;
+        
+        openPositions.set(positionId, {
+          id: positionId,
+          asset: agg.asset,
+          direction: agg.direction,
+          marketSlug: agg.market.slug,
+          tokenId,
+          shares: difference,  // Only add the MISSING shares, not all of them!
+          entryPrice: avgPrice,
+          totalCost: difference * avgPrice,
+          entryTime: Date.now() - 30_000,  // Assume old position
+          orderId: `wallet-${positionId}`,
+          takeProfitPrice,
+          peakBidSeen: avgPrice,
+          trailingActive: false,
+        });
+        
+        loadedCount++;
+        if (!quiet) {
+          log(`   📋 Wallet: ${agg.asset} ${agg.direction} +${difference.toFixed(2)} sh (wallet: ${walletShares.toFixed(2)}, tracked: ${inMemoryShares.toFixed(2)}) @ ${(avgPrice * 100).toFixed(1)}¢`);
+        }
+      } else if (difference < -0.5) {
+        // Wallet has LESS shares than we're tracking - some were sold externally
+        // Remove old wallet positions first, keep in-memory ones
+        for (const [posId] of openPositions) {
+          if (posId.startsWith('wallet:') && posId.includes(key)) {
+            openPositions.delete(posId);
+            if (!quiet) log(`   🗑️ Removed stale wallet position ${posId}`);
+          }
+        }
+      } else if (!quiet && walletShares > 0.5) {
+        // Shares match - just log for visibility
+        log(`   ✓ Wallet in sync: ${agg.asset} ${agg.direction} ${walletShares.toFixed(2)} sh (${openPositions.size} positions tracked)`);
       }
     }
 
