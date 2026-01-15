@@ -28,8 +28,9 @@ let currentAssets: Asset[] = [];
 
 const BINANCE_WS_BASE = 'wss://stream.binance.com:9443/ws';
 
-// Buffer configuration - aggregate trades over 100ms windows
-const BUFFER_MS = 100;
+// Buffer configuration - DISABLED for lowest latency
+// Set to 0 to emit every trade immediately (no aggregation)
+const BUFFER_MS = 0;
 
 // Per-asset price buffer
 interface PriceBuffer {
@@ -76,6 +77,16 @@ function emitBufferedPrice(asset: Asset): void {
 }
 
 function bufferPrice(asset: Asset, price: number, timestamp: number): void {
+  // ZERO LATENCY MODE: If BUFFER_MS is 0, emit immediately
+  if (BUFFER_MS === 0) {
+    if (priceCallback) {
+      priceCallback(asset, price, timestamp);
+    }
+    lastEmittedPrice[asset] = price;
+    return;
+  }
+  
+  // Original buffered logic for BUFFER_MS > 0
   const buffer = priceBuffers[asset];
   const now = Date.now();
   

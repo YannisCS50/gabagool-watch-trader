@@ -739,8 +739,8 @@ export async function placeBuyOrder(
       }
     });
     
-    // Wait for all orders with overall timeout
-    const TOTAL_TIMEOUT_MS = 8000; // 8 seconds max for entire burst
+    // Wait for all orders with overall timeout - REDUCED from 8s to 3s
+    const TOTAL_TIMEOUT_MS = 3000; // 3 seconds max for entire burst
     const allOrdersPromise = Promise.all(orderPromises);
     const totalTimeoutPromise = new Promise<typeof orderPromises extends Promise<infer R>[] ? R[] : never>((resolve) => 
       setTimeout(() => {
