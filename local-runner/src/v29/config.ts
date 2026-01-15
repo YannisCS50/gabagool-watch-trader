@@ -77,7 +77,7 @@ export const DEFAULT_CONFIG: V29Config = {
   delta_threshold: 75,
   min_share_price: 0.30,
   max_share_price: 0.75,
-  shares_per_trade: 2,  // Per burst order (3x burst = 6 shares total)
+  shares_per_trade: 5,  // Per burst order - ensures min $1 order at any price
   prevent_counter_scalping: false,  // DISABLED - allow buying both sides
   
   // Sell config - profit-take OR stop-loss, force close only as safety net
