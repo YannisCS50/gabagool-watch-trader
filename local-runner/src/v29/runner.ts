@@ -241,6 +241,9 @@ async function loadExistingPositions(opts: { quiet?: boolean } = {}): Promise<vo
 
       const avgPrice = agg.shares > 0 ? agg.cost / agg.shares : 0;
       const tokenId = agg.direction === 'UP' ? agg.market.upTokenId : agg.market.downTokenId;
+      
+      // Calculate take-profit target price (entry + TP cents) - CRITICAL for sell logic!
+      const takeProfitPrice = Math.round((avgPrice + config.min_profit_cents / 100) * 100) / 100;
 
       openPositions.set(positionId, {
         id: positionId,
@@ -253,6 +256,7 @@ async function loadExistingPositions(opts: { quiet?: boolean } = {}): Promise<vo
         totalCost: agg.cost,
         entryTime: Date.now() - 30_000,
         orderId: `wallet-${positionId}`,
+        takeProfitPrice,  // Was missing! This caused TP checks to fail
       });
 
       loadedCount++;
