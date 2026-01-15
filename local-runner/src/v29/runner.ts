@@ -335,6 +335,12 @@ async function fetchMarkets(): Promise<void> {
         const asset = m.asset as Asset;
         const slug = String(m.slug || '');
 
+        // ONLY 15m markets - skip everything else!
+        const is15m = slug.toLowerCase().includes('-15m-');
+        if (!is15m) {
+          continue;
+        }
+
         let startMs = new Date(m.eventStartTime || m.event_start_time || '').getTime();
         let endMs = new Date(m.eventEndTime || m.event_end_time || m.endTime || '').getTime();
 
@@ -343,8 +349,7 @@ async function fetchMarkets(): Promise<void> {
 
         if (endMs <= now - 60_000) continue;
 
-        const is15m = slug.toLowerCase().includes('-15m-');
-        const earlyMs = is15m ? EARLY_15M_MS : 60_000;
+        const earlyMs = EARLY_15M_MS; // 90s early entry for 15m markets
 
         if (now < startMs - earlyMs) continue;
 
