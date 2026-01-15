@@ -32,14 +32,15 @@ import {
   sendHeartbeat,
   loadHistoricalData 
 } from './db.js';
-import { startBinanceFeed, stopBinanceFeed } from './binance.js';
-import { startChainlinkFeed, stopChainlinkFeed, getChainlinkPrice } from './chainlink.js';
-import { fetchMarketOrderbook, fetchAllOrderbooks } from './orderbook.js';
-import { startOrderbookWs, stopOrderbookWs, updateMarkets as updateOrderbookWsMarkets } from './orderbook-ws.js';
-import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, cancelOrder } from './trading.js';
+// Import shared modules from v29
+import { startBinanceFeed, stopBinanceFeed } from '../v29/binance.js';
+import { startChainlinkFeed, stopChainlinkFeed, getChainlinkPrice } from '../v29/chainlink.js';
+import { fetchMarketOrderbook, fetchAllOrderbooks } from '../v29/orderbook.js';
+import { startOrderbookWs, stopOrderbookWs, updateMarkets as updateOrderbookWsMarkets } from '../v29/orderbook-ws.js';
+import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, cancelOrder } from '../v29/trading.js';
 import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
-import { acquireLease, releaseLease, isRunnerActive } from './lease.js';
+import { acquireLease, releaseLease, isRunnerActive } from '../v29/lease.js';
 import { config as globalConfig } from '../config.js';
 
 // ============================================
