@@ -111,12 +111,26 @@ export function MainNav() {
             <NavigationMenuLink
               className={cn(
                 navigationMenuTriggerStyle(),
-                location.pathname === '/v26' && 'bg-accent text-accent-foreground',
+                location.pathname === '/v26' && 'bg-accent text-accent-foreground'
+              )}
+            >
+              V26
+            </NavigationMenuLink>
+          </Link>
+        </NavigationMenuItem>
+
+        {/* V30 Market-Maker */}
+        <NavigationMenuItem>
+          <Link to="/v30">
+            <NavigationMenuLink
+              className={cn(
+                navigationMenuTriggerStyle(),
+                location.pathname === '/v30' && 'bg-accent text-accent-foreground',
                 'bg-gradient-to-r from-primary/10 to-emerald-500/10 border border-primary/20'
               )}
             >
               <Sparkles className="mr-2 h-4 w-4 text-primary" />
-              V26
+              V30
             </NavigationMenuLink>
           </Link>
         </NavigationMenuItem>
