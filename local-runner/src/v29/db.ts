@@ -131,7 +131,7 @@ export async function loadV29Config(): Promise<{
       min_share_price: Number(cfg.min_share_price ?? 0.30),
       max_share_price: Number(cfg.max_share_price ?? 0.75),
       shares_per_trade: Number(cfg.shares_per_trade ?? 5),
-      prevent_counter_scalping: cfg.prevent_counter_scalping ?? true,
+      prevent_counter_scalping: cfg.prevent_counter_scalping ?? false,
       take_profit_cents: Number(cfg.take_profit_cents ?? 4),
       timeout_seconds: Number(cfg.timeout_seconds ?? 10),
       max_sell_retries: Number(cfg.max_sell_retries ?? 5),
