@@ -46,9 +46,9 @@ interface OpenPosition {
   entryTime: number;   // timestamp when filled
   orderId?: string;
   takeProfitPrice: number;  // Target sell price = entry + TP cents
-  // TIERED SELL STATE
-  sellTier: number;          // 0=entry+5¢, 1=entry+3¢, 2=entry+2¢, 3=market check
-  lastSellAttempt: number;   // timestamp of last sell attempt at current tier
+  // TRAILING STOP STATE
+  peakBidSeen: number;       // Highest bid seen since entry
+  trailingActive: boolean;   // True once bid >= entry + TRAILING_ACTIVATION_CENTS
 }
 
 // Open positions by ID
@@ -264,8 +264,8 @@ async function loadExistingPositions(opts: { quiet?: boolean } = {}): Promise<vo
         entryTime: Date.now() - 30_000,
         orderId: `wallet-${positionId}`,
         takeProfitPrice,  // Was missing! This caused TP checks to fail
-        sellTier: 0,      // Start at tier 0
-        lastSellAttempt: 0,
+        peakBidSeen: avgPrice,    // Start at entry price (will update on first tick)
+        trailingActive: false,    // Will activate when bid >= entry + 2¢
       });
 
       loadedCount++;
@@ -959,8 +959,8 @@ async function executeBuy(
     entryTime: fillTs,  // Use actual fill time
     orderId: orderId ?? undefined,
     takeProfitPrice,  // Will monitor and sell when price hits this
-    sellTier: 0,      // Start at tier 0 (entry + 5¢)
-    lastSellAttempt: 0,
+    peakBidSeen: avgPrice,    // Start at entry price
+    trailingActive: false,    // Activates when bid >= entry + 2¢
   };
   
   openPositions.set(positionId, openPos);
@@ -982,26 +982,20 @@ async function executeBuy(
 }
 
 // ============================================
-// SELL CHECK - TIERED SELL STRATEGY
+// SELL CHECK - TRAILING STOP STRATEGY
 // ============================================
-// TIERED APPROACH:
-// Tier 0: Try to sell at entry + 5¢ (best case profit)
-// Tier 1: Try to sell at entry + 3¢
-// Tier 2: Try to sell at entry + 2¢  
-// Tier 3: Check market - if bestBid < entry - 4¢ → panic sell, else wait
+// TRAILING STOP APPROACH:
+// 1. Track highest bid seen since entry (peakBidSeen)
+// 2. Activate trailing once bid >= entry + TRAILING_ACTIVATION_CENTS
+// 3. Sell when bid drops TRAILING_STOP_CENTS below peak
+// 4. STOP-LOSS: Always triggers if loss > config.stop_loss_cents
 //
-// Each tier waits 3 seconds before moving to next tier
-// STOP-LOSS: Always triggers if loss > config.stop_loss_cents
+// Example: Entry 50¢ → bid goes to 58¢ (peak) → drops to 56¢ → SELL!
 // ============================================
 
-// Tiered sell configuration
-const SELL_TIERS = [
-  { targetProfitCents: 5, waitMs: 3000 },  // Tier 0: entry + 5¢, wait 3s
-  { targetProfitCents: 3, waitMs: 3000 },  // Tier 1: entry + 3¢, wait 3s
-  { targetProfitCents: 2, waitMs: 3000 },  // Tier 2: entry + 2¢, wait 3s
-  { targetProfitCents: 0, waitMs: 5000 },  // Tier 3: breakeven, check market
-];
-const PANIC_SELL_THRESHOLD_CENTS = -4;  // If market is 4¢ below entry → panic sell
+// Trailing stop configuration
+const TRAILING_ACTIVATION_CENTS = 2;   // Activate trailing when profit >= 2¢
+const TRAILING_STOP_CENTS = 2;         // Sell when bid drops 2¢ from peak
 
 interface AggregatedPosition {
   asset: Asset;
@@ -1027,7 +1021,7 @@ async function checkAndExecuteSells(): Promise<void> {
   const now = Date.now();
   
   // ========================================
-  // PHASE 1: TIERED SELL + STOP-LOSS
+  // PHASE 1: TRAILING STOP + STOP-LOSS
   // ========================================
   for (const [posId, pos] of openPositions) {
     const positionAgeSec = (now - pos.entryTime) / 1000;
@@ -1046,7 +1040,7 @@ async function checkAndExecuteSells(): Promise<void> {
     const profitCents = (bestBid - pos.entryPrice) * 100;
     const cooldownKey = `${pos.asset}:${pos.direction}`;
     
-    // STOP-LOSS: Always exit if loss exceeds threshold (overrides tiers)
+    // STOP-LOSS: Always exit if loss exceeds threshold (overrides trailing)
     if (profitCents <= -config.stop_loss_cents) {
       if (now - (lastSellTime[cooldownKey] ?? 0) < config.order_cooldown_ms) continue;
       
@@ -1085,96 +1079,48 @@ async function checkAndExecuteSells(): Promise<void> {
       continue;
     }
     
-    // TIERED SELL LOGIC
-    const currentTier = pos.sellTier ?? 0;
-    const tierConfig = SELL_TIERS[Math.min(currentTier, SELL_TIERS.length - 1)];
-    const tierTargetPrice = pos.entryPrice + (tierConfig.targetProfitCents / 100);
-    
-    // Check if we should advance to next tier (time expired at current tier)
-    const timeSinceLastAttempt = now - (pos.lastSellAttempt || pos.entryTime);
-    const shouldAdvanceTier = timeSinceLastAttempt >= tierConfig.waitMs && currentTier < SELL_TIERS.length - 1;
-    
-    if (shouldAdvanceTier) {
-      pos.sellTier = currentTier + 1;
-      pos.lastSellAttempt = now;
-      const newTierConfig = SELL_TIERS[pos.sellTier];
-      log(
-        `📉 ${pos.asset} ${pos.direction} advancing to tier ${pos.sellTier} (target: entry+${newTierConfig.targetProfitCents}¢) | bestBid: ${(bestBid * 100).toFixed(1)}¢`,
-        'sell',
-        pos.asset
-      );
-      continue;
-    }
-    
-    // Check if bestBid >= tier target price
-    if (bestBid >= tierTargetPrice) {
-      if (now - (lastSellTime[cooldownKey] ?? 0) < config.order_cooldown_ms) continue;
+    // UPDATE PEAK: Track the highest bid seen
+    if (bestBid > pos.peakBidSeen) {
+      const oldPeak = pos.peakBidSeen;
+      pos.peakBidSeen = bestBid;
       
-      log(
-        `🎯 TIER ${currentTier} HIT: ${pos.asset} ${pos.direction} ${pos.shares} @ bid ${(bestBid * 100).toFixed(1)}¢ >= target ${(tierTargetPrice * 100).toFixed(1)}¢ (entry+${tierConfig.targetProfitCents}¢)`,
-        'sell',
-        pos.asset
-      );
-      
-      lastSellTime[cooldownKey] = now;
-      
-      // Sell at the tier target price (not bestBid - we want OUR price)
-      const result = await placeSellOrder(
-        pos.tokenId,
-        tierTargetPrice,  // Try to get our target price
-        pos.shares,
-        pos.asset,
-        pos.direction
-      );
-      
-      if (result.success) {
-        const actualSellPrice = result.avgPrice || tierTargetPrice;
-        const actualProfit = (actualSellPrice - pos.entryPrice) * pos.shares;
-        const holdTimeMs = now - pos.entryTime;
-        
-        totalPnL += actualProfit;
-        sellsCount++;
-        if (actualProfit > 0) profitableSells++;
-        else lossSells++;
-        
+      // Log significant peak updates (only when trailing is active or when activating)
+      if (pos.trailingActive || profitCents >= TRAILING_ACTIVATION_CENTS) {
         log(
-          `💰 TIER ${currentTier} SOLD: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(actualSellPrice * 100).toFixed(1)}¢ | P&L: ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(3)} | hold: ${(holdTimeMs / 1000).toFixed(1)}s`,
+          `📈 PEAK UPDATE: ${pos.asset} ${pos.direction} | peak: ${(oldPeak * 100).toFixed(1)}¢ → ${(bestBid * 100).toFixed(1)}¢ | profit: +${profitCents.toFixed(1)}¢`,
           'sell',
           pos.asset
         );
-        
-        void logTick({
-          runId: RUN_ID,
-          asset: pos.asset,
-          orderPlaced: true,
-          orderId: result.orderId,
-          fillPrice: actualSellPrice,
-          fillSize: result.filledSize || pos.shares,
-          marketSlug: pos.marketSlug,
-          signalDirection: pos.direction,
-        });
-        
-        openPositions.delete(posId);
-      } else {
-        // Failed to fill - try again next cycle with same tier
-        pos.lastSellAttempt = now;
       }
-      continue;
     }
     
-    // At tier 3 (market check): if bestBid is significantly below entry, panic sell
-    if (currentTier >= SELL_TIERS.length - 1) {
-      if (profitCents <= PANIC_SELL_THRESHOLD_CENTS) {
+    // ACTIVATE TRAILING: Once bid >= entry + activation threshold
+    if (!pos.trailingActive && profitCents >= TRAILING_ACTIVATION_CENTS) {
+      pos.trailingActive = true;
+      log(
+        `🎯 TRAILING ACTIVATED: ${pos.asset} ${pos.direction} | entry: ${(pos.entryPrice * 100).toFixed(1)}¢ | bid: ${(bestBid * 100).toFixed(1)}¢ | peak: ${(pos.peakBidSeen * 100).toFixed(1)}¢`,
+        'sell',
+        pos.asset
+      );
+    }
+    
+    // TRAILING STOP: Check if bid dropped TRAILING_STOP_CENTS below peak
+    if (pos.trailingActive) {
+      const trailTriggerPrice = pos.peakBidSeen - (TRAILING_STOP_CENTS / 100);
+      const dropFromPeakCents = (pos.peakBidSeen - bestBid) * 100;
+      
+      if (bestBid <= trailTriggerPrice) {
         if (now - (lastSellTime[cooldownKey] ?? 0) < config.order_cooldown_ms) continue;
         
         log(
-          `⚡ PANIC SELL: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(bestBid * 100).toFixed(1)}¢ | market ${profitCents.toFixed(1)}¢ below entry | too far down, cutting losses`,
+          `📉 TRAILING STOP TRIGGERED: ${pos.asset} ${pos.direction} ${pos.shares} | peak: ${(pos.peakBidSeen * 100).toFixed(1)}¢ | bid: ${(bestBid * 100).toFixed(1)}¢ | dropped ${dropFromPeakCents.toFixed(1)}¢ from peak`,
           'sell',
           pos.asset
         );
         
         lastSellTime[cooldownKey] = now;
         
+        // Sell at best bid
         const result = await placeSellOrder(
           pos.tokenId,
           bestBid,
@@ -1186,22 +1132,34 @@ async function checkAndExecuteSells(): Promise<void> {
         if (result.success) {
           const actualSellPrice = result.avgPrice || bestBid;
           const actualProfit = (actualSellPrice - pos.entryPrice) * pos.shares;
+          const holdTimeMs = now - pos.entryTime;
           
           totalPnL += actualProfit;
           sellsCount++;
-          lossSells++;
+          if (actualProfit > 0) profitableSells++;
+          else lossSells++;
           
           log(
-            `✅ PANIC SELL EXECUTED: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(actualSellPrice * 100).toFixed(1)}¢ | P&L: $${actualProfit.toFixed(3)}`,
+            `💰 TRAILING STOP SOLD: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(actualSellPrice * 100).toFixed(1)}¢ | P&L: ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(3)} | hold: ${(holdTimeMs / 1000).toFixed(1)}s | peak was: ${(pos.peakBidSeen * 100).toFixed(1)}¢`,
             'sell',
             pos.asset
           );
+          
+          void logTick({
+            runId: RUN_ID,
+            asset: pos.asset,
+            orderPlaced: true,
+            orderId: result.orderId,
+            fillPrice: actualSellPrice,
+            fillSize: result.filledSize || pos.shares,
+            marketSlug: pos.marketSlug,
+            signalDirection: pos.direction,
+          });
           
           openPositions.delete(posId);
         }
         continue;
       }
-      // else: market is within acceptable range, keep waiting
     }
   }
   
