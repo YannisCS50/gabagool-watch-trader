@@ -166,12 +166,12 @@ const PRE_SIGN_CONFIG = {
     0.70, 0.71, 0.72, 0.73, 0.74, 0.75, 0.76, 0.77, 0.78, 0.79,
     0.80, 0.81, 0.82, 0.83, 0.84, 0.85, 0.86, 0.87, 0.88, 0.89, 0.90
   ],
-  // Share sizes to pre-sign - multiple copies for stacking!
-  shareSizes: [2, 2, 2, 5, 5],  // 3x 2-share orders + 2x 5-share orders per price
-  // Refresh every 90 seconds to keep orders fresh
-  refreshIntervalMs: 90 * 1000,
-  // Max age before order is considered stale (5 min for faster turnover)
-  maxOrderAgeMs: 5 * 60 * 1000,
+  // Share sizes to pre-sign - BIGGER CACHE: 5x 2-share + 3x 5-share orders per price
+  shareSizes: [2, 2, 2, 2, 2, 5, 5, 5],  // 5x 2-share + 3x 5-share = 8 orders per price!
+  // Refresh every 60 seconds to keep orders fresh
+  refreshIntervalMs: 60 * 1000,
+  // Max age before order is considered stale (4 min)
+  maxOrderAgeMs: 4 * 60 * 1000,
 };
 
 let isInitialized = false;
@@ -405,6 +405,47 @@ export async function updateMarketCache(
 // FAST ORDER POSTING
 // ============================================
 
+// Track when we need to trigger async cache rebuild
+let pendingCacheRebuild: Map<Asset, NodeJS.Timeout> = new Map();
+
+/**
+ * Trigger async cache rebuild for an asset
+ * Debounced to prevent multiple rebuilds in quick succession
+ */
+function triggerAsyncCacheRebuild(asset: Asset): void {
+  // Clear any pending rebuild for this asset
+  const existing = pendingCacheRebuild.get(asset);
+  if (existing) {
+    clearTimeout(existing);
+  }
+  
+  // Schedule rebuild in 500ms (debounce multiple triggers)
+  const timeout = setTimeout(async () => {
+    pendingCacheRebuild.delete(asset);
+    
+    if (!clobClient) return;
+    
+    const orderSet = orderCache.get(asset);
+    if (!orderSet) return;
+    
+    log(`🔄 Async cache rebuild for ${asset}...`);
+    try {
+      const newOrderSet = await preSignMarketOrders(
+        clobClient,
+        asset,
+        orderSet.upTokenId,
+        orderSet.downTokenId
+      );
+      orderCache.set(asset, newOrderSet);
+      log(`✅ ${asset} cache rebuilt with fresh orders`);
+    } catch (err) {
+      log(`❌ Cache rebuild failed for ${asset}: ${err}`);
+    }
+  }, 500);
+  
+  pendingCacheRebuild.set(asset, timeout);
+}
+
 function getPreSignedOrder(
   asset: Asset,
   direction: 'UP' | 'DOWN',
@@ -439,15 +480,20 @@ function getPreSignedOrder(
     const age = Date.now() - exactMatch.signedAt;
     if (age < PRE_SIGN_CONFIG.maxOrderAgeMs) {
       stats.cacheHits++;
+      // REMOVE from cache after use - each pre-signed order is single-use!
+      tokenMap.delete(exactKey);
+      // Trigger async rebuild to replenish cache
+      triggerAsyncCacheRebuild(asset);
       return exactMatch;
     }
   }
   
   // Try to find closest price match with same or larger size
   let bestMatch: PreSignedOrder | null = null;
+  let bestMatchKey: string | null = null;
   let bestPriceDiff = Infinity;
   
-  for (const [_key, order] of tokenMap) {
+  for (const [key, order] of tokenMap) {
     if (order.size < targetSize) continue;
     
     const age = Date.now() - order.signedAt;
@@ -460,18 +506,24 @@ function getPreSignedOrder(
       if (priceDiff < bestPriceDiff) {
         bestPriceDiff = priceDiff;
         bestMatch = order;
+        bestMatchKey = key;
       }
     } else if (side === 'SELL' && order.price <= targetPrice) {
       const priceDiff = targetPrice - order.price;
       if (priceDiff < bestPriceDiff) {
         bestPriceDiff = priceDiff;
         bestMatch = order;
+        bestMatchKey = key;
       }
     }
   }
   
-  if (bestMatch) {
+  if (bestMatch && bestMatchKey) {
     stats.cacheHits++;
+    // REMOVE from cache after use
+    tokenMap.delete(bestMatchKey);
+    // Trigger async rebuild
+    triggerAsyncCacheRebuild(asset);
     return bestMatch;
   }
   
