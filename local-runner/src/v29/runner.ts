@@ -18,6 +18,7 @@ import type { MarketInfo, PriceState, Signal } from './types.js';
 import { startBinanceFeed, stopBinanceFeed } from './binance.js';
 import { startChainlinkFeed, stopChainlinkFeed, getChainlinkPrice } from './chainlink.js';
 import { fetchMarketOrderbook, fetchAllOrderbooks } from './orderbook.js';
+import { startOrderbookWs, stopOrderbookWs, updateMarkets as updateOrderbookWsMarkets, isOrderbookWsConnected, getOrderbookWsStats } from './orderbook-ws.js';
 import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb, queueLog, logTick, queueTick } from './db.js';
 import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, getOrderStatus, setFillContext, clearFillContext, cancelOrder, logBurstStats } from './trading.js';
 import { verifyVpnConnection } from '../vpn-check.js';
@@ -1349,10 +1350,129 @@ async function checkAndExecuteSells(): Promise<void> {
 }
 
 // ============================================
-// ORDERBOOK POLLING
+// REAL-TIME ORDERBOOK HANDLER (WebSocket)
+// ============================================
+
+/**
+ * Handle real-time orderbook updates from WebSocket
+ * This is called INSTANTLY when CLOB sends a new bid/ask - no polling delay!
+ */
+function handleRealtimeOrderbook(
+  asset: Asset,
+  direction: 'UP' | 'DOWN',
+  bestBid: number | null,
+  bestAsk: number | null,
+  _timestamp: number
+): void {
+  const state = priceState[asset];
+  const now = Date.now();
+  
+  if (direction === 'UP') {
+    if (bestBid !== null) state.upBestBid = bestBid;
+    if (bestAsk !== null) state.upBestAsk = bestAsk;
+  } else {
+    if (bestBid !== null) state.downBestBid = bestBid;
+    if (bestAsk !== null) state.downBestAsk = bestAsk;
+  }
+  state.lastUpdate = now;
+  
+  // REAL-TIME TRAILING STOP CHECK: Check immediately for positions in this asset+direction
+  // This is the KEY improvement - we react to bid drops within milliseconds!
+  if (bestBid !== null && openPositions.size > 0) {
+    for (const [posId, pos] of openPositions) {
+      if (pos.asset !== asset || pos.direction !== direction) continue;
+      
+      const profitCents = (bestBid - pos.entryPrice) * 100;
+      
+      // Update peak bid
+      if (bestBid > pos.peakBidSeen) {
+        pos.peakBidSeen = bestBid;
+        
+        // Activate trailing if not active and profit threshold met
+        if (!pos.trailingActive && profitCents >= TRAILING_ACTIVATION_CENTS) {
+          pos.trailingActive = true;
+          log(
+            `🎯 RT-TRAILING ACTIVATED: ${pos.asset} ${pos.direction} | bid: ${(bestBid * 100).toFixed(1)}¢ | profit: +${profitCents.toFixed(1)}¢`,
+            'sell',
+            pos.asset
+          );
+        }
+      }
+      
+      // REAL-TIME STOP-LOSS: Instant exit if loss exceeds threshold
+      if (profitCents <= -config.stop_loss_cents) {
+        const cooldownKey = `${pos.asset}:${pos.direction}`;
+        if (now - (lastSellTime[cooldownKey] ?? 0) < config.order_cooldown_ms) continue;
+        
+        log(
+          `🛑 RT-STOP-LOSS: ${pos.asset} ${pos.direction} ${pos.shares} @ bid ${(bestBid * 100).toFixed(1)}¢ | ${profitCents.toFixed(1)}¢`,
+          'sell',
+          pos.asset
+        );
+        
+        lastSellTime[cooldownKey] = now;
+        
+        // Fire-and-forget sell (async, don't block the WebSocket handler)
+        void (async () => {
+          const result = await placeSellOrder(pos.tokenId, bestBid, pos.shares, pos.asset, pos.direction);
+          if (result.success) {
+            const actualProfit = ((result.avgPrice || bestBid) - pos.entryPrice) * pos.shares;
+            totalPnL += actualProfit;
+            sellsCount++;
+            lossSells++;
+            log(`✅ RT-STOP-LOSS EXECUTED: ${pos.asset} ${pos.direction} | P&L: $${actualProfit.toFixed(3)}`, 'sell', pos.asset);
+            openPositions.delete(posId);
+          }
+        })();
+        continue;
+      }
+      
+      // REAL-TIME TRAILING STOP: Instant exit if bid drops from peak
+      if (pos.trailingActive) {
+        const trailTriggerPrice = pos.peakBidSeen - (TRAILING_STOP_CENTS / 100);
+        
+        if (bestBid <= trailTriggerPrice) {
+          const cooldownKey = `${pos.asset}:${pos.direction}`;
+          if (now - (lastSellTime[cooldownKey] ?? 0) < config.order_cooldown_ms) continue;
+          
+          const dropCents = (pos.peakBidSeen - bestBid) * 100;
+          log(
+            `📉 RT-TRAILING TRIGGERED: ${pos.asset} ${pos.direction} ${pos.shares} | peak: ${(pos.peakBidSeen * 100).toFixed(1)}¢ → bid: ${(bestBid * 100).toFixed(1)}¢ | dropped ${dropCents.toFixed(1)}¢`,
+            'sell',
+            pos.asset
+          );
+          
+          lastSellTime[cooldownKey] = now;
+          
+          // Fire-and-forget sell
+          void (async () => {
+            const result = await placeSellOrder(pos.tokenId, bestBid, pos.shares, pos.asset, pos.direction);
+            if (result.success) {
+              const actualProfit = ((result.avgPrice || bestBid) - pos.entryPrice) * pos.shares;
+              totalPnL += actualProfit;
+              sellsCount++;
+              if (actualProfit > 0) profitableSells++;
+              else lossSells++;
+              log(`💰 RT-TRAILING SOLD: ${pos.asset} ${pos.direction} | P&L: ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(3)} | peak was: ${(pos.peakBidSeen * 100).toFixed(1)}¢`, 'sell', pos.asset);
+              openPositions.delete(posId);
+            }
+          })();
+        }
+      }
+    }
+  }
+}
+
+// ============================================
+// ORDERBOOK POLLING (FALLBACK)
 // ============================================
 
 async function pollOrderbooks(): Promise<void> {
+  // Only poll if WebSocket is disconnected (fallback mode)
+  if (isOrderbookWsConnected()) {
+    return; // WebSocket is handling updates - no need to poll
+  }
+  
   for (const asset of config.assets) {
     const market = markets.get(asset);
     if (!market) continue;
@@ -1469,12 +1589,20 @@ async function main(): Promise<void> {
     log(`⚠️ Price Feed Logger failed to start: ${(err as Error).message} - fallback prices will be used`);
   }
 
-  // Orderbook polling
+  // ==========================================
+  // START REAL-TIME ORDERBOOK WEBSOCKET
+  // ==========================================
+  // This is the KEY improvement: real-time bid/ask updates for instant trailing stop
+  startOrderbookWs(handleRealtimeOrderbook);
+  updateOrderbookWsMarkets(markets);
+  log('✅ Real-time Orderbook WebSocket started (instant trailing stop!)');
+
+  // Orderbook polling (FALLBACK only - runs when WebSocket disconnected)
   const orderbookInterval = setInterval(() => {
     void pollOrderbooks();
   }, config.orderbook_poll_ms);
 
-  // Sell check interval - check for sell opportunities
+  // Sell check interval - check for sell opportunities (backup for RT handler)
   const sellInterval = setInterval(() => {
     void checkAndExecuteSells();
   }, config.sell_check_ms);
@@ -1486,8 +1614,10 @@ async function main(): Promise<void> {
   }, 120_000);
 
   // Market refresh every 30 seconds - critical for catching new markets fast!
-  const marketRefreshInterval = setInterval(() => {
-    void fetchMarkets();
+  // Also update the orderbook WebSocket with new token IDs
+  const marketRefreshInterval = setInterval(async () => {
+    await fetchMarkets();
+    updateOrderbookWsMarkets(markets);
   }, 30 * 1000);
 
   // Config reload every 30 seconds
@@ -1520,9 +1650,10 @@ async function main(): Promise<void> {
   }, 60_000);
 
   log('🎯 V29 Buy-and-Sell Runner READY');
-  log(`   Strategy: Buy → Profit-take (≥${config.min_profit_cents}¢) → Force close (${config.force_close_after_sec}s)`);
+  log(`   Strategy: Buy → Trailing Stop (${TRAILING_ACTIVATION_CENTS}¢ activation, ${TRAILING_STOP_CENTS}¢ trail) → Force close (${config.force_close_after_sec}s)`);
+  log(`   🚀 REAL-TIME ORDERBOOK: WebSocket enabled - <50ms reaction time to bid changes!`);
   log(`   Shares: ${config.shares_per_trade} | Max Exposure: ${config.max_exposure_per_asset}`);
-  log(`   Aggregation: after ${config.aggregate_after_sec}s | Force close: after ${config.force_close_after_sec}s`);
+  log(`   Stop-loss: ${config.stop_loss_cents}¢ | Aggregation: after ${config.aggregate_after_sec}s`);
 
   // Handle shutdown - release lease!
   const cleanup = async () => {
@@ -1540,6 +1671,7 @@ async function main(): Promise<void> {
     stopChainlinkFeed();
     stopUserChannel();
     stopPreSignedCache();
+    stopOrderbookWs();
     await stopPriceFeedLogger();
     
     // Log final burst stats
