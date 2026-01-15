@@ -78,13 +78,13 @@ export const DEFAULT_CONFIG: V29Config = {
   min_share_price: 0.30,
   max_share_price: 0.75,
   shares_per_trade: 2,  // Per burst order (3x burst = 6 shares total)
-  prevent_counter_scalping: true,  // Don't buy opposite side if position exists
+  prevent_counter_scalping: false,  // DISABLED - allow buying both sides
   
   // Sell config - TIERED: profit-take < 15s, aggregate 15-20s, force dump ≥ 20s
   min_profit_cents: 4,           // Sell when bestBid >= entryPrice + 4¢
   aggregate_after_sec: 15,       // After 15s, group positions for bulk exit
   force_close_after_sec: 20,     // After 20s, force market close all aggregated
-  stop_loss_cents: 10,           // Max 10¢ loss accepted on force close
+  stop_loss_cents: 10,           // Exit if price drops 10¢ below entry
   
   max_exposure_per_asset: 100,
   max_cost_per_asset: 50,
