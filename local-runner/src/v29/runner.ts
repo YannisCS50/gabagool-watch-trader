@@ -994,8 +994,8 @@ async function executeBuy(
 // ============================================
 
 // Trailing stop configuration
-const TRAILING_ACTIVATION_CENTS = 2;   // Activate trailing when profit >= 2¢
-const TRAILING_STOP_CENTS = 2;         // Sell when bid drops 2¢ from peak
+const TRAILING_ACTIVATION_CENTS = 3;   // Activate trailing when profit >= 3¢
+const TRAILING_STOP_CENTS = 3;         // Sell when bid drops 3¢ from peak
 
 interface AggregatedPosition {
   asset: Asset;
