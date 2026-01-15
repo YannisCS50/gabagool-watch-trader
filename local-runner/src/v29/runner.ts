@@ -25,6 +25,7 @@ import { testConnection } from '../polymarket.js';
 import { acquireLease, releaseLease, isRunnerActive } from './lease.js';
 import { fetchPositions, type PolymarketPosition } from '../positions-sync.js';
 import { config as globalConfig } from '../config.js';
+import { startUserChannel, stopUserChannel, type TradeEvent, isUserChannelConnected } from './user-ws.js';
 
 // ============================================
 // POSITION TRACKING
@@ -282,6 +283,110 @@ async function loadExistingPositions(opts: { quiet?: boolean } = {}): Promise<vo
     if (!quiet) logError('Failed to load existing positions', err);
   } finally {
     positionSyncInFlight = false;
+  }
+}
+
+// ============================================
+// REAL-TIME TRADE HANDLER (User Channel WebSocket)
+// ============================================
+
+/**
+ * Handle real-time trade events from User Channel.
+ * Updates position tracking when fills are CONFIRMED.
+ */
+function handleUserChannelTrade(event: TradeEvent): void {
+  // Only process CONFIRMED trades (final state)
+  if (event.status !== 'CONFIRMED' && event.status !== 'MINED') {
+    return;
+  }
+  
+  const tokenId = event.asset_id;
+  const side = event.side;
+  const size = parseFloat(event.size) || 0;
+  const price = parseFloat(event.price) || 0;
+  
+  if (size <= 0) return;
+  
+  // Find which asset/market this trade belongs to
+  let matchedAsset: Asset | null = null;
+  let matchedMarket: MarketInfo | null = null;
+  let matchedDirection: 'UP' | 'DOWN' | null = null;
+  
+  for (const [asset, market] of markets) {
+    if (market.upTokenId === tokenId) {
+      matchedAsset = asset;
+      matchedMarket = market;
+      matchedDirection = 'UP';
+      break;
+    }
+    if (market.downTokenId === tokenId) {
+      matchedAsset = asset;
+      matchedMarket = market;
+      matchedDirection = 'DOWN';
+      break;
+    }
+  }
+  
+  if (!matchedAsset || !matchedMarket || !matchedDirection) {
+    // Trade is for a market we're not tracking (old market, different asset, etc.)
+    return;
+  }
+  
+  log(`🔔 RT Trade: ${matchedAsset} ${matchedDirection} ${side} ${size} @ ${(price * 100).toFixed(1)}¢ (${event.status})`, 'fill', matchedAsset);
+  
+  if (side === 'BUY') {
+    // A BUY fill means we acquired shares - might already be tracked from our order flow
+    // Check if we already have this position tracked
+    const existingPositions = Array.from(openPositions.values()).filter(
+      p => p.asset === matchedAsset && p.direction === matchedDirection && p.marketSlug === matchedMarket!.slug
+    );
+    
+    // If no existing position with similar entry time (within 5s), this might be a missed buy
+    const recentPosition = existingPositions.find(p => Math.abs(Date.now() - p.entryTime) < 5000);
+    
+    if (!recentPosition && existingPositions.length === 0) {
+      // Create a new position from this external fill
+      const positionId = `rt-${Date.now()}-${matchedAsset}-${matchedDirection}`;
+      const takeProfitPrice = Math.round((price + config.min_profit_cents / 100) * 100) / 100;
+      
+      openPositions.set(positionId, {
+        id: positionId,
+        asset: matchedAsset,
+        direction: matchedDirection,
+        marketSlug: matchedMarket.slug,
+        tokenId,
+        shares: size,
+        entryPrice: price,
+        totalCost: size * price,
+        entryTime: Date.now(),
+        orderId: event.taker_order_id,
+        takeProfitPrice,
+      });
+      
+      log(`   📥 Created position from RT fill: ${size} shares @ ${(price * 100).toFixed(1)}¢`, 'fill', matchedAsset);
+    }
+    
+  } else if (side === 'SELL') {
+    // A SELL fill means we reduced/closed a position
+    // Reduce shares from existing positions
+    let remainingToReduce = size;
+    
+    for (const [posId, pos] of openPositions) {
+      if (pos.asset !== matchedAsset || pos.direction !== matchedDirection) continue;
+      if (pos.marketSlug !== matchedMarket.slug) continue;
+      if (remainingToReduce <= 0) break;
+      
+      const reduceAmount = Math.min(pos.shares, remainingToReduce);
+      pos.shares -= reduceAmount;
+      remainingToReduce -= reduceAmount;
+      
+      if (pos.shares <= 0.0001) {
+        openPositions.delete(posId);
+        log(`   📤 Position closed via RT sell: ${posId}`, 'fill', matchedAsset);
+      } else {
+        log(`   📉 Position reduced: ${reduceAmount} shares sold, ${pos.shares.toFixed(2)} remaining`, 'fill', matchedAsset);
+      }
+    }
   }
 }
 
@@ -1264,6 +1369,14 @@ async function main(): Promise<void> {
   startChainlinkFeed(config.assets, handleChainlinkPrice);
   log('✅ Chainlink feed started');
 
+  // Start User Channel for real-time position tracking
+  const userChannelStarted = startUserChannel(handleUserChannelTrade);
+  if (userChannelStarted) {
+    log('✅ User Channel started (real-time position tracking)');
+  } else {
+    log('⚠️ User Channel not started (no API credentials) - using 45s polling fallback');
+  }
+
   // Orderbook polling
   const orderbookInterval = setInterval(() => {
     void pollOrderbooks();
@@ -1274,10 +1387,11 @@ async function main(): Promise<void> {
     void checkAndExecuteSells();
   }, config.sell_check_ms);
 
-  // Reconcile positions from wallet every 45s (prevents "ghost positions" / missing positions)
+  // Reconcile positions from wallet every 2 min (backup for User Channel)
+  // User Channel provides real-time updates; this is just a safety net
   const positionSyncInterval = setInterval(() => {
     void loadExistingPositions({ quiet: true });
-  }, 45_000);
+  }, 120_000);
 
   // Market refresh every 2 minutes
   const marketRefreshInterval = setInterval(() => {
@@ -1332,6 +1446,7 @@ async function main(): Promise<void> {
     clearInterval(burstStatsInterval);
     stopBinanceFeed();
     stopChainlinkFeed();
+    stopUserChannel();
     stopPreSignedCache();
     
     // Log final burst stats
