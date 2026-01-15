@@ -10,12 +10,15 @@ let supabase: SupabaseClient | null = null;
 
 function getDb(): SupabaseClient {
   if (!supabase) {
-    const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
-    const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.VITE_SUPABASE_PUBLISHABLE_KEY || '';
+    // Use same env vars as db.ts - SUPABASE_URL (not VITE_SUPABASE_URL)
+    const supabaseUrl = process.env.SUPABASE_URL || '';
+    const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || '';
     if (!supabaseUrl || !supabaseKey) {
+      console.error('[OrderTracker] Missing env vars. Available:', Object.keys(process.env).filter(k => k.includes('SUPABASE')));
       throw new Error('Supabase URL and key are required for order tracker');
     }
     supabase = createClient(supabaseUrl, supabaseKey);
+    console.log('[OrderTracker] Initialized Supabase client');
   }
   return supabase;
 }
