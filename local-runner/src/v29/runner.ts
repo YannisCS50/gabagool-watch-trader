@@ -726,12 +726,37 @@ async function executeBuy(
   const signalBucket = Math.floor(signalTs / 1000);
   const dedupKey = `${asset}-${direction}-${strikeActualDelta.toFixed(2)}-${signalBucket}`;
   
-  // Get orderbook
+  // Get orderbook - try cached first, then quick on-demand fetch
   const state = priceState[asset];
-  const bestAsk = direction === 'UP' ? state.upBestAsk : state.downBestAsk;
+  let bestAsk = direction === 'UP' ? state.upBestAsk : state.downBestAsk;
+  
+  // If no cached orderbook, try quick on-demand fetch (300ms timeout)
+  if (!bestAsk || bestAsk <= 0) {
+    const fetchStart = Date.now();
+    try {
+      const freshBook = await Promise.race([
+        fetchMarketOrderbook(market),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 300))
+      ]);
+      
+      if (freshBook) {
+        // Update cached state
+        if (freshBook.upBestAsk) state.upBestAsk = freshBook.upBestAsk;
+        if (freshBook.upBestBid) state.upBestBid = freshBook.upBestBid;
+        if (freshBook.downBestAsk) state.downBestAsk = freshBook.downBestAsk;
+        if (freshBook.downBestBid) state.downBestBid = freshBook.downBestBid;
+        state.lastUpdate = Date.now();
+        
+        bestAsk = direction === 'UP' ? freshBook.upBestAsk ?? null : freshBook.downBestAsk ?? null;
+        log(`📖 On-demand orderbook: ${asset} ${direction} ask ${bestAsk ? (bestAsk * 100).toFixed(1) + '¢' : 'null'} (${Date.now() - fetchStart}ms)`);
+      }
+    } catch {
+      // Timeout or error - continue with null
+    }
+  }
   
   if (!bestAsk || bestAsk <= 0) {
-    log(`⚠️ No orderbook for ${asset} ${direction}`);
+    log(`⚠️ No orderbook for ${asset} ${direction} (even after on-demand fetch)`);
     return;
   }
   
