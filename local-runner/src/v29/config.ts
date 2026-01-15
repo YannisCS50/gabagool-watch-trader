@@ -73,28 +73,28 @@ export interface V29Config {
 
 export const DEFAULT_CONFIG: V29Config = {
   enabled: true,
-  tick_delta_usd: 8,
-  delta_threshold: 75,
-  min_share_price: 0.30,
-  max_share_price: 0.75,
-  shares_per_trade: 5,  // Per burst order - ensures min $1 order at any price
-  prevent_counter_scalping: false,  // DISABLED - allow buying both sides
+  tick_delta_usd: 6,              // LOWERED: trigger on smaller moves ($6 instead of $8)
+  delta_threshold: 200,           // RAISED: allow both directions until delta > $200
+  min_share_price: 0.15,          // LOWERED: trade wider price range (15¢-85¢)
+  max_share_price: 0.85,          // RAISED: trade wider price range
+  shares_per_trade: 2,            // SMALLER: 2 shares for faster stacking
+  prevent_counter_scalping: false,
   
-  // Sell config - ACTIVE TAKE-PROFIT ORDERS
-  min_profit_cents: 2,           // TP target: entry + 2¢ (small but frequent profits!)
-  aggregate_after_sec: 60,       // After 60s, consider position for passive monitoring
-  force_close_after_sec: 120,    // After 2min, force close (safety net)
-  stop_loss_cents: 8,            // Exit if price drops 8¢ below entry
+  // Sell config - MONITOR AND FIRE
+  min_profit_cents: 2,            // TP target: entry + 2¢
+  aggregate_after_sec: 60,        // After 60s, passive monitoring
+  force_close_after_sec: 120,     // After 2min, force close
+  stop_loss_cents: 8,             // Exit if 8¢ below entry
   
-  max_exposure_per_asset: 100,
-  max_cost_per_asset: 50,
+  max_exposure_per_asset: 200,    // RAISED: allow more stacking
+  max_cost_per_asset: 100,        // RAISED: allow more cost
   
-  price_buffer_cents: 2,  // Increased from 1 for more price tolerance
+  price_buffer_cents: 2,
   assets: ['BTC', 'ETH', 'SOL', 'XRP'],
   binance_poll_ms: 100,
-  orderbook_poll_ms: 2000,
-  order_cooldown_ms: 3000,
-  sell_check_ms: 200,
+  orderbook_poll_ms: 1500,        // FASTER: update orderbook more often
+  order_cooldown_ms: 500,         // MUCH FASTER: only 500ms between buys per direction!
+  sell_check_ms: 150,             // FASTER: check sells more often
 };
 
 // Binance WebSocket symbols
