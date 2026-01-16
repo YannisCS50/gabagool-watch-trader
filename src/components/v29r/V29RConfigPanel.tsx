@@ -82,6 +82,69 @@ export function V29RConfigPanel({ config, onUpdate }: Props) {
           </div>
         </div>
 
+        {/* Filters */}
+        <div className="space-y-2">
+          <p className="text-xs font-medium text-muted-foreground">Filters</p>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <Label className="text-xs">Max Spread (¢)</Label>
+              <Input 
+                type="number" 
+                step="0.1"
+                value={localConfig.max_spread_cents}
+                onChange={(e) => setLocalConfig(prev => ({ ...prev, max_spread_cents: parseFloat(e.target.value) || 1.0 }))}
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Min Share Price</Label>
+              <Input 
+                type="number" 
+                step="0.05"
+                value={localConfig.min_share_price}
+                onChange={(e) => setLocalConfig(prev => ({ ...prev, min_share_price: parseFloat(e.target.value) || 0.15 }))}
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Max Share Price</Label>
+              <Input 
+                type="number" 
+                step="0.05"
+                value={localConfig.max_share_price}
+                onChange={(e) => setLocalConfig(prev => ({ ...prev, max_share_price: parseFloat(e.target.value) || 0.85 }))}
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <Label className="text-xs">Max Move (¢)</Label>
+              <Input 
+                type="number" 
+                step="0.1"
+                value={localConfig.max_share_move_cents}
+                onChange={(e) => setLocalConfig(prev => ({ ...prev, max_share_move_cents: parseFloat(e.target.value) || 0.5 }))}
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Cooldown (ms)</Label>
+              <Input 
+                type="number" 
+                step="100"
+                value={localConfig.cooldown_ms}
+                onChange={(e) => setLocalConfig(prev => ({ ...prev, cooldown_ms: parseInt(e.target.value) || 2000 }))}
+              />
+            </div>
+            <div>
+              <Label className="text-xs">Max Exposure ($)</Label>
+              <Input 
+                type="number" 
+                step="5"
+                value={localConfig.max_exposure_usd}
+                onChange={(e) => setLocalConfig(prev => ({ ...prev, max_exposure_usd: parseFloat(e.target.value) || 50 }))}
+              />
+            </div>
+          </div>
+        </div>
+
         {/* UP Asymmetry */}
         <div className="space-y-2">
           <p className="text-xs font-medium text-green-500">⬆️ UP Trades (Faster repricing)</p>

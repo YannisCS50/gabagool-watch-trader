@@ -5531,11 +5531,17 @@ export type Database = {
       v29_config_response: {
         Row: {
           config_json: Json | null
+          cooldown_ms: number | null
           down_max_hold_sec: number | null
           down_target_max: number | null
           down_target_min: number | null
           enabled: boolean | null
           id: string
+          max_exposure_usd: number | null
+          max_share_move_cents: number | null
+          max_share_price: number | null
+          max_spread_cents: number | null
+          min_share_price: number | null
           shares_per_trade: number | null
           signal_delta_usd: number | null
           signal_window_ms: number | null
@@ -5546,11 +5552,17 @@ export type Database = {
         }
         Insert: {
           config_json?: Json | null
+          cooldown_ms?: number | null
           down_max_hold_sec?: number | null
           down_target_max?: number | null
           down_target_min?: number | null
           enabled?: boolean | null
           id?: string
+          max_exposure_usd?: number | null
+          max_share_move_cents?: number | null
+          max_share_price?: number | null
+          max_spread_cents?: number | null
+          min_share_price?: number | null
           shares_per_trade?: number | null
           signal_delta_usd?: number | null
           signal_window_ms?: number | null
@@ -5561,11 +5573,17 @@ export type Database = {
         }
         Update: {
           config_json?: Json | null
+          cooldown_ms?: number | null
           down_max_hold_sec?: number | null
           down_target_max?: number | null
           down_target_min?: number | null
           enabled?: boolean | null
           id?: string
+          max_exposure_usd?: number | null
+          max_share_move_cents?: number | null
+          max_share_price?: number | null
+          max_spread_cents?: number | null
+          min_share_price?: number | null
           shares_per_trade?: number | null
           signal_delta_usd?: number | null
           signal_window_ms?: number | null
