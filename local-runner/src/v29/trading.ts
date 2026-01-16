@@ -383,6 +383,10 @@ export function stopPreSignedCache(): void {
   log('Pre-signed cache stopped');
 }
 
+export function isCacheInitialized(): boolean {
+  return isInitialized && clobClient !== null;
+}
+
 /**
  * Update cache for a specific asset when market changes
  * This is called when a new market is detected for an asset
