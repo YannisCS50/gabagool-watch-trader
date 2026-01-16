@@ -53,6 +53,10 @@ const priceState: Record<Asset, PriceState> = {
 // Active positions (one per asset at most)
 const activePositions = new Map<Asset, ActivePosition>();
 
+// Prevent duplicate/concurrent exit attempts per asset
+const exitInFlight = new Set<Asset>();
+const nextExitAttemptAt: Record<Asset, number> = { BTC: 0, ETH: 0, SOL: 0, XRP: 0 };
+
 // Cooldowns
 const lastExitTime: Record<Asset, number> = { BTC: 0, ETH: 0, SOL: 0, XRP: 0 };
 
@@ -446,18 +450,24 @@ function startExitMonitor(asset: Asset, position: ActivePosition): void {
 }
 
 function checkPositionExit(asset: Asset): void {
+  // Prevent spamming exit logs / duplicate exit calls while an exit is in progress
+  if (exitInFlight.has(asset)) return;
+
+  const now = Date.now();
+  if (now < (nextExitAttemptAt[asset] || 0)) return;
+
   const position = activePositions.get(asset);
   if (!position) return;
-  
+
   const state = priceState[asset];
-  
+
   const decision = checkExit(
     position,
     config,
     state,
     (msg, data) => logAsset(asset, msg, data)
   );
-  
+
   if (decision.shouldExit) {
     void executeExit(asset, position, decision.type!, decision.reason ?? '', decision.unrealizedPnl ?? 0);
   }
@@ -474,36 +484,41 @@ async function executeExit(
   exitReason: string,
   unrealizedPnl: number
 ): Promise<void> {
-  // Stop monitoring
-  if (position.monitorInterval) {
-    clearInterval(position.monitorInterval);
-    position.monitorInterval = undefined;
-  }
-  
-  const state = priceState[asset];
-  const market = markets.get(asset);
-  const signal = position.signal;
-  
-  const bestBid = position.direction === 'UP' ? state.upBestBid : state.downBestBid;
-  
-  if (!bestBid || !market) {
-    logAsset(asset, `⚠️ EXIT: No bid available, position stuck`);
-    activePositions.delete(asset);
-    lastExitTime[asset] = Date.now();
-    return;
-  }
-  
-  // Sell at market (use bid)
-  const sellPrice = Math.floor(bestBid * 100) / 100;
-  
-  logAsset(asset, `📤 EXIT: ${position.direction} ${position.shares} @ ${(sellPrice * 100).toFixed(1)}¢ | type=${exitType}`, {
-    positionId: position.id,
-    exitType,
-    exitReason,
-    sellPrice,
-  });
-  
+  // Guard against concurrent exit attempts (interval + price-tick path)
+  if (exitInFlight.has(asset)) return;
+  exitInFlight.add(asset);
+
   try {
+    // Stop monitoring
+    if (position.monitorInterval) {
+      clearInterval(position.monitorInterval);
+      position.monitorInterval = undefined;
+    }
+
+    const state = priceState[asset];
+    const market = markets.get(asset);
+    const signal = position.signal;
+
+    const bestBid = position.direction === 'UP' ? state.upBestBid : state.downBestBid;
+
+    if (!bestBid || !market) {
+      logAsset(asset, `⚠️ EXIT: No bid available, position stuck`);
+      activePositions.delete(asset);
+      lastExitTime[asset] = Date.now();
+      return;
+    }
+
+    // Sell at market (use bid)
+    const sellPrice = Math.floor(bestBid * 100) / 100;
+
+    logAsset(asset, `📤 EXIT: ${position.direction} ${position.shares} @ ${(sellPrice * 100).toFixed(1)}¢ | type=${exitType}`, {
+      positionId: position.id,
+      exitType,
+      exitReason,
+      sellPrice,
+      unrealizedPnl,
+    });
+
     const result = await placeSellOrder(
       position.tokenId,
       sellPrice,
@@ -511,27 +526,44 @@ async function executeExit(
       asset,
       position.direction
     );
-    
+
+    // If we couldn't even post the sell order, DO NOT mark as exited.
+    if (!result.success) {
+      const errMsg = result.error ?? 'Unknown error';
+      logAsset(asset, `❌ EXIT FAILED: ${errMsg}`, {
+        positionId: position.id,
+        exitType,
+        sellPrice,
+      });
+
+      signal.exit_type = 'error';
+      signal.exit_reason = `sell_failed: ${errMsg}`;
+      void saveSignalLog(signal, state);
+
+      // Backoff + retry
+      nextExitAttemptAt[asset] = Date.now() + 1000;
+      position.monitorInterval = setInterval(() => {
+        checkPositionExit(asset);
+      }, config.exit_monitor_interval_ms);
+
+      return;
+    }
+
     const exitTs = Date.now();
     const holdTimeMs = exitTs - position.entryTime;
-    
-    let actualExitPrice = sellPrice;
-    let soldShares = position.shares;
-    
-    if (result.success) {
-      actualExitPrice = result.avgPrice ?? sellPrice;
-      soldShares = result.filledSize ?? position.shares;
-    }
-    
+
+    const actualExitPrice = result.avgPrice ?? sellPrice;
+    const soldShares = result.filledSize ?? position.shares;
+
     // Calculate P&L
     const grossPnl = (actualExitPrice - position.entryPrice) * soldShares;
     const fees = soldShares * actualExitPrice * 0.001; // ~0.1% fee estimate
     const netPnl = grossPnl - fees;
-    
+
     // Update stats
     exitCount++;
     totalPnl += netPnl;
-    
+
     // Update signal
     signal.status = 'exited';
     signal.exit_price = actualExitPrice;
@@ -541,9 +573,9 @@ async function executeExit(
     signal.gross_pnl = grossPnl;
     signal.fees = fees;
     signal.net_pnl = netPnl;
-    
+
     void saveSignalLog(signal, state);
-    
+
     logAsset(asset, `✅ EXITED: ${position.direction} | type=${exitType} | hold=${holdTimeMs}ms | PnL=${(netPnl * 100).toFixed(2)}¢`, {
       positionId: position.id,
       exitType,
@@ -551,17 +583,25 @@ async function executeExit(
       grossPnl,
       netPnl,
     });
-    
+
     // Remove position
     activePositions.delete(asset);
     lastExitTime[asset] = exitTs;
-    
   } catch (err) {
     logError(`Exit error for ${asset}`, err);
-    
-    // Still remove position to avoid stuck state
-    activePositions.delete(asset);
-    lastExitTime[asset] = Date.now();
+
+    // Backoff + keep position so we can retry exiting
+    nextExitAttemptAt[asset] = Date.now() + 1500;
+
+    if (activePositions.has(asset)) {
+      position.monitorInterval = setInterval(() => {
+        checkPositionExit(asset);
+      }, config.exit_monitor_interval_ms);
+    } else {
+      lastExitTime[asset] = Date.now();
+    }
+  } finally {
+    exitInFlight.delete(asset);
   }
 }
 
