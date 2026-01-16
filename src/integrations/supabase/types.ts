@@ -392,6 +392,63 @@ export type Database = {
         }
         Relationships: []
       }
+      bucket_statistics: {
+        Row: {
+          asset: string
+          avg_edge_after_spread: number | null
+          avg_move_10s: number | null
+          avg_move_15s: number | null
+          avg_move_5s: number | null
+          avg_move_7s: number | null
+          avg_spot_lead_ms: number | null
+          avg_taker_zscore: number | null
+          created_at: string | null
+          delta_bucket: string
+          id: string
+          last_updated_at: string | null
+          sample_count: number | null
+          std_move_7s: number | null
+          time_bucket: string | null
+          win_rate: number | null
+        }
+        Insert: {
+          asset: string
+          avg_edge_after_spread?: number | null
+          avg_move_10s?: number | null
+          avg_move_15s?: number | null
+          avg_move_5s?: number | null
+          avg_move_7s?: number | null
+          avg_spot_lead_ms?: number | null
+          avg_taker_zscore?: number | null
+          created_at?: string | null
+          delta_bucket: string
+          id?: string
+          last_updated_at?: string | null
+          sample_count?: number | null
+          std_move_7s?: number | null
+          time_bucket?: string | null
+          win_rate?: number | null
+        }
+        Update: {
+          asset?: string
+          avg_edge_after_spread?: number | null
+          avg_move_10s?: number | null
+          avg_move_15s?: number | null
+          avg_move_5s?: number | null
+          avg_move_7s?: number | null
+          avg_spot_lead_ms?: number | null
+          avg_taker_zscore?: number | null
+          created_at?: string | null
+          delta_bucket?: string
+          id?: string
+          last_updated_at?: string | null
+          sample_count?: number | null
+          std_move_7s?: number | null
+          time_bucket?: string | null
+          win_rate?: number | null
+        }
+        Relationships: []
+      }
       canonical_positions: {
         Row: {
           avg_cost: number | null
@@ -727,6 +784,42 @@ export type Database = {
           unpaired_shares?: number
           up_shares?: number
           window_start?: string | null
+        }
+        Relationships: []
+      }
+      delta_bucket_config: {
+        Row: {
+          asset: string
+          bucket_index: number
+          bucket_label: string
+          created_at: string | null
+          id: string
+          last_calibrated_at: string | null
+          max_delta: number
+          min_delta: number
+          sample_count: number | null
+        }
+        Insert: {
+          asset: string
+          bucket_index: number
+          bucket_label: string
+          created_at?: string | null
+          id?: string
+          last_calibrated_at?: string | null
+          max_delta: number
+          min_delta: number
+          sample_count?: number | null
+        }
+        Update: {
+          asset?: string
+          bucket_index?: number
+          bucket_label?: string
+          created_at?: string | null
+          id?: string
+          last_calibrated_at?: string | null
+          max_delta?: number
+          min_delta?: number
+          sample_count?: number | null
         }
         Relationships: []
       }
@@ -3580,6 +3673,177 @@ export type Database = {
           theoretical_price_at_entry?: number | null
           time_to_expiry_at_entry?: number | null
           updated_at?: string
+        }
+        Relationships: []
+      }
+      signal_quality_analysis: {
+        Row: {
+          actual_pnl: number | null
+          actual_price_at_10s: number | null
+          actual_price_at_15s: number | null
+          actual_price_at_5s: number | null
+          actual_price_at_7s: number | null
+          ask_depth_down: number | null
+          ask_depth_up: number | null
+          asset: string
+          best_exit_hedge_profit: number | null
+          best_exit_sell_profit_10s: number | null
+          best_exit_sell_profit_15s: number | null
+          bid_depth_down: number | null
+          bid_depth_up: number | null
+          binance_tick_ts: number | null
+          bucket_confidence: number | null
+          bucket_n: number | null
+          chosen_exit_type: string | null
+          created_at: string | null
+          delta_bucket: string
+          delta_usd: number
+          depth_imbalance: number | null
+          direction: string
+          down_ask: number | null
+          down_bid: number | null
+          edge_after_spread_10s: number | null
+          edge_after_spread_7s: number | null
+          effective_spread_hedge: number | null
+          effective_spread_sell: number | null
+          expected_move_10s: number | null
+          expected_move_15s: number | null
+          expected_move_5s: number | null
+          expected_move_7s: number | null
+          id: string
+          is_false_edge: boolean | null
+          market_id: string
+          missed_profit: number | null
+          polymarket_tick_ts: number | null
+          should_trade: boolean | null
+          signal_id: string
+          spot_lead_bucket: string | null
+          spot_lead_ms: number | null
+          spot_price_at_signal: number
+          spread_down: number | null
+          spread_percentile_1h: number | null
+          spread_up: number | null
+          strike_price: number
+          taker_volume_last_5s: number | null
+          taker_volume_zscore: number | null
+          time_remaining_seconds: number
+          timestamp_signal_detected: number
+          up_ask: number | null
+          up_bid: number | null
+          updated_at: string | null
+          would_have_lost_money: boolean | null
+        }
+        Insert: {
+          actual_pnl?: number | null
+          actual_price_at_10s?: number | null
+          actual_price_at_15s?: number | null
+          actual_price_at_5s?: number | null
+          actual_price_at_7s?: number | null
+          ask_depth_down?: number | null
+          ask_depth_up?: number | null
+          asset: string
+          best_exit_hedge_profit?: number | null
+          best_exit_sell_profit_10s?: number | null
+          best_exit_sell_profit_15s?: number | null
+          bid_depth_down?: number | null
+          bid_depth_up?: number | null
+          binance_tick_ts?: number | null
+          bucket_confidence?: number | null
+          bucket_n?: number | null
+          chosen_exit_type?: string | null
+          created_at?: string | null
+          delta_bucket: string
+          delta_usd: number
+          depth_imbalance?: number | null
+          direction: string
+          down_ask?: number | null
+          down_bid?: number | null
+          edge_after_spread_10s?: number | null
+          edge_after_spread_7s?: number | null
+          effective_spread_hedge?: number | null
+          effective_spread_sell?: number | null
+          expected_move_10s?: number | null
+          expected_move_15s?: number | null
+          expected_move_5s?: number | null
+          expected_move_7s?: number | null
+          id?: string
+          is_false_edge?: boolean | null
+          market_id: string
+          missed_profit?: number | null
+          polymarket_tick_ts?: number | null
+          should_trade?: boolean | null
+          signal_id: string
+          spot_lead_bucket?: string | null
+          spot_lead_ms?: number | null
+          spot_price_at_signal: number
+          spread_down?: number | null
+          spread_percentile_1h?: number | null
+          spread_up?: number | null
+          strike_price: number
+          taker_volume_last_5s?: number | null
+          taker_volume_zscore?: number | null
+          time_remaining_seconds: number
+          timestamp_signal_detected: number
+          up_ask?: number | null
+          up_bid?: number | null
+          updated_at?: string | null
+          would_have_lost_money?: boolean | null
+        }
+        Update: {
+          actual_pnl?: number | null
+          actual_price_at_10s?: number | null
+          actual_price_at_15s?: number | null
+          actual_price_at_5s?: number | null
+          actual_price_at_7s?: number | null
+          ask_depth_down?: number | null
+          ask_depth_up?: number | null
+          asset?: string
+          best_exit_hedge_profit?: number | null
+          best_exit_sell_profit_10s?: number | null
+          best_exit_sell_profit_15s?: number | null
+          bid_depth_down?: number | null
+          bid_depth_up?: number | null
+          binance_tick_ts?: number | null
+          bucket_confidence?: number | null
+          bucket_n?: number | null
+          chosen_exit_type?: string | null
+          created_at?: string | null
+          delta_bucket?: string
+          delta_usd?: number
+          depth_imbalance?: number | null
+          direction?: string
+          down_ask?: number | null
+          down_bid?: number | null
+          edge_after_spread_10s?: number | null
+          edge_after_spread_7s?: number | null
+          effective_spread_hedge?: number | null
+          effective_spread_sell?: number | null
+          expected_move_10s?: number | null
+          expected_move_15s?: number | null
+          expected_move_5s?: number | null
+          expected_move_7s?: number | null
+          id?: string
+          is_false_edge?: boolean | null
+          market_id?: string
+          missed_profit?: number | null
+          polymarket_tick_ts?: number | null
+          should_trade?: boolean | null
+          signal_id?: string
+          spot_lead_bucket?: string | null
+          spot_lead_ms?: number | null
+          spot_price_at_signal?: number
+          spread_down?: number | null
+          spread_percentile_1h?: number | null
+          spread_up?: number | null
+          strike_price?: number
+          taker_volume_last_5s?: number | null
+          taker_volume_zscore?: number | null
+          time_remaining_seconds?: number
+          timestamp_signal_detected?: number
+          up_ask?: number | null
+          up_bid?: number | null
+          updated_at?: string | null
+          would_have_lost_money?: boolean | null
         }
         Relationships: []
       }
