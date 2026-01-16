@@ -553,6 +553,34 @@ async function executeExit(
     const market = markets.get(asset);
     const signal = position.signal;
 
+    // CRITICAL: Check if market has expired - if so, we cannot sell, must wait for claim
+    const now = Date.now();
+    const positionMarketSlug = position.marketSlug;
+    
+    // Extract epoch from slug (e.g., "btc-updown-15m-1768596300" -> 1768596300)
+    const slugParts = positionMarketSlug.split('-');
+    const marketEndEpoch = parseInt(slugParts[slugParts.length - 1], 10) * 1000;
+    
+    if (Number.isFinite(marketEndEpoch) && now >= marketEndEpoch) {
+      logAsset(asset, `⏰ MARKET EXPIRED: position will be settled via claim, removing from active tracking`, {
+        positionId: position.id,
+        marketSlug: positionMarketSlug,
+        marketEndEpoch,
+        expiredAgo: `${((now - marketEndEpoch) / 1000).toFixed(0)}s`,
+      });
+      
+      signal.exit_type = 'expired';
+      signal.exit_reason = 'market_expired_before_exit';
+      signal.exit_ts = now;
+      void saveSignalLog(signal, state);
+      
+      // Remove position so new trades can happen
+      activePositions.delete(asset);
+      lastExitTime[asset] = now;
+      
+      return;
+    }
+
     const bestBid = position.direction === 'UP' ? state.upBestBid : state.downBestBid;
 
     if (!bestBid || !market) {
@@ -593,9 +621,32 @@ async function executeExit(
       position.direction
     );
 
-    // If we couldn't even post the sell order, DO NOT mark as exited.
+    // If we couldn't even post the sell order, check if market expired
     if (!result.success) {
       const errMsg = result.error || 'Unknown error (no error message returned)';
+      
+      // Check if this is a balance/allowance error which often means market expired
+      const isExpiredError = errMsg.includes('balance') || errMsg.includes('allowance');
+      
+      // Re-check market expiry (might have just expired)
+      const nowCheck = Date.now();
+      if (Number.isFinite(marketEndEpoch) && nowCheck >= marketEndEpoch) {
+        logAsset(asset, `⏰ MARKET EXPIRED during exit attempt: position will be settled via claim`, {
+          positionId: position.id,
+          error: errMsg,
+        });
+        
+        signal.exit_type = 'expired';
+        signal.exit_reason = `market_expired: ${errMsg}`;
+        signal.exit_ts = nowCheck;
+        void saveSignalLog(signal, state);
+        
+        activePositions.delete(asset);
+        lastExitTime[asset] = nowCheck;
+        
+        return;
+      }
+      
       logAsset(asset, `❌ EXIT FAILED: ${errMsg}`, {
         positionId: position.id,
         exitType,
@@ -603,13 +654,22 @@ async function executeExit(
         shares: position.shares,
         tokenId: position.tokenId,
         latencyMs: result.latencyMs,
+        isExpiredError,
       });
 
       signal.exit_type = 'error';
       signal.exit_reason = `sell_failed: ${errMsg}`;
       void saveSignalLog(signal, state);
 
-      // Backoff + retry
+      // If it looks like an expired market error, don't retry endlessly
+      if (isExpiredError) {
+        logAsset(asset, `🛑 Removing stuck position (balance/allowance error suggests expired market)`);
+        activePositions.delete(asset);
+        lastExitTime[asset] = Date.now();
+        return;
+      }
+
+      // Backoff + retry for other errors
       nextExitAttemptAt[asset] = Date.now() + 1000;
       position.monitorInterval = setInterval(() => {
         checkPositionExit(asset);
