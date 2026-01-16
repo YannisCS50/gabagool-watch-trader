@@ -486,15 +486,32 @@ async function handleForceCounter(
   direction: 'UP' | 'DOWN',
   reason: string
 ): Promise<TradeAction> {
-  log(`⚠️ FORCE COUNTER: ${asset} ${direction} | ${reason}`);
+  const secRemaining = Math.max(0, (market.endTime.getTime() - Date.now()) / 1000);
+  const inventory = inventoryManager.getInventory(asset, market.slug, secRemaining);
+  
+  // Calculate how much imbalance we actually need to fix
+  // net > 0 means more UP than DOWN, so we buy DOWN to balance
+  // net < 0 means more DOWN than UP, so we buy UP to balance
+  const imbalance = Math.abs(inventory.net);
+  
+  // Only buy enough to reduce imbalance, not create opposite imbalance
+  // Target: reduce net to 50% of current (gradual rebalancing)
+  const targetReduction = Math.ceil(imbalance * 0.5);
+  const maxSize = Math.min(targetReduction, config.bet_size_base);
+  
+  if (maxSize < 5) {
+    log(`⚠️ FORCE COUNTER SKIP: ${asset} | imbalance ${imbalance} too small to hedge`);
+    return 'none';
+  }
+  
+  log(`⚠️ FORCE COUNTER: ${asset} ${direction} | ${reason} | imbalance=${imbalance} buying=${maxSize}`);
   
   const state = priceState[asset];
   const price = direction === 'UP' ? state.upBestAsk : state.downBestAsk;
   
   if (!price) return 'none';
   
-  const size = edgeCalculator.calculateBetSize();
-  const success = await executeBuy(asset, direction, market, price, size);
+  const success = await executeBuy(asset, direction, market, price, maxSize);
   
   if (success) {
     forceCounterCount++;
