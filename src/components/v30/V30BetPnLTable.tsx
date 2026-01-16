@@ -18,28 +18,35 @@ interface Position {
   created_at: string;
 }
 
-interface MarketResult {
-  slug: string;
-  asset: string;
-  result: string | null;
-  event_end_time: string;
-  strike_price: number | null;
-  close_price: number | null;
+interface LastTick {
+  market_slug: string;
+  c_price: number;
+  strike_price: number;
+  seconds_remaining: number;
 }
 
 interface BetPnL {
   market_slug: string;
   asset: string;
-  event_end_time: string;
+  event_end_time: Date | null;
   up_shares: number;
   down_shares: number;
   up_cost: number;
   down_cost: number;
   total_cost: number;
-  result: string | null;
+  result: 'UP' | 'DOWN' | null;
   payout: number;
   pnl: number;
   status: 'running' | 'settled' | 'pending';
+}
+
+// Parse end time from market slug: btc-updown-15m-1768548600
+function parseEndTimeFromSlug(slug: string): Date | null {
+  const parts = slug.split('-');
+  const lastPart = parts[parts.length - 1];
+  const timestamp = parseInt(lastPart, 10);
+  if (isNaN(timestamp) || timestamp < 1700000000) return null;
+  return new Date(timestamp * 1000);
 }
 
 async function fetchBetPnLData(): Promise<BetPnL[]> {
@@ -50,46 +57,62 @@ async function fetchBetPnLData(): Promise<BetPnL[]> {
     .order('created_at', { ascending: false });
 
   if (posError) throw posError;
+  if (!positions || positions.length === 0) return [];
 
-  // Fetch market results
-  const { data: markets, error: mktError } = await supabase
-    .from('market_history')
-    .select('slug, asset, result, event_end_time, strike_price, close_price')
-    .order('event_end_time', { ascending: false })
-    .limit(200);
+  // Fetch last tick per market (where seconds_remaining < 120 to get close-to-expiry data)
+  const { data: lastTicks, error: tickError } = await supabase
+    .from('v30_ticks')
+    .select('market_slug, c_price, strike_price, seconds_remaining')
+    .lt('seconds_remaining', 120)
+    .order('seconds_remaining', { ascending: true });
 
-  if (mktError) throw mktError;
+  if (tickError) throw tickError;
 
-  // Create market lookup
-  const marketLookup = new Map<string, MarketResult>();
-  (markets || []).forEach((m: MarketResult) => {
-    marketLookup.set(m.slug, m);
-  });
+  // Build a map of last tick per market (lowest seconds_remaining)
+  const lastTickMap = new Map<string, LastTick>();
+  for (const tick of (lastTicks || [])) {
+    const existing = lastTickMap.get(tick.market_slug);
+    if (!existing || tick.seconds_remaining < existing.seconds_remaining) {
+      lastTickMap.set(tick.market_slug, tick);
+    }
+  }
 
-  // Group positions by market
+  const now = new Date();
   const betMap = new Map<string, BetPnL>();
 
-  (positions || []).forEach((pos: Position) => {
+  // Group positions by market
+  for (const pos of positions) {
     const existing = betMap.get(pos.market_slug);
-    const market = marketLookup.get(pos.market_slug);
 
     if (!existing) {
-      const now = Date.now();
-      const endTime = market?.event_end_time ? new Date(market.event_end_time).getTime() : 0;
-      const status: 'running' | 'settled' | 'pending' = 
-        market?.result && market.result !== 'UNKNOWN' ? 'settled' :
-        endTime && endTime < now ? 'pending' : 'running';
+      const endTime = parseEndTimeFromSlug(pos.market_slug);
+      const lastTick = lastTickMap.get(pos.market_slug);
+
+      let status: 'running' | 'settled' | 'pending' = 'running';
+      let result: 'UP' | 'DOWN' | null = null;
+
+      if (endTime) {
+        if (endTime > now) {
+          status = 'running';
+        } else if (lastTick) {
+          status = 'settled';
+          // Derive result from last tick: if close price > strike, UP wins
+          result = lastTick.c_price > lastTick.strike_price ? 'UP' : 'DOWN';
+        } else {
+          status = 'pending'; // Expired but no tick data
+        }
+      }
 
       betMap.set(pos.market_slug, {
         market_slug: pos.market_slug,
         asset: pos.asset,
-        event_end_time: market?.event_end_time || pos.created_at,
+        event_end_time: endTime,
         up_shares: pos.direction === 'UP' ? pos.shares : 0,
         down_shares: pos.direction === 'DOWN' ? pos.shares : 0,
         up_cost: pos.direction === 'UP' ? pos.total_cost : 0,
         down_cost: pos.direction === 'DOWN' ? pos.total_cost : 0,
         total_cost: pos.total_cost,
-        result: market?.result || null,
+        result,
         payout: 0,
         pnl: 0,
         status,
@@ -104,27 +127,27 @@ async function fetchBetPnLData(): Promise<BetPnL[]> {
       }
       existing.total_cost += pos.total_cost;
     }
-  });
+  }
 
   // Calculate payouts and PnL
   betMap.forEach((bet) => {
-    if (bet.result === 'UP') {
-      bet.payout = bet.up_shares;
-      bet.pnl = bet.payout - bet.total_cost;
-    } else if (bet.result === 'DOWN') {
-      bet.payout = bet.down_shares;
+    if (bet.status === 'settled' && bet.result) {
+      // Winning shares pay out $1 each
+      const winningShares = bet.result === 'UP' ? bet.up_shares : bet.down_shares;
+      bet.payout = winningShares;
       bet.pnl = bet.payout - bet.total_cost;
     } else {
-      // Running or pending - estimate based on 50/50
-      const pairedShares = Math.min(bet.up_shares, bet.down_shares);
-      bet.payout = pairedShares; // Guaranteed payout from pairs
-      bet.pnl = 0; // Unknown until settled
+      // Running or pending - no realized PnL yet
+      bet.payout = 0;
+      bet.pnl = 0;
     }
   });
 
-  return Array.from(betMap.values()).sort((a, b) => 
-    new Date(b.event_end_time).getTime() - new Date(a.event_end_time).getTime()
-  );
+  return Array.from(betMap.values()).sort((a, b) => {
+    const aTime = a.event_end_time?.getTime() || 0;
+    const bTime = b.event_end_time?.getTime() || 0;
+    return bTime - aTime;
+  });
 }
 
 export function V30BetPnLTable() {
