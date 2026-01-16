@@ -231,13 +231,13 @@ function analyzeDirection(
     for (let seconds = 1; seconds <= 9; seconds++) {
       const targetTs = signal.ts + seconds * 1000;
       
-      // Find closest tick to target timestamp (within 500ms tolerance)
+      // Find closest tick to target timestamp (within 750ms tolerance)
       let closestTick: FollowupTick | null = null;
       let closestDiff = Infinity;
 
       for (const tick of marketTicks) {
         const diff = Math.abs(tick.ts - targetTs);
-        if (diff < closestDiff && diff < 500) {
+        if (diff < closestDiff && diff < 750) {
           closestDiff = diff;
           closestTick = tick;
         }
