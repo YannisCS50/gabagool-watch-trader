@@ -58,6 +58,7 @@ export async function loadV30Config(): Promise<V30Config> {
     aggressive_exit_sec: Number(data.aggressive_exit_sec) || DEFAULT_V30_CONFIG.aggressive_exit_sec,
     min_share_price: Number(data.min_share_price) || DEFAULT_V30_CONFIG.min_share_price,
     max_share_price: Number(data.max_share_price) || DEFAULT_V30_CONFIG.max_share_price,
+    min_time_remaining_sec: Number(data.min_time_remaining_sec) || DEFAULT_V30_CONFIG.min_time_remaining_sec,
   };
 }
 

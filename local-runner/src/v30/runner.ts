@@ -257,6 +257,20 @@ async function evaluateAsset(asset: Asset): Promise<void> {
   const secRemaining = Math.max(0, (market.endTime.getTime() - now) / 1000);
   if (secRemaining <= 0) return;
   
+  // Skip if not enough time remaining (wait for next market)
+  const minTimeRequired = config.min_time_remaining_sec ?? 600;
+  const inventory = inventoryManager.getInventory(asset, market.slug, secRemaining);
+  const hasPosition = inventory.up > 0 || inventory.down > 0;
+  
+  // Only skip if we have NO position yet - if we have a position, we need to manage it
+  if (!hasPosition && secRemaining < minTimeRequired) {
+    // Log once per minute
+    if (Math.floor(now / 60000) !== Math.floor((now - 500) / 60000)) {
+      log(`⏳ ${asset}: Only ${Math.floor(secRemaining / 60)}min left, waiting for next market`);
+    }
+    return;
+  }
+  
   // Calculate delta to strike
   const deltaToStrike = C_t - market.strikePrice;
   

@@ -18,6 +18,7 @@ export const DEFAULT_V30_CONFIG: V30Config = {
   aggressive_exit_sec: 60,       // Aggressive exit in last 60 seconds
   min_share_price: 0.05,         // Don't trade below 5¢
   max_share_price: 0.95,         // Don't trade above 95¢
+  min_time_remaining_sec: 600,   // Don't start trading if <10 min left
 };
 
 export const BINANCE_SYMBOLS: Record<Asset, string> = {
