@@ -1,14 +1,16 @@
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
-import { WindowsList } from '@/components/chainlink';
+import { WindowsList, SignalAnalysisTable } from '@/components/chainlink';
 import { useQueryClient } from '@tanstack/react-query';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 export default function BetsHistory() {
   const queryClient = useQueryClient();
 
   const handleRefresh = () => {
     queryClient.invalidateQueries({ queryKey: ['chainlink-windows'] });
+    queryClient.invalidateQueries({ queryKey: ['signal-analysis'] });
   };
 
   return (
@@ -23,7 +25,7 @@ export default function BetsHistory() {
                 Back
               </Button>
             </Link>
-            <h1 className="text-xl font-bold">15-Min Price Windows</h1>
+            <h1 className="text-xl font-bold">15-Min Price Analysis</h1>
           </div>
           <Button variant="outline" size="sm" onClick={handleRefresh}>
             <RefreshCw className="h-4 w-4 mr-2" />
@@ -34,7 +36,20 @@ export default function BetsHistory() {
 
       {/* Main Content */}
       <main className="container mx-auto px-4 py-6">
-        <WindowsList />
+        <Tabs defaultValue="signals" className="space-y-4">
+          <TabsList>
+            <TabsTrigger value="signals">Signal Analysis</TabsTrigger>
+            <TabsTrigger value="windows">Price Windows</TabsTrigger>
+          </TabsList>
+          
+          <TabsContent value="signals">
+            <SignalAnalysisTable />
+          </TabsContent>
+          
+          <TabsContent value="windows">
+            <WindowsList />
+          </TabsContent>
+        </Tabs>
       </main>
     </div>
   );
