@@ -1,11 +1,17 @@
 /**
- * V29 Buy-and-Sell Strategy - Configuration
+ * V29 Pair-Instead-of-Sell Strategy - Configuration
  * 
  * STRATEGY:
- * - Binance tick delta → buy shares
- * - Wait for fill confirmation with SETTLED price
- * - Sell as soon as profit >= 2¢ (based on settled entry price)
- * - NEVER sell at loss unless position age > 60 seconds
+ * - Binance tick delta → buy shares (UP or DOWN)
+ * - Track unpaired positions waiting for hedge opportunity
+ * - When opposite side becomes cheap (combined < target), BUY opposite to lock profit
+ * - Paired shares = guaranteed profit at settlement (no need to sell!)
+ * 
+ * ADVANTAGES OVER SELL:
+ * - No slippage on exit (buying is easier than selling)
+ * - No need to find buyers for your shares
+ * - Profit is LOCKED once paired (both sides owned)
+ * - Natural settlement - no active management needed
  */
 
 export type Asset = 'BTC' | 'ETH' | 'SOL' | 'XRP';
@@ -60,26 +66,25 @@ export interface V29Config {
   // Delta at which max scaling is reached
   delta_trap_full_scale_delta: number;  // e.g., 200 = at $200 delta, use max multipliers
   
-  // === COUNTER-SCALPING PREVENTION ===
-  // If true: don't buy opposite direction when you already have a position in this market
-  // e.g., if you have UP shares, don't buy DOWN shares (prevents self-hedging)
-  prevent_counter_scalping: boolean;
+  // === PAIRING CONFIG (replaces sell logic) ===
   
-  // === SELL CONFIG ===
+  // Maximum combined price to lock in profit
+  // If UP @ 60¢ and DOWN @ 38¢ = 98¢ combined → 2¢ profit locked!
+  max_combined_price: number;  // e.g., 0.98 = only pair if combined < 98¢
   
-  // Minimum profit before selling (in cents) - based on SETTLED entry price!
-  min_profit_cents: number;  // e.g., 2 = only sell if bestBid >= entryPrice - 2¢
+  // Minimum profit per share to consider pairing (in cents)
+  // profit = 100 - combined_price
+  min_pair_profit_cents: number;  // e.g., 2 = only pair if profit >= 2¢
   
-  // Aggregation threshold (seconds) - positions older than this get grouped
-  aggregate_after_sec: number;  // e.g., 15 = after 15s, mark for aggregation
+  // Maximum age before force-pairing at any profit (seconds)
+  // After this time, pair even at 0.5¢ profit to reduce exposure
+  force_pair_after_sec: number;  // e.g., 120 = after 2 min, accept any profit
   
-  // Force close threshold (seconds) - aggregated positions get market dumped
-  force_close_after_sec: number;  // e.g., 20 = after 20s, force close at market
+  // Minimum profit to accept during force-pair (in cents)
+  // Won't pair at a loss even during force-pair
+  min_force_pair_profit_cents: number;  // e.g., 0.5 = accept 0.5¢ profit during force-pair
   
-  // Stop loss threshold after timeout (cents) - max loss we'll accept after timeout
-  stop_loss_cents: number;  // e.g., 10 = after force close, max 10¢ loss accepted
-  
-  // Maximum exposure per asset
+  // Maximum exposure per asset (unpaired shares)
   max_exposure_per_asset: number;  // shares
   max_cost_per_asset: number;      // USD
   
@@ -96,8 +101,8 @@ export interface V29Config {
   // Minimum time between orders (prevent spam)
   order_cooldown_ms: number;
   
-  // Sell check interval (how often to check for sell opportunities)
-  sell_check_ms: number;
+  // Pair check interval (how often to check for pairing opportunities)
+  pair_check_ms: number;
 }
 
 export const DEFAULT_CONFIG: V29Config = {
@@ -121,13 +126,11 @@ export const DEFAULT_CONFIG: V29Config = {
   delta_trap_min_multiplier: 0.5, // Unfavored direction: 0.5x shares (still buy some)
   delta_trap_full_scale_delta: 200, // Full scaling at $200 delta
   
-  prevent_counter_scalping: false,
-  
-  // Sell config - MONITOR AND FIRE
-  min_profit_cents: 2,            // TP target: entry + 2¢
-  aggregate_after_sec: 60,        // After 60s, passive monitoring
-  force_close_after_sec: 120,     // After 2min, force close
-  stop_loss_cents: 8,             // Exit if 8¢ below entry
+  // PAIRING CONFIG - Lock in profits by buying opposite side
+  max_combined_price: 0.98,       // Pair when combined < 98¢ (= 2¢ profit)
+  min_pair_profit_cents: 2,       // Normal pairing: min 2¢ profit
+  force_pair_after_sec: 120,      // After 2 min, accept lower profit
+  min_force_pair_profit_cents: 0.5, // Force-pair: accept 0.5¢ profit
   
   max_exposure_per_asset: 200,
   max_cost_per_asset: 100,
@@ -137,7 +140,7 @@ export const DEFAULT_CONFIG: V29Config = {
   binance_poll_ms: 100,
   orderbook_poll_ms: 1500,
   order_cooldown_ms: 1500,        // 1.5 second cooldown
-  sell_check_ms: 150,
+  pair_check_ms: 150,             // Check pairing opportunities every 150ms
 };
 
 // Binance WebSocket symbols

@@ -1,11 +1,16 @@
 /**
- * V29 Buy-and-Sell Runner
+ * V29 Pair-Instead-of-Sell Runner
  * 
- * SIMPLE STRATEGY:
- * 1. Binance tick delta → buy shares
- * 2. Track SETTLED entry price per position
- * 3. Sell as soon as bestBid >= entryPrice - 2¢ (profit!)
- * 4. NEVER sell at loss unless position age > 60 seconds
+ * STRATEGY:
+ * 1. Binance tick delta → buy shares (UP or DOWN)
+ * 2. Track UNPAIRED positions waiting for hedge opportunity
+ * 3. When opposite side is cheap enough (combined < target), BUY opposite to LOCK profit
+ * 4. Paired shares = guaranteed profit at settlement (no selling needed!)
+ * 
+ * ADVANTAGES:
+ * - No slippage risk on exit (buying is often easier than selling)
+ * - Profit is LOCKED once paired (guaranteed $1 payout per pair)
+ * - Natural settlement - capital freed at market expiry
  */
 
 // CRITICAL: Import HTTP agent FIRST to configure axios before any SDK imports
@@ -20,7 +25,7 @@ import { startChainlinkFeed, stopChainlinkFeed, getChainlinkPrice } from './chai
 import { fetchMarketOrderbook, fetchAllOrderbooks } from './orderbook.js';
 import { startOrderbookWs, stopOrderbookWs, updateMarkets as updateOrderbookWsMarkets, isOrderbookWsConnected, getOrderbookWsStats } from './orderbook-ws.js';
 import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb, queueLog, logTick, queueTick } from './db.js';
-import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, getOrderStatus, setFillContext, clearFillContext, cancelOrder, logBurstStats } from './trading.js';
+import { placeBuyOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, getOrderStatus, setFillContext, clearFillContext, cancelOrder, logBurstStats } from './trading.js';
 import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
 import { acquireLease, releaseLease, isRunnerActive } from './lease.js';
@@ -36,10 +41,10 @@ let fairValueModel: EmpiricalFairValue;
 
 
 // ============================================
-// POSITION TRACKING
+// POSITION TRACKING - UNPAIRED/PAIRED
 // ============================================
 
-interface OpenPosition {
+interface UnpairedPosition {
   id: string;
   asset: Asset;
   direction: 'UP' | 'DOWN';
@@ -50,14 +55,27 @@ interface OpenPosition {
   totalCost: number;
   entryTime: number;   // timestamp when filled
   orderId?: string;
-  takeProfitPrice: number;  // Target sell price = entry + TP cents
-  // TRAILING STOP STATE
-  peakBidSeen: number;       // Highest bid seen since entry
-  trailingActive: boolean;   // True once bid >= entry + TRAILING_ACTIVATION_CENTS
 }
 
-// Open positions by ID
-const openPositions = new Map<string, OpenPosition>();
+interface PairedPosition {
+  id: string;
+  asset: Asset;
+  marketSlug: string;
+  upTokenId: string;
+  downTokenId: string;
+  shares: number;
+  upEntryPrice: number;
+  downEntryPrice: number;
+  combinedCost: number;      // UP + DOWN cost per share
+  lockedProfit: number;      // 1 - combinedCost (per share)
+  pairedAt: number;
+}
+
+// Unpaired positions by ID (waiting for hedge)
+const unpairedPositions = new Map<string, UnpairedPosition>();
+
+// Paired positions by ID (locked profit, waiting for settlement)
+const pairedPositions = new Map<string, PairedPosition>();
 
 // ============================================
 // STATE
@@ -84,18 +102,14 @@ const lastBinancePrice: Record<Asset, number | null> = { BTC: null, ETH: null, S
 
 // Stats
 let buysCount = 0;
-let sellsCount = 0;
-let profitableSells = 0;
-let lossSells = 0;
-// Cooldowns per asset+direction (UP/DOWN are independent markets)
-const lastBuyTime: Record<string, number> = {};  // key: "BTC:UP", "BTC:DOWN", etc.
-const lastSellTime: Record<string, number> = {};
-// Rate-limit noisy force-close skip logs (sell check runs every ~200ms)
-const lastForceCloseSkipLogTime: Record<string, number> = {};
-const FORCE_CLOSE_SKIP_LOG_COOLDOWN_MS = 30_000;
+let pairsCount = 0;
+let totalLockedProfit = 0;  // Total locked profit from pairing
+
+// Cooldowns per asset+direction
+const lastBuyTime: Record<string, number> = {};
+const lastPairTime: Record<string, number> = {};
 let lastMarketRefresh = 0;
 let lastConfigReload = 0;
-let totalPnL = 0;
 
 // Track previous market slugs to detect market changes
 const previousMarketSlugs: Record<Asset, string | null> = { BTC: null, ETH: null, SOL: null, XRP: null };
@@ -103,8 +117,7 @@ const previousMarketSlugs: Record<Asset, string | null> = { BTC: null, ETH: null
 // Market expiration timers
 const marketTimers: Record<Asset, NodeJS.Timeout | null> = { BTC: null, ETH: null, SOL: null, XRP: null };
 
-// LOCAL DEDUP CACHE: Prevents blocking DB calls before order placement
-// Saves ~100-200ms latency per order by avoiding network round-trip
+// LOCAL DEDUP CACHE
 const localDedupCache = new Set<string>();
 
 // ============================================
@@ -127,12 +140,16 @@ function logError(msg: string, err?: unknown): void {
 // POSITION HELPERS
 // ============================================
 
-function getOpenPositionsForAsset(asset: Asset): OpenPosition[] {
-  return Array.from(openPositions.values()).filter(p => p.asset === asset);
+function getUnpairedPositionsForAsset(asset: Asset): UnpairedPosition[] {
+  return Array.from(unpairedPositions.values()).filter(p => p.asset === asset);
 }
 
-function getTotalExposure(asset: Asset): { shares: number; cost: number } {
-  const positions = getOpenPositionsForAsset(asset);
+function getUnpairedByDirection(asset: Asset, direction: 'UP' | 'DOWN'): UnpairedPosition[] {
+  return Array.from(unpairedPositions.values()).filter(p => p.asset === asset && p.direction === direction);
+}
+
+function getTotalUnpairedExposure(asset: Asset): { shares: number; cost: number } {
+  const positions = getUnpairedPositionsForAsset(asset);
   return {
     shares: positions.reduce((sum, p) => sum + p.shares, 0),
     cost: positions.reduce((sum, p) => sum + p.totalCost, 0),
@@ -140,33 +157,41 @@ function getTotalExposure(asset: Asset): { shares: number; cost: number } {
 }
 
 function getPositionsSummary(): string {
-  if (openPositions.size === 0) return 'No open positions';
+  const unpairedCount = unpairedPositions.size;
+  const pairedCount = pairedPositions.size;
+  
+  if (unpairedCount === 0 && pairedCount === 0) return 'No positions';
 
-  const byKey: Record<string, { shares: number; cost: number; count: number }> = {};
-
-  for (const pos of openPositions.values()) {
+  const unpairedByKey: Record<string, { shares: number; cost: number }> = {};
+  for (const pos of unpairedPositions.values()) {
     const key = `${pos.asset} ${pos.direction}`;
-    if (!byKey[key]) byKey[key] = { shares: 0, cost: 0, count: 0 };
-    byKey[key].shares += pos.shares;
-    byKey[key].cost += pos.totalCost;
-    byKey[key].count++;
+    if (!unpairedByKey[key]) unpairedByKey[key] = { shares: 0, cost: 0 };
+    unpairedByKey[key].shares += pos.shares;
+    unpairedByKey[key].cost += pos.totalCost;
   }
 
-  return Object.entries(byKey)
-    .map(([key, data]) => `${key}: ${data.shares.toFixed(2)} sh ($${data.cost.toFixed(2)})`)
-    .join(' | ');
+  const pairedByAsset: Record<string, { shares: number; profit: number }> = {};
+  for (const pos of pairedPositions.values()) {
+    if (!pairedByAsset[pos.asset]) pairedByAsset[pos.asset] = { shares: 0, profit: 0 };
+    pairedByAsset[pos.asset].shares += pos.shares;
+    pairedByAsset[pos.asset].profit += pos.lockedProfit * pos.shares;
+  }
+
+  const unpairedStr = Object.entries(unpairedByKey)
+    .map(([key, data]) => `${key}: ${data.shares.toFixed(0)}sh`)
+    .join(', ');
+  
+  const pairedStr = Object.entries(pairedByAsset)
+    .map(([asset, data]) => `${asset}: ${data.shares.toFixed(0)}sh (+$${data.profit.toFixed(2)})`)
+    .join(', ');
+
+  return `UNPAIRED: ${unpairedStr || 'none'} | PAIRED: ${pairedStr || 'none'}`;
 }
 
 // ============================================
 // LOAD EXISTING POSITIONS FROM POLYMARKET
 // ============================================
 
-/**
- * Load existing positions from Polymarket API and add them to openPositions.
- * This allows selling positions that were opened in previous sessions.
- * 
- * NOTE: Sell is ALWAYS allowed - no price range restrictions!
- */
 let positionSyncInFlight = false;
 
 async function loadExistingPositions(opts: { quiet?: boolean } = {}): Promise<void> {
@@ -199,6 +224,7 @@ async function loadExistingPositions(opts: { quiet?: boolean } = {}): Promise<vo
       slugToMarket.set(market.slug, { asset, market });
     }
 
+    // Aggregate positions by market+direction
     const aggregates = new Map<string, {
       asset: Asset;
       direction: 'UP' | 'DOWN';
@@ -230,90 +256,90 @@ async function loadExistingPositions(opts: { quiet?: boolean } = {}): Promise<vo
       });
     }
 
-    // Remove stale wallet-derived positions that don't match any current market
-    const activeMarketKeys = new Set<string>();
-    for (const [key] of aggregates) activeMarketKeys.add(key);  // e.g., "btc-up-12345:UP"
+    // Check for pairable positions (both UP and DOWN in same market)
+    for (const [asset, market] of markets) {
+      const upKey = `${market.slug}:UP`;
+      const downKey = `${market.slug}:DOWN`;
+      const upAgg = aggregates.get(upKey);
+      const downAgg = aggregates.get(downKey);
 
-    for (const [posId, pos] of openPositions) {
-      if (!posId.startsWith('wallet:')) continue;
-      const marketKey = `${pos.marketSlug}:${pos.direction}`;
-      if (!activeMarketKeys.has(marketKey)) {
-        if (!quiet) log(`   🗑️ Removing stale wallet position: ${posId} (market no longer active)`);
-        openPositions.delete(posId);
+      if (upAgg && downAgg) {
+        // We have both sides! Check if they're already paired
+        const pairedShares = Math.min(upAgg.shares, downAgg.shares);
+        if (pairedShares >= 1) {
+          const upAvg = upAgg.shares > 0 ? upAgg.cost / upAgg.shares : 0;
+          const downAvg = downAgg.shares > 0 ? downAgg.cost / downAgg.shares : 0;
+          const combinedCost = upAvg + downAvg;
+          const lockedProfit = 1 - combinedCost;
+
+          // Create paired position
+          const pairId = `wallet-pair:${asset}:${Date.now()}`;
+          pairedPositions.set(pairId, {
+            id: pairId,
+            asset,
+            marketSlug: market.slug,
+            upTokenId: market.upTokenId,
+            downTokenId: market.downTokenId,
+            shares: pairedShares,
+            upEntryPrice: upAvg,
+            downEntryPrice: downAvg,
+            combinedCost,
+            lockedProfit,
+            pairedAt: Date.now(),
+          });
+
+          if (!quiet) {
+            log(`   🔗 PAIRED from wallet: ${asset} ${pairedShares.toFixed(0)} sh @ ${(combinedCost * 100).toFixed(1)}¢ = +${(lockedProfit * 100).toFixed(1)}¢/sh`);
+          }
+
+          // Reduce aggregates by paired amount
+          upAgg.shares -= pairedShares;
+          downAgg.shares -= pairedShares;
+        }
       }
     }
 
-    // PRESERVE individual positions! Only add wallet-derived position if we have NO in-memory positions
-    // This ensures trailing stop works per-order, not aggregated
+    // Add remaining unpaired positions
     let loadedCount = 0;
     for (const [key, agg] of aggregates) {
+      if (agg.shares < 1) continue;  // Skip tiny positions
+
       const tokenId = agg.direction === 'UP' ? agg.market.upTokenId : agg.market.downTokenId;
-      
-      // Count in-memory shares for this market+direction
+      const avgPrice = agg.cost / agg.shares;
+
+      // Check if we already track this
       let inMemoryShares = 0;
-      for (const [, pos] of openPositions) {
-        if (pos.marketSlug === agg.market.slug && pos.direction === agg.direction && pos.asset === agg.asset) {
+      for (const [, pos] of unpairedPositions) {
+        if (pos.marketSlug === agg.market.slug && pos.direction === agg.direction) {
           inMemoryShares += pos.shares;
         }
       }
-      
-      // Compare wallet truth vs in-memory
-      const walletShares = agg.shares;
-      const difference = walletShares - inMemoryShares;
-      
-      if (difference > 0.5) {
-        // Wallet has MORE shares than we're tracking - add a new position for the difference
-        // This handles positions opened in previous sessions
+
+      const difference = agg.shares - inMemoryShares;
+      if (difference >= 1) {
         const positionId = `wallet:${key}:${Date.now()}`;
-        const avgPrice = agg.shares > 0 ? agg.cost / agg.shares : 0;
-        const takeProfitPrice = Math.round((avgPrice + config.min_profit_cents / 100) * 100) / 100;
-        
-        openPositions.set(positionId, {
+        unpairedPositions.set(positionId, {
           id: positionId,
           asset: agg.asset,
           direction: agg.direction,
           marketSlug: agg.market.slug,
           tokenId,
-          shares: difference,  // Only add the MISSING shares, not all of them!
+          shares: difference,
           entryPrice: avgPrice,
           totalCost: difference * avgPrice,
           entryTime: Date.now() - 30_000,  // Assume old position
           orderId: `wallet-${positionId}`,
-          takeProfitPrice,
-          peakBidSeen: avgPrice,
-          trailingActive: false,
         });
-        
+
         loadedCount++;
         if (!quiet) {
-          log(`   📋 Wallet: ${agg.asset} ${agg.direction} +${difference.toFixed(2)} sh (wallet: ${walletShares.toFixed(2)}, tracked: ${inMemoryShares.toFixed(2)}) @ ${(avgPrice * 100).toFixed(1)}¢`);
+          log(`   📋 UNPAIRED from wallet: ${agg.asset} ${agg.direction} ${difference.toFixed(0)} sh @ ${(avgPrice * 100).toFixed(1)}¢`);
         }
-      } else if (difference < -0.5) {
-        // Wallet has LESS shares than we're tracking - some were sold externally
-        // Remove old wallet positions first, keep in-memory ones
-        for (const [posId] of openPositions) {
-          if (posId.startsWith('wallet:') && posId.includes(key)) {
-            openPositions.delete(posId);
-            if (!quiet) log(`   🗑️ Removed stale wallet position ${posId}`);
-          }
-        }
-      } else if (!quiet && walletShares > 0.5) {
-        // Shares match - just log for visibility
-        log(`   ✓ Wallet in sync: ${agg.asset} ${agg.direction} ${walletShares.toFixed(2)} sh (${openPositions.size} positions tracked)`);
       }
     }
 
     if (!quiet) {
-      if (loadedCount === 0) {
-        log(`   No matching positions for active markets (wallet has ${positions.length} total positions).`);
-        const sample = positions
-          .filter(p => p.size > 0.0001)
-          .slice(0, 3)
-          .map(p => `${p.eventSlug ?? 'no-slug'} / ${p.outcome} / ${p.size}`)
-          .join(' | ');
-        if (sample) log(`   Sample wallet positions: ${sample}`);
-      }
-      log(`✅ Wallet sync done: ${loadedCount} active positions loaded`);
+      log(`✅ Wallet sync: ${loadedCount} unpaired, ${pairedPositions.size} paired positions`);
     }
   } catch (err) {
     if (!quiet) logError('Failed to load existing positions', err);
@@ -326,15 +352,8 @@ async function loadExistingPositions(opts: { quiet?: boolean } = {}): Promise<vo
 // REAL-TIME TRADE HANDLER (User Channel WebSocket)
 // ============================================
 
-/**
- * Handle real-time trade events from User Channel.
- * Updates position tracking when fills are CONFIRMED.
- */
 function handleUserChannelTrade(event: TradeEvent): void {
-  // Only process CONFIRMED trades (final state)
-  if (event.status !== 'CONFIRMED' && event.status !== 'MINED') {
-    return;
-  }
+  if (event.status !== 'CONFIRMED' && event.status !== 'MINED') return;
   
   const tokenId = event.asset_id;
   const side = event.side;
@@ -363,65 +382,18 @@ function handleUserChannelTrade(event: TradeEvent): void {
     }
   }
   
-  if (!matchedAsset || !matchedMarket || !matchedDirection) {
-    // Trade is for a market we're not tracking (old market, different asset, etc.)
-    return;
-  }
+  if (!matchedAsset || !matchedMarket || !matchedDirection) return;
   
-  log(`🔔 RT Trade: ${matchedAsset} ${matchedDirection} ${side} ${size} @ ${(price * 100).toFixed(1)}¢ (${event.status})`, 'fill', matchedAsset);
+  log(`🔔 RT Trade: ${matchedAsset} ${matchedDirection} ${side} ${size} @ ${(price * 100).toFixed(1)}¢`, 'fill', matchedAsset);
   
   if (side === 'BUY') {
-    // A BUY fill means we acquired shares - might already be tracked from our order flow
-    // Check if we already have this position tracked
-    const existingPositions = Array.from(openPositions.values()).filter(
-      p => p.asset === matchedAsset && p.direction === matchedDirection && p.marketSlug === matchedMarket!.slug
-    );
+    // Check if this is a pairing buy (buying opposite side)
+    const oppositeDirection = matchedDirection === 'UP' ? 'DOWN' : 'UP';
+    const unpairedOpposite = getUnpairedByDirection(matchedAsset, oppositeDirection);
     
-    // If no existing position with similar entry time (within 5s), this might be a missed buy
-    const recentPosition = existingPositions.find(p => Math.abs(Date.now() - p.entryTime) < 5000);
-    
-    if (!recentPosition && existingPositions.length === 0) {
-      // Create a new position from this external fill
-      const positionId = `rt-${Date.now()}-${matchedAsset}-${matchedDirection}`;
-      const takeProfitPrice = Math.round((price + config.min_profit_cents / 100) * 100) / 100;
-      
-      openPositions.set(positionId, {
-        id: positionId,
-        asset: matchedAsset,
-        direction: matchedDirection,
-        marketSlug: matchedMarket.slug,
-        tokenId,
-        shares: size,
-        entryPrice: price,
-        totalCost: size * price,
-        entryTime: Date.now(),
-        orderId: event.taker_order_id,
-        takeProfitPrice,
-      });
-      
-      log(`   📥 Created position from RT fill: ${size} shares @ ${(price * 100).toFixed(1)}¢`, 'fill', matchedAsset);
-    }
-    
-  } else if (side === 'SELL') {
-    // A SELL fill means we reduced/closed a position
-    // Reduce shares from existing positions
-    let remainingToReduce = size;
-    
-    for (const [posId, pos] of openPositions) {
-      if (pos.asset !== matchedAsset || pos.direction !== matchedDirection) continue;
-      if (pos.marketSlug !== matchedMarket.slug) continue;
-      if (remainingToReduce <= 0) break;
-      
-      const reduceAmount = Math.min(pos.shares, remainingToReduce);
-      pos.shares -= reduceAmount;
-      remainingToReduce -= reduceAmount;
-      
-      if (pos.shares <= 0.0001) {
-        openPositions.delete(posId);
-        log(`   📤 Position closed via RT sell: ${posId}`, 'fill', matchedAsset);
-      } else {
-        log(`   📉 Position reduced: ${reduceAmount} shares sold, ${pos.shares.toFixed(2)} remaining`, 'fill', matchedAsset);
-      }
+    if (unpairedOpposite.length > 0) {
+      // This could be a pairing buy! Let checkAndExecutePairs handle it
+      log(`   ℹ️ Buy detected - pairing check will run shortly`, 'fill', matchedAsset);
     }
   }
 }
@@ -476,11 +448,9 @@ async function fetchMarkets(): Promise<void> {
         const asset = m.asset as Asset;
         const slug = String(m.slug || '');
 
-        // ONLY 15m markets - skip everything else!
+        // ONLY 15m markets
         const is15m = slug.toLowerCase().includes('-15m-');
-        if (!is15m) {
-          continue;
-        }
+        if (!is15m) continue;
 
         let startMs = new Date(m.eventStartTime || m.event_start_time || '').getTime();
         let endMs = new Date(m.eventEndTime || m.event_end_time || m.endTime || '').getTime();
@@ -490,8 +460,7 @@ async function fetchMarkets(): Promise<void> {
 
         if (endMs <= now - 60_000) continue;
 
-        const earlyMs = EARLY_15M_MS; // 90s early entry for 15m markets
-
+        const earlyMs = EARLY_15M_MS;
         if (now < startMs - earlyMs) continue;
 
         const entry: MarketCandidate = {
@@ -521,16 +490,16 @@ async function fetchMarkets(): Promise<void> {
         const previousSlug = previousMarketSlugs[asset];
         const isNewMarket = previousSlug !== slug;
 
-        // VALIDATE token IDs - must be 70+ chars numeric (not condition IDs which are ~66 chars)
+        // VALIDATE token IDs
         const upTokenId = m.upTokenId;
         const downTokenId = m.downTokenId;
         
         if (!upTokenId || upTokenId.length < 70 || !/^\d+$/.test(upTokenId)) {
-          log(`⚠️ ${asset} INVALID upTokenId (len=${upTokenId?.length}): ${upTokenId?.slice(0, 30)}...`, 'error', asset);
+          log(`⚠️ ${asset} INVALID upTokenId`, 'error', asset);
           continue;
         }
         if (!downTokenId || downTokenId.length < 70 || !/^\d+$/.test(downTokenId)) {
-          log(`⚠️ ${asset} INVALID downTokenId (len=${downTokenId?.length}): ${downTokenId?.slice(0, 30)}...`, 'error', asset);
+          log(`⚠️ ${asset} INVALID downTokenId`, 'error', asset);
           continue;
         }
 
@@ -546,7 +515,7 @@ async function fetchMarkets(): Promise<void> {
         markets.set(asset, marketInfo);
 
         if (isNewMarket) {
-          log(`🔁 ${asset} NEW MARKET: ${slug} - fetching orderbook NOW`, 'market', asset);
+          log(`🔁 ${asset} NEW MARKET: ${slug}`, 'market', asset);
 
           priceState[asset] = {
             ...priceState[asset],
@@ -559,7 +528,7 @@ async function fetchMarkets(): Promise<void> {
 
           void updateMarketCache(asset, m.upTokenId, m.downTokenId);
 
-          // SYNC orderbook fetch - wait for it before trading!
+          // Fetch orderbook
           try {
             const book = await fetchMarketOrderbook(marketInfo);
             if (markets.get(asset)?.slug === slug) {
@@ -567,14 +536,11 @@ async function fetchMarkets(): Promise<void> {
               if (book.upBestBid !== undefined) priceState[asset].upBestBid = book.upBestBid;
               if (book.downBestAsk !== undefined) priceState[asset].downBestAsk = book.downBestAsk;
               if (book.downBestBid !== undefined) priceState[asset].downBestBid = book.downBestBid;
-              if (book.lastUpdate !== undefined) priceState[asset].lastUpdate = book.lastUpdate;
-              log(`📖 ${asset} orderbook READY: UP ask ${book.upBestAsk ? (book.upBestAsk * 100).toFixed(1) : 'n/a'}¢ | DOWN ask ${book.downBestAsk ? (book.downBestAsk * 100).toFixed(1) : 'n/a'}¢`, 'market', asset);
+              log(`📖 ${asset} orderbook ready`, 'market', asset);
             }
           } catch (err) {
-            log(`⚠️ ${asset} initial orderbook fetch failed - will retry on poll`, 'error', asset);
+            log(`⚠️ ${asset} orderbook fetch failed`, 'error', asset);
           }
-        } else if (previousSlug === null) {
-          log(`📍 ${asset}: ${slug} @ strike $${marketInfo.strikePrice ?? 0}`, 'market', asset);
         }
 
         previousMarketSlugs[asset] = slug;
@@ -599,24 +565,13 @@ function scheduleMarketRefresh(asset: Asset, endTimeMs: number): void {
   const now = Date.now();
   const timeUntilEnd = endTimeMs - now;
   
-  if (timeUntilEnd <= 0 || timeUntilEnd > 2 * 60 * 60 * 1000) {
-    return;
-  }
+  if (timeUntilEnd <= 0 || timeUntilEnd > 2 * 60 * 60 * 1000) return;
   
-  // Schedule refresh 10 seconds BEFORE market ends to catch the next one early
   const refreshIn = Math.max(timeUntilEnd - 10_000, 1_000);
-  
-  log(`⏰ ${asset} timer: refresh in ${Math.floor(refreshIn / 1000)}s (ends in ${Math.floor(timeUntilEnd / 1000)}s)`, 'market', asset);
   
   marketTimers[asset] = setTimeout(() => {
     log(`🔄 ${asset} market expiring → fetching next`, 'market', asset);
     void fetchMarkets();
-    
-    // Also schedule a follow-up refresh 5 seconds AFTER market end (in case next market isn't ready yet)
-    setTimeout(() => {
-      log(`🔄 ${asset} post-expiry refresh`, 'market', asset);
-      void fetchMarkets();
-    }, timeUntilEnd + 5_000 - refreshIn);
   }, refreshIn);
 }
 
@@ -625,12 +580,7 @@ function scheduleMarketRefresh(asset: Asset, endTimeMs: number): void {
 // ============================================
 
 function handleChainlinkPrice(asset: Asset, price: number): void {
-  const prev = priceState[asset].chainlink;
   priceState[asset].chainlink = price;
-  
-  if (prev && Math.abs(price - prev) >= 10) {
-    queueLog(RUN_ID, 'info', 'price', `${asset} chainlink $${price.toFixed(2)}`, asset, { source: 'chainlink', price });
-  }
 }
 
 // ============================================
@@ -638,10 +588,7 @@ function handleChainlinkPrice(asset: Asset, price: number): void {
 // ============================================
 
 function handleBinancePrice(asset: Asset, price: number, _timestamp: number): void {
-  // CRITICAL: Skip processing if we're no longer the active runner
-  if (!isRunnerActive()) {
-    return; // Silent skip - takeover detected, shutting down
-  }
+  if (!isRunnerActive()) return;
 
   const now = Date.now();
   
@@ -655,7 +602,7 @@ function handleBinancePrice(asset: Asset, price: number, _timestamp: number): vo
   const market = markets.get(asset);
   const chainlinkPrice = state.chainlink;
   
-  // Log EVERY tick to database (queue for batch insert)
+  // Log tick
   queueTick({
     runId: RUN_ID,
     asset,
@@ -671,93 +618,57 @@ function handleBinancePrice(asset: Asset, price: number, _timestamp: number): vo
     strikePrice: market?.strikePrice,
   });
   
-  if (Math.abs(tickDelta) >= config.tick_delta_usd) {
-    queueLog(RUN_ID, 'info', 'price', `${asset} binance $${price.toFixed(2)} Δ${tickDelta >= 0 ? '+' : ''}${tickDelta.toFixed(2)} 🎯`, asset, { 
-      source: 'binance', 
-      price,
-      tickDelta, 
-    });
-  }
-  
-  // Skip if disabled
   if (!config.enabled) return;
-  
-  // Need previous price
   if (prevPrice === null) return;
-  
-  // Check tick delta threshold
   if (Math.abs(tickDelta) < config.tick_delta_usd) return;
+  if (!market || !market.strikePrice) return;
   
-  // Get market
-  if (!market || !market.strikePrice) {
-    return;
-  }
-  
-  // Use Chainlink for delta calculation, fallback to Binance
   const actualPrice = chainlinkPrice ?? price;
-  
-  // Calculate price vs strike delta
   const priceVsStrikeDelta = actualPrice - market.strikePrice;
   
-  log(`📊 ${asset} TRIGGER: tickΔ=$${tickDelta.toFixed(2)} | price=$${actualPrice.toFixed(2)} vs strike=$${market.strikePrice.toFixed(0)} → Δ$${priceVsStrikeDelta.toFixed(0)}`);
+  log(`📊 ${asset} TRIGGER: tickΔ=$${tickDelta.toFixed(2)} | Δstrike=$${priceVsStrikeDelta.toFixed(0)}`);
   
-  // Direction based on tick movement
   const tickDirection: 'UP' | 'DOWN' = tickDelta > 0 ? 'UP' : 'DOWN';
   
-  // Buy cooldown per asset+direction (UP/DOWN are independent)
+  // Cooldown
   const cooldownKey = `${asset}:${tickDirection}`;
   if (now - (lastBuyTime[cooldownKey] ?? 0) < config.order_cooldown_ms) return;
   
   // === SMART DIRECTION FILTER ===
-  // Use V30's fair value model to decide if opposite-direction ticks should be blocked
   let allowedDirection: 'UP' | 'DOWN' | 'BOTH' = 'BOTH';
   let smartDirectionUsed = false;
   
   if (config.smart_direction_enabled && fairValueModel) {
-    // Calculate time remaining
     const secRemaining = Math.max(0, (market.endTime.getTime() - now) / 1000);
-    
-    // Get fair value using blended delta
     const fairValue = fairValueModel.getFairP(asset, priceVsStrikeDelta, secRemaining);
     
-    // Only use smart direction if we have enough samples
     if (fairValue.samples >= config.smart_direction_min_samples) {
       smartDirectionUsed = true;
       
-      // If P(UP) is high, only allow UP ticks
       if (fairValue.p_up >= config.smart_direction_threshold) {
         allowedDirection = 'UP';
-        log(`🧠 SMART: P(UP)=${(fairValue.p_up * 100).toFixed(0)}% ≥ ${(config.smart_direction_threshold * 100).toFixed(0)}% → only UP allowed (${fairValue.samples} samples)`);
-      }
-      // If P(DOWN) is high, only allow DOWN ticks
-      else if (fairValue.p_down >= config.smart_direction_threshold) {
+        log(`🧠 SMART: P(UP)=${(fairValue.p_up * 100).toFixed(0)}% → only UP`);
+      } else if (fairValue.p_down >= config.smart_direction_threshold) {
         allowedDirection = 'DOWN';
-        log(`🧠 SMART: P(DOWN)=${(fairValue.p_down * 100).toFixed(0)}% ≥ ${(config.smart_direction_threshold * 100).toFixed(0)}% → only DOWN allowed (${fairValue.samples} samples)`);
-      }
-      // Otherwise both directions allowed
-      else {
-        log(`🧠 SMART: P(UP)=${(fairValue.p_up * 100).toFixed(0)}%, P(DOWN)=${(fairValue.p_down * 100).toFixed(0)}% → BOTH allowed`);
+        log(`🧠 SMART: P(DOWN)=${(fairValue.p_down * 100).toFixed(0)}% → only DOWN`);
       }
     }
   }
   
-  // FALLBACK: Use legacy delta threshold if smart direction not available
+  // Fallback
   if (!smartDirectionUsed) {
     if (priceVsStrikeDelta > config.delta_threshold) {
       allowedDirection = 'UP';
     } else if (priceVsStrikeDelta < -config.delta_threshold) {
       allowedDirection = 'DOWN';
-    } else {
-      allowedDirection = 'BOTH';
     }
   }
   
   if (allowedDirection !== 'BOTH' && allowedDirection !== tickDirection) {
-    log(`⚠️ ${asset} ${tickDirection} blocked | Δ$${priceVsStrikeDelta.toFixed(0)} | only ${allowedDirection} allowed${smartDirectionUsed ? ' (smart)' : ''}`);
+    log(`⚠️ ${asset} ${tickDirection} blocked | only ${allowedDirection} allowed`);
     return;
   }
   
-  // Log alert tick
   void logTick({
     runId: RUN_ID,
     asset,
@@ -774,9 +685,8 @@ function handleBinancePrice(asset: Asset, price: number, _timestamp: number): vo
     strikePrice: market.strikePrice,
   });
   
-  log(`🎯 TRIGGER: ${asset} ${tickDirection} | tickΔ$${tickDelta.toFixed(2)} | allowed: ${allowedDirection}`, 'signal', asset);
+  log(`🎯 TRIGGER: ${asset} ${tickDirection}`, 'signal', asset);
   
-  // Execute buy trade
   void executeBuy(asset, tickDirection, price, tickDelta, priceVsStrikeDelta, market);
 }
 
@@ -792,27 +702,20 @@ async function executeBuy(
   strikeActualDelta: number,
   market: MarketInfo
 ): Promise<void> {
-  // CRITICAL: Check local flag (fast path - no DB call)
   if (!isRunnerActive()) {
-    log(`🛑 BLOCKED: Buy attempt for ${asset} ${direction} - runner no longer active`);
+    log(`🛑 BLOCKED: Buy attempt - runner no longer active`);
     return;
   }
 
-  // signalTs is when we START processing - used for dedup key
   const signalTs = Date.now();
-  
-  // Generate deterministic signal ID to prevent duplicate orders from multiple runners
-  // Round timestamp to nearest second to catch same-tick races
   const signalBucket = Math.floor(signalTs / 1000);
   const dedupKey = `${asset}-${direction}-${strikeActualDelta.toFixed(2)}-${signalBucket}`;
   
-  // Get orderbook - try cached first, then quick on-demand fetch
+  // Get orderbook
   const state = priceState[asset];
   let bestAsk = direction === 'UP' ? state.upBestAsk : state.downBestAsk;
   
-  // If no cached orderbook, try quick on-demand fetch (300ms timeout)
   if (!bestAsk || bestAsk <= 0) {
-    const fetchStart = Date.now();
     try {
       const freshBook = await Promise.race([
         fetchMarketOrderbook(market),
@@ -820,71 +723,38 @@ async function executeBuy(
       ]);
       
       if (freshBook) {
-        // Update cached state
         if (freshBook.upBestAsk) state.upBestAsk = freshBook.upBestAsk;
         if (freshBook.upBestBid) state.upBestBid = freshBook.upBestBid;
         if (freshBook.downBestAsk) state.downBestAsk = freshBook.downBestAsk;
         if (freshBook.downBestBid) state.downBestBid = freshBook.downBestBid;
-        state.lastUpdate = Date.now();
         
         bestAsk = direction === 'UP' ? freshBook.upBestAsk ?? null : freshBook.downBestAsk ?? null;
-        log(`📖 On-demand orderbook: ${asset} ${direction} ask ${bestAsk ? (bestAsk * 100).toFixed(1) + '¢' : 'null'} (${Date.now() - fetchStart}ms)`);
       }
     } catch {
-      // Timeout or error - continue with null
+      // Continue with null
     }
   }
   
   if (!bestAsk || bestAsk <= 0) {
-    log(`⚠️ No orderbook for ${asset} ${direction} (even after on-demand fetch)`);
+    log(`⚠️ No orderbook for ${asset} ${direction}`);
     return;
   }
   
   // Price range check
-  if (bestAsk < config.min_share_price) {
-    log(`🚫 ${asset} ${direction} ask ${(bestAsk * 100).toFixed(1)}¢ < min ${(config.min_share_price * 100).toFixed(1)}¢`);
+  if (bestAsk < config.min_share_price || bestAsk > config.max_share_price) {
+    log(`🚫 ${asset} ${direction} ask ${(bestAsk * 100).toFixed(1)}¢ out of range`);
     return;
   }
   
-  if (bestAsk > config.max_share_price) {
-    log(`🚫 ${asset} ${direction} ask ${(bestAsk * 100).toFixed(1)}¢ > max ${(config.max_share_price * 100).toFixed(1)}¢`);
-    return;
-  }
-  
-  // === COUNTER-SCALPING PREVENTION ===
-  // Don't buy opposite direction if we already have a position in this market
-  if (config.prevent_counter_scalping) {
-    const oppositeDirection = direction === 'UP' ? 'DOWN' : 'UP';
-    const oppositePositions = Array.from(openPositions.values()).filter(
-      p => p.marketSlug === market.slug && p.direction === oppositeDirection
-    );
-    
-    if (oppositePositions.length > 0) {
-      const totalOppositeShares = oppositePositions.reduce((sum, p) => sum + p.shares, 0);
-      log(`🛑 COUNTER-SCALP BLOCKED: Already have ${totalOppositeShares.toFixed(2)} ${oppositeDirection} shares in ${market.slug} - won't buy ${direction}`, 'guard', asset);
-      return;
-    }
-  }
-  
-  // Calculate price with buffer
-  const priceBuffer = config.price_buffer_cents / 100;
-  const buyPrice = Math.ceil((bestAsk + priceBuffer) * 100) / 100;
-  
-  // === DELTA TRAP: Calculate shares based on delta direction ===
+  // Calculate shares with delta trap
   let shares = config.shares_per_trade;
   
   if (config.delta_trap_enabled) {
     const absDelta = Math.abs(strikeActualDelta);
-    
-    // Determine if this direction is "favored" (matches delta direction)
-    // Positive delta (price > strike) → UP is favored
-    // Negative delta (price < strike) → DOWN is favored
     const favoredDirection: 'UP' | 'DOWN' = strikeActualDelta >= 0 ? 'UP' : 'DOWN';
     const isFavored = direction === favoredDirection;
     
-    // Calculate scaling factor based on delta magnitude
     if (absDelta >= config.delta_trap_min_delta) {
-      // Linear interpolation from min_delta to full_scale_delta
       const scalingProgress = Math.min(
         (absDelta - config.delta_trap_min_delta) / 
         (config.delta_trap_full_scale_delta - config.delta_trap_min_delta),
@@ -892,56 +762,49 @@ async function executeBuy(
       );
       
       if (isFavored) {
-        // Favored direction: scale UP from 1.0 to max_multiplier
         const multiplier = 1.0 + scalingProgress * (config.delta_trap_max_multiplier - 1.0);
         shares = Math.max(5, Math.round(config.shares_per_trade * multiplier));
-        log(`🎯 DELTA TRAP: ${asset} ${direction} FAVORED | Δ$${strikeActualDelta.toFixed(0)} | ${multiplier.toFixed(2)}x → ${shares} shares`);
+        log(`🎯 DELTA TRAP: ${asset} ${direction} FAVORED | ${multiplier.toFixed(2)}x → ${shares} shares`);
       } else {
-        // Unfavored direction: scale DOWN from 1.0 to min_multiplier
         const multiplier = 1.0 - scalingProgress * (1.0 - config.delta_trap_min_multiplier);
         shares = Math.max(5, Math.round(config.shares_per_trade * multiplier));
-        log(`⚖️ DELTA TRAP: ${asset} ${direction} unfavored | Δ$${strikeActualDelta.toFixed(0)} | ${multiplier.toFixed(2)}x → ${shares} shares`);
       }
-    } else {
-      log(`📊 DELTA TRAP: ${asset} |Δ|=$${absDelta.toFixed(0)} < min $${config.delta_trap_min_delta} → no scaling`);
     }
   }
   
   // Check exposure limits
-  const exposure = getTotalExposure(asset);
+  const exposure = getTotalUnpairedExposure(asset);
   
   if (exposure.shares + shares > config.max_exposure_per_asset) {
     log(`🚫 ${asset} exposure limit: ${exposure.shares + shares} > ${config.max_exposure_per_asset}`);
     return;
   }
   
-  if (exposure.cost + (shares * buyPrice) > config.max_cost_per_asset) {
-    log(`🚫 ${asset} cost limit: $${(exposure.cost + shares * buyPrice).toFixed(2)} > $${config.max_cost_per_asset}`);
+  if (exposure.cost + (shares * bestAsk) > config.max_cost_per_asset) {
+    log(`🚫 ${asset} cost limit exceeded`);
     return;
   }
   
-  // RACE PREVENTION: Local in-memory dedup (avoid DB call before order)
-  // This is a fast local check - DB dedup happens async after fill
+  // Dedup check
   if (localDedupCache.has(dedupKey)) {
-    log(`🛑 DUPLICATE: Signal ${dedupKey} already in local cache`);
+    log(`🛑 DUPLICATE: ${dedupKey}`);
     return;
   }
   localDedupCache.add(dedupKey);
-  // Expire from cache after 30s to prevent memory leak
   setTimeout(() => localDedupCache.delete(dedupKey), 30_000);
   
-  // Create signal for logging - signal_ts is when we STARTED processing (for dedup)
+  // Signal for logging
   const signal: Signal = {
     run_id: RUN_ID,
     asset,
     direction,
     binance_price: binancePrice,
     binance_delta: tickDelta,
-    share_price: buyPrice,
+    share_price: bestAsk,
     market_slug: market.slug,
     strike_price: market.strikePrice,
     status: 'pending',
-    signal_ts: signalTs,  // Used for dedup + ordering
+    signal_ts: signalTs,
     entry_price: null,
     exit_price: null,
     shares: null,
@@ -952,497 +815,214 @@ async function executeBuy(
     gross_pnl: null,
     net_pnl: null,
     fees: null,
-    signal_key: dedupKey, // Add signal key for deduplication
-    notes: `BUY ${direction} | tickΔ$${Math.abs(tickDelta).toFixed(0)} | @${(buyPrice * 100).toFixed(1)}¢`,
+    signal_key: dedupKey,
+    notes: `BUY ${direction} | tickΔ$${Math.abs(tickDelta).toFixed(0)}`,
   };
   
-  // Fire-and-forget signal save - DON'T await before order placement!
-  // This saves ~100-200ms latency per order
   void saveSignal(signal).then(id => { if (id) signal.id = id; });
   
   lastBuyTime[`${asset}:${direction}`] = Date.now();
   
-  log(`📤 BUY: ${asset} ${direction} ${shares} shares @ ${(buyPrice * 100).toFixed(1)}¢`, 'order', asset);
+  const priceBuffer = config.price_buffer_cents / 100;
+  const buyPrice = Math.ceil((bestAsk + priceBuffer) * 100) / 100;
+  
+  log(`📤 BUY: ${asset} ${direction} ${shares} @ ${(buyPrice * 100).toFixed(1)}¢`, 'order', asset);
   
   const tokenId = direction === 'UP' ? market.upTokenId : market.downTokenId;
   
-  // Set fill context for burst logging
-  setFillContext({
-    runId: RUN_ID,
-    signalId: signal.id,
-    marketSlug: market.slug,
-  });
+  setFillContext({ runId: RUN_ID, signalId: signal.id, marketSlug: market.slug });
   
-  // ⏱️ LATENCY: Start timer RIGHT BEFORE the API call - this is the TRUE order latency
   const orderStartTs = Date.now();
-  
   const result = await placeBuyOrder(tokenId, buyPrice, shares, asset, direction);
   
-  // Clear context after order
   clearFillContext();
   
-  // TIMING: fillTs is NOW - right after placeBuyOrder returns
-  // FOK orders fill instantly, so this is the true fill time
   const fillTs = Date.now();
-  const orderLatencyMs = fillTs - orderStartTs;  // TRUE order latency (API call only)
+  const orderLatencyMs = fillTs - orderStartTs;
   
   if (!result.success) {
     signal.status = 'failed';
-    signal.notes = `${result.error ?? 'Unknown error'}`;
+    signal.notes = result.error ?? 'Unknown error';
     log(`❌ FAILED: ${result.error ?? 'Unknown'} (${orderLatencyMs}ms)`);
     void saveSignal(signal);
     return;
   }
   
-  const orderId = result.orderId;
-  
-  // FOK orders: if success=true, it's already filled!
-  // No need to poll - use the filledSize from result directly
   const filledSize = result.filledSize ?? shares;
   const avgPrice = result.avgPrice ?? buyPrice;
   
   if (filledSize <= 0) {
     signal.status = 'no_fill';
-    signal.notes = `FOK returned 0 shares`;
-    log(`⚠️ FOK order returned 0 shares (${orderLatencyMs}ms)`);
+    log(`⚠️ FOK order returned 0 shares`);
     void saveSignal(signal);
     return;
   }
   
-  signal.order_id = orderId ?? null;
-  
-  // Log tick with REAL latency data
-  void logTick({
-    runId: RUN_ID,
-    asset,
-    binancePrice,
-    chainlinkPrice: priceState[asset].chainlink ?? undefined,
-    binanceDelta: tickDelta,
-    upBestAsk: priceState[asset].upBestAsk ?? undefined,
-    upBestBid: priceState[asset].upBestBid ?? undefined,
-    downBestAsk: priceState[asset].downBestAsk ?? undefined,
-    downBestBid: priceState[asset].downBestBid ?? undefined,
-    alertTriggered: true,
-    signalDirection: direction,
-    orderPlaced: true,
-    orderId: orderId ?? undefined,
-    fillPrice: avgPrice,
-    fillSize: filledSize,
-    marketSlug: market.slug,
-    strikePrice: market.strikePrice,
-    // LATENCY TRACKING - orderLatencyMs = TRUE API call latency
-    orderLatencyMs: orderLatencyMs,
-    fillLatencyMs: result.fillLatencyMs,
-    signalToFillMs: orderLatencyMs,  // Use orderLatencyMs as the key metric
-    signLatencyMs: result.signLatencyMs,
-    postLatencyMs: result.postLatencyMs,
-    usedCache: result.usedCache,
-  });
-  
-  // FILLED! Create open position with SETTLED entry price
+  // Create unpaired position
   const positionId = `${RUN_ID}-${buysCount}`;
   
-  // Calculate take-profit target price (entry + profit target)
-  const takeProfitPrice = Math.round((avgPrice + config.min_profit_cents / 100) * 100) / 100;
-  
-  const openPos: OpenPosition = {
+  const newPos: UnpairedPosition = {
     id: positionId,
     asset,
     direction,
     marketSlug: market.slug,
     tokenId,
     shares: filledSize,
-    entryPrice: avgPrice,  // SETTLED PRICE!
+    entryPrice: avgPrice,
     totalCost: filledSize * avgPrice,
-    entryTime: fillTs,  // Use actual fill time
-    orderId: orderId ?? undefined,
-    takeProfitPrice,  // Will monitor and sell when price hits this
-    peakBidSeen: avgPrice,    // Start at entry price
-    trailingActive: false,    // Activates when bid >= entry + 2¢
+    entryTime: fillTs,
+    orderId: result.orderId ?? undefined,
   };
   
-  openPositions.set(positionId, openPos);
+  unpairedPositions.set(positionId, newPos);
   buysCount++;
   
   signal.status = 'filled';
   signal.entry_price = avgPrice;
   signal.shares = filledSize;
   signal.fill_ts = fillTs;
-  signal.signal_ts = orderStartTs;
-  signal.notes = `BOUGHT ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ in ${orderLatencyMs}ms`;
+  signal.notes = `BOUGHT ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ (${orderLatencyMs}ms) - awaiting pair`;
   
-  log(`✅ BOUGHT: ${asset} ${direction} ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ (${orderLatencyMs}ms) - TP target: ${(takeProfitPrice * 100).toFixed(1)}¢`, 'fill', asset);
+  log(`✅ BOUGHT: ${asset} ${direction} ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ (${orderLatencyMs}ms) - UNPAIRED`, 'fill', asset);
   
   void saveSignal(signal);
-  
-  
-  // No GTC order - we monitor price and fire sell when TP hit
 }
 
 // ============================================
-// SELL CHECK - TRAILING STOP STRATEGY
-// ============================================
-// TRAILING STOP APPROACH:
-// 1. Track highest bid seen since entry (peakBidSeen)
-// 2. Activate trailing once bid >= entry + TRAILING_ACTIVATION_CENTS
-// 3. Sell when bid drops TRAILING_STOP_CENTS below peak
-// 4. STOP-LOSS: Always triggers if loss > config.stop_loss_cents
-//
-// Example: Entry 50¢ → bid goes to 58¢ (peak) → drops to 56¢ → SELL!
+// PAIRING CHECK - BUY OPPOSITE SIDE TO LOCK PROFIT
 // ============================================
 
-// Trailing stop configuration
-const TRAILING_ACTIVATION_CENTS = 3;   // Activate trailing when profit >= 3¢
-const TRAILING_STOP_CENTS = 3;         // Sell when bid drops 3¢ from peak
-
-interface AggregatedPosition {
-  asset: Asset;
-  direction: 'UP' | 'DOWN';
-  marketSlug: string;
-  tokenId: string;
-  totalShares: number;
-  totalCost: number;
-  weightedEntryPrice: number;
-  oldestEntryTime: number;
-  positionIds: string[];
-}
-
-async function checkAndExecuteSells(): Promise<void> {
-  // CRITICAL: Check local flag (fast path - no DB call)
-  if (!isRunnerActive()) {
-    return; // Silent skip - takeover detected, shutting down
-  }
-
+async function checkAndExecutePairs(): Promise<void> {
+  if (!isRunnerActive()) return;
   if (!config.enabled) return;
-  if (openPositions.size === 0) return;
+  if (unpairedPositions.size === 0) return;
   
   const now = Date.now();
   
-  // ========================================
-  // PHASE 1: TRAILING STOP + STOP-LOSS
-  // ========================================
-  for (const [posId, pos] of openPositions) {
-    const positionAgeSec = (now - pos.entryTime) / 1000;
-    
-    // Skip if too old (will be force closed in phase 2)
-    if (positionAgeSec >= config.force_close_after_sec) continue;
-    
-    const market = markets.get(pos.asset);
-    if (!market || market.slug !== pos.marketSlug) continue;
-    
-    const state = priceState[pos.asset];
-    const bestBid = pos.direction === 'UP' ? state.upBestBid : state.downBestBid;
-    
-    if (!bestBid || bestBid <= 0) continue;
-    
-    const profitCents = (bestBid - pos.entryPrice) * 100;
-    const cooldownKey = `${pos.asset}:${pos.direction}`;
-    
-    // STOP-LOSS: Always exit if loss exceeds threshold (overrides trailing)
-    if (profitCents <= -config.stop_loss_cents) {
-      if (now - (lastSellTime[cooldownKey] ?? 0) < config.order_cooldown_ms) continue;
-      
-      log(
-        `🛑 STOP-LOSS: ${pos.asset} ${pos.direction} ${pos.shares} @ bid ${(bestBid * 100).toFixed(1)}¢ | ${profitCents.toFixed(1)}¢ | ${positionAgeSec.toFixed(0)}s`,
-        'sell',
-        pos.asset
-      );
-      
-      lastSellTime[cooldownKey] = now;
-      
-      const result = await placeSellOrder(
-        pos.tokenId,
-        bestBid,
-        pos.shares,
-        pos.asset,
-        pos.direction
-      );
-      
-      if (result.success) {
-        const actualSellPrice = result.avgPrice || bestBid;
-        const actualProfit = (actualSellPrice - pos.entryPrice) * pos.shares;
-        
-        totalPnL += actualProfit;
-        sellsCount++;
-        lossSells++;
-        
-        log(
-          `✅ STOP-LOSS EXECUTED: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(actualSellPrice * 100).toFixed(1)}¢ | P&L: $${actualProfit.toFixed(3)}`,
-          'sell',
-          pos.asset
-        );
-        
-        openPositions.delete(posId);
-      }
-      continue;
-    }
-    
-    // UPDATE PEAK: Track the highest bid seen
-    if (bestBid > pos.peakBidSeen) {
-      const oldPeak = pos.peakBidSeen;
-      pos.peakBidSeen = bestBid;
-      
-      // Log significant peak updates (only when trailing is active or when activating)
-      if (pos.trailingActive || profitCents >= TRAILING_ACTIVATION_CENTS) {
-        log(
-          `📈 PEAK UPDATE: ${pos.asset} ${pos.direction} | peak: ${(oldPeak * 100).toFixed(1)}¢ → ${(bestBid * 100).toFixed(1)}¢ | profit: +${profitCents.toFixed(1)}¢`,
-          'sell',
-          pos.asset
-        );
-      }
-    }
-    
-    // ACTIVATE TRAILING: Once bid >= entry + activation threshold
-    if (!pos.trailingActive && profitCents >= TRAILING_ACTIVATION_CENTS) {
-      pos.trailingActive = true;
-      log(
-        `🎯 TRAILING ACTIVATED: ${pos.asset} ${pos.direction} | entry: ${(pos.entryPrice * 100).toFixed(1)}¢ | bid: ${(bestBid * 100).toFixed(1)}¢ | peak: ${(pos.peakBidSeen * 100).toFixed(1)}¢`,
-        'sell',
-        pos.asset
-      );
-    }
-    
-    // TRAILING STOP: Check if bid dropped TRAILING_STOP_CENTS below peak
-    if (pos.trailingActive) {
-      const trailTriggerPrice = pos.peakBidSeen - (TRAILING_STOP_CENTS / 100);
-      const dropFromPeakCents = (pos.peakBidSeen - bestBid) * 100;
-      
-      if (bestBid <= trailTriggerPrice) {
-        if (now - (lastSellTime[cooldownKey] ?? 0) < config.order_cooldown_ms) continue;
-        
-        log(
-          `📉 TRAILING STOP TRIGGERED: ${pos.asset} ${pos.direction} ${pos.shares} | peak: ${(pos.peakBidSeen * 100).toFixed(1)}¢ | bid: ${(bestBid * 100).toFixed(1)}¢ | dropped ${dropFromPeakCents.toFixed(1)}¢ from peak`,
-          'sell',
-          pos.asset
-        );
-        
-        lastSellTime[cooldownKey] = now;
-        
-        // Sell at best bid
-        const result = await placeSellOrder(
-          pos.tokenId,
-          bestBid,
-          pos.shares,
-          pos.asset,
-          pos.direction
-        );
-        
-        if (result.success) {
-          const actualSellPrice = result.avgPrice || bestBid;
-          const actualProfit = (actualSellPrice - pos.entryPrice) * pos.shares;
-          const holdTimeMs = now - pos.entryTime;
-          
-          totalPnL += actualProfit;
-          sellsCount++;
-          if (actualProfit > 0) profitableSells++;
-          else lossSells++;
-          
-          log(
-            `💰 TRAILING STOP SOLD: ${pos.asset} ${pos.direction} ${pos.shares} @ ${(actualSellPrice * 100).toFixed(1)}¢ | P&L: ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(3)} | hold: ${(holdTimeMs / 1000).toFixed(1)}s | peak was: ${(pos.peakBidSeen * 100).toFixed(1)}¢`,
-            'sell',
-            pos.asset
-          );
-          
-          void logTick({
-            runId: RUN_ID,
-            asset: pos.asset,
-            orderPlaced: true,
-            orderId: result.orderId,
-            fillPrice: actualSellPrice,
-            fillSize: result.filledSize || pos.shares,
-            marketSlug: pos.marketSlug,
-            signalDirection: pos.direction,
-          });
-          
-          openPositions.delete(posId);
-        }
-        continue;
-      }
-    }
-  }
+  // Group unpaired positions by asset + direction
+  const byAssetDirection = new Map<string, UnpairedPosition[]>();
   
-  // ========================================
-  // PHASE 2: Force close aggregated (≥ 20s)
-  // ========================================
-  // First, aggregate all positions that are past the force_close threshold
-  const toForceClose = new Map<string, AggregatedPosition>();
-  
-  for (const [posId, pos] of openPositions) {
-    const positionAgeSec = (now - pos.entryTime) / 1000;
-    
-    // Only aggregate positions past force_close threshold
-    if (positionAgeSec < config.force_close_after_sec) continue;
-    
+  for (const pos of unpairedPositions.values()) {
     const key = `${pos.asset}:${pos.direction}`;
-    
-    if (!toForceClose.has(key)) {
-      toForceClose.set(key, {
-        asset: pos.asset,
-        direction: pos.direction,
-        marketSlug: pos.marketSlug,
-        tokenId: pos.tokenId,
-        totalShares: 0,
-        totalCost: 0,
-        weightedEntryPrice: 0,
-        oldestEntryTime: pos.entryTime,
-        positionIds: [],
-      });
-    }
-    
-    const agg = toForceClose.get(key)!;
-    agg.totalShares += pos.shares;
-    agg.totalCost += pos.totalCost;
-    agg.positionIds.push(posId);
-    if (pos.entryTime < agg.oldestEntryTime) {
-      agg.oldestEntryTime = pos.entryTime;
-    }
+    const list = byAssetDirection.get(key) ?? [];
+    list.push(pos);
+    byAssetDirection.set(key, list);
   }
   
-  // Calculate weighted average and execute force close
-  for (const [key, agg] of toForceClose) {
-    agg.weightedEntryPrice = agg.totalCost / agg.totalShares;
+  // For each group, check if we can pair
+  for (const [key, positions] of byAssetDirection) {
+    const [assetStr, directionStr] = key.split(':');
+    const asset = assetStr as Asset;
+    const direction = directionStr as 'UP' | 'DOWN';
+    const oppositeDirection: 'UP' | 'DOWN' = direction === 'UP' ? 'DOWN' : 'UP';
     
-    const market = markets.get(agg.asset);
+    const market = markets.get(asset);
+    if (!market || market.slug !== positions[0].marketSlug) continue;
     
-    // CRITICAL: Skip positions from expired/different markets
-    // These are stale wallet positions that should be removed from tracking
-    if (!market || market.slug !== agg.marketSlug) {
-      log(`🗑️ Removing stale positions from ${agg.marketSlug} (current: ${market?.slug ?? 'none'}) - ${agg.totalShares} shares`, 'system', agg.asset);
-      for (const posId of agg.positionIds) {
-        openPositions.delete(posId);
+    const state = priceState[asset];
+    
+    // Get best ask for opposite side
+    const oppositeAsk = oppositeDirection === 'UP' ? state.upBestAsk : state.downBestAsk;
+    if (!oppositeAsk || oppositeAsk <= 0) continue;
+    
+    // Calculate weighted average entry price for our side
+    const totalShares = positions.reduce((sum, p) => sum + p.shares, 0);
+    const totalCost = positions.reduce((sum, p) => sum + p.totalCost, 0);
+    const avgEntryPrice = totalCost / totalShares;
+    
+    // Combined price if we pair now
+    const combinedPrice = avgEntryPrice + oppositeAsk + (config.price_buffer_cents / 100);
+    const profitPerShare = 1 - combinedPrice;
+    const profitCents = profitPerShare * 100;
+    
+    // Check if oldest position is past force-pair threshold
+    const oldestEntry = Math.min(...positions.map(p => p.entryTime));
+    const ageSec = (now - oldestEntry) / 1000;
+    const isForceMode = ageSec >= config.force_pair_after_sec;
+    
+    const minProfit = isForceMode ? config.min_force_pair_profit_cents : config.min_pair_profit_cents;
+    
+    if (profitCents < minProfit) {
+      // Not profitable enough to pair
+      if (isForceMode && profitCents > 0) {
+        log(`⏳ ${asset} ${direction}: combined ${(combinedPrice * 100).toFixed(1)}¢ = ${profitCents.toFixed(1)}¢ profit (force mode, min ${minProfit}¢)`);
       }
       continue;
     }
     
-    // Also skip if market has expired
-    if (market.endTime && market.endTime.getTime() < now) {
-      log(`🗑️ Removing positions from expired market ${agg.marketSlug} - ${agg.totalShares} shares`, 'system', agg.asset);
-      for (const posId of agg.positionIds) {
-        openPositions.delete(posId);
-      }
+    // Check cooldown
+    const cooldownKey = `pair:${asset}`;
+    if (now - (lastPairTime[cooldownKey] ?? 0) < config.order_cooldown_ms) continue;
+    
+    // PAIR TIME! Buy opposite side
+    const oppositeTokenId = oppositeDirection === 'UP' ? market.upTokenId : market.downTokenId;
+    const buyPrice = Math.ceil((oppositeAsk + config.price_buffer_cents / 100) * 100) / 100;
+    
+    // Buy enough shares to pair with smallest position (for simplicity, pair all)
+    const sharesToPair = Math.max(5, Math.floor(totalShares));
+    
+    log(`🔗 PAIRING: ${asset} ${direction} → buy ${sharesToPair} ${oppositeDirection} @ ${(buyPrice * 100).toFixed(1)}¢ | combined ${(combinedPrice * 100).toFixed(1)}¢ = +${profitCents.toFixed(1)}¢/sh${isForceMode ? ' (FORCE)' : ''}`, 'pair', asset);
+    
+    lastPairTime[cooldownKey] = now;
+    
+    setFillContext({ runId: RUN_ID, marketSlug: market.slug });
+    
+    const result = await placeBuyOrder(oppositeTokenId, buyPrice, sharesToPair, asset, oppositeDirection);
+    
+    clearFillContext();
+    
+    if (!result.success) {
+      log(`❌ PAIR FAILED: ${result.error ?? 'Unknown'}`, 'error', asset);
       continue;
     }
     
-    const state = priceState[agg.asset];
-    let bestBid = agg.direction === 'UP' ? state.upBestBid : state.downBestBid;
+    const filledSize = result.filledSize ?? sharesToPair;
+    const avgHedgePrice = result.avgPrice ?? buyPrice;
     
-    // Force fetch if no bid
-    if (!bestBid || bestBid <= 0) {
-      try {
-        const book = await fetchMarketOrderbook(market);
-        if (book.upBestBid !== undefined) state.upBestBid = book.upBestBid;
-        if (book.downBestBid !== undefined) state.downBestBid = book.downBestBid;
-        if (book.upBestAsk !== undefined) state.upBestAsk = book.upBestAsk;
-        if (book.downBestAsk !== undefined) state.downBestAsk = book.downBestAsk;
-      } catch { /* ignore */ }
-      
-      bestBid = agg.direction === 'UP' ? state.upBestBid : state.downBestBid;
-      
-      // Emergency: sell at 1¢ if still no bid
-      if (!bestBid || bestBid <= 0) {
-        bestBid = 0.01;
-      }
-    }
-    
-    // SKIP: Polymarket min order size is 1 share (avoid endless "Shares < 1" spam)
-    if (agg.totalShares < 1) {
-      if (now - (lastForceCloseSkipLogTime[key] ?? 0) >= FORCE_CLOSE_SKIP_LOG_COOLDOWN_MS) {
-        log(`⏭️ SKIP FORCE CLOSE: ${agg.asset} ${agg.direction} ${agg.totalShares.toFixed(4)} shares (<1) - cannot place order`, 'sell', agg.asset);
-        lastForceCloseSkipLogTime[key] = now;
-      }
-      continue;
-    }
-
-    // SKIP: Shares at 99¢+ or ≤1¢ don't need force close - they'll settle at $1 or $0
-    if (bestBid >= 0.99 || bestBid <= 0.01) {
-      if (now - (lastForceCloseSkipLogTime[key] ?? 0) >= FORCE_CLOSE_SKIP_LOG_COOLDOWN_MS) {
-        log(`⏭️ SKIP FORCE CLOSE: ${agg.asset} ${agg.direction} @ ${(bestBid * 100).toFixed(0)}¢ - will settle naturally`, 'sell', agg.asset);
-        lastForceCloseSkipLogTime[key] = now;
-      }
+    if (filledSize <= 0) {
+      log(`⚠️ PAIR: No fill`, 'error', asset);
       continue;
     }
     
-    // Sell cooldown
-    if (now - (lastSellTime[key] ?? 0) < config.order_cooldown_ms) continue;
+    // Successfully paired! Create paired position and remove from unpaired
+    const actualCombined = avgEntryPrice + avgHedgePrice;
+    const actualProfit = 1 - actualCombined;
     
-    const profitCents = (bestBid - agg.weightedEntryPrice) * 100;
-    const oldestAgeSec = (now - agg.oldestEntryTime) / 1000;
+    const pairId = `${RUN_ID}-pair-${pairsCount}`;
     
-    log(
-      `🔥 FORCE CLOSE: ${agg.asset} ${agg.direction} ${agg.totalShares} shares @ ${(bestBid * 100).toFixed(1)}¢ | ${profitCents >= 0 ? '+' : ''}${profitCents.toFixed(1)}¢ | ${agg.positionIds.length} pos | ${oldestAgeSec.toFixed(0)}s old`,
-      'sell',
-      agg.asset
-    );
+    pairedPositions.set(pairId, {
+      id: pairId,
+      asset,
+      marketSlug: market.slug,
+      upTokenId: market.upTokenId,
+      downTokenId: market.downTokenId,
+      shares: filledSize,
+      upEntryPrice: direction === 'UP' ? avgEntryPrice : avgHedgePrice,
+      downEntryPrice: direction === 'DOWN' ? avgEntryPrice : avgHedgePrice,
+      combinedCost: actualCombined,
+      lockedProfit: actualProfit,
+      pairedAt: now,
+    });
     
-    lastSellTime[key] = now;
+    pairsCount++;
+    totalLockedProfit += actualProfit * filledSize;
     
-    // Aggressive discount for force close (2¢ below best bid to guarantee fill)
-    const result = await placeSellOrder(
-      agg.tokenId,
-      bestBid,
-      agg.totalShares,
-      agg.asset,
-      agg.direction,
-      2 // 2¢ aggressive discount
-    );
-    
-    if (result.success) {
-      const actualSellPrice = result.avgPrice || bestBid;
-      const actualProfit = (actualSellPrice - agg.weightedEntryPrice) * agg.totalShares;
+    // Remove paired shares from unpaired positions
+    let remainingToRemove = filledSize;
+    for (const pos of positions) {
+      if (remainingToRemove <= 0) break;
       
-      totalPnL += actualProfit;
-      sellsCount++;
+      const removeAmount = Math.min(pos.shares, remainingToRemove);
+      pos.shares -= removeAmount;
+      pos.totalCost -= removeAmount * pos.entryPrice;
+      remainingToRemove -= removeAmount;
       
-      if (actualProfit >= 0) {
-        profitableSells++;
-      } else {
-        lossSells++;
-      }
-      
-      const holdTimeMs = Date.now() - agg.oldestEntryTime;
-      
-      log(
-        `✅ CLOSED: ${agg.asset} ${agg.direction} ${agg.totalShares} @ ${(actualSellPrice * 100).toFixed(1)}¢ | P&L: ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(3)} | hold: ${(holdTimeMs / 1000).toFixed(1)}s | sellLatency: ${result.latencyMs}ms`,
-        'sell',
-        agg.asset
-      );
-      
-      // Log sell tick with latency data
-      void logTick({
-        runId: RUN_ID,
-        asset: agg.asset,
-        orderPlaced: true,
-        orderId: result.orderId,
-        fillPrice: actualSellPrice,
-        fillSize: result.filledSize || agg.totalShares,
-        marketSlug: agg.marketSlug,
-        orderLatencyMs: result.latencyMs,
-        signalDirection: agg.direction,
-      });
-      
-      
-      // Remove all closed positions
-      for (const posId of agg.positionIds) {
-        openPositions.delete(posId);
-      }
-    } else {
-      // BALANCE ERROR = position doesn't exist anymore, remove from tracking
-      const errMsg = result.error || 'Unknown error';
-      if (errMsg.includes('balance') || errMsg.includes('allowance') || errMsg.includes('insufficient')) {
-        log(`⚠️ Position gone (${errMsg}) - removing from tracking`, 'warn', agg.asset);
-        for (const posId of agg.positionIds) {
-          openPositions.delete(posId);
-        }
-      } else if (errMsg.includes('min size') || errMsg.includes('invalid amount')) {
-        // Min order size error - position is too small, remove it
-        log(`⚠️ Position too small to sell (${errMsg}) - removing ${agg.totalShares} shares`, 'warn', agg.asset);
-        for (const posId of agg.positionIds) {
-          openPositions.delete(posId);
-        }
-      } else {
-        log(`❌ Force close failed: ${errMsg}`, 'error', agg.asset);
+      if (pos.shares < 0.5) {
+        unpairedPositions.delete(pos.id);
       }
     }
+    
+    log(`✅ PAIRED: ${asset} ${filledSize} sh @ ${(actualCombined * 100).toFixed(1)}¢ = LOCKED +$${(actualProfit * filledSize).toFixed(3)} (+${(actualProfit * 100).toFixed(1)}¢/sh)`, 'pair', asset);
   }
 }
 
@@ -1450,10 +1030,6 @@ async function checkAndExecuteSells(): Promise<void> {
 // REAL-TIME ORDERBOOK HANDLER (WebSocket)
 // ============================================
 
-/**
- * Handle real-time orderbook updates from WebSocket
- * This is called INSTANTLY when CLOB sends a new bid/ask - no polling delay!
- */
 function handleRealtimeOrderbook(
   asset: Asset,
   direction: 'UP' | 'DOWN',
@@ -1462,7 +1038,6 @@ function handleRealtimeOrderbook(
   _timestamp: number
 ): void {
   const state = priceState[asset];
-  const now = Date.now();
   
   if (direction === 'UP') {
     if (bestBid !== null) state.upBestBid = bestBid;
@@ -1471,91 +1046,18 @@ function handleRealtimeOrderbook(
     if (bestBid !== null) state.downBestBid = bestBid;
     if (bestAsk !== null) state.downBestAsk = bestAsk;
   }
-  state.lastUpdate = now;
+  state.lastUpdate = Date.now();
   
-  // REAL-TIME TRAILING STOP CHECK: Check immediately for positions in this asset+direction
-  // This is the KEY improvement - we react to bid drops within milliseconds!
-  if (bestBid !== null && openPositions.size > 0) {
-    for (const [posId, pos] of openPositions) {
-      if (pos.asset !== asset || pos.direction !== direction) continue;
-      
-      const profitCents = (bestBid - pos.entryPrice) * 100;
-      
-      // Update peak bid
-      if (bestBid > pos.peakBidSeen) {
-        pos.peakBidSeen = bestBid;
-        
-        // Activate trailing if not active and profit threshold met
-        if (!pos.trailingActive && profitCents >= TRAILING_ACTIVATION_CENTS) {
-          pos.trailingActive = true;
-          log(
-            `🎯 RT-TRAILING ACTIVATED: ${pos.asset} ${pos.direction} | bid: ${(bestBid * 100).toFixed(1)}¢ | profit: +${profitCents.toFixed(1)}¢`,
-            'sell',
-            pos.asset
-          );
-        }
-      }
-      
-      // REAL-TIME STOP-LOSS: Instant exit if loss exceeds threshold
-      if (profitCents <= -config.stop_loss_cents) {
-        const cooldownKey = `${pos.asset}:${pos.direction}`;
-        if (now - (lastSellTime[cooldownKey] ?? 0) < config.order_cooldown_ms) continue;
-        
-        log(
-          `🛑 RT-STOP-LOSS: ${pos.asset} ${pos.direction} ${pos.shares} @ bid ${(bestBid * 100).toFixed(1)}¢ | ${profitCents.toFixed(1)}¢`,
-          'sell',
-          pos.asset
-        );
-        
-        lastSellTime[cooldownKey] = now;
-        
-        // Fire-and-forget sell (async, don't block the WebSocket handler)
-        void (async () => {
-          const result = await placeSellOrder(pos.tokenId, bestBid, pos.shares, pos.asset, pos.direction);
-          if (result.success) {
-            const actualProfit = ((result.avgPrice || bestBid) - pos.entryPrice) * pos.shares;
-            totalPnL += actualProfit;
-            sellsCount++;
-            lossSells++;
-            log(`✅ RT-STOP-LOSS EXECUTED: ${pos.asset} ${pos.direction} | P&L: $${actualProfit.toFixed(3)}`, 'sell', pos.asset);
-            openPositions.delete(posId);
-          }
-        })();
-        continue;
-      }
-      
-      // REAL-TIME TRAILING STOP: Instant exit if bid drops from peak
-      if (pos.trailingActive) {
-        const trailTriggerPrice = pos.peakBidSeen - (TRAILING_STOP_CENTS / 100);
-        
-        if (bestBid <= trailTriggerPrice) {
-          const cooldownKey = `${pos.asset}:${pos.direction}`;
-          if (now - (lastSellTime[cooldownKey] ?? 0) < config.order_cooldown_ms) continue;
-          
-          const dropCents = (pos.peakBidSeen - bestBid) * 100;
-          log(
-            `📉 RT-TRAILING TRIGGERED: ${pos.asset} ${pos.direction} ${pos.shares} | peak: ${(pos.peakBidSeen * 100).toFixed(1)}¢ → bid: ${(bestBid * 100).toFixed(1)}¢ | dropped ${dropCents.toFixed(1)}¢`,
-            'sell',
-            pos.asset
-          );
-          
-          lastSellTime[cooldownKey] = now;
-          
-          // Fire-and-forget sell
-          void (async () => {
-            const result = await placeSellOrder(pos.tokenId, bestBid, pos.shares, pos.asset, pos.direction);
-            if (result.success) {
-              const actualProfit = ((result.avgPrice || bestBid) - pos.entryPrice) * pos.shares;
-              totalPnL += actualProfit;
-              sellsCount++;
-              if (actualProfit > 0) profitableSells++;
-              else lossSells++;
-              log(`💰 RT-TRAILING SOLD: ${pos.asset} ${pos.direction} | P&L: ${actualProfit >= 0 ? '+' : ''}$${actualProfit.toFixed(3)} | peak was: ${(pos.peakBidSeen * 100).toFixed(1)}¢`, 'sell', pos.asset);
-              openPositions.delete(posId);
-            }
-          })();
-        }
-      }
+  // Real-time pairing check when opposite ask drops
+  // This is the key advantage - we react instantly to cheap opposite-side prices!
+  if (bestAsk !== null && unpairedPositions.size > 0) {
+    // Check if any unpaired positions on opposite side could be paired now
+    const oppositeDirection = direction === 'UP' ? 'DOWN' : 'UP';
+    const unpairedOpposite = getUnpairedByDirection(asset, oppositeDirection);
+    
+    if (unpairedOpposite.length > 0) {
+      // There are positions waiting for a cheap price on THIS side - check immediately
+      void checkAndExecutePairs();
     }
   }
 }
@@ -1565,10 +1067,7 @@ function handleRealtimeOrderbook(
 // ============================================
 
 async function pollOrderbooks(): Promise<void> {
-  // Only poll if WebSocket is disconnected (fallback mode)
-  if (isOrderbookWsConnected()) {
-    return; // WebSocket is handling updates - no need to poll
-  }
+  if (isOrderbookWsConnected()) return;
   
   for (const asset of config.assets) {
     const market = markets.get(asset);
@@ -1589,33 +1088,27 @@ async function pollOrderbooks(): Promise<void> {
 // ============================================
 
 async function main(): Promise<void> {
-  log('🚀 V29 Buy-and-Sell Runner starting...');
+  log('🚀 V29 Pair-Instead-of-Sell Runner starting...');
   log(`📋 Run ID: ${RUN_ID}`);
   
-  // Init DB first (needed for lease)
   initDb();
   log('✅ DB initialized');
   
-  // ============================================
-  // RUNNER REGISTRATION - NO TAKEOVER BY DEFAULT
-  // ============================================
   const registered = await acquireLease(RUN_ID, { force: process.env.FORCE_TAKEOVER === '1' });
   if (!registered) {
-    logError('❌ Failed to register runner (another runner is active)');
+    logError('❌ Failed to register runner');
     process.exit(1);
   }
   log('🔒 Registered as active runner');
   
-  // VPN check
   const vpnOk = await verifyVpnConnection();
   if (!vpnOk) {
     await releaseLease(RUN_ID);
-    logError('VPN verification failed! Exiting.');
+    logError('VPN verification failed!');
     process.exit(1);
   }
   log('✅ VPN OK');
   
-  // Test Polymarket connection
   try {
     await testConnection();
     log('✅ Polymarket connection OK');
@@ -1624,7 +1117,6 @@ async function main(): Promise<void> {
     process.exit(1);
   }
   
-  // Get balance
   try {
     const balance = await getBalance();
     log(`💰 Balance: $${balance.toFixed(2)}`);
@@ -1632,24 +1124,20 @@ async function main(): Promise<void> {
     logError('Balance check failed', err);
   }
   
-  // Load config - merge with defaults to ensure all fields exist
+  // Load config
   const loadedConfig = await loadV29Config();
   if (loadedConfig) {
     config = { ...DEFAULT_CONFIG, ...loadedConfig };
-    log(`✅ Config loaded: enabled=${config.enabled}, shares=${config.shares_per_trade}, counter-scalp-block=${config.prevent_counter_scalping}`);
-  } else {
-    log(`⚠️ Using defaults: shares=${config.shares_per_trade}, counter-scalp-block=${config.prevent_counter_scalping}`);
+    log(`✅ Config loaded: enabled=${config.enabled}, shares=${config.shares_per_trade}`);
   }
   
-  // Initialize fair value model for smart direction filter
   fairValueModel = getFairValueModel();
-  log(`✅ Fair value model initialized for smart direction filter`);
+  log(`✅ Fair value model initialized`);
   
-  // Fetch markets
   await fetchMarkets();
   
   if (markets.size === 0) {
-    logError('No markets found! Exiting.');
+    logError('No markets found!');
     process.exit(1);
   }
   
@@ -1661,107 +1149,70 @@ async function main(): Promise<void> {
   }));
   await initPreSignedCache(marketsList);
   
-  // Load existing positions from Polymarket (so they can be sold!)
+  // Load existing positions
   await loadExistingPositions();
 
   isRunning = true;
 
-  // Start Binance feed
+  // Start feeds
   startBinanceFeed(config.assets, handleBinancePrice, config.binance_poll_ms);
   log('✅ Binance feed started');
 
-  // Start Chainlink feed
   startChainlinkFeed(config.assets, handleChainlinkPrice);
   log('✅ Chainlink feed started');
 
-  // Start User Channel for real-time position tracking
   const userChannelStarted = startUserChannel(handleUserChannelTrade);
   if (userChannelStarted) {
-    log('✅ User Channel started (real-time position tracking)');
-  } else {
-    log('⚠️ User Channel not started (no API credentials) - using 45s polling fallback');
+    log('✅ User Channel started');
   }
 
-  // Start Price Feed Logger for chainlink_rtds ticks (strike price source)
   try {
     await startPriceFeedLogger();
-    log('✅ Price Feed Logger started (chainlink_rtds ticks for exact strike prices)');
+    log('✅ Price Feed Logger started');
   } catch (err) {
-    log(`⚠️ Price Feed Logger failed to start: ${(err as Error).message} - fallback prices will be used`);
+    log(`⚠️ Price Feed Logger failed: ${(err as Error).message}`);
   }
 
-  // ==========================================
-  // START REAL-TIME ORDERBOOK WEBSOCKET
-  // ==========================================
-  // This is the KEY improvement: real-time bid/ask updates for instant trailing stop
+  // Start real-time orderbook
   startOrderbookWs(handleRealtimeOrderbook);
   updateOrderbookWsMarkets(markets);
-  log('✅ Real-time Orderbook WebSocket started (instant trailing stop!)');
+  log('✅ Real-time Orderbook WebSocket started');
 
-  // Orderbook polling (FALLBACK only - runs when WebSocket disconnected)
-  const orderbookInterval = setInterval(() => {
-    void pollOrderbooks();
-  }, config.orderbook_poll_ms);
-
-  // Sell check interval - check for sell opportunities (backup for RT handler)
-  const sellInterval = setInterval(() => {
-    void checkAndExecuteSells();
-  }, config.sell_check_ms);
-
-  // Reconcile positions from wallet every 2 min (backup for User Channel)
-  // User Channel provides real-time updates; this is just a safety net
-  const positionSyncInterval = setInterval(() => {
-    void loadExistingPositions({ quiet: true });
-  }, 120_000);
-
-  // Market refresh every 30 seconds - critical for catching new markets fast!
-  // Also update the orderbook WebSocket with new token IDs
+  // Intervals
+  const orderbookInterval = setInterval(() => void pollOrderbooks(), config.orderbook_poll_ms);
+  const pairInterval = setInterval(() => void checkAndExecutePairs(), config.pair_check_ms);
+  const positionSyncInterval = setInterval(() => void loadExistingPositions({ quiet: true }), 120_000);
   const marketRefreshInterval = setInterval(async () => {
     await fetchMarkets();
     updateOrderbookWsMarkets(markets);
   }, 30 * 1000);
-
-  // Config reload every 30 seconds
   const configReloadInterval = setInterval(async () => {
     const newConfig = await loadV29Config();
     if (newConfig) {
-      const changed = JSON.stringify(config) !== JSON.stringify({ ...DEFAULT_CONFIG, ...newConfig });
-      if (changed) {
-        config = { ...DEFAULT_CONFIG, ...newConfig };
-        log(`🔧 Config updated: enabled=${config.enabled}, shares=${config.shares_per_trade}, counter-scalp-block=${config.prevent_counter_scalping}`);
-      }
+      config = { ...DEFAULT_CONFIG, ...newConfig };
     }
   }, 30_000);
-
-  // Heartbeat every 10 seconds
   const heartbeatInterval = setInterval(async () => {
     const balance = await getBalance().catch(() => 0);
-    void sendHeartbeat(HEARTBEAT_ID, RUN_ID, 'trading', balance, openPositions.size, buysCount);
+    void sendHeartbeat(HEARTBEAT_ID, RUN_ID, 'trading', balance, unpairedPositions.size + pairedPositions.size, buysCount);
   }, 10_000);
-
-  // Log position summary every 30 seconds
   const summaryInterval = setInterval(() => {
     const summary = getPositionsSummary();
-    log(`📊 Positions: ${summary} | P&L: ${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)} | Buys: ${buysCount} | Sells: ${sellsCount} (${profitableSells}✅/${lossSells}❌)`);
+    log(`📊 ${summary} | Buys: ${buysCount} | Pairs: ${pairsCount} | Locked: +$${totalLockedProfit.toFixed(2)}`);
   }, 30_000);
+  const burstStatsInterval = setInterval(() => logBurstStats(), 60_000);
 
-  // Log burst fill stats every 60 seconds
-  const burstStatsInterval = setInterval(() => {
-    logBurstStats();
-  }, 60_000);
+  log('🎯 V29 Pair-Instead-of-Sell Runner READY');
+  log(`   Strategy: Buy on tick → Wait for cheap opposite → PAIR to lock profit`);
+  log(`   Pairing target: combined < ${(config.max_combined_price * 100).toFixed(0)}¢ (= ${((1 - config.max_combined_price) * 100).toFixed(0)}¢ profit)`);
+  log(`   Force-pair after: ${config.force_pair_after_sec}s (accept ${config.min_force_pair_profit_cents}¢ profit)`);
 
-  log('🎯 V29 Buy-and-Sell Runner READY');
-  log(`   Strategy: Buy → Trailing Stop (${TRAILING_ACTIVATION_CENTS}¢ activation, ${TRAILING_STOP_CENTS}¢ trail) → Force close (${config.force_close_after_sec}s)`);
-  log(`   🚀 REAL-TIME ORDERBOOK: WebSocket enabled - <50ms reaction time to bid changes!`);
-  log(`   Shares: ${config.shares_per_trade} | Max Exposure: ${config.max_exposure_per_asset}`);
-  log(`   Stop-loss: ${config.stop_loss_cents}¢ | Aggregation: after ${config.aggregate_after_sec}s`);
-
-  // Handle shutdown - release lease!
+  // Cleanup
   const cleanup = async () => {
     log('🛑 Shutting down...');
     isRunning = false;
     clearInterval(orderbookInterval);
-    clearInterval(sellInterval);
+    clearInterval(pairInterval);
     clearInterval(positionSyncInterval);
     clearInterval(marketRefreshInterval);
     clearInterval(configReloadInterval);
@@ -1775,15 +1226,11 @@ async function main(): Promise<void> {
     stopOrderbookWs();
     await stopPriceFeedLogger();
     
-    // Log final burst stats
     logBurstStats();
-    
-    // Release registration so we're not in the DB anymore
     await releaseLease(RUN_ID);
     log('🔓 Registration released');
     
-    // Final summary
-    log(`📊 Final: Buys=${buysCount} Sells=${sellsCount} P&L=${totalPnL >= 0 ? '+' : ''}$${totalPnL.toFixed(2)}`);
+    log(`📊 Final: Buys=${buysCount} Pairs=${pairsCount} Locked=+$${totalLockedProfit.toFixed(2)}`);
     
     process.exit(0);
   };
