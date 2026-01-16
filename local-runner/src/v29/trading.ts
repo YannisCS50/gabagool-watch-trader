@@ -3,6 +3,8 @@
  * 
  * Uses pre-signed orders for maximum speed (same as v28)
  * Orders are signed during idle time and instantly posted when signals fire
+ * 
+ * ORDER GUARD: Only v29-response is authorized to place real orders.
  */
 
 // CRITICAL: Import HTTP agent FIRST to ensure axios is configured before SDK
@@ -15,6 +17,7 @@ import { ClobClient, Side, OrderType } from '@polymarket/clob-client';
 import type { SignedOrder } from '@polymarket/order-utils';
 import type { Asset } from './config.js';
 import { logFillsBatch, type FillRecord } from './db.js';
+import { guardOrderPlacement, logBlockedOrder } from '../order-guard.js';
 
 // Global context for fill logging (set by caller)
 let currentFillContext: {
@@ -682,6 +685,14 @@ export async function placeBuyOrder(
 ): Promise<OrderResult> {
   const start = Date.now();
   
+  // ORDER GUARD: Only authorized runners can place real orders
+  try {
+    guardOrderPlacement(`BUY ${shares} @ ${(price * 100).toFixed(0)}¢ ${asset ?? ''} ${direction ?? ''}`);
+  } catch (err) {
+    logBlockedOrder(`BUY ${shares} @ ${(price * 100).toFixed(0)}¢ ${asset ?? ''} ${direction ?? ''}`);
+    return { success: false, error: 'ORDER_BLOCKED: Runner not authorized', latencyMs: Date.now() - start };
+  }
+  
   // CRITICAL: Validate tokenId to prevent "Cannot read properties of undefined (reading 'toString')"
   if (!tokenId || typeof tokenId !== 'string' || tokenId.trim() === '') {
     log(`❌ BUY failed: invalid tokenId for ${asset} ${direction}`);
@@ -1149,6 +1160,14 @@ export async function placeSellOrder(
   const start = Date.now();
   const FILL_CHECK_INTERVAL_MS = 150;
   const MAX_FILL_WAIT_MS = 3000;
+
+  // ORDER GUARD: Only authorized runners can place real orders
+  try {
+    guardOrderPlacement(`SELL ${shares} @ ${(price * 100).toFixed(0)}¢ ${asset ?? ''} ${direction ?? ''}`);
+  } catch (err) {
+    logBlockedOrder(`SELL ${shares} @ ${(price * 100).toFixed(0)}¢ ${asset ?? ''} ${direction ?? ''}`);
+    return { success: false, error: 'ORDER_BLOCKED: Runner not authorized', latencyMs: Date.now() - start };
+  }
 
   // CRITICAL: Validate tokenId to prevent "Cannot read properties of undefined (reading 'toString')"
   if (!tokenId || typeof tokenId !== 'string' || tokenId.trim() === '') {

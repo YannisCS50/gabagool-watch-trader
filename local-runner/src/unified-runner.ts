@@ -21,6 +21,7 @@ import { V27Runner } from './v27/runner.js';
 import { getV27Config } from './v27/config.js';
 import type { V27Config } from './v27/config.js';
 import type { V27Market, V27OrderBook, V27SpotData } from './v27/index.js';
+import { setRunnerIdentity } from './order-guard.js';
 
 // ============================================================
 // CONSTANTS
@@ -406,6 +407,9 @@ async function executeOrder(
 // ============================================================
 
 async function main(): Promise<void> {
+  // SET RUNNER IDENTITY - Unified is NOT authorized for real orders
+  setRunnerIdentity('unified');
+  
   console.log('');
   console.log('╔══════════════════════════════════════════════════════════════╗');
   console.log('║  🚀 UNIFIED RUNNER - Price Logger + V27 Strategy             ║');

@@ -45,6 +45,7 @@ import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
 import { acquireLease, releaseLease, isRunnerActive } from '../v29/lease.js';
 import { config as globalConfig } from '../config.js';
+import { setRunnerIdentity } from '../order-guard.js';
 
 // ============================================
 // STATE

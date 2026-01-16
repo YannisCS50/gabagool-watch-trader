@@ -35,6 +35,7 @@ import { startUserChannel, stopUserChannel, type TradeEvent, isUserChannelConnec
 import { startPriceFeedLogger, stopPriceFeedLogger, isPriceFeedLoggerRunning } from '../price-feed-ws-logger.js';
 // V30 Fair Value model for smart direction filtering
 import { EmpiricalFairValue, getFairValueModel } from '../v30/fair-value.js';
+import { setRunnerIdentity } from '../order-guard.js';
 
 // Fair value model instance (shared with V30)
 let fairValueModel: EmpiricalFairValue;
@@ -1232,6 +1233,9 @@ async function pollOrderbooks(): Promise<void> {
 async function main(): Promise<void> {
   log('🚀 V29 Pair-Instead-of-Sell Runner starting...');
   log(`📋 Run ID: ${RUN_ID}`);
+  
+  // SET RUNNER IDENTITY - V29 is NOT authorized for real orders
+  setRunnerIdentity('v29');
   
   initDb();
   log('✅ DB initialized');
