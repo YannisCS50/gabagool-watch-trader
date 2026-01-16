@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, RefreshCw, Database, BookOpen, BarChart3, Zap, Activity } from 'lucide-react';
+import { ArrowLeft, RefreshCw, Database, BookOpen, BarChart3, Zap, Activity, Search } from 'lucide-react';
 import { WindowsList, SignalAnalysisTable } from '@/components/chainlink';
 import { useQueryClient } from '@tanstack/react-query';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -22,6 +22,7 @@ import {
   PricePathChart,
   RecommendationsPanel
 } from '@/components/momentum';
+import { StrategyDiscoveryDashboard } from '@/components/strategy';
 import { 
   useSignalQualityStats, 
   useBucketAggregations,
@@ -29,7 +30,6 @@ import {
 } from '@/hooks/useSignalQualityAnalysis';
 import { useMomentumAnalysis } from '@/hooks/useMomentumAnalysis';
 import { toast } from 'sonner';
-
 export default function BetsHistory() {
   const queryClient = useQueryClient();
   const [selectedAsset, setSelectedAsset] = useState<string>('all');
@@ -112,8 +112,12 @@ export default function BetsHistory() {
 
       {/* Main Content */}
       <main className="container mx-auto px-4 py-6">
-        <Tabs defaultValue="momentum" className="space-y-4">
+        <Tabs defaultValue="discovery" className="space-y-4">
           <TabsList className="flex-wrap">
+            <TabsTrigger value="discovery" className="gap-2">
+              <Search className="h-4 w-4" />
+              Strategy Discovery
+            </TabsTrigger>
             <TabsTrigger value="momentum" className="gap-2">
               <Zap className="h-4 w-4" />
               Momentum Dynamics
@@ -130,6 +134,11 @@ export default function BetsHistory() {
             <TabsTrigger value="charts">Grafieken</TabsTrigger>
             <TabsTrigger value="windows">Price Windows</TabsTrigger>
           </TabsList>
+          
+          {/* NEW: Strategy Discovery Tab - Find Opportunities */}
+          <TabsContent value="discovery">
+            <StrategyDiscoveryDashboard />
+          </TabsContent>
           
           {/* NEW: Momentum Dynamics Tab */}
           <TabsContent value="momentum" className="space-y-6">
