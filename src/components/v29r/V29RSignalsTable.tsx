@@ -39,11 +39,17 @@ export function V29RSignalsTable({ signals }: Props) {
     return null;
   };
 
+  // Check if a trade is complete (bought AND sold)
+  const isCompleteTrade = (s: V29RSignal) => {
+    return (s.status === 'filled' || s.status === 'closed') && s.exit_price != null;
+  };
+
   // Filter signals based on selection
   const filteredSignals = useMemo(() => {
     switch (filter) {
       case 'filled':
-        return signals.filter(s => s.status === 'filled' || s.status === 'closed');
+        // Only show trades that have both entry AND exit (complete round-trips)
+        return signals.filter(isCompleteTrade);
       case 'skipped':
         return signals.filter(s => s.status === 'skipped');
       default:
@@ -51,14 +57,15 @@ export function V29RSignalsTable({ signals }: Props) {
     }
   }, [signals, filter]);
 
-  // Calculate totals for filled trades
+  // Calculate totals for complete trades only
   const filledStats = useMemo(() => {
-    const filled = signals.filter(s => s.status === 'filled' || s.status === 'closed');
+    const filled = signals.filter(isCompleteTrade);
     const totalPnl = filled.reduce((sum, s) => sum + (s.net_pnl || 0), 0);
+    const totalShares = filled.reduce((sum, s) => sum + (s.shares || 0), 0);
     const wins = filled.filter(s => (s.net_pnl || 0) > 0).length;
     const losses = filled.filter(s => (s.net_pnl || 0) < 0).length;
     const winRate = filled.length > 0 ? (wins / filled.length) * 100 : 0;
-    return { count: filled.length, totalPnl, wins, losses, winRate };
+    return { count: filled.length, totalPnl, totalShares, wins, losses, winRate };
   }, [signals]);
 
   return (
@@ -98,9 +105,12 @@ export function V29RSignalsTable({ signals }: Props) {
         </div>
         {/* Show totals when viewing filled trades */}
         {filter === 'filled' && filledStats.count > 0 && (
-          <div className="flex gap-4 mt-2 text-sm">
+          <div className="flex flex-wrap gap-4 mt-2 text-sm">
             <span className="text-muted-foreground">
               Trades: <span className="font-bold text-foreground">{filledStats.count}</span>
+            </span>
+            <span className="text-muted-foreground">
+              Shares: <span className="font-bold text-foreground">{filledStats.totalShares}</span>
             </span>
             <span className="text-muted-foreground">
               P&L: <span className={`font-bold ${filledStats.totalPnl >= 0 ? 'text-green-500' : 'text-red-500'}`}>
@@ -126,6 +136,7 @@ export function V29RSignalsTable({ signals }: Props) {
                 <TableHead>Time</TableHead>
                 <TableHead>Asset</TableHead>
                 <TableHead>Dir</TableHead>
+                <TableHead>Shares</TableHead>
                 <TableHead>Δ</TableHead>
                 <TableHead>Entry</TableHead>
                 <TableHead>Exit</TableHead>
@@ -144,6 +155,7 @@ export function V29RSignalsTable({ signals }: Props) {
                     <TableCell>
                       {signal.direction === 'UP' ? <TrendingUp className="h-4 w-4 text-green-500" /> : <TrendingDown className="h-4 w-4 text-red-500" />}
                     </TableCell>
+                    <TableCell className="font-mono">{signal.shares ?? '-'}</TableCell>
                     <TableCell className="font-mono">${(signal.binance_delta || 0).toFixed(2)}</TableCell>
                     <TableCell className="font-mono">{signal.entry_price ? `${(signal.entry_price * 100).toFixed(1)}¢` : '-'}</TableCell>
                     <TableCell className="font-mono">{signal.exit_price ? `${(signal.exit_price * 100).toFixed(1)}¢` : '-'}</TableCell>
