@@ -1177,10 +1177,14 @@ export async function placeSellOrder(
 
   try {
     const client = await getClient();
-    const roundedShares = Math.floor(shares);
+    
+    // CRITICAL FIX: Do NOT floor the shares - use exact amount to match actual position
+    // Polymarket tracks fractional shares from partial fills, so we need to sell the exact amount.
+    // Rounding down leaves "dust" that causes "not enough balance / allowance" errors on retry.
+    const exactShares = Math.round(shares * 1e6) / 1e6; // Round to 6 decimals (Polymarket precision)
 
-    if (roundedShares < 1) {
-      return { success: false, error: 'Shares < 1', latencyMs: Date.now() - start };
+    if (exactShares < 0.5) {
+      return { success: false, error: `Shares ${exactShares.toFixed(4)} < 0.5 minimum`, latencyMs: Date.now() - start };
     }
     
     // CRITICAL: Use the EXACT price passed in - this is bestBid!
@@ -1189,20 +1193,20 @@ export async function placeSellOrder(
     
     // Polymarket CLOB minimum order value is ~$1
     const MIN_ORDER_VALUE_USD = 1.0;
-    const orderValue = roundedShares * roundedPrice;
+    const orderValue = exactShares * roundedPrice;
     if (orderValue < MIN_ORDER_VALUE_USD) {
       log(`⚠️ SELL skipped: order value $${orderValue.toFixed(2)} < min $${MIN_ORDER_VALUE_USD}`);
       return { success: false, error: `Order value $${orderValue.toFixed(2)} < min $${MIN_ORDER_VALUE_USD}`, latencyMs: Date.now() - start };
     }
     
-    log(`📤 SELL ${roundedShares} shares @ ${(roundedPrice * 100).toFixed(1)}¢ = $${orderValue.toFixed(2)}`);
+    log(`📤 SELL ${exactShares} shares @ ${(roundedPrice * 100).toFixed(1)}¢ = $${orderValue.toFixed(2)}`);
     
     // Try to use cached pre-signed order first
     let signedOrder: SignedOrder | null = null;
     let usedCache = false;
     
     if (asset && direction) {
-      const cached = getPreSignedOrder(asset, direction, 'SELL', roundedPrice, roundedShares);
+      const cached = getPreSignedOrder(asset, direction, 'SELL', roundedPrice, exactShares);
       if (cached) {
         signedOrder = cached.signedOrder;
         usedCache = true;
@@ -1213,7 +1217,7 @@ export async function placeSellOrder(
     if (!signedOrder) {
       try {
         signedOrder = await client.createOrder(
-          { tokenID: tokenId, price: roundedPrice, size: roundedShares, side: Side.SELL },
+          { tokenID: tokenId, price: roundedPrice, size: exactShares, side: Side.SELL },
           { tickSize: '0.01', negRisk: false }
         );
       } catch (signErr) {
