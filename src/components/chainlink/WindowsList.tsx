@@ -3,13 +3,16 @@ import { useChainlinkWindows } from '@/hooks/useChainlinkWindows';
 import { WindowCard } from './WindowCard';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
 import { TrendingUp, TrendingDown, Activity, Clock } from 'lucide-react';
 
 export function WindowsList() {
   const [assetFilter, setAssetFilter] = useState<string>('all');
+  const [onlyCompleted, setOnlyCompleted] = useState(true);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   
-  const { data: windows, isLoading, error } = useChainlinkWindows(assetFilter);
+  const { data: windows, isLoading, error } = useChainlinkWindows(assetFilter, onlyCompleted);
 
   const assets = windows ? [...new Set(windows.map(w => w.asset))] : [];
 
@@ -40,8 +43,8 @@ export function WindowsList() {
 
   return (
     <div className="space-y-4">
-      {/* Filter */}
-      <div className="flex gap-4">
+      {/* Filters */}
+      <div className="flex gap-4 items-center flex-wrap">
         <Select value={assetFilter} onValueChange={setAssetFilter}>
           <SelectTrigger className="w-32">
             <SelectValue placeholder="Asset" />
@@ -53,6 +56,17 @@ export function WindowsList() {
             ))}
           </SelectContent>
         </Select>
+        
+        <div className="flex items-center gap-2">
+          <Switch 
+            id="only-completed" 
+            checked={onlyCompleted} 
+            onCheckedChange={setOnlyCompleted}
+          />
+          <Label htmlFor="only-completed" className="text-sm">
+            Only completed windows
+          </Label>
+        </div>
       </div>
 
       {/* Stats */}
