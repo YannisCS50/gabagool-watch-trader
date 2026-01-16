@@ -158,12 +158,8 @@ async function fetchMarkets(): Promise<void> {
         await updateMarketCache(asset, market.upTokenId, market.downTokenId);
       }
       
-      // Update orderbook WS subscriptions
-      const allTokenIds: string[] = [];
-      for (const market of markets.values()) {
-        allTokenIds.push(market.upTokenId, market.downTokenId);
-      }
-      updateOrderbookWsMarkets(allTokenIds);
+      // Update orderbook WS subscriptions - pass the full markets Map
+      updateOrderbookWsMarkets(markets);
     }
     
     lastMarketRefresh = Date.now();
@@ -574,8 +570,9 @@ async function main(): Promise<void> {
     log(`📋 Loaded ${existingPositions.length} existing positions`);
   }
   
-  // Acquire lease
-  const leaseOk = await acquireLease(RUN_ID, 'v30-market-maker');
+  // Acquire lease - use force if FORCE_TAKEOVER env var is set
+  const forceTakeover = process.env.FORCE_TAKEOVER === '1' || process.env.FORCE_TAKEOVER === 'true';
+  const leaseOk = await acquireLease(RUN_ID, { force: forceTakeover });
   if (!leaseOk) {
     log('⚠️ Could not acquire lease, another runner may be active');
     log('   Continuing in monitor mode...');
@@ -601,22 +598,19 @@ async function main(): Promise<void> {
   startBinanceFeed(assets, (asset, price) => handleBinancePrice(asset, price));
   startChainlinkFeed(assets, (asset, price) => handleChainlinkPrice(asset, price));
   
-  // Start orderbook WebSocket
-  const tokenIds: string[] = [];
-  for (const market of markets.values()) {
-    tokenIds.push(market.upTokenId, market.downTokenId);
-  }
-  startOrderbookWs(tokenIds, (tokenId, asks, bids) => {
+  // Start orderbook WebSocket with proper callback signature
+  // First update markets so WS knows which tokens to subscribe to
+  updateOrderbookWsMarkets(markets);
+  
+  // Start with correct callback: (asset, direction, bestBid, bestAsk, timestamp)
+  startOrderbookWs((asset: Asset, direction: 'UP' | 'DOWN', bestBid: number | null, bestAsk: number | null, _timestamp: number) => {
     // Update price state from WS
-    for (const [asset, market] of markets) {
-      if (market.upTokenId === tokenId) {
-        priceState[asset].upBestAsk = asks[0]?.[0] ?? null;
-        priceState[asset].upBestBid = bids[0]?.[0] ?? null;
-      }
-      if (market.downTokenId === tokenId) {
-        priceState[asset].downBestAsk = asks[0]?.[0] ?? null;
-        priceState[asset].downBestBid = bids[0]?.[0] ?? null;
-      }
+    if (direction === 'UP') {
+      priceState[asset].upBestBid = bestBid;
+      priceState[asset].upBestAsk = bestAsk;
+    } else {
+      priceState[asset].downBestBid = bestBid;
+      priceState[asset].downBestAsk = bestAsk;
     }
   });
   
@@ -682,7 +676,7 @@ async function shutdown(): Promise<void> {
   stopOrderbookWs();
   stopPreSignedCache();
   await flushTicks();
-  await releaseLease();
+  await releaseLease(RUN_ID);
   
   log('👋 V30 stopped');
   process.exit(0);
