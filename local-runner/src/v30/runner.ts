@@ -277,10 +277,7 @@ async function evaluateAsset(asset: Asset): Promise<void> {
   // Get fair value
   const fairValue = fairValueModel.getFairP(asset, deltaToStrike, secRemaining);
   
-  // Get inventory
-  const inventory = inventoryManager.getInventory(asset, market.slug, secRemaining);
-  
-  // Calculate edges
+  // Calculate edges (using inventory from above)
   const edgeResult = edgeCalculator.calculateEdge(
     upAsk,
     downAsk,
