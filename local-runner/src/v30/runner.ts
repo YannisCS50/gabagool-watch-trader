@@ -336,8 +336,13 @@ async function evaluateAsset(asset: Asset): Promise<void> {
     return;
   }
   
-  // Check for forced counter-bet
-  const forceCheck = edgeCalculator.shouldForceCounter(inventory);
+  // Check for forced counter-bet (pass avg prices for cost-aware hedging)
+  const { up: upPos, down: downPos } = inventoryManager.getMarketPositions(asset, market.slug);
+  const forceCheck = edgeCalculator.shouldForceCounter(
+    inventory,
+    upPos?.avg_entry_price,
+    downPos?.avg_entry_price
+  );
   if (forceCheck.force && forceCheck.direction) {
     const action = await handleForceCounter(asset, market, forceCheck.direction, forceCheck.reason);
     tick.action_taken = action;
@@ -527,23 +532,52 @@ async function handleAggressiveExit(
   inventory: { up: number; down: number; net: number }
 ): Promise<TradeAction> {
   const state = priceState[asset];
+  const { up: upPos, down: downPos } = inventoryManager.getMarketPositions(asset, market.slug);
   
-  // Sell all positions at market bid
+  // Only sell positions that would be at a loss if held to expiry
+  // If we bought cheap (< 30¢), let it ride - potential upside is worth the small risk
   let soldAny = false;
   
-  if (inventory.up > 0 && state.upBestBid) {
-    const success = await executeSell(asset, 'UP', market, state.upBestBid, inventory.up);
-    if (success) {
-      log(`🏃 AGGRESSIVE EXIT: Sold ${inventory.up} UP @ ${(state.upBestBid * 100).toFixed(1)}¢`);
-      soldAny = true;
+  // Check UP position
+  if (inventory.up > 0 && state.upBestBid && upPos) {
+    const avgCost = upPos.avg_entry_price;
+    const currentBid = state.upBestBid;
+    
+    // Only exit if:
+    // 1. We bought expensive (> 50¢) and price dropped, OR
+    // 2. We're in profit and want to lock it in
+    const inProfit = currentBid > avgCost;
+    const boughtExpensive = avgCost > 0.50;
+    
+    if (inProfit || boughtExpensive) {
+      const success = await executeSell(asset, 'UP', market, currentBid, inventory.up);
+      if (success) {
+        const pnl = (currentBid - avgCost) * inventory.up;
+        log(`🏃 AGGRESSIVE EXIT: Sold ${inventory.up} UP @ ${(currentBid * 100).toFixed(1)}¢ (cost ${(avgCost * 100).toFixed(1)}¢) PnL: $${pnl.toFixed(2)}`);
+        soldAny = true;
+      }
+    } else {
+      log(`💎 HOLD UP: ${inventory.up} sh @ ${(avgCost * 100).toFixed(0)}¢ - cheap position, letting it ride`);
     }
   }
   
-  if (inventory.down > 0 && state.downBestBid) {
-    const success = await executeSell(asset, 'DOWN', market, state.downBestBid, inventory.down);
-    if (success) {
-      log(`🏃 AGGRESSIVE EXIT: Sold ${inventory.down} DOWN @ ${(state.downBestBid * 100).toFixed(1)}¢`);
-      soldAny = true;
+  // Check DOWN position
+  if (inventory.down > 0 && state.downBestBid && downPos) {
+    const avgCost = downPos.avg_entry_price;
+    const currentBid = state.downBestBid;
+    
+    const inProfit = currentBid > avgCost;
+    const boughtExpensive = avgCost > 0.50;
+    
+    if (inProfit || boughtExpensive) {
+      const success = await executeSell(asset, 'DOWN', market, currentBid, inventory.down);
+      if (success) {
+        const pnl = (currentBid - avgCost) * inventory.down;
+        log(`🏃 AGGRESSIVE EXIT: Sold ${inventory.down} DOWN @ ${(currentBid * 100).toFixed(1)}¢ (cost ${(avgCost * 100).toFixed(1)}¢) PnL: $${pnl.toFixed(2)}`);
+        soldAny = true;
+      }
+    } else {
+      log(`💎 HOLD DOWN: ${inventory.down} sh @ ${(avgCost * 100).toFixed(0)}¢ - cheap position, letting it ride`);
     }
   }
   

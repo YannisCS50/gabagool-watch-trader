@@ -78,8 +78,15 @@ export class EdgeCalculator {
 
   /**
    * Check if we should force a counter-bet to reduce inventory
+   * 
+   * IMPORTANT: Only force counter when we have EXPENSIVE exposure (high cost side)
+   * Cheap side exposure (e.g. 130 shares @ 10¢ = $13 risk) doesn't need aggressive hedging
    */
-  shouldForceCounter(inventory: Inventory): { 
+  shouldForceCounter(
+    inventory: Inventory,
+    upAvgPrice?: number,
+    downAvgPrice?: number
+  ): { 
     force: boolean; 
     direction: 'UP' | 'DOWN' | null;
     reason: string;
@@ -90,12 +97,40 @@ export class EdgeCalculator {
       return { force: false, direction: null, reason: '' };
     }
 
+    // Determine which side has more shares
+    const dominantSide = inventory.net > 0 ? 'UP' : 'DOWN';
+    const dominantShares = inventory.net > 0 ? inventory.up : inventory.down;
+    const dominantAvgPrice = inventory.net > 0 ? (upAvgPrice ?? 0.5) : (downAvgPrice ?? 0.5);
+    
+    // Calculate actual dollar exposure at risk
+    // If we bought cheap (e.g. 10¢), max loss is only 10¢ per share
+    const exposureAtRisk = dominantShares * dominantAvgPrice;
+    
+    // Only force counter if exposure > $50 AND avg price > 40¢ (expensive side)
+    // Cheap side (< 40¢) has limited downside, no need to panic hedge
+    if (dominantAvgPrice < 0.40) {
+      return { 
+        force: false, 
+        direction: null, 
+        reason: `Cheap side (${(dominantAvgPrice * 100).toFixed(0)}¢) - no hedge needed` 
+      };
+    }
+    
+    // Even for expensive side, only hedge if exposure is significant
+    if (exposureAtRisk < 50) {
+      return { 
+        force: false, 
+        direction: null, 
+        reason: `Low exposure ($${exposureAtRisk.toFixed(0)}) - no hedge needed` 
+      };
+    }
+
     // Force buy opposite direction
     const direction = inventory.net > 0 ? 'DOWN' : 'UP';
     return {
       force: true,
       direction,
-      reason: `Inventory ratio ${(ratio * 100).toFixed(1)}% > ${(this.config.force_counter_at_pct * 100).toFixed(0)}% threshold`,
+      reason: `High exposure: ${dominantShares} ${dominantSide} @ ${(dominantAvgPrice * 100).toFixed(0)}¢ = $${exposureAtRisk.toFixed(0)}`,
     };
   }
 
