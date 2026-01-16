@@ -1,24 +1,26 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, RefreshCw, Database } from 'lucide-react';
+import { ArrowLeft, RefreshCw, Database, BookOpen, BarChart3 } from 'lucide-react';
 import { WindowsList, SignalAnalysisTable } from '@/components/chainlink';
 import { useQueryClient } from '@tanstack/react-query';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { 
-  SignalQualityStatsCards, 
   SignalQualityTable, 
-  BucketAnalysisTable,
   EdgeSpreadScatterPlot,
   SpotLeadPnLChart,
-  TakerZscorePnLChart 
+  TakerZscorePnLChart,
+  StrategyExplainerCard,
+  MetricExplainerCard,
+  BucketExplainerTable
 } from '@/components/signalQuality';
 import { 
   useSignalQualityStats, 
   useBucketAggregations,
   usePopulateSignalQuality 
 } from '@/hooks/useSignalQualityAnalysis';
+import { toast } from 'sonner';
 
 export default function BetsHistory() {
   const queryClient = useQueryClient();
@@ -32,6 +34,18 @@ export default function BetsHistory() {
     queryClient.invalidateQueries({ queryKey: ['chainlink-windows'] });
     queryClient.invalidateQueries({ queryKey: ['signal-analysis'] });
     queryClient.invalidateQueries({ queryKey: ['signal-quality-analysis'] });
+    toast.success('Data wordt ververst...');
+  };
+
+  const handlePopulate = () => {
+    populateMutation.mutate(undefined, {
+      onSuccess: (result) => {
+        toast.success(`${result.processed} signalen geanalyseerd (${result.fromV29} van v29, ${result.fromV29Response} van v29-response)`);
+      },
+      onError: (error) => {
+        toast.error(`Fout bij analyseren: ${error.message}`);
+      }
+    });
   };
 
   return (
@@ -46,7 +60,10 @@ export default function BetsHistory() {
                 Back
               </Button>
             </Link>
-            <h1 className="text-xl font-bold">Signal Quality & Edge Truth</h1>
+            <div>
+              <h1 className="text-xl font-bold">Signal Quality & Edge Truth</h1>
+              <p className="text-xs text-muted-foreground">Analyseer je trading strategie prestaties</p>
+            </div>
           </div>
           <div className="flex items-center gap-2">
             <Select value={selectedAsset} onValueChange={setSelectedAsset}>
@@ -54,7 +71,7 @@ export default function BetsHistory() {
                 <SelectValue placeholder="Asset" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All</SelectItem>
+                <SelectItem value="all">Alle</SelectItem>
                 <SelectItem value="BTC">BTC</SelectItem>
                 <SelectItem value="ETH">ETH</SelectItem>
                 <SelectItem value="SOL">SOL</SelectItem>
@@ -64,15 +81,15 @@ export default function BetsHistory() {
             <Button 
               variant="outline" 
               size="sm" 
-              onClick={() => populateMutation.mutate()}
+              onClick={handlePopulate}
               disabled={populateMutation.isPending}
             >
               <Database className="h-4 w-4 mr-2" />
-              Populate
+              {populateMutation.isPending ? 'Bezig...' : 'Analyseer'}
             </Button>
             <Button variant="outline" size="sm" onClick={handleRefresh}>
               <RefreshCw className="h-4 w-4 mr-2" />
-              Refresh
+              Ververs
             </Button>
           </div>
         </div>
@@ -80,17 +97,35 @@ export default function BetsHistory() {
 
       {/* Main Content */}
       <main className="container mx-auto px-4 py-6">
-        <Tabs defaultValue="edge-truth" className="space-y-4">
+        <Tabs defaultValue="overview" className="space-y-4">
           <TabsList>
-            <TabsTrigger value="edge-truth">Edge Truth</TabsTrigger>
-            <TabsTrigger value="signals">Signal Table</TabsTrigger>
-            <TabsTrigger value="charts">Visualizations</TabsTrigger>
+            <TabsTrigger value="overview" className="gap-2">
+              <BookOpen className="h-4 w-4" />
+              Overzicht & Advies
+            </TabsTrigger>
+            <TabsTrigger value="metrics" className="gap-2">
+              <BarChart3 className="h-4 w-4" />
+              Metrics Uitleg
+            </TabsTrigger>
+            <TabsTrigger value="signals">Signaal Tabel</TabsTrigger>
+            <TabsTrigger value="charts">Grafieken</TabsTrigger>
             <TabsTrigger value="windows">Price Windows</TabsTrigger>
           </TabsList>
           
-          <TabsContent value="edge-truth" className="space-y-6">
-            <SignalQualityStatsCards stats={stats} isLoading={isLoading} />
-            <BucketAnalysisTable aggregations={aggregations} isLoading={isLoading} />
+          <TabsContent value="overview" className="space-y-6">
+            {/* Strategy health and recommendations */}
+            <StrategyExplainerCard stats={stats} aggregations={aggregations} />
+            
+            {/* Bucket table with explanations */}
+            <BucketExplainerTable aggregations={aggregations} isLoading={isLoading} />
+          </TabsContent>
+          
+          <TabsContent value="metrics" className="space-y-6">
+            {/* Detailed metric explanations */}
+            <MetricExplainerCard stats={stats} isLoading={isLoading} />
+            
+            {/* Bucket table */}
+            <BucketExplainerTable aggregations={aggregations} isLoading={isLoading} />
           </TabsContent>
           
           <TabsContent value="signals">
