@@ -18,7 +18,8 @@
     "unified": "tsx src/unified-runner.ts",
     "claim:debug": "tsx scripts/claim-debug.ts",
     "claim": "tsx scripts/claim-now.ts",
-    "claim:loop": "tsx scripts/claim-loop.ts"
+    "claim:loop": "tsx scripts/claim-loop.ts",
+    "v29r": "tsx src/v29-response/runner.ts"
   },
   "dependencies": {
     "@polymarket/clob-client": "^5.0.0",
