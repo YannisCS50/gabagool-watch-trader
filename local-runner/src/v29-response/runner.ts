@@ -30,6 +30,7 @@ import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreS
 import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
 import { acquireLease, releaseLease, isRunnerActive } from '../v29/lease.js';
+import { setRunnerIdentity } from '../order-guard.js';
 
 // ============================================
 // STATE
@@ -823,6 +824,9 @@ async function refreshConfig(): Promise<void> {
 
 async function main(): Promise<void> {
   log('🚀 V29 Response-Based Strategy Starting...');
+  
+  // SET RUNNER IDENTITY - V29R is authorized to place real orders
+  setRunnerIdentity('v29-response');
   
   // Initialize DB
   initDb();

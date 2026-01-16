@@ -8,12 +8,15 @@
  * - Polymarket orders use nonce="0" and expiration="0" (never expires)
  * - The signature is stateless - valid indefinitely
  * - We can pre-sign orders and cache them for instant posting
+ * 
+ * ORDER GUARD: Only v29-response is authorized to place real orders.
  */
 
 import { ClobClient, Side, OrderType } from '@polymarket/clob-client';
 import type { SignedOrder } from '@polymarket/order-utils';
 import { getClient } from '../polymarket.js';
 import { Asset } from './config.js';
+import { guardOrderPlacement, logBlockedOrder } from '../order-guard.js';
 
 // ============================================
 // TYPES
@@ -526,6 +529,14 @@ export async function postPreSignedOrder(
 ): Promise<{ success: boolean; orderId?: string; avgPrice?: number; filledSize?: number; error?: string }> {
   if (!client) {
     return { success: false, error: 'CLOB client not initialized' };
+  }
+  
+  // ORDER GUARD: Only authorized runners can place real orders
+  try {
+    guardOrderPlacement(`${preSignedOrder.side} ${preSignedOrder.size}@${(preSignedOrder.price * 100).toFixed(0)}¢ ${preSignedOrder.asset} ${preSignedOrder.direction}`);
+  } catch (err) {
+    logBlockedOrder(`${preSignedOrder.side} ${preSignedOrder.size}@${(preSignedOrder.price * 100).toFixed(0)}¢ ${preSignedOrder.asset} ${preSignedOrder.direction}`);
+    return { success: false, error: 'ORDER_BLOCKED: Runner not authorized' };
   }
   
   const startTime = Date.now();

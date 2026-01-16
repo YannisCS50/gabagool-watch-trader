@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { ClobClient, Side, OrderType } from '@polymarket/clob-client';
 import { Wallet } from 'ethers';
 import { config } from './config.js';
+import { guardOrderPlacement, logBlockedOrder, isOrderAuthorized } from './order-guard.js';
 
 const CLOB_URL = 'https://clob.polymarket.com';
 const CHAIN_ID = 137; // Polygon mainnet
@@ -703,6 +704,18 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
   
   const intent = order.intent || 'ENTRY';
   const adjustedPrice = order.price; // Use price as-is (already guarded)
+  
+  // ORDER GUARD: Only authorized runners can place real orders
+  try {
+    guardOrderPlacement(`${order.side} ${order.size} @ ${(adjustedPrice * 100).toFixed(0)}¢ (${intent})`);
+  } catch (err) {
+    logBlockedOrder(`${order.side} ${order.size} @ ${(adjustedPrice * 100).toFixed(0)}¢ (${intent})`);
+    return {
+      success: false,
+      error: 'ORDER_BLOCKED: Runner not authorized to place orders',
+      failureReason: 'auth',
+    };
+  }
   
   // Log the order with NO-CROSSING compliance info
   console.log(
