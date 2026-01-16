@@ -42,7 +42,8 @@ export type SkipReason =
   | 'cooldown'
   | 'position_open'
   | 'exposure_limit'
-  | 'no_previous_tick';
+  | 'no_previous_tick'
+  | 'delta_direction_mismatch';  // New: wrong side for this delta
 
 // ============================================
 // SIGNAL RESULT
@@ -167,18 +168,36 @@ export function checkSignal(
     return { triggered: false, skipReason: 'price_out_of_range' };
   }
   
-  // 9. Check cooldown
+  // 9. DELTA-BASED DIRECTIONAL FILTER
+  // Uses binance price vs strike to determine which sides are allowed
+  // As we get closer to expiry, the allowed delta range narrows
+  const binancePrice = priceState.binance ?? 0;
+  const strikePrice = market.strikePrice ?? 0;
+  const priceToStrikeDelta = strikePrice > 0 ? binancePrice - strikePrice : 0;
+  const msToExpiry = market.endTime.getTime() - now;
+  const minToExpiry = msToExpiry / 60_000;
+  
+  const directionAllowed = checkDeltaDirection(priceToStrikeDelta, direction, minToExpiry);
+  
+  if (!directionAllowed.allowed) {
+    logFn(`SKIP: ${asset} ${direction} - delta direction blocked | Δ=${priceToStrikeDelta.toFixed(2)} | ${directionAllowed.reason}`, {
+      asset, direction, priceToStrikeDelta, minToExpiry, reason: directionAllowed.reason,
+    });
+    return { triggered: false, skipReason: 'delta_direction_mismatch', skipDetails: directionAllowed.reason };
+  }
+  
+  // 10. Check cooldown
   if (inCooldown) {
     return { triggered: false, skipReason: 'cooldown' };
   }
   
-  // 10. Check single position rule
+  // 11. Check single position rule
   if (config.single_position_per_market && hasOpenPosition) {
     logFn(`SKIP: ${asset} ${direction} - position already open`, { asset, direction });
     return { triggered: false, skipReason: 'position_open' };
   }
   
-  // 11. Check exposure limit
+  // 12. Check exposure limit
   const orderCost = config.shares_per_trade * bestAsk;
   if (currentExposure + orderCost > config.max_exposure_usd) {
     logFn(`SKIP: ${asset} ${direction} - exposure limit`, {
@@ -193,8 +212,6 @@ export function checkSignal(
   
   // Record share price for future repricing check
   lastSharePriceAtSignal[signalKey] = bestAsk;
-  
-  const binancePrice = priceState.binance ?? 0;
   
   const signal: Signal = {
     id: randomUUID(),
@@ -241,4 +258,75 @@ export function resetSignalState(asset: Asset): void {
       delete lastSharePriceAtSignal[key];
     }
   }
+}
+
+// ============================================
+// DELTA-BASED DIRECTIONAL FILTER
+// ============================================
+
+/**
+ * Check if a direction is allowed based on delta-to-strike and time remaining.
+ * 
+ * RULES:
+ * - delta > +75  → only UP allowed (any time)
+ * - delta < -75  → only DOWN allowed (any time)
+ * - Within delta bands, both sides allowed but only until certain time:
+ *   - -75 to +75 → both sides until 10 min remaining
+ *   - -50 to +50 → both sides until 5 min remaining
+ *   - -30 to +30 → both sides until 2 min remaining
+ *   - <2 min remaining → only extremes (>75 or <-75) allowed
+ */
+function checkDeltaDirection(
+  priceToStrikeDelta: number,
+  direction: Direction,
+  minToExpiry: number
+): { allowed: boolean; reason: string } {
+  const absDelta = Math.abs(priceToStrikeDelta);
+  
+  // EXTREMES: always allowed in correct direction
+  if (priceToStrikeDelta > 75) {
+    // Strong bullish - only UP allowed
+    if (direction === 'UP') {
+      return { allowed: true, reason: 'delta>+75, UP allowed' };
+    } else {
+      return { allowed: false, reason: `delta=+${priceToStrikeDelta.toFixed(0)}, only UP allowed` };
+    }
+  }
+  
+  if (priceToStrikeDelta < -75) {
+    // Strong bearish - only DOWN allowed
+    if (direction === 'DOWN') {
+      return { allowed: true, reason: 'delta<-75, DOWN allowed' };
+    } else {
+      return { allowed: false, reason: `delta=${priceToStrikeDelta.toFixed(0)}, only DOWN allowed` };
+    }
+  }
+  
+  // WITHIN -75 to +75 band - time-based restrictions
+  
+  // Less than 2 min: no trading in neutral zone (too risky)
+  if (minToExpiry < 2) {
+    return { allowed: false, reason: `<2min + |delta|=${absDelta.toFixed(0)} (need |delta|>75)` };
+  }
+  
+  // 2-5 min: need delta within -30 to +30 for both sides
+  if (minToExpiry < 5) {
+    if (absDelta <= 30) {
+      return { allowed: true, reason: `2-5min + |delta|=${absDelta.toFixed(0)}≤30, both OK` };
+    } else {
+      return { allowed: false, reason: `2-5min + |delta|=${absDelta.toFixed(0)}>30 (need ≤30)` };
+    }
+  }
+  
+  // 5-10 min: need delta within -50 to +50 for both sides
+  if (minToExpiry < 10) {
+    if (absDelta <= 50) {
+      return { allowed: true, reason: `5-10min + |delta|=${absDelta.toFixed(0)}≤50, both OK` };
+    } else {
+      return { allowed: false, reason: `5-10min + |delta|=${absDelta.toFixed(0)}>50 (need ≤50)` };
+    }
+  }
+  
+  // ≥10 min: delta within -75 to +75 allows both sides (already checked above)
+  return { allowed: true, reason: `≥10min + |delta|=${absDelta.toFixed(0)}≤75, both OK` };
 }
