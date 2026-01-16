@@ -28,7 +28,11 @@ import { fetchPositions, type PolymarketPosition } from '../positions-sync.js';
 import { config as globalConfig } from '../config.js';
 import { startUserChannel, stopUserChannel, type TradeEvent, isUserChannelConnected } from './user-ws.js';
 import { startPriceFeedLogger, stopPriceFeedLogger, isPriceFeedLoggerRunning } from '../price-feed-ws-logger.js';
-// Order tracker disabled (was causing runner crashes when env vars were missing)
+// V30 Fair Value model for smart direction filtering
+import { EmpiricalFairValue, getFairValueModel } from '../v30/fair-value.js';
+
+// Fair value model instance (shared with V30)
+let fairValueModel: EmpiricalFairValue;
 
 
 // ============================================
@@ -704,18 +708,52 @@ function handleBinancePrice(asset: Asset, price: number, _timestamp: number): vo
   const cooldownKey = `${asset}:${tickDirection}`;
   if (now - (lastBuyTime[cooldownKey] ?? 0) < config.order_cooldown_ms) return;
   
-  // Apply direction filter (delta threshold = 75)
-  let allowedDirection: 'UP' | 'DOWN' | 'BOTH';
-  if (priceVsStrikeDelta > config.delta_threshold) {
-    allowedDirection = 'UP';
-  } else if (priceVsStrikeDelta < -config.delta_threshold) {
-    allowedDirection = 'DOWN';
-  } else {
-    allowedDirection = 'BOTH';
+  // === SMART DIRECTION FILTER ===
+  // Use V30's fair value model to decide if opposite-direction ticks should be blocked
+  let allowedDirection: 'UP' | 'DOWN' | 'BOTH' = 'BOTH';
+  let smartDirectionUsed = false;
+  
+  if (config.smart_direction_enabled && fairValueModel) {
+    // Calculate time remaining
+    const secRemaining = Math.max(0, (market.endTime.getTime() - now) / 1000);
+    
+    // Get fair value using blended delta
+    const fairValue = fairValueModel.getFairP(asset, priceVsStrikeDelta, secRemaining);
+    
+    // Only use smart direction if we have enough samples
+    if (fairValue.samples >= config.smart_direction_min_samples) {
+      smartDirectionUsed = true;
+      
+      // If P(UP) is high, only allow UP ticks
+      if (fairValue.p_up >= config.smart_direction_threshold) {
+        allowedDirection = 'UP';
+        log(`🧠 SMART: P(UP)=${(fairValue.p_up * 100).toFixed(0)}% ≥ ${(config.smart_direction_threshold * 100).toFixed(0)}% → only UP allowed (${fairValue.samples} samples)`);
+      }
+      // If P(DOWN) is high, only allow DOWN ticks
+      else if (fairValue.p_down >= config.smart_direction_threshold) {
+        allowedDirection = 'DOWN';
+        log(`🧠 SMART: P(DOWN)=${(fairValue.p_down * 100).toFixed(0)}% ≥ ${(config.smart_direction_threshold * 100).toFixed(0)}% → only DOWN allowed (${fairValue.samples} samples)`);
+      }
+      // Otherwise both directions allowed
+      else {
+        log(`🧠 SMART: P(UP)=${(fairValue.p_up * 100).toFixed(0)}%, P(DOWN)=${(fairValue.p_down * 100).toFixed(0)}% → BOTH allowed`);
+      }
+    }
+  }
+  
+  // FALLBACK: Use legacy delta threshold if smart direction not available
+  if (!smartDirectionUsed) {
+    if (priceVsStrikeDelta > config.delta_threshold) {
+      allowedDirection = 'UP';
+    } else if (priceVsStrikeDelta < -config.delta_threshold) {
+      allowedDirection = 'DOWN';
+    } else {
+      allowedDirection = 'BOTH';
+    }
   }
   
   if (allowedDirection !== 'BOTH' && allowedDirection !== tickDirection) {
-    log(`⚠️ ${asset} ${tickDirection} blocked | Δ$${priceVsStrikeDelta.toFixed(0)} | only ${allowedDirection} allowed`);
+    log(`⚠️ ${asset} ${tickDirection} blocked | Δ$${priceVsStrikeDelta.toFixed(0)} | only ${allowedDirection} allowed${smartDirectionUsed ? ' (smart)' : ''}`);
     return;
   }
   
@@ -1602,6 +1640,10 @@ async function main(): Promise<void> {
   } else {
     log(`⚠️ Using defaults: shares=${config.shares_per_trade}, counter-scalp-block=${config.prevent_counter_scalping}`);
   }
+  
+  // Initialize fair value model for smart direction filter
+  fairValueModel = getFairValueModel();
+  log(`✅ Fair value model initialized for smart direction filter`);
   
   // Fetch markets
   await fetchMarkets();
