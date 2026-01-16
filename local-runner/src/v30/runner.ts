@@ -360,16 +360,13 @@ async function evaluateAsset(asset: Asset): Promise<void> {
   // Normal edge-based trading
   let action: TradeAction = 'none';
   
-  // Log when we're NOT trading due to low fair value (important debugging!)
-  const minFairValue = edgeResult.min_fair_value_used ?? 0.10;
-  
-  // Check if edge looks good but fair value blocks it
-  if (edgeResult.edge_up < -edgeResult.theta && !edgeResult.signal_up) {
-    // Edge is good but signal blocked by low fair value
-    logDebug(`⚠️ ${asset}: UP edge ${(edgeResult.edge_up * 100).toFixed(1)}% looks good but P(UP)=${(fairValue.p_up * 100).toFixed(1)}% < ${(minFairValue * 100).toFixed(0)}% min`, 'fair-value', asset);
+  // Log when edge looks attractive but CI lower bound blocks it
+  if (upAsk - fairValue.p_up < -edgeResult.theta && !edgeResult.signal_up) {
+    // Point estimate edge is good, but CI lower bound says no
+    logDebug(`⚠️ ${asset}: UP price ${(upAsk * 100).toFixed(1)}¢ < P(UP)=${(fairValue.p_up * 100).toFixed(1)}¢, but CI_lower=${(fairValue.ci_lower_up * 100).toFixed(1)}¢ blocks trade`, 'fair-value', asset);
   }
-  if (edgeResult.edge_down < -edgeResult.theta && !edgeResult.signal_down) {
-    logDebug(`⚠️ ${asset}: DOWN edge ${(edgeResult.edge_down * 100).toFixed(1)}% looks good but P(DOWN)=${(fairValue.p_down * 100).toFixed(1)}% < ${(minFairValue * 100).toFixed(0)}% min`, 'fair-value', asset);
+  if (downAsk - fairValue.p_down < -edgeResult.theta && !edgeResult.signal_down) {
+    logDebug(`⚠️ ${asset}: DOWN price ${(downAsk * 100).toFixed(1)}¢ < P(DOWN)=${(fairValue.p_down * 100).toFixed(1)}¢, but CI_lower=${(fairValue.ci_lower_down * 100).toFixed(1)}¢ blocks trade`, 'fair-value', asset);
   }
   
   // Check UP signal
@@ -385,7 +382,7 @@ async function evaluateAsset(asset: Asset): Promise<void> {
       if (success) {
         action = 'buy_up';
         buysUpCount++;
-        log(`🟢 BUY UP: ${asset} | ${size} sh @ ${(upAsk * 100).toFixed(1)}¢ | edge ${(edgeResult.edge_up * 100).toFixed(1)}% | P(UP)=${(fairValue.p_up * 100).toFixed(1)}% | θ ${(edgeResult.theta * 100).toFixed(1)}%`);
+        log(`🟢 BUY UP: ${asset} | ${size} sh @ ${(upAsk * 100).toFixed(1)}¢ | P(UP)=${(fairValue.p_up * 100).toFixed(1)}% [${(fairValue.ci_lower_up * 100).toFixed(0)}-${(fairValue.ci_upper_up * 100).toFixed(0)}%] | edge=${(edgeResult.edge_up * 100).toFixed(1)}%`);
       }
     }
   }
@@ -401,9 +398,9 @@ async function evaluateAsset(asset: Asset): Promise<void> {
       
       const success = await executeBuy(asset, 'DOWN', market, downAsk, size);
       if (success) {
-        action = action === 'buy_up' ? 'buy_up' : 'buy_down'; // Keep first if both
+        action = action === 'buy_up' ? 'buy_up' : 'buy_down';
         buysDownCount++;
-        log(`🔴 BUY DOWN: ${asset} | ${size} sh @ ${(downAsk * 100).toFixed(1)}¢ | edge ${(edgeResult.edge_down * 100).toFixed(1)}% | P(DOWN)=${(fairValue.p_down * 100).toFixed(1)}% | θ ${(edgeResult.theta * 100).toFixed(1)}%`);
+        log(`🔴 BUY DOWN: ${asset} | ${size} sh @ ${(downAsk * 100).toFixed(1)}¢ | P(DOWN)=${(fairValue.p_down * 100).toFixed(1)}% [${(fairValue.ci_lower_down * 100).toFixed(0)}-${(fairValue.ci_upper_down * 100).toFixed(0)}%] | edge=${(edgeResult.edge_down * 100).toFixed(1)}%`);
       }
     }
   }
