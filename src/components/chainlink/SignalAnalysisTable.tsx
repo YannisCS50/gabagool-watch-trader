@@ -1,14 +1,22 @@
-import { useSignalAnalysis, SignalAnalysis } from '@/hooks/useSignalAnalysis';
+import { useSignalAnalysis, useSignalAnalysisByBucket, SignalAnalysis, BucketAnalysis } from '@/hooks/useSignalAnalysis';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Skeleton } from '@/components/ui/skeleton';
-import { TrendingUp, TrendingDown } from 'lucide-react';
+import { TrendingUp, TrendingDown, Clock } from 'lucide-react';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useState } from 'react';
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 
 export function SignalAnalysisTable() {
   const [asset, setAsset] = useState<string>('all');
-  const { data, isLoading, error } = useSignalAnalysis(asset);
+  const [viewMode, setViewMode] = useState<string>('overall');
+  
+  const { data: overallData, isLoading: overallLoading, error: overallError } = useSignalAnalysis(asset);
+  const { data: bucketData, isLoading: bucketLoading, error: bucketError } = useSignalAnalysisByBucket(asset);
+
+  const isLoading = viewMode === 'overall' ? overallLoading : bucketLoading;
+  const error = viewMode === 'overall' ? overallError : bucketError;
 
   if (isLoading) {
     return (
@@ -28,34 +36,70 @@ export function SignalAnalysisTable() {
     );
   }
 
-  if (!data) return null;
-
   return (
     <div className="space-y-6">
-      {/* Filter */}
-      <Select value={asset} onValueChange={setAsset}>
-        <SelectTrigger className="w-32">
-          <SelectValue placeholder="Asset" />
-        </SelectTrigger>
-        <SelectContent>
-          <SelectItem value="all">All Assets</SelectItem>
-          <SelectItem value="BTC">BTC</SelectItem>
-          <SelectItem value="ETH">ETH</SelectItem>
-          <SelectItem value="SOL">SOL</SelectItem>
-          <SelectItem value="XRP">XRP</SelectItem>
-        </SelectContent>
-      </Select>
+      {/* Filters */}
+      <div className="flex gap-4 items-center">
+        <Select value={asset} onValueChange={setAsset}>
+          <SelectTrigger className="w-32">
+            <SelectValue placeholder="Asset" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Assets</SelectItem>
+            <SelectItem value="BTC">BTC</SelectItem>
+            <SelectItem value="ETH">ETH</SelectItem>
+            <SelectItem value="SOL">SOL</SelectItem>
+            <SelectItem value="XRP">XRP</SelectItem>
+          </SelectContent>
+        </Select>
 
-      {/* UP Signals Table */}
-      <DirectionTable analysis={data.up} />
+        <Tabs value={viewMode} onValueChange={setViewMode}>
+          <TabsList>
+            <TabsTrigger value="overall">Overall</TabsTrigger>
+            <TabsTrigger value="by-bucket">By Time Remaining</TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </div>
 
-      {/* DOWN Signals Table */}
-      <DirectionTable analysis={data.down} />
+      {viewMode === 'overall' && overallData && (
+        <div className="space-y-6">
+          <DirectionTable analysis={overallData.up} />
+          <DirectionTable analysis={overallData.down} />
+        </div>
+      )}
+
+      {viewMode === 'by-bucket' && bucketData && (
+        <BucketAccordion buckets={bucketData} />
+      )}
     </div>
   );
 }
 
-function DirectionTable({ analysis }: { analysis: SignalAnalysis }) {
+function BucketAccordion({ buckets }: { buckets: BucketAnalysis[] }) {
+  return (
+    <Accordion type="multiple" defaultValue={buckets.map(b => b.bucket_label)} className="space-y-4">
+      {buckets.map((bucket) => (
+        <AccordionItem key={bucket.bucket_label} value={bucket.bucket_label} className="border rounded-lg">
+          <AccordionTrigger className="px-4 hover:no-underline">
+            <div className="flex items-center gap-3">
+              <Clock className="h-4 w-4 text-muted-foreground" />
+              <span className="font-semibold">{bucket.bucket_label} remaining</span>
+              <span className="text-sm text-muted-foreground">
+                ({bucket.up.total_signals + bucket.down.total_signals} signals)
+              </span>
+            </div>
+          </AccordionTrigger>
+          <AccordionContent className="px-4 pb-4 space-y-4">
+            <DirectionTable analysis={bucket.up} compact />
+            <DirectionTable analysis={bucket.down} compact />
+          </AccordionContent>
+        </AccordionItem>
+      ))}
+    </Accordion>
+  );
+}
+
+function DirectionTable({ analysis, compact = false }: { analysis: SignalAnalysis; compact?: boolean }) {
   if (!analysis) return null;
   
   const isUp = analysis.direction === 'UP';
@@ -64,10 +108,10 @@ function DirectionTable({ analysis }: { analysis: SignalAnalysis }) {
   const bgColor = isUp ? 'bg-green-500/10' : 'bg-red-500/10';
 
   return (
-    <Card>
-      <CardHeader className={bgColor}>
-        <CardTitle className={`flex items-center gap-2 ${color}`}>
-          <Icon className="h-5 w-5" />
+    <Card className={compact ? 'shadow-sm' : ''}>
+      <CardHeader className={`${bgColor} ${compact ? 'py-3' : ''}`}>
+        <CardTitle className={`flex items-center gap-2 ${color} ${compact ? 'text-base' : ''}`}>
+          <Icon className={compact ? 'h-4 w-4' : 'h-5 w-5'} />
           {analysis.direction} Signals
         </CardTitle>
         <CardDescription>

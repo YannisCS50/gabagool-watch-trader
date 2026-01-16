@@ -40,9 +40,26 @@ export interface SignalAnalysis {
   stats_by_second: SecondStats[];
 }
 
-export function useSignalAnalysis(asset?: string) {
+export interface BucketAnalysis {
+  bucket_label: string;
+  bucket_min_sec: number;
+  bucket_max_sec: number;
+  up: SignalAnalysis;
+  down: SignalAnalysis;
+}
+
+// Time remaining buckets in seconds
+const TIME_BUCKETS = [
+  { label: '0-60s', min: 0, max: 60 },
+  { label: '60-120s', min: 60, max: 120 },
+  { label: '120-300s', min: 120, max: 300 },
+  { label: '300-600s', min: 300, max: 600 },
+  { label: '600s+', min: 600, max: Infinity },
+];
+
+export function useSignalAnalysis(asset?: string, bucket?: string) {
   return useQuery({
-    queryKey: ['signal-analysis', asset],
+    queryKey: ['signal-analysis', asset, bucket],
     queryFn: async () => {
       // Fetch all ticks for analysis
       let query = supabase
@@ -57,9 +74,17 @@ export function useSignalAnalysis(asset?: string) {
       const { data: allTicks, error } = await query;
       if (error) throw error;
 
+      // Parse market end time from slug and calculate seconds remaining
+      const ticksWithSecondsRemaining = (allTicks || []).map(tick => {
+        const endTimeMatch = tick.market_slug?.match(/-(\d+)$/);
+        const endTimeMs = endTimeMatch ? parseInt(endTimeMatch[1]) * 1000 : null;
+        const secondsRemaining = endTimeMs ? Math.floor((endTimeMs - tick.ts) / 1000) : null;
+        return { ...tick, secondsRemaining };
+      });
+
       // Group ticks by market_slug for efficient lookup
-      const ticksByMarket = new Map<string, FollowupTick[]>();
-      for (const tick of allTicks || []) {
+      const ticksByMarket = new Map<string, (FollowupTick & { secondsRemaining: number | null })[]>();
+      for (const tick of ticksWithSecondsRemaining) {
         const existing = ticksByMarket.get(tick.market_slug);
         if (existing) {
           existing.push(tick);
@@ -68,23 +93,101 @@ export function useSignalAnalysis(asset?: string) {
         }
       }
 
-      // Find signal ticks
-      const upSignals: (SignalTick & { binance_delta: number })[] = [];
-      const downSignals: (SignalTick & { binance_delta: number })[] = [];
-
-      for (const tick of allTicks || []) {
-        if (tick.signal_direction === 'UP') {
-          upSignals.push(tick as SignalTick & { binance_delta: number });
-        } else if (tick.signal_direction === 'DOWN') {
-          downSignals.push(tick as SignalTick & { binance_delta: number });
+      // If a specific bucket is requested, filter and return single analysis
+      if (bucket && bucket !== 'all') {
+        const bucketDef = TIME_BUCKETS.find(b => b.label === bucket);
+        if (bucketDef) {
+          const filteredSignals = ticksWithSecondsRemaining.filter(
+            t => t.signal_direction && 
+                 t.secondsRemaining !== null && 
+                 t.secondsRemaining >= bucketDef.min && 
+                 t.secondsRemaining < bucketDef.max
+          );
+          
+          const upSignals = filteredSignals.filter(t => t.signal_direction === 'UP') as (SignalTick & { binance_delta: number })[];
+          const downSignals = filteredSignals.filter(t => t.signal_direction === 'DOWN') as (SignalTick & { binance_delta: number })[];
+          
+          return {
+            up: analyzeDirection(upSignals, ticksByMarket, 'UP'),
+            down: analyzeDirection(downSignals, ticksByMarket, 'DOWN'),
+          };
         }
       }
 
-      // Analyze each direction
-      const upAnalysis = analyzeDirection(upSignals, ticksByMarket, 'UP');
-      const downAnalysis = analyzeDirection(downSignals, ticksByMarket, 'DOWN');
+      // Default: return overall analysis
+      const upSignals = ticksWithSecondsRemaining.filter(t => t.signal_direction === 'UP') as (SignalTick & { binance_delta: number })[];
+      const downSignals = ticksWithSecondsRemaining.filter(t => t.signal_direction === 'DOWN') as (SignalTick & { binance_delta: number })[];
 
-      return { up: upAnalysis, down: downAnalysis };
+      return {
+        up: analyzeDirection(upSignals, ticksByMarket, 'UP'),
+        down: analyzeDirection(downSignals, ticksByMarket, 'DOWN'),
+      };
+    },
+    staleTime: 60000,
+  });
+}
+
+// New hook that returns analysis per bucket
+export function useSignalAnalysisByBucket(asset?: string) {
+  return useQuery({
+    queryKey: ['signal-analysis-by-bucket', asset],
+    queryFn: async () => {
+      // Fetch all ticks for analysis
+      let query = supabase
+        .from('v29_ticks')
+        .select('ts, signal_direction, binance_price, binance_delta, chainlink_price, up_best_bid, down_best_bid, market_slug, asset')
+        .order('ts', { ascending: true });
+
+      if (asset && asset !== 'all') {
+        query = query.eq('asset', asset);
+      }
+
+      const { data: allTicks, error } = await query;
+      if (error) throw error;
+
+      // Parse market end time from slug and calculate seconds remaining
+      const ticksWithSecondsRemaining = (allTicks || []).map(tick => {
+        const endTimeMatch = tick.market_slug?.match(/-(\d+)$/);
+        const endTimeMs = endTimeMatch ? parseInt(endTimeMatch[1]) * 1000 : null;
+        const secondsRemaining = endTimeMs ? Math.floor((endTimeMs - tick.ts) / 1000) : null;
+        return { ...tick, secondsRemaining };
+      });
+
+      // Group ticks by market_slug for efficient lookup
+      const ticksByMarket = new Map<string, (FollowupTick & { secondsRemaining: number | null })[]>();
+      for (const tick of ticksWithSecondsRemaining) {
+        const existing = ticksByMarket.get(tick.market_slug);
+        if (existing) {
+          existing.push(tick);
+        } else {
+          ticksByMarket.set(tick.market_slug, [tick]);
+        }
+      }
+
+      // Analyze each bucket
+      const bucketAnalyses: BucketAnalysis[] = [];
+      
+      for (const bucketDef of TIME_BUCKETS) {
+        const filteredSignals = ticksWithSecondsRemaining.filter(
+          t => t.signal_direction && 
+               t.secondsRemaining !== null && 
+               t.secondsRemaining >= bucketDef.min && 
+               t.secondsRemaining < bucketDef.max
+        );
+        
+        const upSignals = filteredSignals.filter(t => t.signal_direction === 'UP') as (SignalTick & { binance_delta: number })[];
+        const downSignals = filteredSignals.filter(t => t.signal_direction === 'DOWN') as (SignalTick & { binance_delta: number })[];
+        
+        bucketAnalyses.push({
+          bucket_label: bucketDef.label,
+          bucket_min_sec: bucketDef.min,
+          bucket_max_sec: bucketDef.max,
+          up: analyzeDirection(upSignals, ticksByMarket, 'UP'),
+          down: analyzeDirection(downSignals, ticksByMarket, 'DOWN'),
+        });
+      }
+
+      return bucketAnalyses;
     },
     staleTime: 60000,
   });
