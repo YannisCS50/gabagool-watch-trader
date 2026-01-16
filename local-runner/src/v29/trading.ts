@@ -94,22 +94,36 @@ function asErrorMessage(err: unknown): string {
       if (msg && !msg.includes('Converting circular structure to JSON')) return msg;
     }
 
-    // Fallback: safe inspection (handles circular refs)
+    // Fallback: safe inspection (handles circular refs) - but SKIP huge objects like requests/sockets
     try {
+      // Check if this looks like a request/socket object - don't log these
+      if (anyC?._events || anyC?._readableState || anyC?.socket || anyC?.servername) {
+        continue; // Skip request/socket objects entirely
+      }
+      
       const inspected = util.inspect(anyC, {
         depth: 2,
         breakLength: 120,
         maxStringLength: 240,
         maxArrayLength: 20,
       });
-      if (inspected && inspected !== '[object Object]' && !inspected.includes('TLSSocket')) return inspected;
+      
+      // Skip if it looks like a socket/request dump or is too long
+      if (inspected && 
+          inspected.length < 500 && 
+          inspected !== '[object Object]' && 
+          !inspected.includes('TLSSocket') &&
+          !inspected.includes('_readableState') &&
+          !inspected.includes('servername')) {
+        return inspected;
+      }
     } catch {
       // ignore
     }
   }
 
-  // Last resort: log to console for debugging when we can't extract message
-  console.error('[asErrorMessage] Could not extract message from:', err);
+  // Last resort: return a generic message without logging the whole error
+  // (the error is often a huge request object that's not useful)
   return 'Unknown error (see console for details)';
 }
 
@@ -1028,7 +1042,21 @@ async function placeSingleBuyOrder(
     const response = await client.postOrder(signedOrder!, OrderType.GTC);
     
     if (!response.success || !response.orderID) {
-      const msg = asErrorMessage(response.errorMsg) || 'Order rejected';
+      // Extract error from various possible fields in the response
+      let msg = 'Order rejected';
+      
+      if (response.errorMsg && typeof response.errorMsg === 'string') {
+        msg = response.errorMsg;
+      } else if ((response as any).error && typeof (response as any).error === 'string') {
+        msg = (response as any).error;
+      } else if ((response as any).message && typeof (response as any).message === 'string') {
+        msg = (response as any).message;
+      } else if ((response as any).reason && typeof (response as any).reason === 'string') {
+        msg = (response as any).reason;
+      } else if ((response as any).code) {
+        msg = `Order rejected (code: ${(response as any).code})`;
+      }
+      
       log(`❌ Order failed: ${msg}`);
       return { success: false, error: msg, latencyMs: Date.now() - start };
     }
@@ -1189,7 +1217,30 @@ export async function placeSellOrder(
     const orderId = response.orderID;
     
     if (!response.success || !orderId) {
-      const errMsg = asErrorMessage(response.errorMsg) || 'Sell rejected';
+      // Extract error from various possible fields in the response
+      let errMsg = 'Sell rejected';
+      
+      if (response.errorMsg && typeof response.errorMsg === 'string') {
+        errMsg = response.errorMsg;
+      } else if ((response as any).error && typeof (response as any).error === 'string') {
+        errMsg = (response as any).error;
+      } else if ((response as any).message && typeof (response as any).message === 'string') {
+        errMsg = (response as any).message;
+      } else if ((response as any).reason && typeof (response as any).reason === 'string') {
+        errMsg = (response as any).reason;
+      } else {
+        // Log the actual response structure for debugging (but keep it short)
+        const keys = Object.keys(response).filter(k => k !== 'orderID');
+        log(`⚠️ Rejection response keys: ${keys.join(', ')}`);
+        
+        // Check for status code or other hints
+        if ((response as any).status) {
+          errMsg = `Sell rejected (status: ${(response as any).status})`;
+        } else if ((response as any).code) {
+          errMsg = `Sell rejected (code: ${(response as any).code})`;
+        }
+      }
+      
       log(`⚠️ Order rejected: ${errMsg}`);
       return { success: false, error: errMsg, latencyMs: Date.now() - start };
     }
