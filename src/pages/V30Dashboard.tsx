@@ -8,6 +8,7 @@ import {
   V30StatsCards,
   V30LogViewer,
   V30FairValueExplainer,
+  V30BetPnLTable,
 } from '@/components/v30';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -65,6 +66,9 @@ export default function V30Dashboard() {
 
         {/* Live Status Grid */}
         <V30LiveStatus ticks={ticks} assets={config.assets} />
+
+        {/* Bet P/L Table */}
+        <V30BetPnLTable />
 
         {/* Log Viewer - Full Width */}
         <V30LogViewer />
