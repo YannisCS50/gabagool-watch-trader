@@ -27,38 +27,77 @@ export function useSignalQualityData(filters: SignalQualityFilters = {}) {
   return useQuery({
     queryKey: ['signal-quality-analysis', filters],
     queryFn: async (): Promise<SignalQualityAnalysis[]> => {
-      let query = supabase
-        .from('signal_quality_analysis')
-        .select('*')
-        .order('created_at', { ascending: false });
-      
-      if (filters.asset && filters.asset !== 'all') {
-        query = query.eq('asset', filters.asset);
-      }
-      if (filters.deltaBucket) {
-        query = query.eq('delta_bucket', filters.deltaBucket);
-      }
-      if (filters.spotLeadBucket) {
-        query = query.eq('spot_lead_bucket', filters.spotLeadBucket);
-      }
-      if (filters.shouldTrade !== undefined) {
-        query = query.eq('should_trade', filters.shouldTrade);
-      }
-      if (filters.timeRemaining) {
-        query = query
-          .gte('time_remaining_seconds', filters.timeRemaining.min)
-          .lte('time_remaining_seconds', filters.timeRemaining.max);
-      }
+      // If a specific limit is set, use simple query
       if (filters.limit) {
-        query = query.limit(filters.limit);
-      } else {
-        query = query.limit(500);
+        let query = supabase
+          .from('signal_quality_analysis')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(filters.limit);
+        
+        if (filters.asset && filters.asset !== 'all') {
+          query = query.eq('asset', filters.asset);
+        }
+        if (filters.deltaBucket) {
+          query = query.eq('delta_bucket', filters.deltaBucket);
+        }
+        if (filters.spotLeadBucket) {
+          query = query.eq('spot_lead_bucket', filters.spotLeadBucket);
+        }
+        if (filters.shouldTrade !== undefined) {
+          query = query.eq('should_trade', filters.shouldTrade);
+        }
+        if (filters.timeRemaining) {
+          query = query
+            .gte('time_remaining_seconds', filters.timeRemaining.min)
+            .lte('time_remaining_seconds', filters.timeRemaining.max);
+        }
+        
+        const { data, error } = await query;
+        if (error) throw error;
+        return (data || []) as unknown as SignalQualityAnalysis[];
       }
       
-      const { data, error } = await query;
+      // No limit - paginate to get ALL data
+      const allData: SignalQualityAnalysis[] = [];
+      let offset = 0;
+      const pageSize = 1000;
       
-      if (error) throw error;
-      return (data || []) as unknown as SignalQualityAnalysis[];
+      while (true) {
+        let query = supabase
+          .from('signal_quality_analysis')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .range(offset, offset + pageSize - 1);
+        
+        if (filters.asset && filters.asset !== 'all') {
+          query = query.eq('asset', filters.asset);
+        }
+        if (filters.deltaBucket) {
+          query = query.eq('delta_bucket', filters.deltaBucket);
+        }
+        if (filters.spotLeadBucket) {
+          query = query.eq('spot_lead_bucket', filters.spotLeadBucket);
+        }
+        if (filters.shouldTrade !== undefined) {
+          query = query.eq('should_trade', filters.shouldTrade);
+        }
+        if (filters.timeRemaining) {
+          query = query
+            .gte('time_remaining_seconds', filters.timeRemaining.min)
+            .lte('time_remaining_seconds', filters.timeRemaining.max);
+        }
+        
+        const { data, error } = await query;
+        if (error) throw error;
+        if (!data || data.length === 0) break;
+        
+        allData.push(...(data as unknown as SignalQualityAnalysis[]));
+        offset += pageSize;
+        if (data.length < pageSize) break;
+      }
+      
+      return allData;
     },
     staleTime: 30000,
   });
