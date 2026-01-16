@@ -310,6 +310,27 @@ async function executeEntry(asset: Asset, signal: Signal, market: MarketInfo): P
   const state = priceState[asset];
   const direction = signal.direction;
   
+  // CRITICAL: Check market is still active (not expired)
+  const now = Date.now();
+  const msToExpiry = market.endTime.getTime() - now;
+  
+  if (msToExpiry <= 0) {
+    logAsset(asset, `⚠️ SKIP: market expired ${Math.abs(msToExpiry / 1000).toFixed(0)}s ago`);
+    signal.status = 'skipped';
+    signal.skip_reason = 'market_expired';
+    void saveSignalLog(signal, state);
+    return;
+  }
+  
+  // Don't trade in last 30 seconds (orderbook often empty)
+  if (msToExpiry < 30_000) {
+    logAsset(asset, `⚠️ SKIP: too close to expiry (${(msToExpiry / 1000).toFixed(0)}s remaining)`);
+    signal.status = 'skipped';
+    signal.skip_reason = 'too_close_to_expiry';
+    void saveSignalLog(signal, state);
+    return;
+  }
+  
   const bestBid = direction === 'UP' ? state.upBestBid : state.downBestBid;
   const bestAsk = direction === 'UP' ? state.upBestAsk : state.downBestAsk;
   
