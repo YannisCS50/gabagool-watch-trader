@@ -59,7 +59,7 @@ export async function loadConfig(): Promise<Record<string, unknown> | null> {
   try {
     const db = getDb();
     const { data, error } = await db
-      .from('v29_config')
+      .from('v29_config_response')
       .select('*')
       .eq('id', 'v29-response')
       .maybeSingle();

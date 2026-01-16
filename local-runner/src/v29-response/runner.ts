@@ -66,6 +66,7 @@ let totalPnl = 0;
 let orderbookPollInterval: NodeJS.Timeout | null = null;
 let heartbeatInterval: NodeJS.Timeout | null = null;
 let marketRefreshInterval: NodeJS.Timeout | null = null;
+let configRefreshInterval: NodeJS.Timeout | null = null;
 
 // ============================================
 // LOGGING (async, non-blocking)
@@ -661,6 +662,30 @@ async function sendStatusHeartbeat(): Promise<void> {
 }
 
 // ============================================
+// CONFIG REFRESH
+// ============================================
+
+async function refreshConfig(): Promise<void> {
+  try {
+    const dbConfig = await loadConfig();
+    if (dbConfig) {
+      const oldSpread = config.max_spread_cents;
+      const oldDelta = config.signal_delta_usd;
+      
+      // Merge DB values into config
+      config = { ...DEFAULT_CONFIG, ...dbConfig } as V29Config;
+      
+      // Log if important settings changed
+      if (dbConfig.max_spread_cents !== oldSpread || dbConfig.signal_delta_usd !== oldDelta) {
+        log(`🔄 Config updated: spread=${config.max_spread_cents}¢, delta=$${config.signal_delta_usd}`);
+      }
+    }
+  } catch (err) {
+    logError('Config refresh failed', err);
+  }
+}
+
+// ============================================
 // MAIN
 // ============================================
 
@@ -734,6 +759,9 @@ async function main(): Promise<void> {
   // Start market refresh
   marketRefreshInterval = setInterval(fetchMarkets, 60_000);
   
+  // Start config refresh (every 30 seconds)
+  configRefreshInterval = setInterval(refreshConfig, 30_000);
+  
   // Start heartbeat
   heartbeatInterval = setInterval(sendStatusHeartbeat, 10_000);
   
@@ -753,6 +781,7 @@ async function main(): Promise<void> {
     // Clear intervals
     if (orderbookPollInterval) clearInterval(orderbookPollInterval);
     if (marketRefreshInterval) clearInterval(marketRefreshInterval);
+    if (configRefreshInterval) clearInterval(configRefreshInterval);
     if (heartbeatInterval) clearInterval(heartbeatInterval);
     
     // Clear position monitors
