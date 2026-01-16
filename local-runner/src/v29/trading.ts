@@ -108,7 +108,9 @@ function asErrorMessage(err: unknown): string {
     }
   }
 
-  return 'Unknown error';
+  // Last resort: log to console for debugging when we can't extract message
+  console.error('[asErrorMessage] Could not extract message from:', err);
+  return 'Unknown error (see console for details)';
 }
 
 interface OrderResult {
@@ -1240,6 +1242,8 @@ export async function placeSellOrder(
       };
     }
     
+    // No fill at all - log clearly
+    log(`⚠️ Sell GTC timeout: 0/${roundedShares} filled at ${(roundedPrice * 100).toFixed(1)}¢`);
     return { 
       success: false, 
       error: `GTC timeout: 0/${roundedShares} filled at ${(roundedPrice * 100).toFixed(1)}¢`, 
@@ -1247,7 +1251,10 @@ export async function placeSellOrder(
     };
   } catch (err) {
     const msg = asErrorMessage(err);
-    return { success: false, error: msg, latencyMs: Date.now() - start };
+    log(`❌ Sell error: ${msg}`);
+    // Log full error for debugging
+    console.error('[V29:Trade] Full sell error:', err);
+    return { success: false, error: msg || 'Sell exception', latencyMs: Date.now() - start };
   }
 }
 
