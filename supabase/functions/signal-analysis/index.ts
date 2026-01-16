@@ -20,25 +20,10 @@ serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
     );
 
-    // Build asset filter
-    const assetFilter = asset !== "all" ? `AND asset = '${asset}'` : "";
+    // Server-side aggregation (avoid pulling 300k+ rows to the browser)
+    const result = await simpleAnalysis(supabase, asset);
 
-    // Query that calculates everything in SQL
-    const { data, error } = await supabase.rpc("analyze_signals", { 
-      asset_filter: asset === "all" ? null : asset 
-    });
-
-    if (error) {
-      // If RPC doesn't exist, fall back to raw SQL approach
-      console.log("RPC not found, using raw query");
-      
-      const result = await analyzeWithRawQueries(supabase, asset);
-      return new Response(JSON.stringify(result), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    return new Response(JSON.stringify(data), {
+    return new Response(JSON.stringify(result), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (err: unknown) {
@@ -169,17 +154,31 @@ async function analyzeWithRawQueries(supabase: any, asset: string) {
 }
 
 async function simpleAnalysis(supabase: any, asset: string) {
-  // Fetch just signal ticks (much smaller dataset)
-  const assetFilter = asset !== "all" ? { asset } : {};
-  
-  const { data: signals, error: sigError } = await supabase
-    .from('v29_ticks')
-    .select('ts, signal_direction, binance_delta, chainlink_price, up_best_bid, down_best_bid, market_slug, asset')
-    .not('signal_direction', 'is', null)
-    .match(asset !== "all" ? { asset } : {})
-    .order('ts', { ascending: true });
+  // Fetch all signal ticks (paginate; PostgREST max-rows is typically 1000)
+  const signals: any[] = [];
+  let offset = 0;
+  const pageSize = 1000;
+  const maxPages = 50; // 50k signals safety
 
-  if (sigError) throw sigError;
+  for (let page = 0; page < maxPages; page++) {
+    let q = supabase
+      .from('v29_ticks')
+      .select('ts, signal_direction, binance_delta, chainlink_price, up_best_bid, down_best_bid, market_slug, asset')
+      .not('signal_direction', 'is', null)
+      .order('ts', { ascending: true })
+      .range(offset, offset + pageSize - 1);
+
+    if (asset !== 'all') q = q.eq('asset', asset);
+
+    const { data, error } = await q;
+    if (error) throw error;
+    if (!data || data.length === 0) break;
+
+    signals.push(...data);
+
+    if (data.length < pageSize) break;
+    offset += pageSize;
+  }
 
   // Group signals by market
   const signalsByMarket = new Map<string, any[]>();
@@ -194,23 +193,35 @@ async function simpleAnalysis(supabase: any, asset: string) {
   const marketSlugs = Array.from(signalsByMarket.keys());
   const allFollowups = new Map<string, any[]>();
   
-  // Batch fetch
+  // Batch fetch (paginate because of max-rows)
   const batchSize = 50;
+  const pageSizeTicks = 1000;
+  const maxPagesTicks = 1000; // safety
+
   for (let i = 0; i < marketSlugs.length; i += batchSize) {
     const batch = marketSlugs.slice(i, i + batchSize);
-    const { data: ticks, error: tickError } = await supabase
-      .from('v29_ticks')
-      .select('ts, chainlink_price, up_best_bid, down_best_bid, market_slug')
-      .in('market_slug', batch)
-      .order('ts', { ascending: true });
 
-    if (tickError) throw tickError;
+    let offsetTicks = 0;
+    for (let page = 0; page < maxPagesTicks; page++) {
+      const { data: ticks, error: tickError } = await supabase
+        .from('v29_ticks')
+        .select('ts, chainlink_price, up_best_bid, down_best_bid, market_slug')
+        .in('market_slug', batch)
+        .order('ts', { ascending: true })
+        .range(offsetTicks, offsetTicks + pageSizeTicks - 1);
 
-    for (const t of ticks || []) {
-      if (!allFollowups.has(t.market_slug)) {
-        allFollowups.set(t.market_slug, []);
+      if (tickError) throw tickError;
+      if (!ticks || ticks.length === 0) break;
+
+      for (const t of ticks) {
+        if (!allFollowups.has(t.market_slug)) {
+          allFollowups.set(t.market_slug, []);
+        }
+        allFollowups.get(t.market_slug)!.push(t);
       }
-      allFollowups.get(t.market_slug)!.push(t);
+
+      if (ticks.length < pageSizeTicks) break;
+      offsetTicks += pageSizeTicks;
     }
   }
 
