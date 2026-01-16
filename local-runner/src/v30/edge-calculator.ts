@@ -22,6 +22,9 @@ export class EdgeCalculator {
 
   /**
    * Calculate edges for both sides
+   * 
+   * CRITICAL FIX: Also check that fair value is high enough to trade!
+   * With delta=-$113, P(UP wins) might be <5% - never buy UP regardless of price!
    */
   calculateEdge(
     upBestAsk: number,
@@ -40,10 +43,30 @@ export class EdgeCalculator {
     // Dynamic threshold
     const theta = this.calculateThreshold(secRemaining, inventory);
 
+    // ===========================================
+    // CRITICAL: MINIMUM FAIR VALUE CHECK
+    // ===========================================
+    // Never trade a side where fair value is too low!
+    // Even if price is "cheap", if fair value is <10%, 
+    // we're almost certainly going to lose.
+    //
+    // Example: delta=-$113, P(UP)=3%, UP price=5¢
+    //   Edge = 5¢ - 3¢ = +2¢ (overpriced, no signal anyway)
+    //   BUT even if edge was negative, we shouldn't trade!
+    //
+    // Minimum thresholds:
+    // - High confidence (crossing model validated): 10%
+    // - Low confidence (heuristic): 15% (more conservative)
+    const minFairValue = fairValue.confidence > 0.5 
+      ? this.config.min_fair_value_to_trade ?? 0.10
+      : this.config.min_fair_value_to_trade_low_confidence ?? 0.15;
+    
     // Signal generation
-    // Buy if edge is negative enough (price below fair value by more than theta)
-    const signal_up = edge_up < -theta;
-    const signal_down = edge_down < -theta;
+    // Buy if:
+    // 1. Edge is negative enough (price below fair value by more than theta)
+    // 2. Fair value is high enough to be worth trading
+    const signal_up = edge_up < -theta && fairValue.p_up >= minFairValue;
+    const signal_down = edge_down < -theta && fairValue.p_down >= minFairValue;
 
     return {
       edge_up,
@@ -51,6 +74,11 @@ export class EdgeCalculator {
       theta,
       signal_up,
       signal_down,
+      // Include fair values for debugging
+      fair_p_up: fairValue.p_up,
+      fair_p_down: fairValue.p_down,
+      min_fair_value_used: minFairValue,
+      confidence: fairValue.confidence,
     };
   }
 
