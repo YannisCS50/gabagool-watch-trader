@@ -14,7 +14,7 @@ import { RefreshCw, ArrowLeft } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 export default function V30Dashboard() {
-  const { config, ticks, positions, stats, loading, error, updateConfig, refetch } = useV30Data();
+  const { config, ticks, positions, stats, loading, error, isConnected, lastUpdate, updateConfig, refetch } = useV30Data();
 
   if (loading) {
     return (
@@ -38,6 +38,7 @@ export default function V30Dashboard() {
             </Link>
             <div className="flex items-center gap-2">
               <h1 className="text-xl font-bold">V30 Market-Maker</h1>
+              <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500 animate-pulse' : 'bg-yellow-500'}`} />
               <Badge variant={config.enabled ? 'default' : 'secondary'}>
                 {config.enabled ? 'Active' : 'Disabled'}
               </Badge>
@@ -58,8 +59,8 @@ export default function V30Dashboard() {
           </div>
         )}
 
-        {/* Stats Overview */}
-        <V30StatsCards stats={stats} />
+        {/* Stats Overview with live status */}
+        <V30StatsCards stats={stats} lastUpdate={lastUpdate} isConnected={isConnected} />
 
         {/* Live Status Grid */}
         <V30LiveStatus ticks={ticks} assets={config.assets} />

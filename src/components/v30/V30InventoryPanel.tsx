@@ -1,3 +1,4 @@
+import { forwardRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
@@ -8,7 +9,7 @@ interface Props {
   config: V30Config;
 }
 
-export function V30InventoryPanel({ positions, config }: Props) {
+export const V30InventoryPanel = forwardRef<HTMLDivElement, Props>(({ positions, config }, ref) => {
   // Group positions by asset
   const byAsset = config.assets.reduce((acc, asset) => {
     const assetPositions = positions.filter(p => p.asset === asset);
@@ -118,4 +119,6 @@ export function V30InventoryPanel({ positions, config }: Props) {
       </CardContent>
     </Card>
   );
-}
+});
+
+V30InventoryPanel.displayName = 'V30InventoryPanel';

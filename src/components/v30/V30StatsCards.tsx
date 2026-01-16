@@ -1,14 +1,46 @@
+import { useState, useEffect } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
-import { TrendingUp, TrendingDown, Activity, Zap } from 'lucide-react';
+import { TrendingUp, TrendingDown, Activity, Zap, Clock } from 'lucide-react';
 import type { V30Stats } from '@/hooks/useV30Data';
+import { formatDistanceToNow } from 'date-fns';
 
 interface Props {
   stats: V30Stats;
+  lastUpdate?: number;
+  isConnected?: boolean;
 }
 
-export function V30StatsCards({ stats }: Props) {
+export function V30StatsCards({ stats, lastUpdate, isConnected }: Props) {
+  const [now, setNow] = useState(Date.now());
+  
+  // Update every second for "last update" display
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const lastTickAge = stats.lastTickTs ? Math.floor((now - stats.lastTickTs) / 1000) : null;
+  const isLive = lastTickAge !== null && lastTickAge < 10;
+
   return (
-    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+      {/* Connection Status */}
+      <Card className={isLive ? 'border-green-500/50' : 'border-yellow-500/50'}>
+        <CardContent className="pt-4">
+          <div className="flex items-center gap-2">
+            <div className={`w-2 h-2 rounded-full ${isLive ? 'bg-green-500 animate-pulse' : 'bg-yellow-500'}`} />
+            <span className="text-sm text-muted-foreground">Status</span>
+          </div>
+          <div className={`text-lg font-bold mt-1 ${isLive ? 'text-green-400' : 'text-yellow-400'}`}>
+            {isLive ? 'LIVE' : 'STALE'}
+          </div>
+          <div className="text-xs text-muted-foreground flex items-center gap-1">
+            <Clock className="h-3 w-3" />
+            {lastTickAge !== null ? `${lastTickAge}s ago` : 'No data'}
+          </div>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardContent className="pt-4">
           <div className="flex items-center gap-2">
