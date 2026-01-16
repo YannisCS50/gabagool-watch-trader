@@ -54,6 +54,13 @@ export interface V29RConfig {
   down_target_min: number;
   down_target_max: number;
   down_max_hold_sec: number;
+  // Filter settings
+  max_spread_cents: number;
+  min_share_price: number;
+  max_share_price: number;
+  max_share_move_cents: number;
+  cooldown_ms: number;
+  max_exposure_usd: number;
   updated_at: string | null;
 }
 
@@ -80,6 +87,13 @@ const DEFAULT_CONFIG: V29RConfig = {
   down_target_min: 2.0,
   down_target_max: 2.4,
   down_max_hold_sec: 7,
+  // Filter settings
+  max_spread_cents: 1.0,
+  min_share_price: 0.15,
+  max_share_price: 0.85,
+  max_share_move_cents: 0.5,
+  cooldown_ms: 2000,
+  max_exposure_usd: 50,
   updated_at: null,
 };
 
