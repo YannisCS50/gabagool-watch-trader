@@ -23,8 +23,11 @@ export function OpportunityHeatmap({ buckets }: Props) {
   }
   
   const getColor = (bucket: StrategyBucket | undefined): string => {
-    if (!bucket || bucket.sampleCount < 3) return 'bg-muted/30';
-    
+    if (!bucket) return 'bg-muted/30';
+
+    // For very low sample sizes we still show the cell, but keep it visually muted.
+    if (bucket.sampleCount < 3) return 'bg-muted/40 text-muted-foreground';
+
     const wr = bucket.winRate;
     if (wr >= 65) return 'bg-green-600 text-white';
     if (wr >= 55) return 'bg-green-400 text-black';
@@ -77,7 +80,7 @@ export function OpportunityHeatmap({ buckets }: Props) {
                         : 'Geen data'
                       }
                     >
-                      {bucket && bucket.sampleCount >= 3 ? (
+                      {bucket ? (
                         <>
                           {bucket.winRate.toFixed(0)}%
                           {bucket.isSignificant && <span className="ml-0.5">★</span>}
