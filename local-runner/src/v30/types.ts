@@ -19,6 +19,7 @@ export interface V30Config {
   aggressive_exit_sec: number;     // Seconds before expiry → aggressive close
   min_share_price: number;
   max_share_price: number;
+  min_time_remaining_sec: number;  // Don't start trading if less than this
 }
 
 export interface MarketInfo {
