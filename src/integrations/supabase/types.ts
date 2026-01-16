@@ -3717,6 +3717,7 @@ export type Database = {
           polymarket_tick_ts: number | null
           should_trade: boolean | null
           signal_id: string
+          source: string | null
           spot_lead_bucket: string | null
           spot_lead_ms: number | null
           spot_price_at_signal: number
@@ -3773,6 +3774,7 @@ export type Database = {
           polymarket_tick_ts?: number | null
           should_trade?: boolean | null
           signal_id: string
+          source?: string | null
           spot_lead_bucket?: string | null
           spot_lead_ms?: number | null
           spot_price_at_signal: number
@@ -3829,6 +3831,7 @@ export type Database = {
           polymarket_tick_ts?: number | null
           should_trade?: boolean | null
           signal_id?: string
+          source?: string | null
           spot_lead_bucket?: string | null
           spot_lead_ms?: number | null
           spot_price_at_signal?: number

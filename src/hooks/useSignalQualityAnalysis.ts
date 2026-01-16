@@ -191,125 +191,311 @@ export function useDeltaBucketConfig(asset?: string) {
   });
 }
 
-// Populate signal quality analysis from v29_signals_response
+// ============================================
+// POPULATE FROM BOTH v29_signals AND v29_signals_response
+// ============================================
+// These tables contain data from DIFFERENT time periods:
+// - v29_signals: 13 jan - 16 jan 10:46 (6,557 rows) 
+// - v29_signals_response: 16 jan 13:46 - now (159 rows)
+// We merge both to get complete signal history.
+
+interface RawSignalV29 {
+  id: string;
+  asset: string;
+  direction: string;
+  binance_price: number | null;
+  delta_usd: number | null;
+  share_price: number | null;
+  market_slug: string | null;
+  strike_price: number | null;
+  status: string | null;
+  entry_price: number | null;
+  exit_price: number | null;
+  exit_reason: string | null;
+  signal_ts: number | null;
+  fill_ts: number | null;
+  sell_ts: number | null;
+  net_pnl: number | null;
+  shares: number | null;
+}
+
+interface RawSignalV29Response {
+  id: string;
+  asset: string;
+  direction: string;
+  binance_price: number | null;
+  binance_delta: number | null;
+  binance_ts: number | null;
+  share_price_t0: number | null;
+  spread_t0: number | null;
+  best_bid_t0: number | null;
+  best_ask_t0: number | null;
+  market_slug: string | null;
+  strike_price: number | null;
+  status: string | null;
+  entry_price: number | null;
+  exit_price: number | null;
+  exit_type: string | null;
+  exit_reason: string | null;
+  signal_ts: number | null;
+  fill_ts: number | null;
+  exit_ts: number | null;
+  net_pnl: number | null;
+  gross_pnl: number | null;
+  fees: number | null;
+  shares: number | null;
+  price_at_1s: number | null;
+  price_at_2s: number | null;
+  price_at_3s: number | null;
+  price_at_5s: number | null;
+  decision_latency_ms: number | null;
+  order_latency_ms: number | null;
+  fill_latency_ms: number | null;
+}
+
+function computeDeltaBucket(asset: string, deltaAbs: number): string {
+  if (asset === 'BTC') {
+    if (deltaAbs >= 100) return 'd100+';
+    if (deltaAbs >= 50) return 'd50-100';
+    if (deltaAbs >= 20) return 'd20-50';
+    return 'd0-20';
+  } else if (asset === 'ETH') {
+    if (deltaAbs >= 10) return 'd10+';
+    if (deltaAbs >= 5) return 'd5-10';
+    if (deltaAbs >= 2) return 'd2-5';
+    return 'd0-2';
+  } else if (asset === 'SOL') {
+    if (deltaAbs >= 2) return 'd2+';
+    if (deltaAbs >= 1) return 'd1-2';
+    if (deltaAbs >= 0.5) return 'd0.5-1';
+    return 'd0-0.5';
+  } else if (asset === 'XRP') {
+    if (deltaAbs >= 0.02) return 'd0.02+';
+    if (deltaAbs >= 0.01) return 'd0.01-0.02';
+    if (deltaAbs >= 0.005) return 'd0.005-0.01';
+    return 'd0-0.005';
+  }
+  return 'd0-20';
+}
+
+function computeSpotLeadBucket(spotLeadMs: number | null): string {
+  if (spotLeadMs === null) return '<300ms';
+  if (spotLeadMs >= 800) return '>800ms';
+  if (spotLeadMs >= 300) return '300-800ms';
+  return '<300ms';
+}
+
+// Transform v29_signals (legacy format) to analysis record
+function transformV29Signal(s: RawSignalV29) {
+  const deltaAbs = Math.abs(s.delta_usd || 0);
+  const asset = s.asset || 'BTC';
+  const deltaBucket = computeDeltaBucket(asset, deltaAbs);
+  
+  // Legacy format doesn't have bid/ask, estimate from share_price
+  const estimatedSpread = 0.02; // Typical spread ~2 cents
+  const spreadUp = estimatedSpread;
+  const effectiveSpreadSell = estimatedSpread;
+  const effectiveSpreadHedge = estimatedSpread * 2;
+  
+  // No binance_ts in legacy, can't compute lead
+  const spotLeadMs = null;
+  const spotLeadBucket = '<300ms';
+  
+  // Estimate edge - legacy has less data
+  const edgeAfterSpread = Math.abs(s.delta_usd || 0) / 100 - effectiveSpreadSell;
+  const isFalseEdge = (s.delta_usd || 0) !== 0 && edgeAfterSpread < 0;
+  const wouldHaveLost = (s.net_pnl || 0) < 0;
+  
+  return {
+    signal_id: s.id,
+    market_id: s.market_slug || '',
+    asset,
+    direction: s.direction || 'UP',
+    timestamp_signal_detected: s.signal_ts || Date.now(),
+    time_remaining_seconds: 0,
+    strike_price: s.strike_price || 0,
+    spot_price_at_signal: s.binance_price || 0,
+    delta_usd: s.delta_usd || 0,
+    delta_bucket: deltaBucket,
+    
+    up_bid: s.share_price ? s.share_price - 0.01 : null,
+    up_ask: s.share_price,
+    down_bid: null,
+    down_ask: null,
+    
+    spread_up: spreadUp,
+    spread_down: spreadUp,
+    effective_spread_sell: effectiveSpreadSell,
+    effective_spread_hedge: effectiveSpreadHedge,
+    
+    actual_price_at_5s: null,
+    actual_price_at_7s: null,
+    actual_price_at_10s: null,
+    actual_pnl: s.net_pnl,
+    
+    binance_tick_ts: null,
+    polymarket_tick_ts: s.signal_ts,
+    spot_lead_ms: spotLeadMs,
+    spot_lead_bucket: spotLeadBucket,
+    
+    edge_after_spread_7s: edgeAfterSpread,
+    
+    chosen_exit_type: s.exit_reason ? 'sell' : 'none',
+    
+    bucket_n: 50,
+    bucket_confidence: 0.5, // Lower confidence for legacy data
+    
+    should_trade: edgeAfterSpread > 0,
+    would_have_lost_money: wouldHaveLost,
+    is_false_edge: isFalseEdge,
+    source: 'v29_signals',
+  };
+}
+
+// Transform v29_signals_response (new format) to analysis record
+function transformV29ResponseSignal(s: RawSignalV29Response) {
+  const deltaAbs = Math.abs(s.binance_delta || 0);
+  const asset = s.asset || 'BTC';
+  const deltaBucket = computeDeltaBucket(asset, deltaAbs);
+  
+  // New format has actual bid/ask
+  const spreadUp = (s.best_ask_t0 || 0) - (s.best_bid_t0 || 0);
+  const spreadDown = spreadUp;
+  const effectiveSpreadSell = spreadUp;
+  const effectiveSpreadHedge = ((s.best_ask_t0 || 0) * 2) - 1;
+  
+  // Compute lead/lag
+  const spotLeadMs = s.signal_ts && s.binance_ts 
+    ? (s.signal_ts - s.binance_ts) 
+    : null;
+  const spotLeadBucket = computeSpotLeadBucket(spotLeadMs);
+  
+  // Use actual price moves if available
+  const priceMove5s = s.price_at_5s ? (s.price_at_5s - (s.share_price_t0 || 0)) : null;
+  const edgeAfterSpread = priceMove5s !== null 
+    ? priceMove5s - effectiveSpreadSell 
+    : (Math.abs(s.binance_delta || 0) / 100 - effectiveSpreadSell);
+  
+  const isFalseEdge = (s.binance_delta || 0) !== 0 && edgeAfterSpread < 0;
+  const wouldHaveLost = (s.net_pnl || 0) < 0;
+  
+  // should_trade logic: edge > 0, lead >= 500ms, bucket has samples
+  const shouldTrade = edgeAfterSpread > 0 
+    && (spotLeadMs === null || spotLeadMs >= 500);
+  
+  return {
+    signal_id: s.id,
+    market_id: s.market_slug || '',
+    asset,
+    direction: s.direction || 'UP',
+    timestamp_signal_detected: s.signal_ts || Date.now(),
+    time_remaining_seconds: 0,
+    strike_price: s.strike_price || 0,
+    spot_price_at_signal: s.binance_price || 0,
+    delta_usd: s.binance_delta || 0,
+    delta_bucket: deltaBucket,
+    
+    up_bid: s.best_bid_t0,
+    up_ask: s.best_ask_t0,
+    down_bid: s.best_bid_t0,
+    down_ask: s.best_ask_t0,
+    
+    spread_up: spreadUp,
+    spread_down: spreadDown,
+    effective_spread_sell: effectiveSpreadSell,
+    effective_spread_hedge: effectiveSpreadHedge,
+    
+    actual_price_at_5s: s.price_at_5s,
+    actual_price_at_7s: s.price_at_5s, // Approximate
+    actual_price_at_10s: s.price_at_5s,
+    actual_pnl: s.net_pnl,
+    
+    binance_tick_ts: s.binance_ts,
+    polymarket_tick_ts: s.signal_ts,
+    spot_lead_ms: spotLeadMs,
+    spot_lead_bucket: spotLeadBucket,
+    
+    edge_after_spread_7s: edgeAfterSpread,
+    
+    chosen_exit_type: s.exit_type || 'none',
+    
+    bucket_n: 50,
+    bucket_confidence: 1.0,
+    
+    should_trade: shouldTrade,
+    would_have_lost_money: wouldHaveLost,
+    is_false_edge: isFalseEdge,
+    source: 'v29_signals_response',
+  };
+}
+
 export function usePopulateSignalQuality() {
   const queryClient = useQueryClient();
   
   return useMutation({
     mutationFn: async () => {
-      // Fetch recent signals from v29_signals_response that aren't yet in signal_quality_analysis
-      const { data: signals, error: fetchError } = await supabase
-        .from('v29_signals_response')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(200);
-      
-      if (fetchError) throw fetchError;
-      if (!signals || signals.length === 0) return { processed: 0 };
-      
-      // Check which ones already exist
-      const signalIds = signals.map(s => s.id);
-      const { data: existing } = await supabase
+      // Fetch existing signal IDs to avoid duplicates
+      const { data: existingData } = await supabase
         .from('signal_quality_analysis')
-        .select('signal_id')
-        .in('signal_id', signalIds);
+        .select('signal_id');
+      const existingIds = new Set((existingData || []).map(e => e.signal_id));
       
-      const existingIds = new Set((existing || []).map(e => e.signal_id));
-      const newSignals = signals.filter(s => !existingIds.has(s.id));
+      // Fetch from both sources in parallel
+      const [v29Result, v29ResponseResult] = await Promise.all([
+        supabase
+          .from('v29_signals')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(1000),
+        supabase
+          .from('v29_signals_response')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(500),
+      ]);
       
-      if (newSignals.length === 0) return { processed: 0 };
+      if (v29Result.error) throw v29Result.error;
+      if (v29ResponseResult.error) throw v29ResponseResult.error;
       
-      // Transform and insert
-      const records = newSignals.map(s => {
-        const deltaAbs = Math.abs(s.binance_delta || 0);
-        const asset = s.asset || 'BTC';
+      const v29Signals = (v29Result.data || []) as unknown as RawSignalV29[];
+      const v29ResponseSignals = (v29ResponseResult.data || []) as unknown as RawSignalV29Response[];
+      
+      // Filter out already processed signals
+      const newV29 = v29Signals.filter(s => !existingIds.has(s.id));
+      const newV29Response = v29ResponseSignals.filter(s => !existingIds.has(s.id));
+      
+      if (newV29.length === 0 && newV29Response.length === 0) {
+        return { processed: 0, fromV29: 0, fromV29Response: 0 };
+      }
+      
+      // Transform both sources
+      const recordsV29 = newV29.map(transformV29Signal);
+      const recordsV29Response = newV29Response.map(transformV29ResponseSignal);
+      const allRecords = [...recordsV29, ...recordsV29Response];
+      
+      // Insert in batches of 100
+      const batchSize = 100;
+      let inserted = 0;
+      
+      for (let i = 0; i < allRecords.length; i += batchSize) {
+        const batch = allRecords.slice(i, i + batchSize);
+        const { error: insertError } = await supabase
+          .from('signal_quality_analysis')
+          .insert(batch);
         
-        // Compute delta bucket
-        let deltaBucket = 'd0-20';
-        if (asset === 'BTC') {
-          if (deltaAbs >= 100) deltaBucket = 'd100+';
-          else if (deltaAbs >= 50) deltaBucket = 'd50-100';
-          else if (deltaAbs >= 20) deltaBucket = 'd20-50';
-        } else if (asset === 'ETH') {
-          if (deltaAbs >= 10) deltaBucket = 'd10+';
-          else if (deltaAbs >= 5) deltaBucket = 'd5-10';
-          else if (deltaAbs >= 2) deltaBucket = 'd2-5';
-          else deltaBucket = 'd0-2';
+        if (insertError) {
+          console.error('Batch insert error:', insertError);
+          // Continue with next batch
+        } else {
+          inserted += batch.length;
         }
-        
-        // Compute spreads
-        const spreadUp = (s.best_ask_t0 || 0) - (s.best_bid_t0 || 0);
-        const spreadDown = spreadUp; // Approximate if not available
-        const effectiveSpreadSell = spreadUp;
-        const effectiveSpreadHedge = ((s.best_ask_t0 || 0) + (s.best_ask_t0 || 0)) - 1;
-        
-        // Compute lead/lag
-        const spotLeadMs = s.signal_ts && s.binance_ts 
-          ? (s.signal_ts - s.binance_ts) 
-          : null;
-        let spotLeadBucket = '<300ms';
-        if (spotLeadMs !== null) {
-          if (spotLeadMs >= 800) spotLeadBucket = '>800ms';
-          else if (spotLeadMs >= 300) spotLeadBucket = '300-800ms';
-        }
-        
-        // Truth flags
-        const edgeAfterSpread = (s.price_at_5s || s.share_price_t0 || 0) - (s.share_price_t0 || 0) - effectiveSpreadSell;
-        const isFalseEdge = (s.binance_delta || 0) > 0 && edgeAfterSpread < 0;
-        const wouldHaveLost = (s.net_pnl || 0) < 0;
-        
-        return {
-          signal_id: s.id,
-          market_id: s.market_slug || '',
-          asset,
-          direction: s.direction || 'UP',
-          timestamp_signal_detected: s.signal_ts || Date.now(),
-          time_remaining_seconds: 0, // Would need to compute from market data
-          strike_price: s.strike_price || 0,
-          spot_price_at_signal: s.binance_price || 0,
-          delta_usd: s.binance_delta || 0,
-          delta_bucket: deltaBucket,
-          
-          up_bid: s.best_bid_t0,
-          up_ask: s.best_ask_t0,
-          down_bid: s.best_bid_t0,
-          down_ask: s.best_ask_t0,
-          
-          spread_up: spreadUp,
-          spread_down: spreadDown,
-          effective_spread_sell: effectiveSpreadSell,
-          effective_spread_hedge: effectiveSpreadHedge,
-          
-          actual_price_at_5s: s.price_at_5s,
-          actual_price_at_7s: s.price_at_5s, // Approximate
-          actual_price_at_10s: s.price_at_5s,
-          actual_pnl: s.net_pnl,
-          
-          binance_tick_ts: s.binance_ts,
-          polymarket_tick_ts: s.signal_ts,
-          spot_lead_ms: spotLeadMs,
-          spot_lead_bucket: spotLeadBucket,
-          
-          edge_after_spread_7s: edgeAfterSpread,
-          
-          chosen_exit_type: s.exit_type || 'none',
-          
-          bucket_n: 50, // Will be updated by aggregation
-          bucket_confidence: 1.0,
-          
-          should_trade: edgeAfterSpread > 0 && (spotLeadMs || 0) >= 500,
-          would_have_lost_money: wouldHaveLost,
-          is_false_edge: isFalseEdge,
-        };
-      });
+      }
       
-      const { error: insertError } = await supabase
-        .from('signal_quality_analysis')
-        .insert(records);
-      
-      if (insertError) throw insertError;
-      
-      return { processed: records.length };
+      return { 
+        processed: inserted, 
+        fromV29: recordsV29.length, 
+        fromV29Response: recordsV29Response.length 
+      };
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['signal-quality-analysis'] });
