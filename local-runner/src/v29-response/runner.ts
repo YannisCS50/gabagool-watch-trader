@@ -197,14 +197,31 @@ async function fetchMarkets(): Promise<void> {
 async function fetchOrderbook(asset: Asset, market: MarketInfo): Promise<void> {
   try {
     const book = await fetchMarketOrderbook(market);
-    
-    if (book.upBestAsk !== undefined) priceState[asset].upBestAsk = book.upBestAsk;
-    if (book.upBestBid !== undefined) priceState[asset].upBestBid = book.upBestBid;
-    if (book.downBestAsk !== undefined) priceState[asset].downBestAsk = book.downBestAsk;
-    if (book.downBestBid !== undefined) priceState[asset].downBestBid = book.downBestBid;
-    priceState[asset].lastOrderbookUpdate = Date.now();
-  } catch (err) {
-    // Silent fail
+
+    let didUpdate = false;
+
+    if (book.upBestAsk !== undefined) {
+      priceState[asset].upBestAsk = book.upBestAsk;
+      didUpdate = true;
+    }
+    if (book.upBestBid !== undefined) {
+      priceState[asset].upBestBid = book.upBestBid;
+      didUpdate = true;
+    }
+    if (book.downBestAsk !== undefined) {
+      priceState[asset].downBestAsk = book.downBestAsk;
+      didUpdate = true;
+    }
+    if (book.downBestBid !== undefined) {
+      priceState[asset].downBestBid = book.downBestBid;
+      didUpdate = true;
+    }
+
+    if (didUpdate) {
+      priceState[asset].lastOrderbookUpdate = Date.now();
+    }
+  } catch {
+    // If fetchMarketOrderbook throws (unexpected), keep previous book values.
   }
 }
 
