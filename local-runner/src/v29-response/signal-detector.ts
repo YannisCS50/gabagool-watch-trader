@@ -1,12 +1,11 @@
 /**
  * V29 Response-Based Strategy - Signal Detector
  * 
- * SIGNAL DEFINITION:
- * 1. Binance price move ≥ $6 within 300ms rolling window
+ * SIGNAL DEFINITION (tick-to-tick like V29):
+ * 1. Binance price move ≥ $6 between buffered ticks (100ms buffer)
  * 2. Direction: up-tick → UP, down-tick → DOWN
- * 3. Polymarket share price NOT moved more than +0.5¢
- * 4. Spread ≤ 1.0¢
- * 5. No toxicity (large taker fills in last 300ms) - TODO: implement via WS
+ * 3. Polymarket share price NOT moved more than max_share_move_cents
+ * 4. Spread ≤ max_spread_cents
  */
 
 import type { Asset, V29Config, Direction } from './config.js';
@@ -14,19 +13,26 @@ import type { PriceTick, PriceState, MarketInfo, Signal } from './types.js';
 import { randomUUID } from 'crypto';
 
 // ============================================
-// ROLLING PRICE WINDOW PER ASSET
+// TICK-TO-TICK PRICE TRACKING (like V29)
 // ============================================
 
-interface RollingWindow {
-  ticks: PriceTick[];
+interface TickBuffer {
+  // Last emitted price (from previous buffer window)
   lastEmittedPrice: number | null;
+  lastEmittedTs: number;
+  
+  // Current buffer window
+  bufferStart: number;
+  firstPrice: number | null;
+  lastPrice: number | null;
+  lastTs: number;
 }
 
-const rollingWindows: Record<Asset, RollingWindow> = {
-  BTC: { ticks: [], lastEmittedPrice: null },
-  ETH: { ticks: [], lastEmittedPrice: null },
-  SOL: { ticks: [], lastEmittedPrice: null },
-  XRP: { ticks: [], lastEmittedPrice: null },
+const tickBuffers: Record<Asset, TickBuffer> = {
+  BTC: { lastEmittedPrice: null, lastEmittedTs: 0, bufferStart: 0, firstPrice: null, lastPrice: null, lastTs: 0 },
+  ETH: { lastEmittedPrice: null, lastEmittedTs: 0, bufferStart: 0, firstPrice: null, lastPrice: null, lastTs: 0 },
+  SOL: { lastEmittedPrice: null, lastEmittedTs: 0, bufferStart: 0, firstPrice: null, lastPrice: null, lastTs: 0 },
+  XRP: { lastEmittedPrice: null, lastEmittedTs: 0, bufferStart: 0, firstPrice: null, lastPrice: null, lastTs: 0 },
 };
 
 // Track share price at last signal to detect if already repriced
@@ -46,7 +52,8 @@ export type SkipReason =
   | 'price_out_of_range'
   | 'cooldown'
   | 'position_open'
-  | 'exposure_limit';
+  | 'exposure_limit'
+  | 'no_previous_tick';
 
 // ============================================
 // SIGNAL RESULT
@@ -60,35 +67,68 @@ export interface SignalResult {
 }
 
 // ============================================
-// CORE DETECTION LOGIC
+// TICK-TO-TICK LOGIC (like V29)
 // ============================================
 
-export function addPriceTick(asset: Asset, price: number, ts: number): void {
-  const window = rollingWindows[asset];
-  window.ticks.push({ price, ts });
-}
-
-export function cleanOldTicks(asset: Asset, windowMs: number, now: number): void {
-  const window = rollingWindows[asset];
-  const cutoff = now - windowMs;
-  window.ticks = window.ticks.filter(t => t.ts >= cutoff);
-}
-
-export function getRollingDelta(asset: Asset): { delta: number; direction: Direction | null } {
-  const window = rollingWindows[asset];
+/**
+ * Add a price tick to the buffer.
+ * Returns true if buffer window completed and should check for signal.
+ */
+export function addPriceTick(asset: Asset, price: number, ts: number, bufferMs: number): boolean {
+  const buffer = tickBuffers[asset];
+  const now = Date.now();
   
-  if (window.ticks.length < 2) {
-    return { delta: 0, direction: null };
+  // First tick ever or buffer expired?
+  if (buffer.firstPrice === null || (now - buffer.bufferStart) >= bufferMs) {
+    // If we had a previous buffer, emit it
+    if (buffer.lastPrice !== null) {
+      buffer.lastEmittedPrice = buffer.lastPrice;
+      buffer.lastEmittedTs = buffer.lastTs;
+    }
+    
+    // Start new buffer
+    buffer.bufferStart = now;
+    buffer.firstPrice = price;
+    buffer.lastPrice = price;
+    buffer.lastTs = ts;
+    
+    // Signal to check for delta if we have previous emitted price
+    return buffer.lastEmittedPrice !== null;
   }
   
-  const first = window.ticks[0];
-  const last = window.ticks[window.ticks.length - 1];
-  const delta = last.price - first.price;
+  // Update current buffer
+  buffer.lastPrice = price;
+  buffer.lastTs = ts;
+  return false;
+}
+
+/**
+ * Get tick-to-tick delta (current buffer vs previous buffer)
+ */
+export function getTickDelta(asset: Asset): { delta: number; direction: Direction | null; currentPrice: number | null } {
+  const buffer = tickBuffers[asset];
+  
+  if (buffer.lastEmittedPrice === null || buffer.lastPrice === null) {
+    return { delta: 0, direction: null, currentPrice: buffer.lastPrice };
+  }
+  
+  const delta = buffer.lastPrice - buffer.lastEmittedPrice;
   
   return {
     delta,
     direction: delta > 0 ? 'UP' : delta < 0 ? 'DOWN' : null,
+    currentPrice: buffer.lastPrice,
   };
+}
+
+// Legacy functions for compatibility
+export function cleanOldTicks(_asset: Asset, _windowMs: number, _now: number): void {
+  // No-op: tick-to-tick doesn't use rolling window
+}
+
+export function getRollingDelta(asset: Asset): { delta: number; direction: Direction | null } {
+  const { delta, direction } = getTickDelta(asset);
+  return { delta, direction };
 }
 
 /**
@@ -118,12 +158,11 @@ export function checkSignal(
     return { triggered: false, skipReason: 'no_market' };
   }
   
-  // 3. Clean old ticks and calculate rolling delta
-  cleanOldTicks(asset, config.signal_window_ms, now);
-  const { delta, direction } = getRollingDelta(asset);
+  // 3. Get tick-to-tick delta (like V29)
+  const { delta, direction } = getTickDelta(asset);
   
   if (!direction) {
-    return { triggered: false, skipReason: 'delta_too_small' };
+    return { triggered: false, skipReason: 'no_previous_tick' };
   }
   
   // 4. Check delta threshold
