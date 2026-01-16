@@ -11,6 +11,7 @@ import { getOrderbookDepth, placeOrder, getClient } from '../polymarket.js';
 import { startPriceFeedLogger, stopPriceFeedLogger, type PriceFeedCallback } from '../price-feed-ws-logger.js';
 import { fetchPositions, type PolymarketPosition } from '../positions-sync.js';
 import { config } from '../config.js';
+import { setRunnerIdentity } from '../order-guard.js';
 import {
   initPreSignedCache,
   stopPreSignedCache,
@@ -1848,6 +1849,10 @@ async function runLoop(): Promise<void> {
 // ============================================
 
 export async function startV28Runner(): Promise<void> {
+  // CRITICAL: Set runner identity for order guard
+  // V28 is NOT authorized to place real orders - only v29-response can trade
+  setRunnerIdentity('v28');
+  
   if (isRunning) {
     console.log('[V28] Already running');
     return;
