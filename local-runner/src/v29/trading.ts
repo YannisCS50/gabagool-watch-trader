@@ -180,8 +180,8 @@ const PRE_SIGN_CONFIG = {
     0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50,
     0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85
   ],
-  // Share sizes: just 2 common sizes (vs 8 before)
-  shareSizes: [2, 5],
+  // Share sizes: 5 and 10 (Polymarket minimum is 5 shares)
+  shareSizes: [5, 10],
   // Refresh every 5 minutes (vs 60s before) - cache rebuilds take time!
   refreshIntervalMs: 5 * 60 * 1000,
   // Max age before order is considered stale (8 min to match longer refresh)
@@ -585,8 +585,8 @@ const BURST_FILL_CONFIG = {
   enabled: true,
   // Number of parallel orders to fire (3x burst)
   burstCount: 3,
-  // Shares per order (total = burstCount * sharesPerOrder = 6 shares max)
-  sharesPerOrder: 2,
+  // Shares per order (Polymarket minimum is 5 shares!)
+  sharesPerOrder: 5,
   // Price step between orders - INCREASED to 2¢ for more aggressive fills
   priceStepCents: 0.02,
   // How long to wait before checking fills (ms)
