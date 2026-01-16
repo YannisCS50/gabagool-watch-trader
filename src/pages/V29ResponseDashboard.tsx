@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ArrowLeft, RefreshCw, Download } from 'lucide-react';
 import { useV29ResponseData } from '@/hooks/useV29ResponseData';
-import { V29RStatsCards, V29RSignalsTable, V29RExitDistribution, V29RRepricingChart, V29RConfigPanel } from '@/components/v29r';
+import { V29RStatsCards, V29RSignalsTable, V29RExitDistribution, V29RRepricingChart, V29RConfigPanel, V29RLogViewer } from '@/components/v29r';
 
 export default function V29ResponseDashboard() {
   const { config, signals, stats, loading, error, isConnected, lastUpdate, updateConfig, refetch } = useV29ResponseData();
@@ -49,6 +49,7 @@ export default function V29ResponseDashboard() {
           <V29RRepricingChart signals={signals} />
           <V29RExitDistribution stats={stats} />
         </div>
+        <V29RLogViewer />
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-1"><V29RConfigPanel config={config} onUpdate={updateConfig} /></div>
           <div className="lg:col-span-2"><V29RSignalsTable signals={signals} /></div>
