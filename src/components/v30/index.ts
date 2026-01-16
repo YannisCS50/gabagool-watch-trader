@@ -7,3 +7,4 @@ export { V30StatsCards } from './V30StatsCards';
 export { V30LogViewer } from './V30LogViewer';
 export { V30FairValueExplainer } from './V30FairValueExplainer';
 export { V30BetPnLTable } from './V30BetPnLTable';
+export { V30CrossingAnalysis } from './V30CrossingAnalysis';

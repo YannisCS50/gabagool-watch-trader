@@ -18,6 +18,7 @@ import { randomUUID } from 'crypto';
 import type { Asset, V30Config, MarketInfo, PriceState, V30Tick, TradeAction } from './types.js';
 import { DEFAULT_V30_CONFIG, BINANCE_SYMBOLS } from './config.js';
 import { EmpiricalFairValue, getFairValueModel } from './fair-value.js';
+import { getCrossingModel, EmpiricalCrossingModel } from './crossing-model.js';
 import { EdgeCalculator } from './edge-calculator.js';
 import { InventoryManager } from './inventory.js';
 import { 
@@ -55,6 +56,7 @@ let config: V30Config = { ...DEFAULT_V30_CONFIG };
 
 // Core components
 let fairValueModel: EmpiricalFairValue;
+let crossingModel: EmpiricalCrossingModel;
 let edgeCalculator: EdgeCalculator;
 let inventoryManager: InventoryManager;
 
@@ -602,14 +604,28 @@ async function calibrateFairValue(): Promise<void> {
   log('📚 Calibrating fair value model from historical data...');
   
   try {
+    // Load legacy cell-based model
     const history = await loadHistoricalData(10000);
     
     if (history.length > 0) {
       fairValueModel.loadFromHistory(history);
       const stats = fairValueModel.getStats();
-      log(`✅ Fair value calibrated: ${stats.trustedCells}/${stats.totalCells} trusted cells, avg ${stats.avgSamples.toFixed(1)} samples`);
+      log(`✅ Legacy fair value calibrated: ${stats.trustedCells}/${stats.totalCells} trusted cells`);
+    }
+    
+    // Load new crossing model from v30_ticks
+    log('📊 Loading empirical crossing model...');
+    const { createClient } = await import('@supabase/supabase-js');
+    const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+    const supabaseKey = process.env.VITE_SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY;
+    
+    if (supabaseUrl && supabaseKey) {
+      const supabase = createClient(supabaseUrl, supabaseKey);
+      const result = await crossingModel.loadFromDatabase(supabase);
+      const crossingStats = crossingModel.getStats();
+      log(`✅ Crossing model loaded: ${result.loaded} ticks → ${crossingStats.significantCells} significant cells (${crossingStats.totalSamples} samples)`);
     } else {
-      log('⚠️ No historical data for calibration, using heuristics');
+      log('⚠️ No Supabase credentials for crossing model calibration');
     }
   } catch (err) {
     logError('Fair value calibration failed', err);
@@ -664,6 +680,7 @@ async function main(): Promise<void> {
   
   // Initialize components
   fairValueModel = getFairValueModel();
+  crossingModel = getCrossingModel();
   edgeCalculator = new EdgeCalculator(config);
   inventoryManager = new InventoryManager(config);
   
