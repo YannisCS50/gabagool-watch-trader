@@ -19,7 +19,7 @@ export interface OpportunityWindow {
   asset: string;
   marketSlug: string;
   ticks: TickSnapshot[];
-  outcome: 'UP' | 'DOWN' | 'UNKNOWN';
+  outcome: 'UP' | 'DOWN';
   
   // Computed metrics
   avgSharePrice: number;
@@ -215,6 +215,9 @@ export function useStrategyDiscovery(asset: string = 'BTC', hoursBack: number = 
         .limit(50000);
       
       if (error) throw error;
+      
+      console.log('[StrategyDiscovery] Fetched ticks:', ticks?.length || 0);
+      
       if (!ticks || ticks.length === 0) {
         return {
           buckets: [],
@@ -250,26 +253,41 @@ export function useStrategyDiscovery(asset: string = 'BTC', hoursBack: number = 
         marketGroups.get(tick.market_slug)!.push(snapshot);
       }
       
+      console.log('[StrategyDiscovery] Market groups:', marketGroups.size);
+      
       // Analyze each market window
       const opportunityWindows: OpportunityWindow[] = [];
+      const now = Date.now();
+      
+      // Debug: count skipped markets
+      let skippedTooFewTicks = 0;
+      let skippedNotEnded = 0;
       
       for (const [slug, marketTicks] of marketGroups) {
-        if (marketTicks.length < 20) continue;
+        if (marketTicks.length < 20) {
+          skippedTooFewTicks++;
+          continue;
+        }
         
         const sortedTicks = marketTicks.sort((a, b) => a.ts - b.ts);
         const firstTick = sortedTicks[0];
         const lastTick = sortedTicks[sortedTicks.length - 1];
+        const marketEndTs = firstTick.marketEndTs;
         
-        // Determine outcome based on final price vs strike
-        const finalBinance = lastTick.binancePrice;
+        // Only analyze COMPLETED markets (market end time has passed)
+        if (now < marketEndTs) {
+          skippedNotEnded++;
+          continue;
+        }
+        
+        // Determine outcome based on final price vs strike at market end
+        // Find the tick closest to market end
+        const ticksNearEnd = sortedTicks.filter(t => t.ts >= marketEndTs - 60000);
+        const endTick = ticksNearEnd.length > 0 ? ticksNearEnd[ticksNearEnd.length - 1] : lastTick;
+        
+        const finalBinance = endTick.binancePrice;
         const strike = firstTick.strikePrice;
-        const outcome: 'UP' | 'DOWN' | 'UNKNOWN' = 
-          lastTick.ts >= lastTick.marketEndTs - 60000 
-            ? (finalBinance >= strike ? 'UP' : 'DOWN')
-            : 'UNKNOWN';
-        
-        // Skip unresolved markets
-        if (outcome === 'UNKNOWN') continue;
+        const outcome: 'UP' | 'DOWN' = finalBinance >= strike ? 'UP' : 'DOWN';
         
         // Calculate all metrics
         const upBids = sortedTicks.map(t => t.upBid).filter(b => b > 0);
@@ -327,6 +345,12 @@ export function useStrategyDiscovery(asset: string = 'BTC', hoursBack: number = 
           theoreticalPnl,
         });
       }
+      
+      console.log('[StrategyDiscovery] Analysis results:', {
+        skippedTooFewTicks,
+        skippedNotEnded,
+        analyzedWindows: opportunityWindows.length,
+      });
       
       // Bucket the opportunities
       const bucketMap = new Map<string, StrategyBucket>();
