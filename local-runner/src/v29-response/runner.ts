@@ -18,7 +18,7 @@ import { randomUUID } from 'crypto';
 
 import { Asset, V29Config, DEFAULT_CONFIG, BINANCE_SYMBOLS } from './config.js';
 import type { MarketInfo, PriceState, Signal, ActivePosition, SignalLog, TickLog } from './types.js';
-import { checkSignal, addPriceTick, resetSignalState } from './signal-detector.js';
+import { checkSignal, processTick, resetSignalState } from './signal-detector.js';
 import { checkExit, createPositionTracker, ExitType } from './exit-monitor.js';
 import { initDb, loadConfig, saveSignal, queueTick, queueLog, sendHeartbeat, flushAll } from './db.js';
 
@@ -220,9 +220,8 @@ function handleBinancePrice(asset: Asset, price: number, timestamp: number): voi
   state.binance = price;
   state.binanceTs = timestamp;
   
-  // Add to tick buffer - returns true if buffer window completed
-  const bufferMs = config.signal_window_ms;  // Use signal_window_ms as buffer interval
-  const shouldCheckSignal = addPriceTick(asset, price, now, bufferMs);
+  // Process tick and get delta from previous tick (tick-to-tick like V29)
+  const { hasPrevious, delta, direction } = processTick(asset, price);
   
   // Log tick (async)
   queueTick({
@@ -246,9 +245,9 @@ function handleBinancePrice(asset: Asset, price: number, timestamp: number): voi
     return;
   }
   
-  // Only check for signal when buffer window completes (tick-to-tick)
-  if (shouldCheckSignal) {
-    checkForSignal(asset);
+  // Check for signal on every tick (tick-to-tick comparison)
+  if (hasPrevious) {
+    checkForSignal(asset, delta, direction);
   }
 }
 
@@ -256,7 +255,7 @@ function handleBinancePrice(asset: Asset, price: number, timestamp: number): voi
 // SIGNAL CHECKING
 // ============================================
 
-function checkForSignal(asset: Asset): void {
+function checkForSignal(asset: Asset, delta: number, direction: 'UP' | 'DOWN' | null): void {
   const market = markets.get(asset);
   const state = priceState[asset];
   const now = Date.now();
@@ -278,13 +277,14 @@ function checkForSignal(asset: Asset): void {
     activePositions.has(asset),
     inCooldown,
     currentExposure,
-    RUN_ID,
+    delta,
+    direction,
     (msg, data) => logAsset(asset, msg, data)
   );
   
   if (!result.triggered) {
-    // Log skip reasons for analysis
-    if (result.skipReason && result.skipReason !== 'delta_too_small' && result.skipReason !== 'disabled') {
+    // Log skip reasons for analysis (skip delta_too_small to avoid spam)
+    if (result.skipReason && result.skipReason !== 'delta_too_small' && result.skipReason !== 'disabled' && result.skipReason !== 'no_previous_tick') {
       logAsset(asset, `SKIP: ${result.skipReason} ${result.skipDetails ?? ''}`, {
         skipReason: result.skipReason,
         skipDetails: result.skipDetails,
