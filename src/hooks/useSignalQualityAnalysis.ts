@@ -326,8 +326,13 @@ function computeSpotLeadBucket(spotLeadMs: number | null): string {
 
 // Transform v29_signals (legacy format) to analysis record
 function transformV29Signal(s: RawSignalV29) {
-  const deltaAbs = Math.abs(s.delta_usd || 0);
   const asset = s.asset || 'BTC';
+  
+  // Correct delta calculation: spot price (binance/chainlink) - strike price
+  const spotPrice = s.binance_price || 0;
+  const strikePrice = s.strike_price || 0;
+  const deltaUsd = spotPrice - strikePrice;
+  const deltaAbs = Math.abs(deltaUsd);
   const deltaBucket = computeDeltaBucket(asset, deltaAbs);
   
   // Legacy format doesn't have bid/ask, estimate from share_price
@@ -352,9 +357,9 @@ function transformV29Signal(s: RawSignalV29) {
     direction: s.direction || 'UP',
     timestamp_signal_detected: s.signal_ts || Date.now(),
     time_remaining_seconds: 0,
-    strike_price: s.strike_price || 0,
-    spot_price_at_signal: s.binance_price || 0,
-    delta_usd: s.delta_usd || 0,
+  strike_price: strikePrice,
+    spot_price_at_signal: spotPrice,
+    delta_usd: deltaUsd,
     delta_bucket: deltaBucket,
     
     up_bid: s.share_price ? s.share_price - 0.01 : null,
@@ -393,8 +398,13 @@ function transformV29Signal(s: RawSignalV29) {
 
 // Transform v29_signals_response (new format) to analysis record
 function transformV29ResponseSignal(s: RawSignalV29Response) {
-  const deltaAbs = Math.abs(s.binance_delta || 0);
   const asset = s.asset || 'BTC';
+  
+  // Correct delta calculation: spot price (binance/chainlink) - strike price
+  const spotPrice = s.binance_price || 0;
+  const strikePrice = s.strike_price || 0;
+  const deltaUsd = spotPrice - strikePrice;
+  const deltaAbs = Math.abs(deltaUsd);
   const deltaBucket = computeDeltaBucket(asset, deltaAbs);
   
   // New format has actual bid/ask
@@ -429,9 +439,9 @@ function transformV29ResponseSignal(s: RawSignalV29Response) {
     direction: s.direction || 'UP',
     timestamp_signal_detected: s.signal_ts || Date.now(),
     time_remaining_seconds: 0,
-    strike_price: s.strike_price || 0,
-    spot_price_at_signal: s.binance_price || 0,
-    delta_usd: s.binance_delta || 0,
+  strike_price: strikePrice,
+    spot_price_at_signal: spotPrice,
+    delta_usd: deltaUsd,
     delta_bucket: deltaBucket,
     
     up_bid: s.best_bid_t0,
