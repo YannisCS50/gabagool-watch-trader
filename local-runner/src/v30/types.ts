@@ -20,6 +20,9 @@ export interface V30Config {
   min_share_price: number;
   max_share_price: number;
   min_time_remaining_sec: number;  // Don't start trading if less than this
+  // NEW: Minimum fair value to trade (prevents trading losing positions)
+  min_fair_value_to_trade?: number;              // Default 0.10 (10%)
+  min_fair_value_to_trade_low_confidence?: number; // Default 0.15 (15%)
 }
 
 export interface MarketInfo {
@@ -52,8 +55,13 @@ export interface EdgeResult {
   edge_up: number;    // Δ_up = q_up - p_up (negative = underpriced)
   edge_down: number;  // Δ_down = q_down - p_down
   theta: number;      // Current dynamic threshold
-  signal_up: boolean; // true if edge_up < -theta
+  signal_up: boolean; // true if edge_up < -theta AND fair value high enough
   signal_down: boolean;
+  // Extra debugging info
+  fair_p_up?: number;
+  fair_p_down?: number;
+  min_fair_value_used?: number;
+  confidence?: number;
 }
 
 export interface Inventory {

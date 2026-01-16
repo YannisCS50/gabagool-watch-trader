@@ -19,6 +19,10 @@ export const DEFAULT_V30_CONFIG: V30Config = {
   min_share_price: 0.05,         // Don't trade below 5¢
   max_share_price: 0.95,         // Don't trade above 95¢
   min_time_remaining_sec: 600,   // Don't start trading if <10 min left
+  // CRITICAL: Minimum fair value thresholds
+  // Prevents buying sides with very low win probability
+  min_fair_value_to_trade: 0.10,              // 10% minimum for high-confidence estimates
+  min_fair_value_to_trade_low_confidence: 0.15, // 15% minimum for heuristic estimates
 };
 
 export const BINANCE_SYMBOLS: Record<Asset, string> = {

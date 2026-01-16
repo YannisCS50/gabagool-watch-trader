@@ -360,6 +360,18 @@ async function evaluateAsset(asset: Asset): Promise<void> {
   // Normal edge-based trading
   let action: TradeAction = 'none';
   
+  // Log when we're NOT trading due to low fair value (important debugging!)
+  const minFairValue = edgeResult.min_fair_value_used ?? 0.10;
+  
+  // Check if edge looks good but fair value blocks it
+  if (edgeResult.edge_up < -edgeResult.theta && !edgeResult.signal_up) {
+    // Edge is good but signal blocked by low fair value
+    logDebug(`⚠️ ${asset}: UP edge ${(edgeResult.edge_up * 100).toFixed(1)}% looks good but P(UP)=${(fairValue.p_up * 100).toFixed(1)}% < ${(minFairValue * 100).toFixed(0)}% min`, 'fair-value', asset);
+  }
+  if (edgeResult.edge_down < -edgeResult.theta && !edgeResult.signal_down) {
+    logDebug(`⚠️ ${asset}: DOWN edge ${(edgeResult.edge_down * 100).toFixed(1)}% looks good but P(DOWN)=${(fairValue.p_down * 100).toFixed(1)}% < ${(minFairValue * 100).toFixed(0)}% min`, 'fair-value', asset);
+  }
+  
   // Check UP signal
   if (edgeResult.signal_up && canTrade(asset, 'UP', upAsk)) {
     const space = inventoryManager.getAvailableSpace(asset, market.slug, 'UP', secRemaining);
@@ -373,7 +385,7 @@ async function evaluateAsset(asset: Asset): Promise<void> {
       if (success) {
         action = 'buy_up';
         buysUpCount++;
-        log(`🟢 BUY UP: ${asset} | ${size} sh @ ${(upAsk * 100).toFixed(1)}¢ | edge ${(edgeResult.edge_up * 100).toFixed(1)}% | θ ${(edgeResult.theta * 100).toFixed(1)}%`);
+        log(`🟢 BUY UP: ${asset} | ${size} sh @ ${(upAsk * 100).toFixed(1)}¢ | edge ${(edgeResult.edge_up * 100).toFixed(1)}% | P(UP)=${(fairValue.p_up * 100).toFixed(1)}% | θ ${(edgeResult.theta * 100).toFixed(1)}%`);
       }
     }
   }
@@ -391,7 +403,7 @@ async function evaluateAsset(asset: Asset): Promise<void> {
       if (success) {
         action = action === 'buy_up' ? 'buy_up' : 'buy_down'; // Keep first if both
         buysDownCount++;
-        log(`🔴 BUY DOWN: ${asset} | ${size} sh @ ${(downAsk * 100).toFixed(1)}¢ | edge ${(edgeResult.edge_down * 100).toFixed(1)}% | θ ${(edgeResult.theta * 100).toFixed(1)}%`);
+        log(`🔴 BUY DOWN: ${asset} | ${size} sh @ ${(downAsk * 100).toFixed(1)}¢ | edge ${(edgeResult.edge_down * 100).toFixed(1)}% | P(DOWN)=${(fairValue.p_down * 100).toFixed(1)}% | θ ${(edgeResult.theta * 100).toFixed(1)}%`);
       }
     }
   }
