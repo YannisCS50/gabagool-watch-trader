@@ -227,43 +227,47 @@ function analyzeDirection(
     const marketTicks = ticksByMarket.get(signal.market_slug);
     if (!marketTicks) continue;
 
-    // Find ticks after this signal
-    for (let seconds = 1; seconds <= 9; seconds++) {
-      const targetTs = signal.ts + seconds * 1000;
+    // Track which seconds we've already counted for this signal (to avoid duplicates)
+    const countedSeconds = new Set<number>();
+
+    // Find all ticks after this signal and bucket them
+    for (const tick of marketTicks) {
+      const timeDiffMs = tick.ts - signal.ts;
       
-      // Find closest tick to target timestamp (within 750ms tolerance)
-      let closestTick: FollowupTick | null = null;
-      let closestDiff = Infinity;
+      // Only look at ticks 0-10 seconds after
+      if (timeDiffMs < 0 || timeDiffMs >= 10000) continue;
+      
+      // Bucket: 0-1499ms -> 1s, 1500-2499ms -> 2s, etc.
+      // Formula: bucket = floor((timeDiffMs + 500) / 1000)
+      const bucket = Math.floor((timeDiffMs + 500) / 1000);
+      
+      // bucket 0 means 0-499ms, skip it (too early)
+      // bucket 1-9 means 500-1499ms, 1500-2499ms, etc.
+      if (bucket < 1 || bucket > 9) continue;
+      
+      // Only count the first tick per bucket per signal
+      if (countedSeconds.has(bucket)) continue;
+      countedSeconds.add(bucket);
 
-      for (const tick of marketTicks) {
-        const diff = Math.abs(tick.ts - targetTs);
-        if (diff < closestDiff && diff < 750) {
-          closestDiff = diff;
-          closestTick = tick;
-        }
-      }
+      const stats = statsBySecond.get(bucket)!;
+      
+      // Price change (Chainlink)
+      const priceChange = ((tick.chainlink_price - signal.chainlink_price) / signal.chainlink_price) * 100;
+      stats.price_changes.push(priceChange);
 
-      if (closestTick) {
-        const stats = statsBySecond.get(seconds)!;
-        
-        // Price change (Chainlink)
-        const priceChange = ((closestTick.chainlink_price - signal.chainlink_price) / signal.chainlink_price) * 100;
-        stats.price_changes.push(priceChange);
+      if (priceChange > 0) stats.price_up_count++;
+      if (priceChange < 0) stats.price_down_count++;
 
-        if (priceChange > 0) stats.price_up_count++;
-        if (priceChange < 0) stats.price_down_count++;
+      // Share price change in cents
+      const signalSharePrice = direction === 'UP' ? signal.up_best_bid : signal.down_best_bid;
+      const followupSharePrice = direction === 'UP' ? tick.up_best_bid : tick.down_best_bid;
 
-        // Share price change in cents
-        const signalSharePrice = direction === 'UP' ? signal.up_best_bid : signal.down_best_bid;
-        const followupSharePrice = direction === 'UP' ? closestTick.up_best_bid : closestTick.down_best_bid;
+      if (signalSharePrice != null && followupSharePrice != null) {
+        const shareChangeCents = (followupSharePrice - signalSharePrice) * 100;
+        stats.share_changes_cents.push(shareChangeCents);
 
-        if (signalSharePrice != null && followupSharePrice != null) {
-          const shareChangeCents = (followupSharePrice - signalSharePrice) * 100; // Convert to cents
-          stats.share_changes_cents.push(shareChangeCents);
-
-          if (shareChangeCents > 0) stats.share_up_count++;
-          if (shareChangeCents < 0) stats.share_down_count++;
-        }
+        if (shareChangeCents > 0) stats.share_up_count++;
+        if (shareChangeCents < 0) stats.share_down_count++;
       }
     }
   }
