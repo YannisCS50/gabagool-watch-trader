@@ -717,7 +717,12 @@ async function main(): Promise<void> {
   log('✅ Polymarket connected');
   
   // Acquire lease
-  const leaseOk = await acquireLease(RUN_ID, 'v29-response');
+  const forceTakeover =
+    process.argv.includes('--force') ||
+    process.env.FORCE_TAKEOVER === '1' ||
+    process.env.FORCE_TAKEOVER === 'true';
+
+  const leaseOk = await acquireLease(RUN_ID, { force: forceTakeover });
   if (!leaseOk) {
     logError('Failed to acquire lease');
     process.exit(1);
