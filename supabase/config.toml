@@ -77,3 +77,6 @@ verify_jwt = false
 
 [functions.fetch-onchain-pnl]
 verify_jwt = false
+
+[functions.backfill-price-paths]
+verify_jwt = false
