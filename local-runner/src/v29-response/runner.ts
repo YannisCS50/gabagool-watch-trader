@@ -482,8 +482,6 @@ async function executeEntry(asset: Asset, signal: Signal, market: MarketInfo): P
     entryInFlight.delete(asset);
   }
 }
-  }
-}
 
 // ============================================
 // EXIT MONITORING (CRITICAL)
