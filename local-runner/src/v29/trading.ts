@@ -587,8 +587,8 @@ const BURST_FILL_CONFIG = {
   burstCount: 3,
   // Shares per order (Polymarket minimum is 5 shares!)
   sharesPerOrder: 5,
-  // Price step between orders - INCREASED to 2¢ for more aggressive fills
-  priceStepCents: 0.02,
+  // Price step between orders - 0.5¢ increments (e.g., 71¢, 71.5¢, 72¢)
+  priceStepCents: 0.005,
   // How long to wait before checking fills (ms)
   fillCheckDelayMs: 100,
   // How long to wait for fill before canceling unfilled orders (ms)
