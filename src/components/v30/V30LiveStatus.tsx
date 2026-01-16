@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import type { V30Tick } from '@/hooks/useV30Data';
@@ -8,6 +9,14 @@ interface Props {
 }
 
 export function V30LiveStatus({ ticks, assets }: Props) {
+  // Force re-render every second for countdown
+  const [now, setNow] = useState(Date.now());
+  
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, []);
+
   // Get latest tick per asset
   const latestByAsset = assets.reduce((acc, asset) => {
     const latest = ticks.find(t => t.asset === asset);
@@ -36,18 +45,31 @@ export function V30LiveStatus({ ticks, assets }: Props) {
           );
         }
 
-        const secRemaining = tick.seconds_remaining ?? 0;
+        // Calculate live seconds remaining based on tick timestamp
+        const tickAge = (now - tick.ts) / 1000;
+        const originalSecRemaining = tick.seconds_remaining ?? 0;
+        const secRemaining = Math.max(0, originalSecRemaining - tickAge);
+        
         const isExpiring = secRemaining < 60;
+        const isStale = tickAge > 10; // Tick is older than 10 seconds
         const fairP = tick.fair_p_up ?? 0.5;
         const edgeUp = (tick.edge_up ?? 0) * 100;
         const edgeDown = (tick.edge_down ?? 0) * 100;
         const theta = (tick.theta_current ?? 0) * 100;
 
         return (
-          <Card key={asset} className={isExpiring ? 'border-destructive' : ''}>
+          <Card key={asset} className={`${isExpiring ? 'border-destructive' : ''} ${isStale ? 'opacity-60' : ''}`}>
             <CardHeader className="pb-2">
               <CardTitle className="text-lg flex items-center justify-between">
-                {asset}
+                <div className="flex items-center gap-2">
+                  {asset}
+                  {isStale && (
+                    <span className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse" title="Stale data" />
+                  )}
+                  {!isStale && (
+                    <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" title="Live" />
+                  )}
+                </div>
                 <Badge variant={secRemaining > 300 ? 'default' : secRemaining > 60 ? 'secondary' : 'destructive'}>
                   {Math.floor(secRemaining / 60)}:{String(Math.floor(secRemaining % 60)).padStart(2, '0')}
                 </Badge>
