@@ -198,6 +198,11 @@ async function preSignOrder(
   const startTime = Date.now();
   
   try {
+    // CRITICAL: Validate tokenId to prevent "Cannot read properties of undefined (reading 'toString')"
+    if (!tokenId || typeof tokenId !== 'string' || tokenId.trim() === '') {
+      log(`⚠️ Pre-sign skipped ${asset} ${direction}: invalid tokenId`);
+      return null;
+    }
     if (!Number.isFinite(price) || price < 0.01 || price > 0.99) return null;
     if (!Number.isFinite(size) || size < 1) return null;
     
@@ -231,7 +236,7 @@ async function preSignOrder(
       direction,
     };
   } catch (err) {
-    log(`❌ Pre-sign failed ${asset} ${direction} ${side} ${size}@${price}: ${err}`);
+    log(`❌ Pre-sign failed ${asset} ${direction} ${side} ${size}@${price}: ${asErrorMessage(err)}`);
     return null;
   }
 }
@@ -657,6 +662,12 @@ export async function placeBuyOrder(
 ): Promise<OrderResult> {
   const start = Date.now();
   
+  // CRITICAL: Validate tokenId to prevent "Cannot read properties of undefined (reading 'toString')"
+  if (!tokenId || typeof tokenId !== 'string' || tokenId.trim() === '') {
+    log(`❌ BUY failed: invalid tokenId for ${asset} ${direction}`);
+    return { success: false, error: 'Invalid tokenId', latencyMs: Date.now() - start };
+  }
+  
   try {
     const client = await getClient();
     const roundedShares = Math.floor(shares);
@@ -970,6 +981,12 @@ async function placeSingleBuyOrder(
   const start = startTime ?? Date.now();
   const roundedPrice = Math.round(price * 100) / 100;
   
+  // CRITICAL: Validate tokenId before signing
+  if (!tokenId || typeof tokenId !== 'string' || tokenId.trim() === '') {
+    log(`❌ SingleBuy failed: invalid tokenId for ${asset} ${direction}`);
+    return { success: false, error: 'Invalid tokenId', latencyMs: Date.now() - start };
+  }
+  
   try {
     let signedOrder: SignedOrder;
     let usedCache = false;
@@ -1042,6 +1059,12 @@ export async function placeSellOrder(
   const start = Date.now();
   const FILL_CHECK_INTERVAL_MS = 150;
   const MAX_FILL_WAIT_MS = 3000;
+
+  // CRITICAL: Validate tokenId to prevent "Cannot read properties of undefined (reading 'toString')"
+  if (!tokenId || typeof tokenId !== 'string' || tokenId.trim() === '') {
+    log(`❌ SELL failed: invalid tokenId for ${asset} ${direction}`);
+    return { success: false, error: 'Invalid tokenId', latencyMs: Date.now() - start };
+  }
 
   try {
     const client = await getClient();
@@ -1227,6 +1250,12 @@ export async function placeTakeProfitSellOrder(
   direction?: 'UP' | 'DOWN'
 ): Promise<OrderResult> {
   const start = Date.now();
+  
+  // CRITICAL: Validate tokenId to prevent "Cannot read properties of undefined (reading 'toString')"
+  if (!tokenId || typeof tokenId !== 'string' || tokenId.trim() === '') {
+    log(`❌ TP SELL failed: invalid tokenId for ${asset} ${direction}`);
+    return { success: false, error: 'Invalid tokenId', latencyMs: Date.now() - start };
+  }
   
   try {
     const client = await getClient();
