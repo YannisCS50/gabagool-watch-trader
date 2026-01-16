@@ -201,18 +201,24 @@ export function useStrategyDiscovery(asset: string = 'BTC', hoursBack: number = 
   return useQuery({
     queryKey: ['strategy-discovery', asset, hoursBack],
     queryFn: async (): Promise<StrategyDiscoveryResult> => {
-      const cutoffTs = Date.now() - (hoursBack * 60 * 60 * 1000);
+      // We want COMPLETED markets, so fetch older data, not the most recent
+      // hoursBack now means "go back X hours from now and find completed markets in that range"
+      const currentTime = Date.now();
+      const startTs = currentTime - (hoursBack * 60 * 60 * 1000);
+      // Only get markets that ended at least 15 minutes ago (to ensure they're settled)
+      const maxEndTs = currentTime - (15 * 60 * 1000);
       
-      // Fetch ticks with all relevant data
+      // Fetch ticks - we'll filter completed markets in code
       const { data: ticks, error } = await supabase
         .from('v29_ticks')
         .select('ts, binance_price, chainlink_price, strike_price, up_best_bid, down_best_bid, market_slug, asset')
         .eq('asset', asset)
-        .gte('ts', cutoffTs)
+        .gte('ts', startTs)
+        .lte('ts', maxEndTs)
         .not('binance_price', 'is', null)
         .not('strike_price', 'is', null)
         .order('ts', { ascending: true })
-        .limit(50000);
+        .limit(100000);
       
       if (error) throw error;
       
