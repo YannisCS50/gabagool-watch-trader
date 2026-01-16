@@ -2,37 +2,26 @@
  * V29 Response-Based Strategy - Signal Detector
  * 
  * SIGNAL DEFINITION (tick-to-tick like V29):
- * 1. Binance price move ≥ $6 between buffered ticks (100ms buffer)
+ * 1. Binance price move ≥ $6 between consecutive ticks (Binance already buffers at 100ms)
  * 2. Direction: up-tick → UP, down-tick → DOWN
  * 3. Polymarket share price NOT moved more than max_share_move_cents
  * 4. Spread ≤ max_spread_cents
  */
 
 import type { Asset, V29Config, Direction } from './config.js';
-import type { PriceTick, PriceState, MarketInfo, Signal } from './types.js';
+import type { PriceState, MarketInfo, Signal } from './types.js';
 import { randomUUID } from 'crypto';
 
 // ============================================
-// TICK-TO-TICK PRICE TRACKING (like V29)
+// SIMPLE TICK-TO-TICK TRACKING (like V29)
 // ============================================
 
-interface TickBuffer {
-  // Last emitted price (from previous buffer window)
-  lastEmittedPrice: number | null;
-  lastEmittedTs: number;
-  
-  // Current buffer window
-  bufferStart: number;
-  firstPrice: number | null;
-  lastPrice: number | null;
-  lastTs: number;
-}
-
-const tickBuffers: Record<Asset, TickBuffer> = {
-  BTC: { lastEmittedPrice: null, lastEmittedTs: 0, bufferStart: 0, firstPrice: null, lastPrice: null, lastTs: 0 },
-  ETH: { lastEmittedPrice: null, lastEmittedTs: 0, bufferStart: 0, firstPrice: null, lastPrice: null, lastTs: 0 },
-  SOL: { lastEmittedPrice: null, lastEmittedTs: 0, bufferStart: 0, firstPrice: null, lastPrice: null, lastTs: 0 },
-  XRP: { lastEmittedPrice: null, lastEmittedTs: 0, bufferStart: 0, firstPrice: null, lastPrice: null, lastTs: 0 },
+// Track previous price per asset (Binance feed already buffers at 100ms)
+const previousPrice: Record<Asset, number | null> = {
+  BTC: null,
+  ETH: null,
+  SOL: null,
+  XRP: null,
 };
 
 // Track share price at last signal to detect if already repriced
@@ -71,69 +60,37 @@ export interface SignalResult {
 // ============================================
 
 /**
- * Add a price tick to the buffer.
- * Returns true if buffer window completed and should check for signal.
+ * Process a price tick and get delta from previous tick.
+ * Binance feed already buffers at 100ms, so we just compare consecutive ticks.
  */
-export function addPriceTick(asset: Asset, price: number, ts: number, bufferMs: number): boolean {
-  const buffer = tickBuffers[asset];
-  const now = Date.now();
+export function processTick(asset: Asset, price: number): { 
+  hasPrevious: boolean; 
+  delta: number; 
+  direction: Direction | null;
+} {
+  const previous = previousPrice[asset];
   
-  // First tick ever or buffer expired?
-  if (buffer.firstPrice === null || (now - buffer.bufferStart) >= bufferMs) {
-    // If we had a previous buffer, emit it
-    if (buffer.lastPrice !== null) {
-      buffer.lastEmittedPrice = buffer.lastPrice;
-      buffer.lastEmittedTs = buffer.lastTs;
-    }
-    
-    // Start new buffer
-    buffer.bufferStart = now;
-    buffer.firstPrice = price;
-    buffer.lastPrice = price;
-    buffer.lastTs = ts;
-    
-    // Signal to check for delta if we have previous emitted price
-    return buffer.lastEmittedPrice !== null;
+  // Update for next comparison
+  previousPrice[asset] = price;
+  
+  if (previous === null) {
+    return { hasPrevious: false, delta: 0, direction: null };
   }
   
-  // Update current buffer
-  buffer.lastPrice = price;
-  buffer.lastTs = ts;
-  return false;
+  const delta = price - previous;
+  const direction: Direction | null = delta > 0 ? 'UP' : delta < 0 ? 'DOWN' : null;
+  
+  return { hasPrevious: true, delta, direction };
 }
 
-/**
- * Get tick-to-tick delta (current buffer vs previous buffer)
- */
-export function getTickDelta(asset: Asset): { delta: number; direction: Direction | null; currentPrice: number | null } {
-  const buffer = tickBuffers[asset];
-  
-  if (buffer.lastEmittedPrice === null || buffer.lastPrice === null) {
-    return { delta: 0, direction: null, currentPrice: buffer.lastPrice };
-  }
-  
-  const delta = buffer.lastPrice - buffer.lastEmittedPrice;
-  
-  return {
-    delta,
-    direction: delta > 0 ? 'UP' : delta < 0 ? 'DOWN' : null,
-    currentPrice: buffer.lastPrice,
-  };
-}
-
-// Legacy functions for compatibility
-export function cleanOldTicks(_asset: Asset, _windowMs: number, _now: number): void {
-  // No-op: tick-to-tick doesn't use rolling window
-}
-
-export function getRollingDelta(asset: Asset): { delta: number; direction: Direction | null } {
-  const { delta, direction } = getTickDelta(asset);
-  return { delta, direction };
+// Legacy function for compatibility (not used but kept for imports)
+export function addPriceTick(_asset: Asset, _price: number, _ts: number, _bufferMs?: number): boolean {
+  return true; // Always check signal on tick
 }
 
 /**
  * Check if a signal should be generated.
- * All conditions must pass; all skips are logged.
+ * Called after processTick to check all conditions.
  */
 export function checkSignal(
   asset: Asset,
@@ -143,7 +100,8 @@ export function checkSignal(
   hasOpenPosition: boolean,
   inCooldown: boolean,
   currentExposure: number,
-  runId: string,
+  delta: number,
+  direction: Direction | null,
   logFn: (msg: string, data?: Record<string, unknown>) => void
 ): SignalResult {
   const now = Date.now();
@@ -158,9 +116,7 @@ export function checkSignal(
     return { triggered: false, skipReason: 'no_market' };
   }
   
-  // 3. Get tick-to-tick delta (like V29)
-  const { delta, direction } = getTickDelta(asset);
-  
+  // 3. Check if we have a direction
   if (!direction) {
     return { triggered: false, skipReason: 'no_previous_tick' };
   }
@@ -191,13 +147,13 @@ export function checkSignal(
   
   // 7. Check if already repriced
   const signalKey = `${asset}:${direction}`;
-  const lastPrice = lastSharePriceAtSignal[signalKey];
+  const lastPriceAtSignal = lastSharePriceAtSignal[signalKey];
   
-  if (lastPrice !== undefined) {
-    const repricedCents = (bestAsk - lastPrice) * 100;
+  if (lastPriceAtSignal !== undefined) {
+    const repricedCents = (bestAsk - lastPriceAtSignal) * 100;
     if (repricedCents > config.max_share_move_cents) {
       logFn(`SKIP: ${asset} ${direction} - already repriced +${repricedCents.toFixed(2)}¢`, {
-        asset, direction, repricedCents, lastPrice, currentAsk: bestAsk,
+        asset, direction, repricedCents, lastPriceAtSignal, currentAsk: bestAsk,
       });
       return { triggered: false, skipReason: 'already_repriced', skipDetails: `moved=${repricedCents.toFixed(2)}¢` };
     }
@@ -277,14 +233,7 @@ export function checkSignal(
  * Reset the signal state when market changes
  */
 export function resetSignalState(asset: Asset): void {
-  tickBuffers[asset] = { 
-    lastEmittedPrice: null, 
-    lastEmittedTs: 0, 
-    bufferStart: 0, 
-    firstPrice: null, 
-    lastPrice: null, 
-    lastTs: 0 
-  };
+  previousPrice[asset] = null;
   
   // Clear repricing tracking for this asset
   for (const key of Object.keys(lastSharePriceAtSignal)) {
