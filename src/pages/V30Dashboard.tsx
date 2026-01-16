@@ -9,6 +9,7 @@ import {
   V30LogViewer,
   V30FairValueExplainer,
   V30BetPnLTable,
+  TrackedWalletPanel,
 } from '@/components/v30';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -90,9 +91,10 @@ export default function V30Dashboard() {
             <V30TradeLog ticks={ticks} />
           </div>
 
-          {/* Right Column - Inventory */}
-          <div>
+          {/* Right Column - Inventory & Tracker */}
+          <div className="space-y-6">
             <V30InventoryPanel positions={positions} config={config} />
+            <TrackedWalletPanel />
           </div>
         </div>
       </main>

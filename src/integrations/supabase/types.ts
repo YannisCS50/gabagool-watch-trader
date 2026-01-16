@@ -4366,6 +4366,54 @@ export type Database = {
         }
         Relationships: []
       }
+      tracked_wallet_trades: {
+        Row: {
+          asset: string | null
+          created_at: string
+          fee: number | null
+          id: string
+          market_slug: string | null
+          outcome: string | null
+          price: number
+          raw_data: Json | null
+          side: string
+          size: number
+          timestamp: string
+          trade_id: string
+          wallet_address: string
+        }
+        Insert: {
+          asset?: string | null
+          created_at?: string
+          fee?: number | null
+          id?: string
+          market_slug?: string | null
+          outcome?: string | null
+          price: number
+          raw_data?: Json | null
+          side: string
+          size: number
+          timestamp: string
+          trade_id: string
+          wallet_address: string
+        }
+        Update: {
+          asset?: string | null
+          created_at?: string
+          fee?: number | null
+          id?: string
+          market_slug?: string | null
+          outcome?: string | null
+          price?: number
+          raw_data?: Json | null
+          side?: string
+          size?: number
+          timestamp?: string
+          trade_id?: string
+          wallet_address?: string
+        }
+        Relationships: []
+      }
       trader_stats: {
         Row: {
           active_since: string | null
