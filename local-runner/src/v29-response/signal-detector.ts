@@ -277,7 +277,14 @@ export function checkSignal(
  * Reset the signal state when market changes
  */
 export function resetSignalState(asset: Asset): void {
-  rollingWindows[asset] = { ticks: [], lastEmittedPrice: null };
+  tickBuffers[asset] = { 
+    lastEmittedPrice: null, 
+    lastEmittedTs: 0, 
+    bufferStart: 0, 
+    firstPrice: null, 
+    lastPrice: null, 
+    lastTs: 0 
+  };
   
   // Clear repricing tracking for this asset
   for (const key of Object.keys(lastSharePriceAtSignal)) {
