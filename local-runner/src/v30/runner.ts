@@ -26,6 +26,8 @@ import {
   saveV30Config, 
   queueTick, 
   flushTicks, 
+  queueLog,
+  flushLogs,
   loadPositions, 
   upsertPosition, 
   clearMarketPositions, 
@@ -87,14 +89,29 @@ const CALIBRATION_INTERVAL_MS = 300_000; // Recalibrate fair value every 5 min
 // LOGGING
 // ============================================
 
-function log(msg: string, category = 'system', asset?: string): void {
+function log(msg: string, category = 'system', asset?: string, data?: Record<string, unknown>): void {
   const ts = new Date().toISOString().slice(11, 23);
   console.log(`[${ts}] [V30] ${msg}`);
+  // Also queue for database
+  queueLog(RUN_ID, 'info', category, msg, asset, data);
 }
 
-function logError(msg: string, err?: unknown): void {
+function logDebug(msg: string, category = 'system', asset?: string, data?: Record<string, unknown>): void {
+  const ts = new Date().toISOString().slice(11, 23);
+  console.log(`[${ts}] [V30] ${msg}`);
+  queueLog(RUN_ID, 'debug', category, msg, asset, data);
+}
+
+function logWarn(msg: string, category = 'system', asset?: string, data?: Record<string, unknown>): void {
+  const ts = new Date().toISOString().slice(11, 23);
+  console.warn(`[${ts}] [V30] ⚠️ ${msg}`);
+  queueLog(RUN_ID, 'warn', category, msg, asset, data);
+}
+
+function logError(msg: string, err?: unknown, category = 'error', asset?: string): void {
   const ts = new Date().toISOString().slice(11, 23);
   console.error(`[${ts}] [V30] ❌ ${msg}`, err ?? '');
+  queueLog(RUN_ID, 'error', category, msg, asset, { error: String(err) });
 }
 
 // ============================================
@@ -687,8 +704,9 @@ async function main(): Promise<void> {
   // Periodic orderbook refresh (backup for WS)
   setInterval(refreshOrderbooks, 5000);
   
-  // Flush ticks periodically
+  // Flush ticks and logs periodically
   setInterval(flushTicks, 5000);
+  setInterval(flushLogs, 3000);
   
   log('✅ V30 Market-Maker running');
   log(`   Tick interval: ${TICK_INTERVAL_MS}ms`);
@@ -702,7 +720,7 @@ async function main(): Promise<void> {
 }
 
 async function shutdown(): Promise<void> {
-  log('🛑 Shutting down...');
+  log('🛑 Shutting down...', 'system');
   isRunning = false;
   
   stopBinanceFeed();
@@ -710,9 +728,10 @@ async function shutdown(): Promise<void> {
   stopOrderbookWs();
   stopPreSignedCache();
   await flushTicks();
+  await flushLogs();
   await releaseLease(RUN_ID);
   
-  log('👋 V30 stopped');
+  console.log('[V30] 👋 V30 stopped');
   process.exit(0);
 }
 

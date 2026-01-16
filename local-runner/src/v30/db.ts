@@ -149,6 +149,64 @@ export async function flushTicks(): Promise<void> {
 // Start flush interval
 setInterval(flushTicks, TICK_FLUSH_INTERVAL);
 
+// ============================================
+// LOG BATCHING
+// ============================================
+
+interface LogEntry {
+  ts: number;
+  run_id: string;
+  level: string;
+  category: string;
+  asset: string | null;
+  message: string;
+  data: Record<string, unknown> | null;
+}
+
+let logQueue: LogEntry[] = [];
+const LOG_BATCH_SIZE = 30;
+const LOG_FLUSH_INTERVAL = 3000;
+
+export function queueLog(
+  runId: string,
+  level: 'debug' | 'info' | 'warn' | 'error',
+  category: string,
+  message: string,
+  asset?: string,
+  data?: Record<string, unknown>
+): void {
+  logQueue.push({
+    ts: Date.now(),
+    run_id: runId,
+    level,
+    category,
+    asset: asset ?? null,
+    message,
+    data: data ?? null,
+  });
+  
+  if (logQueue.length >= LOG_BATCH_SIZE) {
+    flushLogs();
+  }
+}
+
+export async function flushLogs(): Promise<void> {
+  if (logQueue.length === 0) return;
+  
+  const batch = logQueue.splice(0, LOG_BATCH_SIZE);
+  const supabase = getDb();
+  
+  const { error } = await supabase.from('v30_logs').insert(batch);
+  
+  if (error) {
+    // Log to console only if DB fails
+    console.error('[V30] Failed to flush logs:', error.message);
+  }
+}
+
+// Periodic log flush
+setInterval(flushLogs, LOG_FLUSH_INTERVAL);
+
 /**
  * Load positions for a run
  */
