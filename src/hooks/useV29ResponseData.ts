@@ -41,28 +41,20 @@ export interface V29RSignal {
   created_at: string | null;
 }
 
+// Matches the actual v29_config_response table
 export interface V29RConfig {
   id: string;
   enabled: boolean;
-  assets: string[];
-  binance_min_move_usd: number;
-  binance_window_ms: number;
-  max_spread_cents: number;
-  max_poly_move_cents: number;
-  up_target_cents_min: number;
-  up_target_cents_max: number;
-  down_target_cents_min: number;
-  down_target_cents_max: number;
-  up_max_hold_ms: number;
-  down_max_hold_ms: number;
-  repricing_exhaustion_pct: number;
-  stall_threshold_cents: number;
-  stall_window_ms: number;
-  adverse_spread_cents: number;
-  cooldown_ms: number;
+  signal_delta_usd: number;
+  signal_window_ms: number;
   shares_per_trade: number;
-  max_slippage_cents: number;
-  monitor_interval_ms: number;
+  up_target_min: number;
+  up_target_max: number;
+  up_max_hold_sec: number;
+  down_target_min: number;
+  down_target_max: number;
+  down_max_hold_sec: number;
+  updated_at: string | null;
 }
 
 export interface V29RStats {
@@ -77,27 +69,18 @@ export interface V29RStats {
 }
 
 const DEFAULT_CONFIG: V29RConfig = {
-  id: 'default',
-  enabled: false,
-  assets: ['BTC', 'ETH', 'SOL', 'XRP'],
-  binance_min_move_usd: 6,
-  binance_window_ms: 300,
-  max_spread_cents: 1.0,
-  max_poly_move_cents: 0.5,
-  up_target_cents_min: 1.8,
-  up_target_cents_max: 2.0,
-  down_target_cents_min: 2.0,
-  down_target_cents_max: 2.4,
-  up_max_hold_ms: 6000,
-  down_max_hold_ms: 7000,
-  repricing_exhaustion_pct: 0.65,
-  stall_threshold_cents: 0.1,
-  stall_window_ms: 1000,
-  adverse_spread_cents: 1.5,
-  cooldown_ms: 2500,
+  id: 'v29-response',
+  enabled: true,
+  signal_delta_usd: 6,
+  signal_window_ms: 300,
   shares_per_trade: 5,
-  max_slippage_cents: 1.0,
-  monitor_interval_ms: 150,
+  up_target_min: 1.8,
+  up_target_max: 2.0,
+  up_max_hold_sec: 6,
+  down_target_min: 2.0,
+  down_target_max: 2.4,
+  down_max_hold_sec: 7,
+  updated_at: null,
 };
 
 export function useV29ResponseData() {
@@ -198,7 +181,7 @@ export function useV29ResponseData() {
     try {
       const { error } = await supabase
         .from('v29_config_response')
-        .update(updates)
+        .update({ ...updates, updated_at: new Date().toISOString() })
         .eq('id', config.id);
 
       if (error) throw error;

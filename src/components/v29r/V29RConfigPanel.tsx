@@ -53,40 +53,30 @@ export function V29RConfigPanel({ config, onUpdate }: Props) {
         {/* Signal Detection */}
         <div className="space-y-2">
           <p className="text-xs font-medium text-muted-foreground">Signal Detection</p>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-3 gap-3">
             <div>
-              <Label className="text-xs">Binance Min Move ($)</Label>
+              <Label className="text-xs">Binance Δ ($)</Label>
               <Input 
                 type="number" 
                 step="0.5"
-                value={localConfig.binance_min_move_usd}
-                onChange={(e) => setLocalConfig(prev => ({ ...prev, binance_min_move_usd: parseFloat(e.target.value) || 6 }))}
+                value={localConfig.signal_delta_usd}
+                onChange={(e) => setLocalConfig(prev => ({ ...prev, signal_delta_usd: parseFloat(e.target.value) || 6 }))}
               />
             </div>
             <div>
               <Label className="text-xs">Window (ms)</Label>
               <Input 
                 type="number" 
-                value={localConfig.binance_window_ms}
-                onChange={(e) => setLocalConfig(prev => ({ ...prev, binance_window_ms: parseInt(e.target.value) || 300 }))}
+                value={localConfig.signal_window_ms}
+                onChange={(e) => setLocalConfig(prev => ({ ...prev, signal_window_ms: parseInt(e.target.value) || 300 }))}
               />
             </div>
             <div>
-              <Label className="text-xs">Max Spread (¢)</Label>
+              <Label className="text-xs">Shares/Trade</Label>
               <Input 
                 type="number" 
-                step="0.1"
-                value={localConfig.max_spread_cents}
-                onChange={(e) => setLocalConfig(prev => ({ ...prev, max_spread_cents: parseFloat(e.target.value) || 1.0 }))}
-              />
-            </div>
-            <div>
-              <Label className="text-xs">Max Poly Move (¢)</Label>
-              <Input 
-                type="number" 
-                step="0.1"
-                value={localConfig.max_poly_move_cents}
-                onChange={(e) => setLocalConfig(prev => ({ ...prev, max_poly_move_cents: parseFloat(e.target.value) || 0.5 }))}
+                value={localConfig.shares_per_trade}
+                onChange={(e) => setLocalConfig(prev => ({ ...prev, shares_per_trade: parseInt(e.target.value) || 5 }))}
               />
             </div>
           </div>
@@ -94,15 +84,15 @@ export function V29RConfigPanel({ config, onUpdate }: Props) {
 
         {/* UP Asymmetry */}
         <div className="space-y-2">
-          <p className="text-xs font-medium text-green-500">UP Trades (Faster)</p>
+          <p className="text-xs font-medium text-green-500">⬆️ UP Trades (Faster repricing)</p>
           <div className="grid grid-cols-3 gap-3">
             <div>
               <Label className="text-xs">Target Min (¢)</Label>
               <Input 
                 type="number" 
                 step="0.1"
-                value={localConfig.up_target_cents_min}
-                onChange={(e) => setLocalConfig(prev => ({ ...prev, up_target_cents_min: parseFloat(e.target.value) || 1.8 }))}
+                value={localConfig.up_target_min}
+                onChange={(e) => setLocalConfig(prev => ({ ...prev, up_target_min: parseFloat(e.target.value) || 1.8 }))}
               />
             </div>
             <div>
@@ -110,17 +100,17 @@ export function V29RConfigPanel({ config, onUpdate }: Props) {
               <Input 
                 type="number" 
                 step="0.1"
-                value={localConfig.up_target_cents_max}
-                onChange={(e) => setLocalConfig(prev => ({ ...prev, up_target_cents_max: parseFloat(e.target.value) || 2.0 }))}
+                value={localConfig.up_target_max}
+                onChange={(e) => setLocalConfig(prev => ({ ...prev, up_target_max: parseFloat(e.target.value) || 2.0 }))}
               />
             </div>
             <div>
-              <Label className="text-xs">Max Hold (ms)</Label>
+              <Label className="text-xs">Max Hold (sec)</Label>
               <Input 
                 type="number" 
-                step="100"
-                value={localConfig.up_max_hold_ms}
-                onChange={(e) => setLocalConfig(prev => ({ ...prev, up_max_hold_ms: parseInt(e.target.value) || 6000 }))}
+                step="1"
+                value={localConfig.up_max_hold_sec}
+                onChange={(e) => setLocalConfig(prev => ({ ...prev, up_max_hold_sec: parseInt(e.target.value) || 6 }))}
               />
             </div>
           </div>
@@ -128,15 +118,15 @@ export function V29RConfigPanel({ config, onUpdate }: Props) {
 
         {/* DOWN Asymmetry */}
         <div className="space-y-2">
-          <p className="text-xs font-medium text-red-500">DOWN Trades (Slower)</p>
+          <p className="text-xs font-medium text-red-500">⬇️ DOWN Trades (Slower repricing)</p>
           <div className="grid grid-cols-3 gap-3">
             <div>
               <Label className="text-xs">Target Min (¢)</Label>
               <Input 
                 type="number" 
                 step="0.1"
-                value={localConfig.down_target_cents_min}
-                onChange={(e) => setLocalConfig(prev => ({ ...prev, down_target_cents_min: parseFloat(e.target.value) || 2.0 }))}
+                value={localConfig.down_target_min}
+                onChange={(e) => setLocalConfig(prev => ({ ...prev, down_target_min: parseFloat(e.target.value) || 2.0 }))}
               />
             </div>
             <div>
@@ -144,60 +134,17 @@ export function V29RConfigPanel({ config, onUpdate }: Props) {
               <Input 
                 type="number" 
                 step="0.1"
-                value={localConfig.down_target_cents_max}
-                onChange={(e) => setLocalConfig(prev => ({ ...prev, down_target_cents_max: parseFloat(e.target.value) || 2.4 }))}
+                value={localConfig.down_target_max}
+                onChange={(e) => setLocalConfig(prev => ({ ...prev, down_target_max: parseFloat(e.target.value) || 2.4 }))}
               />
             </div>
             <div>
-              <Label className="text-xs">Max Hold (ms)</Label>
+              <Label className="text-xs">Max Hold (sec)</Label>
               <Input 
                 type="number" 
-                step="100"
-                value={localConfig.down_max_hold_ms}
-                onChange={(e) => setLocalConfig(prev => ({ ...prev, down_max_hold_ms: parseInt(e.target.value) || 7000 }))}
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Exit Logic */}
-        <div className="space-y-2">
-          <p className="text-xs font-medium text-muted-foreground">Exit Logic</p>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <div>
-              <Label className="text-xs">Exhaustion %</Label>
-              <Input 
-                type="number" 
-                step="0.05"
-                value={localConfig.repricing_exhaustion_pct}
-                onChange={(e) => setLocalConfig(prev => ({ ...prev, repricing_exhaustion_pct: parseFloat(e.target.value) || 0.65 }))}
-              />
-            </div>
-            <div>
-              <Label className="text-xs">Stall (¢)</Label>
-              <Input 
-                type="number" 
-                step="0.05"
-                value={localConfig.stall_threshold_cents}
-                onChange={(e) => setLocalConfig(prev => ({ ...prev, stall_threshold_cents: parseFloat(e.target.value) || 0.1 }))}
-              />
-            </div>
-            <div>
-              <Label className="text-xs">Adverse Spread (¢)</Label>
-              <Input 
-                type="number" 
-                step="0.1"
-                value={localConfig.adverse_spread_cents}
-                onChange={(e) => setLocalConfig(prev => ({ ...prev, adverse_spread_cents: parseFloat(e.target.value) || 1.5 }))}
-              />
-            </div>
-            <div>
-              <Label className="text-xs">Cooldown (ms)</Label>
-              <Input 
-                type="number" 
-                step="100"
-                value={localConfig.cooldown_ms}
-                onChange={(e) => setLocalConfig(prev => ({ ...prev, cooldown_ms: parseInt(e.target.value) || 2500 }))}
+                step="1"
+                value={localConfig.down_max_hold_sec}
+                onChange={(e) => setLocalConfig(prev => ({ ...prev, down_max_hold_sec: parseInt(e.target.value) || 7 }))}
               />
             </div>
           </div>
@@ -207,6 +154,10 @@ export function V29RConfigPanel({ config, onUpdate }: Props) {
           <Save className="h-4 w-4 mr-2" />
           {saving ? 'Saving...' : 'Save Config'}
         </Button>
+
+        <p className="text-xs text-muted-foreground text-center">
+          Last updated: {localConfig.updated_at ? new Date(localConfig.updated_at).toLocaleString('nl-NL') : 'Never'}
+        </p>
       </CardContent>
     </Card>
   );
