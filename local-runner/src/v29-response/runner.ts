@@ -548,11 +548,14 @@ async function executeExit(
 
     // If we couldn't even post the sell order, DO NOT mark as exited.
     if (!result.success) {
-      const errMsg = result.error ?? 'Unknown error';
+      const errMsg = result.error || 'Unknown error (no error message returned)';
       logAsset(asset, `❌ EXIT FAILED: ${errMsg}`, {
         positionId: position.id,
         exitType,
         sellPrice,
+        shares: position.shares,
+        tokenId: position.tokenId,
+        latencyMs: result.latencyMs,
       });
 
       signal.exit_type = 'error';
