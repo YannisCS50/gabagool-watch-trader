@@ -24,8 +24,10 @@ const previousPrice: Record<Asset, number | null> = {
   XRP: null,
 };
 
-// Track share price at last signal to detect if already repriced
-const lastSharePriceAtSignal: Record<string, number> = {};
+// Track share price AND timestamp at last signal to detect if already repriced
+// Expires after 2 seconds (new Binance move = fresh opportunity)
+const lastSignalData: Record<string, { price: number; ts: number }> = {};
+const REPRICING_MEMORY_MS = 2000; // 2 seconds
 
 // ============================================
 // SKIP REASONS
@@ -146,18 +148,24 @@ export function checkSignal(
     return { triggered: false, skipReason: 'spread_too_wide', skipDetails: `spread=${spreadCents.toFixed(1)}¢` };
   }
   
-  // 7. Check if already repriced
+  // 7. Check if already repriced (only if recent signal exists - expires after 2s)
   const signalKey = `${asset}:${direction}`;
-  const lastPriceAtSignal = lastSharePriceAtSignal[signalKey];
+  const lastData = lastSignalData[signalKey];
   
-  if (lastPriceAtSignal !== undefined) {
-    const repricedCents = (bestAsk - lastPriceAtSignal) * 100;
-    if (repricedCents > config.max_share_move_cents) {
-      logFn(`SKIP: ${asset} ${direction} - already repriced +${repricedCents.toFixed(2)}¢`, {
-        asset, direction, repricedCents, lastPriceAtSignal, currentAsk: bestAsk,
-      });
-      return { triggered: false, skipReason: 'already_repriced', skipDetails: `moved=${repricedCents.toFixed(2)}¢` };
+  if (lastData !== undefined) {
+    const ageMs = now - lastData.ts;
+    
+    // Only check repricing if the last signal was recent (within memory window)
+    if (ageMs < REPRICING_MEMORY_MS) {
+      const repricedCents = (bestAsk - lastData.price) * 100;
+      if (repricedCents > config.max_share_move_cents) {
+        logFn(`SKIP: ${asset} ${direction} - already repriced +${repricedCents.toFixed(2)}¢`, {
+          asset, direction, repricedCents, lastPriceAtSignal: lastData.price, currentAsk: bestAsk,
+        });
+        return { triggered: false, skipReason: 'already_repriced', skipDetails: `moved=${repricedCents.toFixed(2)}¢` };
+      }
     }
+    // Else: old signal expired, treat as fresh opportunity
   }
   
   // 8. Check price range
@@ -210,8 +218,8 @@ export function checkSignal(
   // SIGNAL TRIGGERED!
   // ============================================
   
-  // Record share price for future repricing check
-  lastSharePriceAtSignal[signalKey] = bestAsk;
+  // Record share price + timestamp for future repricing check
+  lastSignalData[signalKey] = { price: bestAsk, ts: now };
   
   const signal: Signal = {
     id: randomUUID(),
@@ -253,9 +261,9 @@ export function resetSignalState(asset: Asset): void {
   previousPrice[asset] = null;
   
   // Clear repricing tracking for this asset
-  for (const key of Object.keys(lastSharePriceAtSignal)) {
+  for (const key of Object.keys(lastSignalData)) {
     if (key.startsWith(`${asset}:`)) {
-      delete lastSharePriceAtSignal[key];
+      delete lastSignalData[key];
     }
   }
 }
