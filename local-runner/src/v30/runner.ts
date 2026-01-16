@@ -137,20 +137,31 @@ async function fetchMarkets(): Promise<void> {
         const endMs = new Date(m.eventEndTime || m.event_end_time).getTime();
         if (endMs <= now) continue;
         
-        const strikePrice = parseFloat(m.strikePrice || m.strike_price);
-        if (isNaN(strikePrice)) continue;
+        // Parse strikePrice - use 0 as fallback if not yet available
+        // The fair value model will use live Binance price anyway
+        let strikePrice = parseFloat(m.strikePrice || m.strike_price || m.openPrice || '0');
+        if (isNaN(strikePrice)) strikePrice = 0;
+        
+        // Validate token IDs before adding market
+        const upTokenId = m.upTokenId || m.up_token_id;
+        const downTokenId = m.downTokenId || m.down_token_id;
+        
+        if (!upTokenId || !downTokenId) {
+          log(`⚠️ ${asset}: Missing token IDs, skipping`);
+          continue;
+        }
         
         const marketInfo: MarketInfo = {
           slug: m.slug,
           asset,
           strikePrice,
-          upTokenId: m.upTokenId || m.up_token_id,
-          downTokenId: m.downTokenId || m.down_token_id,
+          upTokenId,
+          downTokenId,
           endTime: new Date(endMs),
         };
         
         markets.set(asset, marketInfo);
-        log(`📊 Market: ${asset} | Strike $${strikePrice.toFixed(0)} | Ends ${marketInfo.endTime.toISOString().slice(11, 19)}`);
+        log(`📊 Market: ${asset} | Strike $${strikePrice > 0 ? strikePrice.toFixed(0) : 'pending'} | Ends ${marketInfo.endTime.toISOString().slice(11, 19)}`);
       }
       
       // Update orderbook WS subscriptions - pass the full markets Map
