@@ -37,7 +37,7 @@ import { startBinanceFeed, stopBinanceFeed } from '../v29/binance.js';
 import { startChainlinkFeed, stopChainlinkFeed, getChainlinkPrice } from '../v29/chainlink.js';
 import { fetchMarketOrderbook, fetchAllOrderbooks } from '../v29/orderbook.js';
 import { startOrderbookWs, stopOrderbookWs, updateMarkets as updateOrderbookWsMarkets } from '../v29/orderbook-ws.js';
-import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, cancelOrder } from '../v29/trading.js';
+import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, cancelOrder, isCacheInitialized } from '../v29/trading.js';
 import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
 import { acquireLease, releaseLease, isRunnerActive } from '../v29/lease.js';
@@ -153,13 +153,16 @@ async function fetchMarkets(): Promise<void> {
         log(`📊 Market: ${asset} | Strike $${strikePrice.toFixed(0)} | Ends ${marketInfo.endTime.toISOString().slice(11, 19)}`);
       }
       
-      // Update pre-signed order cache with asset as first parameter
-      for (const [asset, market] of markets) {
-        await updateMarketCache(asset, market.upTokenId, market.downTokenId);
-      }
-      
       // Update orderbook WS subscriptions - pass the full markets Map
       updateOrderbookWsMarkets(markets);
+      
+      // Only update pre-signed cache if already initialized (not on first call)
+      // On first call, initPreSignedCache() handles the cache build
+      if (isCacheInitialized()) {
+        for (const [asset, market] of markets) {
+          await updateMarketCache(asset, market.upTokenId, market.downTokenId);
+        }
+      }
     }
     
     lastMarketRefresh = Date.now();
