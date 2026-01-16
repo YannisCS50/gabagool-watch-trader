@@ -220,8 +220,9 @@ function handleBinancePrice(asset: Asset, price: number, timestamp: number): voi
   state.binance = price;
   state.binanceTs = timestamp;
   
-  // Add to rolling window for signal detection
-  addPriceTick(asset, price, now);
+  // Add to tick buffer - returns true if buffer window completed
+  const bufferMs = config.signal_window_ms;  // Use signal_window_ms as buffer interval
+  const shouldCheckSignal = addPriceTick(asset, price, now, bufferMs);
   
   // Log tick (async)
   queueTick({
@@ -245,8 +246,10 @@ function handleBinancePrice(asset: Asset, price: number, timestamp: number): voi
     return;
   }
   
-  // No active position - check for signal
-  checkForSignal(asset);
+  // Only check for signal when buffer window completes (tick-to-tick)
+  if (shouldCheckSignal) {
+    checkForSignal(asset);
+  }
 }
 
 // ============================================
