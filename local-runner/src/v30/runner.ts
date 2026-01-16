@@ -153,9 +153,9 @@ async function fetchMarkets(): Promise<void> {
         log(`📊 Market: ${asset} | Strike $${strikePrice.toFixed(0)} | Ends ${marketInfo.endTime.toISOString().slice(11, 19)}`);
       }
       
-      // Update pre-signed order cache
+      // Update pre-signed order cache with asset as first parameter
       for (const [asset, market] of markets) {
-        await updateMarketCache(market.upTokenId, market.downTokenId);
+        await updateMarketCache(asset, market.upTokenId, market.downTokenId);
       }
       
       // Update orderbook WS subscriptions
@@ -375,7 +375,8 @@ async function executeBuy(
   const buyPrice = Math.ceil((price + 0.01) * 100) / 100; // 1¢ buffer
   
   try {
-    const result = await placeBuyOrder(tokenId, shares, buyPrice);
+    // placeBuyOrder signature: (tokenId, price, shares, asset?, direction?)
+    const result = await placeBuyOrder(tokenId, buyPrice, shares, asset, direction);
     
     if (result && result.orderId) {
       // Track position
@@ -412,7 +413,8 @@ async function executeSell(
   const sellPrice = Math.floor((price - 0.01) * 100) / 100; // 1¢ below bid
   
   try {
-    const result = await placeSellOrder(tokenId, shares, sellPrice);
+    // placeSellOrder signature: (tokenId, price, shares, asset?, direction?)
+    const result = await placeSellOrder(tokenId, sellPrice, shares, asset, direction);
     
     if (result && result.orderId) {
       // Update inventory
