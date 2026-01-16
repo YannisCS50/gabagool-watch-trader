@@ -20,9 +20,9 @@ export interface V30Config {
   min_share_price: number;
   max_share_price: number;
   min_time_remaining_sec: number;  // Don't start trading if less than this
-  // NEW: Minimum fair value to trade (prevents trading losing positions)
-  min_fair_value_to_trade?: number;              // Default 0.10 (10%)
-  min_fair_value_to_trade_low_confidence?: number; // Default 0.15 (15%)
+  // DEPRECATED: Now handled by CI-based edge calculation
+  // min_fair_value_to_trade?: number;
+  // min_fair_value_to_trade_low_confidence?: number;
 }
 
 export interface MarketInfo {
@@ -45,10 +45,15 @@ export interface PriceState {
 }
 
 export interface FairValueResult {
-  p_up: number;       // Fair probability UP wins
+  p_up: number;       // Fair probability UP wins (point estimate)
   p_down: number;     // Fair probability DOWN wins (1 - p_up)
   confidence: number; // 0-1 confidence in estimate
   samples: number;    // Number of historical samples used
+  // Confidence interval bounds (95% Wilson score)
+  ci_lower_up: number;   // Lower bound for P(UP)
+  ci_upper_up: number;   // Upper bound for P(UP)
+  ci_lower_down: number; // Lower bound for P(DOWN) = 1 - ci_upper_up
+  ci_upper_down: number; // Upper bound for P(DOWN) = 1 - ci_lower_up
 }
 
 export interface EdgeResult {

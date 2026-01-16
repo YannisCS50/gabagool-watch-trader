@@ -105,7 +105,7 @@ export class EmpiricalFairValue {
    * Get fair probability for given market conditions
    * 
    * NOW USES EMPIRICAL CROSSING MODEL for better accuracy!
-   * Falls back to legacy cells if crossing model has no data
+   * Returns CONFIDENCE INTERVALS for unified edge calculation
    */
   getFairP(
     asset: Asset,
@@ -116,13 +116,17 @@ export class EmpiricalFairValue {
     const crossingModel = getCrossingModel();
     const crossingResult = crossingModel.getFairP(asset, deltaToStrike, secRemaining);
     
-    // If crossing model has significant data, use it
+    // If crossing model has significant data, use it with CI bounds
     if (crossingResult.confidence > 0.8) {
       return {
         p_up: crossingResult.p_up,
         p_down: crossingResult.p_down,
         confidence: crossingResult.confidence,
         samples: crossingResult.samples,
+        ci_lower_up: crossingResult.ci_lower,
+        ci_upper_up: crossingResult.ci_upper,
+        ci_lower_down: 1 - crossingResult.ci_upper,
+        ci_upper_down: 1 - crossingResult.ci_lower,
       };
     }
     
@@ -134,14 +138,21 @@ export class EmpiricalFairValue {
     
     // If we have crossing data (even non-significant), blend with cell data
     if (crossingResult.samples > 0 && cell && cell.samples >= MIN_FAIR_VALUE_SAMPLES) {
-      // Weight by relative sample count
       const crossingWeight = crossingResult.samples / (crossingResult.samples + cell.samples);
       const blendedP = crossingWeight * crossingResult.p_up + (1 - crossingWeight) * cell.p_up;
+      const totalSamples = crossingResult.samples + cell.samples;
+      // Blend CI bounds too
+      const ci_lower = crossingWeight * crossingResult.ci_lower + (1 - crossingWeight) * Math.max(0, cell.p_up - 0.2);
+      const ci_upper = crossingWeight * crossingResult.ci_upper + (1 - crossingWeight) * Math.min(1, cell.p_up + 0.2);
       return {
         p_up: blendedP,
         p_down: 1 - blendedP,
-        confidence: Math.min(1, (crossingResult.samples + cell.samples) / 100),
-        samples: crossingResult.samples + cell.samples,
+        confidence: Math.min(1, totalSamples / 100),
+        samples: totalSamples,
+        ci_lower_up: ci_lower,
+        ci_upper_up: ci_upper,
+        ci_lower_down: 1 - ci_upper,
+        ci_upper_down: 1 - ci_lower,
       };
     }
     
@@ -152,25 +163,41 @@ export class EmpiricalFairValue {
         p_down: crossingResult.p_down,
         confidence: crossingResult.confidence,
         samples: crossingResult.samples,
+        ci_lower_up: crossingResult.ci_lower,
+        ci_upper_up: crossingResult.ci_upper,
+        ci_lower_down: 1 - crossingResult.ci_upper,
+        ci_upper_down: 1 - crossingResult.ci_lower,
       };
     }
     
-    // Pure legacy fallback
+    // Pure legacy fallback - use wide CI since heuristic
     if (!cell || cell.samples < MIN_FAIR_VALUE_SAMPLES) {
       const heuristicP = this.improvedHeuristic(asset, deltaToStrike, secRemaining);
+      // Heuristic has ~30% uncertainty
+      const heuristicCI = 0.30;
       return {
         p_up: heuristicP,
         p_down: 1 - heuristicP,
         confidence: cell ? cell.samples / MIN_FAIR_VALUE_SAMPLES : 0,
         samples: cell?.samples ?? 0,
+        ci_lower_up: Math.max(0.01, heuristicP - heuristicCI),
+        ci_upper_up: Math.min(0.99, heuristicP + heuristicCI),
+        ci_lower_down: Math.max(0.01, (1 - heuristicP) - heuristicCI),
+        ci_upper_down: Math.min(0.99, (1 - heuristicP) + heuristicCI),
       };
     }
 
+    // Cell-based fallback - estimate CI from samples
+    const cellCI = 1 / Math.sqrt(cell.samples); // Rough binomial CI
     return {
       p_up: cell.p_up,
       p_down: 1 - cell.p_up,
       confidence: Math.min(1, cell.samples / (MIN_FAIR_VALUE_SAMPLES * 5)),
       samples: cell.samples,
+      ci_lower_up: Math.max(0.01, cell.p_up - cellCI),
+      ci_upper_up: Math.min(0.99, cell.p_up + cellCI),
+      ci_lower_down: Math.max(0.01, (1 - cell.p_up) - cellCI),
+      ci_upper_down: Math.min(0.99, (1 - cell.p_up) + cellCI),
     };
   }
 

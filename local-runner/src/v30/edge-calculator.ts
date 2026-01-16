@@ -21,10 +21,25 @@ export class EdgeCalculator {
   }
 
   /**
-   * Calculate edges for both sides
+   * Calculate edges for both sides using UNIFIED formula
    * 
-   * CRITICAL FIX: Also check that fair value is high enough to trade!
-   * With delta=-$113, P(UP wins) might be <5% - never buy UP regardless of price!
+   * KEY INSIGHT: Use confidence interval lower bound for conservative edge
+   * 
+   * edge = price - fair_value_lower_bound
+   * 
+   * This naturally handles:
+   * - High confidence → tight CI → use ~point estimate
+   * - Low confidence → wide CI → require bigger discount
+   * - Extreme probabilities → lower bound near 0 → need very cheap price
+   * 
+   * Example:
+   *   delta=-$113, P(UP)=3%, CI=[1%, 8%]
+   *   UP price = 5¢
+   *   edge = 5¢ - 1¢ = +4¢ (overpriced vs lower bound!) → NO TRADE
+   *   
+   *   delta=-$20, P(UP)=35%, CI=[28%, 42%]
+   *   UP price = 20¢
+   *   edge = 20¢ - 28¢ = -8¢ (underpriced vs lower bound!) → TRADE ✓
    */
   calculateEdge(
     upBestAsk: number,
@@ -33,40 +48,23 @@ export class EdgeCalculator {
     inventory: Inventory,
     secRemaining: number
   ): EdgeResult {
-    // Edge calculation
-    // Δ_up = q_up - p_up (what we pay minus fair value)
-    // Δ_down = q_down - p_down
-    // Negative = underpriced = good to buy
-    const edge_up = upBestAsk - fairValue.p_up;
-    const edge_down = downBestAsk - fairValue.p_down;
+    // USE LOWER BOUNDS for conservative edge calculation
+    // This is the unified formula that handles everything!
+    const conservativeUpValue = fairValue.ci_lower_up;
+    const conservativeDownValue = fairValue.ci_lower_down;
+    
+    // Edge = price - conservative_fair_value
+    // Negative = price below conservative value = safe to buy
+    const edge_up = upBestAsk - conservativeUpValue;
+    const edge_down = downBestAsk - conservativeDownValue;
 
-    // Dynamic threshold
+    // Dynamic threshold (still useful for inventory/time adjustments)
     const theta = this.calculateThreshold(secRemaining, inventory);
 
-    // ===========================================
-    // CRITICAL: MINIMUM FAIR VALUE CHECK
-    // ===========================================
-    // Never trade a side where fair value is too low!
-    // Even if price is "cheap", if fair value is <10%, 
-    // we're almost certainly going to lose.
-    //
-    // Example: delta=-$113, P(UP)=3%, UP price=5¢
-    //   Edge = 5¢ - 3¢ = +2¢ (overpriced, no signal anyway)
-    //   BUT even if edge was negative, we shouldn't trade!
-    //
-    // Minimum thresholds:
-    // - High confidence (crossing model validated): 10%
-    // - Low confidence (heuristic): 15% (more conservative)
-    const minFairValue = fairValue.confidence > 0.5 
-      ? this.config.min_fair_value_to_trade ?? 0.10
-      : this.config.min_fair_value_to_trade_low_confidence ?? 0.15;
-    
-    // Signal generation
-    // Buy if:
-    // 1. Edge is negative enough (price below fair value by more than theta)
-    // 2. Fair value is high enough to be worth trading
-    const signal_up = edge_up < -theta && fairValue.p_up >= minFairValue;
-    const signal_down = edge_down < -theta && fairValue.p_down >= minFairValue;
+    // Signal: buy if price is below conservative fair value by more than theta
+    // No separate fair value check needed - it's built into the formula!
+    const signal_up = edge_up < -theta;
+    const signal_down = edge_down < -theta;
 
     return {
       edge_up,
@@ -74,10 +72,10 @@ export class EdgeCalculator {
       theta,
       signal_up,
       signal_down,
-      // Include fair values for debugging
+      // Include values for debugging
       fair_p_up: fairValue.p_up,
       fair_p_down: fairValue.p_down,
-      min_fair_value_used: minFairValue,
+      min_fair_value_used: conservativeUpValue, // Now shows the CI lower bound used
       confidence: fairValue.confidence,
     };
   }

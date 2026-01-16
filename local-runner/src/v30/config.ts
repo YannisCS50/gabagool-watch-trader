@@ -8,7 +8,7 @@ export const DEFAULT_V30_CONFIG: V30Config = {
   enabled: false,
   assets: ['BTC'],  // Only BTC for now
   fair_value_model: 'empirical',
-  base_theta: 0.05,              // 5% edge threshold (verhoogd van 3%)
+  base_theta: 0.03,              // 3% edge threshold (can be lower now with CI-based safety)
   theta_time_decay_factor: 0.5,  // Threshold decreases 50% toward expiry
   theta_inventory_factor: 0.3,   // Threshold increases 30% at max inventory
   i_max_base: 500,               // Max 500 shares net exposure
@@ -19,10 +19,7 @@ export const DEFAULT_V30_CONFIG: V30Config = {
   min_share_price: 0.05,         // Don't trade below 5¢
   max_share_price: 0.95,         // Don't trade above 95¢
   min_time_remaining_sec: 600,   // Don't start trading if <10 min left
-  // CRITICAL: Minimum fair value thresholds
-  // Prevents buying sides with very low win probability
-  min_fair_value_to_trade: 0.10,              // 10% minimum for high-confidence estimates
-  min_fair_value_to_trade_low_confidence: 0.15, // 15% minimum for heuristic estimates
+  // Note: min_fair_value checks are now handled automatically via CI lower bounds
 };
 
 export const BINANCE_SYMBOLS: Record<Asset, string> = {
