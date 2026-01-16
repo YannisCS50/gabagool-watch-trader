@@ -56,6 +56,8 @@ export function SignalAnalysisTable() {
 }
 
 function DirectionTable({ analysis }: { analysis: SignalAnalysis }) {
+  if (!analysis) return null;
+  
   const isUp = analysis.direction === 'UP';
   const Icon = isUp ? TrendingUp : TrendingDown;
   const color = isUp ? 'text-green-500' : 'text-red-500';
@@ -69,8 +71,8 @@ function DirectionTable({ analysis }: { analysis: SignalAnalysis }) {
           {analysis.direction} Signals
         </CardTitle>
         <CardDescription>
-          {analysis.total_signals.toLocaleString()} signals • 
-          Avg trigger size: ${analysis.avg_signal_size.toFixed(2)}
+          {(analysis.total_signals ?? 0).toLocaleString()} signals • 
+          Avg trigger size: ${(analysis.avg_signal_size ?? 0).toFixed(2)}
         </CardDescription>
       </CardHeader>
       <CardContent className="p-0">
@@ -108,10 +110,10 @@ function DirectionTable({ analysis }: { analysis: SignalAnalysis }) {
                   {formatPct(stat.avg_price_change_pct)}
                 </TableCell>
                 <TableCell className="text-right font-mono text-green-500">
-                  {stat.up_tick_pct.toFixed(1)}%
+                  {(stat.up_tick_pct ?? 0).toFixed(1)}%
                 </TableCell>
                 <TableCell className="text-right font-mono text-red-500 border-r">
-                  {stat.down_tick_pct.toFixed(1)}%
+                  {(stat.down_tick_pct ?? 0).toFixed(1)}%
                 </TableCell>
                 
                 {/* Share price changes */}
@@ -119,10 +121,10 @@ function DirectionTable({ analysis }: { analysis: SignalAnalysis }) {
                   {formatCents(stat.avg_share_change_cents)}
                 </TableCell>
                 <TableCell className="text-right font-mono text-green-500">
-                  {stat.up_share_pct.toFixed(1)}%
+                  {(stat.up_share_pct ?? 0).toFixed(1)}%
                 </TableCell>
                 <TableCell className="text-right font-mono text-red-500">
-                  {stat.down_share_pct.toFixed(1)}%
+                  {(stat.down_share_pct ?? 0).toFixed(1)}%
                 </TableCell>
               </TableRow>
             ))}
@@ -133,12 +135,14 @@ function DirectionTable({ analysis }: { analysis: SignalAnalysis }) {
   );
 }
 
-function formatPct(value: number): string {
+function formatPct(value: number | undefined): string {
+  if (value == null) return '-';
   const sign = value >= 0 ? '+' : '';
   return `${sign}${value.toFixed(4)}%`;
 }
 
-function formatCents(value: number): string {
+function formatCents(value: number | undefined): string {
+  if (value == null) return '-';
   const sign = value >= 0 ? '+' : '';
   return `${sign}${value.toFixed(2)}¢`;
 }
