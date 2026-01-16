@@ -4,6 +4,11 @@
  * Calculates edge (Δ) and dynamic threshold (θ)
  * Edge = market price - fair value
  * Negative edge = underpriced = BUY signal
+ * 
+ * IMPROVED:
+ * - Edge-aware force counter (don't hedge against strong edge)
+ * - Better threshold dynamics
+ * - Cost-aware hedging with minimum thresholds
  */
 
 import type { V30Config, EdgeResult, Inventory, FairValueResult } from './types.js';
@@ -79,11 +84,19 @@ export class EdgeCalculator {
   /**
    * Check if we should force a counter-bet to reduce inventory
    * 
-   * IMPORTANT: Only force counter when we have EXPENSIVE exposure (high cost side)
-   * Cheap side exposure (e.g. 130 shares @ 10¢ = $13 risk) doesn't need aggressive hedging
+   * IMPROVED: Edge-aware force counter
+   * 
+   * Key insight: Don't force counter if edge strongly supports current position
+   * - If we're long UP and edge_up is very negative (UP underpriced), hold position
+   * - Only force counter when edge is neutral or against us
+   * 
+   * Also checks:
+   * - Only force counter for "expensive" positions (high cost side)
+   * - Cheap side exposure (e.g. 130 shares @ 10¢ = $13 risk) doesn't need aggressive hedging
    */
   shouldForceCounter(
     inventory: Inventory,
+    edgeResult?: EdgeResult,
     upAvgPrice?: number,
     downAvgPrice?: number
   ): { 
@@ -93,6 +106,7 @@ export class EdgeCalculator {
   } {
     const ratio = Math.abs(inventory.net) / inventory.i_max;
     
+    // Not at threshold yet
     if (ratio < this.config.force_counter_at_pct) {
       return { force: false, direction: null, reason: '' };
     }
@@ -102,6 +116,39 @@ export class EdgeCalculator {
     const dominantShares = inventory.net > 0 ? inventory.up : inventory.down;
     const dominantAvgPrice = inventory.net > 0 ? (upAvgPrice ?? 0.5) : (downAvgPrice ?? 0.5);
     
+    // ============================================
+    // EDGE-AWARE CHECK
+    // ============================================
+    // If edge strongly supports our position, don't force counter!
+    if (edgeResult) {
+      const dominantEdge = dominantSide === 'UP' ? edgeResult.edge_up : edgeResult.edge_down;
+      const oppositeEdge = dominantSide === 'UP' ? edgeResult.edge_down : edgeResult.edge_up;
+      
+      // Strong edge in our favor: edge < -2*theta (double the normal threshold)
+      const strongEdgeThreshold = -2 * edgeResult.theta;
+      
+      if (dominantEdge < strongEdgeThreshold) {
+        return {
+          force: false,
+          direction: null,
+          reason: `Edge supports ${dominantSide} (${(dominantEdge * 100).toFixed(1)}% < ${(strongEdgeThreshold * 100).toFixed(1)}%), holding position`
+        };
+      }
+      
+      // If opposite side has negative edge (underpriced), then counter makes sense
+      // But if opposite side is overpriced (positive edge), don't force buy it
+      if (oppositeEdge > edgeResult.theta) {
+        return {
+          force: false,
+          direction: null,
+          reason: `Counter side ${dominantSide === 'UP' ? 'DOWN' : 'UP'} overpriced (${(oppositeEdge * 100).toFixed(1)}%), skipping hedge`
+        };
+      }
+    }
+    
+    // ============================================
+    // COST-AWARE CHECK
+    // ============================================
     // Calculate actual dollar exposure at risk
     // If we bought cheap (e.g. 10¢), max loss is only 10¢ per share
     const exposureAtRisk = dominantShares * dominantAvgPrice;
@@ -112,7 +159,7 @@ export class EdgeCalculator {
       return { 
         force: false, 
         direction: null, 
-        reason: `Cheap side (${(dominantAvgPrice * 100).toFixed(0)}¢) - no hedge needed` 
+        reason: `Cheap side (${(dominantAvgPrice * 100).toFixed(0)}¢) - limited downside, no hedge needed` 
       };
     }
     
@@ -125,12 +172,15 @@ export class EdgeCalculator {
       };
     }
 
+    // ============================================
+    // FORCE COUNTER APPROVED
+    // ============================================
     // Force buy opposite direction
     const direction = inventory.net > 0 ? 'DOWN' : 'UP';
     return {
       force: true,
       direction,
-      reason: `High exposure: ${dominantShares} ${dominantSide} @ ${(dominantAvgPrice * 100).toFixed(0)}¢ = $${exposureAtRisk.toFixed(0)}`,
+      reason: `High exposure: ${dominantShares} ${dominantSide} @ ${(dominantAvgPrice * 100).toFixed(0)}¢ = $${exposureAtRisk.toFixed(0)} (edge neutral/against)`,
     };
   }
 

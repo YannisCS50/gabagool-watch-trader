@@ -288,10 +288,11 @@ async function evaluateAsset(asset: Asset): Promise<void> {
     return;
   }
   
-  // Calculate delta to strike
-  const deltaToStrike = C_t - market.strikePrice;
+  // Calculate delta to strike using blended price (Binance + Chainlink)
+  const Z_t = state.chainlink;
+  const deltaToStrike = fairValueModel.getBlendedDelta(C_t, Z_t, market.strikePrice, secRemaining);
   
-  // Get fair value
+  // Get fair value using blended delta
   const fairValue = fairValueModel.getFairP(asset, deltaToStrike, secRemaining);
   
   // Calculate edges (using inventory from above)
@@ -336,10 +337,11 @@ async function evaluateAsset(asset: Asset): Promise<void> {
     return;
   }
   
-  // Check for forced counter-bet (pass avg prices for cost-aware hedging)
+  // Check for forced counter-bet (pass edge + avg prices for smart hedging)
   const { up: upPos, down: downPos } = inventoryManager.getMarketPositions(asset, market.slug);
   const forceCheck = edgeCalculator.shouldForceCounter(
     inventory,
+    edgeResult,  // Pass edge result for edge-aware hedging
     upPos?.avg_entry_price,
     downPos?.avg_entry_price
   );
@@ -348,6 +350,9 @@ async function evaluateAsset(asset: Asset): Promise<void> {
     tick.action_taken = action;
     queueTick(tick);
     return;
+  } else if (forceCheck.reason && !forceCheck.force) {
+    // Log why we're NOT forcing counter (useful for debugging)
+    logDebug(`⚖️ ${asset}: ${forceCheck.reason}`, 'hedge', asset);
   }
   
   // Normal edge-based trading
