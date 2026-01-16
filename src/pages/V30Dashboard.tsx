@@ -7,6 +7,7 @@ import {
   V30TradeLog,
   V30StatsCards,
   V30LogViewer,
+  V30FairValueExplainer,
 } from '@/components/v30';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -72,6 +73,9 @@ export default function V30Dashboard() {
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Left Column - Wider */}
           <div className="lg:col-span-2 space-y-6">
+            {/* Fair Value Explainer */}
+            <V30FairValueExplainer />
+
             {/* Config Editor */}
             <V30ConfigEditor config={config} onUpdate={updateConfig} />
 
