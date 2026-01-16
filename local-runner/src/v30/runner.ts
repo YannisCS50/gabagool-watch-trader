@@ -135,7 +135,16 @@ async function fetchMarkets(): Promise<void> {
         if (!config.assets.includes(asset)) continue;
         
         const endMs = new Date(m.eventEndTime || m.event_end_time).getTime();
+        const startMs = new Date(m.eventStartTime || m.event_start_time).getTime();
+        
+        // Skip expired markets
         if (endMs <= now) continue;
+        
+        // Skip future markets - only trade CURRENT markets
+        if (startMs > now) {
+          log(`⏳ ${asset}: Market starts in ${Math.round((startMs - now) / 60000)}min, skipping`);
+          continue;
+        }
         
         // Parse strikePrice - use 0 as fallback if not yet available
         // The fair value model will use live Binance price anyway
