@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, RefreshCw, Database, BookOpen, BarChart3 } from 'lucide-react';
+import { ArrowLeft, RefreshCw, Database, BookOpen, BarChart3, Zap, Activity } from 'lucide-react';
 import { WindowsList, SignalAnalysisTable } from '@/components/chainlink';
 import { useQueryClient } from '@tanstack/react-query';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -15,11 +15,19 @@ import {
   MetricExplainerCard,
   BucketExplainerTable
 } from '@/components/signalQuality';
+import {
+  MomentumConfidenceCard,
+  DeltaWinMatrix,
+  DirectionAnalysisCard,
+  PricePathChart,
+  RecommendationsPanel
+} from '@/components/momentum';
 import { 
   useSignalQualityStats, 
   useBucketAggregations,
   usePopulateSignalQuality 
 } from '@/hooks/useSignalQualityAnalysis';
+import { useMomentumAnalysis } from '@/hooks/useMomentumAnalysis';
 import { toast } from 'sonner';
 
 export default function BetsHistory() {
@@ -29,11 +37,18 @@ export default function BetsHistory() {
   const { stats, signals, isLoading } = useSignalQualityStats({ asset: selectedAsset });
   const { aggregations } = useBucketAggregations(selectedAsset);
   const populateMutation = usePopulateSignalQuality();
+  
+  // New momentum analysis hook
+  const { 
+    data: momentumData, 
+    isLoading: momentumLoading 
+  } = useMomentumAnalysis(selectedAsset);
 
   const handleRefresh = () => {
     queryClient.invalidateQueries({ queryKey: ['chainlink-windows'] });
     queryClient.invalidateQueries({ queryKey: ['signal-analysis'] });
     queryClient.invalidateQueries({ queryKey: ['signal-quality-analysis'] });
+    queryClient.invalidateQueries({ queryKey: ['momentum-analysis'] });
     toast.success('Data wordt ververst...');
   };
 
@@ -97,8 +112,12 @@ export default function BetsHistory() {
 
       {/* Main Content */}
       <main className="container mx-auto px-4 py-6">
-        <Tabs defaultValue="overview" className="space-y-4">
-          <TabsList>
+        <Tabs defaultValue="momentum" className="space-y-4">
+          <TabsList className="flex-wrap">
+            <TabsTrigger value="momentum" className="gap-2">
+              <Zap className="h-4 w-4" />
+              Momentum Dynamics
+            </TabsTrigger>
             <TabsTrigger value="overview" className="gap-2">
               <BookOpen className="h-4 w-4" />
               Overzicht & Advies
@@ -111,6 +130,49 @@ export default function BetsHistory() {
             <TabsTrigger value="charts">Grafieken</TabsTrigger>
             <TabsTrigger value="windows">Price Windows</TabsTrigger>
           </TabsList>
+          
+          {/* NEW: Momentum Dynamics Tab */}
+          <TabsContent value="momentum" className="space-y-6">
+            {/* Data source info */}
+            <div className="text-sm text-muted-foreground bg-muted/30 p-3 rounded-lg">
+              <strong>Data:</strong> v29_signals_response tabel | 
+              <strong className="ml-2">Signalen:</strong> {momentumData?.totalSignals || 0} totaal, {momentumData?.signalsWithPath || 0} met price path |
+              <strong className="ml-2">Delta:</strong> binance_price - strike_price
+            </div>
+            
+            {/* Confidence score - prominent */}
+            <MomentumConfidenceCard 
+              confidence={momentumData?.confidence || { score: 0, label: 'VERMIJDEN', reasons: [] }} 
+              isLoading={momentumLoading} 
+            />
+            
+            {/* Two column layout */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Delta-Win Matrix */}
+              <DeltaWinMatrix 
+                bucketStats={momentumData?.bucketStats || []} 
+                isLoading={momentumLoading} 
+              />
+              
+              {/* Direction Analysis */}
+              <DirectionAnalysisCard 
+                directionStats={momentumData?.directionStats || []} 
+                isLoading={momentumLoading} 
+              />
+            </div>
+            
+            {/* Price Path Chart */}
+            <PricePathChart 
+              signals={momentumData?.signals || []} 
+              isLoading={momentumLoading} 
+            />
+            
+            {/* Recommendations */}
+            <RecommendationsPanel 
+              recommendations={momentumData?.recommendations || []} 
+              isLoading={momentumLoading} 
+            />
+          </TabsContent>
           
           <TabsContent value="overview" className="space-y-6">
             {/* Strategy health and recommendations */}
