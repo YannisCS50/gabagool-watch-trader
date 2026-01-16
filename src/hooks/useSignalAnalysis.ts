@@ -61,18 +61,31 @@ export function useSignalAnalysis(asset?: string, bucket?: string) {
   return useQuery({
     queryKey: ['signal-analysis', asset, bucket],
     queryFn: async () => {
-      // Fetch all ticks for analysis
-      let query = supabase
-        .from('v29_ticks')
-        .select('ts, signal_direction, binance_price, binance_delta, chainlink_price, up_best_bid, down_best_bid, market_slug, asset')
-        .order('ts', { ascending: true });
+      // Fetch all ticks for analysis - need to paginate to get all data
+      const allTicks: any[] = [];
+      let offset = 0;
+      const pageSize = 10000;
+      
+      while (true) {
+        let query = supabase
+          .from('v29_ticks')
+          .select('ts, signal_direction, binance_price, binance_delta, chainlink_price, up_best_bid, down_best_bid, market_slug, asset')
+          .order('ts', { ascending: true })
+          .range(offset, offset + pageSize - 1);
 
-      if (asset && asset !== 'all') {
-        query = query.eq('asset', asset);
+        if (asset && asset !== 'all') {
+          query = query.eq('asset', asset);
+        }
+
+        const { data, error } = await query;
+        if (error) throw error;
+        
+        if (!data || data.length === 0) break;
+        allTicks.push(...data);
+        
+        if (data.length < pageSize) break;
+        offset += pageSize;
       }
-
-      const { data: allTicks, error } = await query;
-      if (error) throw error;
 
       // Parse market end time from slug and calculate seconds remaining
       const ticksWithSecondsRemaining = (allTicks || []).map(tick => {
@@ -132,18 +145,31 @@ export function useSignalAnalysisByBucket(asset?: string) {
   return useQuery({
     queryKey: ['signal-analysis-by-bucket', asset],
     queryFn: async () => {
-      // Fetch all ticks for analysis
-      let query = supabase
-        .from('v29_ticks')
-        .select('ts, signal_direction, binance_price, binance_delta, chainlink_price, up_best_bid, down_best_bid, market_slug, asset')
-        .order('ts', { ascending: true });
+      // Fetch all ticks for analysis - need to paginate to get all data
+      const allTicks: any[] = [];
+      let offset = 0;
+      const pageSize = 10000;
+      
+      while (true) {
+        let query = supabase
+          .from('v29_ticks')
+          .select('ts, signal_direction, binance_price, binance_delta, chainlink_price, up_best_bid, down_best_bid, market_slug, asset')
+          .order('ts', { ascending: true })
+          .range(offset, offset + pageSize - 1);
 
-      if (asset && asset !== 'all') {
-        query = query.eq('asset', asset);
+        if (asset && asset !== 'all') {
+          query = query.eq('asset', asset);
+        }
+
+        const { data, error } = await query;
+        if (error) throw error;
+        
+        if (!data || data.length === 0) break;
+        allTicks.push(...data);
+        
+        if (data.length < pageSize) break;
+        offset += pageSize;
       }
-
-      const { data: allTicks, error } = await query;
-      if (error) throw error;
 
       // Parse market end time from slug and calculate seconds remaining
       const ticksWithSecondsRemaining = (allTicks || []).map(tick => {
