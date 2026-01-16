@@ -76,11 +76,11 @@ export function BucketExplainerTable({ aggregations, isLoading }: BucketExplaine
             </Tooltip>
           </div>
           
-          <div className="text-sm text-muted-foreground mt-2 space-y-1">
+        <div className="text-sm text-muted-foreground mt-2 space-y-1">
             <p>
               Deze tabel toont hoe goed elke "delta bucket" presteert. 
-              De <span className="text-foreground font-medium">delta</span> is het verschil tussen de Polymarket prijs 
-              en de "eerlijke" prijs (berekend uit Binance).
+              De <span className="text-foreground font-medium">delta</span> is het verschil tussen de 
+              live spot prijs (Binance/Chainlink) en de strike prijs van de markt.
             </p>
             <p>
               <span className="text-green-500">●</span> Groen = winstgevend bucket | 
