@@ -53,6 +53,9 @@ const priceState: Record<Asset, PriceState> = {
 // Active positions (one per asset at most)
 const activePositions = new Map<Asset, ActivePosition>();
 
+// Prevent duplicate/concurrent ENTRY attempts per asset (critical to avoid order spam)
+const entryInFlight = new Set<Asset>();
+
 // Prevent duplicate/concurrent exit attempts per asset
 const exitInFlight = new Set<Asset>();
 const nextExitAttemptAt: Record<Asset, number> = { BTC: 0, ETH: 0, SOL: 0, XRP: 0 };
@@ -268,10 +271,12 @@ function handleBinancePrice(asset: Asset, price: number, timestamp: number): voi
     signal_triggered: false,
   });
   
-  // Check for active position (exit monitoring is done separately)
-  if (activePositions.has(asset)) {
-    // Position exists - update price and check exit
-    checkPositionExit(asset);
+  // Check for active position OR entry in progress (exit monitoring is done separately)
+  if (activePositions.has(asset) || entryInFlight.has(asset)) {
+    // Position exists or entry is pending - update price and check exit
+    if (activePositions.has(asset)) {
+      checkPositionExit(asset);
+    }
     return;
   }
   
@@ -337,74 +342,83 @@ function checkForSignal(asset: Asset, delta: number, direction: 'UP' | 'DOWN' | 
 // ============================================
 
 async function executeEntry(asset: Asset, signal: Signal, market: MarketInfo): Promise<void> {
+  // CRITICAL: Lock immediately to prevent concurrent entries during async operations
+  if (entryInFlight.has(asset)) {
+    signal.status = 'skipped';
+    signal.skip_reason = 'entry_already_in_flight';
+    return;
+  }
+  entryInFlight.add(asset);
+  
   const state = priceState[asset];
   const direction = signal.direction;
   
-  // CRITICAL: Check market is currently active (started and not expired)
-  const now = Date.now();
-  const msFromStart = now - market.startTime.getTime();
-  const msToExpiry = market.endTime.getTime() - now;
-  
-  // Market hasn't started yet
-  if (msFromStart < 0) {
-    logAsset(asset, `⚠️ SKIP: market starts in ${Math.abs(msFromStart / 1000).toFixed(0)}s`);
-    signal.status = 'skipped';
-    signal.skip_reason = 'market_not_started';
-    void saveSignalLog(signal, state);
-    return;
-  }
-  
-  if (msToExpiry <= 0) {
-    logAsset(asset, `⚠️ SKIP: market expired ${Math.abs(msToExpiry / 1000).toFixed(0)}s ago`);
-    signal.status = 'skipped';
-    signal.skip_reason = 'market_expired';
-    void saveSignalLog(signal, state);
-    return;
-  }
-  
-  // Don't trade in last 30 seconds (orderbook often empty)
-  if (msToExpiry < 30_000) {
-    logAsset(asset, `⚠️ SKIP: too close to expiry (${(msToExpiry / 1000).toFixed(0)}s remaining)`);
-    signal.status = 'skipped';
-    signal.skip_reason = 'too_close_to_expiry';
-    void saveSignalLog(signal, state);
-    return;
-  }
-  
-  const bestBid = direction === 'UP' ? state.upBestBid : state.downBestBid;
-  const bestAsk = direction === 'UP' ? state.upBestAsk : state.downBestAsk;
-  
-  if (!bestBid || !bestAsk) {
-    signal.status = 'failed';
-    signal.skip_reason = 'no_orderbook_at_entry';
-    void saveSignalLog(signal, state);
-    return;
-  }
-  
-  // Calculate entry price (maker-biased)
-  const buffer = config.entry_price_buffer_cents / 100;
-  const entryPrice = Math.round((bestBid + buffer) * 100) / 100;
-  
-  // Validate slippage
-  if (entryPrice > bestAsk + (config.max_entry_slippage_cents / 100)) {
-    signal.status = 'skipped';
-    signal.skip_reason = 'slippage_too_high';
-    void saveSignalLog(signal, state);
-    return;
-  }
-  
-  const tokenId = direction === 'UP' ? market.upTokenId : market.downTokenId;
-  const shares = config.shares_per_trade;
-  
-  logAsset(asset, `📤 ENTRY: ${direction} ${shares} @ ${(entryPrice * 100).toFixed(1)}¢`, {
-    signalId: signal.id,
-    entryPrice,
-    shares,
-  });
-  
-  signal.order_submit_ts = Date.now();
-  
+  // Wrap everything in try-finally to ALWAYS release the lock
   try {
+    // CRITICAL: Check market is currently active (started and not expired)
+    const now = Date.now();
+    const msFromStart = now - market.startTime.getTime();
+    const msToExpiry = market.endTime.getTime() - now;
+    
+    // Market hasn't started yet
+    if (msFromStart < 0) {
+      logAsset(asset, `⚠️ SKIP: market starts in ${Math.abs(msFromStart / 1000).toFixed(0)}s`);
+      signal.status = 'skipped';
+      signal.skip_reason = 'market_not_started';
+      void saveSignalLog(signal, state);
+      return;
+    }
+    
+    if (msToExpiry <= 0) {
+      logAsset(asset, `⚠️ SKIP: market expired ${Math.abs(msToExpiry / 1000).toFixed(0)}s ago`);
+      signal.status = 'skipped';
+      signal.skip_reason = 'market_expired';
+      void saveSignalLog(signal, state);
+      return;
+    }
+    
+    // Don't trade in last 30 seconds (orderbook often empty)
+    if (msToExpiry < 30_000) {
+      logAsset(asset, `⚠️ SKIP: too close to expiry (${(msToExpiry / 1000).toFixed(0)}s remaining)`);
+      signal.status = 'skipped';
+      signal.skip_reason = 'too_close_to_expiry';
+      void saveSignalLog(signal, state);
+      return;
+    }
+    
+    const bestBid = direction === 'UP' ? state.upBestBid : state.downBestBid;
+    const bestAsk = direction === 'UP' ? state.upBestAsk : state.downBestAsk;
+    
+    if (!bestBid || !bestAsk) {
+      signal.status = 'failed';
+      signal.skip_reason = 'no_orderbook_at_entry';
+      void saveSignalLog(signal, state);
+      return;
+    }
+    
+    // Calculate entry price (maker-biased)
+    const buffer = config.entry_price_buffer_cents / 100;
+    const entryPrice = Math.round((bestBid + buffer) * 100) / 100;
+    
+    // Validate slippage
+    if (entryPrice > bestAsk + (config.max_entry_slippage_cents / 100)) {
+      signal.status = 'skipped';
+      signal.skip_reason = 'slippage_too_high';
+      void saveSignalLog(signal, state);
+      return;
+    }
+    
+    const tokenId = direction === 'UP' ? market.upTokenId : market.downTokenId;
+    const shares = config.shares_per_trade;
+    
+    logAsset(asset, `📤 ENTRY: ${direction} ${shares} @ ${(entryPrice * 100).toFixed(1)}¢`, {
+      signalId: signal.id,
+      entryPrice,
+      shares,
+    });
+    
+    signal.order_submit_ts = Date.now();
+    
     const result = await placeBuyOrder(tokenId, entryPrice, shares, asset, direction);
     
     if (!result.success) {
@@ -463,6 +477,11 @@ async function executeEntry(asset: Asset, signal: Signal, market: MarketInfo): P
     signal.skip_reason = String(err);
     void saveSignalLog(signal, state);
     logError(`Entry error for ${asset}`, err);
+  } finally {
+    // ALWAYS release the lock when done (success or failure)
+    entryInFlight.delete(asset);
+  }
+}
   }
 }
 
