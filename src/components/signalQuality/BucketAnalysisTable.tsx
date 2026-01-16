@@ -76,7 +76,7 @@ export function BucketAnalysisTable({ aggregations, isLoading }: BucketAnalysisT
                   <span className={`font-mono ${
                     bucket.avgEdge > 0 ? 'text-green-500' : 'text-red-500'
                   }`}>
-                    {(bucket.avgEdge * 100).toFixed(2)}¢
+                    {bucket.avgEdge.toFixed(2)}¢
                   </span>
                 </TableCell>
                 <TableCell className="text-right">

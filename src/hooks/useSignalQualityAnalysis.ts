@@ -147,7 +147,7 @@ export function useSignalQualityStats(filters: SignalQualityFilters = {}) {
 
 // Aggregation by delta bucket
 export function useBucketAggregations(asset?: string) {
-  const { data: signals } = useSignalQualityData({ asset, limit: 1000 });
+  const { data: signals } = useSignalQualityData({ asset }); // No limit - get all
   
   const aggregations: BucketAggregation[] = signals ? (() => {
     const bucketMap = new Map<string, SignalQualityAnalysis[]>();
