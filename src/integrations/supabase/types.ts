@@ -5528,6 +5528,54 @@ export type Database = {
         }
         Relationships: []
       }
+      v29_config_response: {
+        Row: {
+          config_json: Json | null
+          down_max_hold_sec: number | null
+          down_target_max: number | null
+          down_target_min: number | null
+          enabled: boolean | null
+          id: string
+          shares_per_trade: number | null
+          signal_delta_usd: number | null
+          signal_window_ms: number | null
+          up_max_hold_sec: number | null
+          up_target_max: number | null
+          up_target_min: number | null
+          updated_at: string | null
+        }
+        Insert: {
+          config_json?: Json | null
+          down_max_hold_sec?: number | null
+          down_target_max?: number | null
+          down_target_min?: number | null
+          enabled?: boolean | null
+          id?: string
+          shares_per_trade?: number | null
+          signal_delta_usd?: number | null
+          signal_window_ms?: number | null
+          up_max_hold_sec?: number | null
+          up_target_max?: number | null
+          up_target_min?: number | null
+          updated_at?: string | null
+        }
+        Update: {
+          config_json?: Json | null
+          down_max_hold_sec?: number | null
+          down_target_max?: number | null
+          down_target_min?: number | null
+          enabled?: boolean | null
+          id?: string
+          shares_per_trade?: number | null
+          signal_delta_usd?: number | null
+          signal_window_ms?: number | null
+          up_max_hold_sec?: number | null
+          up_target_max?: number | null
+          up_target_min?: number | null
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
       v29_fills: {
         Row: {
           asset: string
@@ -5606,6 +5654,39 @@ export type Database = {
           message?: string
           run_id?: string | null
           ts?: number
+        }
+        Relationships: []
+      }
+      v29_logs_response: {
+        Row: {
+          asset: string | null
+          category: string | null
+          created_at: string | null
+          data: Json | null
+          id: string
+          level: string | null
+          message: string | null
+          run_id: string | null
+        }
+        Insert: {
+          asset?: string | null
+          category?: string | null
+          created_at?: string | null
+          data?: Json | null
+          id?: string
+          level?: string | null
+          message?: string | null
+          run_id?: string | null
+        }
+        Update: {
+          asset?: string | null
+          category?: string | null
+          created_at?: string | null
+          data?: Json | null
+          id?: string
+          level?: string | null
+          message?: string | null
+          run_id?: string | null
         }
         Relationships: []
       }
@@ -5795,6 +5876,123 @@ export type Database = {
         }
         Relationships: []
       }
+      v29_signals_response: {
+        Row: {
+          asset: string
+          best_ask_t0: number | null
+          best_bid_t0: number | null
+          binance_delta: number | null
+          binance_price: number | null
+          binance_ts: number | null
+          created_at: string | null
+          decision_latency_ms: number | null
+          decision_ts: number | null
+          direction: string
+          entry_price: number | null
+          exit_latency_ms: number | null
+          exit_price: number | null
+          exit_reason: string | null
+          exit_ts: number | null
+          exit_type: string | null
+          fees: number | null
+          fill_latency_ms: number | null
+          fill_ts: number | null
+          gross_pnl: number | null
+          id: string
+          market_slug: string | null
+          net_pnl: number | null
+          order_latency_ms: number | null
+          price_at_1s: number | null
+          price_at_2s: number | null
+          price_at_3s: number | null
+          price_at_5s: number | null
+          run_id: string
+          share_price_t0: number | null
+          shares: number | null
+          signal_ts: number | null
+          skip_reason: string | null
+          spread_t0: number | null
+          status: string
+          strike_price: number | null
+        }
+        Insert: {
+          asset: string
+          best_ask_t0?: number | null
+          best_bid_t0?: number | null
+          binance_delta?: number | null
+          binance_price?: number | null
+          binance_ts?: number | null
+          created_at?: string | null
+          decision_latency_ms?: number | null
+          decision_ts?: number | null
+          direction: string
+          entry_price?: number | null
+          exit_latency_ms?: number | null
+          exit_price?: number | null
+          exit_reason?: string | null
+          exit_ts?: number | null
+          exit_type?: string | null
+          fees?: number | null
+          fill_latency_ms?: number | null
+          fill_ts?: number | null
+          gross_pnl?: number | null
+          id: string
+          market_slug?: string | null
+          net_pnl?: number | null
+          order_latency_ms?: number | null
+          price_at_1s?: number | null
+          price_at_2s?: number | null
+          price_at_3s?: number | null
+          price_at_5s?: number | null
+          run_id: string
+          share_price_t0?: number | null
+          shares?: number | null
+          signal_ts?: number | null
+          skip_reason?: string | null
+          spread_t0?: number | null
+          status: string
+          strike_price?: number | null
+        }
+        Update: {
+          asset?: string
+          best_ask_t0?: number | null
+          best_bid_t0?: number | null
+          binance_delta?: number | null
+          binance_price?: number | null
+          binance_ts?: number | null
+          created_at?: string | null
+          decision_latency_ms?: number | null
+          decision_ts?: number | null
+          direction?: string
+          entry_price?: number | null
+          exit_latency_ms?: number | null
+          exit_price?: number | null
+          exit_reason?: string | null
+          exit_ts?: number | null
+          exit_type?: string | null
+          fees?: number | null
+          fill_latency_ms?: number | null
+          fill_ts?: number | null
+          gross_pnl?: number | null
+          id?: string
+          market_slug?: string | null
+          net_pnl?: number | null
+          order_latency_ms?: number | null
+          price_at_1s?: number | null
+          price_at_2s?: number | null
+          price_at_3s?: number | null
+          price_at_5s?: number | null
+          run_id?: string
+          share_price_t0?: number | null
+          shares?: number | null
+          signal_ts?: number | null
+          skip_reason?: string | null
+          spread_t0?: number | null
+          status?: string
+          strike_price?: number | null
+        }
+        Relationships: []
+      }
       v29_ticks: {
         Row: {
           alert_triggered: boolean | null
@@ -5879,6 +6077,63 @@ export type Database = {
           up_best_ask?: number | null
           up_best_bid?: number | null
           used_cache?: boolean | null
+        }
+        Relationships: []
+      }
+      v29_ticks_response: {
+        Row: {
+          asset: string
+          binance_delta: number | null
+          binance_price: number | null
+          created_at: string | null
+          down_best_ask: number | null
+          down_best_bid: number | null
+          id: string
+          market_slug: string | null
+          run_id: string | null
+          signal_direction: string | null
+          signal_id: string | null
+          signal_triggered: boolean | null
+          strike_price: number | null
+          ts: number
+          up_best_ask: number | null
+          up_best_bid: number | null
+        }
+        Insert: {
+          asset: string
+          binance_delta?: number | null
+          binance_price?: number | null
+          created_at?: string | null
+          down_best_ask?: number | null
+          down_best_bid?: number | null
+          id?: string
+          market_slug?: string | null
+          run_id?: string | null
+          signal_direction?: string | null
+          signal_id?: string | null
+          signal_triggered?: boolean | null
+          strike_price?: number | null
+          ts: number
+          up_best_ask?: number | null
+          up_best_bid?: number | null
+        }
+        Update: {
+          asset?: string
+          binance_delta?: number | null
+          binance_price?: number | null
+          created_at?: string | null
+          down_best_ask?: number | null
+          down_best_bid?: number | null
+          id?: string
+          market_slug?: string | null
+          run_id?: string | null
+          signal_direction?: string | null
+          signal_id?: string | null
+          signal_triggered?: boolean | null
+          strike_price?: number | null
+          ts?: number
+          up_best_ask?: number | null
+          up_best_bid?: number | null
         }
         Relationships: []
       }
