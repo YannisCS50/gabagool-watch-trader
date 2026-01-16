@@ -394,21 +394,21 @@ export function useStrategyDiscovery(asset: string = 'BTC', hoursBack: number = 
       
       for (const [, bucket] of bucketMap) {
         const n = bucket.windows.length;
-        if (n < 3) continue; // Need minimum samples
-        
+        if (n < 1) continue;
+
         const wins = bucket.windows.filter(w => w.theoreticalPnl > 0).length;
         bucket.sampleCount = n;
         bucket.winRate = (wins / n) * 100;
         bucket.avgPnl = bucket.windows.reduce((s, w) => s + w.theoreticalPnl, 0) / n;
         bucket.avgCounterTicks = bucket.windows.reduce((s, w) => s + w.counterTickCount, 0) / n;
         bucket.avgMaxAdverse = bucket.windows.reduce((s, w) => s + w.maxAdverseMove, 0) / n;
-        
+
         // Z-score for significance (vs 50% baseline)
         const p = wins / n;
         const se = Math.sqrt(0.5 * 0.5 / n);
         bucket.zScore = (p - 0.5) / se;
         bucket.isSignificant = Math.abs(bucket.zScore) >= 1.96 && n >= 10;
-        
+
         buckets.push(bucket);
       }
       
