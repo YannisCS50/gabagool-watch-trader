@@ -991,6 +991,14 @@ async function placeSingleBuyOrder(
     return { success: false, error: 'Invalid tokenId', latencyMs: Date.now() - start };
   }
   
+  // Polymarket CLOB minimum order value is ~$1
+  const MIN_ORDER_VALUE_USD = 1.0;
+  const orderValue = shares * roundedPrice;
+  if (orderValue < MIN_ORDER_VALUE_USD) {
+    log(`⚠️ BUY skipped: order value $${orderValue.toFixed(2)} < min $${MIN_ORDER_VALUE_USD}`);
+    return { success: false, error: `Order value $${orderValue.toFixed(2)} < min $${MIN_ORDER_VALUE_USD}`, latencyMs: Date.now() - start };
+  }
+  
   try {
     let signedOrder: SignedOrder;
     let usedCache = false;
@@ -1130,7 +1138,15 @@ export async function placeSellOrder(
     // DO NOT discount it - that would mean selling for less than market price!
     const roundedPrice = Math.round(price * 100) / 100;
     
-    log(`📤 SELL ${roundedShares} shares @ ${(roundedPrice * 100).toFixed(1)}¢ (bestBid, NO discount)`);
+    // Polymarket CLOB minimum order value is ~$1
+    const MIN_ORDER_VALUE_USD = 1.0;
+    const orderValue = roundedShares * roundedPrice;
+    if (orderValue < MIN_ORDER_VALUE_USD) {
+      log(`⚠️ SELL skipped: order value $${orderValue.toFixed(2)} < min $${MIN_ORDER_VALUE_USD}`);
+      return { success: false, error: `Order value $${orderValue.toFixed(2)} < min $${MIN_ORDER_VALUE_USD}`, latencyMs: Date.now() - start };
+    }
+    
+    log(`📤 SELL ${roundedShares} shares @ ${(roundedPrice * 100).toFixed(1)}¢ = $${orderValue.toFixed(2)}`);
     
     // Try to use cached pre-signed order first
     let signedOrder: SignedOrder | null = null;
