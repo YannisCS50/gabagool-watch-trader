@@ -17,7 +17,19 @@ export interface V29Config {
   // Tick-to-tick delta (USD) - triggers trade when Binance price moves this much between ticks
   tick_delta_usd: number;
   
-  // Delta threshold for direction logic
+  // === SMART DIRECTION FILTER (V30-style fair value) ===
+  // Uses P(UP wins) to decide if opposite-direction ticks should be blocked
+  smart_direction_enabled: boolean;
+  
+  // Probability threshold to block opposite direction
+  // If P(UP) >= 0.65, block DOWN ticks (and vice versa)
+  smart_direction_threshold: number;
+  
+  // Minimum samples required before using smart direction
+  // Falls back to delta_threshold if insufficient data
+  smart_direction_min_samples: number;
+  
+  // LEGACY: Delta threshold for direction logic (fallback when smart not available)
   // delta = binance_price - strike_price
   // -75 to +75: trade both directions
   // < -75: only trade DOWN
@@ -91,7 +103,13 @@ export interface V29Config {
 export const DEFAULT_CONFIG: V29Config = {
   enabled: true,
   tick_delta_usd: 6,              // Trigger on $6 moves
-  delta_threshold: 75,            // Direction filter: < -75 = DOWN only, > +75 = UP only
+  
+  // SMART DIRECTION: Use V30's fair value to filter ticks
+  smart_direction_enabled: true,  // Use P(UP) to block unfavored ticks
+  smart_direction_threshold: 0.65, // Block opposite if P(side) >= 65%
+  smart_direction_min_samples: 10, // Minimum samples before trusting
+  
+  delta_threshold: 75,            // FALLBACK: < -75 = DOWN only, > +75 = UP only
   min_share_price: 0.08,          // WIDENED: Trade 8¢-92¢ range (was 15-85)
   max_share_price: 0.92,          // WIDENED: allows trading when price is far from strike
   shares_per_trade: 5,            // FIXED: Polymarket minimum is 5 shares!
