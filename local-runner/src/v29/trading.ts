@@ -1014,25 +1014,73 @@ async function placeSingleBuyOrder(
       );
     }
     
-    // POST the order
+    // POST the order as GTC - then poll for fill status
     const response = await client.postOrder(signedOrder!, OrderType.GTC);
     
-    const latencyMs = Date.now() - start;
-    
-    if (response.success) {
-      log(`✅ Order placed: ${response.orderID ?? 'no-id'} (${latencyMs}ms, cache=${usedCache})`);
-      return {
-        success: true,
-        orderId: response.orderID,
-        avgPrice: roundedPrice,
-        filledSize: shares,
-        latencyMs,
-      };
-    } else {
+    if (!response.success || !response.orderID) {
       const msg = asErrorMessage(response.errorMsg) || 'Order rejected';
       log(`❌ Order failed: ${msg}`);
-      return { success: false, error: msg, latencyMs };
+      return { success: false, error: msg, latencyMs: Date.now() - start };
     }
+    
+    const orderId = response.orderID;
+    const postLatency = Date.now() - start;
+    log(`📤 Order posted (${usedCache ? 'cached' : 'signed'}, GTC): ${orderId} in ${postLatency}ms`);
+    
+    // Poll for fill status - GTC orders need verification
+    const FILL_CHECK_INTERVAL_MS = 100;
+    const MAX_FILL_WAIT_MS = 2000;
+    const maxAttempts = Math.ceil(MAX_FILL_WAIT_MS / FILL_CHECK_INTERVAL_MS);
+    let filledSize = 0;
+    let attempts = 0;
+    
+    while (attempts < maxAttempts) {
+      await new Promise(r => setTimeout(r, FILL_CHECK_INTERVAL_MS));
+      const status = await getOrderStatus(orderId);
+      filledSize = status.filledSize;
+      
+      if (status.filled || filledSize >= shares) {
+        const latencyMs = Date.now() - start;
+        log(`✅ Order FILLED: ${filledSize} shares (${latencyMs}ms, cache=${usedCache})`);
+        return {
+          success: true,
+          orderId,
+          avgPrice: roundedPrice,
+          filledSize,
+          latencyMs,
+        };
+      }
+      
+      if (status.status === 'CANCELLED' || status.status === 'EXPIRED') {
+        break;
+      }
+      
+      attempts++;
+    }
+    
+    // Partial or no fill - cancel remaining and return result
+    if (filledSize < shares && orderId) {
+      log(`⚠️ Buy partial: ${filledSize}/${shares}, cancelling remainder`);
+      await cancelOrder(orderId);
+    }
+    
+    if (filledSize > 0) {
+      return {
+        success: true,
+        orderId,
+        avgPrice: roundedPrice,
+        filledSize,
+        latencyMs: Date.now() - start,
+      };
+    }
+    
+    // No fill at all
+    log(`⚠️ Order timeout: 0/${shares} filled at ${(roundedPrice * 100).toFixed(1)}¢`);
+    return { 
+      success: false, 
+      error: `GTC timeout: 0/${shares} filled at ${(roundedPrice * 100).toFixed(1)}¢`, 
+      latencyMs: Date.now() - start 
+    };
   } catch (err) {
     const msg = asErrorMessage(err);
     log(`❌ Order error: ${msg}`);
