@@ -1,5 +1,5 @@
-import { useSignalAnalysis, SignalAnalysis, SecondStats } from '@/hooks/useSignalAnalysis';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { useSignalAnalysis, SignalAnalysis } from '@/hooks/useSignalAnalysis';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Skeleton } from '@/components/ui/skeleton';
 import { TrendingUp, TrendingDown } from 'lucide-react';
@@ -66,43 +66,63 @@ function DirectionTable({ analysis }: { analysis: SignalAnalysis }) {
       <CardHeader className={bgColor}>
         <CardTitle className={`flex items-center gap-2 ${color}`}>
           <Icon className="h-5 w-5" />
-          {analysis.direction} Signals ({analysis.total_signals.toLocaleString()} signals)
+          {analysis.direction} Signals
         </CardTitle>
+        <CardDescription>
+          {analysis.total_signals.toLocaleString()} signals • 
+          Avg trigger size: ${analysis.avg_signal_size.toFixed(2)}
+        </CardDescription>
       </CardHeader>
       <CardContent className="p-0">
         <Table>
           <TableHeader>
-            <TableRow>
-              <TableHead className="w-24">Time After</TableHead>
-              <TableHead className="text-right">Samples</TableHead>
-              <TableHead className="text-right">Avg Price Δ%</TableHead>
-              <TableHead className="text-right">Med Price Δ%</TableHead>
-              <TableHead className="text-right">Avg Share Δ%</TableHead>
-              <TableHead className="text-right">Med Share Δ%</TableHead>
-              <TableHead className="text-right">Hit Rate</TableHead>
+            <TableRow className="hover:bg-transparent">
+              <TableHead rowSpan={2} className="w-20 border-r align-middle">Time</TableHead>
+              <TableHead rowSpan={2} className="text-right border-r align-middle w-20">N</TableHead>
+              <TableHead colSpan={3} className="text-center border-b border-r">
+                Price Change (Chainlink)
+              </TableHead>
+              <TableHead colSpan={3} className="text-center border-b">
+                Share Price Change
+              </TableHead>
+            </TableRow>
+            <TableRow className="hover:bg-transparent">
+              <TableHead className="text-right text-xs">Avg %</TableHead>
+              <TableHead className="text-right text-xs text-green-500">↑ %</TableHead>
+              <TableHead className="text-right text-xs text-red-500 border-r">↓ %</TableHead>
+              <TableHead className="text-right text-xs">Avg ¢</TableHead>
+              <TableHead className="text-right text-xs text-green-500">↑ %</TableHead>
+              <TableHead className="text-right text-xs text-red-500">↓ %</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {analysis.stats_by_second.map((stat) => (
               <TableRow key={stat.seconds_after}>
-                <TableCell className="font-mono">{stat.seconds_after}s</TableCell>
-                <TableCell className="text-right text-muted-foreground">
+                <TableCell className="font-mono font-bold border-r">{stat.seconds_after}s</TableCell>
+                <TableCell className="text-right text-muted-foreground border-r text-xs">
                   {stat.sample_count.toLocaleString()}
                 </TableCell>
-                <TableCell className={`text-right font-mono ${getColorClass(stat.avg_price_change_pct, isUp)}`}>
+                
+                {/* Price changes */}
+                <TableCell className={`text-right font-mono ${getPriceColor(stat.avg_price_change_pct, isUp)}`}>
                   {formatPct(stat.avg_price_change_pct)}
                 </TableCell>
-                <TableCell className={`text-right font-mono ${getColorClass(stat.median_price_change_pct, isUp)}`}>
-                  {formatPct(stat.median_price_change_pct)}
+                <TableCell className="text-right font-mono text-green-500">
+                  {stat.up_tick_pct.toFixed(1)}%
                 </TableCell>
-                <TableCell className={`text-right font-mono ${getColorClass(stat.avg_share_price_change_pct, isUp)}`}>
-                  {formatPct(stat.avg_share_price_change_pct)}
+                <TableCell className="text-right font-mono text-red-500 border-r">
+                  {stat.down_tick_pct.toFixed(1)}%
                 </TableCell>
-                <TableCell className={`text-right font-mono ${getColorClass(stat.median_share_price_change_pct, isUp)}`}>
-                  {formatPct(stat.median_share_price_change_pct)}
+                
+                {/* Share price changes */}
+                <TableCell className={`text-right font-mono ${getShareColor(stat.avg_share_change_cents, isUp)}`}>
+                  {formatCents(stat.avg_share_change_cents)}
                 </TableCell>
-                <TableCell className={`text-right font-mono ${stat.positive_rate > 50 ? 'text-green-500' : 'text-red-500'}`}>
-                  {stat.positive_rate.toFixed(1)}%
+                <TableCell className="text-right font-mono text-green-500">
+                  {stat.up_share_pct.toFixed(1)}%
+                </TableCell>
+                <TableCell className="text-right font-mono text-red-500">
+                  {stat.down_share_pct.toFixed(1)}%
                 </TableCell>
               </TableRow>
             ))}
@@ -118,10 +138,23 @@ function formatPct(value: number): string {
   return `${sign}${value.toFixed(4)}%`;
 }
 
-function getColorClass(value: number, isUp: boolean): string {
+function formatCents(value: number): string {
+  const sign = value >= 0 ? '+' : '';
+  return `${sign}${value.toFixed(2)}¢`;
+}
+
+function getPriceColor(value: number, isUp: boolean): string {
+  // For UP signals, positive price change is good (green)
+  // For DOWN signals, negative price change is good (green)
   if (isUp) {
-    return value > 0 ? 'text-green-500' : 'text-red-500';
+    return value > 0 ? 'text-green-500' : value < 0 ? 'text-red-500' : '';
   } else {
-    return value < 0 ? 'text-green-500' : 'text-red-500';
+    return value < 0 ? 'text-green-500' : value > 0 ? 'text-red-500' : '';
   }
+}
+
+function getShareColor(value: number, isUp: boolean): string {
+  // For UP signals, positive share change is good (we bought UP shares, want them to go up)
+  // For DOWN signals, positive share change is good (we bought DOWN shares, want them to go up)
+  return value > 0 ? 'text-green-500' : value < 0 ? 'text-red-500' : '';
 }

@@ -23,16 +23,20 @@ interface FollowupTick {
 export interface SecondStats {
   seconds_after: number;
   sample_count: number;
+  // Price changes
   avg_price_change_pct: number;
-  avg_share_price_change_pct: number;
-  median_price_change_pct: number;
-  median_share_price_change_pct: number;
-  positive_rate: number; // % of cases where price moved in expected direction
+  up_tick_pct: number;      // % of cases where price went UP
+  down_tick_pct: number;    // % of cases where price went DOWN
+  // Share price changes in cents
+  avg_share_change_cents: number;
+  up_share_pct: number;     // % of cases where share price went UP
+  down_share_pct: number;   // % of cases where share price went DOWN
 }
 
 export interface SignalAnalysis {
   direction: 'UP' | 'DOWN';
   total_signals: number;
+  avg_signal_size: number;  // Average binance delta that triggered the signal
   stats_by_second: SecondStats[];
 }
 
@@ -43,7 +47,7 @@ export function useSignalAnalysis(asset?: string) {
       // Fetch all ticks for analysis
       let query = supabase
         .from('v29_ticks')
-        .select('ts, signal_direction, binance_price, chainlink_price, up_best_bid, down_best_bid, market_slug, asset')
+        .select('ts, signal_direction, binance_price, binance_delta, chainlink_price, up_best_bid, down_best_bid, market_slug, asset')
         .order('ts', { ascending: true });
 
       if (asset && asset !== 'all') {
@@ -65,14 +69,14 @@ export function useSignalAnalysis(asset?: string) {
       }
 
       // Find signal ticks
-      const upSignals: SignalTick[] = [];
-      const downSignals: SignalTick[] = [];
+      const upSignals: (SignalTick & { binance_delta: number })[] = [];
+      const downSignals: (SignalTick & { binance_delta: number })[] = [];
 
       for (const tick of allTicks || []) {
         if (tick.signal_direction === 'UP') {
-          upSignals.push(tick as SignalTick);
+          upSignals.push(tick as SignalTick & { binance_delta: number });
         } else if (tick.signal_direction === 'DOWN') {
-          downSignals.push(tick as SignalTick);
+          downSignals.push(tick as SignalTick & { binance_delta: number });
         }
       }
 
@@ -87,22 +91,36 @@ export function useSignalAnalysis(asset?: string) {
 }
 
 function analyzeDirection(
-  signals: SignalTick[],
+  signals: (SignalTick & { binance_delta: number })[],
   ticksByMarket: Map<string, FollowupTick[]>,
   direction: 'UP' | 'DOWN'
 ): SignalAnalysis {
   const statsBySecond: Map<number, {
     price_changes: number[];
-    share_changes: number[];
-    positive_count: number;
+    share_changes_cents: number[];
+    price_up_count: number;
+    price_down_count: number;
+    share_up_count: number;
+    share_down_count: number;
   }> = new Map();
 
   // Initialize 1-9 seconds
   for (let s = 1; s <= 9; s++) {
-    statsBySecond.set(s, { price_changes: [], share_changes: [], positive_count: 0 });
+    statsBySecond.set(s, { 
+      price_changes: [], 
+      share_changes_cents: [],
+      price_up_count: 0,
+      price_down_count: 0,
+      share_up_count: 0,
+      share_down_count: 0,
+    });
   }
 
+  let totalDelta = 0;
+
   for (const signal of signals) {
+    totalDelta += Math.abs(signal.binance_delta || 0);
+    
     const marketTicks = ticksByMarket.get(signal.market_slug);
     if (!marketTicks) continue;
 
@@ -129,18 +147,20 @@ function analyzeDirection(
         const priceChange = ((closestTick.chainlink_price - signal.chainlink_price) / signal.chainlink_price) * 100;
         stats.price_changes.push(priceChange);
 
-        // Share price change (use up_best_bid for UP signals, down_best_bid for DOWN)
+        if (priceChange > 0) stats.price_up_count++;
+        if (priceChange < 0) stats.price_down_count++;
+
+        // Share price change in cents
         const signalSharePrice = direction === 'UP' ? signal.up_best_bid : signal.down_best_bid;
         const followupSharePrice = direction === 'UP' ? closestTick.up_best_bid : closestTick.down_best_bid;
 
-        if (signalSharePrice && followupSharePrice && signalSharePrice > 0) {
-          const shareChange = ((followupSharePrice - signalSharePrice) / signalSharePrice) * 100;
-          stats.share_changes.push(shareChange);
-        }
+        if (signalSharePrice != null && followupSharePrice != null) {
+          const shareChangeCents = (followupSharePrice - signalSharePrice) * 100; // Convert to cents
+          stats.share_changes_cents.push(shareChangeCents);
 
-        // Did price move in expected direction?
-        if (direction === 'UP' && priceChange > 0) stats.positive_count++;
-        if (direction === 'DOWN' && priceChange < 0) stats.positive_count++;
+          if (shareChangeCents > 0) stats.share_up_count++;
+          if (shareChangeCents < 0) stats.share_down_count++;
+        }
       }
     }
   }
@@ -149,23 +169,25 @@ function analyzeDirection(
   const statsArray: SecondStats[] = [];
   for (let s = 1; s <= 9; s++) {
     const data = statsBySecond.get(s)!;
+    const totalSamples = data.price_changes.length;
+    const totalShareSamples = data.share_changes_cents.length;
     
     statsArray.push({
       seconds_after: s,
-      sample_count: data.price_changes.length,
+      sample_count: totalSamples,
       avg_price_change_pct: average(data.price_changes),
-      avg_share_price_change_pct: average(data.share_changes),
-      median_price_change_pct: median(data.price_changes),
-      median_share_price_change_pct: median(data.share_changes),
-      positive_rate: data.price_changes.length > 0 
-        ? (data.positive_count / data.price_changes.length) * 100 
-        : 0,
+      up_tick_pct: totalSamples > 0 ? (data.price_up_count / totalSamples) * 100 : 0,
+      down_tick_pct: totalSamples > 0 ? (data.price_down_count / totalSamples) * 100 : 0,
+      avg_share_change_cents: average(data.share_changes_cents),
+      up_share_pct: totalShareSamples > 0 ? (data.share_up_count / totalShareSamples) * 100 : 0,
+      down_share_pct: totalShareSamples > 0 ? (data.share_down_count / totalShareSamples) * 100 : 0,
     });
   }
 
   return {
     direction,
     total_signals: signals.length,
+    avg_signal_size: signals.length > 0 ? totalDelta / signals.length : 0,
     stats_by_second: statsArray,
   };
 }
@@ -173,11 +195,4 @@ function analyzeDirection(
 function average(arr: number[]): number {
   if (arr.length === 0) return 0;
   return arr.reduce((sum, v) => sum + v, 0) / arr.length;
-}
-
-function median(arr: number[]): number {
-  if (arr.length === 0) return 0;
-  const sorted = [...arr].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
 }
