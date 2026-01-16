@@ -28,14 +28,24 @@ export const BINANCE_SYMBOLS: Record<Asset, string> = {
   XRP: 'xrpusdt',
 };
 
-// Time bucket boundaries (in seconds remaining)
-export const TIME_BUCKETS = [900, 600, 300, 180, 120, 60, 30, 0] as const;
+// Time bucket boundaries (in seconds remaining) - more granular near expiry
+export const TIME_BUCKETS = [
+  900, 750, 600, 480, 360, 300, 240, 180, 150, 120, 90, 60, 45, 30, 15, 0
+] as const;
 
-// Delta bucket size (in USD)
-export const DELTA_BUCKET_SIZE = 10;
+// Delta bucket size per asset (in USD) - smaller = more granular
+export const DELTA_BUCKET_SIZE: Record<string, number> = {
+  BTC: 25,    // Was 10, now 25 for ~40 buckets in typical ±$500 range
+  ETH: 3,     // ~40 buckets in ±$60 range
+  SOL: 0.25,  // ~40 buckets in ±$5 range
+  XRP: 0.005, // ~40 buckets in ±$0.10 range
+};
 
-// Minimum samples for trusted fair value
-export const MIN_FAIR_VALUE_SAMPLES = 10;
+// Default delta bucket size for unknown assets
+export const DEFAULT_DELTA_BUCKET_SIZE = 10;
 
-// EWMA alpha for fair value updates
-export const FAIR_VALUE_ALPHA = 0.1;
+// Minimum samples for trusted fair value (reduced for more granular buckets)
+export const MIN_FAIR_VALUE_SAMPLES = 5;
+
+// EWMA alpha for fair value updates (slightly higher for faster learning)
+export const FAIR_VALUE_ALPHA = 0.15;

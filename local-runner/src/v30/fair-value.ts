@@ -10,7 +10,7 @@
  * - Time-weighted confidence scaling
  */
 
-import { DELTA_BUCKET_SIZE, MIN_FAIR_VALUE_SAMPLES, FAIR_VALUE_ALPHA, TIME_BUCKETS } from './config.js';
+import { DELTA_BUCKET_SIZE, DEFAULT_DELTA_BUCKET_SIZE, MIN_FAIR_VALUE_SAMPLES, FAIR_VALUE_ALPHA, TIME_BUCKETS } from './config.js';
 import type { FairValueResult, Asset } from './types.js';
 
 interface FairCell {
@@ -61,10 +61,11 @@ export class EmpiricalFairValue {
   }
 
   /**
-   * Get the delta bucket for given delta to strike
+   * Get the delta bucket for given delta to strike (asset-specific)
    */
-  private getDeltaBucket(deltaToStrike: number): number {
-    return Math.round(deltaToStrike / DELTA_BUCKET_SIZE) * DELTA_BUCKET_SIZE;
+  private getDeltaBucket(asset: Asset, deltaToStrike: number): number {
+    const bucketSize = DELTA_BUCKET_SIZE[asset] ?? DEFAULT_DELTA_BUCKET_SIZE;
+    return Math.round(deltaToStrike / bucketSize) * bucketSize;
   }
 
   /**
@@ -103,7 +104,7 @@ export class EmpiricalFairValue {
     deltaToStrike: number,
     secRemaining: number
   ): FairValueResult {
-    const deltaBucket = this.getDeltaBucket(deltaToStrike);
+    const deltaBucket = this.getDeltaBucket(asset, deltaToStrike);
     const timeBucket = this.getTimeBucket(secRemaining);
     const k = this.key(asset, deltaBucket, timeBucket);
     
@@ -201,7 +202,7 @@ export class EmpiricalFairValue {
     upWon: boolean,
     ts: number = Date.now()
   ): void {
-    const deltaBucket = this.getDeltaBucket(deltaToStrike);
+    const deltaBucket = this.getDeltaBucket(asset, deltaToStrike);
     const timeBucket = this.getTimeBucket(secRemaining);
     const k = this.key(asset, deltaBucket, timeBucket);
     
