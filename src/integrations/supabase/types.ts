@@ -5891,6 +5891,42 @@ export type Database = {
         }
         Relationships: []
       }
+      v30_logs: {
+        Row: {
+          asset: string | null
+          category: string
+          created_at: string
+          data: Json | null
+          id: string
+          level: string
+          message: string
+          run_id: string | null
+          ts: number
+        }
+        Insert: {
+          asset?: string | null
+          category?: string
+          created_at?: string
+          data?: Json | null
+          id?: string
+          level?: string
+          message: string
+          run_id?: string | null
+          ts: number
+        }
+        Update: {
+          asset?: string | null
+          category?: string
+          created_at?: string
+          data?: Json | null
+          id?: string
+          level?: string
+          message?: string
+          run_id?: string | null
+          ts?: number
+        }
+        Relationships: []
+      }
       v30_positions: {
         Row: {
           asset: string
