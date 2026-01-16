@@ -8,7 +8,7 @@ export const DEFAULT_V30_CONFIG: V30Config = {
   enabled: false,
   assets: ['BTC'],  // Only BTC for now
   fair_value_model: 'empirical',
-  base_theta: 0.03,              // 3% edge threshold
+  base_theta: 0.05,              // 5% edge threshold (verhoogd van 3%)
   theta_time_decay_factor: 0.5,  // Threshold decreases 50% toward expiry
   theta_inventory_factor: 0.3,   // Threshold increases 30% at max inventory
   i_max_base: 500,               // Max 500 shares net exposure
