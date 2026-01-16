@@ -214,20 +214,33 @@ export function useV29ResponseData() {
     refetch();
   }, [refetch]);
 
-  // Set up realtime subscription
+  // Set up realtime subscriptions for signals AND config
   useEffect(() => {
-    const signalsChannel = supabase
-      .channel('v29_signals_response_realtime')
+    const channel = supabase
+      .channel('v29_response_realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'v29_signals_response' }, () => {
         fetchSignals();
         setLastUpdate(new Date());
       })
-      .subscribe();
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'v29_config_response' }, () => {
+        fetchConfig();
+        setLastUpdate(new Date());
+      })
+      .subscribe((status) => {
+        setIsConnected(status === 'SUBSCRIBED');
+      });
+
+    // Fallback polling every 5s in case realtime misses events
+    const pollInterval = setInterval(() => {
+      fetchSignals();
+      setLastUpdate(new Date());
+    }, 5000);
 
     return () => {
-      supabase.removeChannel(signalsChannel);
+      supabase.removeChannel(channel);
+      clearInterval(pollInterval);
     };
-  }, [fetchSignals]);
+  }, [fetchSignals, fetchConfig]);
 
   return {
     config,
