@@ -29,6 +29,9 @@ let healthCheckTimer: NodeJS.Timeout | null = null;
 // Token ID to asset/direction mapping
 const tokenMap = new Map<string, { asset: Asset; direction: 'UP' | 'DOWN' }>();
 
+// Cache last known bid/ask per token (so we don't lose ask when price_change only gives bid)
+const lastKnownPrices = new Map<string, { bestBid: number | null; bestAsk: number | null }>();
+
 // Subscribed token IDs
 let subscribedTokens: string[] = [];
 
@@ -145,9 +148,15 @@ function handleMessage(data: WebSocket.Data): void {
       // Best ask = lowest price willing to sell
       const bestAsk = asks.length > 0 ? parseFloat(asks[0][0]) : null;
       
+      // Cache the prices so we don't lose them on price_change events
+      const cached = lastKnownPrices.get(msg.asset_id) ?? { bestBid: null, bestAsk: null };
+      if (bestBid !== null) cached.bestBid = bestBid;
+      if (bestAsk !== null) cached.bestAsk = bestAsk;
+      lastKnownPrices.set(msg.asset_id, cached);
+      
       if (priceCallback && (bestBid !== null || bestAsk !== null)) {
         stats.lastBidUpdate = now;
-        priceCallback(tokenInfo.asset, tokenInfo.direction, bestBid, bestAsk, now);
+        priceCallback(tokenInfo.asset, tokenInfo.direction, cached.bestBid, cached.bestAsk, now);
       }
     }
     
@@ -160,12 +169,15 @@ function handleMessage(data: WebSocket.Data): void {
         const price = parseFloat(pc.price);
         if (!Number.isFinite(price) || price <= 0 || price >= 1.5) continue;
         
-        // Price change often contains mid price - treat as both bid and ask hint
-        // For trailing stop we mainly care about bids, so this is supplementary
+        // Update cached bid, preserve cached ask
+        const cached = lastKnownPrices.get(pc.asset_id) ?? { bestBid: null, bestAsk: null };
+        cached.bestBid = price;
+        lastKnownPrices.set(pc.asset_id, cached);
+        
         if (priceCallback) {
           stats.lastBidUpdate = now;
-          // Fire as bid update (conservative for trailing stop)
-          priceCallback(tokenInfo.asset, tokenInfo.direction, price, null, now);
+          // Fire with cached ask so we don't lose it
+          priceCallback(tokenInfo.asset, tokenInfo.direction, price, cached.bestAsk, now);
         }
       }
     }
@@ -175,12 +187,18 @@ function handleMessage(data: WebSocket.Data): void {
       const tokenInfo = tokenMap.get(msg.asset_id);
       if (!tokenInfo) return;
       
-      const bestBid = msg.bid ? parseFloat(msg.bid) : null;
-      const bestAsk = msg.ask ? parseFloat(msg.ask) : null;
+      const tickBid = msg.bid ? parseFloat(msg.bid) : null;
+      const tickAsk = msg.ask ? parseFloat(msg.ask) : null;
       
-      if (priceCallback && (bestBid !== null || bestAsk !== null)) {
+      // Update cache with tick data
+      const cached = lastKnownPrices.get(msg.asset_id) ?? { bestBid: null, bestAsk: null };
+      if (tickBid !== null) cached.bestBid = tickBid;
+      if (tickAsk !== null) cached.bestAsk = tickAsk;
+      lastKnownPrices.set(msg.asset_id, cached);
+      
+      if (priceCallback && (tickBid !== null || tickAsk !== null)) {
         stats.lastBidUpdate = now;
-        priceCallback(tokenInfo.asset, tokenInfo.direction, bestBid, bestAsk, now);
+        priceCallback(tokenInfo.asset, tokenInfo.direction, cached.bestBid, cached.bestAsk, now);
       }
     }
     
