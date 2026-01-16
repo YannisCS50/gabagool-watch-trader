@@ -14,6 +14,7 @@ import HedgeAnalysis from "./pages/HedgeAnalysis";
 import DataLogging from "./pages/DataLogging";
 import Observability from "./pages/Observability";
 import BotHealth from "./pages/BotHealth";
+import BetsHistory from "./pages/BetsHistory";
 import Reconcile from "./pages/Reconcile";
 import V26Dashboard from "./pages/V26Dashboard";
 import V27Dashboard from "./pages/V27Dashboard";
@@ -50,6 +51,7 @@ const App = () => (
           <Route path="/data-logging" element={<DataLogging />} />
           <Route path="/observability" element={<Observability />} />
           <Route path="/bot-health" element={<BotHealth />} />
+          <Route path="/bets" element={<BetsHistory />} />
           <Route path="/reconcile" element={<Reconcile />} />
           <Route path="/v26" element={<V26Dashboard />} />
           <Route path="/v27" element={<V27Dashboard />} />
