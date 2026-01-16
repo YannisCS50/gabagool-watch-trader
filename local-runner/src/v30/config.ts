@@ -6,7 +6,7 @@ import type { Asset, V30Config } from './types.js';
 
 export const DEFAULT_V30_CONFIG: V30Config = {
   enabled: false,
-  assets: ['BTC', 'ETH', 'SOL', 'XRP'],
+  assets: ['BTC'],  // Only BTC for now
   fair_value_model: 'empirical',
   base_theta: 0.03,              // 3% edge threshold
   theta_time_decay_factor: 0.5,  // Threshold decreases 50% toward expiry
