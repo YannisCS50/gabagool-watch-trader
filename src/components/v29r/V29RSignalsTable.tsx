@@ -41,7 +41,9 @@ export function V29RSignalsTable({ signals }: Props) {
 
   // Check if a trade is complete (bought AND sold)
   const isCompleteTrade = (s: V29RSignal) => {
-    return (s.status === 'filled' || s.status === 'closed') && s.exit_price != null;
+    // Status can be 'exited', 'filled', or 'closed' for complete trades
+    const completedStatus = ['exited', 'filled', 'closed'].includes(s.status);
+    return completedStatus && s.exit_price != null && s.entry_price != null;
   };
 
   // Filter signals based on selection
