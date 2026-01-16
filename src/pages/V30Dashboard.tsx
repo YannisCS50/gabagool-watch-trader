@@ -6,6 +6,7 @@ import {
   V30ConfigEditor,
   V30TradeLog,
   V30StatsCards,
+  V30LogViewer,
 } from '@/components/v30';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -62,6 +63,9 @@ export default function V30Dashboard() {
 
         {/* Live Status Grid */}
         <V30LiveStatus ticks={ticks} assets={config.assets} />
+
+        {/* Log Viewer - Full Width */}
+        <V30LogViewer />
 
         {/* Two Column Layout */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
