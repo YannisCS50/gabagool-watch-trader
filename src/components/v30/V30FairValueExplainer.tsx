@@ -25,11 +25,13 @@ const ASSET_VOLATILITY: Record<string, number> = {
 };
 
 const DELTA_BUCKET_SIZE: Record<string, number> = {
-  BTC: 25,
-  ETH: 3,
-  SOL: 0.25,
-  XRP: 0.005,
+  BTC: 75,
+  ETH: 8,
+  SOL: 0.6,
+  XRP: 0.015,
 };
+
+const TIME_BUCKETS_COUNT = 8;
 
 export function V30FairValueExplainer() {
   const [asset, setAsset] = useState<string>('BTC');
@@ -109,7 +111,7 @@ export function V30FairValueExplainer() {
   const currentDeltaBucket = Math.round(delta / deltaBucketSize) * deltaBucketSize;
 
   // Estimate bucket coverage
-  const timeBuckets = 16; // From config
+  const timeBuckets = TIME_BUCKETS_COUNT;
   const deltaRange = sigma * 5; // Typical range
   const estimatedDeltaBuckets = Math.ceil((deltaRange * 2) / deltaBucketSize);
   const totalBuckets = timeBuckets * estimatedDeltaBuckets;
