@@ -24,7 +24,7 @@ import { startBinanceFeed, stopBinanceFeed } from './binance.js';
 import { startChainlinkFeed, stopChainlinkFeed, getChainlinkPrice } from './chainlink.js';
 import { fetchMarketOrderbook, fetchAllOrderbooks } from './orderbook.js';
 import { startOrderbookWs, stopOrderbookWs, updateMarkets as updateOrderbookWsMarkets, isOrderbookWsConnected, getOrderbookWsStats } from './orderbook-ws.js';
-import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb, queueLog, logTick, queueTick } from './db.js';
+import { initDb, saveSignal, loadV29Config, sendHeartbeat, getDb, queueLog, logTick, queueTick, upsertAggregatePosition, addHedgeToPosition, getAllPositionsForMarket, clearPositionsForMarket } from './db.js';
 import { placeBuyOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache, getOrderStatus, setFillContext, clearFillContext, cancelOrder, logBurstStats } from './trading.js';
 import { verifyVpnConnection } from '../vpn-check.js';
 import { testConnection } from '../polymarket.js';
@@ -346,6 +346,100 @@ async function loadExistingPositions(opts: { quiet?: boolean } = {}): Promise<vo
   } finally {
     positionSyncInFlight = false;
   }
+}
+
+// ============================================
+// LOAD POSITIONS FROM DATABASE (v29_positions table)
+// ============================================
+
+async function loadPositionsFromDb(): Promise<void> {
+  log('💾 Loading positions from database...');
+  
+  let dbPositionsLoaded = 0;
+  
+  for (const [asset, market] of markets) {
+    try {
+      const dbPositions = await getAllPositionsForMarket(market.slug);
+      
+      if (dbPositions.length === 0) continue;
+      
+      for (const dbPos of dbPositions) {
+        // Skip if already hedged (paired)
+        if (dbPos.isFullyHedged) {
+          // This is a paired position - add to pairedPositions
+          const oppositeDbPos = dbPositions.find(
+            p => p.marketSlug === dbPos.marketSlug && p.side !== dbPos.side
+          );
+          
+          if (oppositeDbPos) {
+            const pairedShares = Math.min(dbPos.totalShares, oppositeDbPos.totalShares);
+            if (pairedShares >= 1) {
+              const upPos = dbPos.side === 'UP' ? dbPos : oppositeDbPos;
+              const downPos = dbPos.side === 'DOWN' ? dbPos : oppositeDbPos;
+              
+              const pairId = `db-pair:${asset}:${dbPos.id}`;
+              if (!pairedPositions.has(pairId)) {
+                const combinedCost = upPos.avgEntryPrice + downPos.avgEntryPrice;
+                pairedPositions.set(pairId, {
+                  id: pairId,
+                  asset,
+                  marketSlug: market.slug,
+                  upTokenId: market.upTokenId,
+                  downTokenId: market.downTokenId,
+                  shares: pairedShares,
+                  upEntryPrice: upPos.avgEntryPrice,
+                  downEntryPrice: downPos.avgEntryPrice,
+                  combinedCost,
+                  lockedProfit: 1 - combinedCost,
+                  pairedAt: new Date(dbPos.updatedAt).getTime(),
+                });
+                dbPositionsLoaded++;
+                log(`   🔗 DB PAIRED: ${asset} ${pairedShares.toFixed(0)} sh`, 'db', asset);
+              }
+            }
+          }
+          continue;
+        }
+        
+        // Unpaired position
+        if (dbPos.totalShares < 1) continue;
+        
+        const direction = dbPos.side as 'UP' | 'DOWN';
+        const tokenId = direction === 'UP' ? market.upTokenId : market.downTokenId;
+        
+        // Check if we already have this in memory
+        let existingShares = 0;
+        for (const [, pos] of unpairedPositions) {
+          if (pos.marketSlug === market.slug && pos.direction === direction) {
+            existingShares += pos.shares;
+          }
+        }
+        
+        const diff = dbPos.totalShares - existingShares;
+        if (diff >= 1) {
+          const positionId = `db:${asset}:${direction}:${dbPos.id}`;
+          unpairedPositions.set(positionId, {
+            id: positionId,
+            asset,
+            direction,
+            marketSlug: market.slug,
+            tokenId,
+            shares: diff,
+            entryPrice: dbPos.avgEntryPrice,
+            totalCost: diff * dbPos.avgEntryPrice,
+            entryTime: new Date(dbPos.createdAt).getTime(),
+            orderId: `db-${dbPos.id}`,
+          });
+          dbPositionsLoaded++;
+          log(`   📋 DB UNPAIRED: ${asset} ${direction} ${diff.toFixed(0)} sh @ ${(dbPos.avgEntryPrice * 100).toFixed(1)}¢`, 'db', asset);
+        }
+      }
+    } catch (err) {
+      logError(`Failed to load DB positions for ${asset}`, err);
+    }
+  }
+  
+  log(`✅ DB sync: loaded ${dbPositionsLoaded} positions from v29_positions`);
 }
 
 // ============================================
@@ -886,6 +980,24 @@ async function executeBuy(
   log(`✅ BOUGHT: ${asset} ${direction} ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ (${orderLatencyMs}ms) - UNPAIRED`, 'fill', asset);
   
   void saveSignal(signal);
+  
+  // 🔥 PERSIST TO DATABASE - write position to v29_positions table
+  try {
+    const persisted = await upsertAggregatePosition(
+      RUN_ID,
+      asset,
+      direction,
+      market.slug,
+      tokenId,
+      filledSize,
+      filledSize * avgPrice
+    );
+    if (persisted) {
+      log(`💾 DB: Persisted ${asset} ${direction} ${filledSize}sh to v29_positions`, 'db', asset);
+    }
+  } catch (dbErr) {
+    logError(`Failed to persist position to DB`, dbErr);
+  }
 }
 
 // ============================================
@@ -1023,6 +1135,36 @@ async function checkAndExecutePairs(): Promise<void> {
     }
     
     log(`✅ PAIRED: ${asset} ${filledSize} sh @ ${(actualCombined * 100).toFixed(1)}¢ = LOCKED +$${(actualProfit * filledSize).toFixed(3)} (+${(actualProfit * 100).toFixed(1)}¢/sh)`, 'pair', asset);
+    
+    // 🔥 PERSIST HEDGE TO DATABASE - update the original position with hedge info
+    try {
+      // First, upsert the hedge side position
+      await upsertAggregatePosition(
+        RUN_ID,
+        asset,
+        oppositeDirection,
+        market.slug,
+        oppositeTokenId,
+        filledSize,
+        filledSize * avgHedgePrice
+      );
+      
+      // Then mark the original side as hedged
+      const origPos = await import('./db.js').then(db => 
+        db.getAggregatePosition(asset, direction, market.slug)
+      );
+      if (origPos) {
+        await addHedgeToPosition(
+          origPos.id,
+          filledSize,
+          filledSize * avgHedgePrice,
+          true // is_fully_hedged
+        );
+        log(`💾 DB: Persisted hedge for ${asset} to v29_positions`, 'db', asset);
+      }
+    } catch (dbErr) {
+      logError(`Failed to persist hedge to DB`, dbErr);
+    }
   }
 }
 
@@ -1149,7 +1291,10 @@ async function main(): Promise<void> {
   }));
   await initPreSignedCache(marketsList);
   
-  // Load existing positions
+  // Load existing positions from database first (persisted state)
+  await loadPositionsFromDb();
+  
+  // Then sync with wallet (real-time truth from Polymarket)
   await loadExistingPositions();
 
   isRunning = true;
