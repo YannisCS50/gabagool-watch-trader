@@ -61,12 +61,14 @@ export function useSignalAnalysis(asset?: string, bucket?: string) {
   return useQuery({
     queryKey: ['signal-analysis', asset, bucket],
     queryFn: async () => {
-      // Fetch all ticks for analysis - need to paginate to get all data
+      // Fetch all ticks for analysis - need to paginate to get all data.
+      // Note: the backend enforces a max rows/page (commonly 1000), so keep pageSize at 1000.
       const allTicks: any[] = [];
       let offset = 0;
-      const pageSize = 10000;
-      
-      while (true) {
+      const pageSize = 1000;
+      const maxPages = 500; // safety
+
+      for (let page = 0; page < maxPages; page++) {
         let query = supabase
           .from('v29_ticks')
           .select('ts, signal_direction, binance_price, binance_delta, chainlink_price, up_best_bid, down_best_bid, market_slug, asset')
@@ -79,19 +81,30 @@ export function useSignalAnalysis(asset?: string, bucket?: string) {
 
         const { data, error } = await query;
         if (error) throw error;
-        
+
         if (!data || data.length === 0) break;
         allTicks.push(...data);
-        
+
+        // last page
         if (data.length < pageSize) break;
         offset += pageSize;
       }
 
-      // Parse market end time from slug and calculate seconds remaining
+      // Parse market start time + duration from slug and calculate seconds remaining
+      // Example slug: btc-updown-15m-1768402800 (15m market starting at unix=1768402800)
       const ticksWithSecondsRemaining = (allTicks || []).map(tick => {
-        const endTimeMatch = tick.market_slug?.match(/-(\d+)$/);
-        const endTimeMs = endTimeMatch ? parseInt(endTimeMatch[1]) * 1000 : null;
-        const secondsRemaining = endTimeMs ? Math.floor((endTimeMs - tick.ts) / 1000) : null;
+        const m = tick.market_slug?.match(/-(\d+)([smhd])-([0-9]+)$/);
+        if (!m) return { ...tick, secondsRemaining: null };
+
+        const durationValue = parseInt(m[1]);
+        const durationUnit = m[2] as 's' | 'm' | 'h' | 'd';
+        const startUnixSec = parseInt(m[3]);
+
+        const unitToSec: Record<typeof durationUnit, number> = { s: 1, m: 60, h: 3600, d: 86400 };
+        const durationSec = durationValue * unitToSec[durationUnit];
+        const endTimeMs = (startUnixSec + durationSec) * 1000;
+
+        const secondsRemaining = Math.floor((endTimeMs - tick.ts) / 1000);
         return { ...tick, secondsRemaining };
       });
 
@@ -145,12 +158,14 @@ export function useSignalAnalysisByBucket(asset?: string) {
   return useQuery({
     queryKey: ['signal-analysis-by-bucket', asset],
     queryFn: async () => {
-      // Fetch all ticks for analysis - need to paginate to get all data
+      // Fetch all ticks for analysis - need to paginate to get all data.
+      // Note: the backend enforces a max rows/page (commonly 1000), so keep pageSize at 1000.
       const allTicks: any[] = [];
       let offset = 0;
-      const pageSize = 10000;
-      
-      while (true) {
+      const pageSize = 1000;
+      const maxPages = 500; // safety
+
+      for (let page = 0; page < maxPages; page++) {
         let query = supabase
           .from('v29_ticks')
           .select('ts, signal_direction, binance_price, binance_delta, chainlink_price, up_best_bid, down_best_bid, market_slug, asset')
@@ -163,19 +178,30 @@ export function useSignalAnalysisByBucket(asset?: string) {
 
         const { data, error } = await query;
         if (error) throw error;
-        
+
         if (!data || data.length === 0) break;
         allTicks.push(...data);
-        
+
+        // last page
         if (data.length < pageSize) break;
         offset += pageSize;
       }
 
-      // Parse market end time from slug and calculate seconds remaining
+      // Parse market start time + duration from slug and calculate seconds remaining
+      // Example slug: btc-updown-15m-1768402800 (15m market starting at unix=1768402800)
       const ticksWithSecondsRemaining = (allTicks || []).map(tick => {
-        const endTimeMatch = tick.market_slug?.match(/-(\d+)$/);
-        const endTimeMs = endTimeMatch ? parseInt(endTimeMatch[1]) * 1000 : null;
-        const secondsRemaining = endTimeMs ? Math.floor((endTimeMs - tick.ts) / 1000) : null;
+        const m = tick.market_slug?.match(/-(\d+)([smhd])-([0-9]+)$/);
+        if (!m) return { ...tick, secondsRemaining: null };
+
+        const durationValue = parseInt(m[1]);
+        const durationUnit = m[2] as 's' | 'm' | 'h' | 'd';
+        const startUnixSec = parseInt(m[3]);
+
+        const unitToSec: Record<typeof durationUnit, number> = { s: 1, m: 60, h: 3600, d: 86400 };
+        const durationSec = durationValue * unitToSec[durationUnit];
+        const endTimeMs = (startUnixSec + durationSec) * 1000;
+
+        const secondsRemaining = Math.floor((endTimeMs - tick.ts) / 1000);
         return { ...tick, secondsRemaining };
       });
 
