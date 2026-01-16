@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 
 export interface V30Config {
@@ -61,6 +61,7 @@ export interface V30Stats {
   aggressiveExits: number;
   avgEdgeUp: number;
   avgEdgeDown: number;
+  lastTickTs: number | null;
 }
 
 const DEFAULT_CONFIG: V30Config = {
@@ -90,12 +91,35 @@ export function useV30Data() {
     aggressiveExits: 0,
     avgEdgeUp: 0,
     avgEdgeDown: 0,
+    lastTickTs: null,
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isConnected, setIsConnected] = useState(false);
+  const [lastUpdate, setLastUpdate] = useState<number>(Date.now());
+  
+  const ticksRef = useRef<V30Tick[]>([]);
+
+  // Calculate stats from ticks
+  const calculateStats = useCallback((tickData: V30Tick[]) => {
+    const actions = tickData.map(t => t.action_taken).filter(Boolean);
+    const edgesUp = tickData.map(t => t.edge_up).filter((e): e is number => e !== null);
+    const edgesDown = tickData.map(t => t.edge_down).filter((e): e is number => e !== null);
+
+    setStats({
+      totalTicks: tickData.length,
+      buysUp: actions.filter(a => a === 'buy_up').length,
+      buysDown: actions.filter(a => a === 'buy_down').length,
+      forceCounters: actions.filter(a => a?.includes('force_counter')).length,
+      aggressiveExits: actions.filter(a => a === 'aggressive_exit').length,
+      avgEdgeUp: edgesUp.length > 0 ? edgesUp.reduce((a, b) => a + b, 0) / edgesUp.length : 0,
+      avgEdgeDown: edgesDown.length > 0 ? edgesDown.reduce((a, b) => a + b, 0) / edgesDown.length : 0,
+      lastTickTs: tickData[0]?.ts ?? null,
+    });
+  }, []);
 
   // Fetch config
-  const fetchConfig = async () => {
+  const fetchConfig = useCallback(async () => {
     const { data, error } = await supabase
       .from('v30_config')
       .select('*')
@@ -123,10 +147,10 @@ export function useV30Data() {
         max_share_price: Number(data.max_share_price) || 0.95,
       });
     }
-  };
+  }, []);
 
   // Fetch recent ticks
-  const fetchTicks = async () => {
+  const fetchTicks = useCallback(async () => {
     const { data, error } = await supabase
       .from('v30_ticks')
       .select('*')
@@ -139,26 +163,14 @@ export function useV30Data() {
     }
 
     const tickData = (data || []) as V30Tick[];
+    ticksRef.current = tickData;
     setTicks(tickData);
-
-    // Calculate stats
-    const actions = tickData.map(t => t.action_taken).filter(Boolean);
-    const edgesUp = tickData.map(t => t.edge_up).filter((e): e is number => e !== null);
-    const edgesDown = tickData.map(t => t.edge_down).filter((e): e is number => e !== null);
-
-    setStats({
-      totalTicks: tickData.length,
-      buysUp: actions.filter(a => a === 'buy_up').length,
-      buysDown: actions.filter(a => a === 'buy_down').length,
-      forceCounters: actions.filter(a => a?.includes('force_counter')).length,
-      aggressiveExits: actions.filter(a => a === 'aggressive_exit').length,
-      avgEdgeUp: edgesUp.length > 0 ? edgesUp.reduce((a, b) => a + b, 0) / edgesUp.length : 0,
-      avgEdgeDown: edgesDown.length > 0 ? edgesDown.reduce((a, b) => a + b, 0) / edgesDown.length : 0,
-    });
-  };
+    calculateStats(tickData);
+    setLastUpdate(Date.now());
+  }, [calculateStats]);
 
   // Fetch positions
-  const fetchPositions = async () => {
+  const fetchPositions = useCallback(async () => {
     const { data, error } = await supabase
       .from('v30_positions')
       .select('*')
@@ -170,10 +182,11 @@ export function useV30Data() {
     }
 
     setPositions((data || []) as V30Position[]);
-  };
+    setLastUpdate(Date.now());
+  }, []);
 
   // Update config
-  const updateConfig = async (updates: Partial<V30Config>) => {
+  const updateConfig = useCallback(async (updates: Partial<V30Config>) => {
     const { error } = await supabase
       .from('v30_config')
       .upsert({
@@ -189,7 +202,7 @@ export function useV30Data() {
 
     setConfig(prev => ({ ...prev, ...updates }));
     return true;
-  };
+  }, []);
 
   // Initial fetch
   useEffect(() => {
@@ -205,41 +218,82 @@ export function useV30Data() {
     };
 
     load();
+  }, [fetchConfig, fetchTicks, fetchPositions]);
 
-    // Poll for updates
-    const interval = setInterval(() => {
-      fetchTicks();
-      fetchPositions();
-    }, 5000);
-
-    return () => clearInterval(interval);
-  }, []);
-
-  // Realtime subscription
+  // Realtime subscriptions
   useEffect(() => {
     const channel = supabase
-      .channel('v30-realtime')
+      .channel('v30-realtime-all')
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'v30_ticks' },
         (payload) => {
           const newTick = payload.new as V30Tick;
-          setTicks(prev => [newTick, ...prev.slice(0, 499)]);
+          setTicks(prev => {
+            const updated = [newTick, ...prev.slice(0, 499)];
+            ticksRef.current = updated;
+            calculateStats(updated);
+            return updated;
+          });
+          setLastUpdate(Date.now());
         }
       )
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'v30_positions' },
-        () => {
-          fetchPositions();
+        { event: 'INSERT', schema: 'public', table: 'v30_positions' },
+        (payload) => {
+          const newPos = payload.new as V30Position;
+          setPositions(prev => [newPos, ...prev]);
+          setLastUpdate(Date.now());
         }
       )
-      .subscribe();
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'v30_positions' },
+        (payload) => {
+          const updated = payload.new as V30Position;
+          setPositions(prev => prev.map(p => p.id === updated.id ? updated : p));
+          setLastUpdate(Date.now());
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'DELETE', schema: 'public', table: 'v30_positions' },
+        (payload) => {
+          const deleted = payload.old as { id: string };
+          setPositions(prev => prev.filter(p => p.id !== deleted.id));
+          setLastUpdate(Date.now());
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'v30_config' },
+        () => {
+          fetchConfig();
+        }
+      )
+      .subscribe((status) => {
+        setIsConnected(status === 'SUBSCRIBED');
+      });
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  }, [fetchConfig, calculateStats]);
+
+  // Heartbeat - check connection and refetch if stale
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const age = Date.now() - lastUpdate;
+      // If no updates for 30 seconds, refetch
+      if (age > 30000) {
+        fetchTicks();
+        fetchPositions();
+      }
+    }, 10000);
+
+    return () => clearInterval(interval);
+  }, [lastUpdate, fetchTicks, fetchPositions]);
 
   return {
     config,
@@ -248,6 +302,8 @@ export function useV30Data() {
     stats,
     loading,
     error,
+    isConnected,
+    lastUpdate,
     updateConfig,
     refetch: () => Promise.all([fetchConfig(), fetchTicks(), fetchPositions()]),
   };

@@ -1,3 +1,4 @@
+import { forwardRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, ReferenceLine, Cell } from 'recharts';
 import type { V30Tick } from '@/hooks/useV30Data';
@@ -6,7 +7,7 @@ interface Props {
   ticks: V30Tick[];
 }
 
-export function V30EdgeHistogram({ ticks }: Props) {
+export const V30EdgeHistogram = forwardRef<HTMLDivElement, Props>(({ ticks }, ref) => {
   // Bucket edges into histogram
   const bucketSize = 0.5; // 0.5% buckets
   const minEdge = -10;
@@ -50,7 +51,7 @@ export function V30EdgeHistogram({ ticks }: Props) {
     Math.max(1, ticks.filter(t => t.theta_current !== null).length);
 
   return (
-    <Card>
+    <Card ref={ref}>
       <CardHeader>
         <CardTitle className="flex items-center justify-between">
           Edge Distribution
@@ -99,4 +100,6 @@ export function V30EdgeHistogram({ ticks }: Props) {
       </CardContent>
     </Card>
   );
-}
+});
+
+V30EdgeHistogram.displayName = 'V30EdgeHistogram';

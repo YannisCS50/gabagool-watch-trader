@@ -1,3 +1,4 @@
+import { forwardRef, useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -8,16 +9,29 @@ interface Props {
   ticks: V30Tick[];
 }
 
-export function V30TradeLog({ ticks }: Props) {
+export const V30TradeLog = forwardRef<HTMLDivElement, Props>(({ ticks }, ref) => {
+  // Force re-render every 10s for "time ago" updates
+  const [, setNow] = useState(Date.now());
+  
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 10000);
+    return () => clearInterval(interval);
+  }, []);
+
   // Filter to only ticks with actions
   const trades = ticks.filter(t => t.action_taken && t.action_taken !== 'none');
 
   return (
-    <Card>
+    <Card ref={ref}>
       <CardHeader>
         <CardTitle className="flex items-center justify-between">
           Trade Log
-          <Badge variant="outline">{trades.length} trades</Badge>
+          <div className="flex items-center gap-2">
+            {trades.length > 0 && (
+              <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+            )}
+            <Badge variant="outline">{trades.length} trades</Badge>
+          </div>
         </CardTitle>
       </CardHeader>
       <CardContent>
@@ -89,4 +103,6 @@ export function V30TradeLog({ ticks }: Props) {
       </CardContent>
     </Card>
   );
-}
+});
+
+V30TradeLog.displayName = 'V30TradeLog';
