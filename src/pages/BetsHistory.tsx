@@ -1,14 +1,14 @@
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft, RefreshCw } from 'lucide-react';
-import { BetsList } from '@/components/bets';
+import { WindowsList } from '@/components/chainlink';
 import { useQueryClient } from '@tanstack/react-query';
 
 export default function BetsHistory() {
   const queryClient = useQueryClient();
 
   const handleRefresh = () => {
-    queryClient.invalidateQueries({ queryKey: ['bets-history'] });
+    queryClient.invalidateQueries({ queryKey: ['chainlink-windows'] });
   };
 
   return (
@@ -23,7 +23,7 @@ export default function BetsHistory() {
                 Back
               </Button>
             </Link>
-            <h1 className="text-xl font-bold">15-Min Bets History</h1>
+            <h1 className="text-xl font-bold">15-Min Price Windows</h1>
           </div>
           <Button variant="outline" size="sm" onClick={handleRefresh}>
             <RefreshCw className="h-4 w-4 mr-2" />
@@ -34,7 +34,7 @@ export default function BetsHistory() {
 
       {/* Main Content */}
       <main className="container mx-auto px-4 py-6">
-        <BetsList />
+        <WindowsList />
       </main>
     </div>
   );
