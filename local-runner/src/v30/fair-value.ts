@@ -2,16 +2,21 @@
  * V30 Fair Value Model
  * 
  * Calculates p_t = P(Z_T > Strike | C_t, Z_t, τ)
- * Uses empirical data from historical ticks + outcomes
  * 
- * IMPROVED:
- * - Better heuristic with asset-specific volatility
- * - Uses both Binance (C_t) and Chainlink (Z_t) for delta calculation
- * - Time-weighted confidence scaling
+ * NOW USES EMPIRICAL CROSSING MODEL:
+ * - Tracks historical crossing probabilities by delta/time bucket
+ * - Uses Wilson score intervals for statistical significance
+ * - Falls back to logistic heuristic when insufficient data
+ * - Continuously learns from new market data
+ * 
+ * Key insight:
+ * - If price is ABOVE strike: P(UP wins) = P(no crossing) = 1 - P(cross down)
+ * - If price is BELOW strike: P(UP wins) = P(crosses up)
  */
 
 import { DELTA_BUCKET_SIZE, DEFAULT_DELTA_BUCKET_SIZE, MIN_FAIR_VALUE_SAMPLES, FAIR_VALUE_ALPHA, TIME_BUCKETS } from './config.js';
 import type { FairValueResult, Asset } from './types.js';
+import { getCrossingModel, EmpiricalCrossingModel } from './crossing-model.js';
 
 interface FairCell {
   p_up: number;       // EWMA of P(UP wins)
@@ -98,20 +103,60 @@ export class EmpiricalFairValue {
 
   /**
    * Get fair probability for given market conditions
+   * 
+   * NOW USES EMPIRICAL CROSSING MODEL for better accuracy!
+   * Falls back to legacy cells if crossing model has no data
    */
   getFairP(
     asset: Asset,
     deltaToStrike: number,
     secRemaining: number
   ): FairValueResult {
+    // Try crossing model first (more accurate, statistically validated)
+    const crossingModel = getCrossingModel();
+    const crossingResult = crossingModel.getFairP(asset, deltaToStrike, secRemaining);
+    
+    // If crossing model has significant data, use it
+    if (crossingResult.confidence > 0.8) {
+      return {
+        p_up: crossingResult.p_up,
+        p_down: crossingResult.p_down,
+        confidence: crossingResult.confidence,
+        samples: crossingResult.samples,
+      };
+    }
+    
+    // Legacy path: check old cell-based model
     const deltaBucket = this.getDeltaBucket(asset, deltaToStrike);
     const timeBucket = this.getTimeBucket(secRemaining);
     const k = this.key(asset, deltaBucket, timeBucket);
-    
     const cell = this.cells.get(k);
     
+    // If we have crossing data (even non-significant), blend with cell data
+    if (crossingResult.samples > 0 && cell && cell.samples >= MIN_FAIR_VALUE_SAMPLES) {
+      // Weight by relative sample count
+      const crossingWeight = crossingResult.samples / (crossingResult.samples + cell.samples);
+      const blendedP = crossingWeight * crossingResult.p_up + (1 - crossingWeight) * cell.p_up;
+      return {
+        p_up: blendedP,
+        p_down: 1 - blendedP,
+        confidence: Math.min(1, (crossingResult.samples + cell.samples) / 100),
+        samples: crossingResult.samples + cell.samples,
+      };
+    }
+    
+    // If crossing model has some data, use it even if not fully significant
+    if (crossingResult.samples > 5) {
+      return {
+        p_up: crossingResult.p_up,
+        p_down: crossingResult.p_down,
+        confidence: crossingResult.confidence,
+        samples: crossingResult.samples,
+      };
+    }
+    
+    // Pure legacy fallback
     if (!cell || cell.samples < MIN_FAIR_VALUE_SAMPLES) {
-      // Fallback: use improved delta-based heuristic
       const heuristicP = this.improvedHeuristic(asset, deltaToStrike, secRemaining);
       return {
         p_up: heuristicP,
