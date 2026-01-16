@@ -136,9 +136,17 @@ async function fetchMarkets(): Promise<void> {
         // Only 15m markets
         if (!slug.toLowerCase().includes('-15m-')) continue;
         
+        // Check end time - skip expired markets
         let endMs = new Date(m.eventEndTime || m.event_end_time || m.endTime || '').getTime();
         if (!Number.isFinite(endMs)) continue;
         if (endMs <= now) continue;
+        
+        // CRITICAL: Check start time - only trade ACTIVE markets, not future ones
+        let startMs = new Date(m.eventStartTime || m.event_start_time || m.startTime || '').getTime();
+        if (Number.isFinite(startMs) && startMs > now) {
+          // Market hasn't started yet - skip
+          continue;
+        }
         
         const existingMarket = markets.get(asset);
         const isNewMarket = !existingMarket || existingMarket.slug !== slug;
@@ -149,6 +157,7 @@ async function fetchMarkets(): Promise<void> {
           strikePrice: m.strikePrice ?? m.strike_price ?? 0,
           upTokenId: m.upTokenId,
           downTokenId: m.downTokenId,
+          startTime: new Date(startMs || now),
           endTime: new Date(endMs),
         };
         
@@ -314,9 +323,19 @@ async function executeEntry(asset: Asset, signal: Signal, market: MarketInfo): P
   const state = priceState[asset];
   const direction = signal.direction;
   
-  // CRITICAL: Check market is still active (not expired)
+  // CRITICAL: Check market is currently active (started and not expired)
   const now = Date.now();
+  const msFromStart = now - market.startTime.getTime();
   const msToExpiry = market.endTime.getTime() - now;
+  
+  // Market hasn't started yet
+  if (msFromStart < 0) {
+    logAsset(asset, `⚠️ SKIP: market starts in ${Math.abs(msFromStart / 1000).toFixed(0)}s`);
+    signal.status = 'skipped';
+    signal.skip_reason = 'market_not_started';
+    void saveSignalLog(signal, state);
+    return;
+  }
   
   if (msToExpiry <= 0) {
     logAsset(asset, `⚠️ SKIP: market expired ${Math.abs(msToExpiry / 1000).toFixed(0)}s ago`);

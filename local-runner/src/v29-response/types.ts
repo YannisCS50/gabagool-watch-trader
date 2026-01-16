@@ -14,6 +14,7 @@ export interface MarketInfo {
   strikePrice: number;
   upTokenId: string;
   downTokenId: string;
+  startTime: Date;
   endTime: Date;
 }
 
