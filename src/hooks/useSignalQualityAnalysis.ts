@@ -440,25 +440,58 @@ export function usePopulateSignalQuality() {
         .select('signal_id');
       const existingIds = new Set((existingData || []).map(e => e.signal_id));
       
-      // Fetch from both sources in parallel
-      const [v29Result, v29ResponseResult] = await Promise.all([
-        supabase
-          .from('v29_signals')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(1000),
-        supabase
-          .from('v29_signals_response')
-          .select('*')
-          .order('created_at', { ascending: false })
-          .limit(500),
+      // Fetch from both sources - no limits, get ALL signals
+      // Supabase default limit is 1000, so we need to paginate
+      const fetchAllV29Signals = async () => {
+        const allData: RawSignalV29[] = [];
+        let offset = 0;
+        const pageSize = 1000;
+        
+        while (true) {
+          const { data, error } = await supabase
+            .from('v29_signals')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .range(offset, offset + pageSize - 1);
+          
+          if (error) throw error;
+          if (!data || data.length === 0) break;
+          
+          allData.push(...(data as unknown as RawSignalV29[]));
+          offset += pageSize;
+          if (data.length < pageSize) break;
+        }
+        
+        return allData;
+      };
+      
+      const fetchAllV29Response = async () => {
+        const allData: RawSignalV29Response[] = [];
+        let offset = 0;
+        const pageSize = 1000;
+        
+        while (true) {
+          const { data, error } = await supabase
+            .from('v29_signals_response')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .range(offset, offset + pageSize - 1);
+          
+          if (error) throw error;
+          if (!data || data.length === 0) break;
+          
+          allData.push(...(data as unknown as RawSignalV29Response[]));
+          offset += pageSize;
+          if (data.length < pageSize) break;
+        }
+        
+        return allData;
+      };
+      
+      const [v29Signals, v29ResponseSignals] = await Promise.all([
+        fetchAllV29Signals(),
+        fetchAllV29Response(),
       ]);
-      
-      if (v29Result.error) throw v29Result.error;
-      if (v29ResponseResult.error) throw v29ResponseResult.error;
-      
-      const v29Signals = (v29Result.data || []) as unknown as RawSignalV29[];
-      const v29ResponseSignals = (v29ResponseResult.data || []) as unknown as RawSignalV29Response[];
       
       // Filter out already processed signals
       const newV29 = v29Signals.filter(s => !existingIds.has(s.id));
