@@ -2935,6 +2935,7 @@ export type Database = {
           id: string
           ip_address: string | null
           last_heartbeat: string
+          markets_active: number | null
           markets_count: number | null
           positions_count: number | null
           runner_id: string
@@ -2949,6 +2950,7 @@ export type Database = {
           id?: string
           ip_address?: string | null
           last_heartbeat?: string
+          markets_active?: number | null
           markets_count?: number | null
           positions_count?: number | null
           runner_id: string
@@ -2963,6 +2965,7 @@ export type Database = {
           id?: string
           ip_address?: string | null
           last_heartbeat?: string
+          markets_active?: number | null
           markets_count?: number | null
           positions_count?: number | null
           runner_id?: string
