@@ -229,8 +229,13 @@ export async function sendHeartbeat(
 ): Promise<void> {
   const supabase = getDb();
   
+  // Use a consistent UUID for this runner type (v30-market-maker)
+  // This allows upsert to work correctly
+  const V30_HEARTBEAT_UUID = '00000000-0000-0000-0000-000000000030';
+  
   const { error } = await supabase.from('runner_heartbeats').upsert({
-    id: `v30-${runId}`,
+    id: V30_HEARTBEAT_UUID,
+    runner_id: runId,
     runner_type: 'v30-market-maker',
     last_heartbeat: new Date().toISOString(),
     status,
