@@ -555,9 +555,21 @@ async function executeExit(
     const bestBid = position.direction === 'UP' ? state.upBestBid : state.downBestBid;
 
     if (!bestBid || !market) {
-      logAsset(asset, `⚠️ EXIT: No bid available, position stuck`);
-      activePositions.delete(asset);
-      lastExitTime[asset] = Date.now();
+      // CRITICAL: Do NOT delete position - we still hold shares!
+      // Restart monitoring and retry later when orderbook is available
+      logAsset(asset, `⚠️ EXIT: No bid available, retrying in 500ms`, {
+        positionId: position.id,
+        hasMarket: !!market,
+        hasBid: !!bestBid,
+        lastOrderbookUpdate: state.lastOrderbookUpdate,
+      });
+      
+      // Backoff and retry
+      nextExitAttemptAt[asset] = Date.now() + 500;
+      position.monitorInterval = setInterval(() => {
+        checkPositionExit(asset);
+      }, config.exit_monitor_interval_ms);
+      
       return;
     }
 
