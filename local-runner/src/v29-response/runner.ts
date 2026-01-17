@@ -32,6 +32,7 @@ import { testConnection, config as pmConfig } from '../polymarket.js';
 import { acquireLease, releaseLease, isRunnerActive } from '../v29/lease.js';
 import { setRunnerIdentity } from '../order-guard.js';
 import { fetchPositions } from '../positions-sync.js';
+import { startUserChannel, stopUserChannel, isUserChannelConnected, type TradeEvent, type OrderEvent } from '../v29/user-ws.js';
 
 // ============================================
 // STATE
@@ -881,6 +882,176 @@ async function refreshConfig(): Promise<void> {
 }
 
 // ============================================
+// USER CHANNEL HANDLERS (REALTIME FILL TRACKING)
+// ============================================
+
+/**
+ * Handle realtime trade fills from User Channel WebSocket
+ * This is the PRIMARY source of truth for filled shares!
+ */
+function handleUserChannelTrade(event: TradeEvent): void {
+  const tokenId = event.asset_id;
+  const side = event.side;
+  const price = parseFloat(event.price);
+  const size = parseFloat(event.size);
+  const status = event.status;
+  
+  // Only process confirmed fills
+  if (status !== 'MATCHED' && status !== 'MINED' && status !== 'CONFIRMED') {
+    return;
+  }
+  
+  // Find which market/asset this fill belongs to
+  let matchedAsset: Asset | null = null;
+  let matchedDirection: 'UP' | 'DOWN' | null = null;
+  let matchedMarket: MarketInfo | null = null;
+  
+  for (const [asset, market] of markets) {
+    if (market.upTokenId === tokenId) {
+      matchedAsset = asset;
+      matchedDirection = 'UP';
+      matchedMarket = market;
+      break;
+    }
+    if (market.downTokenId === tokenId) {
+      matchedAsset = asset;
+      matchedDirection = 'DOWN';
+      matchedMarket = market;
+      break;
+    }
+  }
+  
+  if (!matchedAsset || !matchedDirection || !matchedMarket) {
+    log(`🔔 UserWS: Fill for unknown token ${tokenId.slice(0, 12)}... ${side} ${size} @ ${(price * 100).toFixed(1)}¢`);
+    return;
+  }
+  
+  const position = activePositions.get(matchedAsset);
+  
+  if (side === 'BUY') {
+    // BUY fill - update or create position
+    if (position) {
+      // Update existing position with additional shares
+      const oldShares = position.shares;
+      const oldAvg = position.entryPrice;
+      const newTotalShares = oldShares + size;
+      const newAvgPrice = (oldShares * oldAvg + size * price) / newTotalShares;
+      
+      position.shares = newTotalShares;
+      position.entryPrice = newAvgPrice;
+      
+      logAsset(matchedAsset, `🔔 REALTIME BUY: +${size} shares @ ${(price * 100).toFixed(1)}¢ → total ${newTotalShares} shares @ avg ${(newAvgPrice * 100).toFixed(1)}¢`, {
+        oldShares,
+        addedShares: size,
+        newTotalShares,
+        oldAvg,
+        fillPrice: price,
+        newAvgPrice,
+      });
+    } else {
+      // New position from User Channel (might be from another entry path)
+      const fakeSignal: Signal = {
+        id: `ws-${Date.now()}-${matchedAsset}`,
+        asset: matchedAsset,
+        direction: matchedDirection,
+        binance_price: priceState[matchedAsset].binance ?? 0,
+        binance_delta: 0,
+        binance_ts: Date.now(),
+        share_price_t0: price,
+        spread_t0: 0,
+        market_slug: matchedMarket.slug,
+        strike_price: matchedMarket.strikePrice,
+        status: 'filled',
+        signal_ts: Date.now(),
+        decision_ts: Date.now(),
+        entry_price: price,
+        shares: size,
+      };
+      
+      const newPosition = createPositionTracker(
+        fakeSignal,
+        matchedAsset,
+        matchedDirection,
+        matchedMarket.slug,
+        tokenId,
+        size,
+        price,
+        event.taker_order_id
+      );
+      
+      activePositions.set(matchedAsset, newPosition);
+      
+      logAsset(matchedAsset, `🔔 REALTIME NEW POSITION: ${matchedDirection} ${size} shares @ ${(price * 100).toFixed(1)}¢`, {
+        shares: size,
+        price,
+        tokenId: tokenId.slice(0, 12),
+      });
+      
+      // Start exit monitoring
+      startExitMonitor(matchedAsset, newPosition);
+    }
+  } else if (side === 'SELL') {
+    // SELL fill - update position
+    if (position) {
+      const oldShares = position.shares;
+      const newShares = Math.max(0, oldShares - size);
+      
+      position.shares = newShares;
+      
+      const pnl = size * (price - position.entryPrice);
+      
+      logAsset(matchedAsset, `🔔 REALTIME SELL: -${size} shares @ ${(price * 100).toFixed(1)}¢ → ${newShares} remaining | PnL: $${pnl.toFixed(3)}`, {
+        oldShares,
+        soldShares: size,
+        newShares,
+        sellPrice: price,
+        entryPrice: position.entryPrice,
+        pnl,
+      });
+      
+      // If position is fully closed, remove it
+      if (newShares <= 0.01) {
+        activePositions.delete(matchedAsset);
+        if (position.monitorInterval) {
+          clearInterval(position.monitorInterval);
+        }
+        logAsset(matchedAsset, `✅ Position fully closed via realtime sell`);
+      }
+    } else {
+      log(`🔔 UserWS: SELL for ${matchedAsset} but no active position tracked`);
+    }
+  }
+}
+
+/**
+ * Handle order events (placement, cancellation, updates)
+ */
+function handleUserChannelOrder(event: OrderEvent): void {
+  const tokenId = event.asset_id;
+  const eventType = event.type;
+  const sizeMatched = parseFloat(event.size_matched);
+  const originalSize = parseFloat(event.original_size);
+  
+  // Find asset for logging
+  let matchedAsset: Asset | null = null;
+  for (const [asset, market] of markets) {
+    if (market.upTokenId === tokenId || market.downTokenId === tokenId) {
+      matchedAsset = asset;
+      break;
+    }
+  }
+  
+  if (matchedAsset && eventType === 'UPDATE' && sizeMatched > 0) {
+    logAsset(matchedAsset, `📝 Order update: ${sizeMatched}/${originalSize} filled`, {
+      eventType,
+      sizeMatched,
+      originalSize,
+      orderId: event.id,
+    });
+  }
+}
+
+// ============================================
 // POSITION SYNC (CRITICAL: Fetch real positions from Polymarket)
 // ============================================
 
@@ -1083,8 +1254,16 @@ async function main(): Promise<void> {
   // Start position sync (every 30 seconds) - ensures we track real Polymarket state
   positionSyncInterval = setInterval(syncLivePositions, 30_000);
   
-  // Start heartbeat
+// Start heartbeat
   heartbeatInterval = setInterval(sendStatusHeartbeat, 10_000);
+  
+  // Start User Channel WebSocket for realtime fill tracking
+  const userChannelStarted = startUserChannel(handleUserChannelTrade, handleUserChannelOrder);
+  if (userChannelStarted) {
+    log('✅ User Channel WebSocket started (realtime fills)');
+  } else {
+    log('⚠️ User Channel not started - no API credentials');
+  }
   
   log('🟢 V29 Response-Based Strategy RUNNING');
   log(`   Signal: Δ≥$${config.signal_delta_usd} in ${config.signal_window_ms}ms`);
@@ -1115,6 +1294,7 @@ async function main(): Promise<void> {
     stopBinanceFeed();
     stopChainlinkFeed();
     stopPreSignedCache();
+    stopUserChannel();
     
     // Release lease
     await releaseLease();
