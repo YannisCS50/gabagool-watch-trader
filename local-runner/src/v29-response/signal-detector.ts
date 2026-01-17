@@ -41,7 +41,7 @@ export type SkipReason =
   | 'spread_too_wide'
   | 'already_repriced'
   | 'price_out_of_range'
-  | 'cooldown'
+  
   | 'position_open'
   | 'exposure_limit'
   | 'no_previous_tick'
@@ -101,7 +101,6 @@ export function checkSignal(
   priceState: PriceState,
   market: MarketInfo | undefined,
   hasOpenPosition: boolean,
-  inCooldown: boolean,
   currentExposure: number,
   delta: number,
   direction: Direction | null,
@@ -194,19 +193,14 @@ export function checkSignal(
     return { triggered: false, skipReason: 'delta_direction_mismatch', skipDetails: directionAllowed.reason };
   }
   
-  // 10. Check cooldown
-  if (inCooldown) {
-    return { triggered: false, skipReason: 'cooldown' };
-  }
-  
-  // 11. Check max positions per asset
+  // 10. Check max positions per asset
   // hasOpenPosition is now "at max positions" (passed from caller)
   if (hasOpenPosition) {
     logFn(`SKIP: ${asset} ${direction} - max positions reached`, { asset, direction });
     return { triggered: false, skipReason: 'position_open' };
   }
   
-  // 12. Check exposure limit
+  // 11. Check exposure limit
   const orderCost = config.shares_per_trade * bestAsk;
   if (currentExposure + orderCost > config.max_exposure_usd) {
     logFn(`SKIP: ${asset} ${direction} - exposure limit`, {

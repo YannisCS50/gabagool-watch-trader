@@ -68,7 +68,7 @@ const exitInFlight = new Set<string>();
 const nextExitAttemptAt = new Map<string, number>();
 
 // Cooldowns - we track last exit time globally (not per asset since we allow concurrent positions)
-let lastGlobalExitTime = 0;
+// No cooldown tracking needed
 
 // Stats
 let signalCount = 0;
@@ -340,10 +340,6 @@ function getAssetExposure(asset: Asset): number {
 function checkForSignal(asset: Asset, delta: number, direction: 'UP' | 'DOWN' | null): void {
   const market = markets.get(asset);
   const state = priceState[asset];
-  const now = Date.now();
-  
-  // Check cooldown (global, not per-asset since we allow concurrent positions)
-  const inCooldown = (now - lastGlobalExitTime) < config.cooldown_after_exit_ms;
   
   // Check exposure for this asset
   const currentExposure = getAssetExposure(asset);
@@ -358,7 +354,6 @@ function checkForSignal(asset: Asset, delta: number, direction: 'UP' | 'DOWN' | 
     state,
     market,
     atMaxPositions, // Pass "at max" instead of "has any"
-    inCooldown,
     currentExposure,
     delta,
     direction,
