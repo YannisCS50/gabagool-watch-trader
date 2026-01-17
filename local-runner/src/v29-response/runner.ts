@@ -28,7 +28,8 @@ import { startChainlinkFeed, stopChainlinkFeed, getChainlinkPrice } from '../v29
 import { fetchMarketOrderbook } from '../v29/orderbook.js';
 import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache } from '../v29/trading.js';
 import { verifyVpnConnection } from '../vpn-check.js';
-import { testConnection, config as pmConfig } from '../polymarket.js';
+import { testConnection } from '../polymarket.js';
+import { config as pmConfig } from '../config.js';
 import { acquireLease, releaseLease, isRunnerActive } from '../v29/lease.js';
 import { setRunnerIdentity } from '../order-guard.js';
 import { fetchPositions } from '../positions-sync.js';
