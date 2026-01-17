@@ -208,23 +208,78 @@ export function useStrategyDiscovery(asset: string = 'BTC', hoursBack: number = 
       // Only get markets that ended at least 15 minutes ago (to ensure they're settled)
       const maxEndTs = currentTime - (15 * 60 * 1000);
       
-      // Fetch ticks - we'll filter completed markets in code
-      const { data: ticks, error } = await supabase
-        .from('v29_ticks')
-        .select('ts, binance_price, chainlink_price, strike_price, up_best_bid, down_best_bid, market_slug, asset')
-        .eq('asset', asset)
-        .gte('ts', startTs)
-        .lte('ts', maxEndTs)
-        .not('binance_price', 'is', null)
-        .not('strike_price', 'is', null)
-        .order('ts', { ascending: true })
-        .limit(100000);
+      // Fetch from BOTH v29_ticks (legacy) AND v29_ticks_response (current) tables
+      // v29_ticks: 13-16 jan (old strategy) - has chainlink_price
+      // v29_ticks_response: 16 jan onwards (current strategy) - no chainlink_price
+      const [legacyResult, currentResult] = await Promise.all([
+        supabase
+          .from('v29_ticks')
+          .select('ts, binance_price, chainlink_price, strike_price, up_best_bid, down_best_bid, market_slug, asset')
+          .eq('asset', asset)
+          .gte('ts', startTs)
+          .lte('ts', maxEndTs)
+          .not('binance_price', 'is', null)
+          .not('strike_price', 'is', null)
+          .order('ts', { ascending: true })
+          .limit(50000),
+        supabase
+          .from('v29_ticks_response')
+          .select('ts, binance_price, strike_price, up_best_bid, down_best_bid, market_slug, asset')
+          .eq('asset', asset)
+          .gte('ts', startTs)
+          .lte('ts', maxEndTs)
+          .not('binance_price', 'is', null)
+          .not('strike_price', 'is', null)
+          .order('ts', { ascending: true })
+          .limit(50000)
+      ]);
       
-      if (error) throw error;
+      if (legacyResult.error) throw legacyResult.error;
+      if (currentResult.error) throw currentResult.error;
       
-      console.log('[StrategyDiscovery] Fetched ticks:', ticks?.length || 0);
+      // Normalize data from both sources into a common format
+      interface NormalizedTick {
+        ts: number;
+        binance_price: number;
+        chainlink_price: number;
+        strike_price: number;
+        up_best_bid: number;
+        down_best_bid: number;
+        market_slug: string;
+        asset: string;
+      }
       
-      if (!ticks || ticks.length === 0) {
+      const normalizedLegacy: NormalizedTick[] = (legacyResult.data || []).map(t => ({
+        ts: t.ts,
+        binance_price: t.binance_price,
+        chainlink_price: t.chainlink_price,
+        strike_price: t.strike_price,
+        up_best_bid: t.up_best_bid,
+        down_best_bid: t.down_best_bid,
+        market_slug: t.market_slug || '',
+        asset: t.asset,
+      }));
+      
+      const normalizedCurrent: NormalizedTick[] = (currentResult.data || []).map(t => ({
+        ts: t.ts,
+        binance_price: t.binance_price,
+        chainlink_price: t.binance_price, // Use binance as fallback for chainlink
+        strike_price: t.strike_price,
+        up_best_bid: t.up_best_bid,
+        down_best_bid: t.down_best_bid,
+        market_slug: t.market_slug || '',
+        asset: t.asset,
+      }));
+      
+      const ticks = [...normalizedLegacy, ...normalizedCurrent];
+      
+      console.log('[StrategyDiscovery] Fetched ticks:', {
+        legacy: legacyResult.data?.length || 0,
+        current: currentResult.data?.length || 0,
+        total: ticks.length
+      });
+      
+      if (ticks.length === 0) {
         return {
           buckets: [],
           delayStats: [],
