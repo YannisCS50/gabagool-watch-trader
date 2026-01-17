@@ -835,9 +835,8 @@ async function executeExit(
       position.monitorInterval = setInterval(() => {
         checkPositionExit(positionKey);
       }, config.exit_monitor_interval_ms);
-    } else {
-      lastGlobalExitTime = Date.now();
     }
+    // No cooldown tracking needed
   } finally {
     exitInFlight.delete(positionKey);
   }
