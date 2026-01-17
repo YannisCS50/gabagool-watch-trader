@@ -185,41 +185,41 @@ export function LiveRunnerStatus() {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
-        {/* Quick Stats */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <div className="bg-background/50 rounded-lg p-3 space-y-1">
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <DollarSign className="w-3 h-3" />
-              Balance
+        {/* Quick Stats - 2x2 on mobile, 4 cols on desktop */}
+        <div className="grid grid-cols-2 gap-2 sm:gap-3">
+          <div className="bg-background/50 rounded-lg p-2 sm:p-3 space-y-1">
+            <div className="flex items-center gap-1 text-[10px] sm:text-xs text-muted-foreground">
+              <DollarSign className="w-3 h-3 shrink-0" />
+              <span className="truncate">Balance</span>
             </div>
-            <div className="text-lg font-mono font-semibold">
+            <div className="text-sm sm:text-lg font-mono font-semibold truncate">
               {formatUsdcFromBaseUnits(heartbeat?.balance)}
             </div>
           </div>
-          <div className="bg-background/50 rounded-lg p-3 space-y-1">
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Activity className="w-3 h-3" />
-              Positions
+          <div className="bg-background/50 rounded-lg p-2 sm:p-3 space-y-1">
+            <div className="flex items-center gap-1 text-[10px] sm:text-xs text-muted-foreground">
+              <Activity className="w-3 h-3 shrink-0" />
+              <span className="truncate">Positions</span>
             </div>
-            <div className="text-lg font-mono font-semibold">
+            <div className="text-sm sm:text-lg font-mono font-semibold">
               {positions.length}
             </div>
           </div>
-          <div className="bg-background/50 rounded-lg p-3 space-y-1">
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <TrendingUp className="w-3 h-3" />
-              Trades (24h)
+          <div className="bg-background/50 rounded-lg p-2 sm:p-3 space-y-1">
+            <div className="flex items-center gap-1 text-[10px] sm:text-xs text-muted-foreground">
+              <TrendingUp className="w-3 h-3 shrink-0" />
+              <span className="truncate">Trades (24h)</span>
             </div>
-            <div className="text-lg font-mono font-semibold">
+            <div className="text-sm sm:text-lg font-mono font-semibold">
               {recentTrades.length}
             </div>
           </div>
-          <div className="bg-background/50 rounded-lg p-3 space-y-1">
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Clock className="w-3 h-3" />
-              Pending
+          <div className="bg-background/50 rounded-lg p-2 sm:p-3 space-y-1">
+            <div className="flex items-center gap-1 text-[10px] sm:text-xs text-muted-foreground">
+              <Clock className="w-3 h-3 shrink-0" />
+              <span className="truncate">Pending</span>
             </div>
-            <div className="text-lg font-mono font-semibold">
+            <div className="text-sm sm:text-lg font-mono font-semibold">
               {pendingOrders}
             </div>
           </div>
@@ -227,13 +227,13 @@ export function LiveRunnerStatus() {
 
         {/* Invested & Profit Summary */}
         {positions.length > 0 && (
-          <div className="bg-background/50 rounded-lg p-3 space-y-2">
-            <div className="flex justify-between text-sm">
+          <div className="bg-background/50 rounded-lg p-2 sm:p-3 space-y-2">
+            <div className="flex justify-between text-xs sm:text-sm">
               <span className="text-muted-foreground">Total Invested</span>
               <span className="font-mono">${totalInvested.toFixed(2)}</span>
             </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-muted-foreground">Est. Profit (if hedged)</span>
+            <div className="flex justify-between text-xs sm:text-sm">
+              <span className="text-muted-foreground">Est. Profit</span>
               <span className={`font-mono ${totalPotentialProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
                 {totalPotentialProfit >= 0 ? '+' : ''}${totalPotentialProfit.toFixed(2)}
               </span>
@@ -241,34 +241,31 @@ export function LiveRunnerStatus() {
           </div>
         )}
 
-        {/* Open Positions */}
+        {/* Open Positions - Stack on mobile */}
         {positions.length > 0 && (
           <div className="space-y-2">
-            <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+            <div className="text-[10px] sm:text-xs font-medium text-muted-foreground uppercase tracking-wider">
               Open Positions
             </div>
             <div className="space-y-2 max-h-48 overflow-y-auto">
               {positions.map(pos => (
                 <div key={pos.market_slug} className="bg-background/50 rounded-lg p-2 text-xs">
-                  <div className="flex justify-between items-center mb-1">
+                  {/* Header row */}
+                  <div className="flex justify-between items-center mb-2">
                     <Badge variant="outline" className="text-[10px]">{pos.asset}</Badge>
-                    <span className="text-muted-foreground font-mono">
-                      {pos.market_slug.slice(-20)}
+                    <span className={`font-mono text-[10px] sm:text-xs ${pos.potentialProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {pos.potentialProfit >= 0 ? '+' : ''}${pos.potentialProfit.toFixed(2)}
                     </span>
                   </div>
-                  <div className="grid grid-cols-3 gap-2 text-muted-foreground">
-                    <div>
-                      <TrendingUp className="w-3 h-3 inline mr-1 text-emerald-400" />
-                      {pos.upShares.toFixed(0)} @ ${pos.upShares > 0 ? (pos.upInvested / pos.upShares).toFixed(2) : '0'}
+                  {/* Positions - 2 cols on mobile */}
+                  <div className="grid grid-cols-2 gap-2 text-[10px] sm:text-xs text-muted-foreground">
+                    <div className="flex items-center gap-1">
+                      <TrendingUp className="w-3 h-3 text-emerald-400 shrink-0" />
+                      <span className="truncate">{pos.upShares.toFixed(0)} @ ${pos.upShares > 0 ? (pos.upInvested / pos.upShares).toFixed(2) : '0'}</span>
                     </div>
-                    <div>
-                      <TrendingDown className="w-3 h-3 inline mr-1 text-red-400" />
-                      {pos.downShares.toFixed(0)} @ ${pos.downShares > 0 ? (pos.downInvested / pos.downShares).toFixed(2) : '0'}
-                    </div>
-                    <div className="text-right">
-                      <span className={pos.potentialProfit >= 0 ? 'text-emerald-400' : 'text-red-400'}>
-                        {pos.potentialProfit >= 0 ? '+' : ''}${pos.potentialProfit.toFixed(2)}
-                      </span>
+                    <div className="flex items-center gap-1">
+                      <TrendingDown className="w-3 h-3 text-red-400 shrink-0" />
+                      <span className="truncate">{pos.downShares.toFixed(0)} @ ${pos.downShares > 0 ? (pos.downInvested / pos.downShares).toFixed(2) : '0'}</span>
                     </div>
                   </div>
                 </div>
