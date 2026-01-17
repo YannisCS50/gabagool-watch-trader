@@ -28,9 +28,10 @@ import { startChainlinkFeed, stopChainlinkFeed, getChainlinkPrice } from '../v29
 import { fetchMarketOrderbook } from '../v29/orderbook.js';
 import { placeBuyOrder, placeSellOrder, getBalance, initPreSignedCache, stopPreSignedCache, updateMarketCache } from '../v29/trading.js';
 import { verifyVpnConnection } from '../vpn-check.js';
-import { testConnection } from '../polymarket.js';
+import { testConnection, config as pmConfig } from '../polymarket.js';
 import { acquireLease, releaseLease, isRunnerActive } from '../v29/lease.js';
 import { setRunnerIdentity } from '../order-guard.js';
+import { fetchPositions } from '../positions-sync.js';
 
 // ============================================
 // STATE
@@ -75,6 +76,7 @@ let orderbookPollInterval: NodeJS.Timeout | null = null;
 let heartbeatInterval: NodeJS.Timeout | null = null;
 let marketRefreshInterval: NodeJS.Timeout | null = null;
 let configRefreshInterval: NodeJS.Timeout | null = null;
+let positionSyncInterval: NodeJS.Timeout | null = null;
 
 // ============================================
 // LOGGING (async, non-blocking)
@@ -879,6 +881,117 @@ async function refreshConfig(): Promise<void> {
 }
 
 // ============================================
+// POSITION SYNC (CRITICAL: Fetch real positions from Polymarket)
+// ============================================
+
+async function syncLivePositions(): Promise<void> {
+  const walletAddress = pmConfig.polymarket.address;
+  if (!walletAddress) {
+    log('⚠️ No wallet address configured for position sync');
+    return;
+  }
+  
+  try {
+    const positions = await fetchPositions(walletAddress);
+    
+    // Build lookup: tokenId -> MarketInfo
+    const tokenToMarket = new Map<string, { asset: Asset; direction: 'UP' | 'DOWN'; market: MarketInfo }>();
+    for (const [asset, market] of markets) {
+      tokenToMarket.set(market.upTokenId, { asset, direction: 'UP', market });
+      tokenToMarket.set(market.downTokenId, { asset, direction: 'DOWN', market });
+    }
+    
+    let syncedCount = 0;
+    
+    for (const pos of positions) {
+      // Match position to active market by slug
+      if (!pos.eventSlug) continue;
+      
+      // Find market by slug
+      let matchedAsset: Asset | null = null;
+      let matchedMarket: MarketInfo | null = null;
+      let matchedDirection: 'UP' | 'DOWN' | null = null;
+      
+      for (const [asset, market] of markets) {
+        if (market.slug === pos.eventSlug) {
+          matchedAsset = asset;
+          matchedMarket = market;
+          // Determine direction from outcome
+          matchedDirection = pos.outcome?.toLowerCase().includes('up') || pos.outcomeIndex === 0 ? 'UP' : 'DOWN';
+          break;
+        }
+      }
+      
+      if (!matchedAsset || !matchedMarket || !matchedDirection) continue;
+      
+      // Skip if already tracking this asset
+      if (activePositions.has(matchedAsset)) {
+        // Update shares if different
+        const existing = activePositions.get(matchedAsset)!;
+        if (Math.abs(existing.shares - pos.size) > 0.01) {
+          log(`📊 ${matchedAsset} position updated: ${existing.shares} → ${pos.size} shares`);
+          existing.shares = pos.size;
+        }
+        continue;
+      }
+      
+      // New position found - create tracker
+      const tokenId = matchedDirection === 'UP' ? matchedMarket.upTokenId : matchedMarket.downTokenId;
+      
+      const fakeSignal: Signal = {
+        id: `sync-${Date.now()}-${matchedAsset}`,
+        asset: matchedAsset,
+        direction: matchedDirection,
+        binance_price: priceState[matchedAsset].binance ?? 0,
+        binance_delta: 0,
+        binance_ts: Date.now(),
+        share_price_t0: pos.avgPrice,
+        spread_t0: 0,
+        market_slug: matchedMarket.slug,
+        strike_price: matchedMarket.strikePrice,
+        status: 'filled',
+        signal_ts: Date.now(),
+        decision_ts: Date.now(),
+        entry_price: pos.avgPrice,
+        shares: pos.size,
+      };
+      
+      const position = createPositionTracker(
+        fakeSignal,
+        matchedAsset,
+        matchedDirection,
+        matchedMarket.slug,
+        tokenId,
+        pos.size,
+        pos.avgPrice,
+        undefined
+      );
+      
+      activePositions.set(matchedAsset, position);
+      syncedCount++;
+      
+      log(`🔄 SYNCED: ${matchedAsset} ${matchedDirection} ${pos.size} shares @ ${(pos.avgPrice * 100).toFixed(1)}¢`, {
+        asset: matchedAsset,
+        direction: matchedDirection,
+        shares: pos.size,
+        avgPrice: pos.avgPrice,
+        slug: matchedMarket.slug,
+      });
+      
+      // Start exit monitoring for synced position
+      startExitMonitor(matchedAsset, position);
+    }
+    
+    if (syncedCount > 0) {
+      log(`✅ Position sync: ${syncedCount} positions loaded from Polymarket`);
+    }
+    
+  } catch (err) {
+    logError('Position sync failed', err);
+  }
+}
+
+// ============================================
 // MAIN
 // ============================================
 
@@ -940,6 +1053,10 @@ async function main(): Promise<void> {
   }));
   await initPreSignedCache(marketsForCache);
   
+  // CRITICAL: Sync live positions from Polymarket BEFORE starting
+  log('📥 Syncing live positions from Polymarket...');
+  await syncLivePositions();
+  
   isRunning = true;
   
   // Start Binance feed (zero latency mode)
@@ -963,6 +1080,9 @@ async function main(): Promise<void> {
   // Start config refresh (every 30 seconds)
   configRefreshInterval = setInterval(refreshConfig, 30_000);
   
+  // Start position sync (every 30 seconds) - ensures we track real Polymarket state
+  positionSyncInterval = setInterval(syncLivePositions, 30_000);
+  
   // Start heartbeat
   heartbeatInterval = setInterval(sendStatusHeartbeat, 10_000);
   
@@ -983,6 +1103,7 @@ async function main(): Promise<void> {
     if (orderbookPollInterval) clearInterval(orderbookPollInterval);
     if (marketRefreshInterval) clearInterval(marketRefreshInterval);
     if (configRefreshInterval) clearInterval(configRefreshInterval);
+    if (positionSyncInterval) clearInterval(positionSyncInterval);
     if (heartbeatInterval) clearInterval(heartbeatInterval);
     
     // Clear position monitors
