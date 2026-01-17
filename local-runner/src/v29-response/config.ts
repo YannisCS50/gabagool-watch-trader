@@ -168,7 +168,7 @@ export const DEFAULT_CONFIG: V29Config = {
   
   // RISK CONTROLS
   max_positions_per_asset: 5,  // Allow 5 concurrent positions per asset
-  cooldown_after_exit_ms: 500, // Reduced cooldown since each position exits independently
+  // No cooldown needed with multiple concurrent positions // Reduced cooldown since each position exits independently
   max_exposure_usd: 50,
   
   assets: ['BTC', 'ETH', 'SOL', 'XRP'],
