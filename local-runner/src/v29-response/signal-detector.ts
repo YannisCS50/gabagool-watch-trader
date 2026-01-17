@@ -199,9 +199,10 @@ export function checkSignal(
     return { triggered: false, skipReason: 'cooldown' };
   }
   
-  // 11. Check single position rule
-  if (config.single_position_per_market && hasOpenPosition) {
-    logFn(`SKIP: ${asset} ${direction} - position already open`, { asset, direction });
+  // 11. Check max positions per asset
+  // hasOpenPosition is now "at max positions" (passed from caller)
+  if (hasOpenPosition) {
+    logFn(`SKIP: ${asset} ${direction} - max positions reached`, { asset, direction });
     return { triggered: false, skipReason: 'position_open' };
   }
   
