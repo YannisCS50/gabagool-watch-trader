@@ -665,12 +665,58 @@ async function executeExit(
       signal.exit_reason = `sell_failed: ${errMsg}`;
       void saveSignalLog(signal, state);
 
-      // If it looks like an expired market error, don't retry endlessly
+      // If it looks like an expired market error, verify with position sync before removing
       if (isExpiredError) {
-        logAsset(asset, `🛑 Removing stuck position (balance/allowance error suggests expired market)`);
-        activePositions.delete(asset);
-        lastExitTime[asset] = Date.now();
-        return;
+        logAsset(asset, `🔍 Balance/allowance error - syncing live positions to verify...`);
+        
+        try {
+          // Fetch actual positions from Polymarket API
+          const livePositions = await fetchPositions(pmConfig.polymarket.address);
+          
+          // Find if we still have this position
+          const matchingPosition = livePositions.find(p => 
+            p.asset === position.tokenId || 
+            (p.eventSlug && position.marketSlug.includes(p.eventSlug))
+          );
+          
+          if (matchingPosition && matchingPosition.size > 0.1) {
+            // We still have shares! Update our position and retry
+            logAsset(asset, `📊 POSITION STILL EXISTS: ${matchingPosition.size.toFixed(2)} shares @ ${matchingPosition.outcome}`, {
+              apiShares: matchingPosition.size,
+              localShares: position.shares,
+              curPrice: matchingPosition.curPrice,
+            });
+            
+            // Update local position with actual shares from API
+            position.shares = matchingPosition.size;
+            
+            // Backoff and retry with corrected shares
+            nextExitAttemptAt[asset] = Date.now() + 2000;
+            position.monitorInterval = setInterval(() => {
+              checkPositionExit(asset);
+            }, config.exit_monitor_interval_ms);
+            
+            return;
+          } else {
+            // Position really is gone (redeemed/expired/sold elsewhere)
+            logAsset(asset, `🛑 Position confirmed GONE from Polymarket API - removing from tracking`, {
+              searchedToken: position.tokenId,
+              searchedSlug: position.marketSlug,
+              foundPositions: livePositions.length,
+            });
+            activePositions.delete(asset);
+            lastExitTime[asset] = Date.now();
+            return;
+          }
+        } catch (syncErr) {
+          logAsset(asset, `⚠️ Position sync failed, keeping position for retry: ${syncErr}`);
+          // Backoff and retry
+          nextExitAttemptAt[asset] = Date.now() + 3000;
+          position.monitorInterval = setInterval(() => {
+            checkPositionExit(asset);
+          }, config.exit_monitor_interval_ms);
+          return;
+        }
       }
 
       // Backoff + retry for other errors
