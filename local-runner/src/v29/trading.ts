@@ -1281,7 +1281,7 @@ export async function placeSellOrder(
       const status = await getOrderStatus(orderId);
       filledSize = status.filledSize;
       
-      if (status.filled || filledSize >= roundedShares) {
+      if (status.filled || filledSize >= exactShares) {
         const latencyMs = Date.now() - start;
         log(`✅ Sell FILLED (GTC): ${filledSize} shares (${latencyMs}ms)`);
         return {
@@ -1301,8 +1301,8 @@ export async function placeSellOrder(
     }
     
     // Partial or no fill - cancel remaining
-    if (filledSize < roundedShares && orderId) {
-      log(`⚠️ Sell partial: ${filledSize}/${roundedShares}, cancelling remainder`);
+    if (filledSize < exactShares && orderId) {
+      log(`⚠️ Sell partial: ${filledSize}/${exactShares}, cancelling remainder`);
       await cancelOrder(orderId);
     }
     
@@ -1317,10 +1317,10 @@ export async function placeSellOrder(
     }
     
     // No fill at all - log clearly
-    log(`⚠️ Sell GTC timeout: 0/${roundedShares} filled at ${(roundedPrice * 100).toFixed(1)}¢`);
+    log(`⚠️ Sell GTC timeout: 0/${exactShares} filled at ${(roundedPrice * 100).toFixed(1)}¢`);
     return { 
       success: false, 
-      error: `GTC timeout: 0/${roundedShares} filled at ${(roundedPrice * 100).toFixed(1)}¢`, 
+      error: `GTC timeout: 0/${exactShares} filled at ${(roundedPrice * 100).toFixed(1)}¢`, 
       latencyMs: Date.now() - start 
     };
   } catch (err) {
