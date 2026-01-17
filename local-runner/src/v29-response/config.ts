@@ -99,10 +99,10 @@ export interface V29Config {
   // RISK CONTROLS
   // ============================================
   
-  // One position at a time per market
-  single_position_per_market: boolean;
+  // Max concurrent positions per asset (each with independent exit)
+  max_positions_per_asset: number;  // e.g., 5
   
-  // Cooldown after exit (ms)
+  // Cooldown after exit (ms) - per position, not per asset
   cooldown_after_exit_ms: number;  // e.g., 2000
   
   // Max exposure per asset (USD)
@@ -167,8 +167,8 @@ export const DEFAULT_CONFIG: V29Config = {
   taker_flow_window_ms: 300,
   
   // RISK CONTROLS
-  single_position_per_market: true,
-  cooldown_after_exit_ms: 2000,
+  max_positions_per_asset: 5,  // Allow 5 concurrent positions per asset
+  cooldown_after_exit_ms: 500, // Reduced cooldown since each position exits independently
   max_exposure_usd: 50,
   
   assets: ['BTC', 'ETH', 'SOL', 'XRP'],

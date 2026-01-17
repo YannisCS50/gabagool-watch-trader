@@ -54,18 +54,21 @@ const priceState: Record<Asset, PriceState> = {
   XRP: { binance: null, binanceTs: 0, chainlink: null, upBestAsk: null, upBestBid: null, downBestAsk: null, downBestBid: null, lastOrderbookUpdate: 0 },
 };
 
-// Active positions (one per asset at most)
-const activePositions = new Map<Asset, ActivePosition>();
+// Active positions - keyed by unique position ID (supports multiple per asset)
+// Key format: `${asset}-${positionId}` e.g., "BTC-abc123"
+const activePositions = new Map<string, ActivePosition>();
 
 // Prevent duplicate/concurrent ENTRY attempts per asset (critical to avoid order spam)
 const entryInFlight = new Set<Asset>();
 
-// Prevent duplicate/concurrent exit attempts per asset
-const exitInFlight = new Set<Asset>();
-const nextExitAttemptAt: Record<Asset, number> = { BTC: 0, ETH: 0, SOL: 0, XRP: 0 };
+// Prevent duplicate/concurrent exit attempts per POSITION (not per asset)
+const exitInFlight = new Set<string>();
 
-// Cooldowns
-const lastExitTime: Record<Asset, number> = { BTC: 0, ETH: 0, SOL: 0, XRP: 0 };
+// Next exit attempt time per POSITION
+const nextExitAttemptAt = new Map<string, number>();
+
+// Cooldowns - we track last exit time globally (not per asset since we allow concurrent positions)
+let lastGlobalExitTime = 0;
 
 // Stats
 let signalCount = 0;
@@ -177,10 +180,25 @@ async function fetchMarkets(): Promise<void> {
           // Reset signal state for new market
           resetSignalState(asset);
           
-          // Clear active position if market changed
-          if (activePositions.has(asset)) {
-            log(`⚠️ ${asset} position cleared due to market change`);
-            activePositions.delete(asset);
+          // Clear ALL active positions for this asset if market changed
+          const positionsCleared: string[] = [];
+          for (const [posKey, pos] of activePositions) {
+            if (pos.asset === asset) {
+              // Stop monitoring
+              if (pos.monitorInterval) {
+                clearInterval(pos.monitorInterval);
+              }
+              positionsCleared.push(posKey);
+            }
+          }
+          for (const posKey of positionsCleared) {
+            activePositions.delete(posKey);
+            nextExitAttemptAt.delete(posKey);
+          }
+          if (positionsCleared.length > 0) {
+            log(`⚠️ ${asset} ${positionsCleared.length} position(s) cleared due to market change`, {
+              clearedPositions: positionsCleared,
+            });
           }
           
           // Update pre-signed cache
@@ -276,12 +294,18 @@ function handleBinancePrice(asset: Asset, price: number, timestamp: number): voi
     signal_triggered: false,
   });
   
-  // Check for active position OR entry in progress (exit monitoring is done separately)
-  if (activePositions.has(asset) || entryInFlight.has(asset)) {
-    // Position exists or entry is pending - update price and check exit
-    if (activePositions.has(asset)) {
-      checkPositionExit(asset);
+  // Count positions for this asset
+  const assetPositionCount = countPositionsForAsset(asset);
+  
+  // Check all positions for this asset for exit (each has independent monitoring)
+  for (const [posKey, pos] of activePositions) {
+    if (pos.asset === asset) {
+      checkPositionExit(posKey);
     }
+  }
+  
+  // If max positions reached OR entry in progress, skip signal check
+  if (assetPositionCount >= config.max_positions_per_asset || entryInFlight.has(asset)) {
     return;
   }
   
@@ -289,6 +313,24 @@ function handleBinancePrice(asset: Asset, price: number, timestamp: number): voi
   if (hasPrevious) {
     checkForSignal(asset, delta, direction);
   }
+}
+
+// Helper: count active positions for an asset
+function countPositionsForAsset(asset: Asset): number {
+  let count = 0;
+  for (const pos of activePositions.values()) {
+    if (pos.asset === asset) count++;
+  }
+  return count;
+}
+
+// Helper: get total exposure for an asset
+function getAssetExposure(asset: Asset): number {
+  let total = 0;
+  for (const pos of activePositions.values()) {
+    if (pos.asset === asset) total += pos.totalCost;
+  }
+  return total;
 }
 
 // ============================================
@@ -300,21 +342,22 @@ function checkForSignal(asset: Asset, delta: number, direction: 'UP' | 'DOWN' | 
   const state = priceState[asset];
   const now = Date.now();
   
-  // Check cooldown
-  const inCooldown = (now - lastExitTime[asset]) < config.cooldown_after_exit_ms;
+  // Check cooldown (global, not per-asset since we allow concurrent positions)
+  const inCooldown = (now - lastGlobalExitTime) < config.cooldown_after_exit_ms;
   
-  // Check exposure
-  let currentExposure = 0;
-  for (const pos of activePositions.values()) {
-    currentExposure += pos.totalCost;
-  }
+  // Check exposure for this asset
+  const currentExposure = getAssetExposure(asset);
+  
+  // Check position count for this asset
+  const positionCount = countPositionsForAsset(asset);
+  const atMaxPositions = positionCount >= config.max_positions_per_asset;
   
   const result = checkSignal(
     asset,
     config,
     state,
     market,
-    activePositions.has(asset),
+    atMaxPositions, // Pass "at max" instead of "has any"
     inCooldown,
     currentExposure,
     delta,
@@ -456,7 +499,9 @@ async function executeEntry(asset: Asset, signal: Signal, market: MarketInfo): P
       result.orderId
     );
     
-    activePositions.set(asset, position);
+    // Use unique position key: ${asset}-${positionId}
+    const positionKey = `${asset}-${position.id}`;
+    activePositions.set(positionKey, position);
     tradeCount++;
     
     signal.status = 'filled';
@@ -465,8 +510,11 @@ async function executeEntry(asset: Asset, signal: Signal, market: MarketInfo): P
     signal.fill_ts = Date.now();
     signal.order_id = result.orderId;
     
-    logAsset(asset, `✅ FILLED: ${direction} ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ | latency=${Date.now() - signal.signal_ts}ms`, {
+    const posCount = countPositionsForAsset(asset);
+    logAsset(asset, `✅ FILLED: ${direction} ${filledSize} @ ${(avgPrice * 100).toFixed(1)}¢ | pos=${posCount}/${config.max_positions_per_asset} | latency=${Date.now() - signal.signal_ts}ms`, {
       signalId: signal.id,
+      positionKey,
+      positionCount: posCount,
       filledSize,
       avgPrice,
       latency: Date.now() - signal.signal_ts,
@@ -474,8 +522,8 @@ async function executeEntry(asset: Asset, signal: Signal, market: MarketInfo): P
     
     void saveSignalLog(signal, state);
     
-    // Start exit monitoring
-    startExitMonitor(asset, position);
+    // Start exit monitoring for this specific position
+    startExitMonitor(positionKey, position);
     
   } catch (err) {
     signal.status = 'failed';
@@ -492,31 +540,35 @@ async function executeEntry(asset: Asset, signal: Signal, market: MarketInfo): P
 // EXIT MONITORING (CRITICAL)
 // ============================================
 
-function startExitMonitor(asset: Asset, position: ActivePosition): void {
+function startExitMonitor(positionKey: string, position: ActivePosition): void {
   // Clear any existing monitor
   if (position.monitorInterval) {
     clearInterval(position.monitorInterval);
   }
   
+  const asset = position.asset as Asset;
+  
   // Schedule price tracking for analytics
   schedulePriceTracking(asset, position);
   
-  // Start exit check loop
+  // Start exit check loop for THIS position
   position.monitorInterval = setInterval(() => {
-    checkPositionExit(asset);
+    checkPositionExit(positionKey);
   }, config.exit_monitor_interval_ms);
 }
 
-function checkPositionExit(asset: Asset): void {
+function checkPositionExit(positionKey: string): void {
   // Prevent spamming exit logs / duplicate exit calls while an exit is in progress
-  if (exitInFlight.has(asset)) return;
+  if (exitInFlight.has(positionKey)) return;
 
   const now = Date.now();
-  if (now < (nextExitAttemptAt[asset] || 0)) return;
+  const nextAttempt = nextExitAttemptAt.get(positionKey) || 0;
+  if (now < nextAttempt) return;
 
-  const position = activePositions.get(asset);
+  const position = activePositions.get(positionKey);
   if (!position) return;
 
+  const asset = position.asset as Asset;
   const state = priceState[asset];
 
   const decision = checkExit(
@@ -527,7 +579,7 @@ function checkPositionExit(asset: Asset): void {
   );
 
   if (decision.shouldExit) {
-    void executeExit(asset, position, decision.type!, decision.reason ?? '', decision.unrealizedPnl ?? 0);
+    void executeExit(positionKey, position, decision.type!, decision.reason ?? '', decision.unrealizedPnl ?? 0);
   }
 }
 
@@ -536,15 +588,17 @@ function checkPositionExit(asset: Asset): void {
 // ============================================
 
 async function executeExit(
-  asset: Asset,
+  positionKey: string,
   position: ActivePosition,
   exitType: ExitType,
   exitReason: string,
   unrealizedPnl: number
 ): Promise<void> {
   // Guard against concurrent exit attempts (interval + price-tick path)
-  if (exitInFlight.has(asset)) return;
-  exitInFlight.add(asset);
+  if (exitInFlight.has(positionKey)) return;
+  exitInFlight.add(positionKey);
+
+  const asset = position.asset as Asset;
 
   try {
     // Stop monitoring
@@ -567,6 +621,7 @@ async function executeExit(
     
     if (Number.isFinite(marketEndEpoch) && now >= marketEndEpoch) {
       logAsset(asset, `⏰ MARKET EXPIRED: position will be settled via claim, removing from active tracking`, {
+        positionKey,
         positionId: position.id,
         marketSlug: positionMarketSlug,
         marketEndEpoch,
@@ -579,8 +634,8 @@ async function executeExit(
       void saveSignalLog(signal, state);
       
       // Remove position so new trades can happen
-      activePositions.delete(asset);
-      lastExitTime[asset] = now;
+      activePositions.delete(positionKey);
+      lastGlobalExitTime = now;
       
       return;
     }
@@ -591,6 +646,7 @@ async function executeExit(
       // CRITICAL: Do NOT delete position - we still hold shares!
       // Restart monitoring and retry later when orderbook is available
       logAsset(asset, `⚠️ EXIT: No bid available, retrying in 500ms`, {
+        positionKey,
         positionId: position.id,
         hasMarket: !!market,
         hasBid: !!bestBid,
@@ -598,9 +654,9 @@ async function executeExit(
       });
       
       // Backoff and retry
-      nextExitAttemptAt[asset] = Date.now() + 500;
+      nextExitAttemptAt.set(positionKey, Date.now() + 500);
       position.monitorInterval = setInterval(() => {
-        checkPositionExit(asset);
+        checkPositionExit(positionKey);
       }, config.exit_monitor_interval_ms);
       
       return;
@@ -610,6 +666,7 @@ async function executeExit(
     const sellPrice = Math.floor(bestBid * 100) / 100;
 
     logAsset(asset, `📤 EXIT: ${position.direction} ${position.shares} @ ${(sellPrice * 100).toFixed(1)}¢ | type=${exitType}`, {
+      positionKey,
       positionId: position.id,
       exitType,
       exitReason,
@@ -636,6 +693,7 @@ async function executeExit(
       const nowCheck = Date.now();
       if (Number.isFinite(marketEndEpoch) && nowCheck >= marketEndEpoch) {
         logAsset(asset, `⏰ MARKET EXPIRED during exit attempt: position will be settled via claim`, {
+          positionKey,
           positionId: position.id,
           error: errMsg,
         });
@@ -645,13 +703,14 @@ async function executeExit(
         signal.exit_ts = nowCheck;
         void saveSignalLog(signal, state);
         
-        activePositions.delete(asset);
-        lastExitTime[asset] = nowCheck;
+        activePositions.delete(positionKey);
+        lastGlobalExitTime = nowCheck;
         
         return;
       }
       
       logAsset(asset, `❌ EXIT FAILED: ${errMsg}`, {
+        positionKey,
         positionId: position.id,
         exitType,
         sellPrice,
@@ -691,38 +750,39 @@ async function executeExit(
             position.shares = matchingPosition.size;
             
             // Backoff and retry with corrected shares
-            nextExitAttemptAt[asset] = Date.now() + 2000;
+            nextExitAttemptAt.set(positionKey, Date.now() + 2000);
             position.monitorInterval = setInterval(() => {
-              checkPositionExit(asset);
+              checkPositionExit(positionKey);
             }, config.exit_monitor_interval_ms);
             
             return;
           } else {
             // Position really is gone (redeemed/expired/sold elsewhere)
             logAsset(asset, `🛑 Position confirmed GONE from Polymarket API - removing from tracking`, {
+              positionKey,
               searchedToken: position.tokenId,
               searchedSlug: position.marketSlug,
               foundPositions: livePositions.length,
             });
-            activePositions.delete(asset);
-            lastExitTime[asset] = Date.now();
+            activePositions.delete(positionKey);
+            lastGlobalExitTime = Date.now();
             return;
           }
         } catch (syncErr) {
           logAsset(asset, `⚠️ Position sync failed, keeping position for retry: ${syncErr}`);
           // Backoff and retry
-          nextExitAttemptAt[asset] = Date.now() + 3000;
+          nextExitAttemptAt.set(positionKey, Date.now() + 3000);
           position.monitorInterval = setInterval(() => {
-            checkPositionExit(asset);
+            checkPositionExit(positionKey);
           }, config.exit_monitor_interval_ms);
           return;
         }
       }
 
       // Backoff + retry for other errors
-      nextExitAttemptAt[asset] = Date.now() + 1000;
+      nextExitAttemptAt.set(positionKey, Date.now() + 1000);
       position.monitorInterval = setInterval(() => {
-        checkPositionExit(asset);
+        checkPositionExit(positionKey);
       }, config.exit_monitor_interval_ms);
 
       return;
@@ -755,32 +815,36 @@ async function executeExit(
 
     void saveSignalLog(signal, state);
 
-    logAsset(asset, `✅ EXITED: ${position.direction} | type=${exitType} | hold=${holdTimeMs}ms | PnL=${(netPnl * 100).toFixed(2)}¢`, {
+    const remainingPos = countPositionsForAsset(asset) - 1;
+    logAsset(asset, `✅ EXITED: ${position.direction} | type=${exitType} | hold=${holdTimeMs}ms | PnL=${(netPnl * 100).toFixed(2)}¢ | remaining=${remainingPos}`, {
+      positionKey,
       positionId: position.id,
       exitType,
       holdTimeMs,
       grossPnl,
       netPnl,
+      remainingPositions: remainingPos,
     });
 
     // Remove position
-    activePositions.delete(asset);
-    lastExitTime[asset] = exitTs;
+    activePositions.delete(positionKey);
+    nextExitAttemptAt.delete(positionKey);
+    lastGlobalExitTime = exitTs;
   } catch (err) {
-    logError(`Exit error for ${asset}`, err);
+    logError(`Exit error for ${positionKey}`, err);
 
     // Backoff + keep position so we can retry exiting
-    nextExitAttemptAt[asset] = Date.now() + 1500;
+    nextExitAttemptAt.set(positionKey, Date.now() + 1500);
 
-    if (activePositions.has(asset)) {
+    if (activePositions.has(positionKey)) {
       position.monitorInterval = setInterval(() => {
-        checkPositionExit(asset);
+        checkPositionExit(positionKey);
       }, config.exit_monitor_interval_ms);
     } else {
-      lastExitTime[asset] = Date.now();
+      lastGlobalExitTime = Date.now();
     }
   } finally {
-    exitInFlight.delete(asset);
+    exitInFlight.delete(positionKey);
   }
 }
 
@@ -973,7 +1037,16 @@ function handleUserChannelTrade(event: TradeEvent): void {
     return;
   }
   
-  const position = activePositions.get(matchedAsset);
+  // Find existing position for this asset+direction (take first match)
+  let position: ActivePosition | undefined;
+  let positionKey: string | undefined;
+  for (const [key, pos] of activePositions) {
+    if (pos.asset === matchedAsset && pos.direction === matchedDirection) {
+      position = pos;
+      positionKey = key;
+      break;
+    }
+  }
   
   if (side === 'BUY') {
     // BUY fill - update or create position
@@ -1026,16 +1099,18 @@ function handleUserChannelTrade(event: TradeEvent): void {
         event.taker_order_id
       );
       
-      activePositions.set(matchedAsset, newPosition);
+      const newPosKey = `${matchedAsset}-${newPosition.id}`;
+      activePositions.set(newPosKey, newPosition);
       
       logAsset(matchedAsset, `🔔 REALTIME NEW POSITION: ${matchedDirection} ${size} shares @ ${(price * 100).toFixed(1)}¢`, {
+        positionKey: newPosKey,
         shares: size,
         price,
         tokenId: tokenId.slice(0, 12),
       });
       
       // Start exit monitoring
-      startExitMonitor(matchedAsset, newPosition);
+      startExitMonitor(newPosKey, newPosition);
     }
   } else if (side === 'SELL') {
     // SELL fill - update position
@@ -1057,8 +1132,9 @@ function handleUserChannelTrade(event: TradeEvent): void {
       });
       
       // If position is fully closed, remove it
-      if (newShares <= 0.01) {
-        activePositions.delete(matchedAsset);
+      if (newShares <= 0.01 && positionKey) {
+        activePositions.delete(positionKey);
+        nextExitAttemptAt.delete(positionKey);
         if (position.monitorInterval) {
           clearInterval(position.monitorInterval);
         }
