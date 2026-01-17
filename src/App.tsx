@@ -42,7 +42,8 @@ const App = () => (
       <Sonner />
       <BrowserRouter>
         <Routes>
-          <Route path="/" element={<Index />} />
+          <Route path="/" element={<V29ResponseDashboard />} />
+          <Route path="/old-dashboard" element={<Index />} />
           <Route path="/auth" element={<Auth />} />
           <Route path="/live-trading" element={<LiveTrading />} />
           <Route path="/gabagool-analysis" element={<GabagoolStrategyAnalysis />} />
@@ -59,7 +60,7 @@ const App = () => (
           <Route path="/v28" element={<V28Dashboard />} />
           <Route path="/v29" element={<V29Dashboard />} />
           <Route path="/v29-new" element={<V29DashboardNew />} />
-          <Route path="/v29-response" element={<V29ResponseDashboard />} />
+          {/* V29ResponseDashboard is now the homepage */}
           <Route path="/v30" element={<V30Dashboard />} />
           <Route path="/price-latency" element={<PriceLatencyAnalyzer />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
