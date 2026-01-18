@@ -24,6 +24,14 @@ const previousPrice: Record<Asset, number | null> = {
   XRP: null,
 };
 
+// Track recent price history for volatility calculation (dynamic delta)
+const priceHistory: Record<Asset, Array<{ price: number; ts: number }>> = {
+  BTC: [],
+  ETH: [],
+  SOL: [],
+  XRP: [],
+};
+
 // Track share price AND timestamp at last signal to detect if already repriced
 // Expires after 2 seconds (new Binance move = fresh opportunity)
 const lastSignalData: Record<string, { price: number; ts: number }> = {};
@@ -37,15 +45,17 @@ export type SkipReason =
   | 'no_market'
   | 'disabled'
   | 'delta_too_small'
+  | 'delta_too_large'    // Skip if delta > max
+  | 'delta_below_dynamic'  // NEW: Skip if delta < dynamic threshold
   | 'no_orderbook'
   | 'spread_too_wide'
   | 'already_repriced'
   | 'price_out_of_range'
-  | 'cooldown'
+  | 'extreme_price_weak_delta'  // Extreme price zone needs stronger delta
   | 'position_open'
   | 'exposure_limit'
   | 'no_previous_tick'
-  | 'delta_direction_mismatch';  // New: wrong side for this delta
+  | 'delta_direction_mismatch';
 
 // ============================================
 // SIGNAL RESULT
@@ -72,9 +82,15 @@ export function processTick(asset: Asset, price: number): {
   direction: Direction | null;
 } {
   const previous = previousPrice[asset];
+  const now = Date.now();
   
   // Update for next comparison
   previousPrice[asset] = price;
+  
+  // Track price history for volatility calculation
+  priceHistory[asset].push({ price, ts: now });
+  // Keep only last 10 seconds of history
+  priceHistory[asset] = priceHistory[asset].filter(p => p.ts >= now - 10000);
   
   if (previous === null) {
     return { hasPrevious: false, delta: 0, direction: null };
@@ -84,6 +100,36 @@ export function processTick(asset: Asset, price: number): {
   const direction: Direction | null = delta > 0 ? 'UP' : delta < 0 ? 'DOWN' : null;
   
   return { hasPrevious: true, delta, direction };
+}
+
+/**
+ * Calculate recent volatility for dynamic delta adjustment.
+ * Returns a multiplier: 1.0 = normal, >1 = high volatility needs higher delta.
+ */
+function getVolatilityMultiplier(asset: Asset, config: V29Config): number {
+  if (!config.dynamic_delta_enabled) return 1.0;
+  
+  const now = Date.now();
+  const windowMs = config.dynamic_delta_volatility_window_ms;
+  const history = priceHistory[asset].filter(p => p.ts >= now - windowMs);
+  
+  if (history.length < 2) return 1.0;  // Not enough data
+  
+  // Calculate range (high - low) in the window
+  const prices = history.map(p => p.price);
+  const high = Math.max(...prices);
+  const low = Math.min(...prices);
+  const range = high - low;
+  
+  // Compare to base volatility
+  const baseVol = config.dynamic_delta_base_volatility;
+  if (range <= baseVol) return 1.0;  // Normal or low volatility
+  
+  // Scale up: range/baseVol gives multiplier, cap at max
+  const multiplier = range / baseVol;
+  const capped = Math.min(multiplier, config.dynamic_delta_multiplier_cap);
+  
+  return capped;
 }
 
 // Legacy function for compatibility (not used but kept for imports)
@@ -101,7 +147,6 @@ export function checkSignal(
   priceState: PriceState,
   market: MarketInfo | undefined,
   hasOpenPosition: boolean,
-  inCooldown: boolean,
   currentExposure: number,
   delta: number,
   direction: Direction | null,
@@ -124,10 +169,31 @@ export function checkSignal(
     return { triggered: false, skipReason: 'no_previous_tick' };
   }
   
-  // 4. Check delta threshold
+  // 4. Check delta threshold (base minimum)
   const absDelta = Math.abs(delta);
   if (absDelta < config.signal_delta_usd) {
     return { triggered: false, skipReason: 'delta_too_small' };
+  }
+  
+  // 4b. DYNAMIC DELTA CHECK - Adjust threshold based on volatility
+  const volMultiplier = getVolatilityMultiplier(asset, config);
+  if (volMultiplier > 1.0) {
+    const dynamicThreshold = config.signal_delta_usd * volMultiplier;
+    if (absDelta < dynamicThreshold) {
+      logFn(`SKIP: ${asset} ${direction} - delta $${absDelta.toFixed(2)} < dynamic threshold $${dynamicThreshold.toFixed(2)} (vol=${volMultiplier.toFixed(2)}x)`, {
+        asset, direction, absDelta, dynamicThreshold, volMultiplier,
+      });
+      return { triggered: false, skipReason: 'delta_below_dynamic', skipDetails: `delta=$${absDelta.toFixed(2)} < $${dynamicThreshold.toFixed(1)} (vol ${volMultiplier.toFixed(1)}x)` };
+    }
+  }
+  
+  // 4c. Check delta threshold (max) - Skip delta > $15
+  // Analysis showed >$15 delta has win_rate 67% but NEGATIVE avg P&L
+  if (config.signal_delta_max_usd && absDelta > config.signal_delta_max_usd) {
+    logFn(`SKIP: ${asset} ${direction} - delta $${absDelta.toFixed(2)} > max $${config.signal_delta_max_usd}`, {
+      asset, direction, absDelta, maxDelta: config.signal_delta_max_usd,
+    });
+    return { triggered: false, skipReason: 'delta_too_large', skipDetails: `delta=$${absDelta.toFixed(2)}` };
   }
   
   // 5. Check orderbook availability
@@ -176,6 +242,22 @@ export function checkSignal(
     return { triggered: false, skipReason: 'price_out_of_range' };
   }
   
+  // 8b. EXTREME PRICE ZONE CHECK - NEW
+  // Analysis: price <0.35 or >0.65 are volatile zones that need stronger delta
+  if (config.extreme_price_threshold && config.extreme_price_delta_multiplier) {
+    const isExtreme = bestAsk < config.extreme_price_threshold || 
+                      bestAsk > (1 - config.extreme_price_threshold);
+    if (isExtreme) {
+      const requiredDelta = config.signal_delta_usd * config.extreme_price_delta_multiplier;
+      if (absDelta < requiredDelta) {
+        logFn(`SKIP: ${asset} ${direction} - extreme price ${(bestAsk * 100).toFixed(1)}¢ needs delta ≥$${requiredDelta.toFixed(1)} (got $${absDelta.toFixed(2)})`, {
+          asset, direction, price: bestAsk, absDelta, requiredDelta,
+        });
+        return { triggered: false, skipReason: 'extreme_price_weak_delta', skipDetails: `price=${(bestAsk * 100).toFixed(0)}¢, need $${requiredDelta.toFixed(0)}` };
+      }
+    }
+  }
+  
   // 9. DELTA-BASED DIRECTIONAL FILTER
   // Uses binance price vs strike to determine which sides are allowed
   // As we get closer to expiry, the allowed delta range narrows
@@ -194,18 +276,14 @@ export function checkSignal(
     return { triggered: false, skipReason: 'delta_direction_mismatch', skipDetails: directionAllowed.reason };
   }
   
-  // 10. Check cooldown
-  if (inCooldown) {
-    return { triggered: false, skipReason: 'cooldown' };
-  }
-  
-  // 11. Check single position rule
-  if (config.single_position_per_market && hasOpenPosition) {
-    logFn(`SKIP: ${asset} ${direction} - position already open`, { asset, direction });
+  // 10. Check max positions per asset
+  // hasOpenPosition is now "at max positions" (passed from caller)
+  if (hasOpenPosition) {
+    logFn(`SKIP: ${asset} ${direction} - max positions reached`, { asset, direction });
     return { triggered: false, skipReason: 'position_open' };
   }
   
-  // 12. Check exposure limit
+  // 11. Check exposure limit
   const orderCost = config.shares_per_trade * bestAsk;
   if (currentExposure + orderCost > config.max_exposure_usd) {
     logFn(`SKIP: ${asset} ${direction} - exposure limit`, {
@@ -259,6 +337,7 @@ export function checkSignal(
  */
 export function resetSignalState(asset: Asset): void {
   previousPrice[asset] = null;
+  priceHistory[asset] = [];  // Clear volatility history
   
   // Clear repricing tracking for this asset
   for (const key of Object.keys(lastSignalData)) {

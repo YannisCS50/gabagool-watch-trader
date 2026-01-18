@@ -17,7 +17,7 @@ import type { ActivePosition, PriceState } from './types.js';
 // EXIT DECISION
 // ============================================
 
-export type ExitType = 'target' | 'exhaustion' | 'adverse' | 'timeout';
+export type ExitType = 'target' | 'trailing' | 'exhaustion' | 'stagnation' | 'adverse' | 'timeout';
 
 export interface ExitDecision {
   shouldExit: boolean;
@@ -81,13 +81,52 @@ export function checkExit(
   position.priceHistory = position.priceHistory.filter(p => p.ts >= now - 2000);
   
   // ============================================
-  // EXIT CONDITION 1: TARGET RESPONSE ACHIEVED
+  // EXIT CONDITION 1: TARGET / TRAILING PROFIT
   // ============================================
   
   // Use target range: exit if within target window
   const targetMin = dirConfig.target_profit_cents_min;
   const targetMax = dirConfig.target_profit_cents_max;
   
+  // TRAILING PROFIT LOGIC
+  if (dirConfig.trailing_enabled && unrealizedPnlCents >= dirConfig.trailing_start_cents) {
+    // Calculate max unrealized P&L (from max price seen)
+    const maxUnrealizedPnlCents = (position.maxPriceSeen - position.entryPrice) * 100;
+    
+    // Calculate pullback from max
+    const pullbackCents = maxUnrealizedPnlCents - unrealizedPnlCents;
+    
+    // If we've pulled back too much from max, exit to lock in profit
+    if (pullbackCents >= dirConfig.trailing_pullback_cents && unrealizedPnlCents > 0) {
+      logFn(`📈 EXIT TRAILING: ${position.asset} ${position.direction} +${unrealizedPnlCents.toFixed(2)}¢ (max was +${maxUnrealizedPnlCents.toFixed(2)}¢, pullback ${pullbackCents.toFixed(2)}¢)`, {
+        positionId: position.id,
+        unrealizedPnlCents,
+        maxUnrealizedPnlCents,
+        pullbackCents,
+        holdTimeSec,
+      });
+      
+      return {
+        shouldExit: true,
+        type: 'trailing',
+        reason: `trail: +${unrealizedPnlCents.toFixed(1)}¢ (max +${maxUnrealizedPnlCents.toFixed(1)}¢)`,
+        unrealizedPnl: unrealizedPnlCents,
+      };
+    }
+    
+    // Dynamic target: raise target based on how far we've gone
+    // Every trailing_step_cents of profit above start, raise the min target
+    const stepsAboveStart = Math.floor((maxUnrealizedPnlCents - dirConfig.trailing_start_cents) / dirConfig.trailing_step_cents);
+    const dynamicTargetMin = targetMin + (stepsAboveStart * 0.5);  // Raise by 0.5¢ per step
+    
+    // If we're still above dynamic target, let it ride (don't exit yet)
+    if (unrealizedPnlCents >= dynamicTargetMin && pullbackCents < dirConfig.trailing_pullback_cents) {
+      // Still in trailing mode, don't exit
+      return { shouldExit: false, unrealizedPnl: unrealizedPnlCents };
+    }
+  }
+  
+  // FIXED TARGET: Exit if we hit target without trailing
   if (unrealizedPnlCents >= targetMin) {
     logFn(`✅ EXIT TARGET: ${position.asset} ${position.direction} +${unrealizedPnlCents.toFixed(2)}¢ (target ${targetMin}-${targetMax}¢)`, {
       positionId: position.id,
@@ -128,6 +167,46 @@ export function checkExit(
         reason: `repriced=${(repricingPct * 100).toFixed(0)}%, stall=${priceChangeLastSec.toFixed(2)}¢/s`,
         unrealizedPnl: unrealizedPnlCents,
       };
+    }
+  }
+  
+  // ============================================
+  // EXIT CONDITION 2b: STAGNATION DETECTION (NEW)
+  // ============================================
+  // Analysis showed: losers have ~+2.6% at 1s then ~+2.8% at 5s (stagnation)
+  // Winners show: ~+4.7% at 1s then ~+5.6% at 5s (momentum continues)
+  // If we're past the stagnation check time and price hasn't improved much, exit early
+  
+  if (dirConfig.stagnation_check_after_ms && dirConfig.stagnation_threshold_cents) {
+    if (holdTimeMs >= dirConfig.stagnation_check_after_ms) {
+      // Check if price has improved since ~1 second in
+      const priceAt1s = position.priceHistory.find(p => 
+        p.ts >= position.entryTime + 900 && p.ts <= position.entryTime + 1100
+      );
+      
+      if (priceAt1s) {
+        const improvementSince1s = (currentBestBid - priceAt1s.price) * 100;
+        
+        // If we're in profit at 1s but haven't improved much since then → stagnation
+        const profitAt1s = (priceAt1s.price - position.entryPrice) * 100;
+        
+        if (profitAt1s > 0 && improvementSince1s < dirConfig.stagnation_threshold_cents) {
+          logFn(`📉 EXIT STAGNATION: ${position.asset} ${position.direction} | profit@1s=${profitAt1s.toFixed(2)}¢, improvement since=${improvementSince1s.toFixed(2)}¢ (threshold=${dirConfig.stagnation_threshold_cents}¢)`, {
+            positionId: position.id,
+            profitAt1s,
+            improvementSince1s,
+            holdTimeSec,
+            unrealizedPnlCents,
+          });
+          
+          return {
+            shouldExit: true,
+            type: 'stagnation',
+            reason: `stagnated: +${profitAt1s.toFixed(1)}¢@1s, +${improvementSince1s.toFixed(1)}¢ since`,
+            unrealizedPnl: unrealizedPnlCents,
+          };
+        }
+      }
     }
   }
   
