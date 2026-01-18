@@ -23,8 +23,9 @@ export interface DirectionConfig {
   target_profit_cents_min: number;  // e.g., 1.8
   target_profit_cents_max: number;  // e.g., 2.0
   
-  // Hard time stop (seconds) - LAST RESORT only
-  max_hold_seconds: number;  // UP: 6s, DOWN: 7s
+  // Hard time stop (seconds) - REDUCED from 60s+ to 15-20s based on analysis
+  // Analysis: losers hold ~37s avg vs winners ~9s avg
+  max_hold_seconds: number;  // UP: 15s, DOWN: 20s
   
   // Repricing exhaustion: what % of expected repricing before exit
   repricing_exhaustion_pct: number;  // e.g., 0.65 = 65%
@@ -34,6 +35,12 @@ export interface DirectionConfig {
   
   // Expected repricing after signal (cents) - used for exhaustion calc
   expected_repricing_cents: number;  // e.g., 3.0
+  
+  // STAGNATION EXIT: if price doesn't improve between checks, exit early
+  // Analysis showed: losers have +2.6% move at 1s then +2.8% at 5s (stagnation)
+  // Winners show: +4.7% at 1s then +5.6% at 5s (momentum continues)
+  stagnation_threshold_cents: number;  // exit if price improvement < this after initial move
+  stagnation_check_after_ms: number;   // start checking for stagnation after this time
 }
 
 export interface V29Config {
@@ -46,6 +53,14 @@ export interface V29Config {
   
   // Minimum Binance price move (USD) within rolling window to trigger
   signal_delta_usd: number;  // e.g., 6.0
+  
+  // Maximum delta - skip if delta > this (analysis showed >$15 has negative avg P&L)
+  signal_delta_max_usd: number;  // e.g., 15.0
+  
+  // Require higher delta for extreme share prices (near 0.35 or 0.65)
+  // Analysis: volatile price zones need stronger signals
+  extreme_price_threshold: number;       // e.g., 0.35/0.65 boundary
+  extreme_price_delta_multiplier: number; // e.g., 1.5 → need $9 instead of $6
   
   // Rolling window for delta calculation (ms)
   signal_window_ms: number;  // e.g., 300
@@ -128,6 +143,9 @@ export const DEFAULT_CONFIG: V29Config = {
   
   // SIGNAL DEFINITION
   signal_delta_usd: 6.0,
+  signal_delta_max_usd: 15.0,  // NEW: Skip delta >$15 (analysis: negative avg P&L)
+  extreme_price_threshold: 0.35,  // NEW: Price <0.35 or >0.65 = extreme zone
+  extreme_price_delta_multiplier: 1.5,  // NEW: Need $9 delta in extreme zones
   signal_window_ms: 300,
   max_share_move_cents: 0.5,
   max_spread_cents: 1.0,
@@ -142,24 +160,28 @@ export const DEFAULT_CONFIG: V29Config = {
   // EXIT MONITORING
   exit_monitor_interval_ms: 100,
   
-  // UP-SPECIFIC: Faster repricing, shorter hold
+  // UP-SPECIFIC: Faster repricing, SHORTER hold (analysis: 15s max)
   up: {
     target_profit_cents_min: 1.8,
     target_profit_cents_max: 2.0,
-    max_hold_seconds: 6,
+    max_hold_seconds: 15,  // REDUCED from 6s (was being hit as "timeout" after much longer)
     repricing_exhaustion_pct: 0.65,
     stall_threshold_cents_per_sec: 0.1,
     expected_repricing_cents: 3.0,
+    stagnation_threshold_cents: 0.5,  // NEW: exit if <0.5¢ improvement
+    stagnation_check_after_ms: 3000,  // NEW: check after 3 seconds
   },
   
-  // DOWN-SPECIFIC: Slower repricing, longer hold, higher target
+  // DOWN-SPECIFIC: Slower repricing, SHORTER hold (analysis: 20s max)
   down: {
     target_profit_cents_min: 2.0,
     target_profit_cents_max: 2.4,
-    max_hold_seconds: 7,
+    max_hold_seconds: 20,  // REDUCED from 7s (was being hit as "timeout" after much longer)
     repricing_exhaustion_pct: 0.70,
     stall_threshold_cents_per_sec: 0.1,
     expected_repricing_cents: 3.5,
+    stagnation_threshold_cents: 0.5,  // NEW: exit if <0.5¢ improvement
+    stagnation_check_after_ms: 4000,  // NEW: check after 4 seconds (DOWN is slower)
   },
   
   // ADVERSE SELECTION
@@ -167,15 +189,15 @@ export const DEFAULT_CONFIG: V29Config = {
   taker_flow_window_ms: 300,
   
   // RISK CONTROLS
-  max_positions_per_asset: 5,  // Allow 5 concurrent positions per asset
-  // No cooldown needed with multiple concurrent positions // Reduced cooldown since each position exits independently
+  max_positions_per_asset: 5,
+  cooldown_after_exit_ms: 0,
   max_exposure_usd: 50,
   
   assets: ['BTC', 'ETH', 'SOL', 'XRP'],
   
   // INTERVALS
-  binance_buffer_ms: 0,  // 0 = instant emit (no buffering)
-  orderbook_poll_ms: 250,  // Fast orderbook polling for exit monitoring
+  binance_buffer_ms: 0,
+  orderbook_poll_ms: 250,
 };
 
 // Binance WebSocket symbols

@@ -37,15 +37,16 @@ export type SkipReason =
   | 'no_market'
   | 'disabled'
   | 'delta_too_small'
+  | 'delta_too_large'    // NEW: Skip if delta > max
   | 'no_orderbook'
   | 'spread_too_wide'
   | 'already_repriced'
   | 'price_out_of_range'
-  
+  | 'extreme_price_weak_delta'  // NEW: Extreme price zone needs stronger delta
   | 'position_open'
   | 'exposure_limit'
   | 'no_previous_tick'
-  | 'delta_direction_mismatch';  // New: wrong side for this delta
+  | 'delta_direction_mismatch';
 
 // ============================================
 // SIGNAL RESULT
@@ -123,10 +124,19 @@ export function checkSignal(
     return { triggered: false, skipReason: 'no_previous_tick' };
   }
   
-  // 4. Check delta threshold
+  // 4. Check delta threshold (min)
   const absDelta = Math.abs(delta);
   if (absDelta < config.signal_delta_usd) {
     return { triggered: false, skipReason: 'delta_too_small' };
+  }
+  
+  // 4b. Check delta threshold (max) - NEW: Skip delta > $15
+  // Analysis showed >$15 delta has win_rate 67% but NEGATIVE avg P&L
+  if (config.signal_delta_max_usd && absDelta > config.signal_delta_max_usd) {
+    logFn(`SKIP: ${asset} ${direction} - delta $${absDelta.toFixed(2)} > max $${config.signal_delta_max_usd}`, {
+      asset, direction, absDelta, maxDelta: config.signal_delta_max_usd,
+    });
+    return { triggered: false, skipReason: 'delta_too_large', skipDetails: `delta=$${absDelta.toFixed(2)}` };
   }
   
   // 5. Check orderbook availability
@@ -173,6 +183,22 @@ export function checkSignal(
       asset, direction, price: bestAsk,
     });
     return { triggered: false, skipReason: 'price_out_of_range' };
+  }
+  
+  // 8b. EXTREME PRICE ZONE CHECK - NEW
+  // Analysis: price <0.35 or >0.65 are volatile zones that need stronger delta
+  if (config.extreme_price_threshold && config.extreme_price_delta_multiplier) {
+    const isExtreme = bestAsk < config.extreme_price_threshold || 
+                      bestAsk > (1 - config.extreme_price_threshold);
+    if (isExtreme) {
+      const requiredDelta = config.signal_delta_usd * config.extreme_price_delta_multiplier;
+      if (absDelta < requiredDelta) {
+        logFn(`SKIP: ${asset} ${direction} - extreme price ${(bestAsk * 100).toFixed(1)}¢ needs delta ≥$${requiredDelta.toFixed(1)} (got $${absDelta.toFixed(2)})`, {
+          asset, direction, price: bestAsk, absDelta, requiredDelta,
+        });
+        return { triggered: false, skipReason: 'extreme_price_weak_delta', skipDetails: `price=${(bestAsk * 100).toFixed(0)}¢, need $${requiredDelta.toFixed(0)}` };
+      }
+    }
   }
   
   // 9. DELTA-BASED DIRECTIONAL FILTER

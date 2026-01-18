@@ -17,7 +17,7 @@ import type { ActivePosition, PriceState } from './types.js';
 // EXIT DECISION
 // ============================================
 
-export type ExitType = 'target' | 'exhaustion' | 'adverse' | 'timeout';
+export type ExitType = 'target' | 'exhaustion' | 'stagnation' | 'adverse' | 'timeout';
 
 export interface ExitDecision {
   shouldExit: boolean;
@@ -128,6 +128,46 @@ export function checkExit(
         reason: `repriced=${(repricingPct * 100).toFixed(0)}%, stall=${priceChangeLastSec.toFixed(2)}¢/s`,
         unrealizedPnl: unrealizedPnlCents,
       };
+    }
+  }
+  
+  // ============================================
+  // EXIT CONDITION 2b: STAGNATION DETECTION (NEW)
+  // ============================================
+  // Analysis showed: losers have ~+2.6% at 1s then ~+2.8% at 5s (stagnation)
+  // Winners show: ~+4.7% at 1s then ~+5.6% at 5s (momentum continues)
+  // If we're past the stagnation check time and price hasn't improved much, exit early
+  
+  if (dirConfig.stagnation_check_after_ms && dirConfig.stagnation_threshold_cents) {
+    if (holdTimeMs >= dirConfig.stagnation_check_after_ms) {
+      // Check if price has improved since ~1 second in
+      const priceAt1s = position.priceHistory.find(p => 
+        p.ts >= position.entryTime + 900 && p.ts <= position.entryTime + 1100
+      );
+      
+      if (priceAt1s) {
+        const improvementSince1s = (currentBestBid - priceAt1s.price) * 100;
+        
+        // If we're in profit at 1s but haven't improved much since then → stagnation
+        const profitAt1s = (priceAt1s.price - position.entryPrice) * 100;
+        
+        if (profitAt1s > 0 && improvementSince1s < dirConfig.stagnation_threshold_cents) {
+          logFn(`📉 EXIT STAGNATION: ${position.asset} ${position.direction} | profit@1s=${profitAt1s.toFixed(2)}¢, improvement since=${improvementSince1s.toFixed(2)}¢ (threshold=${dirConfig.stagnation_threshold_cents}¢)`, {
+            positionId: position.id,
+            profitAt1s,
+            improvementSince1s,
+            holdTimeSec,
+            unrealizedPnlCents,
+          });
+          
+          return {
+            shouldExit: true,
+            type: 'stagnation',
+            reason: `stagnated: +${profitAt1s.toFixed(1)}¢@1s, +${improvementSince1s.toFixed(1)}¢ since`,
+            unrealizedPnl: unrealizedPnlCents,
+          };
+        }
+      }
     }
   }
   
