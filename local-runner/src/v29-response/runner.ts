@@ -1182,7 +1182,7 @@ function handleUserChannelTrade(event: TradeEvent): void {
     } else {
       // New position from User Channel (might be from another entry path)
       const fakeSignal: Signal = {
-        id: `ws-${Date.now()}-${matchedAsset}`,
+        id: randomUUID(),  // Use real UUID for database compatibility
         asset: matchedAsset,
         direction: matchedDirection,
         binance_price: priceState[matchedAsset].binance ?? 0,
@@ -1351,7 +1351,7 @@ async function syncLivePositions(): Promise<void> {
       
       // New position found - create tracker
       const fakeSignal: Signal = {
-        id: `sync-${Date.now()}-${matchedAsset}`,
+        id: randomUUID(),  // Use real UUID for database compatibility
         asset: matchedAsset,
         direction: matchedDirection,
         binance_price: priceState[matchedAsset].binance ?? 0,
