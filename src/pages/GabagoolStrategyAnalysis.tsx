@@ -11,6 +11,16 @@ import jsPDF from 'jspdf';
 import { toast } from 'sonner';
 import { GabagoolTradesTable } from '@/components/GabagoolTradesTable';
 import { LiveRunnerStatus } from '@/components/LiveRunnerStatus';
+import { useGabagoolDeltaAnalysis } from '@/hooks/useGabagoolDeltaAnalysis';
+import {
+  DeltaExplainerCard,
+  GabagoolInsightsPanel,
+  GabagoolSummaryCards,
+  GabagoolPriceDistributionChart,
+  GabagoolHourlyPatternChart,
+  GabagoolAssetComparisonCard,
+  GabagoolMarketTypeCard,
+} from '@/components/gabagool';
 
 interface Trade {
   id: string;
@@ -67,6 +77,9 @@ export default function GabagoolStrategyAnalysis() {
   const [marketStats, setMarketStats] = useState<MarketStats[]>([]);
   const [isExporting, setIsExporting] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
+  
+  // New delta analysis hook
+  const { data: deltaAnalysis, isLoading: deltaLoading } = useGabagoolDeltaAnalysis();
 
   const handleExportPDF = async () => {
     if (!contentRef.current) return;
@@ -433,6 +446,9 @@ export default function GabagoolStrategyAnalysis() {
 
         {/* Live Runner Status */}
         <LiveRunnerStatus />
+
+        {/* Delta Uitleg Card - NEW */}
+        <DeltaExplainerCard />
 
         {/* Executive Summary */}
         <Card className="border-primary/50 bg-gradient-to-br from-primary/5 to-transparent">
