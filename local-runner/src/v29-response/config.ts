@@ -23,6 +23,13 @@ export interface DirectionConfig {
   target_profit_cents_min: number;  // e.g., 1.8
   target_profit_cents_max: number;  // e.g., 2.0
   
+  // TRAILING PROFIT: Lock in profits as price rises
+  // Start with low target, raise target as profit grows
+  trailing_enabled: boolean;         // Enable trailing profit
+  trailing_start_cents: number;      // Start trailing after this profit (e.g., 1.5¢)
+  trailing_step_cents: number;       // Raise target by this per step (e.g., 1.0¢)
+  trailing_pullback_cents: number;   // Exit if price pulls back this much from max (e.g., 0.8¢)
+  
   // Hard time stop (seconds) - REDUCED from 60s+ to 15-20s based on analysis
   // Analysis: losers hold ~37s avg vs winners ~9s avg
   max_hold_seconds: number;  // UP: 15s, DOWN: 20s
@@ -162,7 +169,7 @@ export const DEFAULT_CONFIG: V29Config = {
   max_spread_cents: 1.0,
   min_share_price: 0.15,
   max_share_price: 0.85,
-  shares_per_trade: 5,
+  shares_per_trade: 10,  // INCREASED from 5 for higher profit per bet
   
   // ENTRY
   entry_price_buffer_cents: 0.5,
@@ -175,24 +182,34 @@ export const DEFAULT_CONFIG: V29Config = {
   up: {
     target_profit_cents_min: 1.8,
     target_profit_cents_max: 2.0,
-    max_hold_seconds: 15,  // REDUCED from 6s (was being hit as "timeout" after much longer)
+    // TRAILING PROFIT: Let winners run longer
+    trailing_enabled: true,
+    trailing_start_cents: 1.5,      // Start trailing after 1.5¢ profit
+    trailing_step_cents: 1.0,       // Raise target by 1¢ per step
+    trailing_pullback_cents: 0.8,   // Exit if pulls back 0.8¢ from max
+    max_hold_seconds: 15,
     repricing_exhaustion_pct: 0.65,
     stall_threshold_cents_per_sec: 0.1,
     expected_repricing_cents: 3.0,
-    stagnation_threshold_cents: 0.5,  // NEW: exit if <0.5¢ improvement
-    stagnation_check_after_ms: 3000,  // NEW: check after 3 seconds
+    stagnation_threshold_cents: 0.5,
+    stagnation_check_after_ms: 3000,
   },
   
   // DOWN-SPECIFIC: Slower repricing, SHORTER hold (analysis: 20s max)
   down: {
     target_profit_cents_min: 2.0,
     target_profit_cents_max: 2.4,
-    max_hold_seconds: 20,  // REDUCED from 7s (was being hit as "timeout" after much longer)
+    // TRAILING PROFIT: Let winners run longer
+    trailing_enabled: true,
+    trailing_start_cents: 1.8,      // Start trailing after 1.8¢ profit
+    trailing_step_cents: 1.2,       // Raise target by 1.2¢ per step (DOWN moves slower)
+    trailing_pullback_cents: 0.7,   // Exit if pulls back 0.7¢ from max
+    max_hold_seconds: 20,
     repricing_exhaustion_pct: 0.70,
     stall_threshold_cents_per_sec: 0.1,
     expected_repricing_cents: 3.5,
-    stagnation_threshold_cents: 0.5,  // NEW: exit if <0.5¢ improvement
-    stagnation_check_after_ms: 4000,  // NEW: check after 4 seconds (DOWN is slower)
+    stagnation_threshold_cents: 0.5,
+    stagnation_check_after_ms: 4000,
   },
   
   // ADVERSE SELECTION
