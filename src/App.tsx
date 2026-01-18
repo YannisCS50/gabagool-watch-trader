@@ -24,6 +24,7 @@ import V29DashboardNew from "./pages/V29DashboardNew";
 import V29ResponseDashboard from "./pages/V29ResponseDashboard";
 import V30Dashboard from "./pages/V30Dashboard";
 import PriceLatencyAnalyzer from "./pages/PriceLatencyAnalyzer";
+import GabagoolReverseEngineering from "./pages/GabagoolReverseEngineering";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -63,6 +64,7 @@ const App = () => (
           {/* V29ResponseDashboard is now the homepage */}
           <Route path="/v30" element={<V30Dashboard />} />
           <Route path="/price-latency" element={<PriceLatencyAnalyzer />} />
+          <Route path="/gabagool-reverse" element={<GabagoolReverseEngineering />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>
