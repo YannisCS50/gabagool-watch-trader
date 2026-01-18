@@ -82,7 +82,7 @@ const exitRetryCount = new Map<string, number>();
 const MAX_EXIT_RETRIES = 10;  // Max 10 retry attempts (10 * 250ms = 2.5s max)
 
 // Cooldowns - we track last exit time globally (not per asset since we allow concurrent positions)
-// No cooldown tracking needed
+let lastGlobalExitTime = 0;
 
 // Stats
 let signalCount = 0;
