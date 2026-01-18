@@ -20,12 +20,14 @@ import {
   Shield,
   FileCheck,
   Sparkles,
+  FlaskConical,
 } from 'lucide-react';
 
 const analysisItems = [
   { title: 'Trade Analysis', href: '/trade-analysis', icon: BarChart3, description: 'Analyze trade performance' },
   { title: 'Hedge Analysis', href: '/hedge-analysis', icon: Shield, description: 'Hedge effectiveness' },
   { title: 'Gabagool Analysis', href: '/gabagool-analysis', icon: Activity, description: 'Gabagool strategy stats' },
+  { title: 'Gabagool Backtest', href: '/gabagool-backtest', icon: FlaskConical, description: 'Backtest hedge strategy' },
 ];
 
 const monitoringItems = [
