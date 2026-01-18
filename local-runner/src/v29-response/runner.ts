@@ -394,8 +394,273 @@ function checkForSignal(asset: Asset, delta: number, direction: 'UP' | 'DOWN' | 
   
   const signal = result.signal!;
   
-  // Execute entry (async, non-blocking)
-  void executeEntry(asset, signal, market!);
+  // GABAGOOL HEDGE MODE: Buy BOTH sides simultaneously
+  if (config.hedge_mode_enabled) {
+    void executeHedgeEntry(asset, signal, market!);
+  } else {
+    // Original single-direction entry
+    void executeEntry(asset, signal, market!);
+  }
+}
+
+// ============================================
+// HEDGE ENTRY (GABAGOOL-STYLE)
+// Buy BOTH UP and DOWN simultaneously for guaranteed profit
+// ============================================
+
+// Track hedge positions by market (for balance checking)
+const hedgePositions = new Map<string, { up: number; down: number; totalCost: number }>();
+
+async function executeHedgeEntry(asset: Asset, signal: Signal, market: MarketInfo): Promise<void> {
+  // CRITICAL: Lock immediately to prevent concurrent entries during async operations
+  if (entryInFlight.has(asset)) {
+    signal.status = 'skipped';
+    signal.skip_reason = 'entry_already_in_flight';
+    return;
+  }
+  entryInFlight.add(asset);
+  
+  const state = priceState[asset];
+  const marketKey = market.slug;
+  
+  try {
+    // CRITICAL: Check market is currently active
+    const now = Date.now();
+    const msFromStart = now - market.startTime.getTime();
+    const msToExpiry = market.endTime.getTime() - now;
+    
+    if (msFromStart < 0 || msToExpiry <= 30_000) {
+      signal.status = 'skipped';
+      signal.skip_reason = msFromStart < 0 ? 'market_not_started' : 'too_close_to_expiry';
+      void saveSignalLog(signal, state);
+      return;
+    }
+    
+    // Get orderbook for both sides
+    const upAsk = state.upBestAsk;
+    const downAsk = state.downBestAsk;
+    
+    if (!upAsk || !downAsk) {
+      signal.status = 'skipped';
+      signal.skip_reason = 'no_orderbook_for_hedge';
+      void saveSignalLog(signal, state);
+      return;
+    }
+    
+    // CRITICAL: Check Combined Price Per Share (CPP)
+    const cpp = upAsk + downAsk;
+    if (cpp > config.hedge_max_cpp) {
+      logAsset(asset, `⚠️ HEDGE SKIP: CPP ${(cpp * 100).toFixed(1)}¢ > max ${(config.hedge_max_cpp * 100).toFixed(1)}¢`, {
+        upAsk,
+        downAsk,
+        cpp,
+        maxCpp: config.hedge_max_cpp,
+      });
+      signal.status = 'skipped';
+      signal.skip_reason = `cpp_too_high: ${(cpp * 100).toFixed(1)}¢`;
+      void saveSignalLog(signal, state);
+      return;
+    }
+    
+    // Check existing hedge position for this market
+    const existing = hedgePositions.get(marketKey) ?? { up: 0, down: 0, totalCost: 0 };
+    
+    // Check max cost per market
+    const sharesToBuy = config.hedge_shares_per_side;
+    const estimatedCost = (upAsk * sharesToBuy) + (downAsk * sharesToBuy);
+    
+    if (existing.totalCost + estimatedCost > config.hedge_max_cost_per_market) {
+      logAsset(asset, `⚠️ HEDGE SKIP: Max cost reached for market ($${existing.totalCost.toFixed(2)} + $${estimatedCost.toFixed(2)} > $${config.hedge_max_cost_per_market})`, {
+        existingCost: existing.totalCost,
+        estimatedCost,
+        maxCost: config.hedge_max_cost_per_market,
+      });
+      signal.status = 'skipped';
+      signal.skip_reason = 'hedge_max_cost_reached';
+      void saveSignalLog(signal, state);
+      return;
+    }
+    
+    // Check balance tolerance (don't buy more of one side if already imbalanced)
+    const maxImbalance = Math.max(existing.up, existing.down) * (1 + config.hedge_balance_tolerance);
+    const minSide = Math.min(existing.up, existing.down);
+    if (existing.up > 0 && existing.down > 0 && Math.max(existing.up, existing.down) > maxImbalance) {
+      // Already imbalanced - only buy the lagging side
+      const buyOnlyDown = existing.up > existing.down;
+      const buyOnlyUp = existing.down > existing.up;
+      
+      if (buyOnlyDown) {
+        logAsset(asset, `⚖️ HEDGE BALANCE: Only buying DOWN (UP=${existing.up}, DOWN=${existing.down})`, {});
+        // Buy only DOWN
+        await buyOneSide(asset, market, 'DOWN', market.downTokenId, downAsk, sharesToBuy, signal, state, existing, marketKey);
+        return;
+      } else if (buyOnlyUp) {
+        logAsset(asset, `⚖️ HEDGE BALANCE: Only buying UP (UP=${existing.up}, DOWN=${existing.down})`, {});
+        // Buy only UP
+        await buyOneSide(asset, market, 'UP', market.upTokenId, upAsk, sharesToBuy, signal, state, existing, marketKey);
+        return;
+      }
+    }
+    
+    // BUY BOTH SIDES SIMULTANEOUSLY (Gabagool pattern)
+    logAsset(asset, `🔄 HEDGE ENTRY: UP ${sharesToBuy}@${(upAsk * 100).toFixed(1)}¢ + DOWN ${sharesToBuy}@${(downAsk * 100).toFixed(1)}¢ = CPP ${(cpp * 100).toFixed(1)}¢`, {
+      signalId: signal.id,
+      upAsk,
+      downAsk,
+      cpp,
+      profitMargin: ((1 - cpp) * 100).toFixed(2) + '%',
+      sharesToBuy,
+    });
+    
+    signal.order_submit_ts = Date.now();
+    
+    // Execute both orders in parallel (or with small delay)
+    const upBuffer = config.entry_price_buffer_cents / 100;
+    const downBuffer = config.entry_price_buffer_cents / 100;
+    
+    const upEntryPrice = Math.round((upAsk + upBuffer) * 100) / 100;
+    const downEntryPrice = Math.round((downAsk + downBuffer) * 100) / 100;
+    
+    // Parallel buy (Gabagool does near-simultaneous entries)
+    const [upResult, downResult] = await Promise.all([
+      placeBuyOrder(market.upTokenId, upEntryPrice, sharesToBuy, asset, 'UP'),
+      config.hedge_entry_delay_ms > 0 
+        ? new Promise<ReturnType<typeof placeBuyOrder>>(resolve => 
+            setTimeout(() => placeBuyOrder(market.downTokenId, downEntryPrice, sharesToBuy, asset, 'DOWN').then(resolve), config.hedge_entry_delay_ms)
+          )
+        : placeBuyOrder(market.downTokenId, downEntryPrice, sharesToBuy, asset, 'DOWN'),
+    ]);
+    
+    // Track filled amounts
+    let upFilled = 0;
+    let downFilled = 0;
+    let upCost = 0;
+    let downCost = 0;
+    
+    if (upResult.success && upResult.filledSize && upResult.filledSize > 0) {
+      upFilled = upResult.filledSize;
+      upCost = upFilled * (upResult.avgPrice ?? upEntryPrice);
+      onBuyFill(market.upTokenId, upFilled, upResult.avgPrice ?? upEntryPrice, 'hedge_up');
+    }
+    
+    if (downResult.success && downResult.filledSize && downResult.filledSize > 0) {
+      downFilled = downResult.filledSize;
+      downCost = downFilled * (downResult.avgPrice ?? downEntryPrice);
+      onBuyFill(market.downTokenId, downFilled, downResult.avgPrice ?? downEntryPrice, 'hedge_down');
+    }
+    
+    // Update hedge position tracking
+    existing.up += upFilled;
+    existing.down += downFilled;
+    existing.totalCost += upCost + downCost;
+    hedgePositions.set(marketKey, existing);
+    
+    // Calculate actual CPP for filled orders
+    const actualCpp = (upFilled > 0 && downFilled > 0) 
+      ? (upCost / upFilled) + (downCost / downFilled)
+      : cpp;
+    
+    const totalFilled = upFilled + downFilled;
+    const totalCost = upCost + downCost;
+    
+    if (totalFilled > 0) {
+      signal.status = 'filled';
+      signal.entry_price = actualCpp;  // Store CPP as entry price
+      signal.shares = totalFilled;
+      signal.fill_ts = Date.now();
+      
+      tradeCount++;
+      
+      const profitPerShare = 1 - actualCpp;
+      const pairedShares = Math.min(upFilled, downFilled);
+      const estimatedProfit = profitPerShare * pairedShares;
+      
+      logAsset(asset, `✅ HEDGE FILLED: UP ${upFilled}@${((upCost/upFilled || 0) * 100).toFixed(1)}¢ + DOWN ${downFilled}@${((downCost/downFilled || 0) * 100).toFixed(1)}¢ = CPP ${(actualCpp * 100).toFixed(1)}¢ | profit $${estimatedProfit.toFixed(2)}`, {
+        signalId: signal.id,
+        upFilled,
+        downFilled,
+        upCost,
+        downCost,
+        actualCpp,
+        profitPerShare,
+        pairedShares,
+        estimatedProfit,
+        totalInMarket: existing,
+        latency: Date.now() - signal.signal_ts,
+      });
+      
+      // NO EXIT MONITORING for hedge mode - we hold until settlement
+      // The paired shares are guaranteed profit!
+      
+    } else {
+      signal.status = 'failed';
+      signal.skip_reason = `hedge_no_fills: up=${upResult.error || 'ok'}, down=${downResult.error || 'ok'}`;
+      logAsset(asset, `❌ HEDGE FAILED: UP=${upResult.error || 'no_fill'}, DOWN=${downResult.error || 'no_fill'}`, {});
+    }
+    
+    void saveSignalLog(signal, state);
+    
+  } catch (err) {
+    signal.status = 'failed';
+    signal.skip_reason = String(err);
+    void saveSignalLog(signal, state);
+    logError(`Hedge entry error for ${asset}`, err);
+  } finally {
+    entryInFlight.delete(asset);
+  }
+}
+
+// Helper: Buy just one side (for balance correction)
+async function buyOneSide(
+  asset: Asset, 
+  market: MarketInfo, 
+  direction: 'UP' | 'DOWN',
+  tokenId: string,
+  askPrice: number,
+  shares: number,
+  signal: Signal,
+  state: PriceState,
+  existing: { up: number; down: number; totalCost: number },
+  marketKey: string
+): Promise<void> {
+  const buffer = config.entry_price_buffer_cents / 100;
+  const entryPrice = Math.round((askPrice + buffer) * 100) / 100;
+  
+  logAsset(asset, `📤 HEDGE ${direction}: ${shares}@${(entryPrice * 100).toFixed(1)}¢`, {
+    signalId: signal.id,
+    direction,
+    entryPrice,
+  });
+  
+  const result = await placeBuyOrder(tokenId, entryPrice, shares, asset, direction);
+  
+  if (result.success && result.filledSize && result.filledSize > 0) {
+    const filled = result.filledSize;
+    const cost = filled * (result.avgPrice ?? entryPrice);
+    
+    onBuyFill(tokenId, filled, result.avgPrice ?? entryPrice, `hedge_${direction.toLowerCase()}`);
+    
+    if (direction === 'UP') {
+      existing.up += filled;
+    } else {
+      existing.down += filled;
+    }
+    existing.totalCost += cost;
+    hedgePositions.set(marketKey, existing);
+    
+    signal.status = 'filled';
+    signal.shares = filled;
+    signal.fill_ts = Date.now();
+    tradeCount++;
+    
+    logAsset(asset, `✅ HEDGE ${direction} FILLED: ${filled}@${((cost/filled) * 100).toFixed(1)}¢ | market totals: UP=${existing.up}, DOWN=${existing.down}`, {});
+  } else {
+    signal.status = 'failed';
+    signal.skip_reason = result.error ?? 'no_fill';
+  }
+  
+  void saveSignalLog(signal, state);
+  entryInFlight.delete(asset);
 }
 
 // ============================================
