@@ -55,35 +55,35 @@ export interface V29Config {
   enabled: boolean;
   
   // ============================================
-  // GABAGOOL HEDGE MODE (NEW)
-  // Based on Gabagool22 reverse engineering:
-  // - Buy BOTH UP and DOWN on every signal (instead of exit-based)
+  // GABAGOOL HEDGE MODE (REVISED - Sequential Entry)
+  // Based on deeper Gabagool22 reverse engineering:
+  // - Does NOT buy simultaneous - 87% have 1-30s gap between sides
+  // - Buys the CHEAP side first, waits for other side to become cheap
   // - Target CPP < $1 for guaranteed profit at settlement
   // - No selling - only buying and waiting for settlement
   // ============================================
   
-  // Enable hedge mode (Gabagool-style)
-  // When true: buy BOTH UP+DOWN on signal, ignore exit logic
-  // When false: buy single direction, use exit monitoring
+  // Enable hedge mode (Gabagool-style sequential)
   hedge_mode_enabled: boolean;
   
+  // Maximum price per share to buy first side (must be cheap)
+  hedge_max_entry_price: number;  // e.g., 0.50 - only buy if price <= 50¢
+  
   // Maximum combined price per share to accept (UP_ask + DOWN_ask)
-  // Gabagool targets ~0.98 (2% profit margin)
-  hedge_max_cpp: number;  // e.g., 0.98
+  hedge_max_cpp: number;  // e.g., 0.97
   
-  // Shares per side when hedge buying (will buy both UP and DOWN)
+  // Shares per side when hedge buying
   hedge_shares_per_side: number;  // e.g., 10
-  
-  // Balance tolerance - how much imbalance is allowed between UP and DOWN
-  // If UP shares > DOWN * (1 + tolerance), skip buying more UP
-  hedge_balance_tolerance: number;  // e.g., 0.15 = 15% imbalance max
   
   // Maximum total cost per market (both sides combined)
   hedge_max_cost_per_market: number;  // e.g., 50
   
-  // Entry delay between UP and DOWN orders (ms) - 0 for simultaneous
-  // Gabagool appears to enter near-simultaneously
-  hedge_entry_delay_ms: number;  // e.g., 0-100
+  // Minimum time to wait before buying second side (ms)
+  // Gabagool: 36% between 1-5s, 42% between 5-30s
+  hedge_min_delay_second_leg_ms: number;  // e.g., 1000
+  
+  // Maximum time to wait for second leg before giving up (ms)
+  hedge_max_wait_second_leg_ms: number;  // e.g., 60000 (1 minute)
   
   // ============================================
   // SIGNAL DEFINITION
@@ -187,14 +187,18 @@ export const DEFAULT_CONFIG: V29Config = {
   enabled: true,
   
   // ============================================
-  // GABAGOOL HEDGE MODE (based on reverse engineering)
+  // GABAGOOL HEDGE MODE (REVISED - Sequential Entry)
+  // Key insight: Gabagool does NOT buy simultaneous!
+  // 87% of trades have 1-30s gap between UP and DOWN
+  // Strategy: Buy cheap side first, wait for other side
   // ============================================
-  hedge_mode_enabled: true,           // 🔥 NEW: Enable Gabagool-style hedge mode
-  hedge_max_cpp: 0.98,                // Target CPP 98¢ (same as Gabagool ~98.7¢)
-  hedge_shares_per_side: 10,          // Buy 10 shares of EACH side
-  hedge_balance_tolerance: 0.15,      // Allow 15% imbalance
-  hedge_max_cost_per_market: 50,      // Max $50 per market (both sides)
-  hedge_entry_delay_ms: 0,            // Simultaneous entry (Gabagool pattern)
+  hedge_mode_enabled: true,
+  hedge_max_entry_price: 0.50,        // Only buy if price <= 50¢ (buy cheap side)
+  hedge_max_cpp: 0.97,                // Target CPP 97¢ (3% profit margin)
+  hedge_shares_per_side: 10,          // Buy 10 shares per side
+  hedge_max_cost_per_market: 50,      // Max $50 per market
+  hedge_min_delay_second_leg_ms: 2000, // Wait min 2s before second leg
+  hedge_max_wait_second_leg_ms: 45000, // Give up after 45s
   
   // SIGNAL DEFINITION
   signal_delta_usd: 6.0,
@@ -262,8 +266,8 @@ export const DEFAULT_CONFIG: V29Config = {
   cooldown_after_exit_ms: 0,
   max_exposure_usd: 100,         // INCREASED for hedge mode
   
-  // Assets - BTC FIRST for priority (Gabagool: 70% BTC, 30% ETH)
-  assets: ['BTC', 'ETH'],        // REMOVED SOL/XRP for focus (Gabagool doesn't trade them)
+  // Assets - BTC ONLY for focus (user request)
+  assets: ['BTC'],  // Focus on BTC only - highest volume, best data
   
   // INTERVALS
   binance_buffer_ms: 0,

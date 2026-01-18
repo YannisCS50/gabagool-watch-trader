@@ -404,12 +404,43 @@ function checkForSignal(asset: Asset, delta: number, direction: 'UP' | 'DOWN' | 
 }
 
 // ============================================
-// HEDGE ENTRY (GABAGOOL-STYLE)
-// Buy BOTH UP and DOWN simultaneously for guaranteed profit
+// HEDGE ENTRY (GABAGOOL-STYLE - SEQUENTIAL)
+// Key insight from analysis: Gabagool does NOT buy simultaneously!
+// - 87% of trades have 1-30 second gap between UP and DOWN
+// - Buys the CHEAP side first, waits for other side to become cheap
+// - 50/50 split between UP_FIRST vs DOWN_FIRST
 // ============================================
 
-// Track hedge positions by market (for balance checking)
-const hedgePositions = new Map<string, { up: number; down: number; totalCost: number }>();
+// Track hedge positions by market (for completion tracking)
+interface HedgePosition {
+  firstSide: 'UP' | 'DOWN';
+  firstShares: number;
+  firstPrice: number;
+  firstTs: number;
+  secondSide?: 'UP' | 'DOWN';
+  secondShares?: number;
+  secondPrice?: number;
+  secondTs?: number;
+  totalCost: number;
+  completed: boolean;
+}
+const hedgePositions = new Map<string, HedgePosition>();
+
+// Track pending second legs (waiting for cheap price on other side)
+interface PendingSecondLeg {
+  marketKey: string;
+  asset: Asset;
+  market: MarketInfo;
+  wantSide: 'UP' | 'DOWN';
+  wantTokenId: string;
+  firstTs: number;
+  maxWaitUntil: number;
+  signalId: string;
+}
+const pendingSecondLegs = new Map<string, PendingSecondLeg>(); // keyed by marketKey
+
+// Interval for checking pending second legs
+let secondLegCheckInterval: NodeJS.Timeout | null = null;
 
 async function executeHedgeEntry(asset: Asset, signal: Signal, market: MarketInfo): Promise<void> {
   // CRITICAL: Lock immediately to prevent concurrent entries during async operations
@@ -436,6 +467,27 @@ async function executeHedgeEntry(asset: Asset, signal: Signal, market: MarketInf
       return;
     }
     
+    // Check if we already have a position in this market
+    const existing = hedgePositions.get(marketKey);
+    if (existing?.completed) {
+      // Already have both legs - check if we can add more
+      if (existing.totalCost >= config.hedge_max_cost_per_market) {
+        signal.status = 'skipped';
+        signal.skip_reason = 'hedge_max_cost_reached';
+        void saveSignalLog(signal, state);
+        return;
+      }
+    }
+    
+    // Check if we have a pending second leg for this market
+    if (pendingSecondLegs.has(marketKey)) {
+      // Already waiting for second leg - don't start new entry
+      signal.status = 'skipped';
+      signal.skip_reason = 'waiting_for_second_leg';
+      void saveSignalLog(signal, state);
+      return;
+    }
+    
     // Get orderbook for both sides
     const upAsk = state.upBestAsk;
     const downAsk = state.downBestAsk;
@@ -447,158 +499,135 @@ async function executeHedgeEntry(asset: Asset, signal: Signal, market: MarketInf
       return;
     }
     
-    // CRITICAL: Check Combined Price Per Share (CPP)
-    const cpp = upAsk + downAsk;
-    if (cpp > config.hedge_max_cpp) {
-      logAsset(asset, `⚠️ HEDGE SKIP: CPP ${(cpp * 100).toFixed(1)}¢ > max ${(config.hedge_max_cpp * 100).toFixed(1)}¢`, {
-        upAsk,
-        downAsk,
-        cpp,
-        maxCpp: config.hedge_max_cpp,
-      });
+    // GABAGOOL KEY INSIGHT: Buy the CHEAP side first!
+    // Only buy if price <= hedge_max_entry_price (50¢)
+    const maxEntryPrice = config.hedge_max_entry_price;
+    const upIsCheap = upAsk <= maxEntryPrice;
+    const downIsCheap = downAsk <= maxEntryPrice;
+    
+    if (!upIsCheap && !downIsCheap) {
+      // Neither side is cheap enough
       signal.status = 'skipped';
-      signal.skip_reason = `cpp_too_high: ${(cpp * 100).toFixed(1)}¢`;
+      signal.skip_reason = `no_cheap_side: UP=${(upAsk * 100).toFixed(0)}¢, DOWN=${(downAsk * 100).toFixed(0)}¢ > ${(maxEntryPrice * 100).toFixed(0)}¢`;
       void saveSignalLog(signal, state);
       return;
     }
     
-    // Check existing hedge position for this market
-    const existing = hedgePositions.get(marketKey) ?? { up: 0, down: 0, totalCost: 0 };
+    // Determine which side to buy first
+    // If both cheap, buy the cheaper one (like Gabagool's 50/50 pattern suggests opportunistic buying)
+    let buySide: 'UP' | 'DOWN';
+    let buyPrice: number;
+    let buyTokenId: string;
+    let waitForSide: 'UP' | 'DOWN';
+    let waitForTokenId: string;
     
-    // Check max cost per market
-    const sharesToBuy = config.hedge_shares_per_side;
-    const estimatedCost = (upAsk * sharesToBuy) + (downAsk * sharesToBuy);
-    
-    if (existing.totalCost + estimatedCost > config.hedge_max_cost_per_market) {
-      logAsset(asset, `⚠️ HEDGE SKIP: Max cost reached for market ($${existing.totalCost.toFixed(2)} + $${estimatedCost.toFixed(2)} > $${config.hedge_max_cost_per_market})`, {
-        existingCost: existing.totalCost,
-        estimatedCost,
-        maxCost: config.hedge_max_cost_per_market,
-      });
-      signal.status = 'skipped';
-      signal.skip_reason = 'hedge_max_cost_reached';
-      void saveSignalLog(signal, state);
-      return;
-    }
-    
-    // Check balance tolerance (don't buy more of one side if already imbalanced)
-    const maxImbalance = Math.max(existing.up, existing.down) * (1 + config.hedge_balance_tolerance);
-    const minSide = Math.min(existing.up, existing.down);
-    if (existing.up > 0 && existing.down > 0 && Math.max(existing.up, existing.down) > maxImbalance) {
-      // Already imbalanced - only buy the lagging side
-      const buyOnlyDown = existing.up > existing.down;
-      const buyOnlyUp = existing.down > existing.up;
-      
-      if (buyOnlyDown) {
-        logAsset(asset, `⚖️ HEDGE BALANCE: Only buying DOWN (UP=${existing.up}, DOWN=${existing.down})`, {});
-        // Buy only DOWN
-        await buyOneSide(asset, market, 'DOWN', market.downTokenId, downAsk, sharesToBuy, signal, state, existing, marketKey);
-        return;
-      } else if (buyOnlyUp) {
-        logAsset(asset, `⚖️ HEDGE BALANCE: Only buying UP (UP=${existing.up}, DOWN=${existing.down})`, {});
-        // Buy only UP
-        await buyOneSide(asset, market, 'UP', market.upTokenId, upAsk, sharesToBuy, signal, state, existing, marketKey);
-        return;
+    if (upIsCheap && downIsCheap) {
+      // Both cheap - buy cheaper one first
+      if (upAsk <= downAsk) {
+        buySide = 'UP';
+        buyPrice = upAsk;
+        buyTokenId = market.upTokenId;
+        waitForSide = 'DOWN';
+        waitForTokenId = market.downTokenId;
+      } else {
+        buySide = 'DOWN';
+        buyPrice = downAsk;
+        buyTokenId = market.downTokenId;
+        waitForSide = 'UP';
+        waitForTokenId = market.upTokenId;
       }
+    } else if (upIsCheap) {
+      buySide = 'UP';
+      buyPrice = upAsk;
+      buyTokenId = market.upTokenId;
+      waitForSide = 'DOWN';
+      waitForTokenId = market.downTokenId;
+    } else {
+      buySide = 'DOWN';
+      buyPrice = downAsk;
+      buyTokenId = market.downTokenId;
+      waitForSide = 'UP';
+      waitForTokenId = market.upTokenId;
     }
     
-    // BUY BOTH SIDES SIMULTANEOUSLY (Gabagool pattern)
-    logAsset(asset, `🔄 HEDGE ENTRY: UP ${sharesToBuy}@${(upAsk * 100).toFixed(1)}¢ + DOWN ${sharesToBuy}@${(downAsk * 100).toFixed(1)}¢ = CPP ${(cpp * 100).toFixed(1)}¢`, {
+    // Check CPP projection - would the other side at current price be good enough?
+    const otherAsk = buySide === 'UP' ? downAsk : upAsk;
+    const projectedCpp = buyPrice + otherAsk;
+    
+    logAsset(asset, `🎯 HEDGE ${buySide} FIRST: ${(buyPrice * 100).toFixed(1)}¢ | waiting for ${waitForSide} | projected CPP: ${(projectedCpp * 100).toFixed(1)}¢`, {
       signalId: signal.id,
-      upAsk,
-      downAsk,
-      cpp,
-      profitMargin: ((1 - cpp) * 100).toFixed(2) + '%',
-      sharesToBuy,
+      buySide,
+      buyPrice,
+      waitForSide,
+      otherAsk,
+      projectedCpp,
+      maxCpp: config.hedge_max_cpp,
     });
+    
+    // Execute first leg
+    const sharesToBuy = config.hedge_shares_per_side;
+    const buffer = config.entry_price_buffer_cents / 100;
+    const entryPrice = Math.round((buyPrice + buffer) * 100) / 100;
     
     signal.order_submit_ts = Date.now();
     
-    // Execute both orders in parallel (or with small delay)
-    const upBuffer = config.entry_price_buffer_cents / 100;
-    const downBuffer = config.entry_price_buffer_cents / 100;
+    const result = await placeBuyOrder(buyTokenId, entryPrice, sharesToBuy, asset, buySide);
     
-    const upEntryPrice = Math.round((upAsk + upBuffer) * 100) / 100;
-    const downEntryPrice = Math.round((downAsk + downBuffer) * 100) / 100;
-    
-    // Parallel buy (Gabagool does near-simultaneous entries)
-    const [upResult, downResult] = await Promise.all([
-      placeBuyOrder(market.upTokenId, upEntryPrice, sharesToBuy, asset, 'UP'),
-      config.hedge_entry_delay_ms > 0 
-        ? new Promise<ReturnType<typeof placeBuyOrder>>(resolve => 
-            setTimeout(() => placeBuyOrder(market.downTokenId, downEntryPrice, sharesToBuy, asset, 'DOWN').then(resolve), config.hedge_entry_delay_ms)
-          )
-        : placeBuyOrder(market.downTokenId, downEntryPrice, sharesToBuy, asset, 'DOWN'),
-    ]);
-    
-    // Track filled amounts
-    let upFilled = 0;
-    let downFilled = 0;
-    let upCost = 0;
-    let downCost = 0;
-    
-    if (upResult.success && upResult.filledSize && upResult.filledSize > 0) {
-      upFilled = upResult.filledSize;
-      upCost = upFilled * (upResult.avgPrice ?? upEntryPrice);
-      onBuyFill(market.upTokenId, upFilled, upResult.avgPrice ?? upEntryPrice, 'hedge_up');
-    }
-    
-    if (downResult.success && downResult.filledSize && downResult.filledSize > 0) {
-      downFilled = downResult.filledSize;
-      downCost = downFilled * (downResult.avgPrice ?? downEntryPrice);
-      onBuyFill(market.downTokenId, downFilled, downResult.avgPrice ?? downEntryPrice, 'hedge_down');
-    }
-    
-    // Update hedge position tracking
-    existing.up += upFilled;
-    existing.down += downFilled;
-    existing.totalCost += upCost + downCost;
-    hedgePositions.set(marketKey, existing);
-    
-    // Calculate actual CPP for filled orders
-    const actualCpp = (upFilled > 0 && downFilled > 0) 
-      ? (upCost / upFilled) + (downCost / downFilled)
-      : cpp;
-    
-    const totalFilled = upFilled + downFilled;
-    const totalCost = upCost + downCost;
-    
-    if (totalFilled > 0) {
-      signal.status = 'filled';
-      signal.entry_price = actualCpp;  // Store CPP as entry price
-      signal.shares = totalFilled;
-      signal.fill_ts = Date.now();
-      
-      tradeCount++;
-      
-      const profitPerShare = 1 - actualCpp;
-      const pairedShares = Math.min(upFilled, downFilled);
-      const estimatedProfit = profitPerShare * pairedShares;
-      
-      logAsset(asset, `✅ HEDGE FILLED: UP ${upFilled}@${((upCost/upFilled || 0) * 100).toFixed(1)}¢ + DOWN ${downFilled}@${((downCost/downFilled || 0) * 100).toFixed(1)}¢ = CPP ${(actualCpp * 100).toFixed(1)}¢ | profit $${estimatedProfit.toFixed(2)}`, {
-        signalId: signal.id,
-        upFilled,
-        downFilled,
-        upCost,
-        downCost,
-        actualCpp,
-        profitPerShare,
-        pairedShares,
-        estimatedProfit,
-        totalInMarket: existing,
-        latency: Date.now() - signal.signal_ts,
-      });
-      
-      // NO EXIT MONITORING for hedge mode - we hold until settlement
-      // The paired shares are guaranteed profit!
-      
-    } else {
+    if (!result.success || !result.filledSize || result.filledSize <= 0) {
       signal.status = 'failed';
-      signal.skip_reason = `hedge_no_fills: up=${upResult.error || 'ok'}, down=${downResult.error || 'ok'}`;
-      logAsset(asset, `❌ HEDGE FAILED: UP=${upResult.error || 'no_fill'}, DOWN=${downResult.error || 'no_fill'}`, {});
+      signal.skip_reason = result.error ?? 'first_leg_no_fill';
+      void saveSignalLog(signal, state);
+      return;
     }
+    
+    const filled = result.filledSize;
+    const avgPrice = result.avgPrice ?? entryPrice;
+    const cost = filled * avgPrice;
+    
+    onBuyFill(buyTokenId, filled, avgPrice, `hedge_${buySide.toLowerCase()}_first`);
+    
+    // Record first leg
+    const hedgePos: HedgePosition = {
+      firstSide: buySide,
+      firstShares: filled,
+      firstPrice: avgPrice,
+      firstTs: Date.now(),
+      totalCost: cost,
+      completed: false,
+    };
+    hedgePositions.set(marketKey, hedgePos);
+    
+    signal.status = 'filled';
+    signal.entry_price = avgPrice;
+    signal.shares = filled;
+    signal.fill_ts = Date.now();
+    tradeCount++;
+    
+    logAsset(asset, `✅ HEDGE ${buySide} FILLED: ${filled}@${(avgPrice * 100).toFixed(1)}¢ | now waiting for ${waitForSide}`, {
+      signalId: signal.id,
+      filled,
+      avgPrice,
+      cost,
+      waitForSide,
+    });
     
     void saveSignalLog(signal, state);
+    
+    // Set up pending second leg
+    const pending: PendingSecondLeg = {
+      marketKey,
+      asset,
+      market,
+      wantSide: waitForSide,
+      wantTokenId: waitForTokenId,
+      firstTs: Date.now(),
+      maxWaitUntil: Date.now() + config.hedge_max_wait_second_leg_ms,
+      signalId: signal.id,
+    };
+    pendingSecondLegs.set(marketKey, pending);
+    
+    // Start the second leg checker if not running
+    startSecondLegChecker();
     
   } catch (err) {
     signal.status = 'failed';
@@ -610,57 +639,147 @@ async function executeHedgeEntry(asset: Asset, signal: Signal, market: MarketInf
   }
 }
 
-// Helper: Buy just one side (for balance correction)
-async function buyOneSide(
-  asset: Asset, 
-  market: MarketInfo, 
-  direction: 'UP' | 'DOWN',
-  tokenId: string,
-  askPrice: number,
-  shares: number,
-  signal: Signal,
-  state: PriceState,
-  existing: { up: number; down: number; totalCost: number },
-  marketKey: string
-): Promise<void> {
-  const buffer = config.entry_price_buffer_cents / 100;
-  const entryPrice = Math.round((askPrice + buffer) * 100) / 100;
+// Periodically check if second legs can be filled
+function startSecondLegChecker(): void {
+  if (secondLegCheckInterval) return; // Already running
   
-  logAsset(asset, `📤 HEDGE ${direction}: ${shares}@${(entryPrice * 100).toFixed(1)}¢`, {
-    signalId: signal.id,
-    direction,
-    entryPrice,
-  });
+  secondLegCheckInterval = setInterval(() => {
+    void checkPendingSecondLegs();
+  }, 500); // Check every 500ms
+}
+
+function stopSecondLegChecker(): void {
+  if (secondLegCheckInterval) {
+    clearInterval(secondLegCheckInterval);
+    secondLegCheckInterval = null;
+  }
+}
+
+async function checkPendingSecondLegs(): Promise<void> {
+  const now = Date.now();
   
-  const result = await placeBuyOrder(tokenId, entryPrice, shares, asset, direction);
-  
-  if (result.success && result.filledSize && result.filledSize > 0) {
-    const filled = result.filledSize;
-    const cost = filled * (result.avgPrice ?? entryPrice);
-    
-    onBuyFill(tokenId, filled, result.avgPrice ?? entryPrice, `hedge_${direction.toLowerCase()}`);
-    
-    if (direction === 'UP') {
-      existing.up += filled;
-    } else {
-      existing.down += filled;
+  for (const [marketKey, pending] of pendingSecondLegs) {
+    const hedgePos = hedgePositions.get(marketKey);
+    if (!hedgePos || hedgePos.completed) {
+      pendingSecondLegs.delete(marketKey);
+      continue;
     }
-    existing.totalCost += cost;
-    hedgePositions.set(marketKey, existing);
     
-    signal.status = 'filled';
-    signal.shares = filled;
-    signal.fill_ts = Date.now();
-    tradeCount++;
+    // Check if market expired or timeout
+    const msToExpiry = pending.market.endTime.getTime() - now;
+    if (msToExpiry <= 30_000 || now > pending.maxWaitUntil) {
+      logAsset(pending.asset, `⏰ HEDGE TIMEOUT: ${pending.wantSide} not filled in time`, {
+        marketKey,
+        firstSide: hedgePos.firstSide,
+        firstShares: hedgePos.firstShares,
+        waitedMs: now - pending.firstTs,
+      });
+      pendingSecondLegs.delete(marketKey);
+      continue;
+    }
     
-    logAsset(asset, `✅ HEDGE ${direction} FILLED: ${filled}@${((cost/filled) * 100).toFixed(1)}¢ | market totals: UP=${existing.up}, DOWN=${existing.down}`, {});
-  } else {
-    signal.status = 'failed';
-    signal.skip_reason = result.error ?? 'no_fill';
+    // Check min delay (Gabagool waits 1-30s typically)
+    const waitedMs = now - pending.firstTs;
+    if (waitedMs < config.hedge_min_delay_second_leg_ms) {
+      continue; // Keep waiting
+    }
+    
+    // Get current price for the wanted side
+    const state = priceState[pending.asset];
+    const wantAsk = pending.wantSide === 'UP' ? state.upBestAsk : state.downBestAsk;
+    
+    if (!wantAsk) continue;
+    
+    // Check if price is cheap enough
+    const maxEntryPrice = config.hedge_max_entry_price;
+    if (wantAsk > maxEntryPrice) {
+      // Not cheap enough yet, keep waiting
+      continue;
+    }
+    
+    // Check CPP
+    const cpp = hedgePos.firstPrice + wantAsk;
+    if (cpp > config.hedge_max_cpp) {
+      // CPP too high, keep waiting for better price
+      continue;
+    }
+    
+    // Good to buy second leg!
+    logAsset(pending.asset, `🎯 HEDGE ${pending.wantSide} SECOND LEG: ${(wantAsk * 100).toFixed(1)}¢ | CPP: ${(cpp * 100).toFixed(1)}¢ | waited ${(waitedMs / 1000).toFixed(1)}s`, {
+      marketKey,
+      wantSide: pending.wantSide,
+      wantAsk,
+      cpp,
+      waitedMs,
+    });
+    
+    // Remove from pending first (to avoid re-entry)
+    pendingSecondLegs.delete(marketKey);
+    
+    // Execute second leg
+    const sharesToBuy = hedgePos.firstShares; // Match first leg shares
+    const buffer = config.entry_price_buffer_cents / 100;
+    const entryPrice = Math.round((wantAsk + buffer) * 100) / 100;
+    
+    try {
+      const result = await placeBuyOrder(pending.wantTokenId, entryPrice, sharesToBuy, pending.asset, pending.wantSide);
+      
+      if (result.success && result.filledSize && result.filledSize > 0) {
+        const filled = result.filledSize;
+        const avgPrice = result.avgPrice ?? entryPrice;
+        const cost = filled * avgPrice;
+        
+        onBuyFill(pending.wantTokenId, filled, avgPrice, `hedge_${pending.wantSide.toLowerCase()}_second`);
+        
+        // Update hedge position
+        hedgePos.secondSide = pending.wantSide;
+        hedgePos.secondShares = filled;
+        hedgePos.secondPrice = avgPrice;
+        hedgePos.secondTs = Date.now();
+        hedgePos.totalCost += cost;
+        hedgePos.completed = true;
+        hedgePositions.set(marketKey, hedgePos);
+        
+        const actualCpp = hedgePos.firstPrice + avgPrice;
+        const pairedShares = Math.min(hedgePos.firstShares, filled);
+        const profitPerShare = 1 - actualCpp;
+        const estimatedProfit = profitPerShare * pairedShares;
+        
+        tradeCount++;
+        
+        logAsset(pending.asset, `✅ HEDGE COMPLETE: ${hedgePos.firstSide} ${hedgePos.firstShares}@${(hedgePos.firstPrice * 100).toFixed(1)}¢ + ${pending.wantSide} ${filled}@${(avgPrice * 100).toFixed(1)}¢ = CPP ${(actualCpp * 100).toFixed(1)}¢ | profit $${estimatedProfit.toFixed(2)}`, {
+          marketKey,
+          firstSide: hedgePos.firstSide,
+          firstShares: hedgePos.firstShares,
+          firstPrice: hedgePos.firstPrice,
+          secondSide: pending.wantSide,
+          secondShares: filled,
+          secondPrice: avgPrice,
+          actualCpp,
+          pairedShares,
+          profitPerShare,
+          estimatedProfit,
+          totalWaitMs: now - hedgePos.firstTs,
+        });
+      } else {
+        logAsset(pending.asset, `❌ HEDGE SECOND LEG FAILED: ${result.error ?? 'no_fill'}`, {
+          marketKey,
+          wantSide: pending.wantSide,
+        });
+        // Put back in pending to retry
+        pendingSecondLegs.set(marketKey, pending);
+      }
+    } catch (err) {
+      logError(`Hedge second leg error for ${pending.asset}`, err);
+      // Put back in pending to retry
+      pendingSecondLegs.set(marketKey, pending);
+    }
   }
   
-  void saveSignalLog(signal, state);
-  entryInFlight.delete(asset);
+  // Stop checker if no more pending
+  if (pendingSecondLegs.size === 0) {
+    stopSecondLegChecker();
+  }
 }
 
 // ============================================
@@ -1775,9 +1894,15 @@ async function main(): Promise<void> {
   }
   
   log('🟢 V29 Response-Based Strategy RUNNING');
-  log(`   Signal: Δ≥$${config.signal_delta_usd} in ${config.signal_window_ms}ms`);
-  log(`   UP: target ${config.up.target_profit_cents_min}-${config.up.target_profit_cents_max}¢, max ${config.up.max_hold_seconds}s`);
-  log(`   DOWN: target ${config.down.target_profit_cents_min}-${config.down.target_profit_cents_max}¢, max ${config.down.max_hold_seconds}s`);
+  if (config.hedge_mode_enabled) {
+    log(`   HEDGE MODE: Buy cheap side first (≤${(config.hedge_max_entry_price * 100).toFixed(0)}¢), wait for second leg`);
+    log(`   Target CPP: ≤${(config.hedge_max_cpp * 100).toFixed(0)}¢ | Wait: ${config.hedge_min_delay_second_leg_ms / 1000}s-${config.hedge_max_wait_second_leg_ms / 1000}s`);
+    log(`   Assets: ${config.assets.join(', ')}`);
+  } else {
+    log(`   Signal: Δ≥$${config.signal_delta_usd} in ${config.signal_window_ms}ms`);
+    log(`   UP: target ${config.up.target_profit_cents_min}-${config.up.target_profit_cents_max}¢, max ${config.up.max_hold_seconds}s`);
+    log(`   DOWN: target ${config.down.target_profit_cents_min}-${config.down.target_profit_cents_max}¢, max ${config.down.max_hold_seconds}s`);
+  }
   
   // Send initial heartbeat
   await sendStatusHeartbeat();
@@ -1793,6 +1918,7 @@ async function main(): Promise<void> {
     if (configRefreshInterval) clearInterval(configRefreshInterval);
     if (positionSyncInterval) clearInterval(positionSyncInterval);
     if (heartbeatInterval) clearInterval(heartbeatInterval);
+    stopSecondLegChecker(); // Stop hedge second leg checker
     
     // Clear position monitors
     for (const pos of activePositions.values()) {
