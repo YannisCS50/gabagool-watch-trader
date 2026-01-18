@@ -34,6 +34,16 @@ import { acquireLease, releaseLease, isRunnerActive } from '../v29/lease.js';
 import { setRunnerIdentity } from '../order-guard.js';
 import { fetchPositions } from '../positions-sync.js';
 import { startUserChannel, stopUserChannel, isUserChannelConnected, type TradeEvent, type OrderEvent } from '../v29/user-ws.js';
+import { 
+  registerToken, 
+  onBuyFill, 
+  onSellFill, 
+  syncFromApi, 
+  getAvailableShares, 
+  canSellShares,
+  logCacheState,
+  clearCache as clearSharesCache 
+} from './shares-cache.js';
 
 // ============================================
 // STATE
@@ -207,6 +217,10 @@ async function fetchMarkets(): Promise<void> {
           
           // Update pre-signed cache
           void updateMarketCache(asset, m.upTokenId, m.downTokenId);
+          
+          // Register tokens in shares cache for realtime tracking
+          registerToken(asset, 'UP', m.upTokenId);
+          registerToken(asset, 'DOWN', m.downTokenId);
           
           // Fetch initial orderbook
           void fetchOrderbook(asset, marketInfo);
@@ -503,6 +517,9 @@ async function executeEntry(asset: Asset, signal: Signal, market: MarketInfo): P
     activePositions.set(positionKey, position);
     tradeCount++;
     
+    // CRITICAL: Update shares cache with entry fill
+    onBuyFill(tokenId, filledSize, avgPrice, 'entry_fill');
+    
     signal.status = 'filled';
     signal.entry_price = avgPrice;
     signal.shares = filledSize;
@@ -685,19 +702,74 @@ async function executeExit(
     // Sell at market (use bid)
     const sellPrice = Math.floor(bestBid * 100) / 100;
 
-    logAsset(asset, `📤 EXIT: ${position.direction} ${position.shares} @ ${(sellPrice * 100).toFixed(1)}¢ | type=${exitType}`, {
+    // CRITICAL: Check shares cache for actual available shares (non-blocking)
+    // This prevents "not enough balance" errors by using the realtime WebSocket-tracked amount
+    const { canSell, available, shortfall } = canSellShares(position.tokenId, position.shares);
+    
+    // Use the MINIMUM of position.shares and available (from WebSocket cache)
+    // This ensures we never try to sell more than we actually have
+    const sharesToSell = Math.min(position.shares, available);
+    
+    if (available < 0.5) {
+      // No shares available according to realtime cache - position may already be sold
+      logAsset(asset, `⚠️ EXIT SKIPPED: No shares in cache (available=${available.toFixed(2)}, position=${position.shares.toFixed(2)})`, {
+        positionKey,
+        positionId: position.id,
+        cachedShares: available,
+        positionShares: position.shares,
+      });
+      
+      signal.exit_type = 'error';
+      signal.exit_reason = `no_shares_in_cache: available=${available.toFixed(2)}`;
+      signal.exit_ts = Date.now();
+      void saveSignalLog(signal, state);
+      
+      // Clean up position - shares are already gone
+      activePositions.delete(positionKey);
+      exitRetryCount.delete(positionKey);
+      lastGlobalExitTime = Date.now();
+      return;
+    }
+    
+    // Validate minimum order value with adjusted shares
+    const MIN_ORDER_VALUE_USD = 1.0;
+    const orderValue = sharesToSell * sellPrice;
+    if (orderValue < MIN_ORDER_VALUE_USD) {
+      logAsset(asset, `⚠️ EXIT SKIPPED: Order value $${orderValue.toFixed(2)} < min $${MIN_ORDER_VALUE_USD}`, {
+        positionKey,
+        sharesToSell,
+        sellPrice,
+        orderValue,
+      });
+      
+      signal.exit_type = 'error';
+      signal.exit_reason = `order_value_too_low: $${orderValue.toFixed(2)}`;
+      signal.exit_ts = Date.now();
+      void saveSignalLog(signal, state);
+      
+      // Clean up - dust position not worth selling
+      activePositions.delete(positionKey);
+      exitRetryCount.delete(positionKey);
+      lastGlobalExitTime = Date.now();
+      return;
+    }
+
+    logAsset(asset, `📤 EXIT: ${position.direction} ${sharesToSell.toFixed(2)} @ ${(sellPrice * 100).toFixed(1)}¢ | type=${exitType}`, {
       positionKey,
       positionId: position.id,
       exitType,
       exitReason,
       sellPrice,
+      sharesToSell,
+      positionShares: position.shares,
+      cachedShares: available,
       unrealizedPnl,
     });
 
     const result = await placeSellOrder(
       position.tokenId,
       sellPrice,
-      position.shares,
+      sharesToSell,  // Use adjusted shares from cache
       asset,
       position.direction
     );
@@ -1085,6 +1157,9 @@ function handleUserChannelTrade(event: TradeEvent): void {
   }
   
   if (side === 'BUY') {
+    // CRITICAL: Update shares cache FIRST (realtime source of truth)
+    onBuyFill(tokenId, size, price, 'ws_buy');
+    
     // BUY fill - update or create position
     if (position) {
       // Update existing position with additional shares
@@ -1149,6 +1224,9 @@ function handleUserChannelTrade(event: TradeEvent): void {
       startExitMonitor(newPosKey, newPosition);
     }
   } else if (side === 'SELL') {
+    // CRITICAL: Update shares cache FIRST (realtime source of truth)
+    onSellFill(tokenId, size, 'ws_sell');
+    
     // SELL fill - update position
     if (position) {
       const oldShares = position.shares;
@@ -1254,6 +1332,12 @@ async function syncLivePositions(): Promise<void> {
       
       if (!matchedAsset || !matchedMarket || !matchedDirection) continue;
       
+      // Get the tokenId for this position
+      const tokenId = matchedDirection === 'UP' ? matchedMarket.upTokenId : matchedMarket.downTokenId;
+      
+      // CRITICAL: Sync shares cache from API data
+      syncFromApi(tokenId, pos.size, pos.avgPrice);
+      
       // Skip if already tracking this asset
       if (activePositions.has(matchedAsset)) {
         // Update shares if different
@@ -1266,8 +1350,6 @@ async function syncLivePositions(): Promise<void> {
       }
       
       // New position found - create tracker
-      const tokenId = matchedDirection === 'UP' ? matchedMarket.upTokenId : matchedMarket.downTokenId;
-      
       const fakeSignal: Signal = {
         id: `sync-${Date.now()}-${matchedAsset}`,
         asset: matchedAsset,
@@ -1386,6 +1468,9 @@ async function main(): Promise<void> {
   // CRITICAL: Sync live positions from Polymarket BEFORE starting
   log('📥 Syncing live positions from Polymarket...');
   await syncLivePositions();
+  
+  // Log shares cache state after sync
+  logCacheState();
   
   isRunning = true;
   
