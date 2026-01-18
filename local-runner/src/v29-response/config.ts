@@ -55,6 +55,37 @@ export interface V29Config {
   enabled: boolean;
   
   // ============================================
+  // GABAGOOL HEDGE MODE (NEW)
+  // Based on Gabagool22 reverse engineering:
+  // - Buy BOTH UP and DOWN on every signal (instead of exit-based)
+  // - Target CPP < $1 for guaranteed profit at settlement
+  // - No selling - only buying and waiting for settlement
+  // ============================================
+  
+  // Enable hedge mode (Gabagool-style)
+  // When true: buy BOTH UP+DOWN on signal, ignore exit logic
+  // When false: buy single direction, use exit monitoring
+  hedge_mode_enabled: boolean;
+  
+  // Maximum combined price per share to accept (UP_ask + DOWN_ask)
+  // Gabagool targets ~0.98 (2% profit margin)
+  hedge_max_cpp: number;  // e.g., 0.98
+  
+  // Shares per side when hedge buying (will buy both UP and DOWN)
+  hedge_shares_per_side: number;  // e.g., 10
+  
+  // Balance tolerance - how much imbalance is allowed between UP and DOWN
+  // If UP shares > DOWN * (1 + tolerance), skip buying more UP
+  hedge_balance_tolerance: number;  // e.g., 0.15 = 15% imbalance max
+  
+  // Maximum total cost per market (both sides combined)
+  hedge_max_cost_per_market: number;  // e.g., 50
+  
+  // Entry delay between UP and DOWN orders (ms) - 0 for simultaneous
+  // Gabagool appears to enter near-simultaneously
+  hedge_entry_delay_ms: number;  // e.g., 0-100
+  
+  // ============================================
   // SIGNAL DEFINITION
   // ============================================
   
@@ -90,7 +121,7 @@ export interface V29Config {
   min_share_price: number;  // e.g., 0.15
   max_share_price: number;  // e.g., 0.85
   
-  // Shares per trade
+  // Shares per trade (for non-hedge mode)
   shares_per_trade: number;  // e.g., 5
   
   // ============================================
@@ -104,7 +135,7 @@ export interface V29Config {
   max_entry_slippage_cents: number;  // e.g., 1.0
   
   // ============================================
-  // EXIT LOGIC (RESPONSE-BASED)
+  // EXIT LOGIC (RESPONSE-BASED) - only used when hedge_mode_enabled=false
   // ============================================
   
   // Monitor interval for exit conditions (ms)
@@ -137,7 +168,7 @@ export interface V29Config {
   // Max exposure per asset (USD)
   max_exposure_usd: number;
   
-  // Assets to trade
+  // Assets to trade - ORDER MATTERS for priority (BTC first = more focus)
   assets: Asset[];
   
   // ============================================
@@ -155,6 +186,16 @@ export interface V29Config {
 export const DEFAULT_CONFIG: V29Config = {
   enabled: true,
   
+  // ============================================
+  // GABAGOOL HEDGE MODE (based on reverse engineering)
+  // ============================================
+  hedge_mode_enabled: true,           // 🔥 NEW: Enable Gabagool-style hedge mode
+  hedge_max_cpp: 0.98,                // Target CPP 98¢ (same as Gabagool ~98.7¢)
+  hedge_shares_per_side: 10,          // Buy 10 shares of EACH side
+  hedge_balance_tolerance: 0.15,      // Allow 15% imbalance
+  hedge_max_cost_per_market: 50,      // Max $50 per market (both sides)
+  hedge_entry_delay_ms: 0,            // Simultaneous entry (Gabagool pattern)
+  
   // SIGNAL DEFINITION
   signal_delta_usd: 6.0,
   signal_delta_max_usd: 15.0,  // Skip delta >$15 (analysis: negative avg P&L)
@@ -165,17 +206,17 @@ export const DEFAULT_CONFIG: V29Config = {
   extreme_price_threshold: 0.35,  // Price <0.35 or >0.65 = extreme zone
   extreme_price_delta_multiplier: 1.5,  // Need $9 delta in extreme zones
   signal_window_ms: 300,
-  max_share_move_cents: 0.5,
-  max_spread_cents: 1.0,
-  min_share_price: 0.15,
-  max_share_price: 0.85,
-  shares_per_trade: 10,  // INCREASED from 5 for higher profit per bet
+  max_share_move_cents: 1.5,     // RELAXED from 0.5 to allow more opportunities
+  max_spread_cents: 2.0,         // RELAXED from 1.0 to allow more opportunities
+  min_share_price: 0.08,         // WIDENED from 0.15 (Gabagool trades 8¢-92¢)
+  max_share_price: 0.92,         // WIDENED from 0.85
+  shares_per_trade: 10,  // For non-hedge mode
   
   // ENTRY
-  entry_price_buffer_cents: 0.5,
-  max_entry_slippage_cents: 1.0,
+  entry_price_buffer_cents: 1.0,   // INCREASED for better fill rate
+  max_entry_slippage_cents: 2.0,   // INCREASED for better fill rate
   
-  // EXIT MONITORING
+  // EXIT MONITORING (only used if hedge_mode_enabled=false)
   exit_monitor_interval_ms: 100,
   
   // UP-SPECIFIC: Faster repricing, SHORTER hold (analysis: 15s max)
@@ -217,15 +258,16 @@ export const DEFAULT_CONFIG: V29Config = {
   taker_flow_window_ms: 300,
   
   // RISK CONTROLS
-  max_positions_per_asset: 5,
+  max_positions_per_asset: 10,   // INCREASED for hedge mode (more accumulation)
   cooldown_after_exit_ms: 0,
-  max_exposure_usd: 50,
+  max_exposure_usd: 100,         // INCREASED for hedge mode
   
-  assets: ['BTC', 'ETH', 'SOL', 'XRP'],
+  // Assets - BTC FIRST for priority (Gabagool: 70% BTC, 30% ETH)
+  assets: ['BTC', 'ETH'],        // REMOVED SOL/XRP for focus (Gabagool doesn't trade them)
   
   // INTERVALS
   binance_buffer_ms: 0,
-  orderbook_poll_ms: 250,
+  orderbook_poll_ms: 150,        // FASTER for better pricing (was 250)
 };
 
 // Binance WebSocket symbols
