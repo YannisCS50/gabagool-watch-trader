@@ -57,6 +57,13 @@ export interface V29Config {
   // Maximum delta - skip if delta > this (analysis showed >$15 has negative avg P&L)
   signal_delta_max_usd: number;  // e.g., 15.0
   
+  // DYNAMIC DELTA: Adjust min delta based on recent volatility
+  // If volatility is high, require proportionally higher delta
+  dynamic_delta_enabled: boolean;         // Enable dynamic delta adjustment
+  dynamic_delta_volatility_window_ms: number;  // Window to measure volatility (e.g., 5000ms)
+  dynamic_delta_base_volatility: number;  // "Normal" volatility level (e.g., 20 USD range per window)
+  dynamic_delta_multiplier_cap: number;   // Max multiplier (e.g., 2.0 = max $12 delta in high vol)
+  
   // Require higher delta for extreme share prices (near 0.35 or 0.65)
   // Analysis: volatile price zones need stronger signals
   extreme_price_threshold: number;       // e.g., 0.35/0.65 boundary
@@ -143,9 +150,13 @@ export const DEFAULT_CONFIG: V29Config = {
   
   // SIGNAL DEFINITION
   signal_delta_usd: 6.0,
-  signal_delta_max_usd: 15.0,  // NEW: Skip delta >$15 (analysis: negative avg P&L)
-  extreme_price_threshold: 0.35,  // NEW: Price <0.35 or >0.65 = extreme zone
-  extreme_price_delta_multiplier: 1.5,  // NEW: Need $9 delta in extreme zones
+  signal_delta_max_usd: 15.0,  // Skip delta >$15 (analysis: negative avg P&L)
+  dynamic_delta_enabled: true,  // NEW: Enable dynamic delta adjustment
+  dynamic_delta_volatility_window_ms: 5000,  // Measure volatility over 5s
+  dynamic_delta_base_volatility: 20,  // "Normal" is $20 range per 5s
+  dynamic_delta_multiplier_cap: 1.8,  // Max 1.8x = $10.80 delta in high vol
+  extreme_price_threshold: 0.35,  // Price <0.35 or >0.65 = extreme zone
+  extreme_price_delta_multiplier: 1.5,  // Need $9 delta in extreme zones
   signal_window_ms: 300,
   max_share_move_cents: 0.5,
   max_spread_cents: 1.0,

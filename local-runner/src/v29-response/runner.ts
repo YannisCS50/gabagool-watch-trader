@@ -67,6 +67,10 @@ const exitInFlight = new Set<string>();
 // Next exit attempt time per POSITION
 const nextExitAttemptAt = new Map<string, number>();
 
+// Exit retry count per POSITION (to limit retries)
+const exitRetryCount = new Map<string, number>();
+const MAX_EXIT_RETRIES = 10;  // Max 10 retry attempts (10 * 250ms = 2.5s max)
+
 // Cooldowns - we track last exit time globally (not per asset since we allow concurrent positions)
 // No cooldown tracking needed
 
@@ -639,17 +643,38 @@ async function executeExit(
 
     if (!bestBid || !market) {
       // CRITICAL: Do NOT delete position - we still hold shares!
-      // Restart monitoring and retry later when orderbook is available
-      logAsset(asset, `⚠️ EXIT: No bid available, retrying in 500ms`, {
+      const retries = (exitRetryCount.get(positionKey) ?? 0) + 1;
+      exitRetryCount.set(positionKey, retries);
+      
+      if (retries >= MAX_EXIT_RETRIES) {
+        logAsset(asset, `🛑 EXIT: Max retries (${MAX_EXIT_RETRIES}) reached without bid - forcing position cleanup`, {
+          positionKey,
+          positionId: position.id,
+          retries,
+        });
+        
+        signal.exit_type = 'error';
+        signal.exit_reason = 'max_retries_no_bid';
+        signal.exit_ts = Date.now();
+        void saveSignalLog(signal, state);
+        
+        activePositions.delete(positionKey);
+        exitRetryCount.delete(positionKey);
+        lastGlobalExitTime = Date.now();
+        return;
+      }
+      
+      // Restart monitoring and retry with FASTER backoff (250ms instead of 500ms)
+      logAsset(asset, `⚠️ EXIT: No bid available, retry ${retries}/${MAX_EXIT_RETRIES} in 250ms`, {
         positionKey,
         positionId: position.id,
         hasMarket: !!market,
         hasBid: !!bestBid,
         lastOrderbookUpdate: state.lastOrderbookUpdate,
+        retries,
       });
       
-      // Backoff and retry
-      nextExitAttemptAt.set(positionKey, Date.now() + 500);
+      nextExitAttemptAt.set(positionKey, Date.now() + 250);
       position.monitorInterval = setInterval(() => {
         checkPositionExit(positionKey);
       }, config.exit_monitor_interval_ms);
@@ -774,8 +799,25 @@ async function executeExit(
         }
       }
 
-      // Backoff + retry for other errors
-      nextExitAttemptAt.set(positionKey, Date.now() + 1000);
+      // Backoff + retry for other errors with FASTER retry (500ms)
+      const retries = (exitRetryCount.get(positionKey) ?? 0) + 1;
+      exitRetryCount.set(positionKey, retries);
+      
+      if (retries >= MAX_EXIT_RETRIES) {
+        logAsset(asset, `🛑 EXIT: Max retries (${MAX_EXIT_RETRIES}) reached with errors - removing position`, {
+          positionKey,
+          positionId: position.id,
+          retries,
+          lastError: errMsg,
+        });
+        activePositions.delete(positionKey);
+        exitRetryCount.delete(positionKey);
+        lastGlobalExitTime = Date.now();
+        return;
+      }
+      
+      logAsset(asset, `🔄 EXIT: retry ${retries}/${MAX_EXIT_RETRIES} in 500ms`, { positionKey });
+      nextExitAttemptAt.set(positionKey, Date.now() + 500);
       position.monitorInterval = setInterval(() => {
         checkPositionExit(positionKey);
       }, config.exit_monitor_interval_ms);
