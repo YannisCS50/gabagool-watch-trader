@@ -574,7 +574,7 @@ async function executeHedgeEntry(asset: Asset, signal: Signal, market: MarketInf
     let waitForTokenId: string;
     
     // Check if we're in the early market phase (first 30s)
-    const msFromStart = now - market.startTime.getTime();
+    // msFromStart is already calculated at line 508
     const isEarlyMarket = msFromStart < 30_000;  // First 30 seconds
     
     if (isEarlyMarket) {
