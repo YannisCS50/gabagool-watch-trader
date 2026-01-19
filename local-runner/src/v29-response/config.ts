@@ -55,15 +55,22 @@ export interface V29Config {
   enabled: boolean;
   
   // ============================================
-  // GABAGOOL HEDGE MODE (REVISED - Sequential Entry)
-  // Based on deeper Gabagool22 reverse engineering:
+  // GABAGOOL HOLD-TO-EXPIRY MODE (Sequential Hedge)
+  // 
+  // Based on deep Gabagool22 reverse engineering:
   // - Does NOT buy simultaneous - 87% have 1-30s gap between sides
   // - Buys the CHEAP side first, waits for other side to become cheap
   // - Target CPP < $1 for guaranteed profit at settlement
-  // - No selling - only buying and waiting for settlement
+  // - NO SELLING - only buying and waiting for settlement
+  // - Payout: $1 per paired share at expiry, profit = 1 - CPP
+  //
+  // When enabled:
+  // - Exit monitor is DISABLED
+  // - Positions are held until market settlement
+  // - No sell orders are placed
   // ============================================
   
-  // Enable hedge mode (Gabagool-style sequential)
+  // Enable hedge mode (Gabagool-style hold-to-expiry)
   hedge_mode_enabled: boolean;
   
   // Maximum price per share to buy first side (must be cheap)
@@ -134,8 +141,8 @@ export interface V29Config {
   // Max slippage allowed on entry (cents)
   max_entry_slippage_cents: number;  // e.g., 1.0
   
-  // ============================================
-  // EXIT LOGIC (RESPONSE-BASED) - only used when hedge_mode_enabled=false
+  // EXIT LOGIC (RESPONSE-BASED) - ONLY used when hedge_mode_enabled=false
+  // When hedge_mode_enabled=true, NO exit logic runs - positions held to settlement
   // ============================================
   
   // Monitor interval for exit conditions (ms)
@@ -187,15 +194,18 @@ export const DEFAULT_CONFIG: V29Config = {
   enabled: true,
   
   // ============================================
-  // GABAGOOL HEDGE MODE (REVISED - Sequential Entry)
-  // Key insight: Gabagool does NOT buy simultaneous!
-  // 87% of trades have 1-30s gap between UP and DOWN
-  // Strategy: Buy cheap side first, wait for other side
+  // GABAGOOL HOLD-TO-EXPIRY MODE (Sequential Hedge)
+  // 
+  // CRITICAL: When hedge_mode_enabled=true:
+  // - NO SELLING - positions held until market settles
+  // - Buy cheap side first, wait for second leg
+  // - Exit monitor is completely disabled
+  // - Profit realized at settlement: $1 per paired share
   // ============================================
   hedge_mode_enabled: true,
   hedge_max_entry_price: 0.50,        // Only buy if price <= 50¢ (buy cheap side)
-  hedge_max_cpp: 0.97,                // Target CPP 97¢ (3% profit margin)
-  hedge_shares_per_side: 5,           // Buy 5 shares per side (reduced for lower capital)
+  hedge_max_cpp: 0.97,                // Target CPP 97¢ (3% profit margin at settlement)
+  hedge_shares_per_side: 5,           // Buy 5 shares per side
   hedge_max_cost_per_market: 10,      // Max $10 per market (~$5 per side)
   hedge_min_delay_second_leg_ms: 2000, // Wait min 2s before second leg
   hedge_max_wait_second_leg_ms: 45000, // Give up after 45s
