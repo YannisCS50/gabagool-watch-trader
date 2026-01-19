@@ -4,10 +4,17 @@
  * GABAGOOL HOLD-TO-EXPIRY STRATEGY (hedge_mode_enabled=true):
  * ============================================================
  * 1. Signal: Binance price move ≥$6 triggers evaluation
- * 2. First Leg: Buy cheap side (≤50¢) only
+ * 2. First Leg: Buy the EXPENSIVE side (follows the Binance move direction)
+ *    - Binance UP → UP side becomes expensive → buy UP first
+ *    - Binance DOWN → DOWN side becomes expensive → buy DOWN first
+ *    - Key insight: The expensive side will likely stay expensive, but the 
+ *      OTHER side will become cheaper due to mean reversion
  * 3. Second Leg: Wait 2-45s, buy other side when CPP ≤ 97¢
  * 4. NO SELLING: Hold both sides until market settles at expiry
  * 5. Profit: $1 per paired share at settlement - CPP
+ * 
+ * EXCEPTION: At market start (first 30s), buy the cheap side first
+ * (markets are more balanced at open, so grab the cheap side opportunistically)
  * 
  * SCALP MODE (hedge_mode_enabled=false):
  * ============================================================
@@ -540,31 +547,82 @@ async function executeHedgeEntry(asset: Asset, signal: Signal, market: MarketInf
       return;
     }
     
-    // GABAGOOL KEY INSIGHT: Buy the CHEAP side first!
-    // Only buy if price <= hedge_max_entry_price (50¢)
-    const maxEntryPrice = config.hedge_max_entry_price;
-    const upIsCheap = upAsk <= maxEntryPrice;
-    const downIsCheap = downAsk <= maxEntryPrice;
+    // ============================================
+    // GABAGOOL KEY INSIGHT: Buy the EXPENSIVE side first!
+    // ============================================
+    // 
+    // When Binance moves UP → UP side becomes expensive (e.g., 60¢)
+    // The DOWN side becomes cheap (e.g., 40¢)
+    // 
+    // Strategy: Buy the expensive side FIRST because:
+    // 1. It follows the momentum (likely to stay expensive)
+    // 2. The cheap side will likely mean-revert and become even cheaper
+    // 3. Wait 2-45s for mean reversion, then buy cheap side for good CPP
+    //
+    // EXCEPTION: At market start (first 30s), buy the cheap side first
+    // because markets are more balanced at open
     
-    if (!upIsCheap && !downIsCheap) {
-      // Neither side is cheap enough
-      signal.status = 'skipped';
-      signal.skip_reason = `no_cheap_side: UP=${(upAsk * 100).toFixed(0)}¢, DOWN=${(downAsk * 100).toFixed(0)}¢ > ${(maxEntryPrice * 100).toFixed(0)}¢`;
-      void saveSignalLog(signal, state);
-      return;
-    }
+    const maxEntryPrice = config.hedge_max_entry_price;  // Max price for second leg (cheap side)
+    const maxFirstLegPrice = 0.70;  // Max price for first leg (expensive side) - don't overpay
     
-    // Determine which side to buy first
-    // If both cheap, buy the cheaper one (like Gabagool's 50/50 pattern suggests opportunistic buying)
+    // Determine which side to buy based on signal direction (Binance move)
+    // signal.direction tells us which way Binance moved
     let buySide: 'UP' | 'DOWN';
     let buyPrice: number;
     let buyTokenId: string;
     let waitForSide: 'UP' | 'DOWN';
     let waitForTokenId: string;
     
-    if (upIsCheap && downIsCheap) {
-      // Both cheap - buy cheaper one first
-      if (upAsk <= downAsk) {
+    // Check if we're in the early market phase (first 30s)
+    const msFromStart = now - market.startTime.getTime();
+    const isEarlyMarket = msFromStart < 30_000;  // First 30 seconds
+    
+    if (isEarlyMarket) {
+      // EARLY MARKET: Buy the CHEAP side first (traditional approach)
+      // Markets are balanced at open, grab the cheap opportunity
+      const upIsCheap = upAsk <= maxEntryPrice;
+      const downIsCheap = downAsk <= maxEntryPrice;
+      
+      if (!upIsCheap && !downIsCheap) {
+        signal.status = 'skipped';
+        signal.skip_reason = `early_market_no_cheap_side: UP=${(upAsk * 100).toFixed(0)}¢, DOWN=${(downAsk * 100).toFixed(0)}¢ > ${(maxEntryPrice * 100).toFixed(0)}¢`;
+        void saveSignalLog(signal, state);
+        return;
+      }
+      
+      // Buy the cheaper side
+      if (upAsk <= downAsk && upIsCheap) {
+        buySide = 'UP';
+        buyPrice = upAsk;
+        buyTokenId = market.upTokenId;
+        waitForSide = 'DOWN';
+        waitForTokenId = market.downTokenId;
+      } else if (downIsCheap) {
+        buySide = 'DOWN';
+        buyPrice = downAsk;
+        buyTokenId = market.downTokenId;
+        waitForSide = 'UP';
+        waitForTokenId = market.upTokenId;
+      } else {
+        buySide = 'UP';
+        buyPrice = upAsk;
+        buyTokenId = market.upTokenId;
+        waitForSide = 'DOWN';
+        waitForTokenId = market.downTokenId;
+      }
+      
+      logAsset(asset, `🏁 EARLY MARKET: buying CHEAP side ${buySide} at ${(buyPrice * 100).toFixed(1)}¢`, {
+        msFromStart,
+        upAsk: (upAsk * 100).toFixed(1),
+        downAsk: (downAsk * 100).toFixed(1),
+      });
+    } else {
+      // NORMAL MARKET: Buy the EXPENSIVE side first (follows momentum)
+      // signal.direction indicates which way Binance moved
+      // UP signal → Binance went UP → UP side is expensive → buy UP first
+      // DOWN signal → Binance went DOWN → DOWN side is expensive → buy DOWN first
+      
+      if (signal.direction === 'UP') {
         buySide = 'UP';
         buyPrice = upAsk;
         buyTokenId = market.upTokenId;
@@ -577,26 +635,42 @@ async function executeHedgeEntry(asset: Asset, signal: Signal, market: MarketInf
         waitForSide = 'UP';
         waitForTokenId = market.upTokenId;
       }
-    } else if (upIsCheap) {
-      buySide = 'UP';
-      buyPrice = upAsk;
-      buyTokenId = market.upTokenId;
-      waitForSide = 'DOWN';
-      waitForTokenId = market.downTokenId;
-    } else {
-      buySide = 'DOWN';
-      buyPrice = downAsk;
-      buyTokenId = market.downTokenId;
-      waitForSide = 'UP';
-      waitForTokenId = market.upTokenId;
+      
+      // Safety check: Don't overpay for the expensive side
+      if (buyPrice > maxFirstLegPrice) {
+        signal.status = 'skipped';
+        signal.skip_reason = `first_leg_too_expensive: ${buySide}=${(buyPrice * 100).toFixed(0)}¢ > ${(maxFirstLegPrice * 100).toFixed(0)}¢`;
+        void saveSignalLog(signal, state);
+        return;
+      }
+      
+      // Check if the other side is at least reasonably priced for CPP potential
+      const otherAsk = buySide === 'UP' ? downAsk : upAsk;
+      const projectedCpp = buyPrice + otherAsk;
+      
+      // Don't enter if projected CPP is terrible (> 1.10 means we need 10¢+ drop on other side)
+      if (projectedCpp > 1.10) {
+        signal.status = 'skipped';
+        signal.skip_reason = `projected_cpp_too_high: ${(projectedCpp * 100).toFixed(0)}¢ > 110¢`;
+        void saveSignalLog(signal, state);
+        return;
+      }
+      
+      logAsset(asset, `📈 MOMENTUM ENTRY: buying EXPENSIVE side ${buySide} at ${(buyPrice * 100).toFixed(1)}¢ (Binance moved ${signal.direction})`, {
+        signalDirection: signal.direction,
+        upAsk: (upAsk * 100).toFixed(1),
+        downAsk: (downAsk * 100).toFixed(1),
+        waitForSide,
+      });
     }
     
-    // Check CPP projection - would the other side at current price be good enough?
+    // Log the entry decision
     const otherAsk = buySide === 'UP' ? downAsk : upAsk;
     const projectedCpp = buyPrice + otherAsk;
     
-    logAsset(asset, `🎯 HEDGE ${buySide} FIRST: ${(buyPrice * 100).toFixed(1)}¢ | waiting for ${waitForSide} | projected CPP: ${(projectedCpp * 100).toFixed(1)}¢`, {
+    logAsset(asset, `🎯 HEDGE ${buySide} FIRST: ${(buyPrice * 100).toFixed(1)}¢ | waiting for ${waitForSide} @${(otherAsk * 100).toFixed(1)}¢ | projected CPP: ${(projectedCpp * 100).toFixed(1)}¢`, {
       signalId: signal.id,
+      isEarlyMarket,
       buySide,
       buyPrice,
       waitForSide,
