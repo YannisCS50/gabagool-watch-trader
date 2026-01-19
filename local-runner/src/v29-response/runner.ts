@@ -570,8 +570,8 @@ async function executeHedgeEntry(asset: Asset, signal: Signal, market: MarketInf
     // EXCEPTION: At market start (first 30s), buy the cheap side first
     // because markets are more balanced at open
     
-    const maxEntryPrice = config.hedge_max_entry_price;  // Max price for second leg (cheap side)
-    const maxFirstLegPrice = 0.70;  // Max price for first leg (expensive side) - don't overpay
+    const maxEntryPrice = config.hedge_max_entry_price;  // Max price for second leg
+    const maxFirstLegPrice = 0.60;  // Max 60¢ for first leg (so second leg can be up to 40¢ for CPP=100¢)
     
     // Determine which side to buy based on signal direction (Binance move)
     // signal.direction tells us which way Binance moved
@@ -813,18 +813,55 @@ async function checkPendingSecondLegs(): Promise<void> {
     
     if (!wantAsk) continue;
     
-    // Check if price is cheap enough
-    const maxEntryPrice = config.hedge_max_entry_price;
-    if (wantAsk > maxEntryPrice) {
-      // Not cheap enough yet, keep waiting
+    // Calculate CPP
+    const cpp = hedgePos.firstPrice + wantAsk;
+    
+    // ============================================
+    // EMERGENCY HEDGE LOGIC
+    // ============================================
+    // If we've waited >80% of max time, accept higher CPP to avoid unhedged exposure
+    const waitRatio = waitedMs / config.hedge_max_wait_second_leg_ms;
+    const isEmergency = waitRatio >= 0.80;
+    
+    // Emergency: accept CPP up to 105¢ (small loss is better than unhedged)
+    // Normal: require CPP <= hedge_max_cpp (100¢)
+    const effectiveMaxCpp = isEmergency ? 1.05 : config.hedge_max_cpp;
+    
+    // Check if price is reasonable (relaxed in emergency)
+    const effectiveMaxEntry = isEmergency ? 0.70 : config.hedge_max_entry_price;
+    
+    if (wantAsk > effectiveMaxEntry) {
+      if (isEmergency) {
+        logAsset(pending.asset, `⚠️ HEDGE EMERGENCY: ${pending.wantSide} still too expensive ${(wantAsk * 100).toFixed(1)}¢ > ${(effectiveMaxEntry * 100).toFixed(0)}¢`, {
+          marketKey,
+          wantAsk,
+          waitedMs,
+          waitRatio: (waitRatio * 100).toFixed(0) + '%',
+        });
+      }
       continue;
     }
     
-    // Check CPP
-    const cpp = hedgePos.firstPrice + wantAsk;
-    if (cpp > config.hedge_max_cpp) {
-      // CPP too high, keep waiting for better price
+    if (cpp > effectiveMaxCpp) {
+      if (isEmergency) {
+        logAsset(pending.asset, `⚠️ HEDGE EMERGENCY: CPP ${(cpp * 100).toFixed(1)}¢ still > ${(effectiveMaxCpp * 100).toFixed(0)}¢`, {
+          marketKey,
+          cpp,
+          waitedMs,
+          waitRatio: (waitRatio * 100).toFixed(0) + '%',
+        });
+      }
       continue;
+    }
+    
+    // Log emergency hedge if applicable
+    if (isEmergency) {
+      logAsset(pending.asset, `🚨 EMERGENCY HEDGE: accepting CPP ${(cpp * 100).toFixed(1)}¢ after ${(waitedMs / 1000).toFixed(1)}s wait`, {
+        marketKey,
+        cpp,
+        normalMaxCpp: config.hedge_max_cpp,
+        waitRatio: (waitRatio * 100).toFixed(0) + '%',
+      });
     }
     
     // Good to buy second leg!
