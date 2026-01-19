@@ -205,8 +205,8 @@ export const DEFAULT_CONFIG: V29Config = {
   hedge_mode_enabled: true,
   hedge_max_entry_price: 0.50,        // Only buy if price <= 50¢ (buy cheap side)
   hedge_max_cpp: 0.97,                // Target CPP 97¢ (3% profit margin at settlement)
-  hedge_shares_per_side: 5,           // Buy 5 shares per side
-  hedge_max_cost_per_market: 10,      // Max $10 per market (~$5 per side)
+  hedge_shares_per_side: 5,           // Buy 5 shares per side per signal
+  hedge_max_cost_per_market: 50,      // Max $50 per market (allows ~5 accumulation rounds)
   hedge_min_delay_second_leg_ms: 2000, // Wait min 2s before second leg
   hedge_max_wait_second_leg_ms: 45000, // Give up after 45s
   

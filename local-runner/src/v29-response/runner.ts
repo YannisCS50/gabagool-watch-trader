@@ -518,13 +518,21 @@ async function executeHedgeEntry(asset: Asset, signal: Signal, market: MarketInf
     // Check if we already have a position in this market
     const existing = hedgePositions.get(marketKey);
     if (existing?.completed) {
-      // Already have both legs - check if we can add more
+      // Already have both legs - check if we can ACCUMULATE more
       if (existing.totalCost >= config.hedge_max_cost_per_market) {
         signal.status = 'skipped';
-        signal.skip_reason = 'hedge_max_cost_reached';
+        signal.skip_reason = `hedge_max_cost_reached: $${existing.totalCost.toFixed(2)} >= $${config.hedge_max_cost_per_market}`;
         void saveSignalLog(signal, state);
         return;
       }
+      
+      // We CAN accumulate! Try to add more shares if CPP is still good
+      logAsset(asset, `📈 ACCUMULATE: existing hedge has $${existing.totalCost.toFixed(2)}, room for $${(config.hedge_max_cost_per_market - existing.totalCost).toFixed(2)} more`, {
+        existingCost: existing.totalCost,
+        maxCost: config.hedge_max_cost_per_market,
+      });
+      
+      // Continue to try buying both sides again
     }
     
     // Check if we have a pending second leg for this market
