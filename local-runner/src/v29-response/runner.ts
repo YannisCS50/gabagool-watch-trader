@@ -1,13 +1,20 @@
 /**
  * V29 Response-Based Strategy - Main Runner
  * 
- * STRATEGY SUMMARY:
+ * GABAGOOL HOLD-TO-EXPIRY STRATEGY (hedge_mode_enabled=true):
+ * ============================================================
+ * 1. Signal: Binance price move ≥$6 triggers evaluation
+ * 2. First Leg: Buy cheap side (≤50¢) only
+ * 3. Second Leg: Wait 2-45s, buy other side when CPP ≤ 97¢
+ * 4. NO SELLING: Hold both sides until market settles at expiry
+ * 5. Profit: $1 per paired share at settlement - CPP
+ * 
+ * SCALP MODE (hedge_mode_enabled=false):
+ * ============================================================
  * 1. Binance tick ≥$6 in 300ms window → SIGNAL
  * 2. Entry: Maker-biased limit order at best_bid + buffer
  * 3. Exit: Response-based (target, exhaustion, adverse, timeout)
  * 4. Asymmetric: UP and DOWN have different parameters
- * 
- * CRITICAL: Exit based on Polymarket price response, NOT fixed time!
  */
 
 // HTTP agent must be imported first
@@ -312,6 +319,37 @@ function handleBinancePrice(asset: Asset, price: number, timestamp: number): voi
     signal_triggered: false,
   });
   
+  // ============================================
+  // HEDGE MODE: No exit monitoring - hold to settlement
+  // ============================================
+  if (config.hedge_mode_enabled) {
+    // In hedge mode, we don't track activePositions for exit
+    // We only track hedgePositions for completion
+    // Check if we have pending second legs to evaluate
+    // This is done in checkPendingSecondLegs() interval
+    
+    // Skip if entry in progress
+    if (entryInFlight.has(asset)) {
+      return;
+    }
+    
+    // Skip if we already have a pending second leg for this market
+    const market = markets.get(asset);
+    if (market && pendingSecondLegs.has(market.slug)) {
+      return;
+    }
+    
+    // Check for new signal to start first leg
+    if (hasPrevious) {
+      checkForSignal(asset, delta, direction);
+    }
+    return; // CRITICAL: No exit monitoring in hedge mode!
+  }
+  
+  // ============================================
+  // SCALP MODE (hedge_mode_enabled=false): Original exit logic
+  // ============================================
+  
   // Count positions for this asset
   const assetPositionCount = countPositionsForAsset(asset);
   
@@ -394,9 +432,12 @@ function checkForSignal(asset: Asset, delta: number, direction: 'UP' | 'DOWN' | 
   
   const signal = result.signal!;
   
-  // GABAGOOL HEDGE MODE: Buy BOTH sides simultaneously
+  // GABAGOOL HOLD-TO-EXPIRY MODE: Sequential hedge, no selling
+  // Key insight: Gabagool does NOT sell! Holds to settlement for $1 payout per paired share.
   if (config.hedge_mode_enabled) {
+    // Sequential hedge entry - buy cheap side first, wait for second leg
     void executeHedgeEntry(asset, signal, market!);
+    return; // CRITICAL: No exit monitoring in hedge mode!
   } else {
     // Original single-direction entry
     void executeEntry(asset, signal, market!);
@@ -1774,8 +1815,12 @@ async function syncLivePositions(): Promise<void> {
         slug: matchedMarket.slug,
       });
       
-      // Start exit monitoring for synced position
-      startExitMonitor(matchedAsset, position);
+      // Start exit monitoring for synced position - ONLY in scalp mode
+      if (!config.hedge_mode_enabled) {
+        startExitMonitor(matchedAsset, position);
+      } else {
+        log(`   → Holding to expiry (no exit monitor)`);
+      }
     }
     
     if (syncedCount > 0) {
@@ -1895,10 +1940,18 @@ async function main(): Promise<void> {
   
   log('🟢 V29 Response-Based Strategy RUNNING');
   if (config.hedge_mode_enabled) {
-    log(`   HEDGE MODE: Buy cheap side first (≤${(config.hedge_max_entry_price * 100).toFixed(0)}¢), wait for second leg`);
-    log(`   Target CPP: ≤${(config.hedge_max_cpp * 100).toFixed(0)}¢ | Wait: ${config.hedge_min_delay_second_leg_ms / 1000}s-${config.hedge_max_wait_second_leg_ms / 1000}s`);
+    log(`   ╔═══════════════════════════════════════════════════════╗`);
+    log(`   ║  GABAGOOL HOLD-TO-EXPIRY MODE (NO SELLING!)           ║`);
+    log(`   ╠═══════════════════════════════════════════════════════╣`);
+    log(`   ║  • Buy cheap side first (≤${(config.hedge_max_entry_price * 100).toFixed(0)}¢)                      ║`);
+    log(`   ║  • Wait ${config.hedge_min_delay_second_leg_ms / 1000}s-${config.hedge_max_wait_second_leg_ms / 1000}s for second leg at CPP ≤${(config.hedge_max_cpp * 100).toFixed(0)}¢       ║`);
+    log(`   ║  • Hold both sides until market settles               ║`);
+    log(`   ║  • Profit = $1 per paired share - CPP                 ║`);
+    log(`   ╚═══════════════════════════════════════════════════════╝`);
     log(`   Assets: ${config.assets.join(', ')}`);
+    log(`   Shares per side: ${config.hedge_shares_per_side} | Max cost per market: $${config.hedge_max_cost_per_market}`);
   } else {
+    log(`   SCALP MODE (exit-based)`);
     log(`   Signal: Δ≥$${config.signal_delta_usd} in ${config.signal_window_ms}ms`);
     log(`   UP: target ${config.up.target_profit_cents_min}-${config.up.target_profit_cents_max}¢, max ${config.up.max_hold_seconds}s`);
     log(`   DOWN: target ${config.down.target_profit_cents_min}-${config.down.target_profit_cents_max}¢, max ${config.down.max_hold_seconds}s`);
