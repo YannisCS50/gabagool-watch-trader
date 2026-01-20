@@ -67,6 +67,15 @@ const RUN_ID = `v29r-${Date.now().toString(36)}`;
 let isRunning = false;
 let config: V29Config = { ...DEFAULT_CONFIG };
 
+// ============================================================
+// HARD SAFETY: V29R runs ONLY the hold-to-expiry hedge strategy.
+// These constants CANNOT be overridden by DB config.
+// ============================================================
+const FORCE_HEDGE_MODE = true;        // Always enforce hedge mode
+const HARD_MAX_CPP = 0.97;            // Never hedge if CPP >= 97¢
+const HARD_MAX_FIRST_LEG = 0.55;      // Never pay > 55¢ for first leg
+const HARD_MAX_SECOND_LEG = 0.50;     // Never pay > 50¢ for second leg
+
 // Markets by asset
 const markets = new Map<Asset, MarketInfo>();
 
@@ -570,8 +579,9 @@ async function executeHedgeEntry(asset: Asset, signal: Signal, market: MarketInf
     // EXCEPTION: At market start (first 30s), buy the cheap side first
     // because markets are more balanced at open
     
-    const maxEntryPrice = config.hedge_max_entry_price;  // Max price for second leg
-    const maxFirstLegPrice = 0.60;  // Max 60¢ for first leg (so second leg can be up to 40¢ for CPP=100¢)
+    // Use HARD constants for price limits
+    const maxEntryPrice = HARD_MAX_SECOND_LEG;  // 50¢ max for second leg
+    const maxFirstLegPrice = HARD_MAX_FIRST_LEG;  // 55¢ max for first leg
     
     // Determine which side to buy based on signal direction (Binance move)
     // signal.direction tells us which way Binance moved
@@ -817,51 +827,21 @@ async function checkPendingSecondLegs(): Promise<void> {
     const cpp = hedgePos.firstPrice + wantAsk;
     
     // ============================================
-    // EMERGENCY HEDGE LOGIC
+    // STRICT CPP ENFORCEMENT - NO EMERGENCY OVERRIDES
     // ============================================
-    // If we've waited >80% of max time, accept higher CPP to avoid unhedged exposure
-    const waitRatio = waitedMs / config.hedge_max_wait_second_leg_ms;
-    const isEmergency = waitRatio >= 0.80;
+    // CPP must be < 97¢ to guarantee profit at settlement
+    // NO exceptions - better to leave unhedged than lock in a loss
+    const effectiveMaxCpp = HARD_MAX_CPP;  // Always 97¢
+    const effectiveMaxEntry = HARD_MAX_SECOND_LEG;  // Always 50¢
     
-    // Emergency: accept CPP up to 105¢ (small loss is better than unhedged)
-    // Normal: require CPP <= hedge_max_cpp (100¢)
-    const effectiveMaxCpp = isEmergency ? 1.05 : config.hedge_max_cpp;
-    
-    // Check if price is reasonable (relaxed in emergency)
-    const effectiveMaxEntry = isEmergency ? 0.70 : config.hedge_max_entry_price;
-    
+    // Skip if second leg too expensive
     if (wantAsk > effectiveMaxEntry) {
-      if (isEmergency) {
-        logAsset(pending.asset, `⚠️ HEDGE EMERGENCY: ${pending.wantSide} still too expensive ${(wantAsk * 100).toFixed(1)}¢ > ${(effectiveMaxEntry * 100).toFixed(0)}¢`, {
-          marketKey,
-          wantAsk,
-          waitedMs,
-          waitRatio: (waitRatio * 100).toFixed(0) + '%',
-        });
-      }
       continue;
     }
     
-    if (cpp > effectiveMaxCpp) {
-      if (isEmergency) {
-        logAsset(pending.asset, `⚠️ HEDGE EMERGENCY: CPP ${(cpp * 100).toFixed(1)}¢ still > ${(effectiveMaxCpp * 100).toFixed(0)}¢`, {
-          marketKey,
-          cpp,
-          waitedMs,
-          waitRatio: (waitRatio * 100).toFixed(0) + '%',
-        });
-      }
+    // Skip if CPP too high (strict: must be < 97¢)
+    if (cpp >= effectiveMaxCpp) {
       continue;
-    }
-    
-    // Log emergency hedge if applicable
-    if (isEmergency) {
-      logAsset(pending.asset, `🚨 EMERGENCY HEDGE: accepting CPP ${(cpp * 100).toFixed(1)}¢ after ${(waitedMs / 1000).toFixed(1)}s wait`, {
-        marketKey,
-        cpp,
-        normalMaxCpp: config.hedge_max_cpp,
-        waitRatio: (waitRatio * 100).toFixed(0) + '%',
-      });
     }
     
     // Good to buy second leg!
@@ -1101,6 +1081,14 @@ async function executeEntry(asset: Asset, signal: Signal, market: MarketInfo): P
 // ============================================
 
 function startExitMonitor(positionKey: string, position: ActivePosition): void {
+  // ============================================================
+  // HARD SAFETY: Exit monitors are NEVER allowed in hedge mode
+  // ============================================================
+  if (config.hedge_mode_enabled || FORCE_HEDGE_MODE) {
+    logAsset(position.asset as Asset, `🛑 EXIT MONITOR BLOCKED (hedge mode)`, { positionKey });
+    return;
+  }
+  
   // Clear any existing monitor
   if (position.monitorInterval) {
     clearInterval(position.monitorInterval);
@@ -1154,6 +1142,14 @@ async function executeExit(
   exitReason: string,
   unrealizedPnl: number
 ): Promise<void> {
+  // ============================================================
+  // HARD SAFETY: Selling is NEVER allowed in hedge mode
+  // ============================================================
+  if (config.hedge_mode_enabled || FORCE_HEDGE_MODE) {
+    logAsset(position.asset as Asset, `🛑 SELL BLOCKED (hedge mode): ${exitType} - ${exitReason}`, { positionKey });
+    return;
+  }
+  
   // Guard against concurrent exit attempts (interval + price-tick path)
   if (exitInFlight.has(positionKey)) return;
   exitInFlight.add(positionKey);
@@ -1634,6 +1630,20 @@ async function refreshConfig(): Promise<void> {
       // Merge DB values into config
       config = { ...DEFAULT_CONFIG, ...dbConfig } as V29Config;
       
+      // ============================================================
+      // HARD SAFETY OVERRIDES (cannot be bypassed by DB config)
+      // ============================================================
+      if (FORCE_HEDGE_MODE) {
+        config.hedge_mode_enabled = true;
+      }
+      if (config.hedge_max_cpp > HARD_MAX_CPP) {
+        log(`🛑 CLAMP: hedge_max_cpp ${(config.hedge_max_cpp * 100).toFixed(0)}¢ → ${(HARD_MAX_CPP * 100).toFixed(0)}¢`);
+        config.hedge_max_cpp = HARD_MAX_CPP;
+      }
+      if (config.hedge_max_entry_price > HARD_MAX_SECOND_LEG) {
+        config.hedge_max_entry_price = HARD_MAX_SECOND_LEG;
+      }
+      
       // Log if important settings changed
       if (dbConfig.max_spread_cents !== oldSpread || dbConfig.signal_delta_usd !== oldDelta) {
         log(`🔄 Config updated: spread=${config.max_spread_cents}¢, delta=$${config.signal_delta_usd}`);
@@ -1662,6 +1672,20 @@ function handleUserChannelTrade(event: TradeEvent): void {
   // Only process confirmed fills
   if (status !== 'MATCHED' && status !== 'MINED' && status !== 'CONFIRMED') {
     return;
+  }
+  
+  // ============================================================
+  // HEDGE MODE: Only update shares cache, NEVER track for exit
+  // ============================================================
+  if (config.hedge_mode_enabled || FORCE_HEDGE_MODE) {
+    for (const [, market] of markets) {
+      if (market.upTokenId === tokenId || market.downTokenId === tokenId) {
+        if (side === 'BUY') onBuyFill(tokenId, size, price, 'ws_buy_hedge');
+        else if (side === 'SELL') onSellFill(tokenId, size, 'ws_sell_hedge');
+        return;
+      }
+    }
+    return; // Unknown token, ignore
   }
   
   // Find which market/asset this fill belongs to
@@ -1971,15 +1995,26 @@ async function main(): Promise<void> {
     log(`Config loaded from DB`);
   }
   
-  // Log critical strategy mode
-  if (config.hedge_mode_enabled) {
-    log(`🔒 HEDGE MODE ACTIVE: hold-to-expiry, no selling`);
-    log(`   → First leg max: 60¢, Second leg max: ${(config.hedge_max_entry_price * 100).toFixed(0)}¢`);
-    log(`   → Target CPP: ${(config.hedge_max_cpp * 100).toFixed(0)}¢, Emergency CPP: 105¢`);
-    log(`   → Wait for second leg: ${config.hedge_min_delay_second_leg_ms}ms - ${config.hedge_max_wait_second_leg_ms}ms`);
-  } else {
-    log(`⚡ SCALP MODE ACTIVE: entry + exit monitor`);
+  // ============================================================
+  // HARD SAFETY OVERRIDES (startup)
+  // ============================================================
+  if (FORCE_HEDGE_MODE) {
+    config.hedge_mode_enabled = true;
   }
+  if (config.hedge_max_cpp > HARD_MAX_CPP) {
+    log(`🛑 STARTUP CLAMP: hedge_max_cpp → ${(HARD_MAX_CPP * 100).toFixed(0)}¢`);
+    config.hedge_max_cpp = HARD_MAX_CPP;
+  }
+  if (config.hedge_max_entry_price > HARD_MAX_SECOND_LEG) {
+    config.hedge_max_entry_price = HARD_MAX_SECOND_LEG;
+  }
+  
+  // Log strategy (always hedge now)
+  log(`🔒 HEDGE MODE FORCED: hold-to-expiry, NO selling allowed`);
+  log(`   → First leg max: ${(HARD_MAX_FIRST_LEG * 100).toFixed(0)}¢`);
+  log(`   → Second leg max: ${(HARD_MAX_SECOND_LEG * 100).toFixed(0)}¢`);
+  log(`   → Target CPP: < ${(HARD_MAX_CPP * 100).toFixed(0)}¢ (hard limit)`);
+  log(`   → Wait: ${config.hedge_min_delay_second_leg_ms}ms - ${config.hedge_max_wait_second_leg_ms}ms`);
   
   // VPN check
   const vpnOk = await verifyVpnConnection();
