@@ -73,8 +73,8 @@ let config: V29Config = { ...DEFAULT_CONFIG };
 // ============================================================
 const FORCE_HEDGE_MODE = true;        // Always enforce hedge mode
 const HARD_MAX_CPP = 0.97;            // Never hedge if CPP >= 97¢
-const HARD_MAX_FIRST_LEG = 0.55;      // Never pay > 55¢ for first leg
 const HARD_MAX_SECOND_LEG = 0.50;     // Never pay > 50¢ for second leg
+// NOTE: NO first leg price limit - buy at any price based on signal direction
 
 // Markets by asset
 const markets = new Map<Asset, MarketInfo>();
@@ -564,123 +564,48 @@ async function executeHedgeEntry(asset: Asset, signal: Signal, market: MarketInf
       return;
     }
     
-    // ============================================
-    // GABAGOOL KEY INSIGHT: Buy the EXPENSIVE side first!
+// ============================================
+    // USER REQUEST: Buy based on signal direction
     // ============================================
     // 
-    // When Binance moves UP → UP side becomes expensive (e.g., 60¢)
-    // The DOWN side becomes cheap (e.g., 40¢)
-    // 
-    // Strategy: Buy the expensive side FIRST because:
-    // 1. It follows the momentum (likely to stay expensive)
-    // 2. The cheap side will likely mean-revert and become even cheaper
-    // 3. Wait 2-45s for mean reversion, then buy cheap side for good CPP
+    // UP tick (Binance moves UP) → buy UP side first
+    // DOWN tick (Binance moves DOWN) → buy DOWN side first
     //
-    // EXCEPTION: At market start (first 30s), buy the cheap side first
-    // because markets are more balanced at open
+    // NO PRICE LIMIT on first leg!
+    // Second leg: Only if CPP < 97¢ and price ≤ 50¢
     
-    // Use HARD constants for price limits
-    const maxEntryPrice = HARD_MAX_SECOND_LEG;  // 50¢ max for second leg
-    const maxFirstLegPrice = HARD_MAX_FIRST_LEG;  // 55¢ max for first leg
+    // NO first leg price limit - buy at any price
+    const maxSecondLegPrice = HARD_MAX_SECOND_LEG;  // 50¢ max for second leg
     
-    // Determine which side to buy based on signal direction (Binance move)
-    // signal.direction tells us which way Binance moved
+// Determine which side to buy based on signal direction (Binance move)
+    // UP tick → buy UP first, DOWN tick → buy DOWN first
+    // NO PRICE LIMITS on first leg!
     let buySide: 'UP' | 'DOWN';
     let buyPrice: number;
     let buyTokenId: string;
     let waitForSide: 'UP' | 'DOWN';
     let waitForTokenId: string;
     
-    // Check if we're in the early market phase (first 30s)
-    // msFromStart is already calculated at line 508
-    const isEarlyMarket = msFromStart < 30_000;  // First 30 seconds
-    
-    if (isEarlyMarket) {
-      // EARLY MARKET: Buy the CHEAP side first (traditional approach)
-      // Markets are balanced at open, grab the cheap opportunity
-      const upIsCheap = upAsk <= maxEntryPrice;
-      const downIsCheap = downAsk <= maxEntryPrice;
-      
-      if (!upIsCheap && !downIsCheap) {
-        signal.status = 'skipped';
-        signal.skip_reason = `early_market_no_cheap_side: UP=${(upAsk * 100).toFixed(0)}¢, DOWN=${(downAsk * 100).toFixed(0)}¢ > ${(maxEntryPrice * 100).toFixed(0)}¢`;
-        void saveSignalLog(signal, state);
-        return;
-      }
-      
-      // Buy the cheaper side
-      if (upAsk <= downAsk && upIsCheap) {
-        buySide = 'UP';
-        buyPrice = upAsk;
-        buyTokenId = market.upTokenId;
-        waitForSide = 'DOWN';
-        waitForTokenId = market.downTokenId;
-      } else if (downIsCheap) {
-        buySide = 'DOWN';
-        buyPrice = downAsk;
-        buyTokenId = market.downTokenId;
-        waitForSide = 'UP';
-        waitForTokenId = market.upTokenId;
-      } else {
-        buySide = 'UP';
-        buyPrice = upAsk;
-        buyTokenId = market.upTokenId;
-        waitForSide = 'DOWN';
-        waitForTokenId = market.downTokenId;
-      }
-      
-      logAsset(asset, `🏁 EARLY MARKET: buying CHEAP side ${buySide} at ${(buyPrice * 100).toFixed(1)}¢`, {
-        msFromStart,
-        upAsk: (upAsk * 100).toFixed(1),
-        downAsk: (downAsk * 100).toFixed(1),
-      });
+    if (signal.direction === 'UP') {
+      buySide = 'UP';
+      buyPrice = upAsk;
+      buyTokenId = market.upTokenId;
+      waitForSide = 'DOWN';
+      waitForTokenId = market.downTokenId;
     } else {
-      // NORMAL MARKET: Buy the EXPENSIVE side first (follows momentum)
-      // signal.direction indicates which way Binance moved
-      // UP signal → Binance went UP → UP side is expensive → buy UP first
-      // DOWN signal → Binance went DOWN → DOWN side is expensive → buy DOWN first
-      
-      if (signal.direction === 'UP') {
-        buySide = 'UP';
-        buyPrice = upAsk;
-        buyTokenId = market.upTokenId;
-        waitForSide = 'DOWN';
-        waitForTokenId = market.downTokenId;
-      } else {
-        buySide = 'DOWN';
-        buyPrice = downAsk;
-        buyTokenId = market.downTokenId;
-        waitForSide = 'UP';
-        waitForTokenId = market.upTokenId;
-      }
-      
-      // Safety check: Don't overpay for the expensive side
-      if (buyPrice > maxFirstLegPrice) {
-        signal.status = 'skipped';
-        signal.skip_reason = `first_leg_too_expensive: ${buySide}=${(buyPrice * 100).toFixed(0)}¢ > ${(maxFirstLegPrice * 100).toFixed(0)}¢`;
-        void saveSignalLog(signal, state);
-        return;
-      }
-      
-      // Check if the other side is at least reasonably priced for CPP potential
-      const otherAsk = buySide === 'UP' ? downAsk : upAsk;
-      const projectedCpp = buyPrice + otherAsk;
-      
-      // Don't enter if projected CPP is terrible (> 1.10 means we need 10¢+ drop on other side)
-      if (projectedCpp > 1.10) {
-        signal.status = 'skipped';
-        signal.skip_reason = `projected_cpp_too_high: ${(projectedCpp * 100).toFixed(0)}¢ > 110¢`;
-        void saveSignalLog(signal, state);
-        return;
-      }
-      
-      logAsset(asset, `📈 MOMENTUM ENTRY: buying EXPENSIVE side ${buySide} at ${(buyPrice * 100).toFixed(1)}¢ (Binance moved ${signal.direction})`, {
-        signalDirection: signal.direction,
-        upAsk: (upAsk * 100).toFixed(1),
-        downAsk: (downAsk * 100).toFixed(1),
-        waitForSide,
-      });
+      buySide = 'DOWN';
+      buyPrice = downAsk;
+      buyTokenId = market.downTokenId;
+      waitForSide = 'UP';
+      waitForTokenId = market.upTokenId;
     }
+    
+    logAsset(asset, `📈 SIGNAL ${signal.direction}: buying ${buySide} at ${(buyPrice * 100).toFixed(1)}¢ (NO PRICE LIMIT)`, {
+      signalDirection: signal.direction,
+      upAsk: (upAsk * 100).toFixed(1),
+      downAsk: (downAsk * 100).toFixed(1),
+      waitForSide,
+    });
     
     // Log the entry decision
     const otherAsk = buySide === 'UP' ? downAsk : upAsk;
