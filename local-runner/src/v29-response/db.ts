@@ -69,6 +69,16 @@ export async function loadConfig(): Promise<Record<string, unknown> | null> {
       return null;
     }
     
+    if (!data) return null;
+    
+    // Merge config_json into the base data (config_json takes priority)
+    // This allows hedge_mode settings stored in config_json to override base columns
+    const configJson = data.config_json as Record<string, unknown> | null;
+    if (configJson && typeof configJson === 'object') {
+      const { config_json: _, ...baseData } = data;
+      return { ...baseData, ...configJson };
+    }
+    
     return data;
   } catch (err) {
     console.log('[V29:DB] Config load failed:', err);

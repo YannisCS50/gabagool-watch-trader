@@ -1971,6 +1971,16 @@ async function main(): Promise<void> {
     log(`Config loaded from DB`);
   }
   
+  // Log critical strategy mode
+  if (config.hedge_mode_enabled) {
+    log(`🔒 HEDGE MODE ACTIVE: hold-to-expiry, no selling`);
+    log(`   → First leg max: 60¢, Second leg max: ${(config.hedge_max_entry_price * 100).toFixed(0)}¢`);
+    log(`   → Target CPP: ${(config.hedge_max_cpp * 100).toFixed(0)}¢, Emergency CPP: 105¢`);
+    log(`   → Wait for second leg: ${config.hedge_min_delay_second_leg_ms}ms - ${config.hedge_max_wait_second_leg_ms}ms`);
+  } else {
+    log(`⚡ SCALP MODE ACTIVE: entry + exit monitor`);
+  }
+  
   // VPN check
   const vpnOk = await verifyVpnConnection();
   if (!vpnOk) {
