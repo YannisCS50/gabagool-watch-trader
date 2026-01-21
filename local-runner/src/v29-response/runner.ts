@@ -613,7 +613,6 @@ async function executeHedgeEntry(asset: Asset, signal: Signal, market: MarketInf
     
     logAsset(asset, `🎯 HEDGE ${buySide} FIRST: ${(buyPrice * 100).toFixed(1)}¢ | waiting for ${waitForSide} @${(otherAsk * 100).toFixed(1)}¢ | projected CPP: ${(projectedCpp * 100).toFixed(1)}¢`, {
       signalId: signal.id,
-      isEarlyMarket,
       buySide,
       buyPrice,
       waitForSide,
