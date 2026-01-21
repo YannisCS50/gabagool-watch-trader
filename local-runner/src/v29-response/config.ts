@@ -194,21 +194,22 @@ export const DEFAULT_CONFIG: V29Config = {
   enabled: true,
   
   // ============================================
-  // GABAGOOL HOLD-TO-EXPIRY MODE (Sequential Hedge)
+  // V29R SCALP MODE - Response-Based Exit Strategy
   // 
-  // CRITICAL: When hedge_mode_enabled=true:
-  // - NO SELLING - positions held until market settles
-  // - Buy cheap side first, wait for second leg
-  // - Exit monitor is completely disabled
-  // - Profit realized at settlement: $1 per paired share
+  // ORIGINAL V29R STRATEGY:
+  // - Buy on signal (Binance move ≥ $6)
+  // - Exit based on Polymarket price response
+  // - Target profit: 1.8-2.4¢ depending on direction
+  // - Max hold: 15-20s then timeout
+  // - NO holding to expiry - actively manage positions
   // ============================================
-  hedge_mode_enabled: true,
-  hedge_max_entry_price: 0.55,        // Buy second leg if price <= 55¢ (RELAXED from 50¢)
-  hedge_max_cpp: 1.00,                // Target CPP 100¢ (break-even is acceptable to avoid unhedged)
-  hedge_shares_per_side: 5,           // Buy 5 shares per side per signal
-  hedge_max_cost_per_market: 50,      // Max $50 per market (allows ~5 accumulation rounds)
-  hedge_min_delay_second_leg_ms: 1000, // Wait min 1s before second leg (FASTER from 2s)
-  hedge_max_wait_second_leg_ms: 30000, // Give up after 30s (FASTER from 45s - force earlier hedge)
+  hedge_mode_enabled: false,           // SCALP MODE - active exit management
+  hedge_max_entry_price: 0.55,        // (Not used in scalp mode)
+  hedge_max_cpp: 1.00,                // (Not used in scalp mode)
+  hedge_shares_per_side: 10,          // Shares per trade
+  hedge_max_cost_per_market: 100,     // (Not used in scalp mode)
+  hedge_min_delay_second_leg_ms: 1000, // (Not used in scalp mode)
+  hedge_max_wait_second_leg_ms: 30000, // (Not used in scalp mode)
   
   // SIGNAL DEFINITION
   signal_delta_usd: 6.0,

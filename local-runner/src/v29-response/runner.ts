@@ -68,13 +68,20 @@ let isRunning = false;
 let config: V29Config = { ...DEFAULT_CONFIG };
 
 // ============================================================
-// HARD SAFETY: V29R runs ONLY the hold-to-expiry hedge strategy.
-// These constants CANNOT be overridden by DB config.
+// V29R SCALP MODE - Response-Based Exit Strategy
 // ============================================================
-const FORCE_HEDGE_MODE = true;        // Always enforce hedge mode
-const HARD_MAX_CPP = 0.97;            // Never hedge if CPP >= 97¢
-const HARD_MAX_SECOND_LEG = 0.50;     // Never pay > 50¢ for second leg
-// NOTE: NO first leg price limit - buy at any price based on signal direction
+// 
+// This is the ORIGINAL V29R strategy:
+// 1. Signal: Binance price move ≥ $6 in 300ms
+// 2. Entry: Buy in direction of signal (UP tick → buy UP, DOWN tick → buy DOWN)
+// 3. Exit: Response-based (target profit, trailing, exhaustion, timeout)
+// 4. NO holding to expiry - actively manage positions
+//
+// Hedge mode is DISABLED - we scalp based on Polymarket repricing response
+// ============================================================
+const FORCE_HEDGE_MODE = false;       // SCALP MODE - use response-based exits
+const HARD_MAX_CPP = 0.97;            // (Not used in scalp mode)
+const HARD_MAX_SECOND_LEG = 0.50;     // (Not used in scalp mode)
 
 // Markets by asset
 const markets = new Map<Asset, MarketInfo>();
