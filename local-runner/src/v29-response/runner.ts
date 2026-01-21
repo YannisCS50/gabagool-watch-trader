@@ -63,7 +63,10 @@ import {
 // STATE
 // ============================================
 
-const RUN_ID = `v29r-${Date.now().toString(36)}`;
+// NOTE: By default we generate a fresh RUN_ID each start.
+// In Docker this can cause a restart-loop if a previous lease is still valid.
+// Set RUNNER_ID (or RUN_ID) in the runner env to make it stable across restarts.
+const RUN_ID = process.env.RUNNER_ID || process.env.RUN_ID || `v29r-${Date.now().toString(36)}`;
 let isRunning = false;
 let config: V29Config = { ...DEFAULT_CONFIG };
 
@@ -1929,23 +1932,37 @@ async function main(): Promise<void> {
   // ============================================================
   // HARD SAFETY OVERRIDES (startup)
   // ============================================================
+
+  // Only apply hedge clamps when hedge is actually active.
+  // (In scalp mode these values are irrelevant, and clamping/logging is confusing.)
   if (FORCE_HEDGE_MODE) {
     config.hedge_mode_enabled = true;
   }
-  if (config.hedge_max_cpp > HARD_MAX_CPP) {
-    log(`🛑 STARTUP CLAMP: hedge_max_cpp → ${(HARD_MAX_CPP * 100).toFixed(0)}¢`);
-    config.hedge_max_cpp = HARD_MAX_CPP;
+
+  const hedgeSafetyActive = FORCE_HEDGE_MODE || Boolean(config.hedge_mode_enabled);
+  if (hedgeSafetyActive) {
+    if (config.hedge_max_cpp > HARD_MAX_CPP) {
+      log(`🛑 STARTUP CLAMP: hedge_max_cpp → ${(HARD_MAX_CPP * 100).toFixed(0)}¢`);
+      config.hedge_max_cpp = HARD_MAX_CPP;
+    }
+    if (config.hedge_max_entry_price > HARD_MAX_SECOND_LEG) {
+      log(`🛑 STARTUP CLAMP: hedge_max_entry_price → ${(HARD_MAX_SECOND_LEG * 100).toFixed(0)}¢`);
+      config.hedge_max_entry_price = HARD_MAX_SECOND_LEG;
+    }
   }
-  if (config.hedge_max_entry_price > HARD_MAX_SECOND_LEG) {
-    config.hedge_max_entry_price = HARD_MAX_SECOND_LEG;
+
+  // Log active mode clearly
+  if (FORCE_HEDGE_MODE) {
+    log(`🔒 HEDGE MODE FORCED: hold-to-expiry, NO selling allowed`);
+    log(`   → First leg: NO price limit (follows signal direction)`);
+    log(`   → Second leg max: ${(HARD_MAX_SECOND_LEG * 100).toFixed(0)}¢`);
+    log(`   → Target CPP: < ${(HARD_MAX_CPP * 100).toFixed(0)}¢ (hard limit)`);
+    log(`   → Wait: ${config.hedge_min_delay_second_leg_ms}ms - ${config.hedge_max_wait_second_leg_ms}ms`);
+  } else if (config.hedge_mode_enabled) {
+    log(`🟠 HEDGE MODE (config): hold-to-expiry (exit monitor disabled)`);
+  } else {
+    log(`🟢 SCALP MODE: response-based exits enabled`);
   }
-  
-  // Log strategy (always hedge now)
-  log(`🔒 HEDGE MODE FORCED: hold-to-expiry, NO selling allowed`);
-  log(`   → First leg: NO price limit (follows signal direction)`);
-  log(`   → Second leg max: ${(HARD_MAX_SECOND_LEG * 100).toFixed(0)}¢`);
-  log(`   → Target CPP: < ${(HARD_MAX_CPP * 100).toFixed(0)}¢ (hard limit)`);
-  log(`   → Wait: ${config.hedge_min_delay_second_leg_ms}ms - ${config.hedge_max_wait_second_leg_ms}ms`);
   
   // VPN check
   const vpnOk = await verifyVpnConnection();
@@ -1967,12 +1984,22 @@ async function main(): Promise<void> {
     process.env.FORCE_TAKEOVER === '1' ||
     process.env.FORCE_TAKEOVER === 'true';
 
-  const leaseOk = await acquireLease(RUN_ID, { force: forceTakeover });
-  if (!leaseOk) {
-    logError('Failed to acquire lease');
-    process.exit(1);
+  if (forceTakeover) {
+    log('⚡ FORCE_TAKEOVER enabled');
   }
-  log('✅ Lease acquired');
+
+  // IMPORTANT: Don't exit if lease isn't acquired.
+  // Exiting causes Docker restart-loops and makes it harder to recover.
+  // Instead, keep the process alive and retry.
+  while (true) {
+    const leaseOk = await acquireLease(RUN_ID, { force: forceTakeover });
+    if (leaseOk) {
+      log('✅ Lease acquired');
+      break;
+    }
+    log('⏳ Lease not acquired; retrying in 5s...');
+    await new Promise((r) => setTimeout(r, 5_000));
+  }
   
   // Get balance
   const balance = await getBalance();
