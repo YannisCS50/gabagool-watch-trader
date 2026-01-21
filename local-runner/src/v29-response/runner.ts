@@ -1936,7 +1936,7 @@ async function main(): Promise<void> {
   
   // Log strategy (always hedge now)
   log(`🔒 HEDGE MODE FORCED: hold-to-expiry, NO selling allowed`);
-  log(`   → First leg max: ${(HARD_MAX_FIRST_LEG * 100).toFixed(0)}¢`);
+  log(`   → First leg: NO price limit (follows signal direction)`);
   log(`   → Second leg max: ${(HARD_MAX_SECOND_LEG * 100).toFixed(0)}¢`);
   log(`   → Target CPP: < ${(HARD_MAX_CPP * 100).toFixed(0)}¢ (hard limit)`);
   log(`   → Wait: ${config.hedge_min_delay_second_leg_ms}ms - ${config.hedge_max_wait_second_leg_ms}ms`);
