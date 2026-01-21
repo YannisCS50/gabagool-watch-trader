@@ -6,6 +6,7 @@
  */
 
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { randomUUID } from 'crypto';
 import type { SignalLog, TickLog } from './types.js';
 import type { Asset, Direction } from './config.js';
 
@@ -282,14 +283,39 @@ export async function sendHeartbeat(
 ): Promise<void> {
   try {
     const db = getDb();
-    
-    await db.from('runner_heartbeats').upsert({
-      id: runId,
+
+    const marketsCount = Number((data.markets ?? data.markets_active) ?? 0);
+    const positionsCount = Number((data.activePositions ?? data.positions_active) ?? 0);
+    const tradesCount = Number((data.trades ?? data.trades_count) ?? 0);
+    const balance = typeof data.balance === 'number' ? data.balance : null;
+    const version = typeof data.version === 'string' ? data.version : 'v29r';
+
+    // Schema uses (runner_id TEXT, id UUID). We try to upsert on runner_id.
+    const payload = {
+      runner_id: runId,
       runner_type: 'v29-response',
       status,
       last_heartbeat: new Date().toISOString(),
-      data,
-    }, { onConflict: 'id' });
+      markets_count: marketsCount,
+      markets_active: marketsCount,
+      positions_count: positionsCount,
+      trades_count: tradesCount,
+      balance,
+      version,
+    };
+
+    const upsertRes = await db
+      .from('runner_heartbeats')
+      .upsert(payload, { onConflict: 'runner_id' });
+
+    // If runner_id isn't unique in the DB schema, Postgres will reject upsert.
+    // Fall back to inserting a new row so we still get operational visibility.
+    if (upsertRes.error) {
+      await db.from('runner_heartbeats').insert({
+        id: randomUUID(),
+        ...payload,
+      });
+    }
   } catch {
     // Silent fail
   }
