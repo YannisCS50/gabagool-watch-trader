@@ -1106,14 +1106,19 @@ async function executeExit(
     const positionMarketSlug = position.marketSlug;
     
     // Extract epoch from slug (e.g., "btc-updown-15m-1768596300" -> 1768596300)
+    // NOTE: The epoch in the slug is the MARKET START TIME, not end time!
+    // For 15-minute markets, end time = start time + 15 minutes (900 seconds)
     const slugParts = positionMarketSlug.split('-');
-    const marketEndEpoch = parseInt(slugParts[slugParts.length - 1], 10) * 1000;
+    const marketStartEpoch = parseInt(slugParts[slugParts.length - 1], 10) * 1000;
+    const FIFTEEN_MINUTES_MS = 15 * 60 * 1000;  // 900000 ms
+    const marketEndEpoch = marketStartEpoch + FIFTEEN_MINUTES_MS;
     
     if (Number.isFinite(marketEndEpoch) && now >= marketEndEpoch) {
       logAsset(asset, `⏰ MARKET EXPIRED: position will be settled via claim, removing from active tracking`, {
         positionKey,
         positionId: position.id,
         marketSlug: positionMarketSlug,
+        marketStartEpoch,
         marketEndEpoch,
         expiredAgo: `${((now - marketEndEpoch) / 1000).toFixed(0)}s`,
       });
