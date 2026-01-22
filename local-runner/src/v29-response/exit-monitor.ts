@@ -38,7 +38,7 @@ export function checkExit(
   position: ActivePosition,
   config: V29Config,
   priceState: PriceState,
-  currentBinanceDelta: number,  // NEW: Current Binance delta for momentum tracking
+  currentPriceToStrikeDelta: number,  // Current price - strike (for momentum tracking)
   logFn: (msg: string, data?: Record<string, unknown>) => void
 ): ExitDecision {
   const now = Date.now();
@@ -82,35 +82,49 @@ export function checkExit(
   position.priceHistory = position.priceHistory.filter(p => p.ts >= now - 2000);
   
   // ============================================
-  // DELTA MOMENTUM TRACKING (User requested 2026-01-22)
-  // Track if Binance delta continues in our direction
+  // PRICE-TO-STRIKE DELTA MOMENTUM TRACKING (User requested 2026-01-22)
+  // Track if price-to-strike delta is growing in our direction
+  // UP trade: delta should be increasing (price moving further above strike)
+  // DOWN trade: delta should be decreasing (price moving further below strike)
   // ============================================
   let momentumContinues = false;
   
-  if (config.delta_momentum_hold_enabled && currentBinanceDelta !== 0) {
-    // Record delta history
-    position.deltaHistory = position.deltaHistory || [];
-    position.deltaHistory.push({ delta: currentBinanceDelta, ts: now });
-    // Keep only last 5 seconds
-    position.deltaHistory = position.deltaHistory.filter(d => d.ts >= now - 5000);
+  if (config.delta_momentum_hold_enabled && currentPriceToStrikeDelta !== 0) {
+    // Initialize maxDeltaInDirection if not set
+    if (position.maxDeltaInDirection === undefined) {
+      position.maxDeltaInDirection = position.initialDelta || currentPriceToStrikeDelta;
+    }
     
-    // Check if delta is moving in our trade direction
-    const deltaDirection = currentBinanceDelta > 0 ? 'UP' : 'DOWN';
-    const absDelta = Math.abs(currentBinanceDelta);
-    
-    // Momentum continues if: delta >= threshold AND same direction as our trade
-    if (deltaDirection === position.direction && absDelta >= config.delta_momentum_min_per_tick) {
-      momentumContinues = true;
-      position.lastDeltaDirection = deltaDirection;
-      
-      // Log momentum detection (not too spammy)
-      if (holdTimeSec > 3 && holdTimeSec % 2 < 0.2) {  // Log every ~2s after 3s hold
-        logFn(`🚀 MOMENTUM: ${position.asset} ${position.direction} delta=$${currentBinanceDelta.toFixed(2)} (continuing, may extend hold)`, {
-          positionId: position.id,
-          currentBinanceDelta,
-          holdTimeSec,
-          extensionUsed: position.momentumExtensionUsed,
-        });
+    // Check if delta is moving favorably for our position
+    if (position.direction === 'UP') {
+      // For UP trades: delta growing more positive = momentum continues
+      if (currentPriceToStrikeDelta > position.maxDeltaInDirection) {
+        const growth = currentPriceToStrikeDelta - position.maxDeltaInDirection;
+        if (growth >= (config.delta_momentum_min_growth || 5)) {
+          momentumContinues = true;
+          position.maxDeltaInDirection = currentPriceToStrikeDelta;
+          logFn(`🚀 MOMENTUM UP: ${position.asset} | Δ grew +$${growth.toFixed(0)} to +$${currentPriceToStrikeDelta.toFixed(0)} (extending hold)`, {
+            positionId: position.id,
+            initialDelta: position.initialDelta,
+            currentDelta: currentPriceToStrikeDelta,
+            growth,
+          });
+        }
+      }
+    } else {
+      // For DOWN trades: delta growing more negative = momentum continues
+      if (currentPriceToStrikeDelta < position.maxDeltaInDirection) {
+        const growth = Math.abs(currentPriceToStrikeDelta - position.maxDeltaInDirection);
+        if (growth >= (config.delta_momentum_min_growth || 5)) {
+          momentumContinues = true;
+          position.maxDeltaInDirection = currentPriceToStrikeDelta;
+          logFn(`🚀 MOMENTUM DOWN: ${position.asset} | Δ fell -$${growth.toFixed(0)} to $${currentPriceToStrikeDelta.toFixed(0)} (extending hold)`, {
+            positionId: position.id,
+            initialDelta: position.initialDelta,
+            currentDelta: currentPriceToStrikeDelta,
+            growth,
+          });
+        }
       }
     }
   }
@@ -363,6 +377,7 @@ export function createPositionTracker(
   tokenId: string,
   shares: number,
   entryPrice: number,
+  initialPriceToStrikeDelta: number,  // Delta when position opened
   orderId?: string
 ): ActivePosition {
   const now = Date.now();
@@ -391,9 +406,9 @@ export function createPositionTracker(
     
     priceHistory: [{ price: entryPrice, ts: now }],
     
-    // DELTA MOMENTUM TRACKING (User requested 2026-01-22)
-    deltaHistory: [],
-    lastDeltaDirection: direction,  // Assume initial delta matches trade direction
+    // PRICE-TO-STRIKE DELTA MOMENTUM TRACKING (User requested 2026-01-22)
+    initialDelta: initialPriceToStrikeDelta,
+    maxDeltaInDirection: initialPriceToStrikeDelta,
     momentumExtensionUsed: 0,
   };
 }
