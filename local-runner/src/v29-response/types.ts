@@ -133,10 +133,10 @@ export interface ActivePosition {
   // Stall detection (1-second rolling window)
   priceHistory: Array<{ price: number; ts: number }>;
   
-  // DELTA MOMENTUM TRACKING (User requested 2026-01-22)
-  // Track Binance delta to extend hold time when momentum continues
-  deltaHistory: Array<{ delta: number; ts: number }>;
-  lastDeltaDirection: 'UP' | 'DOWN' | null;
+  // PRICE-TO-STRIKE DELTA MOMENTUM TRACKING (User requested 2026-01-22)
+  // Track price-to-strike delta to extend hold time when delta grows in our direction
+  initialDelta: number;           // Delta when position was opened
+  maxDeltaInDirection: number;    // Max favorable delta seen
   momentumExtensionUsed: number;  // Seconds of extra hold time already used
   
   // Monitor interval

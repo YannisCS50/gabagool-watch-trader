@@ -98,7 +98,8 @@ const priceState: Record<Asset, PriceState> = {
 };
 
 // Track last Binance delta per asset (for momentum-based exit extension)
-const lastBinanceDelta: Record<Asset, number> = {
+// NOTE: This is the PRICE-TO-STRIKE delta, not tick-to-tick delta
+const lastPriceToStrikeDelta: Record<Asset, number> = {
   BTC: 0,
   ETH: 0,
   SOL: 0,
@@ -338,8 +339,10 @@ function handleBinancePrice(asset: Asset, price: number, timestamp: number): voi
   // Process tick and get delta from previous tick (tick-to-tick like V29)
   const { hasPrevious, delta, direction } = processTick(asset, price);
   
-  // Store delta for momentum tracking in exit logic
-  lastBinanceDelta[asset] = delta;
+  // Calculate and store price-to-strike delta for momentum tracking
+  if (market && market.strikePrice > 0) {
+    lastPriceToStrikeDelta[asset] = price - market.strikePrice;
+  }
   
   // Log tick (async)
   queueTick({
@@ -969,7 +972,8 @@ async function executeEntry(asset: Asset, signal: Signal, market: MarketInfo): P
       return;
     }
     
-    // Create active position
+    // Create active position with initial price-to-strike delta
+    const initialDelta = lastPriceToStrikeDelta[asset] || 0;
     const position = createPositionTracker(
       signal,
       asset,
@@ -978,6 +982,7 @@ async function executeEntry(asset: Asset, signal: Signal, market: MarketInfo): P
       tokenId,
       filledSize,
       avgPrice,
+      initialDelta,  // Price-to-strike delta at entry
       result.orderId
     );
     
@@ -1064,14 +1069,14 @@ function checkPositionExit(positionKey: string): void {
   const asset = position.asset as Asset;
   const state = priceState[asset];
 
-  // Get current Binance delta for momentum tracking
-  const currentDelta = lastBinanceDelta[asset] || 0;
+  // Get current price-to-strike delta for momentum tracking
+  const currentDelta = lastPriceToStrikeDelta[asset] || 0;
   
   const decision = checkExit(
     position,
     config,
     state,
-    currentDelta,  // Pass current delta for momentum tracking
+    currentDelta,  // Pass price-to-strike delta for momentum tracking
     (msg, data) => logAsset(asset, msg, data)
   );
 
@@ -1721,6 +1726,9 @@ function handleUserChannelTrade(event: TradeEvent): void {
         shares: size,
       };
       
+      // Calculate initial delta for momentum tracking
+      const initialDelta = lastPriceToStrikeDelta[matchedAsset] || 0;
+      
       const newPosition = createPositionTracker(
         fakeSignal,
         matchedAsset,
@@ -1729,6 +1737,7 @@ function handleUserChannelTrade(event: TradeEvent): void {
         tokenId,
         size,
         price,
+        initialDelta,  // Price-to-strike delta at entry
         event.taker_order_id
       );
       
@@ -1890,6 +1899,9 @@ async function syncLivePositions(): Promise<void> {
         shares: pos.size,
       };
       
+      // Calculate initial delta for momentum tracking
+      const initialDelta = lastPriceToStrikeDelta[matchedAsset] || 0;
+      
       const position = createPositionTracker(
         fakeSignal,
         matchedAsset,
@@ -1898,6 +1910,7 @@ async function syncLivePositions(): Promise<void> {
         tokenId,
         pos.size,
         pos.avgPrice,
+        initialDelta,  // Price-to-strike delta at entry
         undefined
       );
       

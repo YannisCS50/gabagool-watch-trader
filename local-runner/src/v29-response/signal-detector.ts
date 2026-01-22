@@ -260,24 +260,39 @@ export function checkSignal(
   }
   
   // 8c. PRO-DELTA-ONLY FILTER (User requested 2026-01-22)
-  // Block trades that go AGAINST the Binance delta direction
-  // If Binance moves UP, only allow buying UP. If Binance moves DOWN, only allow buying DOWN.
-  if (config.pro_delta_only) {
-    const binanceDirection = delta > 0 ? 'UP' : 'DOWN';
-    if (direction !== binanceDirection) {
-      logFn(`SKIP: ${asset} ${direction} - CONTRA-DELTA blocked (Binance moved ${binanceDirection}, we wanted ${direction})`, {
-        asset, direction, delta, binanceDirection,
-      });
-      return { triggered: false, skipReason: 'contra_delta_blocked', skipDetails: `Binance ${binanceDirection}, wanted ${direction}` };
-    }
-  }
-  
-  // 9. DELTA-BASED DIRECTIONAL FILTER (time + strike-based)
-  // Uses binance price vs strike to determine which sides are allowed
-  // As we get closer to expiry, the allowed delta range narrows
+  // Block trades that go AGAINST the price-to-strike delta
+  // Delta = Binance price - Strike price
+  // If price > strike + neutral zone → only UP allowed
+  // If price < strike - neutral zone → only DOWN allowed
   const binancePrice = priceState.binance ?? 0;
   const strikePrice = market.strikePrice ?? 0;
   const priceToStrikeDelta = strikePrice > 0 ? binancePrice - strikePrice : 0;
+  
+  if (config.pro_delta_only && strikePrice > 0) {
+    const neutralZone = config.pro_delta_neutral_zone_usd ?? 50;
+    
+    if (priceToStrikeDelta > neutralZone) {
+      // Price is ABOVE strike by more than neutral zone → only UP allowed
+      if (direction !== 'UP') {
+        logFn(`SKIP: ${asset} ${direction} - CONTRA-DELTA blocked | price>${strikePrice.toFixed(0)}+${neutralZone} | Δ=+${priceToStrikeDelta.toFixed(0)} → only UP allowed`, {
+          asset, direction, priceToStrikeDelta, strikePrice, neutralZone,
+        });
+        return { triggered: false, skipReason: 'contra_delta_blocked', skipDetails: `Δ=+${priceToStrikeDelta.toFixed(0)}, only UP` };
+      }
+    } else if (priceToStrikeDelta < -neutralZone) {
+      // Price is BELOW strike by more than neutral zone → only DOWN allowed
+      if (direction !== 'DOWN') {
+        logFn(`SKIP: ${asset} ${direction} - CONTRA-DELTA blocked | price<${strikePrice.toFixed(0)}-${neutralZone} | Δ=${priceToStrikeDelta.toFixed(0)} → only DOWN allowed`, {
+          asset, direction, priceToStrikeDelta, strikePrice, neutralZone,
+        });
+        return { triggered: false, skipReason: 'contra_delta_blocked', skipDetails: `Δ=${priceToStrikeDelta.toFixed(0)}, only DOWN` };
+      }
+    }
+    // Within neutral zone: both directions OK
+  }
+  
+  // 9. DELTA-BASED DIRECTIONAL FILTER (time-based narrowing)
+  // As we get closer to expiry, the allowed delta range narrows
   const msToExpiry = market.endTime.getTime() - now;
   const minToExpiry = msToExpiry / 60_000;
   
