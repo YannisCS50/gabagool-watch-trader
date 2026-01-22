@@ -46,9 +46,11 @@ export type SkipReason =
   | 'disabled'
   | 'delta_too_small'
   | 'delta_too_large'    // Skip if delta > max
-  | 'delta_below_dynamic'  // NEW: Skip if delta < dynamic threshold
+  | 'delta_below_dynamic'  // Skip if delta < dynamic threshold
+  | 'up_delta_too_small'  // NEW: UP trades need higher threshold ($8)
   | 'no_orderbook'
   | 'spread_too_wide'
+  | 'spread_too_tight'   // NEW: Tight spreads are loss-making
   | 'already_repriced'
   | 'price_out_of_range'
   | 'extreme_price_weak_delta'  // Extreme price zone needs stronger delta
@@ -56,7 +58,8 @@ export type SkipReason =
   | 'exposure_limit'
   | 'no_previous_tick'
   | 'delta_direction_mismatch'
-  | 'contra_delta_blocked';  // NEW: Pro-delta-only filter blocks contra-delta trades
+  | 'contra_delta_blocked'
+  | 'blacklist_hour';    // NEW: Time-of-day blacklist (14-15 UTC)
 
 // ============================================
 // SIGNAL RESULT
@@ -160,6 +163,13 @@ export function checkSignal(
     return { triggered: false, skipReason: 'disabled' };
   }
   
+  // 1b. TIME-OF-DAY BLACKLIST (14:00-15:00 UTC = loss-making hour)
+  // Analysis of 5,900+ trades showed this hour is consistently unprofitable
+  const currentHourUTC = new Date(now).getUTCHours();
+  if (currentHourUTC === 14) {
+    return { triggered: false, skipReason: 'blacklist_hour', skipDetails: '14:00-15:00 UTC blocked' };
+  }
+  
   // 2. Check if market exists
   if (!market) {
     return { triggered: false, skipReason: 'no_market' };
@@ -174,6 +184,15 @@ export function checkSignal(
   const absDelta = Math.abs(delta);
   if (absDelta < config.signal_delta_usd) {
     return { triggered: false, skipReason: 'delta_too_small' };
+  }
+  
+  // 4d. UP TRADES NEED HIGHER THRESHOLD ($8 instead of $6)
+  // Analysis: UP trades with delta <$8 had -$186 total loss
+  if (direction === 'UP' && absDelta < 8.0) {
+    logFn(`SKIP: ${asset} UP - delta $${absDelta.toFixed(2)} < $8 (UP threshold)`, {
+      asset, direction, absDelta, upThreshold: 8.0,
+    });
+    return { triggered: false, skipReason: 'up_delta_too_small', skipDetails: `UP needs ≥$8, got $${absDelta.toFixed(1)}` };
   }
   
   // 4b. DYNAMIC DELTA CHECK - Adjust threshold based on volatility
@@ -206,13 +225,23 @@ export function checkSignal(
     return { triggered: false, skipReason: 'no_orderbook' };
   }
   
-  // 6. Check spread
+  // 6. Check spread (too wide)
   const spreadCents = (bestAsk - bestBid) * 100;
   if (spreadCents > config.max_spread_cents) {
     logFn(`SKIP: ${asset} ${direction} - spread ${spreadCents.toFixed(1)}¢ > ${config.max_spread_cents}¢`, {
       asset, direction, spreadCents,
     });
     return { triggered: false, skipReason: 'spread_too_wide', skipDetails: `spread=${spreadCents.toFixed(1)}¢` };
+  }
+  
+  // 6b. MINIMUM SPREAD FILTER (tight spreads = loss-making)
+  // Analysis: spreads <1¢ had -$186 loss, spreads >2¢ had +$181 profit
+  const MIN_SPREAD_CENTS = 1.5;
+  if (spreadCents < MIN_SPREAD_CENTS) {
+    logFn(`SKIP: ${asset} ${direction} - spread ${spreadCents.toFixed(1)}¢ < ${MIN_SPREAD_CENTS}¢ (too tight)`, {
+      asset, direction, spreadCents,
+    });
+    return { triggered: false, skipReason: 'spread_too_tight', skipDetails: `spread=${spreadCents.toFixed(1)}¢ < ${MIN_SPREAD_CENTS}¢` };
   }
   
   // 7. Check if already repriced (only if recent signal exists - expires after 2s)
