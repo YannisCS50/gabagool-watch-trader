@@ -259,21 +259,21 @@ export const DEFAULT_CONFIG: V29Config = {
   // EXIT MONITORING (only used if hedge_mode_enabled=false)
   exit_monitor_interval_ms: 100,
   
-  // UP-SPECIFIC: Faster repricing, SHORTER hold (analysis: 15s max)
+  // UP-SPECIFIC: TIGHTER TARGETS + SHORTER TIMEOUT (analysis: less profitable)
   up: {
-    target_profit_cents_min: 1.8,
-    target_profit_cents_max: 2.0,
+    target_profit_cents_min: 2.0,   // RAISED from 1.8 - need higher threshold
+    target_profit_cents_max: 2.2,   // RAISED from 2.0 - aim higher
     // TRAILING PROFIT: Let winners run longer
     trailing_enabled: true,
-    trailing_start_cents: 1.5,      // Start trailing after 1.5¢ profit
+    trailing_start_cents: 1.8,      // RAISED from 1.5 - start trailing later
     trailing_step_cents: 1.0,       // Raise target by 1¢ per step
     trailing_pullback_cents: 0.8,   // Exit if pulls back 0.8¢ from max
-    max_hold_seconds: 15,
+    max_hold_seconds: 10,           // REDUCED from 15 - cut losers faster
     repricing_exhaustion_pct: 0.65,
     stall_threshold_cents_per_sec: 0.1,
     expected_repricing_cents: 3.0,
     stagnation_threshold_cents: 0.5,
-    stagnation_check_after_ms: 3000,
+    stagnation_check_after_ms: 2000, // REDUCED from 3000 - detect stagnation earlier
   },
   
   // DOWN-SPECIFIC: Slower repricing, SHORTER hold (analysis: 20s max)
@@ -294,14 +294,14 @@ export const DEFAULT_CONFIG: V29Config = {
   },
   
   // ADVERSE SELECTION
-  adverse_spread_threshold_cents: 1.5,
+  adverse_spread_threshold_cents: 2.5,  // RAISED from 1.5 - less premature adverse exits
   taker_flow_window_ms: 300,
   
   // DELTA MOMENTUM LOGIC - User requested 2026-01-22
   // Delta = price - strike (price to beat)
   // "trades die met de delta mee gaan langer houden"
   pro_delta_only: true,                        // ENABLED: Only trade WITH the price-to-strike delta
-  pro_delta_neutral_zone_usd: 50,              // ±$50 from strike = neutral zone (both OK)
+  pro_delta_neutral_zone_usd: 30,              // TIGHTENED from 50 to 30 - blocks low-edge UP trades
   delta_momentum_hold_enabled: true,           // ENABLED: Keep position if delta grows in our direction
   delta_momentum_min_growth: 5.0,              // Delta must grow $5 to extend hold
   delta_momentum_max_extension_seconds: 15.0,  // Up to 15s extra hold time
