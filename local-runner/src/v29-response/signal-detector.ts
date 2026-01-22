@@ -55,7 +55,8 @@ export type SkipReason =
   | 'position_open'
   | 'exposure_limit'
   | 'no_previous_tick'
-  | 'delta_direction_mismatch';
+  | 'delta_direction_mismatch'
+  | 'contra_delta_blocked';  // NEW: Pro-delta-only filter blocks contra-delta trades
 
 // ============================================
 // SIGNAL RESULT
@@ -258,7 +259,20 @@ export function checkSignal(
     }
   }
   
-  // 9. DELTA-BASED DIRECTIONAL FILTER
+  // 8c. PRO-DELTA-ONLY FILTER (User requested 2026-01-22)
+  // Block trades that go AGAINST the Binance delta direction
+  // If Binance moves UP, only allow buying UP. If Binance moves DOWN, only allow buying DOWN.
+  if (config.pro_delta_only) {
+    const binanceDirection = delta > 0 ? 'UP' : 'DOWN';
+    if (direction !== binanceDirection) {
+      logFn(`SKIP: ${asset} ${direction} - CONTRA-DELTA blocked (Binance moved ${binanceDirection}, we wanted ${direction})`, {
+        asset, direction, delta, binanceDirection,
+      });
+      return { triggered: false, skipReason: 'contra_delta_blocked', skipDetails: `Binance ${binanceDirection}, wanted ${direction}` };
+    }
+  }
+  
+  // 9. DELTA-BASED DIRECTIONAL FILTER (time + strike-based)
   // Uses binance price vs strike to determine which sides are allowed
   // As we get closer to expiry, the allowed delta range narrows
   const binancePrice = priceState.binance ?? 0;

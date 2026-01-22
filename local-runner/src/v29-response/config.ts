@@ -153,6 +153,27 @@ export interface V29Config {
   down: DirectionConfig;
   
   // ============================================
+  // DELTA MOMENTUM LOGIC (user request 2026-01-22)
+  // ============================================
+  
+  // PRO-DELTA ONLY: Block trades that go AGAINST the Binance delta
+  // If Binance moves UP ($delta > 0), ONLY allow buying UP tokens
+  // If Binance moves DOWN ($delta < 0), ONLY allow buying DOWN tokens
+  // This prevents "contra-delta" bets which often lose
+  pro_delta_only: boolean;
+  
+  // DELTA MOMENTUM HOLD: Keep position longer if delta continues in same direction
+  // When the Binance delta keeps moving in our trade direction, don't exit yet
+  // Only exit when delta reverses or stagnates
+  delta_momentum_hold_enabled: boolean;
+  
+  // Minimum delta movement per tick to consider "momentum continuing" (USD)
+  delta_momentum_min_per_tick: number;  // e.g., 2.0 = need $2 move per tick in same direction
+  
+  // Maximum additional hold time when momentum is continuing (seconds)
+  delta_momentum_max_extension_seconds: number;  // e.g., 10s extra hold
+  
+  // ============================================
   // ADVERSE SELECTION DETECTION
   // ============================================
   
@@ -271,6 +292,13 @@ export const DEFAULT_CONFIG: V29Config = {
   // ADVERSE SELECTION
   adverse_spread_threshold_cents: 1.5,
   taker_flow_window_ms: 300,
+  
+  // DELTA MOMENTUM LOGIC - User requested 2026-01-22
+  // "trades die met de delta mee gaan langer houden"
+  pro_delta_only: true,                        // ENABLED: Only trade WITH the delta, not against
+  delta_momentum_hold_enabled: true,           // ENABLED: Keep position if delta continues
+  delta_momentum_min_per_tick: 2.0,            // Need $2 move per tick to extend
+  delta_momentum_max_extension_seconds: 15.0,  // Up to 15s extra hold time
   
   // RISK CONTROLS
   max_positions_per_asset: 10,   // INCREASED for hedge mode (more accumulation)

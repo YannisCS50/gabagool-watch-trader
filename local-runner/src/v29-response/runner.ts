@@ -97,6 +97,14 @@ const priceState: Record<Asset, PriceState> = {
   XRP: { binance: null, binanceTs: 0, chainlink: null, upBestAsk: null, upBestBid: null, downBestAsk: null, downBestBid: null, lastOrderbookUpdate: 0 },
 };
 
+// Track last Binance delta per asset (for momentum-based exit extension)
+const lastBinanceDelta: Record<Asset, number> = {
+  BTC: 0,
+  ETH: 0,
+  SOL: 0,
+  XRP: 0,
+};
+
 // Active positions - keyed by unique position ID (supports multiple per asset)
 // Key format: `${asset}-${positionId}` e.g., "BTC-abc123"
 const activePositions = new Map<string, ActivePosition>();
@@ -329,6 +337,9 @@ function handleBinancePrice(asset: Asset, price: number, timestamp: number): voi
   
   // Process tick and get delta from previous tick (tick-to-tick like V29)
   const { hasPrevious, delta, direction } = processTick(asset, price);
+  
+  // Store delta for momentum tracking in exit logic
+  lastBinanceDelta[asset] = delta;
   
   // Log tick (async)
   queueTick({
@@ -1053,10 +1064,14 @@ function checkPositionExit(positionKey: string): void {
   const asset = position.asset as Asset;
   const state = priceState[asset];
 
+  // Get current Binance delta for momentum tracking
+  const currentDelta = lastBinanceDelta[asset] || 0;
+  
   const decision = checkExit(
     position,
     config,
     state,
+    currentDelta,  // Pass current delta for momentum tracking
     (msg, data) => logAsset(asset, msg, data)
   );
 

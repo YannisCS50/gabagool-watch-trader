@@ -38,6 +38,7 @@ export function checkExit(
   position: ActivePosition,
   config: V29Config,
   priceState: PriceState,
+  currentBinanceDelta: number,  // NEW: Current Binance delta for momentum tracking
   logFn: (msg: string, data?: Record<string, unknown>) => void
 ): ExitDecision {
   const now = Date.now();
@@ -79,6 +80,40 @@ export function checkExit(
   position.priceHistory.push({ price: currentBestBid, ts: now });
   // Keep only last 2 seconds
   position.priceHistory = position.priceHistory.filter(p => p.ts >= now - 2000);
+  
+  // ============================================
+  // DELTA MOMENTUM TRACKING (User requested 2026-01-22)
+  // Track if Binance delta continues in our direction
+  // ============================================
+  let momentumContinues = false;
+  
+  if (config.delta_momentum_hold_enabled && currentBinanceDelta !== 0) {
+    // Record delta history
+    position.deltaHistory = position.deltaHistory || [];
+    position.deltaHistory.push({ delta: currentBinanceDelta, ts: now });
+    // Keep only last 5 seconds
+    position.deltaHistory = position.deltaHistory.filter(d => d.ts >= now - 5000);
+    
+    // Check if delta is moving in our trade direction
+    const deltaDirection = currentBinanceDelta > 0 ? 'UP' : 'DOWN';
+    const absDelta = Math.abs(currentBinanceDelta);
+    
+    // Momentum continues if: delta >= threshold AND same direction as our trade
+    if (deltaDirection === position.direction && absDelta >= config.delta_momentum_min_per_tick) {
+      momentumContinues = true;
+      position.lastDeltaDirection = deltaDirection;
+      
+      // Log momentum detection (not too spammy)
+      if (holdTimeSec > 3 && holdTimeSec % 2 < 0.2) {  // Log every ~2s after 3s hold
+        logFn(`🚀 MOMENTUM: ${position.asset} ${position.direction} delta=$${currentBinanceDelta.toFixed(2)} (continuing, may extend hold)`, {
+          positionId: position.id,
+          currentBinanceDelta,
+          holdTimeSec,
+          extensionUsed: position.momentumExtensionUsed,
+        });
+      }
+    }
+  }
   
   // ============================================
   // EXIT CONDITION 1: TARGET / TRAILING PROFIT
@@ -236,19 +271,47 @@ export function checkExit(
   
   // ============================================
   // EXIT CONDITION 4: HARD TIME STOP (LAST RESORT)
+  // Modified for DELTA MOMENTUM: Extend hold time if momentum continues
   // ============================================
   
-  if (holdTimeSec >= dirConfig.max_hold_seconds) {
-    logFn(`⏰ EXIT TIMEOUT: ${position.asset} ${position.direction} | held ${holdTimeSec.toFixed(1)}s (max ${dirConfig.max_hold_seconds}s)`, {
+  // Calculate effective max hold time (base + momentum extension)
+  const baseMaxHold = dirConfig.max_hold_seconds;
+  let effectiveMaxHold = baseMaxHold;
+  
+  if (config.delta_momentum_hold_enabled && momentumContinues) {
+    // Allow extending hold time up to the max extension
+    const remainingExtension = config.delta_momentum_max_extension_seconds - (position.momentumExtensionUsed || 0);
+    
+    if (remainingExtension > 0) {
+      // Extend by 1 second per momentum check
+      const extensionThisCheck = Math.min(1, remainingExtension);
+      position.momentumExtensionUsed = (position.momentumExtensionUsed || 0) + extensionThisCheck;
+      effectiveMaxHold = baseMaxHold + position.momentumExtensionUsed;
+      
+      logFn(`⏳ MOMENTUM EXTENSION: ${position.asset} ${position.direction} | hold extended to ${effectiveMaxHold.toFixed(1)}s (used ${position.momentumExtensionUsed.toFixed(1)}s of ${config.delta_momentum_max_extension_seconds}s)`, {
+        positionId: position.id,
+        baseMaxHold,
+        effectiveMaxHold,
+        momentumExtensionUsed: position.momentumExtensionUsed,
+        holdTimeSec,
+      });
+    }
+  }
+  
+  if (holdTimeSec >= effectiveMaxHold) {
+    logFn(`⏰ EXIT TIMEOUT: ${position.asset} ${position.direction} | held ${holdTimeSec.toFixed(1)}s (max ${effectiveMaxHold.toFixed(1)}s, base ${baseMaxHold}s)`, {
       positionId: position.id,
       holdTimeSec,
+      baseMaxHold,
+      effectiveMaxHold,
+      momentumExtensionUsed: position.momentumExtensionUsed || 0,
       unrealizedPnlCents,
     });
     
     return {
       shouldExit: true,
       type: 'timeout',
-      reason: `held=${holdTimeSec.toFixed(1)}s`,
+      reason: `held=${holdTimeSec.toFixed(1)}s (max=${effectiveMaxHold.toFixed(1)}s)`,
       unrealizedPnl: unrealizedPnlCents,
     };
   }
@@ -327,5 +390,10 @@ export function createPositionTracker(
     totalRepricing: 0,
     
     priceHistory: [{ price: entryPrice, ts: now }],
+    
+    // DELTA MOMENTUM TRACKING (User requested 2026-01-22)
+    deltaHistory: [],
+    lastDeltaDirection: direction,  // Assume initial delta matches trade direction
+    momentumExtensionUsed: 0,
   };
 }
