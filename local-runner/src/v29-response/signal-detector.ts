@@ -186,13 +186,14 @@ export function checkSignal(
     return { triggered: false, skipReason: 'delta_too_small' };
   }
   
-  // 4d. UP TRADES NEED HIGHER THRESHOLD ($8 instead of $6)
-  // Analysis: UP trades with delta <$8 had -$186 total loss
-  if (direction === 'UP' && absDelta < 8.0) {
-    logFn(`SKIP: ${asset} UP - delta $${absDelta.toFixed(2)} < $8 (UP threshold)`, {
-      asset, direction, absDelta, upThreshold: 8.0,
+  // 4d. UP TRADES NEED HIGHER THRESHOLD ($7 instead of $6)
+  // Analysis: UP trades with delta <$6 had poor performance, but $8 was too strict
+  const UP_MIN_DELTA = 7.0;
+  if (direction === 'UP' && absDelta < UP_MIN_DELTA) {
+    logFn(`SKIP: ${asset} UP - delta $${absDelta.toFixed(2)} < $${UP_MIN_DELTA} (UP threshold)`, {
+      asset, direction, absDelta, upThreshold: UP_MIN_DELTA,
     });
-    return { triggered: false, skipReason: 'up_delta_too_small', skipDetails: `UP needs ≥$8, got $${absDelta.toFixed(1)}` };
+    return { triggered: false, skipReason: 'up_delta_too_small', skipDetails: `UP needs ≥$${UP_MIN_DELTA}, got $${absDelta.toFixed(1)}` };
   }
   
   // 4b. DYNAMIC DELTA CHECK - Adjust threshold based on volatility
@@ -235,8 +236,8 @@ export function checkSignal(
   }
   
   // 6b. MINIMUM SPREAD FILTER (tight spreads = loss-making)
-  // Analysis: spreads <1¢ had -$186 loss, spreads >2¢ had +$181 profit
-  const MIN_SPREAD_CENTS = 1.5;
+  // Analysis: spreads <1¢ had -$186 loss - lowered from 1.5 to 1.0 to avoid blocking too much
+  const MIN_SPREAD_CENTS = 1.0;
   if (spreadCents < MIN_SPREAD_CENTS) {
     logFn(`SKIP: ${asset} ${direction} - spread ${spreadCents.toFixed(1)}¢ < ${MIN_SPREAD_CENTS}¢ (too tight)`, {
       asset, direction, spreadCents,
