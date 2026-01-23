@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -10,7 +10,6 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { toast } from "sonner";
 import { format } from "date-fns";
-import JSZip from "jszip";
 import {
   Download,
   Loader2,
@@ -180,6 +179,21 @@ function DatabaseExport() {
     new Set(["V29 Response (Actief)", "Accounting & PnL", "Positions & Orders"])
   );
   const [tableCounts, setTableCounts] = useState<Record<string, number>>({});
+  const exportWorkerRef = useRef<Worker | null>(null);
+
+  const triggerDownload = (blob: Blob, fileName: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileName;
+    a.rel = "noopener";
+    // Some browsers are picky; keep it in DOM.
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // Don't revoke immediately; some browsers will abort or truncate the download.
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  };
 
   // Group tables by category
   const tablesByCategory = useMemo(() => {
@@ -327,140 +341,85 @@ function DatabaseExport() {
     setIsExporting(true);
     setProgress(0);
 
-    const zip = new JSZip();
-    const manifest: Record<string, { rows: number; description: string; category: string; pages?: number; error?: string }> = {};
-    const errors: string[] = [];
-    
-    let completedTables = 0;
+    // Cleanup any previous worker
+    exportWorkerRef.current?.terminate();
+    exportWorkerRef.current = null;
 
-    for (const tableName of tablesToExport) {
-      setCurrentTable(tableName);
-      const tableDef = TABLE_DEFINITIONS.find(t => t.name === tableName);
-      
-      try {
-        console.log(`[Export] Starting ${tableName}...`);
-        
-        // Fetch all records with pagination.
-        // NOTE: the backend has an effective max of ~1000 rows per request, so higher page sizes won't help.
-        let totalRows = 0;
-        let page = 0;
-        const pageSize = 1000;
-        let hasMore = true;
-        const maxRows = 5_000_000; // Safety limit per table
-        const maxPages = Math.ceil(maxRows / pageSize);
+    const fileName = `polytracker-db-export-${format(new Date(), "yyyy-MM-dd-HHmmss")}.zip`;
 
-        const folderName = tableDef?.category.replace(/[^a-zA-Z0-9]/g, "_") || "misc";
-        const basePath = `${folderName}/${tableName}`;
-
-        // Write pages directly into the zip to avoid holding millions of rows in memory
-        const writePage = (pageIndex: number, data: unknown[]) => {
-          const fileName = `${basePath}/page-${String(pageIndex).padStart(5, "0")}.json`;
-          zip.file(fileName, JSON.stringify(data));
-        };
-
-        // Skip ordering entirely for speed - we just need the data
-        while (hasMore && page < maxPages) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const query = (supabase as any)
-            .from(tableName)
-            .select("*")
-            .range(page * pageSize, (page + 1) * pageSize - 1);
-
-          const { data, error } = await query;
-
-          if (error) {
-            console.error(`[Export] Error on ${tableName} page ${page}:`, error);
-            throw error;
-          }
-
-          if (data && data.length > 0) {
-            writePage(page, data);
-            totalRows += data.length;
-            hasMore = data.length === pageSize;
-            page++;
-            
-            // Log progress every 50 pages (250k rows)
-            if (page % 50 === 0) {
-              console.log(`[Export] ${tableName}: ${totalRows} rows fetched (page ${page})`);
-              toast.info(`${tableName}: ${totalRows.toLocaleString()} rijen...`, { duration: 1000, id: `progress-${tableName}` });
-            }
-          } else {
-            hasMore = false;
-          }
-        }
-
-        if (page >= maxPages) {
-          console.warn(`[Export] ${tableName} hit max pages limit (${maxPages * pageSize} rows)`);
-        }
-
-        console.log(`[Export] ${tableName}: completed with ${totalRows} rows`);
-
-        manifest[tableName] = {
-          rows: totalRows,
-          description: tableDef?.description || "",
-          category: tableDef?.category || "misc",
-          pages: page,
-        };
-
-        toast.success(`${tableName}: ${totalRows.toLocaleString()} rijen`, { duration: 1500 });
-      } catch (error) {
-        console.error(`Error fetching ${tableName}:`, error);
-        errors.push(tableName);
-        manifest[tableName] = {
-          rows: 0,
-          description: `ERROR: ${error}`,
-          category: tableDef?.category || "misc",
-        };
-      }
-
-      completedTables++;
-      setProgress(Math.round((completedTables / tablesToExport.length) * 100));
+    // Prepare minimal meta mapping for README/manifest (in worker)
+    const tableMeta: Record<string, { category: string; description: string }> = {};
+    for (const t of TABLE_DEFINITIONS) {
+      tableMeta[t.name] = { category: t.category, description: t.description };
     }
 
-    // Add manifest
-    zip.file("_MANIFEST.json", JSON.stringify({
-      exported_at: new Date().toISOString(),
-      total_tables: tablesToExport.length,
-      successful: tablesToExport.length - errors.length,
-      failed: errors,
-      tables: manifest,
-    }, null, 2));
+    // Get current auth token (if any) so the worker can query protected tables.
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    const accessToken = session?.access_token ?? null;
 
-    // Add README
-    const readme = generateReadme(manifest);
-    zip.file("README.md", readme);
+    const worker = new Worker(new URL("../workers/databaseExportWorker.ts", import.meta.url), { type: "module" });
+    exportWorkerRef.current = worker;
 
-    // Generate and download ZIP
-    try {
-      // Speed: avoid CPU-heavy compression; streaming also reduces peak memory.
-      const blob = await zip.generateAsync({
-        type: "blob",
-        streamFiles: true,
-        compression: "STORE",
-      });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `polytracker-db-export-${format(new Date(), "yyyy-MM-dd-HHmmss")}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      // Don't revoke immediately; some browsers will abort or truncate the download.
-      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    worker.onmessage = (e: MessageEvent) => {
+      const data = e.data as
+        | { type: "table-start"; tableName: string; tableIndex: number; totalTables: number }
+        | { type: "table-progress"; tableName: string; rows: number; page: number }
+        | { type: "table-done"; tableName: string; rows: number; pages: number; tableIndex: number; totalTables: number }
+        | { type: "done"; blob: Blob; fileName: string; errors: string[] }
+        | { type: "error"; message: string; tableName?: string };
 
-      if (errors.length > 0) {
-        toast.warning(`Export voltooid met ${errors.length} fouten`);
-      } else {
-        toast.success(`Export voltooid: ${tablesToExport.length} tabellen`);
+      if (data.type === "table-start") {
+        setCurrentTable(data.tableName);
+        toast.info(`Start: ${data.tableName}`, { duration: 1200, id: `start-${data.tableName}` });
+        return;
       }
-    } catch (error) {
-      console.error("ZIP generation error:", error);
-      toast.error("Fout bij genereren ZIP");
-    }
 
-    setIsExporting(false);
-    setCurrentTable("");
-    setProgress(0);
+      if (data.type === "table-progress") {
+        toast.info(`${data.tableName}: ${data.rows.toLocaleString()} rijen...`, { duration: 1000, id: `progress-${data.tableName}` });
+        return;
+      }
+
+      if (data.type === "table-done") {
+        setProgress(Math.round(((data.tableIndex + 1) / data.totalTables) * 100));
+        toast.success(`${data.tableName}: ${data.rows.toLocaleString()} rijen`, { duration: 1500 });
+        return;
+      }
+
+      if (data.type === "done") {
+        try {
+          triggerDownload(data.blob, data.fileName);
+          if (data.errors.length > 0) toast.warning(`Export klaar met ${data.errors.length} fouten`);
+          else toast.success(`Export voltooid: ${tablesToExport.length} tabellen`);
+        } finally {
+          worker.terminate();
+          exportWorkerRef.current = null;
+          setIsExporting(false);
+          setCurrentTable("");
+          setProgress(0);
+        }
+        return;
+      }
+
+      if (data.type === "error") {
+        console.error("[Export Worker]", data);
+        toast.error(data.tableName ? `Fout (${data.tableName}): ${data.message}` : data.message);
+        return;
+      }
+    };
+
+    worker.onerror = (err) => {
+      console.error("[Export Worker] onerror", err);
+      toast.error("Export worker crashte (zie console)");
+      worker.terminate();
+      exportWorkerRef.current = null;
+      setIsExporting(false);
+      setCurrentTable("");
+      setProgress(0);
+    };
+
+    worker.postMessage({ type: "start", tables: tablesToExport, tableMeta, fileName, accessToken });
   };
 
   // Wrapper that uses selected tables
