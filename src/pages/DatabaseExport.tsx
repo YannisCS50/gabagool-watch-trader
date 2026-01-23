@@ -122,14 +122,23 @@ const TABLE_DEFINITIONS: TableDef[] = [
   { name: "realtime_price_logs", description: "Realtime price feed logs.", category: "External Data", priority: "low", orderBy: "created_at" },
   
   // === Gabagool Benchmark ===
-  { name: "trades", description: "Gabagool trades voor benchmarking.", category: "Gabagool Benchmark", priority: "low", orderBy: "timestamp" },
-  { name: "positions", description: "Gabagool posities.", category: "Gabagool Benchmark", priority: "low", orderBy: "updated_at" },
+  { name: "trades", description: "Gabagool trades voor benchmarking (3M+ rijen!).", category: "Gabagool Benchmark", priority: "low", orderBy: "timestamp" },
+  { name: "positions", description: "Gabagool posities.", category: "Gabagool Benchmark", priority: "low", orderBy: "created_at" },
   { name: "position_snapshots", description: "Gabagool positie snapshots.", category: "Gabagool Benchmark", priority: "low", orderBy: "snapshot_at" },
+  { name: "gabagool_metrics", description: "Gabagool strategy metrics (CPP, fills, etc).", category: "Gabagool Benchmark", priority: "medium", orderBy: "ts" },
+  { name: "tracked_wallet_trades", description: "Trades van tracked wallets.", category: "Gabagool Benchmark", priority: "medium", orderBy: "created_at" },
   
   // === Subgraph & On-chain ===
   { name: "raw_subgraph_events", description: "Raw events van Polymarket subgraph.", category: "On-chain Data", priority: "medium", orderBy: "timestamp" },
   { name: "cashflow_ledger", description: "Cashflow ledger van subgraph events.", category: "On-chain Data", priority: "medium", orderBy: "timestamp" },
   { name: "polymarket_cashflows", description: "Polymarket cashflow events.", category: "On-chain Data", priority: "low", orderBy: "ts" },
+  { name: "subgraph_fills", description: "Parsed fills van subgraph.", category: "On-chain Data", priority: "medium", orderBy: "created_at" },
+  { name: "subgraph_positions", description: "Subgraph positie data.", category: "On-chain Data", priority: "low", orderBy: "updated_at" },
+  { name: "subgraph_pnl_markets", description: "PnL per market van subgraph.", category: "On-chain Data", priority: "medium" },
+  { name: "subgraph_pnl_summary", description: "Totale PnL summary van subgraph.", category: "On-chain Data", priority: "medium" },
+  
+  // === Strike Prices ===
+  { name: "strike_prices", description: "Strike prices per market/asset.", category: "Market Data", priority: "high", orderBy: "created_at" },
   
   // === Misc ===
   { name: "live_trades", description: "Live trade records.", category: "Trades", priority: "medium", orderBy: "created_at" },
@@ -225,7 +234,7 @@ function DatabaseExport() {
   // Gabagool Reverse Engineering preset - all tables needed to analyze gabagool22 strategy
   const selectGabagoolReverseEngineering = () => {
     const gabagoolTables = [
-      // Gabagool's actual trades and positions
+      // Gabagool's actual trades and positions (trades has 3M+ rows!)
       "trades",
       "positions", 
       "position_snapshots",
@@ -239,6 +248,7 @@ function DatabaseExport() {
       // Market data with strike prices
       "market_history",
       "market_lifecycle",
+      "strike_prices",
       // Our own signals for comparison
       "v29_signals_response",
       "v29_signals",
@@ -250,17 +260,35 @@ function DatabaseExport() {
       "raw_subgraph_events",
       "cashflow_ledger",
       "polymarket_cashflows",
+      "subgraph_fills",
       // Bot positions for comparison
       "bot_positions",
       "canonical_positions",
       // Analysis data
       "signal_quality_analysis",
       "bucket_statistics",
+      "gabagool_metrics",
+      // Tracked wallet data
+      "tracked_wallet_trades",
     ];
-    setSelectedTables(new Set(gabagoolTables.filter(t => 
+    
+    // Filter only existing tables from definitions
+    const validTables = gabagoolTables.filter(t => 
       TABLE_DEFINITIONS.some(def => def.name === t)
-    )));
-    toast.success("Gabagool reverse engineering preset geladen: alle tick-, prijs-, en trade data");
+    );
+    
+    // Log which tables were NOT found for debugging
+    const missingTables = gabagoolTables.filter(t => 
+      !TABLE_DEFINITIONS.some(def => def.name === t)
+    );
+    if (missingTables.length > 0) {
+      console.warn("Gabagool preset: these tables are not in TABLE_DEFINITIONS:", missingTables);
+    }
+    
+    setSelectedTables(new Set(validTables));
+    toast.success(`Gabagool reverse engineering: ${validTables.length} tabellen geselecteerd`, {
+      description: `Let op: trades tabel heeft 3M+ rijen, export kan lang duren`
+    });
   };
 
   // Fetch row counts for selected tables
@@ -293,7 +321,7 @@ function DatabaseExport() {
     setProgress(0);
 
     const zip = new JSZip();
-    const manifest: Record<string, { rows: number; description: string; category: string }> = {};
+    const manifest: Record<string, { rows: number; description: string; category: string; pages?: number; error?: string }> = {};
     const errors: string[] = [];
     
     const tablesToExport = Array.from(selectedTables);
@@ -304,19 +332,23 @@ function DatabaseExport() {
       const tableDef = TABLE_DEFINITIONS.find(t => t.name === tableName);
       
       try {
+        console.log(`[Export] Starting ${tableName}...`);
+        
         // Fetch all records with pagination
         let allData: Record<string, unknown>[] = [];
         let page = 0;
         const pageSize = 1000;
         let hasMore = true;
+        const maxPages = 5000; // Safety limit: 5M rows max per table
 
-        while (hasMore) {
+        while (hasMore && page < maxPages) {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           let query = (supabase as any)
             .from(tableName)
             .select("*")
             .range(page * pageSize, (page + 1) * pageSize - 1);
 
+          // Only use orderBy if specified (skip for very large tables to avoid timeouts)
           if (tableDef?.orderBy) {
             query = query.order(tableDef.orderBy, { ascending: false });
           }
@@ -324,6 +356,7 @@ function DatabaseExport() {
           const { data, error } = await query;
 
           if (error) {
+            console.error(`[Export] Error on ${tableName} page ${page}:`, error);
             throw error;
           }
 
@@ -331,10 +364,22 @@ function DatabaseExport() {
             allData = [...allData, ...data];
             hasMore = data.length === pageSize;
             page++;
+            
+            // Log progress for large tables
+            if (page % 100 === 0) {
+              console.log(`[Export] ${tableName}: ${allData.length} rows fetched (page ${page})`);
+              toast.info(`${tableName}: ${allData.length.toLocaleString()} rijen...`, { duration: 1000, id: `progress-${tableName}` });
+            }
           } else {
             hasMore = false;
           }
         }
+
+        if (page >= maxPages) {
+          console.warn(`[Export] ${tableName} hit max pages limit (${maxPages * pageSize} rows)`);
+        }
+
+        console.log(`[Export] ${tableName}: completed with ${allData.length} rows`);
 
         // Add to ZIP
         const folderName = tableDef?.category.replace(/[^a-zA-Z0-9]/g, "_") || "misc";
@@ -344,9 +389,10 @@ function DatabaseExport() {
           rows: allData.length,
           description: tableDef?.description || "",
           category: tableDef?.category || "misc",
+          pages: page,
         };
 
-        toast.success(`${tableName}: ${allData.length} rows`, { duration: 1000 });
+        toast.success(`${tableName}: ${allData.length.toLocaleString()} rijen`, { duration: 1500 });
       } catch (error) {
         console.error(`Error fetching ${tableName}:`, error);
         errors.push(tableName);
