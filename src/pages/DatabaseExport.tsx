@@ -286,9 +286,16 @@ function DatabaseExport() {
     }
     
     setSelectedTables(new Set(validTables));
-    toast.success(`Gabagool reverse engineering: ${validTables.length} tabellen geselecteerd`, {
-      description: `Let op: trades tabel heeft 3M+ rijen, export kan lang duren`
+    
+    // Start export directly
+    toast.info(`Gabagool export start: ${validTables.length} tabellen...`, {
+      description: `Let op: trades tabel heeft 3M+ rijen, dit kan even duren`
     });
+    
+    // Use setTimeout to allow state to update, then export
+    setTimeout(() => {
+      exportDatabaseWithTables(validTables);
+    }, 100);
   };
 
   // Fetch row counts for selected tables
@@ -310,10 +317,10 @@ function DatabaseExport() {
     setTableCounts(counts);
   };
 
-  // Export all selected tables as ZIP
-  const exportDatabase = async () => {
-    if (selectedTables.size === 0) {
-      toast.error("Selecteer minstens één tabel");
+  // Export tables directly (used by presets)
+  const exportDatabaseWithTables = async (tablesToExport: string[]) => {
+    if (tablesToExport.length === 0) {
+      toast.error("Geen tabellen om te exporteren");
       return;
     }
 
@@ -324,7 +331,6 @@ function DatabaseExport() {
     const manifest: Record<string, { rows: number; description: string; category: string; pages?: number; error?: string }> = {};
     const errors: string[] = [];
     
-    const tablesToExport = Array.from(selectedTables);
     let completedTables = 0;
 
     for (const tableName of tablesToExport) {
@@ -445,6 +451,15 @@ function DatabaseExport() {
     setIsExporting(false);
     setCurrentTable("");
     setProgress(0);
+  };
+
+  // Wrapper that uses selected tables
+  const exportDatabase = () => {
+    if (selectedTables.size === 0) {
+      toast.error("Selecteer minstens één tabel");
+      return;
+    }
+    exportDatabaseWithTables(Array.from(selectedTables));
   };
 
   const generateReadme = (manifest: Record<string, { rows: number; description: string; category: string }>) => {
