@@ -222,6 +222,47 @@ function DatabaseExport() {
     setSelectedTables(new Set(TABLE_DEFINITIONS.filter(t => t.priority === "high").map(t => t.name)));
   };
 
+  // Gabagool Reverse Engineering preset - all tables needed to analyze gabagool22 strategy
+  const selectGabagoolReverseEngineering = () => {
+    const gabagoolTables = [
+      // Gabagool's actual trades and positions
+      "trades",
+      "positions", 
+      "position_snapshots",
+      // Price data (ticks, chainlink, realtime)
+      "price_ticks",
+      "chainlink_prices",
+      "realtime_price_logs",
+      // V29 tick data (Binance + Polymarket spreads)
+      "v29_ticks_response",
+      "v29_ticks",
+      // Market data with strike prices
+      "market_history",
+      "market_lifecycle",
+      // Our own signals for comparison
+      "v29_signals_response",
+      "v29_signals",
+      // Fill/trade events
+      "fill_logs",
+      "live_trades",
+      "live_trade_results",
+      // Subgraph/on-chain data
+      "raw_subgraph_events",
+      "cashflow_ledger",
+      "polymarket_cashflows",
+      // Bot positions for comparison
+      "bot_positions",
+      "canonical_positions",
+      // Analysis data
+      "signal_quality_analysis",
+      "bucket_statistics",
+    ];
+    setSelectedTables(new Set(gabagoolTables.filter(t => 
+      TABLE_DEFINITIONS.some(def => def.name === t)
+    )));
+    toast.success("Gabagool reverse engineering preset geladen: alle tick-, prijs-, en trade data");
+  };
+
   // Fetch row counts for selected tables
   const fetchRowCounts = async () => {
     const counts: Record<string, number> = {};
@@ -499,6 +540,14 @@ function DatabaseExport() {
               </Button>
               <Button variant="outline" size="sm" onClick={selectHighPriority}>
                 Alleen belangrijk
+              </Button>
+              <Button 
+                variant="default" 
+                size="sm" 
+                onClick={selectGabagoolReverseEngineering}
+                className="bg-primary hover:bg-primary/90"
+              >
+                🍝 Gabagool Reverse Engineering
               </Button>
               <Button variant="outline" size="sm" onClick={fetchRowCounts}>
                 Tel rijen
