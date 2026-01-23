@@ -259,52 +259,53 @@ export const DEFAULT_CONFIG: V29Config = {
   // EXIT MONITORING (only used if hedge_mode_enabled=false)
   exit_monitor_interval_ms: 100,
   
-  // UP-SPECIFIC: TIGHTER TARGETS + SHORTER TIMEOUT (analysis: less profitable)
+  // UP-SPECIFIC: TIGHTER EXIT - Analysis shows UP trades bleed after 10s
+  // Hold time analysis: <2s = +$98, 2-5s = +$57, 5-10s = +$57, 15-20s = -$8
+  // Exit types: timeout/adverse = massive bleeders (-$770 combined)
   up: {
-    target_profit_cents_min: 2.0,   // RAISED from 1.8 - need higher threshold
-    target_profit_cents_max: 2.2,   // RAISED from 2.0 - aim higher
-    // TRAILING PROFIT: Let winners run longer
+    target_profit_cents_min: 2.0,   // Maintain higher threshold
+    target_profit_cents_max: 2.2,
+    // TRAILING PROFIT: Let winners run
     trailing_enabled: true,
-    trailing_start_cents: 1.8,      // RAISED from 1.5 - start trailing later
-    trailing_step_cents: 1.0,       // Raise target by 1¢ per step
-    trailing_pullback_cents: 0.8,   // Exit if pulls back 0.8¢ from max
-    max_hold_seconds: 10,           // REDUCED from 15 - cut losers faster
-    repricing_exhaustion_pct: 0.65,
-    stall_threshold_cents_per_sec: 0.1,
+    trailing_start_cents: 1.5,      // Start trailing earlier to lock in profits
+    trailing_step_cents: 0.8,       // Smaller steps for tighter trailing
+    trailing_pullback_cents: 0.6,   // Exit faster on pullback
+    max_hold_seconds: 8,            // REDUCED from 10 to 8 - cut losers faster
+    repricing_exhaustion_pct: 0.60, // Lower threshold for exhaustion exit
+    stall_threshold_cents_per_sec: 0.15, // More sensitive stall detection
     expected_repricing_cents: 3.0,
-    stagnation_threshold_cents: 0.5,
-    stagnation_check_after_ms: 2000, // REDUCED from 3000 - detect stagnation earlier
+    stagnation_threshold_cents: 0.4, // Tighter stagnation detection
+    stagnation_check_after_ms: 1500, // Check earlier for stagnation
   },
   
-  // DOWN-SPECIFIC: Slower repricing, SHORTER hold (analysis: 20s max)
+  // DOWN-SPECIFIC: Analysis shows DOWN more profitable, allow slightly longer hold
+  // Hold time: <2s = +$27, 2-5s = +$28, 5-10s = +$12, >20s = -$12
   down: {
-    target_profit_cents_min: 2.0,
-    target_profit_cents_max: 2.4,
-    // TRAILING PROFIT: Let winners run longer
+    target_profit_cents_min: 1.8,   // Slightly lower target for DOWN (faster exit)
+    target_profit_cents_max: 2.2,
+    // TRAILING PROFIT
     trailing_enabled: true,
-    trailing_start_cents: 1.8,      // Start trailing after 1.8¢ profit
-    trailing_step_cents: 1.2,       // Raise target by 1.2¢ per step (DOWN moves slower)
-    trailing_pullback_cents: 0.7,   // Exit if pulls back 0.7¢ from max
-    max_hold_seconds: 20,
-    repricing_exhaustion_pct: 0.70,
-    stall_threshold_cents_per_sec: 0.1,
+    trailing_start_cents: 1.5,      // Start trailing after 1.5¢ profit
+    trailing_step_cents: 1.0,       // Slightly bigger steps for DOWN
+    trailing_pullback_cents: 0.6,   // Exit if pulls back 0.6¢ from max
+    max_hold_seconds: 15,           // REDUCED from 20 to 15
+    repricing_exhaustion_pct: 0.65,
+    stall_threshold_cents_per_sec: 0.12,
     expected_repricing_cents: 3.5,
-    stagnation_threshold_cents: 0.5,
-    stagnation_check_after_ms: 4000,
+    stagnation_threshold_cents: 0.4,
+    stagnation_check_after_ms: 3000,
   },
   
   // ADVERSE SELECTION
   adverse_spread_threshold_cents: 2.5,  // RAISED from 1.5 - less premature adverse exits
   taker_flow_window_ms: 300,
   
-  // DELTA MOMENTUM LOGIC - User requested 2026-01-22
-  // Delta = price - strike (price to beat)
-  // "trades die met de delta mee gaan langer houden"
+  // DELTA MOMENTUM LOGIC - Keep positions longer when delta grows in our direction
   pro_delta_only: true,                        // ENABLED: Only trade WITH the price-to-strike delta
-  pro_delta_neutral_zone_usd: 30,              // TIGHTENED from 50 to 30 - blocks low-edge UP trades
+  pro_delta_neutral_zone_usd: 20,              // TIGHTENED from 30 to 20 - stricter filtering
   delta_momentum_hold_enabled: true,           // ENABLED: Keep position if delta grows in our direction
-  delta_momentum_min_growth: 5.0,              // Delta must grow $5 to extend hold
-  delta_momentum_max_extension_seconds: 15.0,  // Up to 15s extra hold time
+  delta_momentum_min_growth: 8.0,              // RAISED from 5 to 8 - require stronger momentum
+  delta_momentum_max_extension_seconds: 10.0,  // REDUCED from 15 to 10 - less extension time
   
   // RISK CONTROLS
   max_positions_per_asset: 10,   // INCREASED for hedge mode (more accumulation)
