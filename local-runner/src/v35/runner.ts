@@ -377,12 +377,8 @@ async function main(): Promise<void> {
     log('🧪 DRY RUN MODE - No real orders will be placed');
   }
   
-  // VPN check
-  const vpnOk = await checkVpnRequired();
-  if (!vpnOk) {
-    logError('VPN check failed - exiting');
-    process.exit(1);
-  }
+  // VPN check (exits if VPN not connected)
+  await checkVpnRequired();
   
   // Validate credentials
   if (!config.dryRun) {
