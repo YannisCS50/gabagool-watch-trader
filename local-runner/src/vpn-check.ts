@@ -165,3 +165,9 @@ export async function enforceVpnOrExit(): Promise<void> {
   process.exit(1);
 }
 
+/**
+ * Alias for enforceVpnOrExit for backward compatibility
+ */
+export const checkVpnRequired = enforceVpnOrExit;
+
+
