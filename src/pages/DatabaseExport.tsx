@@ -1,4 +1,4 @@
-import React, { useState, useMemo, forwardRef } from "react";
+import React, { useState, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -160,7 +160,7 @@ const CATEGORY_ICONS: Record<string, React.ElementType> = {
   "Config": Settings,
 };
 
-const DatabaseExport = forwardRef<HTMLDivElement>(function DatabaseExport(_props, ref) {
+function DatabaseExport() {
   const [selectedTables, setSelectedTables] = useState<Set<string>>(
     new Set(TABLE_DEFINITIONS.filter(t => t.priority === "high").map(t => t.name))
   );
@@ -431,7 +431,7 @@ const DatabaseExport = forwardRef<HTMLDivElement>(function DatabaseExport(_props
   };
 
   return (
-    <div ref={ref} className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background">
       <div className="container max-w-6xl mx-auto py-8 px-4">
         {/* Header */}
         <div className="flex items-center gap-4 mb-8">
@@ -636,6 +636,6 @@ const DatabaseExport = forwardRef<HTMLDivElement>(function DatabaseExport(_props
       </div>
     </div>
   );
-});
+}
 
 export default DatabaseExport;
