@@ -4,28 +4,13 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { useRealtimeLiveBot } from "@/hooks/useRealtimeLiveBot";
+import V35Dashboard from "./pages/V35Dashboard";
 import Index from "./pages/Index";
 import Auth from "./pages/Auth";
-import GabagoolStrategyAnalysis from "./pages/GabagoolStrategyAnalysis";
-import LiveTrading from "./pages/LiveTrading";
 import Settings from "./pages/Settings";
-import TradeAnalysis from "./pages/TradeAnalysis";
-import HedgeAnalysis from "./pages/HedgeAnalysis";
-import DataLogging from "./pages/DataLogging";
-import Observability from "./pages/Observability";
 import BotHealth from "./pages/BotHealth";
-import BetsHistory from "./pages/BetsHistory";
-import Reconcile from "./pages/Reconcile";
-import V26Dashboard from "./pages/V26Dashboard";
-import V27Dashboard from "./pages/V27Dashboard";
-import V28Dashboard from "./pages/V28Dashboard";
-import V29Dashboard from "./pages/V29Dashboard";
-import V29DashboardNew from "./pages/V29DashboardNew";
-import V29ResponseDashboard from "./pages/V29ResponseDashboard";
-import V30Dashboard from "./pages/V30Dashboard";
-import PriceLatencyAnalyzer from "./pages/PriceLatencyAnalyzer";
-import GabagoolReverseEngineering from "./pages/GabagoolReverseEngineering";
-import GabagoolBacktest from "./pages/GabagoolBacktest";
+import Observability from "./pages/Observability";
+import DataLogging from "./pages/DataLogging";
 import DatabaseExport from "./pages/DatabaseExport";
 import NotFound from "./pages/NotFound";
 
@@ -45,31 +30,14 @@ const App = () => (
       <Sonner />
       <BrowserRouter>
         <Routes>
-          <Route path="/" element={<V29ResponseDashboard />} />
+          <Route path="/" element={<V35Dashboard />} />
           <Route path="/old-dashboard" element={<Index />} />
           <Route path="/auth" element={<Auth />} />
-          <Route path="/live-trading" element={<LiveTrading />} />
-          <Route path="/gabagool-analysis" element={<GabagoolStrategyAnalysis />} />
           <Route path="/settings" element={<Settings />} />
-          <Route path="/trade-analysis" element={<TradeAnalysis />} />
-          <Route path="/hedge-analysis" element={<HedgeAnalysis />} />
-          <Route path="/data-logging" element={<DataLogging />} />
-          <Route path="/observability" element={<Observability />} />
           <Route path="/bot-health" element={<BotHealth />} />
-          <Route path="/bets" element={<BetsHistory />} />
-          <Route path="/reconcile" element={<Reconcile />} />
-          <Route path="/v26" element={<V26Dashboard />} />
-          <Route path="/v27" element={<V27Dashboard />} />
-          <Route path="/v28" element={<V28Dashboard />} />
-          <Route path="/v29" element={<V29Dashboard />} />
-          <Route path="/v29-new" element={<V29DashboardNew />} />
-          {/* V29ResponseDashboard is now the homepage */}
-          <Route path="/v30" element={<V30Dashboard />} />
-          <Route path="/price-latency" element={<PriceLatencyAnalyzer />} />
-          <Route path="/gabagool-reverse" element={<GabagoolReverseEngineering />} />
-          <Route path="/gabagool-backtest" element={<GabagoolBacktest />} />
+          <Route path="/observability" element={<Observability />} />
+          <Route path="/data-logging" element={<DataLogging />} />
           <Route path="/database-export" element={<DatabaseExport />} />
-          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>
