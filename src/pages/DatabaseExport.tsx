@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -179,7 +179,6 @@ function DatabaseExport() {
     new Set(["V29 Response (Actief)", "Accounting & PnL", "Positions & Orders"])
   );
   const [tableCounts, setTableCounts] = useState<Record<string, number>>({});
-  const exportWorkerRef = useRef<Worker | null>(null);
 
   const triggerDownload = (blob: Blob, fileName: string) => {
     const url = URL.createObjectURL(blob);
@@ -331,7 +330,7 @@ function DatabaseExport() {
     setTableCounts(counts);
   };
 
-  // Export tables directly (used by presets)
+  // Export tables using Edge Function (server-side, faster)
   const exportDatabaseWithTables = async (tablesToExport: string[]) => {
     if (tablesToExport.length === 0) {
       toast.error("Geen tabellen om te exporteren");
@@ -339,87 +338,59 @@ function DatabaseExport() {
     }
 
     setIsExporting(true);
-    setProgress(0);
-
-    // Cleanup any previous worker
-    exportWorkerRef.current?.terminate();
-    exportWorkerRef.current = null;
+    setProgress(10);
 
     const fileName = `polytracker-db-export-${format(new Date(), "yyyy-MM-dd-HHmmss")}.zip`;
 
-    // Prepare minimal meta mapping for README/manifest (in worker)
+    // Prepare minimal meta mapping for README/manifest
     const tableMeta: Record<string, { category: string; description: string }> = {};
     for (const t of TABLE_DEFINITIONS) {
       tableMeta[t.name] = { category: t.category, description: t.description };
     }
 
-    // Get current auth token (if any) so the worker can query protected tables.
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-    const accessToken = session?.access_token ?? null;
+    try {
+      toast.info(`Server-side export gestart: ${tablesToExport.length} tabellen...`, {
+        description: "Dit is 5-10x sneller dan client-side",
+        duration: 5000,
+      });
 
-    const worker = new Worker(new URL("../workers/databaseExportWorker.ts", import.meta.url), { type: "module" });
-    exportWorkerRef.current = worker;
+      setProgress(20);
+      setCurrentTable("Fetching via Edge Function...");
 
-    worker.onmessage = (e: MessageEvent) => {
-      const data = e.data as
-        | { type: "table-start"; tableName: string; tableIndex: number; totalTables: number }
-        | { type: "table-progress"; tableName: string; rows: number; page: number }
-        | { type: "table-done"; tableName: string; rows: number; pages: number; tableIndex: number; totalTables: number }
-        | { type: "done"; blob: Blob; fileName: string; errors: string[] }
-        | { type: "error"; message: string; tableName?: string };
+      const { data, error } = await supabase.functions.invoke("database-export", {
+        body: { tables: tablesToExport, tableMeta },
+      });
 
-      if (data.type === "table-start") {
-        setCurrentTable(data.tableName);
-        toast.info(`Start: ${data.tableName}`, { duration: 1200, id: `start-${data.tableName}` });
-        return;
+      if (error) {
+        throw new Error(error.message || "Edge function error");
       }
 
-      if (data.type === "table-progress") {
-        toast.info(`${data.tableName}: ${data.rows.toLocaleString()} rijen...`, { duration: 1000, id: `progress-${data.tableName}` });
-        return;
+      setProgress(80);
+
+      // Check if we got a blob/arraybuffer back
+      if (data instanceof ArrayBuffer || data instanceof Blob) {
+        const blob = data instanceof Blob ? data : new Blob([data], { type: "application/zip" });
+        triggerDownload(blob, fileName);
+        toast.success(`Export voltooid: ${tablesToExport.length} tabellen`, {
+          description: "Server-side export succesvol",
+        });
+      } else if (data?.error) {
+        throw new Error(data.error);
+      } else {
+        // If data is returned as JSON with error info
+        console.error("[Export] Unexpected response:", data);
+        throw new Error("Onverwacht response formaat");
       }
 
-      if (data.type === "table-done") {
-        setProgress(Math.round(((data.tableIndex + 1) / data.totalTables) * 100));
-        toast.success(`${data.tableName}: ${data.rows.toLocaleString()} rijen`, { duration: 1500 });
-        return;
-      }
-
-      if (data.type === "done") {
-        try {
-          triggerDownload(data.blob, data.fileName);
-          if (data.errors.length > 0) toast.warning(`Export klaar met ${data.errors.length} fouten`);
-          else toast.success(`Export voltooid: ${tablesToExport.length} tabellen`);
-        } finally {
-          worker.terminate();
-          exportWorkerRef.current = null;
-          setIsExporting(false);
-          setCurrentTable("");
-          setProgress(0);
-        }
-        return;
-      }
-
-      if (data.type === "error") {
-        console.error("[Export Worker]", data);
-        toast.error(data.tableName ? `Fout (${data.tableName}): ${data.message}` : data.message);
-        return;
-      }
-    };
-
-    worker.onerror = (err) => {
-      console.error("[Export Worker] onerror", err);
-      toast.error("Export worker crashte (zie console)");
-      worker.terminate();
-      exportWorkerRef.current = null;
+      setProgress(100);
+    } catch (err) {
+      console.error("[Export Error]", err);
+      toast.error(`Export mislukt: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
       setIsExporting(false);
       setCurrentTable("");
       setProgress(0);
-    };
-
-    worker.postMessage({ type: "start", tables: tablesToExport, tableMeta, fileName, accessToken });
+    }
   };
 
   // Wrapper that uses selected tables
