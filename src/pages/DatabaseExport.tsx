@@ -330,7 +330,7 @@ function DatabaseExport() {
     setTableCounts(counts);
   };
 
-  // Export tables using Edge Function (server-side, faster)
+  // Export tables using streaming NDJSON from Edge Function
   const exportDatabaseWithTables = async (tablesToExport: string[]) => {
     if (tablesToExport.length === 0) {
       toast.error("Geen tabellen om te exporteren");
@@ -338,49 +338,140 @@ function DatabaseExport() {
     }
 
     setIsExporting(true);
-    setProgress(10);
+    setProgress(5);
 
     const fileName = `polytracker-db-export-${format(new Date(), "yyyy-MM-dd-HHmmss")}.zip`;
 
-    // Prepare minimal meta mapping for README/manifest
+    // Prepare minimal meta mapping
     const tableMeta: Record<string, { category: string; description: string }> = {};
     for (const t of TABLE_DEFINITIONS) {
       tableMeta[t.name] = { category: t.category, description: t.description };
     }
 
     try {
-      toast.info(`Server-side export gestart: ${tablesToExport.length} tabellen...`, {
-        description: "Dit is 5-10x sneller dan client-side",
+      toast.info(`Streaming export gestart: ${tablesToExport.length} tabellen...`, {
+        description: "Data wordt gestreamd, geen memory limits",
         duration: 5000,
       });
 
-      setProgress(20);
-      setCurrentTable("Fetching via Edge Function...");
+      setCurrentTable("Connecting...");
 
-      const { data, error } = await supabase.functions.invoke("database-export", {
-        body: { tables: tablesToExport, tableMeta },
+      // Make direct fetch to stream the response
+      const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+      const supabaseKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+      
+      const response = await fetch(`${supabaseUrl}/functions/v1/database-export`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${supabaseKey}`,
+          "apikey": supabaseKey,
+        },
+        body: JSON.stringify({ tables: tablesToExport, tableMeta }),
       });
 
-      if (error) {
-        throw new Error(error.message || "Edge function error");
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
       }
 
-      setProgress(80);
+      // Stream the NDJSON response and build ZIP client-side
+      const JSZip = (await import("jszip")).default;
+      const zip = new JSZip();
+      
+      // Collect rows per table
+      const tableData: Record<string, unknown[]> = {};
+      let manifest: Record<string, { rows: number; category: string; description: string; error?: string }> = {};
+      let totalRows = 0;
+      let tablesCompleted = 0;
 
-      // Check if we got a blob/arraybuffer back
-      if (data instanceof ArrayBuffer || data instanceof Blob) {
-        const blob = data instanceof Blob ? data : new Blob([data], { type: "application/zip" });
-        triggerDownload(blob, fileName);
-        toast.success(`Export voltooid: ${tablesToExport.length} tabellen`, {
-          description: "Server-side export succesvol",
-        });
-      } else if (data?.error) {
-        throw new Error(data.error);
-      } else {
-        // If data is returned as JSON with error info
-        console.error("[Export] Unexpected response:", data);
-        throw new Error("Onverwacht response formaat");
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("No response body");
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || ""; // Keep incomplete line in buffer
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const obj = JSON.parse(line);
+            
+            if (obj.type === "header") {
+              setProgress(10);
+            } else if (obj.type === "row") {
+              // Collect row data
+              if (!tableData[obj.table]) {
+                tableData[obj.table] = [];
+              }
+              tableData[obj.table].push(obj.data);
+              totalRows++;
+              
+              // Update progress every 1000 rows
+              if (totalRows % 1000 === 0) {
+                setCurrentTable(`${obj.table}: ${tableData[obj.table].length} rows...`);
+              }
+            } else if (obj.type === "table_complete") {
+              tablesCompleted++;
+              const pct = 10 + Math.round((tablesCompleted / tablesToExport.length) * 70);
+              setProgress(pct);
+              setCurrentTable(`${obj.table}: ${obj.rows} rows ✓`);
+              console.log(`[Export] ${obj.table}: ${obj.rows} rows${obj.error ? ` (error: ${obj.error})` : ""}`);
+            } else if (obj.type === "footer") {
+              manifest = obj.manifest;
+            }
+          } catch (parseErr) {
+            console.warn("[Export] Failed to parse line:", line, parseErr);
+          }
+        }
       }
+
+      setProgress(85);
+      setCurrentTable("Building ZIP...");
+
+      // Add tables to ZIP
+      for (const [tableName, rows] of Object.entries(tableData)) {
+        const meta = tableMeta[tableName] || { category: "misc" };
+        const folder = (meta.category || "misc").replace(/[^a-zA-Z0-9]/g, "_");
+        zip.file(`${folder}/${tableName}.json`, JSON.stringify(rows, null, 2));
+      }
+
+      // Add manifest
+      zip.file("_MANIFEST.json", JSON.stringify({
+        exported_at: new Date().toISOString(),
+        export_method: "streaming-ndjson",
+        total_tables: Object.keys(tableData).length,
+        total_rows: totalRows,
+        tables: manifest,
+      }, null, 2));
+
+      // Add README
+      zip.file("README.md", generateReadme(manifest));
+
+      setProgress(95);
+      setCurrentTable("Compressing...");
+
+      const blob = await zip.generateAsync({ 
+        type: "blob",
+        compression: "DEFLATE",
+        compressionOptions: { level: 6 }
+      });
+
+      triggerDownload(blob, fileName);
+      
+      const failedTables = Object.entries(manifest).filter(([, v]) => v.error).length;
+      toast.success(`Export voltooid: ${totalRows.toLocaleString()} rijen`, {
+        description: failedTables > 0 
+          ? `${Object.keys(tableData).length} tabellen (${failedTables} met errors)`
+          : `${Object.keys(tableData).length} tabellen succesvol`,
+      });
 
       setProgress(100);
     } catch (err) {
