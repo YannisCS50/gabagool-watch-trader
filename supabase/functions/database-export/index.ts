@@ -66,14 +66,20 @@ Deno.serve(async (req) => {
       auth: { persistSession: false, autoRefreshToken: false },
     });
 
+    const url = new URL(req.url);
+    const preset = url.searchParams.get("preset");
+    const singleTable = url.searchParams.get("table");
+    const useGzip = req.headers.get("accept-encoding")?.includes("gzip") ?? false;
+
     let tables: string[];
     let tableMeta: Record<string, { category: string; description: string }>;
 
-    // Support GET with preset parameter
-    const url = new URL(req.url);
-    const preset = url.searchParams.get("preset");
-
-    if (req.method === "GET" && preset === "gabagool") {
+    // Single table mode
+    if (singleTable) {
+      tables = [singleTable];
+      tableMeta = { [singleTable]: DEFAULT_META[singleTable] || { category: "misc", description: "" } };
+      console.log(`[database-export] Single table mode: ${singleTable}`);
+    } else if (req.method === "GET" && preset === "gabagool") {
       tables = GABAGOOL_TABLES;
       tableMeta = DEFAULT_META;
       console.log(`[database-export] GET preset=gabagool, ${tables.length} tables`);
@@ -82,9 +88,17 @@ Deno.serve(async (req) => {
       tables = body.tables || [];
       tableMeta = body.tableMeta || DEFAULT_META;
     } else {
+      // Return list of available tables for easy discovery
       return new Response(
-        JSON.stringify({ error: "Use POST with {tables, tableMeta} or GET with ?preset=gabagool" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({ 
+          available_tables: GABAGOOL_TABLES,
+          usage: {
+            all_tables: "GET ?preset=gabagool",
+            single_table: "GET ?table=trades",
+            custom: "POST with {tables: [...], tableMeta: {...}}"
+          }
+        }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -95,18 +109,19 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log(`[database-export] Starting NDJSON export of ${tables.length} tables`);
+    console.log(`[database-export] Starting NDJSON export of ${tables.length} tables, gzip=${useGzip}`);
 
     const encoder = new TextEncoder();
-    const stream = new ReadableStream({
+    
+    const dataStream = new ReadableStream({
       async start(controller) {
-        const manifest: Record<string, { rows: number; category: string; description: string; error?: string }> = {};
-        
         controller.enqueue(encoder.encode(JSON.stringify({ 
           type: "header", 
           exported_at: new Date().toISOString(),
           tables: tables.length 
         }) + "\n"));
+
+        const manifest: Record<string, { rows: number; category: string; description: string; error?: string }> = {};
 
         for (const tableName of tables) {
           const meta = tableMeta[tableName] || { category: "misc", description: "" };
@@ -183,12 +198,22 @@ Deno.serve(async (req) => {
       }
     });
 
-    return new Response(stream, {
+    // Apply gzip compression if supported
+    const outputStream = useGzip 
+      ? dataStream.pipeThrough(new CompressionStream("gzip"))
+      : dataStream;
+
+    const filename = singleTable 
+      ? `${singleTable}-${new Date().toISOString().slice(0, 10)}.ndjson${useGzip ? '.gz' : ''}`
+      : `polytracker-export-${new Date().toISOString().slice(0, 10)}.ndjson${useGzip ? '.gz' : ''}`;
+
+    return new Response(outputStream, {
       headers: {
         ...corsHeaders,
-        "Content-Type": "application/x-ndjson",
-        "Content-Disposition": `attachment; filename="polytracker-export-${new Date().toISOString().slice(0, 10)}.ndjson"`,
+        "Content-Type": useGzip ? "application/gzip" : "application/x-ndjson",
+        "Content-Disposition": `attachment; filename="${filename}"`,
         "Transfer-Encoding": "chunked",
+        ...(useGzip && { "Content-Encoding": "gzip" }),
       },
     });
   } catch (err) {
