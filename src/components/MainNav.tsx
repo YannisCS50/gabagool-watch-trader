@@ -11,30 +11,17 @@ import {
 import { cn } from '@/lib/utils';
 import {
   LayoutDashboard,
-  TrendingUp,
-  BarChart3,
   Activity,
   Settings,
   Database,
   Eye,
-  Shield,
-  FileCheck,
   Sparkles,
-  FlaskConical,
 } from 'lucide-react';
-
-const analysisItems = [
-  { title: 'Trade Analysis', href: '/trade-analysis', icon: BarChart3, description: 'Analyze trade performance' },
-  { title: 'Hedge Analysis', href: '/hedge-analysis', icon: Shield, description: 'Hedge effectiveness' },
-  { title: 'Gabagool Analysis', href: '/gabagool-analysis', icon: Activity, description: 'Gabagool strategy stats' },
-  { title: 'Gabagool Backtest', href: '/gabagool-backtest', icon: FlaskConical, description: 'Backtest hedge strategy' },
-];
 
 const monitoringItems = [
   { title: 'Bot Health', href: '/bot-health', icon: Activity, description: 'Bot stabiliteit & gedrag' },
   { title: 'Observability', href: '/observability', icon: Eye, description: 'System monitoring' },
   { title: 'Data Logging', href: '/data-logging', icon: Database, description: 'Log viewer' },
-  { title: 'Reconcile', href: '/reconcile', icon: FileCheck, description: 'CSV vs bot fill matching' },
   { title: 'Database Export', href: '/database-export', icon: Database, description: 'Volledige DB export als ZIP' },
 ];
 
@@ -78,79 +65,20 @@ export function MainNav() {
   return (
     <NavigationMenu className="flex justify-start">
       <NavigationMenuList className="flex flex-row space-x-1">
-        {/* Dashboard */}
+        {/* V35 Dashboard */}
         <NavigationMenuItem>
           <Link to="/">
             <NavigationMenuLink
               className={cn(
                 navigationMenuTriggerStyle(),
-                location.pathname === '/' && 'bg-accent text-accent-foreground'
-              )}
-            >
-              <LayoutDashboard className="mr-2 h-4 w-4" />
-              Dashboard
-            </NavigationMenuLink>
-          </Link>
-        </NavigationMenuItem>
-
-        {/* Live Trading */}
-        <NavigationMenuItem>
-          <Link to="/live-trading">
-            <NavigationMenuLink
-              className={cn(
-                navigationMenuTriggerStyle(),
-                location.pathname === '/live-trading' && 'bg-accent text-accent-foreground'
-              )}
-            >
-              <TrendingUp className="mr-2 h-4 w-4" />
-              Live Trading
-            </NavigationMenuLink>
-          </Link>
-        </NavigationMenuItem>
-
-        {/* V26 Strategy */}
-        <NavigationMenuItem>
-          <Link to="/v26">
-            <NavigationMenuLink
-              className={cn(
-                navigationMenuTriggerStyle(),
-                location.pathname === '/v26' && 'bg-accent text-accent-foreground'
-              )}
-            >
-              V26
-            </NavigationMenuLink>
-          </Link>
-        </NavigationMenuItem>
-
-        {/* V30 Market-Maker */}
-        <NavigationMenuItem>
-          <Link to="/v30">
-            <NavigationMenuLink
-              className={cn(
-                navigationMenuTriggerStyle(),
-                location.pathname === '/v30' && 'bg-accent text-accent-foreground',
+                location.pathname === '/' && 'bg-accent text-accent-foreground',
                 'bg-gradient-to-r from-primary/10 to-emerald-500/10 border border-primary/20'
               )}
             >
               <Sparkles className="mr-2 h-4 w-4 text-primary" />
-              V30
+              V35
             </NavigationMenuLink>
           </Link>
-        </NavigationMenuItem>
-
-        {/* Analysis */}
-        <NavigationMenuItem>
-          <NavigationMenuTrigger className="h-9">
-            <BarChart3 className="mr-2 h-4 w-4" />
-            Analysis
-          </NavigationMenuTrigger>
-          <NavigationMenuContent>
-            <ul className="grid w-[300px] gap-1 p-2 bg-popover border border-border rounded-md shadow-lg">
-              {analysisItems.map((item) => (
-                <ListItem key={item.href} {...item} />
-              ))}
-            </ul>
-          </NavigationMenuContent>
         </NavigationMenuItem>
 
         {/* Monitoring */}

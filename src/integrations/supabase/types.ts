@@ -3025,45 +3025,57 @@ export type Database = {
         Row: {
           balance: number | null
           created_at: string
+          dry_run: boolean | null
           id: string
           ip_address: string | null
           last_heartbeat: string
           markets_active: number | null
           markets_count: number | null
+          mode: string | null
           positions_count: number | null
           runner_id: string
           runner_type: string
           status: string
+          total_locked_profit: number | null
+          total_unpaired: number | null
           trades_count: number | null
           version: string | null
         }
         Insert: {
           balance?: number | null
           created_at?: string
+          dry_run?: boolean | null
           id?: string
           ip_address?: string | null
           last_heartbeat?: string
           markets_active?: number | null
           markets_count?: number | null
+          mode?: string | null
           positions_count?: number | null
           runner_id: string
           runner_type?: string
           status?: string
+          total_locked_profit?: number | null
+          total_unpaired?: number | null
           trades_count?: number | null
           version?: string | null
         }
         Update: {
           balance?: number | null
           created_at?: string
+          dry_run?: boolean | null
           id?: string
           ip_address?: string | null
           last_heartbeat?: string
           markets_active?: number | null
           markets_count?: number | null
+          mode?: string | null
           positions_count?: number | null
           runner_id?: string
           runner_type?: string
           status?: string
+          total_locked_profit?: number | null
+          total_unpaired?: number | null
           trades_count?: number | null
           version?: string | null
         }
@@ -6629,6 +6641,57 @@ export type Database = {
           up_best_ask?: number | null
           up_best_bid?: number | null
           z_price?: number | null
+        }
+        Relationships: []
+      }
+      v35_settlements: {
+        Row: {
+          asset: string
+          combined_cost: number | null
+          created_at: string
+          down_cost: number | null
+          down_qty: number | null
+          id: string
+          locked_profit: number | null
+          market_slug: string
+          paired: number | null
+          pnl: number | null
+          unpaired: number | null
+          up_cost: number | null
+          up_qty: number | null
+          winning_side: string | null
+        }
+        Insert: {
+          asset: string
+          combined_cost?: number | null
+          created_at?: string
+          down_cost?: number | null
+          down_qty?: number | null
+          id?: string
+          locked_profit?: number | null
+          market_slug: string
+          paired?: number | null
+          pnl?: number | null
+          unpaired?: number | null
+          up_cost?: number | null
+          up_qty?: number | null
+          winning_side?: string | null
+        }
+        Update: {
+          asset?: string
+          combined_cost?: number | null
+          created_at?: string
+          down_cost?: number | null
+          down_qty?: number | null
+          id?: string
+          locked_profit?: number | null
+          market_slug?: string
+          paired?: number | null
+          pnl?: number | null
+          unpaired?: number | null
+          up_cost?: number | null
+          up_qty?: number | null
+          winning_side?: string | null
         }
         Relationships: []
       }
