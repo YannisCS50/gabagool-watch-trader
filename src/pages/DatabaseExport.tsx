@@ -340,12 +340,14 @@ function DatabaseExport() {
       try {
         console.log(`[Export] Starting ${tableName}...`);
         
-        // Fetch all records with pagination - FAST MODE: 5000 rows per page
+        // Fetch all records with pagination.
+        // NOTE: the backend has an effective max of ~1000 rows per request, so higher page sizes won't help.
         let totalRows = 0;
         let page = 0;
-        const pageSize = 5000; // 5x faster than 1000
+        const pageSize = 1000;
         let hasMore = true;
-        const maxPages = 1000; // Safety limit: 5M rows max per table
+        const maxRows = 5_000_000; // Safety limit per table
+        const maxPages = Math.ceil(maxRows / pageSize);
 
         const folderName = tableDef?.category.replace(/[^a-zA-Z0-9]/g, "_") || "misc";
         const basePath = `${folderName}/${tableName}`;
@@ -430,7 +432,12 @@ function DatabaseExport() {
 
     // Generate and download ZIP
     try {
-      const blob = await zip.generateAsync({ type: "blob" });
+      // Speed: avoid CPU-heavy compression; streaming also reduces peak memory.
+      const blob = await zip.generateAsync({
+        type: "blob",
+        streamFiles: true,
+        compression: "STORE",
+      });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
