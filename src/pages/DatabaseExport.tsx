@@ -340,12 +340,12 @@ function DatabaseExport() {
       try {
         console.log(`[Export] Starting ${tableName}...`);
         
-        // Fetch all records with pagination
+        // Fetch all records with pagination - FAST MODE: 5000 rows per page
         let totalRows = 0;
         let page = 0;
-        const pageSize = 1000;
+        const pageSize = 5000; // 5x faster than 1000
         let hasMore = true;
-        const maxPages = 5000; // Safety limit: 5M rows max per table
+        const maxPages = 1000; // Safety limit: 5M rows max per table
 
         const folderName = tableDef?.category.replace(/[^a-zA-Z0-9]/g, "_") || "misc";
         const basePath = `${folderName}/${tableName}`;
@@ -356,32 +356,15 @@ function DatabaseExport() {
           zip.file(fileName, JSON.stringify(data));
         };
 
+        // Skip ordering entirely for speed - we just need the data
         while (hasMore && page < maxPages) {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          let query = (supabase as any)
+          const query = (supabase as any)
             .from(tableName)
             .select("*")
             .range(page * pageSize, (page + 1) * pageSize - 1);
 
-          const shouldOrder = Boolean(tableDef?.orderBy) && tableName !== "trades";
-          if (shouldOrder) {
-            query = query.order(tableDef!.orderBy!, { ascending: false });
-          }
-
-          // First try with orderBy (if configured), and retry without ordering if the column doesn't exist.
-          let { data, error } = await query;
-          if (error && shouldOrder) {
-            const msg = String((error as any)?.message || error);
-            if (msg.toLowerCase().includes("does not exist") || msg.toLowerCase().includes("unknown column")) {
-              console.warn(`[Export] ${tableName}: orderBy '${tableDef?.orderBy}' failed; retrying without order`);
-              // eslint-disable-next-line @typescript-eslint/no-explicit-any
-              const retry = (supabase as any)
-                .from(tableName)
-                .select("*")
-                .range(page * pageSize, (page + 1) * pageSize - 1);
-              ({ data, error } = await retry);
-            }
-          }
+          const { data, error } = await query;
 
           if (error) {
             console.error(`[Export] Error on ${tableName} page ${page}:`, error);
@@ -394,8 +377,8 @@ function DatabaseExport() {
             hasMore = data.length === pageSize;
             page++;
             
-            // Log progress for large tables
-            if (page % 100 === 0) {
+            // Log progress every 50 pages (250k rows)
+            if (page % 50 === 0) {
               console.log(`[Export] ${tableName}: ${totalRows} rows fetched (page ${page})`);
               toast.info(`${tableName}: ${totalRows.toLocaleString()} rijen...`, { duration: 1000, id: `progress-${tableName}` });
             }
