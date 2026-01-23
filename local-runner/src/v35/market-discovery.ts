@@ -100,6 +100,8 @@ export async function discoverMarkets(minSecondsToExpiry: number = 180): Promise
   // Use the same backend as V29R
   const backendMarkets = await fetchMarketsFromBackend();
   
+  const now = Date.now();
+  
   for (const m of backendMarkets) {
     const asset = extractAsset(m.slug);
     if (!asset || !SUPPORTED_ASSETS.includes(asset)) continue;
@@ -109,17 +111,26 @@ export async function discoverMarkets(minSecondsToExpiry: number = 180): Promise
       continue;
     }
     
-    // Parse expiry
+    // Parse start and expiry times
+    let startTime: Date;
     let expiry: Date;
     try {
+      startTime = new Date(m.eventStartTime);
       expiry = new Date(m.eventEndTime);
-      if (isNaN(expiry.getTime())) continue;
+      if (isNaN(startTime.getTime()) || isNaN(expiry.getTime())) continue;
     } catch {
       continue;
     }
     
+    // Skip if market hasn't started yet
+    if (startTime.getTime() > now) {
+      const secsUntilStart = (startTime.getTime() - now) / 1000;
+      console.log(`[MarketDiscovery] ${m.slug}: FUTURE (starts in ${Math.round(secsUntilStart)}s) - SKIPPING`);
+      continue;
+    }
+    
     // Skip if too close to expiry or already expired
-    const secondsToExpiry = (expiry.getTime() - Date.now()) / 1000;
+    const secondsToExpiry = (expiry.getTime() - now) / 1000;
     if (secondsToExpiry < minSecondsToExpiry) {
       console.log(`[MarketDiscovery] ${m.slug}: ${Math.round(secondsToExpiry)}s to expiry (min: ${minSecondsToExpiry})`);
       continue;
