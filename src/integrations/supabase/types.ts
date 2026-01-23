@@ -6647,6 +6647,42 @@ export type Database = {
         }
         Relationships: []
       }
+      v35_fills: {
+        Row: {
+          asset: string
+          created_at: string
+          fill_type: string | null
+          id: string
+          market_slug: string
+          order_id: string | null
+          price: number
+          side: string
+          size: number
+        }
+        Insert: {
+          asset: string
+          created_at?: string
+          fill_type?: string | null
+          id?: string
+          market_slug: string
+          order_id?: string | null
+          price: number
+          side: string
+          size: number
+        }
+        Update: {
+          asset?: string
+          created_at?: string
+          fill_type?: string | null
+          id?: string
+          market_slug?: string
+          order_id?: string | null
+          price?: number
+          side?: string
+          size?: number
+        }
+        Relationships: []
+      }
       v35_settlements: {
         Row: {
           asset: string
