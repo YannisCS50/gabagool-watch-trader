@@ -3031,6 +3031,7 @@ export type Database = {
           last_heartbeat: string
           markets_active: number | null
           markets_count: number | null
+          metadata: Json | null
           mode: string | null
           positions_count: number | null
           runner_id: string
@@ -3050,6 +3051,7 @@ export type Database = {
           last_heartbeat?: string
           markets_active?: number | null
           markets_count?: number | null
+          metadata?: Json | null
           mode?: string | null
           positions_count?: number | null
           runner_id: string
@@ -3069,6 +3071,7 @@ export type Database = {
           last_heartbeat?: string
           markets_active?: number | null
           markets_count?: number | null
+          metadata?: Json | null
           mode?: string | null
           positions_count?: number | null
           runner_id?: string
