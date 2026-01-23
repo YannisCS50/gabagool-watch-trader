@@ -70,6 +70,10 @@ Deno.serve(async (req) => {
     const preset = url.searchParams.get("preset");
     const singleTable = url.searchParams.get("table");
     const useGzip = req.headers.get("accept-encoding")?.includes("gzip") ?? false;
+    
+    // Pagination for large tables (offset/limit in rows)
+    const offset = parseInt(url.searchParams.get("offset") || "0", 10);
+    const limit = parseInt(url.searchParams.get("limit") || "0", 10); // 0 = no limit
 
     let tables: string[];
     let tableMeta: Record<string, { category: string; description: string }>;
@@ -109,7 +113,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log(`[database-export] Starting NDJSON export of ${tables.length} tables, gzip=${useGzip}`);
+    console.log(`[database-export] Starting NDJSON export of ${tables.length} tables, gzip=${useGzip}, offset=${offset}, limit=${limit}`);
 
     const encoder = new TextEncoder();
     
@@ -118,7 +122,9 @@ Deno.serve(async (req) => {
         controller.enqueue(encoder.encode(JSON.stringify({ 
           type: "header", 
           exported_at: new Date().toISOString(),
-          tables: tables.length 
+          tables: tables.length,
+          offset,
+          limit: limit || "unlimited"
         }) + "\n"));
 
         const manifest: Record<string, { rows: number; category: string; description: string; error?: string }> = {};
@@ -130,17 +136,19 @@ Deno.serve(async (req) => {
           let errorMsg = "";
 
           try {
-            console.log(`[database-export] Streaming ${tableName}...`);
+            console.log(`[database-export] Streaming ${tableName} (offset=${offset}, limit=${limit})...`);
             
             const pageSize = 500;
-            let page = 0;
+            let currentOffset = offset;
             let hasMore = true;
+            const maxRows = limit > 0 ? limit : Infinity;
 
-            while (hasMore) {
+            while (hasMore && totalRows < maxRows) {
+              const fetchSize = Math.min(pageSize, maxRows - totalRows);
               const { data, error } = await supabase
                 .from(tableName)
                 .select("*")
-                .range(page * pageSize, (page + 1) * pageSize - 1);
+                .range(currentOffset, currentOffset + fetchSize - 1);
 
               if (error) {
                 hasError = true;
@@ -159,8 +167,8 @@ Deno.serve(async (req) => {
                   }) + "\n"));
                   totalRows++;
                 }
-                hasMore = data.length === pageSize;
-                page++;
+                hasMore = data.length === fetchSize && totalRows < maxRows;
+                currentOffset += data.length;
               } else {
                 hasMore = false;
               }
@@ -203,8 +211,9 @@ Deno.serve(async (req) => {
       ? dataStream.pipeThrough(new CompressionStream("gzip"))
       : dataStream;
 
+    const offsetSuffix = (offset > 0 || limit > 0) ? `-part${Math.floor(offset / (limit || 100000))}` : '';
     const filename = singleTable 
-      ? `${singleTable}-${new Date().toISOString().slice(0, 10)}.ndjson${useGzip ? '.gz' : ''}`
+      ? `${singleTable}${offsetSuffix}-${new Date().toISOString().slice(0, 10)}.ndjson${useGzip ? '.gz' : ''}`
       : `polytracker-export-${new Date().toISOString().slice(0, 10)}.ndjson${useGzip ? '.gz' : ''}`;
 
     return new Response(outputStream, {
