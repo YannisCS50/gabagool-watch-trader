@@ -2,7 +2,7 @@
 // V35 MARKET DISCOVERY
 // ============================================================
 // Automatically find active 15-minute up/down markets via Gamma API.
-// Filters for BTC, ETH, SOL, XRP assets.
+// Uses candidate slug generation (epoch-based) for reliable discovery.
 // ============================================================
 
 import type { V35Asset } from './types.js';
@@ -20,67 +20,84 @@ export interface DiscoveredMarket {
 }
 
 /**
- * Extract asset from market slug
+ * Generate candidate slugs based on 15-min epoch timestamps
+ * Format: {asset}-updown-15m-{epoch}
+ */
+function generateCandidateSlugs(): string[] {
+  const slugs: string[] = [];
+  const nowSec = Math.floor(Date.now() / 1000);
+  const intervalSec = 15 * 60; // 15 minutes
+  const baseSec = Math.floor(nowSec / intervalSec) * intervalSec;
+
+  // Cover window around "now" to catch current/next/previous markets
+  const offsets = [-2, -1, 0, 1, 2, 3, 4];
+  const assets = ['btc', 'eth', 'sol', 'xrp'];
+
+  for (const asset of assets) {
+    for (const off of offsets) {
+      const ts = baseSec + off * intervalSec;
+      slugs.push(`${asset}-updown-15m-${ts}`);
+    }
+  }
+
+  return slugs;
+}
+
+/**
+ * Fetch a single market by slug
+ */
+async function fetchMarketBySlug(slug: string): Promise<any | null> {
+  try {
+    const response = await fetch(`${GAMMA_URL}/markets/${slug}`, {
+      headers: { 'Accept': 'application/json' },
+      signal: AbortSignal.timeout(5000),
+    });
+    
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extract asset from slug
  */
 function extractAsset(slug: string): V35Asset | null {
   const lower = slug.toLowerCase();
-  
-  if (lower.includes('btc') || lower.includes('bitcoin')) return 'BTC';
-  if (lower.includes('eth') || lower.includes('ethereum')) return 'ETH';
-  if (lower.includes('sol') || lower.includes('solana')) return 'SOL';
-  if (lower.includes('xrp')) return 'XRP';
-  
+  if (lower.startsWith('btc-') || lower.includes('-btc-')) return 'BTC';
+  if (lower.startsWith('eth-') || lower.includes('-eth-')) return 'ETH';
+  if (lower.startsWith('sol-') || lower.includes('-sol-')) return 'SOL';
+  if (lower.startsWith('xrp-') || lower.includes('-xrp-')) return 'XRP';
   return null;
 }
 
 /**
- * Check if slug indicates a 15-minute up/down market
- */
-function is15mUpDownMarket(slug: string): boolean {
-  const lower = slug.toLowerCase();
-  return lower.includes('updown-15m') || 
-         lower.includes('up-or-down') ||
-         (lower.includes('15') && lower.includes('minute') && (lower.includes('up') || lower.includes('down')));
-}
-
-/**
- * Find all active 15-minute up/down markets
+ * Find all active 15-minute up/down markets using candidate slug approach
  */
 export async function discoverMarkets(minSecondsToExpiry: number = 180): Promise<DiscoveredMarket[]> {
   const markets: DiscoveredMarket[] = [];
+  const candidateSlugs = generateCandidateSlugs();
   
-  try {
-    const response = await fetch(`${GAMMA_URL}/markets?active=true&closed=false`, {
-      headers: { 'Accept': 'application/json' },
-      signal: AbortSignal.timeout(10000),
-    });
+  console.log(`[MarketDiscovery] Checking ${candidateSlugs.length} candidate slugs...`);
+  
+  // Fetch in parallel (batched to avoid rate limits)
+  const batchSize = 8;
+  for (let i = 0; i < candidateSlugs.length; i += batchSize) {
+    const batch = candidateSlugs.slice(i, i + batchSize);
+    const results = await Promise.all(batch.map(slug => fetchMarketBySlug(slug)));
     
-    if (!response.ok) {
-      console.error(`[MarketDiscovery] Gamma API error: ${response.status}`);
-      return [];
-    }
-    
-    const data = await response.json();
-    
-    for (const m of data) {
-      const slug = m.slug || '';
+    for (let j = 0; j < results.length; j++) {
+      const m = results[j];
+      if (!m || m.closed || !m.active) continue;
       
-      // Filter for 15-min up/down markets
-      if (!is15mUpDownMarket(slug)) {
-        continue;
-      }
-      
-      // Check asset
+      const slug = batch[j];
       const asset = extractAsset(slug);
-      if (!asset || !SUPPORTED_ASSETS.includes(asset)) {
-        continue;
-      }
+      if (!asset) continue;
       
       // Extract token IDs
       const tokens = m.tokens || [];
-      if (tokens.length < 2) {
-        continue;
-      }
+      if (tokens.length < 2) continue;
       
       let upTokenId: string | null = null;
       let downTokenId: string | null = null;
@@ -94,27 +111,21 @@ export async function discoverMarkets(minSecondsToExpiry: number = 180): Promise
         }
       }
       
-      if (!upTokenId || !downTokenId) {
-        continue;
-      }
+      if (!upTokenId || !downTokenId) continue;
       
       // Parse expiry
       const endDateIso = m.end_date_iso || m.endDate || '';
       let expiry: Date;
       try {
         expiry = new Date(endDateIso.replace('Z', '+00:00'));
-        if (isNaN(expiry.getTime())) {
-          continue;
-        }
+        if (isNaN(expiry.getTime())) continue;
       } catch {
         continue;
       }
       
       // Skip if too close to expiry or already expired
       const secondsToExpiry = (expiry.getTime() - Date.now()) / 1000;
-      if (secondsToExpiry < minSecondsToExpiry) {
-        continue;
-      }
+      if (secondsToExpiry < minSecondsToExpiry) continue;
       
       markets.push({
         slug,
@@ -125,13 +136,9 @@ export async function discoverMarkets(minSecondsToExpiry: number = 180): Promise
         expiry,
       });
     }
-    
-    console.log(`[MarketDiscovery] Found ${markets.length} active 15m up/down markets`);
-    
-  } catch (error: any) {
-    console.error(`[MarketDiscovery] Error fetching markets:`, error?.message || error);
   }
   
+  console.log(`[MarketDiscovery] Found ${markets.length} active 15m up/down markets`);
   return markets;
 }
 
