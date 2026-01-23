@@ -18,6 +18,8 @@
 // ============================================================
 
 import '../config.js'; // Load env first
+import WebSocket from 'ws';
+import os from 'os';
 import { 
   getV35Config, 
   loadV35Config, 
@@ -29,22 +31,25 @@ import type {
   V35Market, 
   V35MarketMetrics, 
   V35PortfolioMetrics,
-  V35Asset 
+  V35Asset,
+  V35Fill,
 } from './types.js';
 import { createEmptyMarket, calculateMarketMetrics } from './types.js';
 import { QuotingEngine } from './quoting-engine.js';
 import { discoverMarkets, filterByAssets } from './market-discovery.js';
 import { syncOrders, cancelAllOrders, updateOrderbook } from './order-manager.js';
 import { processFill, logMarketFillStats } from './fill-tracker.js';
-import { sendV35Heartbeat, sendV35Offline, saveV35Settlement } from './backend.js';
-import { ensureValidCredentials, getBalance } from '../polymarket.js';
+import { sendV35Heartbeat, sendV35Offline, saveV35Settlement, saveV35Fill } from './backend.js';
+import { ensureValidCredentials, getBalance, getOpenOrders } from '../polymarket.js';
 import { checkVpnRequired } from '../vpn-check.js';
+import { acquireLeaseOrHalt, releaseLease, renewLease } from '../runner-lease.js';
 
 // ============================================================
 // CONSTANTS
 // ============================================================
 
-const VERSION = 'V35.0.0';
+const VERSION = 'V35.0.1';
+const RUNNER_ID = process.env.RUNNER_ID || `v35-${os.hostname()}`;
 const RUN_ID = `v35_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
 // ============================================================
@@ -52,10 +57,12 @@ const RUN_ID = `v35_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 // ============================================================
 
 const markets = new Map<string, V35Market>();
+const tokenToMarket = new Map<string, { slug: string; side: 'UP' | 'DOWN' }>();
 let quotingEngine: QuotingEngine;
 let running = false;
 let paused = false;
 let balance = 0;
+let clobSocket: WebSocket | null = null;
 
 // ============================================================
 // LOGGING HELPERS
@@ -69,6 +76,95 @@ function log(msg: string): void {
 function logError(msg: string, err?: any): void {
   const ts = new Date().toISOString().slice(11, 19);
   console.error(`[${ts}] ❌ ${msg}`, err?.message || err || '');
+}
+
+// ============================================================
+// WEBSOCKET MANAGEMENT
+// ============================================================
+
+function buildTokenMap(): void {
+  tokenToMarket.clear();
+  for (const market of markets.values()) {
+    tokenToMarket.set(market.upTokenId, { slug: market.slug, side: 'UP' });
+    tokenToMarket.set(market.downTokenId, { slug: market.slug, side: 'DOWN' });
+  }
+}
+
+function connectToClob(): void {
+  const tokenIds = Array.from(tokenToMarket.keys());
+  if (tokenIds.length === 0) {
+    log('⚠️ No tokens to subscribe');
+    return;
+  }
+
+  log(`🔌 Connecting to CLOB with ${tokenIds.length} tokens...`);
+  clobSocket = new WebSocket('wss://ws-subscriptions-clob.polymarket.com/ws/market');
+
+  clobSocket.on('open', () => {
+    log('✅ Connected to Polymarket CLOB WebSocket');
+    clobSocket!.send(JSON.stringify({ type: 'market', assets_ids: tokenIds }));
+  });
+
+  clobSocket.on('message', (data: WebSocket.Data) => {
+    try {
+      const event = JSON.parse(data.toString());
+      processWsEvent(event);
+    } catch {}
+  });
+
+  clobSocket.on('error', (error) => {
+    logError('CLOB WebSocket error:', error);
+  });
+
+  clobSocket.on('close', () => {
+    log('🔌 CLOB disconnected, reconnecting in 5s...');
+    setTimeout(() => {
+      if (running) connectToClob();
+    }, 5000);
+  });
+}
+
+function processWsEvent(data: any): void {
+  const eventType = data.event_type;
+
+  if (eventType === 'book') {
+    const assetId = data.asset_id;
+    const marketInfo = tokenToMarket.get(assetId);
+    if (!marketInfo) return;
+
+    const market = markets.get(marketInfo.slug);
+    if (!market) return;
+
+    const asks = (data.asks || []) as any[];
+    const bids = (data.bids || []) as any[];
+
+    const parsePrice = (level: any): number | null => {
+      const raw = Array.isArray(level) ? level[0] : level?.price;
+      const n = typeof raw === 'number' ? raw : parseFloat(raw);
+      return Number.isFinite(n) ? n : null;
+    };
+
+    let bestBid: number | null = null;
+    let bestAsk: number | null = null;
+
+    for (const level of bids) {
+      const p = parsePrice(level);
+      if (p !== null && (bestBid === null || p > bestBid)) bestBid = p;
+    }
+    for (const level of asks) {
+      const p = parsePrice(level);
+      if (p !== null && (bestAsk === null || p < bestAsk)) bestAsk = p;
+    }
+
+    if (marketInfo.side === 'UP') {
+      if (bestBid !== null) market.upBestBid = bestBid;
+      if (bestAsk !== null) market.upBestAsk = bestAsk;
+    } else {
+      if (bestBid !== null) market.downBestBid = bestBid;
+      if (bestAsk !== null) market.downBestAsk = bestAsk;
+    }
+    market.lastUpdated = new Date();
+  }
 }
 
 // ============================================================
@@ -88,6 +184,7 @@ async function refreshMarkets(): Promise<void> {
   const assets: V35Asset[] = ['BTC', 'ETH', 'SOL', 'XRP'];
   const filtered = filterByAssets(discovered, assets);
   
+  let added = 0;
   // Add new markets (up to max)
   for (const m of filtered) {
     if (markets.size >= config.maxMarkets) break;
@@ -104,11 +201,23 @@ async function refreshMarkets(): Promise<void> {
     
     markets.set(m.slug, market);
     log(`➕ Added market: ${m.slug.slice(-35)} (${m.asset})`);
+    added++;
+  }
+  
+  // Rebuild token map and reconnect if new markets were added
+  if (added > 0) {
+    buildTokenMap();
+    // Reconnect WS with new tokens
+    if (clobSocket) {
+      clobSocket.close();
+    }
+    connectToClob();
   }
 }
 
 function cleanupExpiredMarkets(): void {
   const now = Date.now();
+  let removed = 0;
   
   for (const [slug, market] of markets.entries()) {
     if (market.expiry.getTime() < now) {
@@ -134,8 +243,17 @@ function cleanupExpiredMarkets(): void {
         pnl: metrics.lockedProfit, // Best estimate
       }).catch(() => {});
       
+      // Remove from token map
+      tokenToMarket.delete(market.upTokenId);
+      tokenToMarket.delete(market.downTokenId);
+      
       markets.delete(slug);
+      removed++;
     }
+  }
+  
+  if (removed > 0) {
+    log(`🗑️ Removed ${removed} expired markets`);
   }
 }
 
@@ -340,10 +458,19 @@ async function stop(): Promise<void> {
   log('🛑 STOPPING...');
   running = false;
   
+  // Close WebSocket
+  if (clobSocket) {
+    clobSocket.close();
+    clobSocket = null;
+  }
+  
   const config = getV35Config();
   for (const market of markets.values()) {
     await cancelAllOrders(market, config.dryRun);
   }
+  
+  // Release runner lease
+  await releaseLease(RUNNER_ID);
   
   await sendV35Offline(RUN_ID);
   log('🛑 STOPPED');
@@ -380,12 +507,26 @@ async function main(): Promise<void> {
   // VPN check (exits if VPN not connected)
   await checkVpnRequired();
   
+  // Acquire exclusive runner lease (prevents multiple runners)
+  const forceLease = process.env.FORCE_LEASE === '1' || process.env.FORCE_TAKEOVER === '1';
+  if (forceLease) {
+    log('⚡ FORCE_LEASE detected - will override existing lease');
+  }
+  log('🔒 Acquiring exclusive runner lease...');
+  const leaseAcquired = await acquireLeaseOrHalt(RUNNER_ID, forceLease);
+  if (!leaseAcquired) {
+    logError('Another runner holds the lease. Use FORCE_LEASE=1 to override.');
+    process.exit(1);
+  }
+  log('✅ Exclusive runner lease acquired');
+  
   // Validate credentials
   if (!config.dryRun) {
     log('🔐 Validating API credentials...');
     const credsOk = await ensureValidCredentials();
     if (!credsOk) {
       logError('Credential validation failed - exiting');
+      await releaseLease(RUNNER_ID);
       process.exit(1);
     }
     log('✅ Credentials validated');
@@ -406,6 +547,12 @@ async function main(): Promise<void> {
   await refreshMarkets();
   log(`📊 Found ${markets.size} markets to trade`);
   
+  // Build token map and connect to WebSocket
+  buildTokenMap();
+  if (tokenToMarket.size > 0 && !config.dryRun) {
+    connectToClob();
+  }
+  
   // Start running
   running = true;
   
@@ -418,11 +565,17 @@ async function main(): Promise<void> {
     sendHeartbeat().catch(err => logError('Heartbeat failed:', err));
   }, 10000); // Every 10 seconds
   
+  // Renew lease every 30 seconds
+  const leaseRenewInterval = setInterval(() => {
+    renewLease(RUNNER_ID).catch(err => logError('Lease renewal failed:', err));
+  }, 30000);
+  
   // Handle shutdown
   const shutdown = async () => {
     console.log('\n');
     clearInterval(marketRefreshInterval);
     clearInterval(heartbeatInterval);
+    clearInterval(leaseRenewInterval);
     await stop();
     process.exit(0);
   };
@@ -442,7 +595,8 @@ async function main(): Promise<void> {
 // ENTRY POINT
 // ============================================================
 
-main().catch(err => {
+main().catch(async (err) => {
   logError('Fatal error:', err);
+  await releaseLease(RUNNER_ID);
   process.exit(1);
 });
