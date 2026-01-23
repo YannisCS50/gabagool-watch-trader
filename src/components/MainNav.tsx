@@ -35,6 +35,7 @@ const monitoringItems = [
   { title: 'Observability', href: '/observability', icon: Eye, description: 'System monitoring' },
   { title: 'Data Logging', href: '/data-logging', icon: Database, description: 'Log viewer' },
   { title: 'Reconcile', href: '/reconcile', icon: FileCheck, description: 'CSV vs bot fill matching' },
+  { title: 'Database Export', href: '/database-export', icon: Database, description: 'Volledige DB export als ZIP' },
 ];
 
 interface ListItemProps {
