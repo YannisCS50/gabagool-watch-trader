@@ -201,7 +201,7 @@ async function refreshMarkets(): Promise<void> {
   
   // Discover new markets
   const discovered = await discoverMarkets(config.stopBeforeExpirySec + 60);
-  const assets: V35Asset[] = ['BTC', 'ETH', 'SOL', 'XRP'];
+  const assets: V35Asset[] = ['BTC']; // Only BTC allowed
   const filtered = filterByAssets(discovered, assets);
   
   let added = 0;
