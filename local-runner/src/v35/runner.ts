@@ -99,25 +99,44 @@ function connectToClob(): void {
   }
 
   log(`🔌 Connecting to CLOB with ${tokenIds.length} tokens...`);
-  clobSocket = new WebSocket('wss://ws-subscriptions-clob.polymarket.com/ws/market');
+  // IMPORTANT:
+  // Use a local socket reference inside event handlers.
+  // Otherwise, if connectToClob() is called again while the previous socket is still CONNECTING,
+  // the previous socket's 'open' handler may fire but attempt to send on the NEW global clobSocket
+  // (still CONNECTING) -> "WebSocket is not open: readyState 0".
+  const ws = new WebSocket('wss://ws-subscriptions-clob.polymarket.com/ws/market');
+  clobSocket = ws;
 
-  clobSocket.on('open', () => {
+  ws.on('open', () => {
+    // Ignore stale sockets
+    if (ws !== clobSocket) {
+      try { ws.close(); } catch {}
+      return;
+    }
+
     log('✅ Connected to Polymarket CLOB WebSocket');
-    clobSocket!.send(JSON.stringify({ type: 'market', assets_ids: tokenIds }));
+    try {
+      ws.send(JSON.stringify({ type: 'market', assets_ids: tokenIds }));
+    } catch (err) {
+      logError('CLOB subscribe send failed:', err);
+    }
   });
 
-  clobSocket.on('message', (data: WebSocket.Data) => {
+  ws.on('message', (data: WebSocket.Data) => {
     try {
       const event = JSON.parse(data.toString());
       processWsEvent(event);
     } catch {}
   });
 
-  clobSocket.on('error', (error) => {
+  ws.on('error', (error) => {
     logError('CLOB WebSocket error:', error);
   });
 
-  clobSocket.on('close', () => {
+  ws.on('close', () => {
+    // Only the currently-active socket should trigger reconnect logic
+    if (ws !== clobSocket) return;
+
     log('🔌 CLOB disconnected, reconnecting in 5s...');
     setTimeout(() => {
       if (running) connectToClob();
