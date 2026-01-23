@@ -132,7 +132,11 @@ ctx.onmessage = async (event: MessageEvent<StartMessage>) => {
             .select("*")
             .range(page * pageSize, (page + 1) * pageSize - 1);
 
-          if (error) throw error;
+          if (error) {
+            // Extract proper error message from Supabase error object
+            const errMsg = error.message || error.details || error.hint || JSON.stringify(error);
+            throw new Error(errMsg);
+          }
 
           if (data && data.length > 0) {
             const fileName = `${basePath}/page-${String(page).padStart(5, "0")}.json`;
@@ -142,7 +146,8 @@ ctx.onmessage = async (event: MessageEvent<StartMessage>) => {
             hasMore = data.length === pageSize;
             page++;
 
-            if (page % 50 === 0) {
+            // Report progress every 10 pages for faster feedback
+            if (page % 10 === 0) {
               ctx.postMessage({ type: "table-progress", tableName, rows: totalRows, page } satisfies WorkerMessage);
             }
           } else {
@@ -151,7 +156,6 @@ ctx.onmessage = async (event: MessageEvent<StartMessage>) => {
         }
 
         if (page >= maxPages) {
-          // Mark as warning in manifest; still return what we have.
           manifest[tableName] = {
             rows: totalRows,
             description: meta?.description || "",
@@ -173,14 +177,18 @@ ctx.onmessage = async (event: MessageEvent<StartMessage>) => {
           { type: "table-done", tableName, rows: totalRows, pages: page, tableIndex: i, totalTables: msg.tables.length } satisfies WorkerMessage,
         );
       } catch (err) {
+        // Continue with other tables even if one fails
+        const errMsg = err instanceof Error ? err.message : (typeof err === 'object' ? JSON.stringify(err) : String(err));
         errors.push(tableName);
         manifest[tableName] = {
-          rows: 0,
+          rows: totalRows, // Keep rows we already got
           description: meta?.description || "",
           category: meta?.category || "misc",
-          error: err instanceof Error ? err.message : String(err),
+          pages: page,
+          error: errMsg,
         };
-        ctx.postMessage({ type: "error", message: err instanceof Error ? err.message : String(err), tableName } satisfies WorkerMessage);
+        ctx.postMessage({ type: "error", message: errMsg, tableName } satisfies WorkerMessage);
+        // Don't throw - continue with next table
       }
     }
 
