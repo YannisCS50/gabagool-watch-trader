@@ -43,6 +43,7 @@ import { sendV35Heartbeat, sendV35Offline, saveV35Settlement, saveV35Fill } from
 import { ensureValidCredentials, getBalance, getOpenOrders } from '../polymarket.js';
 import { checkVpnRequired } from '../vpn-check.js';
 import { acquireLeaseOrHalt, releaseLease, renewLease } from '../runner-lease.js';
+import { setRunnerIdentity } from '../order-guard.js';
 
 // ============================================================
 // CONSTANTS
@@ -503,6 +504,9 @@ async function main(): Promise<void> {
   if (config.dryRun) {
     log('🧪 DRY RUN MODE - No real orders will be placed');
   }
+  
+  // Set runner identity for order-guard (authorizes V35 to place orders)
+  setRunnerIdentity('v35');
   
   // VPN check (exits if VPN not connected)
   await checkVpnRequired();
