@@ -163,11 +163,14 @@ export function checkSignal(
     return { triggered: false, skipReason: 'disabled' };
   }
   
-  // 1b. TIME-OF-DAY BLACKLIST (14:00-15:00 UTC = loss-making hour)
-  // Analysis of 5,900+ trades showed this hour is consistently unprofitable
+  // 1b. BLACKLIST HOURS - Multiple loss-making hours identified
+  // Analysis of 3,689 trades:
+  // Hour 14: -$42 (43% win rate), Hour 15: -$58 (50% win rate) = -$100 combined
+  // Hour 8: -$23 (56% win rate), Hour 11: -$21 (55% win rate)
   const currentHourUTC = new Date(now).getUTCHours();
-  if (currentHourUTC === 14) {
-    return { triggered: false, skipReason: 'blacklist_hour', skipDetails: '14:00-15:00 UTC blocked' };
+  const BLACKLIST_HOURS = [8, 11, 14, 15];
+  if (BLACKLIST_HOURS.includes(currentHourUTC)) {
+    return { triggered: false, skipReason: 'blacklist_hour', skipDetails: `${currentHourUTC}:00 UTC blocked` };
   }
   
   // 2. Check if market exists
@@ -186,9 +189,11 @@ export function checkSignal(
     return { triggered: false, skipReason: 'delta_too_small' };
   }
   
-  // 4d. UP TRADES NEED HIGHER THRESHOLD ($7 instead of $6)
-  // Analysis: UP trades with delta <$6 had poor performance, but $8 was too strict
-  const UP_MIN_DELTA = 7.0;
+  // 4d. UP TRADES NEED HIGHER THRESHOLD ($8 minimum)
+  // Analysis: UP trades with delta <$6 had -$200 loss (1149 trades, 42% win rate)
+  // $6-8 range: +$66 (72.8% win rate) - still ok but marginal
+  // $8+: All buckets profitable with 70%+ win rate
+  const UP_MIN_DELTA = 8.0;
   if (direction === 'UP' && absDelta < UP_MIN_DELTA) {
     logFn(`SKIP: ${asset} UP - delta $${absDelta.toFixed(2)} < $${UP_MIN_DELTA} (UP threshold)`, {
       asset, direction, absDelta, upThreshold: UP_MIN_DELTA,
@@ -236,8 +241,9 @@ export function checkSignal(
   }
   
   // 6b. MINIMUM SPREAD FILTER (tight spreads = loss-making)
-  // Analysis: spreads <1¢ had -$186 loss - lowered from 1.5 to 1.0 to avoid blocking too much
-  const MIN_SPREAD_CENTS = 1.0;
+  // Analysis: spreads <1.5¢ had -$215 combined loss (UP: -$200, DOWN: -$15)
+  // spreads ≥1.5¢ had +$273 profit (UP: +$222, DOWN: +$51)
+  const MIN_SPREAD_CENTS = 1.5;
   if (spreadCents < MIN_SPREAD_CENTS) {
     logFn(`SKIP: ${asset} ${direction} - spread ${spreadCents.toFixed(1)}¢ < ${MIN_SPREAD_CENTS}¢ (too tight)`, {
       asset, direction, spreadCents,
@@ -301,6 +307,24 @@ export function checkSignal(
   if (config.pro_delta_only && strikePrice > 0) {
     const neutralZone = config.pro_delta_neutral_zone_usd ?? 50;
     
+    // HARD BLOCK: Anti-delta trades are extremely loss-making
+    // UP where price < strike: 32.5% win rate, -$26 loss
+    // DOWN where price > strike: 53.5% win rate, -$51 loss
+    // These should be blocked REGARDLESS of neutral zone
+    
+    // Check for hard anti-delta (wrong direction relative to price-to-strike)
+    const isAntiDelta = (direction === 'UP' && priceToStrikeDelta < 0) ||
+                        (direction === 'DOWN' && priceToStrikeDelta > 0);
+    
+    if (isAntiDelta && Math.abs(priceToStrikeDelta) > 15) {
+      // Hard block: trading against strong delta
+      logFn(`SKIP: ${asset} ${direction} - ANTI-DELTA hard block | Δ=${priceToStrikeDelta.toFixed(0)} | ${direction} blocked`, {
+        asset, direction, priceToStrikeDelta, strikePrice,
+      });
+      return { triggered: false, skipReason: 'anti_delta_blocked', skipDetails: `Δ=${priceToStrikeDelta.toFixed(0)}, ${direction} blocked` };
+    }
+    
+    // Original neutral zone logic for softer blocks
     if (priceToStrikeDelta > neutralZone) {
       // Price is ABOVE strike by more than neutral zone → only UP allowed
       if (direction !== 'UP') {
