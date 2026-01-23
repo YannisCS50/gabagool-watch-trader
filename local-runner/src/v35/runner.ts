@@ -321,8 +321,19 @@ async function processMarket(market: V35Market): Promise<void> {
     const upQuotes = quotingEngine.generateQuotes('UP', market);
     const downQuotes = quotingEngine.generateQuotes('DOWN', market);
     
-    await syncOrders(market, 'UP', upQuotes, config.dryRun);
-    await syncOrders(market, 'DOWN', downQuotes, config.dryRun);
+    // Debug: log quote generation
+    if (upQuotes.length === 0 || downQuotes.length === 0) {
+      log(`⚠️ Quote generation: UP=${upQuotes.length} DOWN=${downQuotes.length}`);
+      log(`   bestAsk: UP=$${market.upBestAsk?.toFixed(2)} DOWN=$${market.downBestAsk?.toFixed(2)}`);
+      log(`   inventory: UP=${market.upQty} DOWN=${market.downQty} (skew=${market.upQty - market.downQty})`);
+    }
+    
+    const upResult = await syncOrders(market, 'UP', upQuotes, config.dryRun);
+    const downResult = await syncOrders(market, 'DOWN', downQuotes, config.dryRun);
+    
+    if (upResult.placed > 0 || downResult.placed > 0) {
+      log(`📝 Orders placed: UP=${upResult.placed} DOWN=${downResult.placed}`);
+    }
   }
 }
 
