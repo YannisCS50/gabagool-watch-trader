@@ -5,17 +5,47 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
-interface TableMeta {
-  category: string;
-  description: string;
-}
+// Gabagool preset tables
+const GABAGOOL_TABLES = [
+  "trades", "positions", "position_snapshots",
+  "price_ticks", "chainlink_prices",
+  "v29_ticks_response", "v29_ticks",
+  "market_history", "market_lifecycle", "strike_prices",
+  "v29_signals_response", "v29_signals",
+  "fill_logs", "live_trades", "live_trade_results",
+  "raw_subgraph_events", "cashflow_ledger", "subgraph_fills",
+  "bot_positions", "canonical_positions",
+  "signal_quality_analysis", "bucket_statistics", "gabagool_metrics",
+  "tracked_wallet_trades",
+];
 
-interface ExportRequest {
-  tables: string[];
-  tableMeta: Record<string, TableMeta>;
-}
+const DEFAULT_META: Record<string, { category: string; description: string }> = {
+  trades: { category: "Gabagool", description: "All trades" },
+  positions: { category: "Gabagool", description: "Positions" },
+  position_snapshots: { category: "Gabagool", description: "Position snapshots" },
+  price_ticks: { category: "Prices", description: "Price ticks" },
+  chainlink_prices: { category: "Prices", description: "Chainlink prices" },
+  v29_ticks_response: { category: "V29", description: "V29R ticks" },
+  v29_ticks: { category: "V29", description: "V29 ticks" },
+  market_history: { category: "Markets", description: "Market history" },
+  market_lifecycle: { category: "Markets", description: "Market lifecycle" },
+  strike_prices: { category: "Markets", description: "Strike prices" },
+  v29_signals_response: { category: "V29", description: "V29R signals" },
+  v29_signals: { category: "V29", description: "V29 signals" },
+  fill_logs: { category: "Trades", description: "Fill logs" },
+  live_trades: { category: "Trades", description: "Live trades" },
+  live_trade_results: { category: "Trades", description: "Trade results" },
+  raw_subgraph_events: { category: "Onchain", description: "Subgraph events" },
+  cashflow_ledger: { category: "Onchain", description: "Cashflow ledger" },
+  subgraph_fills: { category: "Onchain", description: "Subgraph fills" },
+  bot_positions: { category: "Positions", description: "Bot positions" },
+  canonical_positions: { category: "Positions", description: "Canonical positions" },
+  signal_quality_analysis: { category: "Analysis", description: "Signal quality" },
+  bucket_statistics: { category: "Analysis", description: "Bucket stats" },
+  gabagool_metrics: { category: "Analysis", description: "Gabagool metrics" },
+  tracked_wallet_trades: { category: "Gabagool", description: "Tracked wallet trades" },
+};
 
-// Simple NDJSON streaming export - no ZIP, no memory issues
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -36,8 +66,27 @@ Deno.serve(async (req) => {
       auth: { persistSession: false, autoRefreshToken: false },
     });
 
-    const body: ExportRequest = await req.json();
-    const { tables, tableMeta } = body;
+    let tables: string[];
+    let tableMeta: Record<string, { category: string; description: string }>;
+
+    // Support GET with preset parameter
+    const url = new URL(req.url);
+    const preset = url.searchParams.get("preset");
+
+    if (req.method === "GET" && preset === "gabagool") {
+      tables = GABAGOOL_TABLES;
+      tableMeta = DEFAULT_META;
+      console.log(`[database-export] GET preset=gabagool, ${tables.length} tables`);
+    } else if (req.method === "POST") {
+      const body = await req.json();
+      tables = body.tables || [];
+      tableMeta = body.tableMeta || DEFAULT_META;
+    } else {
+      return new Response(
+        JSON.stringify({ error: "Use POST with {tables, tableMeta} or GET with ?preset=gabagool" }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
     if (!tables || tables.length === 0) {
       return new Response(
@@ -48,20 +97,17 @@ Deno.serve(async (req) => {
 
     console.log(`[database-export] Starting NDJSON export of ${tables.length} tables`);
 
-    // Stream response - each line is a JSON object
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
       async start(controller) {
         const manifest: Record<string, { rows: number; category: string; description: string; error?: string }> = {};
         
-        // Write header
         controller.enqueue(encoder.encode(JSON.stringify({ 
           type: "header", 
           exported_at: new Date().toISOString(),
           tables: tables.length 
         }) + "\n"));
 
-        // Process tables sequentially to minimize memory
         for (const tableName of tables) {
           const meta = tableMeta[tableName] || { category: "misc", description: "" };
           let totalRows = 0;
@@ -71,8 +117,7 @@ Deno.serve(async (req) => {
           try {
             console.log(`[database-export] Streaming ${tableName}...`);
             
-            // Fetch in pages and stream immediately
-            const pageSize = 500; // Smaller pages for memory efficiency
+            const pageSize = 500;
             let page = 0;
             let hasMore = true;
 
@@ -90,7 +135,6 @@ Deno.serve(async (req) => {
               }
 
               if (data && data.length > 0) {
-                // Stream each row immediately
                 for (const row of data) {
                   controller.enqueue(encoder.encode(JSON.stringify({
                     type: "row",
@@ -121,7 +165,6 @@ Deno.serve(async (req) => {
             ...(hasError && { error: errorMsg })
           };
 
-          // Send table completion marker
           controller.enqueue(encoder.encode(JSON.stringify({
             type: "table_complete",
             table: tableName,
@@ -130,7 +173,6 @@ Deno.serve(async (req) => {
           }) + "\n"));
         }
 
-        // Write footer with manifest
         controller.enqueue(encoder.encode(JSON.stringify({
           type: "footer",
           manifest,
