@@ -1,12 +1,12 @@
 // ============================================================
 // V35 BACKEND LOGGING
 // ============================================================
-// Persists fills, positions, and heartbeats to the database.
-// Uses the runner-proxy for all database operations.
+// Persists fills, positions, heartbeats, and orderbook snapshots
+// to the database. Uses the runner-proxy for all database operations.
 // ============================================================
 
 import { config } from '../config.js';
-import type { V35Market, V35Fill, V35MarketMetrics, V35PortfolioMetrics } from './types.js';
+import type { V35Market, V35Fill, V35MarketMetrics, V35PortfolioMetrics, V35OrderbookSnapshot } from './types.js';
 
 const VERSION = 'V35.0.0';
 
@@ -168,6 +168,73 @@ export async function saveV35Settlement(data: V35SettlementData): Promise<boolea
     return result.success;
   } catch (err: any) {
     console.error('[V35Backend] Save settlement failed:', err?.message);
+    return false;
+  }
+}
+
+// ============================================================
+// ORDERBOOK SNAPSHOT LOGGING
+// ============================================================
+
+export async function saveV35OrderbookSnapshot(snapshot: V35OrderbookSnapshot): Promise<boolean> {
+  try {
+    const result = await callProxy<{ success: boolean }>('save-v35-orderbook-snapshot', {
+      snapshot: {
+        ts: snapshot.ts,
+        market_slug: snapshot.marketSlug,
+        asset: snapshot.asset,
+        up_best_bid: snapshot.upBestBid,
+        up_best_ask: snapshot.upBestAsk,
+        down_best_bid: snapshot.downBestBid,
+        down_best_ask: snapshot.downBestAsk,
+        combined_ask: snapshot.combinedAsk,
+        combined_mid: snapshot.combinedMid,
+        edge: snapshot.edge,
+        up_bids: snapshot.upBids,
+        up_asks: snapshot.upAsks,
+        down_bids: snapshot.downBids,
+        down_asks: snapshot.downAsks,
+        spot_price: snapshot.spotPrice,
+        strike_price: snapshot.strikePrice,
+        seconds_to_expiry: snapshot.secondsToExpiry,
+      },
+    });
+    return result.success;
+  } catch (err: any) {
+    console.error('[V35Backend] Save orderbook snapshot failed:', err?.message);
+    return false;
+  }
+}
+
+// Batch save multiple snapshots at once (more efficient)
+export async function saveV35OrderbookSnapshots(snapshots: V35OrderbookSnapshot[]): Promise<boolean> {
+  if (snapshots.length === 0) return true;
+  
+  try {
+    const result = await callProxy<{ success: boolean; count: number }>('save-v35-orderbook-snapshots', {
+      snapshots: snapshots.map(s => ({
+        ts: s.ts,
+        market_slug: s.marketSlug,
+        asset: s.asset,
+        up_best_bid: s.upBestBid,
+        up_best_ask: s.upBestAsk,
+        down_best_bid: s.downBestBid,
+        down_best_ask: s.downBestAsk,
+        combined_ask: s.combinedAsk,
+        combined_mid: s.combinedMid,
+        edge: s.edge,
+        up_bids: s.upBids,
+        up_asks: s.upAsks,
+        down_bids: s.downBids,
+        down_asks: s.downAsks,
+        spot_price: s.spotPrice,
+        strike_price: s.strikePrice,
+        seconds_to_expiry: s.secondsToExpiry,
+      })),
+    });
+    return result.success;
+  } catch (err: any) {
+    console.error('[V35Backend] Save orderbook snapshots failed:', err?.message);
     return false;
   }
 }

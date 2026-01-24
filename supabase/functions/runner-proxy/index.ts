@@ -64,7 +64,10 @@ type Action =
   | 'update-toxicity-outcome'
   | 'get-toxicity-history'
   // Price feed WebSocket logger
-  | 'save-realtime-price-logs';
+  | 'save-realtime-price-logs'
+  // V35 Orderbook snapshots
+  | 'save-v35-orderbook-snapshot'
+  | 'save-v35-orderbook-snapshots';
 
 interface RequestBody {
   action: Action;
@@ -2000,6 +2003,137 @@ Deno.serve(async (req) => {
 
         console.log(`[runner-proxy] 📊 Saved ${logs.length} realtime price logs`);
         return new Response(JSON.stringify({ success: true, count: logs.length }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // ============================================================
+      // V35 Orderbook Snapshots (full depth logging)
+      // ============================================================
+      case 'save-v35-orderbook-snapshot': {
+        const snapshot = data?.snapshot as {
+          ts: number;
+          market_slug: string;
+          asset: string;
+          up_best_bid: number | null;
+          up_best_ask: number | null;
+          down_best_bid: number | null;
+          down_best_ask: number | null;
+          combined_ask: number | null;
+          combined_mid: number | null;
+          edge: number | null;
+          up_bids: Array<{ price: number; size: number }>;
+          up_asks: Array<{ price: number; size: number }>;
+          down_bids: Array<{ price: number; size: number }>;
+          down_asks: Array<{ price: number; size: number }>;
+          spot_price: number | null;
+          strike_price: number | null;
+          seconds_to_expiry: number | null;
+        } | undefined;
+
+        if (!snapshot) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing snapshot data' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const { error } = await supabase
+          .from('v35_orderbook_snapshots')
+          .insert({
+            ts: snapshot.ts,
+            market_slug: snapshot.market_slug,
+            asset: snapshot.asset,
+            up_best_bid: snapshot.up_best_bid,
+            up_best_ask: snapshot.up_best_ask,
+            down_best_bid: snapshot.down_best_bid,
+            down_best_ask: snapshot.down_best_ask,
+            combined_ask: snapshot.combined_ask,
+            combined_mid: snapshot.combined_mid,
+            edge: snapshot.edge,
+            up_bids: snapshot.up_bids,
+            up_asks: snapshot.up_asks,
+            down_bids: snapshot.down_bids,
+            down_asks: snapshot.down_asks,
+            spot_price: snapshot.spot_price,
+            strike_price: snapshot.strike_price,
+            seconds_to_expiry: snapshot.seconds_to_expiry,
+          });
+
+        if (error) {
+          console.error('[runner-proxy] save-v35-orderbook-snapshot error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      case 'save-v35-orderbook-snapshots': {
+        const snapshots = data?.snapshots as Array<{
+          ts: number;
+          market_slug: string;
+          asset: string;
+          up_best_bid: number | null;
+          up_best_ask: number | null;
+          down_best_bid: number | null;
+          down_best_ask: number | null;
+          combined_ask: number | null;
+          combined_mid: number | null;
+          edge: number | null;
+          up_bids: Array<{ price: number; size: number }>;
+          up_asks: Array<{ price: number; size: number }>;
+          down_bids: Array<{ price: number; size: number }>;
+          down_asks: Array<{ price: number; size: number }>;
+          spot_price: number | null;
+          strike_price: number | null;
+          seconds_to_expiry: number | null;
+        }> | undefined;
+
+        if (!snapshots || snapshots.length === 0) {
+          return new Response(JSON.stringify({ success: true, count: 0 }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const dbRows = snapshots.map((s) => ({
+          ts: s.ts,
+          market_slug: s.market_slug,
+          asset: s.asset,
+          up_best_bid: s.up_best_bid,
+          up_best_ask: s.up_best_ask,
+          down_best_bid: s.down_best_bid,
+          down_best_ask: s.down_best_ask,
+          combined_ask: s.combined_ask,
+          combined_mid: s.combined_mid,
+          edge: s.edge,
+          up_bids: s.up_bids,
+          up_asks: s.up_asks,
+          down_bids: s.down_bids,
+          down_asks: s.down_asks,
+          spot_price: s.spot_price,
+          strike_price: s.strike_price,
+          seconds_to_expiry: s.seconds_to_expiry,
+        }));
+
+        const { error } = await supabase
+          .from('v35_orderbook_snapshots')
+          .insert(dbRows);
+
+        if (error) {
+          console.error('[runner-proxy] save-v35-orderbook-snapshots error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] 📊 Saved ${snapshots.length} V35 orderbook snapshots`);
+        return new Response(JSON.stringify({ success: true, count: snapshots.length }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }

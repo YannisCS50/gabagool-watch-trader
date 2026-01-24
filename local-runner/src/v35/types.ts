@@ -120,6 +120,42 @@ export interface V35Status {
 }
 
 // ============================================================
+// Orderbook Depth (for logging)
+// ============================================================
+
+export interface V35OrderbookLevel {
+  price: number;
+  size: number;
+}
+
+export interface V35OrderbookSnapshot {
+  ts: number;
+  marketSlug: string;
+  asset: V35Asset;
+  upBestBid: number | null;
+  upBestAsk: number | null;
+  downBestBid: number | null;
+  downBestAsk: number | null;
+  combinedAsk: number | null;
+  combinedMid: number | null;
+  edge: number | null;
+  upBids: V35OrderbookLevel[];
+  upAsks: V35OrderbookLevel[];
+  downBids: V35OrderbookLevel[];
+  downAsks: V35OrderbookLevel[];
+  spotPrice: number | null;
+  strikePrice: number | null;
+  secondsToExpiry: number | null;
+}
+  paused: boolean;
+  mode: string;
+  dryRun: boolean;
+  marketsCount: number;
+  portfolio: V35PortfolioMetrics;
+  markets: V35MarketMetrics[];
+}
+
+// ============================================================
 // Market Helpers
 // ============================================================
 

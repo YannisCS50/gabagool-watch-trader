@@ -6683,6 +6683,72 @@ export type Database = {
         }
         Relationships: []
       }
+      v35_orderbook_snapshots: {
+        Row: {
+          asset: string
+          combined_ask: number | null
+          combined_mid: number | null
+          created_at: string
+          down_asks: Json | null
+          down_best_ask: number | null
+          down_best_bid: number | null
+          down_bids: Json | null
+          edge: number | null
+          id: string
+          market_slug: string
+          seconds_to_expiry: number | null
+          spot_price: number | null
+          strike_price: number | null
+          ts: number
+          up_asks: Json | null
+          up_best_ask: number | null
+          up_best_bid: number | null
+          up_bids: Json | null
+        }
+        Insert: {
+          asset: string
+          combined_ask?: number | null
+          combined_mid?: number | null
+          created_at?: string
+          down_asks?: Json | null
+          down_best_ask?: number | null
+          down_best_bid?: number | null
+          down_bids?: Json | null
+          edge?: number | null
+          id?: string
+          market_slug: string
+          seconds_to_expiry?: number | null
+          spot_price?: number | null
+          strike_price?: number | null
+          ts: number
+          up_asks?: Json | null
+          up_best_ask?: number | null
+          up_best_bid?: number | null
+          up_bids?: Json | null
+        }
+        Update: {
+          asset?: string
+          combined_ask?: number | null
+          combined_mid?: number | null
+          created_at?: string
+          down_asks?: Json | null
+          down_best_ask?: number | null
+          down_best_bid?: number | null
+          down_bids?: Json | null
+          edge?: number | null
+          id?: string
+          market_slug?: string
+          seconds_to_expiry?: number | null
+          spot_price?: number | null
+          strike_price?: number | null
+          ts?: number
+          up_asks?: Json | null
+          up_best_ask?: number | null
+          up_best_bid?: number | null
+          up_bids?: Json | null
+        }
+        Relationships: []
+      }
       v35_settlements: {
         Row: {
           asset: string
