@@ -39,7 +39,8 @@ import { QuotingEngine } from './quoting-engine.js';
 import { discoverMarkets, filterByAssets } from './market-discovery.js';
 import { syncOrders, cancelAllOrders, updateOrderbook } from './order-manager.js';
 import { processFill, logMarketFillStats } from './fill-tracker.js';
-import { sendV35Heartbeat, sendV35Offline, saveV35Settlement, saveV35Fill } from './backend.js';
+import { sendV35Heartbeat, sendV35Offline, saveV35Settlement, saveV35Fill, saveV35OrderbookSnapshots } from './backend.js';
+import type { V35OrderbookSnapshot } from './types.js';
 import { ensureValidCredentials, getBalance, getOpenOrders } from '../polymarket.js';
 import { checkVpnRequired } from '../vpn-check.js';
 import { acquireLeaseOrHalt, releaseLease, renewLease } from '../runner-lease.js';
@@ -65,6 +66,11 @@ let paused = false;
 let balance = 0;
 let clobSocket: WebSocket | null = null;
 
+// Orderbook snapshot buffer (batched logging)
+const orderbookBuffer: V35OrderbookSnapshot[] = [];
+const ORDERBOOK_LOG_INTERVAL_MS = 5000; // Flush every 5 seconds
+const MAX_ORDERBOOK_BUFFER = 100; // Max before force flush
+
 // ============================================================
 // LOGGING HELPERS
 // ============================================================
@@ -77,6 +83,66 @@ function log(msg: string): void {
 function logError(msg: string, err?: any): void {
   const ts = new Date().toISOString().slice(11, 19);
   console.error(`[${ts}] ❌ ${msg}`, err?.message || err || '');
+}
+
+// ============================================================
+// ORDERBOOK SNAPSHOT LOGGING
+// ============================================================
+
+function queueOrderbookSnapshot(market: V35Market): void {
+  const now = Date.now();
+  const secondsToExpiry = Math.max(0, (market.expiry.getTime() - now) / 1000);
+  
+  // Calculate combined metrics
+  const combinedAsk = (market.upBestAsk > 0 && market.downBestAsk > 0)
+    ? market.upBestAsk + market.downBestAsk
+    : null;
+  const combinedMid = (market.upBestBid > 0 && market.downBestBid > 0 && 
+                       market.upBestAsk > 0 && market.downBestAsk > 0)
+    ? ((market.upBestBid + market.upBestAsk) / 2 + (market.downBestBid + market.downBestAsk) / 2)
+    : null;
+  const edge = combinedAsk && combinedAsk < 1.0 ? 1.0 - combinedAsk : null;
+  
+  const snapshot: V35OrderbookSnapshot = {
+    ts: now,
+    marketSlug: market.slug,
+    asset: market.asset,
+    upBestBid: market.upBestBid || null,
+    upBestAsk: market.upBestAsk || null,
+    downBestBid: market.downBestBid || null,
+    downBestAsk: market.downBestAsk || null,
+    combinedAsk,
+    combinedMid,
+    edge,
+    // Full depth: we store top 5 levels from tracked orders as proxy
+    // In production, CLOB WebSocket should provide full book
+    upBids: [],
+    upAsks: [],
+    downBids: [],
+    downAsks: [],
+    spotPrice: null, // TODO: integrate Chainlink feed
+    strikePrice: null, // TODO: parse from market slug
+    secondsToExpiry: Math.round(secondsToExpiry),
+  };
+  
+  orderbookBuffer.push(snapshot);
+  
+  // Force flush if buffer is full
+  if (orderbookBuffer.length >= MAX_ORDERBOOK_BUFFER) {
+    flushOrderbookBuffer().catch(err => logError('Force flush failed:', err));
+  }
+}
+
+async function flushOrderbookBuffer(): Promise<void> {
+  if (orderbookBuffer.length === 0) return;
+  
+  const snapshots = [...orderbookBuffer];
+  orderbookBuffer.length = 0; // Clear buffer
+  
+  const success = await saveV35OrderbookSnapshots(snapshots);
+  if (success) {
+    log(`📊 Flushed ${snapshots.length} orderbook snapshots`);
+  }
 }
 
 // ============================================================
@@ -295,6 +361,9 @@ async function processMarket(market: V35Market): Promise<void> {
   
   // Update orderbook
   await updateOrderbook(market, config.dryRun);
+  
+  // Queue orderbook snapshot for logging
+  queueOrderbookSnapshot(market);
   
   // Calculate metrics
   const metrics = calculateMarketMetrics(market);
@@ -604,12 +673,20 @@ async function main(): Promise<void> {
     renewLease(RUNNER_ID).catch(err => logError('Lease renewal failed:', err));
   }, 30000);
   
+  // Flush orderbook snapshots every 5 seconds
+  const orderbookFlushInterval = setInterval(() => {
+    flushOrderbookBuffer().catch(err => logError('Orderbook flush failed:', err));
+  }, ORDERBOOK_LOG_INTERVAL_MS);
+  
   // Handle shutdown
   const shutdown = async () => {
     console.log('\n');
     clearInterval(marketRefreshInterval);
     clearInterval(heartbeatInterval);
     clearInterval(leaseRenewInterval);
+    clearInterval(orderbookFlushInterval);
+    // Final flush before shutdown
+    await flushOrderbookBuffer();
     await stop();
     process.exit(0);
   };
