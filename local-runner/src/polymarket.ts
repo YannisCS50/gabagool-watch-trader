@@ -3,7 +3,8 @@ import './v29/http-agent.js';
 
 import crypto from 'node:crypto';
 import { ClobClient, Side, OrderType } from '@polymarket/clob-client';
-import { Wallet } from 'ethers';
+import pkg from 'ethers';
+const { Wallet } = pkg;
 import { config } from './config.js';
 import { guardOrderPlacement, logBlockedOrder, isOrderAuthorized } from './order-guard.js';
 
