@@ -147,13 +147,6 @@ export interface V35OrderbookSnapshot {
   strikePrice: number | null;
   secondsToExpiry: number | null;
 }
-  paused: boolean;
-  mode: string;
-  dryRun: boolean;
-  marketsCount: number;
-  portfolio: V35PortfolioMetrics;
-  markets: V35MarketMetrics[];
-}
 
 // ============================================================
 // Market Helpers
