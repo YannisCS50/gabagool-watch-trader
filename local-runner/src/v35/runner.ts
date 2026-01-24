@@ -45,6 +45,7 @@ import { ensureValidCredentials, getBalance, getOpenOrders } from '../polymarket
 import { checkVpnRequired } from '../vpn-check.js';
 import { acquireLeaseOrHalt, releaseLease, renewLease } from '../runner-lease.js';
 import { setRunnerIdentity } from '../order-guard.js';
+import { startBinanceFeed, stopBinanceFeed, getBinanceFeed } from './binance-feed.js';
 
 // ============================================================
 // CONSTANTS
@@ -373,16 +374,27 @@ async function processMarket(market: V35Market): Promise<void> {
     log(`⚠️ ${market.slug.slice(-25)}: MAX NOTIONAL REACHED`);
   }
   
-  // Log status
+  // Log status with ratio and momentum info
+  const ratio = (metrics.upQty > 0 && metrics.downQty > 0)
+    ? (metrics.upQty > metrics.downQty ? metrics.upQty / metrics.downQty : metrics.downQty / metrics.upQty)
+    : 0;
+  const ratioWarn = ratio > config.maxImbalanceRatio ? ` 🔴RATIO:${ratio.toFixed(1)}:1` : '';
   const skewWarn = metrics.skew > config.skewThreshold ? ' ⚠️→UP' 
                  : metrics.skew < -config.skewThreshold ? ' ⚠️→DOWN' 
                  : '';
+  
+  // Get momentum state for this asset
+  const binanceFeed = getBinanceFeed();
+  const momentum = binanceFeed.getMomentum(market.asset);
+  const trend = binanceFeed.getTrendDirection(market.asset);
+  const trendIndicator = trend === 'UP' ? '📈' : trend === 'DOWN' ? '📉' : '➡️';
   
   log(
     `📊 ${market.slug.slice(-25)} | ` +
     `UP:${metrics.upQty.toFixed(0)} DOWN:${metrics.downQty.toFixed(0)} | ` +
     `Cost:$${(metrics.upCost + metrics.downCost).toFixed(0)} | ` +
-    `Combined:$${metrics.combinedCost.toFixed(3)}${skewWarn}`
+    `CPP:$${metrics.combinedCost.toFixed(3)} | ` +
+    `${trendIndicator}${momentum.toFixed(2)}%${skewWarn}${ratioWarn}`
   );
   
   // Sync orders if not paused
@@ -564,6 +576,9 @@ async function stop(): Promise<void> {
     clobSocket = null;
   }
   
+  // Stop Binance feed
+  stopBinanceFeed();
+  
   const config = getV35Config();
   for (const market of markets.values()) {
     await cancelAllOrders(market, config.dryRun);
@@ -644,6 +659,14 @@ async function main(): Promise<void> {
   
   // Initialize quoting engine
   quotingEngine = new QuotingEngine();
+  
+  // Start Binance price feed for momentum detection
+  if (config.enableMomentumFilter) {
+    log('📊 Starting Binance price feed for momentum detection...');
+    startBinanceFeed();
+    // Give it a moment to connect
+    await sleep(2000);
+  }
   
   // Initial market discovery
   log('🔍 Discovering markets...');
