@@ -6,17 +6,16 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { ArrowDownRight, ArrowUpRight, Zap } from 'lucide-react';
 import { format } from 'date-fns';
 
-interface FillLog {
+interface V35Fill {
   id: string;
-  ts: number;
+  created_at: string;
   asset: string;
-  market_id: string;
+  market_slug: string;
   side: string;
-  intent: string;
-  fill_price: number;
-  fill_qty: number;
-  fill_notional: number;
-  seconds_remaining: number;
+  fill_type: string;
+  price: number;
+  size: number;
+  order_id: string | null;
 }
 
 export function V35FillsTable() {
@@ -24,16 +23,16 @@ export function V35FillsTable() {
     queryKey: ['v35-fills'],
     queryFn: async () => {
       const { data, error } = await supabase
-        .from('fill_logs')
+        .from('v35_fills')
         .select('*')
-        .order('ts', { ascending: false })
+        .order('created_at', { ascending: false })
         .limit(50);
 
       if (error) {
         console.error('[V35FillsTable] Error:', error);
         return [];
       }
-      return data as FillLog[];
+      return data as V35Fill[];
     },
     refetchInterval: 10000,
   });
@@ -77,21 +76,21 @@ export function V35FillsTable() {
                         >
                           {fill.side}
                         </Badge>
-                        <span className="text-xs text-muted-foreground">
-                          {fill.intent}
-                        </span>
+                        <Badge variant="outline" className="text-xs">
+                          {fill.fill_type}
+                        </Badge>
                       </div>
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        {format(new Date(fill.ts), 'HH:mm:ss')} • {fill.seconds_remaining}s left
+                        {format(new Date(fill.created_at), 'HH:mm:ss')} • {fill.market_slug}
                       </p>
                     </div>
                   </div>
                   <div className="text-right">
                     <p className="text-sm font-medium">
-                      {fill.fill_qty} @ ${fill.fill_price.toFixed(2)}
+                      {fill.size} @ ${fill.price.toFixed(2)}
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      ${fill.fill_notional.toFixed(2)}
+                      ${(fill.size * fill.price).toFixed(2)}
                     </p>
                   </div>
                 </div>
