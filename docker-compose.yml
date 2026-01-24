@@ -13,7 +13,7 @@ services:
   # All bot traffic routes through this container
   # ============================================
   wireguard:
-    image: linuxserver/wireguard:latest
+    image: lscr.io/linuxserver/wireguard:latest
     container_name: wg
     cap_add:
       - NET_ADMIN
