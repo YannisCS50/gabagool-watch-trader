@@ -263,19 +263,36 @@ async function refreshMarkets(): Promise<void> {
   
   // Check if we have room for more markets
   if (markets.size >= config.maxMarkets) {
+    log(`📊 At max markets (${markets.size}/${config.maxMarkets})`);
     return;
   }
   
-  // Discover new markets
-  const discovered = await discoverMarkets(config.stopBeforeExpirySec + 60);
+  // Discover new markets - use stopBeforeExpirySec directly (no extra margin)
+  // The market processing loop will handle the stop-before-expiry logic
+  const minExpiry = config.stopBeforeExpirySec;
+  log(`🔍 Searching for markets with >= ${minExpiry}s to expiry...`);
+  const discovered = await discoverMarkets(minExpiry);
+  log(`📋 Discovery returned ${discovered.length} markets`);
+  
   const assets: V35Asset[] = ['BTC']; // Only BTC allowed
   const filtered = filterByAssets(discovered, assets);
+  log(`🎯 After BTC filter: ${filtered.length} markets`);
+  
+  if (filtered.length === 0) {
+    log(`⚠️ No BTC markets found! Available assets: ${discovered.map(m => m.asset).join(', ')}`);
+  }
   
   let added = 0;
   // Add new markets (up to max)
   for (const m of filtered) {
-    if (markets.size >= config.maxMarkets) break;
-    if (markets.has(m.slug)) continue;
+    if (markets.size >= config.maxMarkets) {
+      log(`📊 Skipping ${m.slug}: at max markets`);
+      break;
+    }
+    if (markets.has(m.slug)) {
+      log(`📊 Skipping ${m.slug}: already tracked`);
+      continue;
+    }
     
     const market = createEmptyMarket(
       m.slug,
@@ -287,7 +304,7 @@ async function refreshMarkets(): Promise<void> {
     );
     
     markets.set(m.slug, market);
-    log(`➕ Added market: ${m.slug.slice(-35)} (${m.asset})`);
+    log(`➕ Added market: ${m.slug} (${m.asset}, expires ${m.expiry.toISOString()})`);
     added++;
   }
   
