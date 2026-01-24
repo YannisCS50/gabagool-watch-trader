@@ -1,4 +1,5 @@
-import { ethers, providers } from 'ethers';
+import pkg from 'ethers';
+const { ethers, providers } = pkg;
 
 // Polygon RPC endpoints - ordered by reliability (publicnode/ankr most stable)
 const RPC_ENDPOINTS = [

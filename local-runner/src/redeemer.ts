@@ -15,7 +15,8 @@
  * @version 2.0.0
  */
 
-import { ethers, Wallet } from 'ethers';
+import pkg from 'ethers';
+const { ethers, Wallet } = pkg;
 import { createClient } from '@supabase/supabase-js';
 import { config } from './config.js';
 import {
