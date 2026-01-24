@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
+import { useV35Realtime } from '@/hooks/useV35Realtime';
 import { MainNav } from '@/components/MainNav';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -53,6 +54,9 @@ interface V35Settlement {
 export default function V35Dashboard() {
   const [isOnline, setIsOnline] = useState(false);
   const [lastSeen, setLastSeen] = useState<Date | null>(null);
+
+  // Enable realtime subscriptions
+  useV35Realtime();
 
   // Fetch runner heartbeat
   const { data: heartbeat } = useQuery({
