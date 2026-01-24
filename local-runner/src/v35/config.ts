@@ -36,9 +36,24 @@ export interface V35Config {
   // 🛡️ RISK LIMITS (CRITICAL!)
   // =========================================================================
   maxNotionalPerMarket: number;   // Max $ per market (both sides combined)
-  maxUnpairedImbalance: number;   // Max directional exposure per market
+  maxUnpairedImbalance: number;   // Max directional exposure per market (STRICT!)
+  maxImbalanceRatio: number;      // Max ratio UP:DOWN or DOWN:UP (e.g., 1.5)
   maxTotalExposure: number;       // Max $ across ALL markets
   maxMarkets: number;             // Max concurrent markets
+  
+  // =========================================================================
+  // 🆕 MOMENTUM FILTER (Binance integration)
+  // =========================================================================
+  enableMomentumFilter: boolean;  // Enable/disable momentum-based quote filtering
+  momentumThreshold: number;      // % move to consider market "trending" (e.g., 0.15)
+  momentumLookbackSec: number;    // Lookback period in seconds
+  
+  // =========================================================================
+  // 🆕 STOP LOSS
+  // =========================================================================
+  enableStopLoss: boolean;        // Enable stop loss protection
+  maxLossPerMarket: number;       // Max unrealized loss per market before stopping
+  maxLossTotal: number;           // Max total unrealized loss
   
   // =========================================================================
   // ⏱️ TIMING PARAMETERS
@@ -67,19 +82,39 @@ export interface V35Config {
 // PRESET CONFIGURATIONS
 // =========================================================================
 
+// =========================================================================
+// PRESET CONFIGURATIONS - UPDATED WITH STRICTER LIMITS
+// =========================================================================
+
 export const SAFE_CONFIG: V35Config = {
   mode: 'safe',
-  gridMin: 0.25,
-  gridMax: 0.75,
+  // Grid - conservative range
+  gridMin: 0.30,              // Was 0.25 - stay away from extremes
+  gridMax: 0.70,              // Was 0.75
   gridStep: 0.02,
-  baseSize: 10,
-  skewThreshold: 30,
-  skewReduceFactor: 0.5,
+  baseSize: 5,                // Was 10 - smaller positions
+  skewThreshold: 15,          // Was 30 - much more sensitive
+  skewReduceFactor: 0.3,      // Was 0.5 - reduce more aggressively
   skewBoostFactor: 1.5,
-  maxNotionalPerMarket: 300,
-  maxUnpairedImbalance: 75,
-  maxTotalExposure: 1000,
-  maxMarkets: 2,
+  
+  // Risk limits - MUCH STRICTER
+  maxNotionalPerMarket: 150,  // Was 300
+  maxUnpairedImbalance: 20,   // Was 75 - CRITICAL FIX
+  maxImbalanceRatio: 1.3,     // NEW - max 1.3:1 ratio
+  maxTotalExposure: 400,      // Was 1000
+  maxMarkets: 1,              // Was 2 - start with 1
+  
+  // Momentum filter - ENABLED
+  enableMomentumFilter: true,
+  momentumThreshold: 0.10,    // 0.10% = trending (sensitive)
+  momentumLookbackSec: 30,
+  
+  // Stop loss - ENABLED
+  enableStopLoss: true,
+  maxLossPerMarket: 30,       // Max $30 loss per market
+  maxLossTotal: 100,          // Max $100 total loss
+  
+  // Timing
   refreshIntervalMs: 5000,
   stopBeforeExpirySec: 180,
   clobUrl: 'https://clob.polymarket.com',
@@ -90,17 +125,28 @@ export const SAFE_CONFIG: V35Config = {
 
 export const MODERATE_CONFIG: V35Config = {
   mode: 'moderate',
-  gridMin: 0.15,
-  gridMax: 0.85,
+  gridMin: 0.20,
+  gridMax: 0.80,
   gridStep: 0.02,
-  baseSize: 15,
-  skewThreshold: 50,
-  skewReduceFactor: 0.5,
+  baseSize: 10,
+  skewThreshold: 25,
+  skewReduceFactor: 0.4,
   skewBoostFactor: 1.5,
-  maxNotionalPerMarket: 1000,
-  maxUnpairedImbalance: 150,
-  maxTotalExposure: 3000,
-  maxMarkets: 3,
+  
+  maxNotionalPerMarket: 500,
+  maxUnpairedImbalance: 40,   // Was 150 - much stricter
+  maxImbalanceRatio: 1.5,     // NEW
+  maxTotalExposure: 1500,
+  maxMarkets: 2,
+  
+  enableMomentumFilter: true,
+  momentumThreshold: 0.15,
+  momentumLookbackSec: 30,
+  
+  enableStopLoss: true,
+  maxLossPerMarket: 50,
+  maxLossTotal: 150,
+  
   refreshIntervalMs: 5000,
   stopBeforeExpirySec: 120,
   clobUrl: 'https://clob.polymarket.com',
@@ -111,17 +157,28 @@ export const MODERATE_CONFIG: V35Config = {
 
 export const PRODUCTION_CONFIG: V35Config = {
   mode: 'production',
-  gridMin: 0.10,
-  gridMax: 0.90,
+  gridMin: 0.15,
+  gridMax: 0.85,
   gridStep: 0.02,
-  baseSize: 20,
-  skewThreshold: 75,
+  baseSize: 15,
+  skewThreshold: 40,
   skewReduceFactor: 0.5,
   skewBoostFactor: 1.5,
-  maxNotionalPerMarket: 5000,
-  maxUnpairedImbalance: 300,
-  maxTotalExposure: 15000,
-  maxMarkets: 4,
+  
+  maxNotionalPerMarket: 2000,
+  maxUnpairedImbalance: 75,   // Was 300 - much stricter
+  maxImbalanceRatio: 1.5,     // NEW
+  maxTotalExposure: 6000,
+  maxMarkets: 3,
+  
+  enableMomentumFilter: true,
+  momentumThreshold: 0.20,
+  momentumLookbackSec: 30,
+  
+  enableStopLoss: true,
+  maxLossPerMarket: 100,
+  maxLossTotal: 300,
+  
   refreshIntervalMs: 5000,
   stopBeforeExpirySec: 120,
   clobUrl: 'https://clob.polymarket.com',
@@ -171,18 +228,29 @@ export function printV35Config(cfg: V35Config): void {
      Base size: ${cfg.baseSize} shares/level
      Skew threshold: ${cfg.skewThreshold} shares
      
-  🛡️ RISK LIMITS
-     Max per market:    $${cfg.maxNotionalPerMarket.toLocaleString()}
-     Max imbalance:     $${cfg.maxUnpairedImbalance.toLocaleString()}
-     Max total:         $${cfg.maxTotalExposure.toLocaleString()}
-     Max markets:       ${cfg.maxMarkets}
+  🛡️ RISK LIMITS (STRICT)
+     Max per market:       $${cfg.maxNotionalPerMarket.toLocaleString()}
+     Max imbalance:        ${cfg.maxUnpairedImbalance} shares
+     Max imbalance ratio:  ${cfg.maxImbalanceRatio}:1
+     Max total exposure:   $${cfg.maxTotalExposure.toLocaleString()}
+     Max markets:          ${cfg.maxMarkets}
+     
+  🆕 MOMENTUM FILTER
+     Enabled:             ${cfg.enableMomentumFilter}
+     Threshold:           ${cfg.momentumThreshold}%
+     Lookback:            ${cfg.momentumLookbackSec}s
+     
+  🆕 STOP LOSS
+     Enabled:             ${cfg.enableStopLoss}
+     Max loss/market:     $${cfg.maxLossPerMarket}
+     Max loss total:      $${cfg.maxLossTotal}
      
   ⏱️ TIMING
-     Refresh:           ${cfg.refreshIntervalMs}ms
-     Stop before exp:   ${cfg.stopBeforeExpirySec}s
+     Refresh:             ${cfg.refreshIntervalMs}ms
+     Stop before exp:     ${cfg.stopBeforeExpirySec}s
      
   🧪 MODE
-     Dry run:           ${cfg.dryRun}
+     Dry run:             ${cfg.dryRun}
 `);
   console.log('='.repeat(70));
 }
