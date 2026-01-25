@@ -86,6 +86,7 @@ export async function saveV35Fill(fill: V35Fill): Promise<boolean> {
         timestamp: fill.timestamp.toISOString(),
         market_slug: fill.marketSlug,
         asset: fill.asset,
+        fill_type: 'MAKER', // V35 always places maker orders
       },
     });
     return result.success;
