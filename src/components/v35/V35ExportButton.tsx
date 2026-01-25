@@ -151,7 +151,7 @@ export function V35ExportButton() {
         fetchAllRecords('v35_orderbook_snapshots', 'ts', 10000),
         fetchAllRecords('v35_settlements', 'created_at'),
         fetchAllRecords('fill_logs', 'created_at', 10000),
-        fetchAllRecords('bot_positions', 'updated_at'),
+        fetchAllRecords('bot_positions', 'synced_at'),
         fetchAllRecords('bot_events', 'ts', 10000),
       ]);
 
