@@ -6749,6 +6749,57 @@ export type Database = {
         }
         Relationships: []
       }
+      v35_positions: {
+        Row: {
+          asset: string
+          combined_cost: number
+          created_at: string
+          down_cost: number
+          down_qty: number
+          id: string
+          locked_profit: number
+          market_slug: string
+          paired: number
+          seconds_to_expiry: number | null
+          timestamp: string
+          unpaired: number
+          up_cost: number
+          up_qty: number
+        }
+        Insert: {
+          asset: string
+          combined_cost?: number
+          created_at?: string
+          down_cost?: number
+          down_qty?: number
+          id?: string
+          locked_profit?: number
+          market_slug: string
+          paired?: number
+          seconds_to_expiry?: number | null
+          timestamp?: string
+          unpaired?: number
+          up_cost?: number
+          up_qty?: number
+        }
+        Update: {
+          asset?: string
+          combined_cost?: number
+          created_at?: string
+          down_cost?: number
+          down_qty?: number
+          id?: string
+          locked_profit?: number
+          market_slug?: string
+          paired?: number
+          seconds_to_expiry?: number | null
+          timestamp?: string
+          unpaired?: number
+          up_cost?: number
+          up_qty?: number
+        }
+        Relationships: []
+      }
       v35_settlements: {
         Row: {
           asset: string
