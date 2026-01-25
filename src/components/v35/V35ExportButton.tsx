@@ -14,15 +14,15 @@ import {
 
 async function fetchAllRecords(
   tableName: string,
-  orderColumn: string = 'created_at',
-  limit: number = 50000
+  orderColumn: string = 'created_at'
 ): Promise<Record<string, unknown>[]> {
+  const MAX_ROWS = 10_000_000; // Effectively unlimited
   const pageSize = 1000;
   let allData: Record<string, unknown>[] = [];
   let offset = 0;
   let hasMore = true;
 
-  while (hasMore && allData.length < limit) {
+  while (hasMore && allData.length < MAX_ROWS) {
     // Use raw query to avoid type issues with dynamic table names
     const { data, error } = await supabase
       .from(tableName as any)
@@ -148,11 +148,11 @@ export function V35ExportButton() {
       toast.info('Fetching all V35 data...');
       
       const [orderbooks, settlements, fills, positions, events] = await Promise.all([
-        fetchAllRecords('v35_orderbook_snapshots', 'ts', 10000),
+        fetchAllRecords('v35_orderbook_snapshots', 'ts'),
         fetchAllRecords('v35_settlements', 'created_at'),
-        fetchAllRecords('fill_logs', 'created_at', 10000),
+        fetchAllRecords('fill_logs', 'created_at'),
         fetchAllRecords('bot_positions', 'synced_at'),
-        fetchAllRecords('bot_events', 'ts', 10000),
+        fetchAllRecords('bot_events', 'ts'),
       ]);
 
       const exportData = {
