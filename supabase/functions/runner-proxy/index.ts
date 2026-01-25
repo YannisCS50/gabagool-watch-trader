@@ -67,7 +67,11 @@ type Action =
   | 'save-realtime-price-logs'
   // V35 Orderbook snapshots
   | 'save-v35-orderbook-snapshot'
-  | 'save-v35-orderbook-snapshots';
+  | 'save-v35-orderbook-snapshots'
+  // V35 Fills and Settlements
+  | 'save-v35-fill'
+  | 'save-v35-position'
+  | 'save-v35-settlement';
 
 interface RequestBody {
   action: Action;
@@ -2134,6 +2138,126 @@ Deno.serve(async (req) => {
 
         console.log(`[runner-proxy] 📊 Saved ${snapshots.length} V35 orderbook snapshots`);
         return new Response(JSON.stringify({ success: true, count: snapshots.length }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // ============================================================
+      // V35 FILLS
+      // ============================================================
+      case 'save-v35-fill': {
+        const fill = data?.fill as Record<string, unknown> | undefined;
+        if (!fill) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing fill data' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const { error } = await supabase.from('v35_fills').insert({
+          order_id: fill.order_id,
+          token_id: fill.token_id,
+          side: fill.side,
+          price: fill.price,
+          size: fill.size,
+          timestamp: fill.timestamp,
+          market_slug: fill.market_slug,
+          asset: fill.asset,
+        });
+
+        if (error) {
+          console.error('[runner-proxy] save-v35-fill error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] ⚡ Saved V35 fill: ${fill.side} ${fill.size}@${fill.price}`);
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // ============================================================
+      // V35 POSITION SNAPSHOTS
+      // ============================================================
+      case 'save-v35-position': {
+        const position = data?.position as Record<string, unknown> | undefined;
+        if (!position) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing position data' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const { error } = await supabase.from('v35_positions').insert({
+          market_slug: position.market_slug,
+          asset: position.asset,
+          up_qty: position.up_qty,
+          down_qty: position.down_qty,
+          up_cost: position.up_cost,
+          down_cost: position.down_cost,
+          paired: position.paired,
+          unpaired: position.unpaired,
+          combined_cost: position.combined_cost,
+          locked_profit: position.locked_profit,
+          seconds_to_expiry: position.seconds_to_expiry,
+          timestamp: position.timestamp,
+        });
+
+        if (error) {
+          console.error('[runner-proxy] save-v35-position error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] 📊 Saved V35 position snapshot: ${position.market_slug}`);
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // ============================================================
+      // V35 SETTLEMENTS
+      // ============================================================
+      case 'save-v35-settlement': {
+        const settlement = data?.settlement as Record<string, unknown> | undefined;
+        if (!settlement) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing settlement data' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const { error } = await supabase.from('v35_settlements').insert({
+          market_slug: settlement.market_slug,
+          asset: settlement.asset,
+          up_qty: settlement.up_qty,
+          down_qty: settlement.down_qty,
+          up_cost: settlement.up_cost,
+          down_cost: settlement.down_cost,
+          paired: settlement.paired,
+          unpaired: settlement.unpaired,
+          combined_cost: settlement.combined_cost,
+          locked_profit: settlement.locked_profit,
+          winning_side: settlement.winning_side,
+          pnl: settlement.pnl,
+          timestamp: settlement.timestamp,
+        });
+
+        if (error) {
+          console.error('[runner-proxy] save-v35-settlement error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] 💰 Saved V35 settlement: ${settlement.market_slug} PnL=${settlement.pnl}`);
+        return new Response(JSON.stringify({ success: true }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }
