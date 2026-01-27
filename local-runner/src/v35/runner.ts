@@ -262,50 +262,12 @@ function processWsEvent(data: any): void {
     market.lastUpdated = new Date();
   }
 
-  // Track fills from CLOB WebSocket
-  if (eventType === 'last_trade_price' || eventType === 'trade') {
-    const assetId = data.asset_id;
-    const marketInfo = tokenToMarket.get(assetId);
-    if (!marketInfo) return;
-
-    const market = markets.get(marketInfo.slug);
-    if (!market) return;
-
-    // Check if this is our fill by looking at the order ID
-    const orderId = data.order_id || data.maker_order_id;
-    const currentOrders = marketInfo.side === 'UP' ? market.upOrders : market.downOrders;
-    
-    if (orderId && currentOrders.has(orderId)) {
-      // This is our fill!
-      const price = parseFloat(data.price);
-      const size = parseFloat(data.size);
-      
-      const fill: V35Fill = {
-        orderId,
-        tokenId: assetId,
-        side: marketInfo.side,
-        price,
-        size,
-        timestamp: new Date(),
-        marketSlug: market.slug,
-        asset: market.asset,
-      };
-      
-      // Process the fill (update inventory)
-      const processed = processFill(fill, markets);
-      if (processed) {
-        log(`🎯 FILL: ${marketInfo.side} ${size.toFixed(0)} @ $${price.toFixed(2)} in ${market.slug.slice(-25)}`);
-        
-        // Log to database
-        saveV35Fill(fill).catch(err => {
-          logError('Failed to save fill:', err);
-        });
-        
-        // Remove the filled order
-        currentOrders.delete(orderId);
-      }
-    }
-  }
+  // IMPORTANT: Do NOT infer fills from the public market WebSocket.
+  // We persist fills exclusively from the authenticated User WebSocket to prevent
+  // double-counting (same fill arriving via multiple channels) and DB duplication.
+  //
+  // The public feed can still be useful for generic market telemetry, but it should
+  // not drive our own fill/inventory accounting.
 }
 
 // ============================================================
