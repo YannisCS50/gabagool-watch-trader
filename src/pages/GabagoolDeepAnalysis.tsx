@@ -359,11 +359,11 @@ export default function GabagoolDeepAnalysis() {
       );
       
       addSpacer(3);
-      addSubtitle('V35 Implication:');
+      addSubtitle('V35 Status:');
       addParagraph(
-        `V35's momentum filter (blocking quotes against trend) contradicts Gabagool's approach. ` +
-        `Gabagool quotes BOTH sides regardless of delta, trusting that price mean-reverts within 15 minutes. ` +
-        `RECOMMENDATION: Disable momentum filtering entirely.`
+        `V35's momentum filter is already DISABLED (enableMomentumFilter: false), matching Gabagool's approach. ` +
+        `Like Gabagool, V35 quotes BOTH sides regardless of delta, trusting that price mean-reverts within 15 minutes. ` +
+        `STATUS: ✓ Correctly configured.`
       );
 
       // ===== SECTION 3: ACCUMULATION STRATEGY =====
@@ -897,11 +897,14 @@ export default function GabagoolDeepAnalysis() {
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div className="p-4 bg-green-500/10 rounded-lg">
-                    <h4 className="font-bold mb-2">1. Disable Momentum Filter</h4>
+                  <div className="p-4 bg-green-500/10 rounded-lg border border-green-500/30">
+                    <h4 className="font-bold mb-2 flex items-center gap-2">
+                      <CheckCircle className="h-4 w-4 text-green-500" />
+                      1. Momentum Filter — ALREADY DISABLED ✓
+                    </h4>
                     <p className="text-sm text-muted-foreground">
-                      Gabagool's 50/50 UP/DOWN ratio proves momentum filtering hurts profitability. 
-                      Quote both sides always, regardless of delta or price trend.
+                      V35 config has <code className="bg-muted px-1 rounded">enableMomentumFilter: false</code>. 
+                      This matches Gabagool's 50/50 UP/DOWN ratio approach.
                     </p>
                   </div>
                   <div className="p-4 bg-green-500/10 rounded-lg">
