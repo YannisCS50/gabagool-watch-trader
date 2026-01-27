@@ -95,9 +95,9 @@ export interface V35Config {
 export const TEST_CONFIG: V35Config = {
   mode: 'test',
   
-  // Grid - per document specs
-  gridMin: 0.15,
-  gridMax: 0.85,
+  // Grid - wider range for more fills
+  gridMin: 0.10,
+  gridMax: 0.90,
   gridStep: 0.05,           // 15 levels per side
   sharesPerLevel: 5,        // Polymarket minimum is 5 shares per order
   
