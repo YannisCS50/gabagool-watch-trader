@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { V35LogViewer, V35FillsTable, V35ExportButton, V35StrategyPDFExport } from '@/components/v35';
+import { V35LogViewer, V35FillsTable, V35ExportButton, V35StrategyPDFExport, V35OpenPositions } from '@/components/v35';
 import { 
   Activity, 
   TrendingUp, 
@@ -256,9 +256,13 @@ export default function V35Dashboard() {
           </CardContent>
         </Card>
 
-        {/* Tabs for Settlements, Logs, Fills */}
-        <Tabs defaultValue="overview" className="space-y-4">
+        {/* Tabs for Positions, Settlements, Logs, Fills */}
+        <Tabs defaultValue="positions" className="space-y-4">
           <TabsList>
+            <TabsTrigger value="positions">
+              <Scale className="h-4 w-4 mr-2" />
+              Positions
+            </TabsTrigger>
             <TabsTrigger value="overview">
               <BarChart3 className="h-4 w-4 mr-2" />
               Overview
@@ -272,6 +276,10 @@ export default function V35Dashboard() {
               Fills
             </TabsTrigger>
           </TabsList>
+
+          <TabsContent value="positions">
+            <V35OpenPositions />
+          </TabsContent>
 
           <TabsContent value="overview">
             <div className="grid gap-6 lg:grid-cols-2">
