@@ -117,7 +117,7 @@ export const TEST_CONFIG: V35Config = {
   // Timing - EXTENDED EXPOSURE: stay 90 seconds longer per market
   startDelayMs: 5000,       // Wait 5s after market open
   stopBeforeExpirySec: 30,  // Stop 30s before expiry (was 120s) = +90s exposure
-  refreshIntervalMs: 5000,
+  refreshIntervalMs: 2000,  // Reduced from 5000ms to 2000ms for faster order replacement
   
   // CRITICAL: DISABLED per strategy document
   // "RULE 1: Never enable momentum filtering"

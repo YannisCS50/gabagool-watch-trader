@@ -117,7 +117,8 @@ export class QuotingEngine {
     
     for (const price of sortedPrices) {
       // Skip if our bid would cross the ask (we'd become taker)
-      if (bestAsk > 0 && price >= bestAsk - 0.01) {
+      // Reduced margin from 1 cent to 0.5 cent to allow more grid levels
+      if (bestAsk > 0 && price >= bestAsk - 0.005) {
         continue;
       }
       
