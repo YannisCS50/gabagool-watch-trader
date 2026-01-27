@@ -47,6 +47,9 @@ interface MarketPosition {
   polymarket_up_avg: number;
   polymarket_down_qty: number;
   polymarket_down_avg: number;
+  // Current live prices from Polymarket
+  live_up_price: number;
+  live_down_price: number;
   // v35_fills data (what we recorded)
   fills_up_qty: number;
   fills_up_avg: number;
@@ -60,6 +63,9 @@ interface MarketPosition {
   unpaired: number;
   combined_cost: number;
   locked_profit: number;
+  total_cost: number;
+  current_value: number;
+  unrealized_pnl: number;
 }
 
 async function fetchPolymarketPositions(walletAddress: string): Promise<PolymarketPosition[]> {
@@ -262,6 +268,8 @@ Deno.serve(async (req) => {
     const polymarketByMarket = new Map<string, { 
       upQty: number; upCost: number; upAvg: number;
       downQty: number; downCost: number; downAvg: number;
+      upCurPrice: number; downCurPrice: number;
+      upCurrentValue: number; downCurrentValue: number;
       asset: string;
     }>();
 
@@ -274,6 +282,8 @@ Deno.serve(async (req) => {
         polymarketByMarket.set(slug, {
           upQty: 0, upCost: 0, upAvg: 0,
           downQty: 0, downCost: 0, downAvg: 0,
+          upCurPrice: 0, downCurPrice: 0,
+          upCurrentValue: 0, downCurrentValue: 0,
           asset,
         });
       }
@@ -282,9 +292,13 @@ Deno.serve(async (req) => {
       if (isUp) {
         m.upQty += pos.size;
         m.upCost += pos.size * pos.avgPrice;
+        m.upCurPrice = pos.curPrice; // Current market price
+        m.upCurrentValue += pos.currentValue;
       } else {
         m.downQty += pos.size;
         m.downCost += pos.size * pos.avgPrice;
+        m.downCurPrice = pos.curPrice; // Current market price
+        m.downCurrentValue += pos.currentValue;
       }
     }
 
@@ -376,6 +390,19 @@ Deno.serve(async (req) => {
       const combined_cost = upAvg + downAvg;
       const locked_profit = combined_cost < 1 && paired > 0 ? paired * (1 - combined_cost) : 0;
 
+      // Calculate costs and values
+      const upCost = polymarket_up_qty * (pm?.upAvg || 0);
+      const downCost = polymarket_down_qty * (pm?.downAvg || 0);
+      const total_cost = upCost + downCost;
+      
+      // Current value based on live prices
+      const upCurrentValue = pm?.upCurrentValue || (polymarket_up_qty * (pm?.upCurPrice || 0));
+      const downCurrentValue = pm?.downCurrentValue || (polymarket_down_qty * (pm?.downCurPrice || 0));
+      const current_value = upCurrentValue + downCurrentValue;
+      
+      // Unrealized P&L
+      const unrealized_pnl = current_value - total_cost;
+
       result.push({
         market_slug: slug,
         asset: pm?.asset || 'UNKNOWN',
@@ -383,6 +410,8 @@ Deno.serve(async (req) => {
         polymarket_up_avg: pm?.upAvg || 0,
         polymarket_down_qty,
         polymarket_down_avg: pm?.downAvg || 0,
+        live_up_price: pm?.upCurPrice || 0,
+        live_down_price: pm?.downCurPrice || 0,
         fills_up_qty,
         fills_up_avg: fl?.upAvg || 0,
         fills_down_qty,
@@ -393,6 +422,9 @@ Deno.serve(async (req) => {
         unpaired,
         combined_cost,
         locked_profit,
+        total_cost,
+        current_value,
+        unrealized_pnl,
       });
     }
 
@@ -410,6 +442,9 @@ Deno.serve(async (req) => {
         total_paired: result.reduce((s, p) => s + p.paired, 0),
         total_unpaired: result.reduce((s, p) => s + p.unpaired, 0),
         total_locked_profit: result.reduce((s, p) => s + p.locked_profit, 0),
+        total_cost: result.reduce((s, p) => s + p.total_cost, 0),
+        total_current_value: result.reduce((s, p) => s + p.current_value, 0),
+        total_unrealized_pnl: result.reduce((s, p) => s + p.unrealized_pnl, 0),
         mismatched_markets: result.filter(p => !p.up_qty_match || !p.down_qty_match).length,
       },
       polymarket_raw: positions15m.length,

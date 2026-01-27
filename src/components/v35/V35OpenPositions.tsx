@@ -26,6 +26,8 @@ interface MarketPosition {
   polymarket_up_avg: number;
   polymarket_down_qty: number;
   polymarket_down_avg: number;
+  live_up_price: number;
+  live_down_price: number;
   fills_up_qty: number;
   fills_up_avg: number;
   fills_down_qty: number;
@@ -36,6 +38,9 @@ interface MarketPosition {
   unpaired: number;
   combined_cost: number;
   locked_profit: number;
+  total_cost: number;
+  current_value: number;
+  unrealized_pnl: number;
 }
 
 interface PositionsResponse {
@@ -47,6 +52,9 @@ interface PositionsResponse {
     total_paired: number;
     total_unpaired: number;
     total_locked_profit: number;
+    total_cost: number;
+    total_current_value: number;
+    total_unrealized_pnl: number;
     mismatched_markets: number;
   };
   polymarket_raw: number;
@@ -231,7 +239,7 @@ export function V35OpenPositions() {
       <CardContent className="space-y-6">
         {/* Summary Stats - Polymarket style */}
         {summary && (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
             <div className="bg-muted/30 rounded-xl p-4 text-center">
               <Target className="h-5 w-5 mx-auto mb-2 text-muted-foreground" />
               <div className="text-2xl font-bold">{summary.total_markets}</div>
@@ -246,6 +254,18 @@ export function V35OpenPositions() {
               <Zap className="h-5 w-5 mx-auto mb-2 text-muted-foreground" />
               <div className="text-2xl font-bold">{summary.total_unpaired.toFixed(0)}</div>
               <div className="text-xs text-muted-foreground">Unpaired</div>
+            </div>
+            <div className="bg-muted/30 rounded-xl p-4 text-center">
+              <DollarSign className="h-5 w-5 mx-auto mb-2 text-muted-foreground" />
+              <div className="text-2xl font-bold">${summary.total_cost?.toFixed(2) || '0.00'}</div>
+              <div className="text-xs text-muted-foreground">Total Cost</div>
+            </div>
+            <div className={`rounded-xl p-4 text-center border ${(summary.total_unrealized_pnl || 0) >= 0 ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-destructive/10 border-destructive/30'}`}>
+              <TrendingUp className={`h-5 w-5 mx-auto mb-2 ${(summary.total_unrealized_pnl || 0) >= 0 ? 'text-emerald-500' : 'text-destructive'}`} />
+              <div className={`text-2xl font-bold ${(summary.total_unrealized_pnl || 0) >= 0 ? 'text-emerald-500' : 'text-destructive'}`}>
+                {(summary.total_unrealized_pnl || 0) >= 0 ? '+' : ''}${(summary.total_unrealized_pnl || 0).toFixed(2)}
+              </div>
+              <div className="text-xs text-muted-foreground">Unrealized P&L</div>
             </div>
             <div className="bg-primary/10 rounded-xl p-4 text-center border border-primary/20">
               <DollarSign className="h-5 w-5 mx-auto mb-2 text-primary" />
@@ -376,6 +396,12 @@ export function V35OpenPositions() {
                           <span className="text-muted-foreground">Avg Price</span>
                           <span className="font-mono font-medium">{(pos.polymarket_up_avg * 100).toFixed(1)}¢</span>
                         </div>
+                        {pos.live_up_price > 0 && (
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">Live Price</span>
+                            <span className="font-mono font-medium text-emerald-500">{(pos.live_up_price * 100).toFixed(1)}¢</span>
+                          </div>
+                        )}
                         <div className="flex justify-between text-sm pt-2 border-t border-border/50">
                           <span className="text-muted-foreground">Cost</span>
                           <span className="font-mono font-bold">${upCost.toFixed(2)}</span>
@@ -403,6 +429,12 @@ export function V35OpenPositions() {
                           <span className="text-muted-foreground">Avg Price</span>
                           <span className="font-mono font-medium">{(pos.polymarket_down_avg * 100).toFixed(1)}¢</span>
                         </div>
+                        {pos.live_down_price > 0 && (
+                          <div className="flex justify-between text-sm">
+                            <span className="text-muted-foreground">Live Price</span>
+                            <span className="font-mono font-medium text-rose-500">{(pos.live_down_price * 100).toFixed(1)}¢</span>
+                          </div>
+                        )}
                         <div className="flex justify-between text-sm pt-2 border-t border-border/50">
                           <span className="text-muted-foreground">Cost</span>
                           <span className="font-mono font-bold">${downCost.toFixed(2)}</span>
@@ -411,8 +443,36 @@ export function V35OpenPositions() {
                     </div>
                   </div>
 
-                  {/* Footer Stats - P&L Scenarios */}
                   <div className="px-4 py-3 bg-muted/20 border-t border-border/50 space-y-2">
+                    {/* Totals row */}
+                    <div className="flex items-center justify-between text-sm">
+                      <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-1.5">
+                          <DollarSign className="h-3.5 w-3.5 text-muted-foreground" />
+                          <span className="text-muted-foreground">Total Cost:</span>
+                          <span className="font-mono font-bold">${pos.total_cost?.toFixed(2) || totalCost.toFixed(2)}</span>
+                        </div>
+                        {(pos.unrealized_pnl !== undefined && pos.unrealized_pnl !== 0) && (
+                          <div className="flex items-center gap-1.5">
+                            <TrendingUp className={`h-3.5 w-3.5 ${pos.unrealized_pnl >= 0 ? 'text-emerald-500' : 'text-destructive'}`} />
+                            <span className="text-muted-foreground">Unrealized:</span>
+                            <span className={`font-mono font-bold ${pos.unrealized_pnl >= 0 ? 'text-emerald-500' : 'text-destructive'}`}>
+                              {pos.unrealized_pnl >= 0 ? '+' : ''}${pos.unrealized_pnl.toFixed(2)}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-muted-foreground">CPP:</span>
+                        <span className={`font-mono font-bold ${
+                          pos.combined_cost < 1 ? 'text-primary' : 'text-destructive'
+                        }`}>
+                          {(pos.combined_cost * 100).toFixed(1)}¢
+                        </span>
+                      </div>
+                    </div>
+                    
+                    {/* Paired/Unpaired row */}
                     <div className="flex items-center justify-between text-sm">
                       <div className="flex items-center gap-4">
                         <div className="flex items-center gap-1.5">
@@ -428,14 +488,14 @@ export function V35OpenPositions() {
                           </div>
                         )}
                       </div>
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-muted-foreground">CPP:</span>
-                        <span className={`font-mono font-bold ${
-                          pos.combined_cost < 1 ? 'text-primary' : 'text-destructive'
-                        }`}>
-                          {(pos.combined_cost * 100).toFixed(1)}¢
-                        </span>
-                      </div>
+                      {pos.locked_profit > 0 && (
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-muted-foreground">Locked:</span>
+                          <span className="font-mono font-bold text-primary">
+                            +${pos.locked_profit.toFixed(2)}
+                          </span>
+                        </div>
+                      )}
                     </div>
                     
                     {/* P&L Scenarios */}
@@ -455,7 +515,7 @@ export function V35OpenPositions() {
                       const pnlIfDownWins = pairedProfit + (excessDown > 0 ? (excessDown * 1 - unpairedDownCost) : -unpairedUpCost);
                       
                       return (
-                        <div className="flex items-center justify-between text-xs pt-1 border-t border-border/30">
+                        <div className="flex items-center justify-between text-xs pt-2 border-t border-border/30">
                           <div className="flex items-center gap-1.5">
                             <TrendingUp className="h-3 w-3 text-emerald-500" />
                             <span className="text-muted-foreground">If UP wins:</span>
