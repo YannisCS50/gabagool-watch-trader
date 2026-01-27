@@ -1,5 +1,5 @@
 // ============================================================
-// V35 CONFIGURATION
+// V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
 // Passive Dual-Outcome Market Maker for Polymarket 15-min options
 // 
@@ -7,9 +7,14 @@
 // When retail traders hit our orders, we accumulate both sides.
 // At settlement: one side pays $1.00, other pays $0.00.
 // If combined cost < $1.00 -> GUARANTEED profit.
+//
+// SOURCE: Reverse-engineered from gabagool22's proven strategy
+// - 34,569 trades analyzed
+// - $165,450 volume
+// - 1.88% ROI, 93% win rate
 // ============================================================
 
-export type V35Mode = 'safe' | 'moderate' | 'production';
+export type V35Mode = 'test' | 'moderate' | 'production';
 
 export interface V35Config {
   // =========================================================================
@@ -20,53 +25,41 @@ export interface V35Config {
   // =========================================================================
   // 🎯 GRID PARAMETERS
   // =========================================================================
-  gridMin: number;          // Lowest bid price (e.g., 0.25)
-  gridMax: number;          // Highest bid price (e.g., 0.75)
-  gridStep: number;         // Step between price levels (e.g., 0.02)
+  gridMin: number;          // Lowest bid price (e.g., 0.15)
+  gridMax: number;          // Highest bid price (e.g., 0.85)
+  gridStep: number;         // Step between price levels (e.g., 0.05)
   
   // =========================================================================
   // 📊 SIZING PARAMETERS
   // =========================================================================
-  baseSize: number;         // Shares per price level
-  skewThreshold: number;    // When skew adjustment starts
-  skewReduceFactor: number; // Reduce size when overweight (e.g., 0.5 = halve)
-  skewBoostFactor: number;  // Boost size when underweight (e.g., 1.5 = 50% more)
+  sharesPerLevel: number;   // Shares per price level (min 3 for Polymarket)
   
   // =========================================================================
-  // 🛡️ RISK LIMITS (CRITICAL!)
+  // 🛡️ RISK LIMITS
   // =========================================================================
-  maxNotionalPerMarket: number;   // Max $ per market (both sides combined)
-  maxUnpairedImbalance: number;   // Max directional exposure per market (STRICT!)
-  maxImbalanceRatio: number;      // Max ratio UP:DOWN or DOWN:UP (e.g., 1.5)
-  maxTotalExposure: number;       // Max $ across ALL markets
-  maxMarkets: number;             // Max concurrent markets
-  
-  // =========================================================================
-  // 🆕 MOMENTUM FILTER (Binance integration)
-  // =========================================================================
-  enableMomentumFilter: boolean;  // Enable/disable momentum-based quote filtering
-  momentumThreshold: number;      // % move to consider market "trending" (e.g., 0.15)
-  momentumLookbackSec: number;    // Lookback period in seconds
-  
-  // =========================================================================
-  // 🆕 FILL SYNC (Streak detection)
-  // =========================================================================
-  enableFillSync: boolean;        // Enable/disable fill streak detection
-  fillSyncWindow: number;         // How many recent fills to analyze
-  fillSyncMaxStreak: number;      // Max consecutive fills on one side before stopping
-  
-  // =========================================================================
-  // 🆕 STOP LOSS
-  // =========================================================================
-  enableStopLoss: boolean;        // Enable stop loss protection
-  maxLossPerMarket: number;       // Max unrealized loss per market before stopping
-  maxLossTotal: number;           // Max total unrealized loss
+  maxUnpairedShares: number;    // Max directional exposure (30 per doc)
+  maxImbalanceRatio: number;    // Max ratio UP:DOWN or DOWN:UP (2.0 per doc)
+  maxLossPerMarket: number;     // Max $ loss per market before stopping
+  maxConcurrentMarkets: number; // Max markets to trade simultaneously
+  capitalPerMarket: number;     // $ allocated per market
   
   // =========================================================================
   // ⏱️ TIMING PARAMETERS
   // =========================================================================
-  refreshIntervalMs: number;      // Milliseconds between order updates
-  stopBeforeExpirySec: number;    // Stop quoting X seconds before expiry
+  startDelayMs: number;         // Delay after market open before placing orders
+  stopBeforeExpirySec: number;  // Stop quoting X seconds before expiry
+  refreshIntervalMs: number;    // Milliseconds between order updates
+  
+  // =========================================================================
+  // 🚫 FEATURES - CRITICAL: KEEP DISABLED PER STRATEGY DOC
+  // =========================================================================
+  enableMomentumFilter: boolean;  // MUST BE FALSE - reduces fills, creates imbalance
+  enableFillSync: boolean;        // MUST BE FALSE - prevents natural balancing
+  
+  // =========================================================================
+  // 🎯 ASSETS
+  // =========================================================================
+  enabledAssets: string[];      // Which assets to trade ['BTC', 'ETH']
   
   // =========================================================================
   // 🔌 API CONFIGURATION
@@ -86,131 +79,130 @@ export interface V35Config {
 }
 
 // =========================================================================
-// PRESET CONFIGURATIONS
+// PRESET CONFIGURATIONS - BASED ON GABAGOOL STRATEGY DOCUMENT
 // =========================================================================
 
-// =========================================================================
-// PRESET CONFIGURATIONS - UPDATED WITH STRICTER LIMITS
-// =========================================================================
-
-export const SAFE_CONFIG: V35Config = {
-  mode: 'safe',
-  // Grid - conservative range
-  gridMin: 0.30,              // Was 0.25 - stay away from extremes
-  gridMax: 0.70,              // Was 0.75
-  gridStep: 0.02,
-  baseSize: 5,                // Was 10 - smaller positions
-  skewThreshold: 15,          // Was 30 - much more sensitive
-  skewReduceFactor: 0.3,      // Was 0.5 - reduce more aggressively
-  skewBoostFactor: 1.5,
+/**
+ * TEST MODE - Minimum Viable Test
+ * Use for initial validation with $150 capital
+ * Run 50 markets before scaling up
+ */
+export const TEST_CONFIG: V35Config = {
+  mode: 'test',
   
-  // Risk limits - MUCH STRICTER
-  maxNotionalPerMarket: 150,  // Was 300
-  maxUnpairedImbalance: 20,   // CRITICAL FIX - hard cap at 20
-  maxImbalanceRatio: 1.3,     // Max 1.3:1 ratio
-  maxTotalExposure: 400,      // Was 1000
-  maxMarkets: 1,              // Was 2 - start with 1
-  
-  // Momentum filter - ENABLED
-  enableMomentumFilter: true,
-  momentumThreshold: 0.10,    // 0.10% = trending (sensitive)
-  momentumLookbackSec: 30,
-  
-  // Fill sync - ENABLED (NEW!)
-  enableFillSync: true,
-  fillSyncWindow: 5,          // Look at last 5 fills
-  fillSyncMaxStreak: 3,       // Stop after 3 fills on same side
-  
-  // Stop loss - ENABLED
-  enableStopLoss: true,
-  maxLossPerMarket: 30,       // Max $30 loss per market
-  maxLossTotal: 100,          // Max $100 total loss
-  
-  // Timing
-  refreshIntervalMs: 5000,
-  stopBeforeExpirySec: 180,
-  clobUrl: 'https://clob.polymarket.com',
-  chainId: 137,
-  dryRun: false,
-  logLevel: 'info',
-};
-
-export const MODERATE_CONFIG: V35Config = {
-  mode: 'moderate',
-  gridMin: 0.20,
-  gridMax: 0.80,
-  gridStep: 0.02,
-  baseSize: 10,
-  skewThreshold: 25,
-  skewReduceFactor: 0.4,
-  skewBoostFactor: 1.5,
-  
-  maxNotionalPerMarket: 500,
-  maxUnpairedImbalance: 30,   // Slightly higher for moderate
-  maxImbalanceRatio: 1.5,
-  maxTotalExposure: 1500,
-  maxMarkets: 2,
-  
-  enableMomentumFilter: true,
-  momentumThreshold: 0.15,
-  momentumLookbackSec: 30,
-  
-  // Fill sync - ENABLED
-  enableFillSync: true,
-  fillSyncWindow: 5,
-  fillSyncMaxStreak: 4,       // Allow 4 before stopping
-  
-  enableStopLoss: true,
-  maxLossPerMarket: 50,
-  maxLossTotal: 150,
-  
-  refreshIntervalMs: 5000,
-  stopBeforeExpirySec: 120,
-  clobUrl: 'https://clob.polymarket.com',
-  chainId: 137,
-  dryRun: false,
-  logLevel: 'info',
-};
-
-export const PRODUCTION_CONFIG: V35Config = {
-  mode: 'production',
+  // Grid - per document specs
   gridMin: 0.15,
   gridMax: 0.85,
-  gridStep: 0.02,
-  baseSize: 15,
-  skewThreshold: 40,
-  skewReduceFactor: 0.5,
-  skewBoostFactor: 1.5,
+  gridStep: 0.05,           // 15 levels per side
+  sharesPerLevel: 3,        // Minimum for Polymarket notional requirements
   
-  maxNotionalPerMarket: 2000,
-  maxUnpairedImbalance: 50,   // Higher for production but still capped
-  maxImbalanceRatio: 1.5,
-  maxTotalExposure: 6000,
-  maxMarkets: 3,
+  // Risk limits - conservative for testing
+  maxUnpairedShares: 30,    // Per document
+  maxImbalanceRatio: 2.0,   // Per document
+  maxLossPerMarket: 10,     // Per document
+  maxConcurrentMarkets: 2,  // Per document
+  capitalPerMarket: 50,     // $50 per market
   
-  enableMomentumFilter: true,
-  momentumThreshold: 0.20,
-  momentumLookbackSec: 30,
-  
-  // Fill sync - ENABLED
-  enableFillSync: true,
-  fillSyncWindow: 5,
-  fillSyncMaxStreak: 5,       // Allow 5 before stopping
-  
-  enableStopLoss: true,
-  maxLossPerMarket: 100,
-  maxLossTotal: 300,
-  
+  // Timing - per document
+  startDelayMs: 5000,       // Wait 5s after market open
+  stopBeforeExpirySec: 120, // Stop 2 min before expiry
   refreshIntervalMs: 5000,
-  stopBeforeExpirySec: 120,
+  
+  // CRITICAL: DISABLED per strategy document
+  // "RULE 1: Never enable momentum filtering"
+  // "RULE 2: Always quote both sides simultaneously"
+  enableMomentumFilter: false,
+  enableFillSync: false,
+  
+  // Assets - start with BTC only for testing
+  enabledAssets: ['BTC'],
+  
   clobUrl: 'https://clob.polymarket.com',
   chainId: 137,
   dryRun: false,
   logLevel: 'info',
 };
 
+/**
+ * MODERATE MODE - After successful test phase
+ * Use after 50+ profitable markets in test mode
+ */
+export const MODERATE_CONFIG: V35Config = {
+  mode: 'moderate',
+  
+  // Grid - slightly wider for more fills
+  gridMin: 0.10,
+  gridMax: 0.90,
+  gridStep: 0.05,           // 17 levels per side
+  sharesPerLevel: 5,        // More shares per level
+  
+  // Risk limits - relaxed after validation
+  maxUnpairedShares: 50,
+  maxImbalanceRatio: 2.0,
+  maxLossPerMarket: 25,
+  maxConcurrentMarkets: 5,
+  capitalPerMarket: 100,
+  
+  // Timing
+  startDelayMs: 3000,       // Faster entry
+  stopBeforeExpirySec: 90,
+  refreshIntervalMs: 3000,
+  
+  // CRITICAL: STILL DISABLED
+  enableMomentumFilter: false,
+  enableFillSync: false,
+  
+  // Add ETH after validation
+  enabledAssets: ['BTC', 'ETH'],
+  
+  clobUrl: 'https://clob.polymarket.com',
+  chainId: 137,
+  dryRun: false,
+  logLevel: 'info',
+};
+
+/**
+ * PRODUCTION MODE - Full Gabagool replication
+ * Use after consistent profitability in moderate mode
+ */
+export const PRODUCTION_CONFIG: V35Config = {
+  mode: 'production',
+  
+  // Grid - full gabagool range
+  gridMin: 0.05,
+  gridMax: 0.95,
+  gridStep: 0.02,           // 46 levels per side (gabagool uses ~90 with 0.01 step)
+  sharesPerLevel: 10,       // Larger positions
+  
+  // Risk limits - production scale
+  maxUnpairedShares: 100,
+  maxImbalanceRatio: 2.0,
+  maxLossPerMarket: 50,
+  maxConcurrentMarkets: 10,
+  capitalPerMarket: 500,
+  
+  // Timing - aggressive
+  startDelayMs: 2000,
+  stopBeforeExpirySec: 60,
+  refreshIntervalMs: 2000,
+  
+  // CRITICAL: STILL DISABLED - this is the secret sauce
+  enableMomentumFilter: false,
+  enableFillSync: false,
+  
+  enabledAssets: ['BTC', 'ETH'],
+  
+  clobUrl: 'https://clob.polymarket.com',
+  chainId: 137,
+  dryRun: false,
+  logLevel: 'info',
+};
+
+// Backwards compatibility alias
+export const SAFE_CONFIG = TEST_CONFIG;
+
 // Runtime config (can be overridden from database or environment)
-let runtimeConfig: V35Config = { ...SAFE_CONFIG };
+let runtimeConfig: V35Config = { ...TEST_CONFIG };
 
 export function getV35Config(): V35Config {
   return runtimeConfig;
@@ -218,8 +210,8 @@ export function getV35Config(): V35Config {
 
 export function loadV35Config(mode: V35Mode): V35Config {
   switch (mode) {
-    case 'safe':
-      runtimeConfig = { ...SAFE_CONFIG };
+    case 'test':
+      runtimeConfig = { ...TEST_CONFIG };
       break;
     case 'moderate':
       runtimeConfig = { ...MODERATE_CONFIG };
@@ -238,46 +230,48 @@ export function setV35ConfigOverrides(overrides: Partial<V35Config>): V35Config 
 
 export function printV35Config(cfg: V35Config): void {
   console.log('\n' + '='.repeat(70));
-  console.log(`  V35 CONFIGURATION — ${cfg.mode.toUpperCase()} MODE`);
+  console.log(`  V35 GABAGOOL STRATEGY — ${cfg.mode.toUpperCase()} MODE`);
   console.log('='.repeat(70));
   console.log(`
-  📊 GRID
-     Range:     $${cfg.gridMin.toFixed(2)} - $${cfg.gridMax.toFixed(2)}
-     Step:      $${cfg.gridStep.toFixed(2)}
-     Levels:    ${Math.floor((cfg.gridMax - cfg.gridMin) / cfg.gridStep) + 1} per side
+  📊 GRID (passive limit orders)
+     Range:           $${cfg.gridMin.toFixed(2)} - $${cfg.gridMax.toFixed(2)}
+     Step:            $${cfg.gridStep.toFixed(2)}
+     Levels per side: ${Math.floor((cfg.gridMax - cfg.gridMin) / cfg.gridStep) + 1}
+     Shares/level:    ${cfg.sharesPerLevel}
 
-  📈 SIZING  
-     Base size: ${cfg.baseSize} shares/level
-     Skew threshold: ${cfg.skewThreshold} shares
-     
-  🛡️ RISK LIMITS (STRICT)
-     Max per market:       $${cfg.maxNotionalPerMarket.toLocaleString()}
-     Max imbalance:        ${cfg.maxUnpairedImbalance} shares
-     Max imbalance ratio:  ${cfg.maxImbalanceRatio}:1
-     Max total exposure:   $${cfg.maxTotalExposure.toLocaleString()}
-     Max markets:          ${cfg.maxMarkets}
-     
-  🆕 MOMENTUM FILTER
-     Enabled:             ${cfg.enableMomentumFilter}
-     Threshold:           ${cfg.momentumThreshold}%
-     Lookback:            ${cfg.momentumLookbackSec}s
-     
-  🆕 FILL SYNC
-     Enabled:             ${cfg.enableFillSync}
-     Window:              ${cfg.fillSyncWindow} fills
-     Max streak:          ${cfg.fillSyncMaxStreak}
-     
-  🆕 STOP LOSS
-     Enabled:             ${cfg.enableStopLoss}
-     Max loss/market:     $${cfg.maxLossPerMarket}
-     Max loss total:      $${cfg.maxLossTotal}
+  🛡️ RISK LIMITS
+     Max unpaired:    ${cfg.maxUnpairedShares} shares
+     Max ratio:       ${cfg.maxImbalanceRatio}:1
+     Max loss/market: $${cfg.maxLossPerMarket}
+     Max markets:     ${cfg.maxConcurrentMarkets}
+     Capital/market:  $${cfg.capitalPerMarket}
      
   ⏱️ TIMING
-     Refresh:             ${cfg.refreshIntervalMs}ms
-     Stop before exp:     ${cfg.stopBeforeExpirySec}s
+     Start delay:     ${cfg.startDelayMs}ms after open
+     Stop before exp: ${cfg.stopBeforeExpirySec}s
+     Refresh:         ${cfg.refreshIntervalMs}ms
+     
+  🚫 FEATURES (DISABLED per gabagool strategy)
+     Momentum filter: ${cfg.enableMomentumFilter ? '⚠️ ON' : '✓ OFF'}
+     Fill sync:       ${cfg.enableFillSync ? '⚠️ ON' : '✓ OFF'}
+     
+  🎯 ASSETS
+     Trading:         ${cfg.enabledAssets.join(', ')}
      
   🧪 MODE
-     Dry run:             ${cfg.dryRun}
+     Dry run:         ${cfg.dryRun}
+`);
+  console.log('='.repeat(70));
+  console.log(`
+  📈 EXPECTED PERFORMANCE (based on gabagool22 data):
+     Combined cost:   ~$0.98 (target < $1.00)
+     Win rate:        ~93% of markets profitable
+     ROI per market:  ~1.9%
+     
+  ⚠️ CRITICAL RULES:
+     1. NEVER enable momentum filter - reduces fills
+     2. ALWAYS quote both sides - imbalance is temporary
+     3. Trust the math - $1 settlement is guaranteed
 `);
   console.log('='.repeat(70));
 }
