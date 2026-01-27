@@ -38,9 +38,14 @@ export interface V35Config {
   // 🛡️ RISK LIMITS
   // =========================================================================
   maxUnpairedShares: number;    // Max directional exposure (30 per doc)
+  maxUnpairedImbalance: number; // Alias for maxUnpairedShares (used by runner)
   maxImbalanceRatio: number;    // Max ratio UP:DOWN or DOWN:UP (2.0 per doc)
   maxLossPerMarket: number;     // Max $ loss per market before stopping
   maxConcurrentMarkets: number; // Max markets to trade simultaneously
+  maxMarkets: number;           // Alias for maxConcurrentMarkets (used by runner)
+  maxNotionalPerMarket: number; // Max $ notional per market
+  maxTotalExposure: number;     // Max $ total exposure across all markets
+  skewThreshold: number;        // Skew threshold for warning logs
   capitalPerMarket: number;     // $ allocated per market
   
   // =========================================================================
@@ -97,11 +102,16 @@ export const TEST_CONFIG: V35Config = {
   sharesPerLevel: 5,        // Polymarket minimum is 5 shares per order
   
   // Risk limits - conservative for testing
-  maxUnpairedShares: 30,    // Per document
-  maxImbalanceRatio: 2.0,   // Per document
-  maxLossPerMarket: 10,     // Per document
-  maxConcurrentMarkets: 2,  // Per document
-  capitalPerMarket: 50,     // $50 per market
+  maxUnpairedShares: 30,        // Per document
+  maxUnpairedImbalance: 30,     // Alias (used by runner)
+  maxImbalanceRatio: 2.0,       // Per document
+  maxLossPerMarket: 10,         // Per document
+  maxConcurrentMarkets: 2,      // Per document
+  maxMarkets: 2,                // Alias (used by runner)
+  maxNotionalPerMarket: 100,    // $100 max per market
+  maxTotalExposure: 200,        // $200 total
+  skewThreshold: 10,            // 10 shares before warning
+  capitalPerMarket: 50,         // $50 per market
   
   // Timing - per document
   startDelayMs: 5000,       // Wait 5s after market open
@@ -138,9 +148,14 @@ export const MODERATE_CONFIG: V35Config = {
   
   // Risk limits - relaxed after validation
   maxUnpairedShares: 50,
+  maxUnpairedImbalance: 50,     // Alias (used by runner)
   maxImbalanceRatio: 2.0,
   maxLossPerMarket: 25,
   maxConcurrentMarkets: 5,
+  maxMarkets: 5,                // Alias (used by runner)
+  maxNotionalPerMarket: 200,    // $200 max per market
+  maxTotalExposure: 1000,       // $1000 total
+  skewThreshold: 15,            // 15 shares before warning
   capitalPerMarket: 100,
   
   // Timing
@@ -176,9 +191,14 @@ export const PRODUCTION_CONFIG: V35Config = {
   
   // Risk limits - production scale
   maxUnpairedShares: 100,
+  maxUnpairedImbalance: 100,    // Alias (used by runner)
   maxImbalanceRatio: 2.0,
   maxLossPerMarket: 50,
   maxConcurrentMarkets: 10,
+  maxMarkets: 10,               // Alias (used by runner)
+  maxNotionalPerMarket: 1000,   // $1000 max per market
+  maxTotalExposure: 10000,      // $10000 total
+  skewThreshold: 25,            // 25 shares before warning
   capitalPerMarket: 500,
   
   // Timing - aggressive
