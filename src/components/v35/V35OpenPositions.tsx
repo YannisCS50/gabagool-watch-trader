@@ -3,38 +3,53 @@ import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { 
-  TrendingUp, 
-  TrendingDown, 
   Scale, 
   Clock,
-  DollarSign
+  TrendingUp,
+  TrendingDown
 } from 'lucide-react';
+import { formatDistanceToNow } from 'date-fns';
 
 interface MarketPosition {
   market_slug: string;
   up_qty: number;
-  down_qty: number;
+  up_avg: number;
   up_cost: number;
+  down_qty: number;
+  down_avg: number;
   down_cost: number;
-  paired: number;
-  unpaired: number;
-  combined_cost: number;
-  locked_profit: number;
-  fill_count: number;
+  total_fills: number;
   last_fill: string;
+  expiry_ts: number;
+}
+
+// Parse market slug to get expiry timestamp
+function parseMarketExpiry(slug: string): number {
+  const match = slug.match(/(\d{10})$/);
+  return match ? parseInt(match[1], 10) * 1000 : 0;
+}
+
+// Format expiry time
+function formatExpiry(ts: number): string {
+  if (!ts) return '';
+  const date = new Date(ts);
+  return date.toLocaleTimeString('en-US', { 
+    hour: 'numeric', 
+    minute: '2-digit',
+    hour12: true 
+  });
 }
 
 export function V35OpenPositions() {
-  // Aggregate positions from fills
   const { data: positions, isLoading } = useQuery({
     queryKey: ['v35-open-positions'],
     queryFn: async () => {
-      // Get aggregated fills per market and side
+      // Get aggregated positions per market and side
       const { data: fills, error } = await supabase
         .from('v35_fills')
-        .select('market_slug, fill_type, price, size, created_at')
-        .order('created_at', { ascending: false });
+        .select('market_slug, side, price, size, created_at');
 
       if (error) throw error;
       if (!fills || fills.length === 0) return [];
@@ -48,58 +63,49 @@ export function V35OpenPositions() {
           marketMap.set(slug, {
             market_slug: slug,
             up_qty: 0,
-            down_qty: 0,
+            up_avg: 0,
             up_cost: 0,
+            down_qty: 0,
+            down_avg: 0,
             down_cost: 0,
-            paired: 0,
-            unpaired: 0,
-            combined_cost: 0,
-            locked_profit: 0,
-            fill_count: 0,
+            total_fills: 0,
             last_fill: fill.created_at,
+            expiry_ts: parseMarketExpiry(slug),
           });
         }
 
         const pos = marketMap.get(slug)!;
-        pos.fill_count++;
+        pos.total_fills++;
         
-        // Determine side from fill_type
-        const isUp = fill.fill_type?.includes('UP');
-        const isDown = fill.fill_type?.includes('DOWN');
-        
-        if (isUp) {
-          pos.up_qty += Number(fill.size) || 0;
-          pos.up_cost += (Number(fill.price) || 0) * (Number(fill.size) || 0);
-        } else if (isDown) {
-          pos.down_qty += Number(fill.size) || 0;
-          pos.down_cost += (Number(fill.price) || 0) * (Number(fill.size) || 0);
-        } else {
-          // Fallback: try to split evenly or use a heuristic
-          // For now, add to down since most fills alternate
-          pos.down_qty += Number(fill.size) || 0;
-          pos.down_cost += (Number(fill.price) || 0) * (Number(fill.size) || 0);
+        const size = Number(fill.size) || 0;
+        const price = Number(fill.price) || 0;
+        const cost = size * price;
+
+        if (fill.side === 'UP') {
+          pos.up_qty += size;
+          pos.up_cost += cost;
+        } else if (fill.side === 'DOWN') {
+          pos.down_qty += size;
+          pos.down_cost += cost;
+        }
+
+        // Track most recent fill
+        if (fill.created_at > pos.last_fill) {
+          pos.last_fill = fill.created_at;
         }
       }
 
-      // Calculate derived metrics
+      // Calculate averages
       for (const pos of marketMap.values()) {
-        pos.paired = Math.min(pos.up_qty, pos.down_qty);
-        pos.unpaired = Math.abs(pos.up_qty - pos.down_qty);
-        
-        const avgUp = pos.up_qty > 0 ? pos.up_cost / pos.up_qty : 0;
-        const avgDown = pos.down_qty > 0 ? pos.down_cost / pos.down_qty : 0;
-        
-        pos.combined_cost = (pos.up_qty > 0 && pos.down_qty > 0) ? avgUp + avgDown : 0;
-        pos.locked_profit = (pos.combined_cost > 0 && pos.combined_cost < 1.0)
-          ? pos.paired * (1.0 - pos.combined_cost)
-          : 0;
+        pos.up_avg = pos.up_qty > 0 ? pos.up_cost / pos.up_qty : 0;
+        pos.down_avg = pos.down_qty > 0 ? pos.down_cost / pos.down_qty : 0;
       }
 
-      // Sort by most recent activity
+      // Sort by expiry (most recent first)
       return Array.from(marketMap.values())
-        .sort((a, b) => new Date(b.last_fill).getTime() - new Date(a.last_fill).getTime());
+        .sort((a, b) => b.expiry_ts - a.expiry_ts);
     },
-    refetchInterval: 10000, // Refresh every 10s
+    refetchInterval: 5000,
   });
 
   if (isLoading) {
@@ -112,10 +118,7 @@ export function V35OpenPositions() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="space-y-3">
-            <Skeleton className="h-20 w-full" />
-            <Skeleton className="h-20 w-full" />
-          </div>
+          <Skeleton className="h-40 w-full" />
         </CardContent>
       </Card>
     );
@@ -129,13 +132,12 @@ export function V35OpenPositions() {
             <Scale className="h-5 w-5" />
             Open Positions
           </CardTitle>
-          <CardDescription>Active market positions</CardDescription>
+          <CardDescription>Per-market position breakdown</CardDescription>
         </CardHeader>
         <CardContent>
           <div className="text-center py-8 text-muted-foreground">
             <Clock className="h-8 w-8 mx-auto mb-2 opacity-50" />
             <p>No open positions</p>
-            <p className="text-xs">Positions will appear when fills are recorded</p>
           </div>
         </CardContent>
       </Card>
@@ -150,98 +152,105 @@ export function V35OpenPositions() {
           Open Positions
         </CardTitle>
         <CardDescription>
-          {positions.length} active market{positions.length !== 1 ? 's' : ''} • 
-          Total Locked: ${positions.reduce((sum, p) => sum + p.locked_profit, 0).toFixed(2)}
+          {positions.length} market{positions.length !== 1 ? 's' : ''} with positions
         </CardDescription>
       </CardHeader>
-      <CardContent>
-        <div className="space-y-4">
-          {positions.map((pos) => {
-            const asset = pos.market_slug.split('-')[0].toUpperCase();
-            const skew = pos.up_qty - pos.down_qty;
-            const skewDirection = skew > 0 ? 'UP' : skew < 0 ? 'DOWN' : 'BALANCED';
-            
-            return (
-              <div 
-                key={pos.market_slug} 
-                className="p-4 rounded-lg border border-border/50 bg-card/50 space-y-3"
-              >
-                {/* Header */}
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <Badge variant="outline" className="font-mono">
-                      {asset}
+      <CardContent className="space-y-6">
+        {positions.map((pos) => {
+          const now = Date.now();
+          const isExpired = pos.expiry_ts < now;
+          const isLive = !isExpired;
+          
+          // Calculate current value (assuming 0.99 mid for UP when market is up)
+          const upValue = pos.up_qty * 0.99; // Approx current value
+          const downValue = pos.down_qty * 0.01; // Approx current value
+          
+          return (
+            <div key={pos.market_slug} className="border rounded-lg overflow-hidden">
+              {/* Market Header */}
+              <div className="bg-muted/50 px-4 py-2 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="font-medium">BTC</span>
+                  <span className="text-muted-foreground">
+                    {formatExpiry(pos.expiry_ts - 15 * 60 * 1000)}-{formatExpiry(pos.expiry_ts)}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {isLive ? (
+                    <Badge variant="default" className="bg-primary">
+                      <span className="mr-1 h-2 w-2 rounded-full bg-white animate-pulse inline-block" />
+                      LIVE
                     </Badge>
-                    <span className="text-sm text-muted-foreground truncate max-w-[200px]">
-                      {pos.market_slug.slice(-20)}
-                    </span>
-                  </div>
-                  <Badge 
-                    variant={pos.locked_profit > 0 ? "default" : "secondary"}
-                    className={pos.locked_profit > 0 ? "bg-primary" : ""}
-                  >
-                    <DollarSign className="h-3 w-3 mr-1" />
-                    {pos.locked_profit > 0 ? '+' : ''}${pos.locked_profit.toFixed(2)}
-                  </Badge>
+                  ) : (
+                    <Badge variant="secondary">EXPIRED</Badge>
+                  )}
+                  <span className="text-xs text-muted-foreground">
+                    {pos.total_fills} fills
+                  </span>
                 </div>
-
-                {/* Quantities */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="flex items-center gap-2">
-                    <TrendingUp className="h-4 w-4 text-primary" />
-                    <div>
-                      <p className="text-sm font-medium">{pos.up_qty.toFixed(1)} UP</p>
-                      <p className="text-xs text-muted-foreground">
-                        Avg: ${pos.up_qty > 0 ? (pos.up_cost / pos.up_qty).toFixed(3) : '0.000'}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <TrendingDown className="h-4 w-4 text-destructive" />
-                    <div>
-                      <p className="text-sm font-medium">{pos.down_qty.toFixed(1)} DOWN</p>
-                      <p className="text-xs text-muted-foreground">
-                        Avg: ${pos.down_qty > 0 ? (pos.down_cost / pos.down_qty).toFixed(3) : '0.000'}
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Metrics */}
-                <div className="flex items-center justify-between text-xs">
-                  <div className="flex items-center gap-4">
-                    <span>
-                      <span className="text-muted-foreground">Paired:</span>{' '}
-                      <span className="font-medium">{pos.paired.toFixed(1)}</span>
-                    </span>
-                    <span>
-                      <span className="text-muted-foreground">Unpaired:</span>{' '}
-                      <span className={`font-medium ${pos.unpaired > 50 ? 'text-warning' : ''}`}>
-                        {pos.unpaired.toFixed(1)}
-                      </span>
-                    </span>
-                    <span>
-                      <span className="text-muted-foreground">CPP:</span>{' '}
-                      <span className={`font-medium ${pos.combined_cost < 1 ? 'text-primary' : 'text-destructive'}`}>
-                        ${pos.combined_cost.toFixed(3)}
-                      </span>
-                    </span>
-                  </div>
-                  <Badge variant="outline" className="text-xs">
-                    {pos.fill_count} fills
-                  </Badge>
-                </div>
-
-                {/* Skew indicator */}
-                {pos.unpaired > 10 && (
-                  <div className="text-xs text-muted-foreground">
-                    ⚠️ Skewed {skewDirection} by {Math.abs(skew).toFixed(1)} shares
-                  </div>
-                )}
               </div>
-            );
-          })}
-        </div>
+              
+              {/* Positions Table */}
+              <Table>
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="w-24">OUTCOME</TableHead>
+                    <TableHead className="text-right">QTY</TableHead>
+                    <TableHead className="text-right">AVG</TableHead>
+                    <TableHead className="text-right">COST</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {pos.up_qty > 0 && (
+                    <TableRow>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <TrendingUp className="h-4 w-4 text-primary" />
+                          <span className="text-primary font-medium">Up</span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        {pos.up_qty.toFixed(0)}
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        {(pos.up_avg * 100).toFixed(0)}¢
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-muted-foreground">
+                        ${pos.up_cost.toFixed(2)}
+                      </TableCell>
+                    </TableRow>
+                  )}
+                  {pos.down_qty > 0 && (
+                    <TableRow>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <TrendingDown className="h-4 w-4 text-destructive" />
+                          <span className="text-destructive font-medium">Down</span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        {pos.down_qty.toFixed(0)}
+                      </TableCell>
+                      <TableCell className="text-right font-mono">
+                        {(pos.down_avg * 100).toFixed(0)}¢
+                      </TableCell>
+                      <TableCell className="text-right font-mono text-muted-foreground">
+                        ${pos.down_cost.toFixed(2)}
+                      </TableCell>
+                    </TableRow>
+                  )}
+                  {pos.up_qty === 0 && pos.down_qty === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={4} className="text-center text-muted-foreground">
+                        No positions
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          );
+        })}
       </CardContent>
     </Card>
   );
