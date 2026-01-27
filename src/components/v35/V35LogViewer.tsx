@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, forwardRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -38,7 +38,7 @@ function normalizeEvent(row: unknown): LogEntry {
   };
 }
 
-export const V35LogViewer = forwardRef<HTMLDivElement>((_, ref) => {
+export function V35LogViewer() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [isPaused, setIsPaused] = useState(false);
   const [eventFilter, setEventFilter] = useState<string>('ALL');
@@ -125,14 +125,14 @@ export const V35LogViewer = forwardRef<HTMLDivElement>((_, ref) => {
   };
 
   return (
-    <Card ref={ref}>
+    <Card>
       <CardHeader className="pb-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle className="text-lg flex items-center gap-2">
             <Terminal className="h-5 w-5" />
             V35 Event Log
             {!isPaused && (
-              <Badge variant="outline" className="bg-green-500/20 text-green-400 border-green-500/30 text-xs">
+              <Badge variant="outline" className="bg-primary/20 text-primary border-primary/30 text-xs">
                 LIVE
               </Badge>
             )}
@@ -231,6 +231,4 @@ export const V35LogViewer = forwardRef<HTMLDivElement>((_, ref) => {
       </CardContent>
     </Card>
   );
-});
-
-V35LogViewer.displayName = 'V35LogViewer';
+}
