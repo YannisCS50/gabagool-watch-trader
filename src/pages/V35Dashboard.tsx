@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { V35LogViewer, V35FillsTable, V35ExportButton } from '@/components/v35';
+import { V35LogViewer, V35FillsTable, V35ExportButton, V35StrategyPDFExport } from '@/components/v35';
 import { 
   Activity, 
   TrendingUp, 
@@ -125,7 +125,8 @@ export default function V35Dashboard() {
               Passive Dual-Outcome Strategy for 15-min Options
             </p>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <V35StrategyPDFExport />
             <V35ExportButton />
             {heartbeat?.dry_run && (
               <Badge variant="outline" className="bg-warning/10 text-warning border-warning/30">
