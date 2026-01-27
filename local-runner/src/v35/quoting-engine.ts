@@ -124,10 +124,14 @@ export class QuotingEngine {
     // =========================================================================
     // GENERATE QUOTES - Simple grid, uniform sizing
     // Per gabagool: sharesPerLevel is constant, no skew adjustments
+    // PRIORITY: 35c-55c range first (lowest combined cost = highest profit)
     // =========================================================================
     const bestAsk = side === 'UP' ? market.upBestAsk : market.downBestAsk;
     
-    for (const price of this.gridPrices) {
+    // Sort grid prices: prioritize 0.35-0.55 range first (sweet spot)
+    const sortedPrices = this.getPrioritizedPrices();
+    
+    for (const price of sortedPrices) {
       // Skip if our bid would cross the ask (we'd become taker)
       if (bestAsk > 0 && price >= bestAsk - 0.01) {
         continue;
@@ -229,5 +233,32 @@ export class QuotingEngine {
    */
   getGridPrices(): number[] {
     return [...this.gridPrices];
+  }
+  
+  /**
+   * Get grid prices sorted by priority (sweet spot 35c-55c first)
+   * This ensures the most profitable price levels are quoted first
+   */
+  private getPrioritizedPrices(): number[] {
+    const sweetSpotMin = 0.35;
+    const sweetSpotMax = 0.55;
+    
+    // Separate into sweet spot and outer prices
+    const sweetSpot: number[] = [];
+    const outer: number[] = [];
+    
+    for (const price of this.gridPrices) {
+      if (price >= sweetSpotMin && price <= sweetSpotMax) {
+        sweetSpot.push(price);
+      } else {
+        outer.push(price);
+      }
+    }
+    
+    // Sort sweet spot by distance from center (0.45 is optimal)
+    sweetSpot.sort((a, b) => Math.abs(a - 0.45) - Math.abs(b - 0.45));
+    
+    // Return sweet spot first, then outer prices
+    return [...sweetSpot, ...outer];
   }
 }
