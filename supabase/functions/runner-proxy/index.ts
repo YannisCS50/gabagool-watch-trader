@@ -2169,7 +2169,12 @@ Deno.serve(async (req) => {
         const fillType = String(fill.fill_type ?? 'MAKER');
 
         const fillKey = `${orderId}|${tokenId}|${side}|${priceStr}|${sizeStr}|${marketSlug}|${fillType}`;
-        const fillTs = typeof fill.timestamp === 'string' ? fill.timestamp : new Date().toISOString();
+        
+        // Robust timestamp extraction - try multiple fields with fallback to now()
+        const rawTs = fill.fill_ts ?? fill.timestamp ?? fill.ts ?? fill.created_at;
+        const fillTs = typeof rawTs === 'string' && rawTs.length > 0 
+          ? rawTs 
+          : (typeof rawTs === 'number' ? new Date(rawTs).toISOString() : new Date().toISOString());
 
         const { error } = await supabase
           .from('v35_fills')
