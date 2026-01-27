@@ -6651,6 +6651,8 @@ export type Database = {
         Row: {
           asset: string
           created_at: string
+          fill_key: string
+          fill_ts: string
           fill_type: string | null
           id: string
           market_slug: string
@@ -6658,10 +6660,13 @@ export type Database = {
           price: number
           side: string
           size: number
+          token_id: string | null
         }
         Insert: {
           asset: string
           created_at?: string
+          fill_key: string
+          fill_ts: string
           fill_type?: string | null
           id?: string
           market_slug: string
@@ -6669,10 +6674,13 @@ export type Database = {
           price: number
           side: string
           size: number
+          token_id?: string | null
         }
         Update: {
           asset?: string
           created_at?: string
+          fill_key?: string
+          fill_ts?: string
           fill_type?: string | null
           id?: string
           market_slug?: string
@@ -6680,6 +6688,7 @@ export type Database = {
           price?: number
           side?: string
           size?: number
+          token_id?: string | null
         }
         Relationships: []
       }
