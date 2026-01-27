@@ -68,57 +68,41 @@ export class QuotingEngine {
     const quotes: V35Quote[] = [];
     
     // =========================================================================
-    // CHECK 1: ABSOLUTE UNPAIRED LIMIT (only hard stop)
-    // Per doc: maxUnpairedShares = 30 for test mode
+    // GABAGOOL PHILOSOPHY: ALWAYS QUOTE BOTH SIDES
     // =========================================================================
+    // Per user request: Remove all blocking guards. The strategy relies on
+    // volume and statistical averaging to achieve balance. Restricting quotes
+    // based on imbalance is counterproductive - it stops the bot exactly when
+    // it should continue to capture mean-reversion opportunities.
+    //
+    // OLD GUARDS (now disabled):
+    // - maxUnpairedShares: Was blocking overweight side
+    // - maxImbalanceRatio: Was blocking when ratio exceeded threshold
+    // - maxLossPerMarket: Was blocking all quotes on unrealized loss
+    //
+    // NEW BEHAVIOR: Log warnings but NEVER block quotes
+    // =========================================================================
+    
     const skew = market.upQty - market.downQty;
     const unpaired = Math.abs(skew);
+    const unrealizedPnL = this.calculateUnrealizedPnL(market);
     
+    // Log warnings for monitoring, but don't block
     if (unpaired > config.maxUnpairedShares) {
-      // Only block the OVERWEIGHT side, keep quoting the underweight side
-      const overweightSide = skew > 0 ? 'UP' : 'DOWN';
-      if (side === overweightSide) {
-        return {
-          quotes: [],
-          blocked: true,
-          blockReason: `Unpaired limit: ${unpaired.toFixed(0)} shares (max ${config.maxUnpairedShares}) - blocking ${side}`,
-        };
-      }
-      // Allow underweight side to continue - this helps rebalance!
+      console.log(`[QuotingEngine] ⚠️ HIGH SKEW: ${unpaired.toFixed(0)} unpaired shares (threshold: ${config.maxUnpairedShares}) - continuing to quote ${side}`);
     }
     
-    // =========================================================================
-    // CHECK 2: RATIO LIMIT (soft limit, per doc: 2.0)
-    // Only triggers when we have significant positions on both sides
-    // =========================================================================
     if (market.upQty >= 10 && market.downQty >= 10) {
       const ratio = market.upQty > market.downQty 
         ? market.upQty / market.downQty 
         : market.downQty / market.upQty;
-      
       if (ratio > config.maxImbalanceRatio) {
-        const overweightSide = market.upQty > market.downQty ? 'UP' : 'DOWN';
-        if (side === overweightSide) {
-          return {
-            quotes: [],
-            blocked: true,
-            blockReason: `Ratio limit: ${ratio.toFixed(2)}:1 (max ${config.maxImbalanceRatio}:1)`,
-          };
-        }
-        // Keep quoting underweight side to help rebalance
+        console.log(`[QuotingEngine] ⚠️ HIGH RATIO: ${ratio.toFixed(2)}:1 (threshold: ${config.maxImbalanceRatio}:1) - continuing to quote ${side}`);
       }
     }
     
-    // =========================================================================
-    // CHECK 3: LOSS LIMIT (per doc: $10 for test mode)
-    // =========================================================================
-    const unrealizedLoss = this.calculateUnrealizedPnL(market);
-    if (unrealizedLoss < -config.maxLossPerMarket) {
-      return {
-        quotes: [],
-        blocked: true,
-        blockReason: `Loss limit: Unrealized P&L $${unrealizedLoss.toFixed(2)} (max -$${config.maxLossPerMarket})`,
-      };
+    if (unrealizedPnL < -config.maxLossPerMarket) {
+      console.log(`[QuotingEngine] ⚠️ UNREALIZED LOSS: $${unrealizedPnL.toFixed(2)} (threshold: -$${config.maxLossPerMarket}) - continuing to quote ${side}`);
     }
     
     // =========================================================================
