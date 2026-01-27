@@ -52,8 +52,8 @@ export async function sendV35Heartbeat(data: V35HeartbeatData): Promise<boolean>
         last_heartbeat: new Date().toISOString(),
         status: 'online',
         markets_count: data.marketsCount,
-        positions_count: data.totalPaired,
-        trades_count: data.totalPaired + data.totalUnpaired,
+        positions_count: Math.floor(data.totalPaired),
+        trades_count: Math.floor(data.totalPaired + data.totalUnpaired),
         balance: data.balance,
         version: VERSION,
         metadata: {
