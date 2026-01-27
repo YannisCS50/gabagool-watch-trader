@@ -34,15 +34,32 @@ export async function syncOrders(
   // 1. Cancel orders that are no longer in target
   for (const [orderId, order] of currentOrders.entries()) {
     if (!targetPrices.has(order.price)) {
-      if (!dryRun) {
-        try {
-          await cancelOrder(orderId);
-        } catch (err: any) {
-          console.warn(`[OrderManager] Cancel failed for ${orderId}:`, err?.message);
-        }
+      if (dryRun) {
+        currentOrders.delete(orderId);
+        cancelled++;
+        continue;
       }
-      currentOrders.delete(orderId);
-      cancelled++;
+
+      try {
+        const res = await cancelOrder(orderId);
+
+        // CRITICAL: only delete from local state if we actually cancelled.
+        // If we delete on failure, fills can still happen on Polymarket but we'll never match them.
+        if (res?.success) {
+          currentOrders.delete(orderId);
+          cancelled++;
+        } else {
+          console.warn(
+            `[OrderManager] Cancel returned failure for ${orderId} (keeping in map so fills still match):`,
+            res?.error || 'unknown error'
+          );
+        }
+      } catch (err: any) {
+        console.warn(
+          `[OrderManager] Cancel threw for ${orderId} (keeping in map so fills still match):`,
+          err?.message
+        );
+      }
     }
   }
   
@@ -115,30 +132,46 @@ async function placeOrderWithRetry(
  */
 export async function cancelAllOrders(market: V35Market, dryRun: boolean): Promise<number> {
   let cancelled = 0;
-  
-  for (const orderId of market.upOrders.keys()) {
-    if (!dryRun) {
-      try {
-        await cancelOrder(orderId);
-      } catch {
-        // Ignore errors on cancel
-      }
+
+  // NOTE: Only remove from local state if cancellation succeeded.
+  // If cancel fails, keep the order so a subsequent fill can still be detected + persisted.
+  for (const orderId of [...market.upOrders.keys()]) {
+    if (dryRun) {
+      market.upOrders.delete(orderId);
+      cancelled++;
+      continue;
     }
-    cancelled++;
-  }
-  market.upOrders.clear();
-  
-  for (const orderId of market.downOrders.keys()) {
-    if (!dryRun) {
-      try {
-        await cancelOrder(orderId);
-      } catch {
-        // Ignore errors on cancel
+    try {
+      const res = await cancelOrder(orderId);
+      if (res?.success) {
+        market.upOrders.delete(orderId);
+        cancelled++;
+      } else {
+        console.warn(`[OrderManager] CancelAll UP failed for ${orderId}:`, res?.error || 'unknown error');
       }
+    } catch (err: any) {
+      console.warn(`[OrderManager] CancelAll UP threw for ${orderId}:`, err?.message);
     }
-    cancelled++;
   }
-  market.downOrders.clear();
+
+  for (const orderId of [...market.downOrders.keys()]) {
+    if (dryRun) {
+      market.downOrders.delete(orderId);
+      cancelled++;
+      continue;
+    }
+    try {
+      const res = await cancelOrder(orderId);
+      if (res?.success) {
+        market.downOrders.delete(orderId);
+        cancelled++;
+      } else {
+        console.warn(`[OrderManager] CancelAll DOWN failed for ${orderId}:`, res?.error || 'unknown error');
+      }
+    } catch (err: any) {
+      console.warn(`[OrderManager] CancelAll DOWN threw for ${orderId}:`, err?.message);
+    }
+  }
   
   return cancelled;
 }
