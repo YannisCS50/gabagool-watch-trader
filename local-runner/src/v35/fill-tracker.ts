@@ -3,10 +3,12 @@
 // ============================================================
 // Tracks fills from Polymarket WebSocket or polling.
 // Updates market inventory when fills occur.
+// Integrates with FillSyncTracker for streak detection.
 // ============================================================
 
 import type { V35Market, V35Fill, V35Side, V35Asset } from './types.js';
 import { sendHeartbeat } from '../backend.js';
+import { fillSyncTracker } from './fill-sync-tracker.js';
 
 type FillCallback = (fill: V35Fill) => void;
 
@@ -24,6 +26,9 @@ export function processFill(
       market.upCost += fill.size * fill.price;
       market.upFills++;
       
+      // Record in fill sync tracker for streak detection
+      fillSyncTracker.recordFill('UP', fill.size, fill.price, market.slug);
+      
       console.log(`📥 FILL: UP ${fill.size.toFixed(0)} @ $${fill.price.toFixed(2)} in ${market.slug.slice(-25)} | Total: ${market.upQty.toFixed(0)} UP`);
       return true;
     }
@@ -32,6 +37,9 @@ export function processFill(
       market.downQty += fill.size;
       market.downCost += fill.size * fill.price;
       market.downFills++;
+      
+      // Record in fill sync tracker for streak detection
+      fillSyncTracker.recordFill('DOWN', fill.size, fill.price, market.slug);
       
       console.log(`📥 FILL: DOWN ${fill.size.toFixed(0)} @ $${fill.price.toFixed(2)} in ${market.slug.slice(-25)} | Total: ${market.downQty.toFixed(0)} DOWN`);
       return true;

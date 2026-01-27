@@ -49,6 +49,13 @@ export interface V35Config {
   momentumLookbackSec: number;    // Lookback period in seconds
   
   // =========================================================================
+  // 🆕 FILL SYNC (Streak detection)
+  // =========================================================================
+  enableFillSync: boolean;        // Enable/disable fill streak detection
+  fillSyncWindow: number;         // How many recent fills to analyze
+  fillSyncMaxStreak: number;      // Max consecutive fills on one side before stopping
+  
+  // =========================================================================
   // 🆕 STOP LOSS
   // =========================================================================
   enableStopLoss: boolean;        // Enable stop loss protection
@@ -99,8 +106,8 @@ export const SAFE_CONFIG: V35Config = {
   
   // Risk limits - MUCH STRICTER
   maxNotionalPerMarket: 150,  // Was 300
-  maxUnpairedImbalance: 20,   // Was 75 - CRITICAL FIX
-  maxImbalanceRatio: 1.3,     // NEW - max 1.3:1 ratio
+  maxUnpairedImbalance: 20,   // CRITICAL FIX - hard cap at 20
+  maxImbalanceRatio: 1.3,     // Max 1.3:1 ratio
   maxTotalExposure: 400,      // Was 1000
   maxMarkets: 1,              // Was 2 - start with 1
   
@@ -108,6 +115,11 @@ export const SAFE_CONFIG: V35Config = {
   enableMomentumFilter: true,
   momentumThreshold: 0.10,    // 0.10% = trending (sensitive)
   momentumLookbackSec: 30,
+  
+  // Fill sync - ENABLED (NEW!)
+  enableFillSync: true,
+  fillSyncWindow: 5,          // Look at last 5 fills
+  fillSyncMaxStreak: 3,       // Stop after 3 fills on same side
   
   // Stop loss - ENABLED
   enableStopLoss: true,
@@ -134,14 +146,19 @@ export const MODERATE_CONFIG: V35Config = {
   skewBoostFactor: 1.5,
   
   maxNotionalPerMarket: 500,
-  maxUnpairedImbalance: 40,   // Was 150 - much stricter
-  maxImbalanceRatio: 1.5,     // NEW
+  maxUnpairedImbalance: 30,   // Slightly higher for moderate
+  maxImbalanceRatio: 1.5,
   maxTotalExposure: 1500,
   maxMarkets: 2,
   
   enableMomentumFilter: true,
   momentumThreshold: 0.15,
   momentumLookbackSec: 30,
+  
+  // Fill sync - ENABLED
+  enableFillSync: true,
+  fillSyncWindow: 5,
+  fillSyncMaxStreak: 4,       // Allow 4 before stopping
   
   enableStopLoss: true,
   maxLossPerMarket: 50,
@@ -166,14 +183,19 @@ export const PRODUCTION_CONFIG: V35Config = {
   skewBoostFactor: 1.5,
   
   maxNotionalPerMarket: 2000,
-  maxUnpairedImbalance: 75,   // Was 300 - much stricter
-  maxImbalanceRatio: 1.5,     // NEW
+  maxUnpairedImbalance: 50,   // Higher for production but still capped
+  maxImbalanceRatio: 1.5,
   maxTotalExposure: 6000,
   maxMarkets: 3,
   
   enableMomentumFilter: true,
   momentumThreshold: 0.20,
   momentumLookbackSec: 30,
+  
+  // Fill sync - ENABLED
+  enableFillSync: true,
+  fillSyncWindow: 5,
+  fillSyncMaxStreak: 5,       // Allow 5 before stopping
   
   enableStopLoss: true,
   maxLossPerMarket: 100,
@@ -239,6 +261,11 @@ export function printV35Config(cfg: V35Config): void {
      Enabled:             ${cfg.enableMomentumFilter}
      Threshold:           ${cfg.momentumThreshold}%
      Lookback:            ${cfg.momentumLookbackSec}s
+     
+  🆕 FILL SYNC
+     Enabled:             ${cfg.enableFillSync}
+     Window:              ${cfg.fillSyncWindow} fills
+     Max streak:          ${cfg.fillSyncMaxStreak}
      
   🆕 STOP LOSS
      Enabled:             ${cfg.enableStopLoss}
