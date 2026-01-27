@@ -95,10 +95,11 @@ export interface V35Config {
 export const TEST_CONFIG: V35Config = {
   mode: 'test',
   
-  // Grid - wider range for more fills
+  // Grid - INCREASED DENSITY: 41 levels per side (was 17)
+  // Analysis shows Gabagool uses 99 levels; we increase from 17 to 41 within same range
   gridMin: 0.10,
   gridMax: 0.90,
-  gridStep: 0.05,           // 15 levels per side
+  gridStep: 0.02,           // 2¢ step = 41 levels per side (was 0.05 = 17 levels)
   sharesPerLevel: 5,        // Polymarket minimum is 5 shares per order
   
   // Risk limits - INCREASED to allow ~75 shares per side
@@ -113,9 +114,9 @@ export const TEST_CONFIG: V35Config = {
   skewThreshold: 20,            // 20 shares before warning
   capitalPerMarket: 100,        // $100 per market
   
-  // Timing - per document
+  // Timing - EXTENDED EXPOSURE: stay 90 seconds longer per market
   startDelayMs: 5000,       // Wait 5s after market open
-  stopBeforeExpirySec: 120, // Stop 2 min before expiry
+  stopBeforeExpirySec: 30,  // Stop 30s before expiry (was 120s) = +90s exposure
   refreshIntervalMs: 5000,
   
   // CRITICAL: DISABLED per strategy document
@@ -140,10 +141,10 @@ export const TEST_CONFIG: V35Config = {
 export const MODERATE_CONFIG: V35Config = {
   mode: 'moderate',
   
-  // Grid - slightly wider for more fills
+  // Grid - INCREASED DENSITY: 41 levels per side
   gridMin: 0.10,
   gridMax: 0.90,
-  gridStep: 0.05,           // 17 levels per side
+  gridStep: 0.02,           // 2¢ step = 41 levels per side
   sharesPerLevel: 5,        // More shares per level
   
   // Risk limits - relaxed after validation
@@ -158,9 +159,9 @@ export const MODERATE_CONFIG: V35Config = {
   skewThreshold: 15,            // 15 shares before warning
   capitalPerMarket: 100,
   
-  // Timing
+  // Timing - EXTENDED EXPOSURE
   startDelayMs: 3000,       // Faster entry
-  stopBeforeExpirySec: 90,
+  stopBeforeExpirySec: 30,  // Stop 30s before expiry (was 90s)
   refreshIntervalMs: 3000,
   
   // CRITICAL: STILL DISABLED
@@ -183,10 +184,10 @@ export const MODERATE_CONFIG: V35Config = {
 export const PRODUCTION_CONFIG: V35Config = {
   mode: 'production',
   
-  // Grid - full gabagool range
+  // Grid - MAXIMUM DENSITY: 2¢ step within 5-95¢ range = 46 levels
   gridMin: 0.05,
   gridMax: 0.95,
-  gridStep: 0.02,           // 46 levels per side (gabagool uses ~90 with 0.01 step)
+  gridStep: 0.02,           // 2¢ step = 46 levels per side
   sharesPerLevel: 10,       // Larger positions
   
   // Risk limits - production scale
@@ -201,9 +202,9 @@ export const PRODUCTION_CONFIG: V35Config = {
   skewThreshold: 25,            // 25 shares before warning
   capitalPerMarket: 500,
   
-  // Timing - aggressive
+  // Timing - MAXIMUM EXPOSURE: stay until 15s before expiry
   startDelayMs: 2000,
-  stopBeforeExpirySec: 60,
+  stopBeforeExpirySec: 15,  // Stop 15s before expiry (was 60s)
   refreshIntervalMs: 2000,
   
   // CRITICAL: STILL DISABLED - this is the secret sauce
