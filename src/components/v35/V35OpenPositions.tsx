@@ -411,8 +411,8 @@ export function V35OpenPositions() {
                     </div>
                   </div>
 
-                  {/* Footer Stats */}
-                  <div className="px-4 py-3 bg-muted/20 border-t border-border/50">
+                  {/* Footer Stats - P&L Scenarios */}
+                  <div className="px-4 py-3 bg-muted/20 border-t border-border/50 space-y-2">
                     <div className="flex items-center justify-between text-sm">
                       <div className="flex items-center gap-4">
                         <div className="flex items-center gap-1.5">
@@ -429,17 +429,50 @@ export function V35OpenPositions() {
                         )}
                       </div>
                       <div className="flex items-center gap-1.5">
-                        <span className="text-muted-foreground">Combined:</span>
+                        <span className="text-muted-foreground">CPP:</span>
                         <span className={`font-mono font-bold ${
                           pos.combined_cost < 1 ? 'text-primary' : 'text-destructive'
                         }`}>
-                          ${pos.combined_cost.toFixed(3)}
+                          {(pos.combined_cost * 100).toFixed(1)}¢
                         </span>
-                        {pos.combined_cost < 1 && (
-                          <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
-                        )}
                       </div>
                     </div>
+                    
+                    {/* P&L Scenarios */}
+                    {(pos.paired > 0 || pos.unpaired > 0) && (() => {
+                      const pairedProfit = pos.paired * (1 - pos.combined_cost);
+                      const excessUp = pos.polymarket_up_qty - pos.polymarket_down_qty;
+                      const excessDown = pos.polymarket_down_qty - pos.polymarket_up_qty;
+                      
+                      // If UP wins: unpaired UP shares pay $1, unpaired DOWN = $0
+                      // If DOWN wins: unpaired DOWN shares pay $1, unpaired UP = $0
+                      const unpairedUpCost = excessUp > 0 ? excessUp * pos.polymarket_up_avg : 0;
+                      const unpairedDownCost = excessDown > 0 ? excessDown * pos.polymarket_down_avg : 0;
+                      
+                      // If UP wins: paired profit + (unpaired UP * $1 - cost) 
+                      const pnlIfUpWins = pairedProfit + (excessUp > 0 ? (excessUp * 1 - unpairedUpCost) : -unpairedDownCost);
+                      // If DOWN wins: paired profit + (unpaired DOWN * $1 - cost)
+                      const pnlIfDownWins = pairedProfit + (excessDown > 0 ? (excessDown * 1 - unpairedDownCost) : -unpairedUpCost);
+                      
+                      return (
+                        <div className="flex items-center justify-between text-xs pt-1 border-t border-border/30">
+                          <div className="flex items-center gap-1.5">
+                            <TrendingUp className="h-3 w-3 text-emerald-500" />
+                            <span className="text-muted-foreground">If UP wins:</span>
+                            <span className={`font-mono font-bold ${pnlIfUpWins >= 0 ? 'text-emerald-500' : 'text-destructive'}`}>
+                              {pnlIfUpWins >= 0 ? '+' : ''}${pnlIfUpWins.toFixed(2)}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <TrendingDown className="h-3 w-3 text-rose-500" />
+                            <span className="text-muted-foreground">If DOWN wins:</span>
+                            <span className={`font-mono font-bold ${pnlIfDownWins >= 0 ? 'text-emerald-500' : 'text-destructive'}`}>
+                              {pnlIfDownWins >= 0 ? '+' : ''}${pnlIfDownWins.toFixed(2)}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
               );
