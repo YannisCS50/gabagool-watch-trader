@@ -46,6 +46,7 @@ import { checkVpnRequired } from '../vpn-check.js';
 import { acquireLeaseOrHalt, releaseLease, renewLease } from '../runner-lease.js';
 import { setRunnerIdentity } from '../order-guard.js';
 import { startBinanceFeed, stopBinanceFeed, getBinanceFeed } from './binance-feed.js';
+import { startUserWebSocket, stopUserWebSocket, setTokenToMarketMap, isUserWsConnected } from './user-ws.js';
 
 // ============================================================
 // CONSTANTS
@@ -156,6 +157,14 @@ function buildTokenMap(): void {
     tokenToMarket.set(market.upTokenId, { slug: market.slug, side: 'UP' });
     tokenToMarket.set(market.downTokenId, { slug: market.slug, side: 'DOWN' });
   }
+  
+  // Also update the User WebSocket token map for fill tracking
+  const userWsMap = new Map<string, { slug: string; side: 'UP' | 'DOWN'; asset: string }>();
+  for (const market of markets.values()) {
+    userWsMap.set(market.upTokenId, { slug: market.slug, side: 'UP', asset: market.asset });
+    userWsMap.set(market.downTokenId, { slug: market.slug, side: 'DOWN', asset: market.asset });
+  }
+  setTokenToMarketMap(userWsMap);
 }
 
 function connectToClob(): void {
@@ -295,6 +304,39 @@ function processWsEvent(data: any): void {
         // Remove the filled order
         currentOrders.delete(orderId);
       }
+    }
+  }
+}
+
+// ============================================================
+// FILL HANDLER (from User WebSocket)
+// ============================================================
+
+/**
+ * Handle fills received from the authenticated User WebSocket
+ * This is more reliable than scanning the public trade feed
+ */
+function handleFillFromUserWs(fill: V35Fill): void {
+  const market = markets.get(fill.marketSlug);
+  if (!market) {
+    log(`⚠️ Fill for unknown market: ${fill.marketSlug}`);
+    return;
+  }
+
+  // Update inventory
+  const processed = processFill(fill, markets);
+  if (processed) {
+    log(`🎯 [UserWS] FILL: ${fill.side} ${fill.size.toFixed(0)} @ $${fill.price.toFixed(2)} in ${fill.marketSlug.slice(-25)}`);
+    
+    // Persist to database
+    saveV35Fill(fill).catch(err => {
+      logError('Failed to save fill:', err);
+    });
+    
+    // Remove the filled order from our tracking (if we know about it)
+    const currentOrders = fill.side === 'UP' ? market.upOrders : market.downOrders;
+    if (fill.orderId && currentOrders.has(fill.orderId)) {
+      currentOrders.delete(fill.orderId);
     }
   }
 }
@@ -643,11 +685,14 @@ async function stop(): Promise<void> {
   log('🛑 STOPPING...');
   running = false;
   
-  // Close WebSocket
+  // Close WebSockets
   if (clobSocket) {
     clobSocket.close();
     clobSocket = null;
   }
+  
+  // Stop User WebSocket
+  stopUserWebSocket();
   
   // Stop Binance feed
   stopBinanceFeed();
@@ -746,10 +791,15 @@ async function main(): Promise<void> {
   await refreshMarkets();
   log(`📊 Found ${markets.size} markets to trade`);
   
-  // Build token map and connect to WebSocket
+  // Build token map and connect to WebSockets
   buildTokenMap();
   if (tokenToMarket.size > 0 && !config.dryRun) {
+    // Connect to public CLOB WebSocket for orderbook updates
     connectToClob();
+    
+    // Start authenticated User WebSocket for reliable fill tracking
+    log('🔐 Starting authenticated User WebSocket for fill tracking...');
+    startUserWebSocket(handleFillFromUserWs);
   }
   
   // Start running
