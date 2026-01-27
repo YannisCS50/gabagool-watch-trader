@@ -83,3 +83,6 @@ verify_jwt = false
 
 [functions.database-export]
 verify_jwt = false
+
+[functions.v35-positions]
+verify_jwt = false
