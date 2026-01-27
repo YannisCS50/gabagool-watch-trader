@@ -3,6 +3,8 @@
 // ============================================================
 // Handles order placement, cancellation, and sync with target grid.
 // Uses the existing polymarket.ts client for CLOB operations.
+//
+// OPTIMIZED: Places all orders in parallel for maximum speed.
 // ============================================================
 
 import { getV35Config } from './config.js';
@@ -13,10 +15,16 @@ interface PlaceOrderResult {
   success: boolean;
   orderId?: string;
   error?: string;
+  price?: number;
+  size?: number;
 }
+
+// Concurrency limit for parallel order placement
+const MAX_CONCURRENT_ORDERS = 10;
 
 /**
  * Sync orders for one side of a market to match target quotes
+ * OPTIMIZED: Places all new orders in parallel batches
  */
 export async function syncOrders(
   market: V35Market,
@@ -28,69 +36,82 @@ export async function syncOrders(
   const tokenId = side === 'UP' ? market.upTokenId : market.downTokenId;
   
   const targetPrices = new Set(targetQuotes.map(q => q.price));
-  let placed = 0;
   let cancelled = 0;
   
-  // 1. Cancel orders that are no longer in target
-  for (const [orderId, order] of currentOrders.entries()) {
-    if (!targetPrices.has(order.price)) {
+  // 1. Cancel orders that are no longer in target (parallel)
+  const ordersToCancel = [...currentOrders.entries()]
+    .filter(([_, order]) => !targetPrices.has(order.price));
+  
+  if (ordersToCancel.length > 0) {
+    const cancelPromises = ordersToCancel.map(async ([orderId, _]) => {
       if (dryRun) {
-        currentOrders.delete(orderId);
-        cancelled++;
-        continue;
+        return { orderId, success: true };
       }
-
       try {
         const res = await cancelOrder(orderId);
-
-        // CRITICAL: only delete from local state if we actually cancelled.
-        // If we delete on failure, fills can still happen on Polymarket but we'll never match them.
-        if (res?.success) {
-          currentOrders.delete(orderId);
-          cancelled++;
-        } else {
-          console.warn(
-            `[OrderManager] Cancel returned failure for ${orderId} (keeping in map so fills still match):`,
-            res?.error || 'unknown error'
-          );
-        }
+        return { orderId, success: res?.success ?? false, error: res?.error };
       } catch (err: any) {
-        console.warn(
-          `[OrderManager] Cancel threw for ${orderId} (keeping in map so fills still match):`,
-          err?.message
-        );
+        return { orderId, success: false, error: err?.message };
+      }
+    });
+    
+    const cancelResults = await Promise.all(cancelPromises);
+    for (const result of cancelResults) {
+      if (result.success) {
+        currentOrders.delete(result.orderId);
+        cancelled++;
+      } else {
+        console.warn(`[OrderManager] Cancel failed for ${result.orderId}: ${result.error}`);
       }
     }
   }
   
-  // 2. Place new orders for prices not covered
+  // 2. Find quotes that need new orders
   const currentPrices = new Set([...currentOrders.values()].map(o => o.price));
+  const quotesToPlace = targetQuotes.filter(q => !currentPrices.has(q.price));
   
-  for (const quote of targetQuotes) {
-    if (currentPrices.has(quote.price)) {
-      continue; // Already have order at this price
-    }
+  if (quotesToPlace.length === 0) {
+    return { placed: 0, cancelled };
+  }
+  
+  // 3. Place all new orders in parallel batches
+  console.log(`[OrderManager] 🚀 Placing ${quotesToPlace.length} ${side} orders in parallel...`);
+  
+  let placed = 0;
+  
+  // Process in batches to avoid overwhelming the API
+  for (let i = 0; i < quotesToPlace.length; i += MAX_CONCURRENT_ORDERS) {
+    const batch = quotesToPlace.slice(i, i + MAX_CONCURRENT_ORDERS);
     
-    const result = await placeOrderWithRetry(tokenId, quote.price, quote.size, market.slug, side, dryRun);
+    const placePromises = batch.map(quote => 
+      placeOrderWithRetry(tokenId, quote.price, quote.size, market.slug, side, dryRun)
+    );
     
-    if (result.success && result.orderId) {
-      const newOrder: V35Order = {
-        orderId: result.orderId,
-        price: quote.price,
-        size: quote.size,
-        side,
-        placedAt: new Date(),
-      };
-      currentOrders.set(result.orderId, newOrder);
-      placed++;
+    const results = await Promise.all(placePromises);
+    
+    for (const result of results) {
+      if (result.success && result.orderId) {
+        const newOrder: V35Order = {
+          orderId: result.orderId,
+          price: result.price!,
+          size: result.size!,
+          side,
+          placedAt: new Date(),
+        };
+        currentOrders.set(result.orderId, newOrder);
+        placed++;
+      }
     }
   }
+  
+  console.log(`[OrderManager] ✅ Placed ${placed}/${quotesToPlace.length} ${side} orders`);
   
   return { placed, cancelled };
 }
 
 /**
  * Place an order with basic retry logic
+ * Returns price/size for tracking after parallel placement
  */
 async function placeOrderWithRetry(
   tokenId: string,
@@ -103,7 +124,7 @@ async function placeOrderWithRetry(
   if (dryRun) {
     const orderId = `DRY_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     console.log(`[DRY] Place ${side} ${size} @ $${price.toFixed(2)} on ${marketSlug.slice(-25)}`);
-    return { success: true, orderId };
+    return { success: true, orderId, price, size };
   }
   
   try {
@@ -116,63 +137,65 @@ async function placeOrderWithRetry(
     });
     
     if (result.success && result.orderId) {
-      console.log(`[OrderManager] Placed ${side} ${size} @ $${price.toFixed(2)} → ${result.orderId.slice(0, 12)}...`);
-      return { success: true, orderId: result.orderId };
+      console.log(`[OrderManager] ✓ ${side} ${size} @ $${price.toFixed(2)} → ${result.orderId.slice(0, 8)}...`);
+      return { success: true, orderId: result.orderId, price, size };
     }
     
-    return { success: false, error: result.error || 'Unknown error' };
+    return { success: false, error: result.error || 'Unknown error', price, size };
   } catch (err: any) {
-    console.error(`[OrderManager] Place failed:`, err?.message);
-    return { success: false, error: err?.message };
+    console.error(`[OrderManager] Place failed @ $${price.toFixed(2)}:`, err?.message?.slice(0, 50));
+    return { success: false, error: err?.message, price, size };
   }
 }
 
 /**
  * Cancel all orders for a market
+ * OPTIMIZED: Cancels all orders in parallel
  */
 export async function cancelAllOrders(market: V35Market, dryRun: boolean): Promise<number> {
-  let cancelled = 0;
-
-  // NOTE: Only remove from local state if cancellation succeeded.
-  // If cancel fails, keep the order so a subsequent fill can still be detected + persisted.
-  for (const orderId of [...market.upOrders.keys()]) {
-    if (dryRun) {
-      market.upOrders.delete(orderId);
-      cancelled++;
-      continue;
-    }
-    try {
-      const res = await cancelOrder(orderId);
-      if (res?.success) {
-        market.upOrders.delete(orderId);
-        cancelled++;
-      } else {
-        console.warn(`[OrderManager] CancelAll UP failed for ${orderId}:`, res?.error || 'unknown error');
-      }
-    } catch (err: any) {
-      console.warn(`[OrderManager] CancelAll UP threw for ${orderId}:`, err?.message);
-    }
+  const allOrderIds = [
+    ...([...market.upOrders.keys()].map(id => ({ id, side: 'UP' as const }))),
+    ...([...market.downOrders.keys()].map(id => ({ id, side: 'DOWN' as const }))),
+  ];
+  
+  if (allOrderIds.length === 0) {
+    return 0;
   }
-
-  for (const orderId of [...market.downOrders.keys()]) {
-    if (dryRun) {
-      market.downOrders.delete(orderId);
-      cancelled++;
-      continue;
-    }
+  
+  if (dryRun) {
+    market.upOrders.clear();
+    market.downOrders.clear();
+    return allOrderIds.length;
+  }
+  
+  console.log(`[OrderManager] 🗑️ Cancelling ${allOrderIds.length} orders in parallel...`);
+  
+  const cancelPromises = allOrderIds.map(async ({ id, side }) => {
     try {
-      const res = await cancelOrder(orderId);
-      if (res?.success) {
-        market.downOrders.delete(orderId);
-        cancelled++;
-      } else {
-        console.warn(`[OrderManager] CancelAll DOWN failed for ${orderId}:`, res?.error || 'unknown error');
-      }
+      const res = await cancelOrder(id);
+      return { id, side, success: res?.success ?? false, error: res?.error };
     } catch (err: any) {
-      console.warn(`[OrderManager] CancelAll DOWN threw for ${orderId}:`, err?.message);
+      return { id, side, success: false, error: err?.message };
+    }
+  });
+  
+  const results = await Promise.all(cancelPromises);
+  let cancelled = 0;
+  
+  for (const result of results) {
+    if (result.success) {
+      if (result.side === 'UP') {
+        market.upOrders.delete(result.id);
+      } else {
+        market.downOrders.delete(result.id);
+      }
+      cancelled++;
+    } else {
+      console.warn(`[OrderManager] CancelAll ${result.side} failed for ${result.id}: ${result.error}`);
     }
   }
   
+  console.log(`[OrderManager] ✅ Cancelled ${cancelled}/${allOrderIds.length} orders`);
   return cancelled;
 }
 
