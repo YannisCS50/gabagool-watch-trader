@@ -26,157 +26,107 @@ interface HeartbeatData {
   } | null;
 }
 
-const SAFE_CONFIG = `// SAFE MODE CONFIGURATION
+const GABAGOOL_CONFIG = `// ============================================================
+// GABAGOOL STRATEGY CONFIGURATION
+// ============================================================
+// Reverse-engineered from gabagool22's proven strategy:
+// - 34,569 trades analyzed
+// - $165,450 volume
+// - 1.88% ROI, 93% win rate
+// ============================================================
 {
-  mode: 'safe',
+  mode: 'test',
   
-  // Grid - conservative range
-  gridMin: 0.30,
-  gridMax: 0.70,
-  gridStep: 0.02,
-  baseSize: 5,
-  skewThreshold: 15,
-  skewReduceFactor: 0.3,
-  skewBoostFactor: 1.5,
+  // Grid - per gabagool document specs
+  gridMin: 0.15,
+  gridMax: 0.85,
+  gridStep: 0.05,           // 15 levels per side
+  sharesPerLevel: 5,        // Polymarket minimum is 5 shares per order
   
-  // Risk limits - STRICT
-  maxNotionalPerMarket: 150,
-  maxUnpairedImbalance: 20,
-  maxImbalanceRatio: 1.3,
-  maxTotalExposure: 400,
-  maxMarkets: 1,
+  // Risk limits - per gabagool document
+  maxUnpairedShares: 30,    // Max directional exposure
+  maxImbalanceRatio: 2.0,   // Max ratio UP:DOWN or DOWN:UP
+  maxLossPerMarket: 10,     // Max $ loss per market before stopping
+  maxConcurrentMarkets: 2,  // Max markets to trade simultaneously
+  capitalPerMarket: 50,     // $ allocated per market
   
-  // Momentum filter - ENABLED
-  enableMomentumFilter: true,
-  momentumThreshold: 0.10,
-  momentumLookbackSec: 30,
-  
-  // Stop loss - ENABLED
-  enableStopLoss: true,
-  maxLossPerMarket: 30,
-  maxLossTotal: 100,
-  
-  // Timing
+  // Timing - per gabagool document
+  startDelayMs: 5000,       // Wait 5s after market open
+  stopBeforeExpirySec: 120, // Stop 2 min before expiry
   refreshIntervalMs: 5000,
-  stopBeforeExpirySec: 180,
+  
+  // CRITICAL: DISABLED per gabagool strategy document
+  // "RULE 1: Never enable momentum filtering"
+  // "RULE 2: Always quote both sides simultaneously"
+  enableMomentumFilter: false,
+  enableFillSync: false,
+  
+  // Assets - start with BTC only for testing
+  enabledAssets: ['BTC'],
+  
   dryRun: false,
 }`;
 
 const STRATEGY_CODE = `// ============================================================
-// V35 STRATEGY - Passive Dual-Outcome Market Maker
+// V35 GABAGOOL STRATEGY - Passive Dual-Outcome Market Maker
 // ============================================================
-// 
-// OVERVIEW:
-// Trade Polymarket 15-minute UP/DOWN markets by accumulating
-// both sides through limit orders. When combined cost < $1.00,
-// profit is guaranteed at settlement.
+// Reverse-engineered from gabagool22 (34,569 trades, 93% win rate)
 //
-// COMPONENTS:
-// 1. BinanceFeed - Real-time price momentum tracking
-// 2. ImbalanceTracker - Inventory skew management
-// 3. QuotingEngine - Grid-based quote generation
-// 4. OrderManager - Order placement and sync
-// 5. FillTracker - Fill processing and inventory updates
+// CORE PRINCIPLE:
+// Place limit BUY orders on a grid for BOTH UP and DOWN sides.
+// When retail traders hit our orders, we accumulate both sides.
+// At settlement: one side pays $1.00, other pays $0.00.
+// If combined cost < $1.00 -> GUARANTEED profit.
 //
+// CRITICAL RULES (from gabagool document):
+// 1. NEVER enable momentum filter - it reduces fills
+// 2. ALWAYS quote both sides - imbalance is temporary
+// 3. Trust the mathematics - $1 settlement is guaranteed
 // ============================================================
 
-// BINANCE FEED - Momentum Calculation
-// ============================================================
-class BinanceFeed {
-  private priceHistory: Map<Asset, PricePoint[]>;
-  private momentum: Map<Asset, MomentumState>;
-  private lookbackSeconds = 30;
-  private momentumThreshold = 0.10; // 0.10%
-
-  calculateMomentum(asset: Asset): void {
-    const history = this.priceHistory.get(asset) || [];
-    if (history.length < 5) return;
-    
-    const now = Date.now();
-    const current = history[history.length - 1];
-    const lookbackTime = now - this.lookbackSeconds * 1000;
-    
-    let pastPrice = current.price;
-    for (let i = 0; i < history.length; i++) {
-      if (history[i].time >= lookbackTime) {
-        pastPrice = history[i].price;
-        break;
-      }
-    }
-    
-    const momentum = ((current.price - pastPrice) / pastPrice) * 100;
-    const isTrending = Math.abs(momentum) >= this.momentumThreshold;
-    
-    let direction: 'UP' | 'DOWN' | 'NEUTRAL' = 'NEUTRAL';
-    if (momentum >= this.momentumThreshold) direction = 'UP';
-    else if (momentum <= -this.momentumThreshold) direction = 'DOWN';
-    
-    this.momentum.set(asset, { momentum, direction, isTrending });
-  }
-
-  // CRITICAL LOGIC:
-  // - If market trending UP: DON'T quote DOWN (we become exit liquidity)
-  // - If market trending DOWN: DON'T quote UP
-  // - If NEUTRAL: Quote both sides
-  shouldQuote(asset: Asset, side: 'UP' | 'DOWN'): boolean {
-    const state = this.momentum.get(asset);
-    if (!state || !state.isTrending) return true;
-    
-    if (state.direction === 'UP' && side === 'DOWN') return false;
-    if (state.direction === 'DOWN' && side === 'UP') return false;
-    return true;
-  }
-}
-
-// IMBALANCE TRACKER - Risk Management
-// ============================================================
-function calculateMarketMetrics(market: Market): Metrics {
-  const skew = market.upQty - market.downQty;
-  const paired = Math.min(market.upQty, market.downQty);
-  const unpaired = Math.abs(skew);
-  
-  const avgUpPrice = market.upQty > 0 ? market.upCost / market.upQty : 0;
-  const avgDownPrice = market.downQty > 0 ? market.downCost / market.downQty : 0;
-  
-  const combinedCost = (market.upQty > 0 && market.downQty > 0)
-    ? avgUpPrice + avgDownPrice
-    : 0;
-  
-  const lockedProfit = (combinedCost > 0 && combinedCost < 1.0)
-    ? paired * (1.0 - combinedCost)
-    : 0;
-  
-  return { skew, paired, unpaired, combinedCost, lockedProfit };
-}
-
-// QUOTING ENGINE - Grid Generation
+// QUOTING ENGINE - Simple Grid Generation
 // ============================================================
 class QuotingEngine {
   generateQuotes(side: 'UP' | 'DOWN', market: Market): Quote[] {
     const config = getConfig();
+    const quotes: Quote[] = [];
     
-    // Check momentum filter first
-    if (config.enableMomentumFilter) {
-      const canQuote = binanceFeed.shouldQuote(market.asset, side);
-      if (!canQuote) return []; // Blocked by momentum
+    // CHECK 1: Absolute unpaired limit (only hard stop)
+    const skew = market.upQty - market.downQty;
+    const unpaired = Math.abs(skew);
+    
+    if (unpaired > config.maxUnpairedShares) {
+      // Only block the OVERWEIGHT side, keep quoting underweight
+      const overweightSide = skew > 0 ? 'UP' : 'DOWN';
+      if (side === overweightSide) {
+        return []; // Blocked - would increase imbalance
+      }
+      // Allow underweight side - this helps rebalance!
     }
     
-    // Check risk limits
-    const metrics = calculateMarketMetrics(market);
-    if (metrics.unpaired >= config.maxUnpairedImbalance) {
-      if ((side === 'UP' && metrics.skew > 0) ||
-          (side === 'DOWN' && metrics.skew < 0)) {
-        return []; // Would increase imbalance
+    // CHECK 2: Ratio limit (soft limit, 2.0)
+    if (market.upQty >= 10 && market.downQty >= 10) {
+      const ratio = market.upQty > market.downQty 
+        ? market.upQty / market.downQty 
+        : market.downQty / market.upQty;
+      
+      if (ratio > config.maxImbalanceRatio) {
+        const overweightSide = market.upQty > market.downQty ? 'UP' : 'DOWN';
+        if (side === overweightSide) {
+          return []; // Blocked by ratio limit
+        }
       }
     }
     
-    // Generate grid quotes
-    const quotes: Quote[] = [];
+    // Generate grid quotes - uniform sizing per gabagool
     for (let price = config.gridMin; price <= config.gridMax; price += config.gridStep) {
+      const minSharesForNotional = Math.ceil(1.0 / price);
+      const shares = Math.max(config.sharesPerLevel, minSharesForNotional);
+      
       quotes.push({
         side: 'BUY',
-        price,
-        size: config.baseSize,
+        price: Math.round(price * 100) / 100,
+        size: shares,
       });
     }
     
@@ -184,7 +134,28 @@ class QuotingEngine {
   }
 }
 
-// MAIN LOOP
+// LOCKED PROFIT CALCULATION - Core Gabagool Metric
+// ============================================================
+function calculateLockedProfit(market: Market): LockedProfit {
+  const pairedShares = Math.min(market.upQty, market.downQty);
+  
+  if (pairedShares === 0) {
+    return { pairedShares: 0, combinedCost: 0, lockedProfit: 0, profitPct: 0 };
+  }
+  
+  // Calculate average costs
+  const avgUpCost = market.upCost / market.upQty;
+  const avgDownCost = market.downCost / market.downQty;
+  const combinedCost = avgUpCost + avgDownCost;
+  
+  // Locked profit = paired shares × (1 - combined cost)
+  const lockedProfit = pairedShares * (1 - combinedCost);
+  const profitPct = (1 - combinedCost) * 100;
+  
+  return { pairedShares, combinedCost, lockedProfit, profitPct };
+}
+
+// MAIN LOOP - Per Gabagool Strategy
 // ============================================================
 async function processMarket(market: Market): Promise<void> {
   const config = getConfig();
@@ -196,21 +167,16 @@ async function processMarket(market: Market): Promise<void> {
     return;
   }
   
-  // Profit-take: stop quoting if hedged with >$5 locked profit
-  const metrics = calculateMarketMetrics(market);
-  const isHedged = metrics.paired > 0 && market.upQty > 0 && market.downQty > 0;
-  const PROFIT_TAKE_THRESHOLD = 5.0;
-  
-  if (isHedged && metrics.lockedProfit >= PROFIT_TAKE_THRESHOLD) {
-    await cancelAllOrders(market);
-    return; // Take profit and wait for settlement
-  }
-  
-  // Generate and sync quotes
+  // Generate quotes for BOTH sides - per gabagool rule
+  // NO momentum filter - we trust the grid!
   const upQuotes = quotingEngine.generateQuotes('UP', market);
   const downQuotes = quotingEngine.generateQuotes('DOWN', market);
   
   await syncOrders(market, upQuotes, downQuotes);
+  
+  // Log locked profit for monitoring
+  const profit = calculateLockedProfit(market);
+  console.log(\`Market: Paired=\${profit.pairedShares} Cost=\${profit.combinedCost.toFixed(4)} Locked=$\${profit.lockedProfit.toFixed(2)}\`);
 }`;
 
 export function V35StrategyPDFExport() {
@@ -311,24 +277,24 @@ export function V35StrategyPDFExport() {
       addLine('Total Unpaired', String(hb.total_unpaired));
       y += 10;
 
-      // Section 2: Active Components
-      addSection('2. Active Components');
+      // Section 2: Active Components (Gabagool Strategy)
+      addSection('2. Active Components (Gabagool Strategy)');
       y += 2;
-      addLine('BinanceFeed', '✅ ENABLED - Real-time momentum tracking via WebSocket');
+      addLine('QuotingEngine', '✅ ENABLED - Grid-based dual-side quoting');
       addLine('ImbalanceTracker', '✅ ENABLED - Calculates skew, paired/unpaired shares');
-      addLine('Momentum Filter', '✅ ENABLED - Blocks quotes against trend');
-      addLine('Stop Loss', '✅ ENABLED - Auto-stop on max loss');
-      addLine('Profit Take', '✅ ENABLED - Stops at $5 locked profit');
+      addLine('Momentum Filter', '❌ DISABLED - Per gabagool rule: reduces fills');
+      addLine('Fill Sync', '❌ DISABLED - Per gabagool rule: prevents natural balancing');
+      addLine('Loss Limit', '✅ ENABLED - $10/market max loss');
       addLine('User WebSocket', '✅ ENABLED - Authenticated fill tracking');
       addLine('CLOB WebSocket', '✅ ENABLED - Orderbook updates');
       y += 10;
 
       // Section 3: Configuration
-      addSection('3. Configuration Values (Safe Mode)');
+      addSection('3. Configuration Values (Gabagool Strategy)');
       y += 2;
       doc.addPage();
       y = 20;
-      addCodeBlock(SAFE_CONFIG);
+      addCodeBlock(GABAGOOL_CONFIG);
       y += 10;
 
       // Section 4: Strategy Code
