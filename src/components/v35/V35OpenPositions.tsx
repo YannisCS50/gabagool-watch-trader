@@ -2,8 +2,22 @@ import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Scale, AlertTriangle, CheckCircle2, RefreshCw } from 'lucide-react';
+import { Progress } from '@/components/ui/progress';
+import { 
+  Scale, 
+  AlertTriangle, 
+  CheckCircle2, 
+  RefreshCw, 
+  TrendingUp, 
+  TrendingDown,
+  Clock,
+  Zap,
+  DollarSign,
+  Target,
+  Timer
+} from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { useEffect, useState } from 'react';
 
 interface MarketPosition {
   market_slug: string;
@@ -46,29 +60,81 @@ function shortWallet(addr?: string): string | null {
   return `${a.slice(0, 6)}…${a.slice(-4)}`;
 }
 
-function parseMarketTime(slug: string): { start: string; end: string; isLive: boolean } | null {
-  // Parse timestamp from slug like "eth-updown-15m-1769517000"
+interface MarketTimeInfo {
+  startTs: number;
+  endTs: number;
+  startTime: string;
+  endTime: string;
+  isLive: boolean;
+  isExpired: boolean;
+  isFuture: boolean;
+  secondsRemaining: number;
+  percentComplete: number;
+}
+
+function parseMarketTime(slug: string): MarketTimeInfo | null {
   const match = slug.match(/(\d{10})$/);
   if (!match) return null;
   
-  const timestamp = parseInt(match[1]) * 1000;
-  const startDate = new Date(timestamp);
-  const endDate = new Date(timestamp + 15 * 60 * 1000); // +15 minutes
+  const startTs = parseInt(match[1]) * 1000;
+  const endTs = startTs + 15 * 60 * 1000;
   const now = Date.now();
   
   const formatTime = (d: Date) => {
     const h = d.getUTCHours();
     const m = d.getUTCMinutes();
-    const period = h >= 12 ? 'PM' : 'AM';
-    const hour12 = h % 12 || 12;
-    return `${hour12}:${m.toString().padStart(2, '0')} ${period}`;
+    return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
   };
   
+  const isLive = now >= startTs && now < endTs;
+  const isExpired = now >= endTs;
+  const isFuture = now < startTs;
+  const secondsRemaining = Math.max(0, Math.floor((endTs - now) / 1000));
+  const percentComplete = isLive ? Math.min(100, ((now - startTs) / (endTs - startTs)) * 100) : (isExpired ? 100 : 0);
+  
   return {
-    start: formatTime(startDate),
-    end: formatTime(endDate),
-    isLive: now >= timestamp && now < timestamp + 15 * 60 * 1000,
+    startTs,
+    endTs,
+    startTime: formatTime(new Date(startTs)),
+    endTime: formatTime(new Date(endTs)),
+    isLive,
+    isExpired,
+    isFuture,
+    secondsRemaining,
+    percentComplete,
   };
+}
+
+function formatCountdown(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function getMarketTitle(asset: string, timeInfo: MarketTimeInfo | null): string {
+  if (!timeInfo) return `${asset} 15m Market`;
+  return `Will ${asset} go UP or DOWN by ${timeInfo.endTime} UTC?`;
+}
+
+function CountdownTimer({ endTs }: { endTs: number }) {
+  const [secondsLeft, setSecondsLeft] = useState(() => Math.max(0, Math.floor((endTs - Date.now()) / 1000)));
+  
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const remaining = Math.max(0, Math.floor((endTs - Date.now()) / 1000));
+      setSecondsLeft(remaining);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [endTs]);
+  
+  const isUrgent = secondsLeft < 120;
+  
+  return (
+    <div className={`flex items-center gap-1.5 font-mono text-sm ${isUrgent ? 'text-destructive animate-pulse' : 'text-muted-foreground'}`}>
+      <Timer className="h-3.5 w-3.5" />
+      {formatCountdown(secondsLeft)}
+    </div>
+  );
 }
 
 export function V35OpenPositions() {
@@ -79,21 +145,21 @@ export function V35OpenPositions() {
       if (error) throw error;
       return data as PositionsResponse;
     },
-    refetchInterval: 10000, // Refresh every 10 seconds
+    refetchInterval: 10000,
   });
 
   if (isLoading) {
     return (
-      <Card>
+      <Card className="border-border/50">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Scale className="h-5 w-5" />
-            Live Positions (Polymarket)
+            Live Positions
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="flex items-center justify-center py-8">
-            <RefreshCw className="h-6 w-6 animate-spin text-muted-foreground" />
+          <div className="flex items-center justify-center py-12">
+            <RefreshCw className="h-8 w-8 animate-spin text-primary" />
           </div>
         </CardContent>
       </Card>
@@ -102,7 +168,7 @@ export function V35OpenPositions() {
 
   if (error) {
     return (
-      <Card>
+      <Card className="border-destructive/50">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Scale className="h-5 w-5" />
@@ -111,7 +177,8 @@ export function V35OpenPositions() {
         </CardHeader>
         <CardContent>
           <div className="text-center py-8 text-destructive">
-            Error loading positions: {String(error)}
+            <AlertTriangle className="h-8 w-8 mx-auto mb-2" />
+            Error loading positions
           </div>
         </CardContent>
       </Card>
@@ -127,56 +194,61 @@ export function V35OpenPositions() {
     p.polymarket_up_qty > 0 || p.polymarket_down_qty > 0
   );
 
+  // Sort: live markets first, then by timestamp descending
+  const sortedPositions = [...activePositions].sort((a, b) => {
+    const timeA = parseMarketTime(a.market_slug);
+    const timeB = parseMarketTime(b.market_slug);
+    if (timeA?.isLive && !timeB?.isLive) return -1;
+    if (!timeA?.isLive && timeB?.isLive) return 1;
+    return (timeB?.startTs || 0) - (timeA?.startTs || 0);
+  });
+
   return (
-    <Card>
-      <CardHeader>
+    <Card className="border-border/50">
+      <CardHeader className="pb-4">
         <div className="flex items-center justify-between">
           <div>
             <CardTitle className="flex items-center gap-2">
-              <Scale className="h-5 w-5" />
-              Live Positions (Polymarket)
+              <Scale className="h-5 w-5 text-primary" />
+              Open Positions
             </CardTitle>
-            <CardDescription>
-              Real-time positions from Polymarket Data API
-              {walletUsed ? ` (wallet ${walletUsed})` : ''}
+            <CardDescription className="mt-1">
+              Live data from Polymarket
+              {walletUsed && <span className="ml-1 font-mono text-xs">({walletUsed})</span>}
             </CardDescription>
           </div>
-          <div className="flex items-center gap-2">
-            {summary && summary.mismatched_markets > 0 && (
-              <Badge variant="destructive" className="flex items-center gap-1">
-                <AlertTriangle className="h-3 w-3" />
-                {summary.mismatched_markets} Mismatched
-              </Badge>
-            )}
-            <Button 
-              variant="outline" 
-              size="sm" 
-              onClick={() => refetch()}
-              disabled={isFetching}
-            >
-              <RefreshCw className={`h-4 w-4 mr-1 ${isFetching ? 'animate-spin' : ''}`} />
-              Refresh
-            </Button>
-          </div>
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={() => refetch()}
+            disabled={isFetching}
+          >
+            <RefreshCw className={`h-4 w-4 mr-1.5 ${isFetching ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
         </div>
       </CardHeader>
-      <CardContent>
-        {/* Summary Stats */}
+      <CardContent className="space-y-6">
+        {/* Summary Stats - Polymarket style */}
         {summary && (
-          <div className="grid grid-cols-4 gap-4 mb-6 p-4 bg-muted/50 rounded-lg">
-            <div className="text-center">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="bg-muted/30 rounded-xl p-4 text-center">
+              <Target className="h-5 w-5 mx-auto mb-2 text-muted-foreground" />
               <div className="text-2xl font-bold">{summary.total_markets}</div>
-              <div className="text-xs text-muted-foreground">Active Markets</div>
+              <div className="text-xs text-muted-foreground">Markets</div>
             </div>
-            <div className="text-center">
+            <div className="bg-muted/30 rounded-xl p-4 text-center">
+              <Scale className="h-5 w-5 mx-auto mb-2 text-muted-foreground" />
               <div className="text-2xl font-bold">{summary.total_paired.toFixed(0)}</div>
-              <div className="text-xs text-muted-foreground">Paired Shares</div>
+              <div className="text-xs text-muted-foreground">Paired</div>
             </div>
-            <div className="text-center">
+            <div className="bg-muted/30 rounded-xl p-4 text-center">
+              <Zap className="h-5 w-5 mx-auto mb-2 text-muted-foreground" />
               <div className="text-2xl font-bold">{summary.total_unpaired.toFixed(0)}</div>
               <div className="text-xs text-muted-foreground">Unpaired</div>
             </div>
-            <div className="text-center">
+            <div className="bg-primary/10 rounded-xl p-4 text-center border border-primary/20">
+              <DollarSign className="h-5 w-5 mx-auto mb-2 text-primary" />
               <div className="text-2xl font-bold text-primary">
                 ${summary.total_locked_profit.toFixed(2)}
               </div>
@@ -185,107 +257,188 @@ export function V35OpenPositions() {
           </div>
         )}
 
-        {/* Positions Table */}
-        {activePositions.length === 0 ? (
-          <div className="text-center py-8 text-muted-foreground">
-            No active positions found
+        {/* Markets List */}
+        {sortedPositions.length === 0 ? (
+          <div className="text-center py-12 text-muted-foreground">
+            <Scale className="h-12 w-12 mx-auto mb-3 opacity-30" />
+            <p className="font-medium">No active positions</p>
+            <p className="text-sm">Positions will appear here when the bot opens trades</p>
           </div>
         ) : (
           <div className="space-y-4">
-            {activePositions.map((pos) => {
+            {sortedPositions.map((pos) => {
               const timeInfo = parseMarketTime(pos.market_slug);
               const hasMismatch = !pos.up_qty_match || !pos.down_qty_match;
+              const title = getMarketTitle(pos.asset, timeInfo);
+              
+              const upCost = pos.polymarket_up_qty * pos.polymarket_up_avg;
+              const downCost = pos.polymarket_down_qty * pos.polymarket_down_avg;
+              const totalCost = upCost + downCost;
+              const upPct = totalCost > 0 ? (upCost / totalCost) * 100 : 50;
               
               return (
                 <div 
                   key={pos.market_slug} 
-                  className={`p-4 border rounded-lg ${hasMismatch ? 'border-destructive/50 bg-destructive/5' : 'border-border'}`}
+                  className={`rounded-xl border overflow-hidden transition-all ${
+                    timeInfo?.isLive 
+                      ? 'border-primary/50 bg-gradient-to-br from-primary/5 to-background shadow-lg shadow-primary/5' 
+                      : 'border-border/50 bg-card'
+                  }`}
                 >
-                  {/* Market Header */}
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline">{pos.asset}</Badge>
-                      {timeInfo && (
-                        <span className="text-sm font-medium">
-                          {timeInfo.start} - {timeInfo.end} UTC
-                        </span>
-                      )}
-                      {timeInfo?.isLive && (
-                        <Badge className="bg-primary animate-pulse">LIVE</Badge>
-                      )}
-                      {!timeInfo?.isLive && (
-                        <Badge variant="secondary">EXPIRED</Badge>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {hasMismatch ? (
-                        <Badge variant="destructive" className="flex items-center gap-1">
-                          <AlertTriangle className="h-3 w-3" />
-                          Data Mismatch
-                        </Badge>
-                      ) : (
-                        <Badge variant="outline" className="flex items-center gap-1 text-primary border-primary/30">
-                          <CheckCircle2 className="h-3 w-3" />
-                          Synced
-                        </Badge>
+                  {/* Market Header - Polymarket style */}
+                  <div className="p-4 pb-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Badge 
+                            variant="outline" 
+                            className={`font-bold ${
+                              pos.asset === 'BTC' ? 'bg-orange-500/10 text-orange-500 border-orange-500/30' :
+                              pos.asset === 'ETH' ? 'bg-blue-500/10 text-blue-500 border-blue-500/30' :
+                              'bg-muted text-muted-foreground'
+                            }`}
+                          >
+                            {pos.asset}
+                          </Badge>
+                          {timeInfo?.isLive && (
+                            <Badge className="bg-primary text-primary-foreground animate-pulse">
+                              <Zap className="h-3 w-3 mr-1" />
+                              LIVE
+                            </Badge>
+                          )}
+                          {timeInfo?.isExpired && (
+                            <Badge variant="secondary">
+                              <Clock className="h-3 w-3 mr-1" />
+                              Settling
+                            </Badge>
+                          )}
+                        </div>
+                        <h3 className="font-semibold text-base leading-snug">
+                          {title}
+                        </h3>
+                        {timeInfo && (
+                          <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground">
+                            <span>{timeInfo.startTime} → {timeInfo.endTime} UTC</span>
+                            {timeInfo.isLive && (
+                              <CountdownTimer endTs={timeInfo.endTs} />
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      
+                      {/* Locked Profit Badge */}
+                      {pos.locked_profit > 0 && (
+                        <div className="text-right">
+                          <div className="text-xs text-muted-foreground mb-0.5">Locked</div>
+                          <div className="text-lg font-bold text-primary">
+                            +${pos.locked_profit.toFixed(2)}
+                          </div>
+                        </div>
                       )}
                     </div>
                   </div>
 
-                  {/* Positions Grid - Polymarket Style */}
-                  <div className="grid grid-cols-2 gap-4">
+                  {/* Progress Bar - Visual ratio of UP vs DOWN */}
+                  {pos.paired > 0 && (
+                    <div className="px-4 pb-3">
+                      <div className="h-2 rounded-full overflow-hidden bg-muted flex">
+                        <div 
+                          className="bg-emerald-500 transition-all duration-500" 
+                          style={{ width: `${upPct}%` }}
+                        />
+                        <div 
+                          className="bg-rose-500 transition-all duration-500" 
+                          style={{ width: `${100 - upPct}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Positions Grid - Two columns */}
+                  <div className="grid grid-cols-2 divide-x divide-border/50">
                     {/* UP Position */}
-                    <div className="p-3 bg-muted/30 rounded">
-                      <div className="text-xs text-muted-foreground mb-1">UP (Yes)</div>
-                      <div className="grid grid-cols-3 gap-2 text-sm">
-                        <div>
-                          <div className="font-bold">{pos.polymarket_up_qty.toFixed(2)}</div>
-                          <div className="text-xs text-muted-foreground">QTY</div>
+                    <div className="p-4 bg-emerald-500/5">
+                      <div className="flex items-center gap-2 mb-3">
+                        <div className="w-8 h-8 rounded-full bg-emerald-500/20 flex items-center justify-center">
+                          <TrendingUp className="h-4 w-4 text-emerald-500" />
                         </div>
                         <div>
-                          <div className="font-bold">{(pos.polymarket_up_avg * 100).toFixed(1)}¢</div>
-                          <div className="text-xs text-muted-foreground">AVG</div>
+                          <div className="font-semibold text-emerald-600 dark:text-emerald-400">UP</div>
+                          <div className="text-xs text-muted-foreground">Yes outcome</div>
                         </div>
-                        <div>
-                          <div className="font-bold">
-                            ${(pos.polymarket_up_qty * pos.polymarket_up_avg).toFixed(2)}
-                          </div>
-                          <div className="text-xs text-muted-foreground">COST</div>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex justify-between text-sm">
+                          <span className="text-muted-foreground">Shares</span>
+                          <span className="font-mono font-medium">{pos.polymarket_up_qty.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-muted-foreground">Avg Price</span>
+                          <span className="font-mono font-medium">{(pos.polymarket_up_avg * 100).toFixed(1)}¢</span>
+                        </div>
+                        <div className="flex justify-between text-sm pt-2 border-t border-border/50">
+                          <span className="text-muted-foreground">Cost</span>
+                          <span className="font-mono font-bold">${upCost.toFixed(2)}</span>
                         </div>
                       </div>
                     </div>
 
                     {/* DOWN Position */}
-                    <div className="p-3 bg-muted/30 rounded">
-                      <div className="text-xs text-muted-foreground mb-1">DOWN (No)</div>
-                      <div className="grid grid-cols-3 gap-2 text-sm">
-                        <div>
-                          <div className="font-bold">{pos.polymarket_down_qty.toFixed(2)}</div>
-                          <div className="text-xs text-muted-foreground">QTY</div>
+                    <div className="p-4 bg-rose-500/5">
+                      <div className="flex items-center gap-2 mb-3">
+                        <div className="w-8 h-8 rounded-full bg-rose-500/20 flex items-center justify-center">
+                          <TrendingDown className="h-4 w-4 text-rose-500" />
                         </div>
                         <div>
-                          <div className="font-bold">{(pos.polymarket_down_avg * 100).toFixed(1)}¢</div>
-                          <div className="text-xs text-muted-foreground">AVG</div>
+                          <div className="font-semibold text-rose-600 dark:text-rose-400">DOWN</div>
+                          <div className="text-xs text-muted-foreground">No outcome</div>
                         </div>
-                        <div>
-                          <div className="font-bold">
-                            ${(pos.polymarket_down_qty * pos.polymarket_down_avg).toFixed(2)}
-                          </div>
-                          <div className="text-xs text-muted-foreground">COST</div>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex justify-between text-sm">
+                          <span className="text-muted-foreground">Shares</span>
+                          <span className="font-mono font-medium">{pos.polymarket_down_qty.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-muted-foreground">Avg Price</span>
+                          <span className="font-mono font-medium">{(pos.polymarket_down_avg * 100).toFixed(1)}¢</span>
+                        </div>
+                        <div className="flex justify-between text-sm pt-2 border-t border-border/50">
+                          <span className="text-muted-foreground">Cost</span>
+                          <span className="font-mono font-bold">${downCost.toFixed(2)}</span>
                         </div>
                       </div>
                     </div>
                   </div>
 
-                  {/* Combined Stats */}
-                  <div className="flex items-center justify-between mt-3 pt-3 border-t border-border/50 text-sm">
-                    <div className="flex gap-4">
-                      <span>Paired: <strong>{pos.paired.toFixed(0)}</strong></span>
-                      <span>Unpaired: <strong>{pos.unpaired.toFixed(0)}</strong></span>
-                      <span>Combined: <strong>${pos.combined_cost.toFixed(3)}</strong></span>
-                    </div>
-                    <div className={`font-bold ${pos.locked_profit > 0 ? 'text-primary' : 'text-muted-foreground'}`}>
-                      Locked: ${pos.locked_profit.toFixed(2)}
+                  {/* Footer Stats */}
+                  <div className="px-4 py-3 bg-muted/20 border-t border-border/50">
+                    <div className="flex items-center justify-between text-sm">
+                      <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-1.5">
+                          <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
+                          <span className="text-muted-foreground">Paired:</span>
+                          <span className="font-mono font-medium">{pos.paired.toFixed(0)}</span>
+                        </div>
+                        {pos.unpaired > 0 && (
+                          <div className="flex items-center gap-1.5">
+                            <AlertTriangle className="h-3.5 w-3.5 text-warning" />
+                            <span className="text-muted-foreground">Unpaired:</span>
+                            <span className="font-mono font-medium">{pos.unpaired.toFixed(0)}</span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-muted-foreground">Combined:</span>
+                        <span className={`font-mono font-bold ${
+                          pos.combined_cost < 1 ? 'text-primary' : 'text-destructive'
+                        }`}>
+                          ${pos.combined_cost.toFixed(3)}
+                        </span>
+                        {pos.combined_cost < 1 && (
+                          <CheckCircle2 className="h-3.5 w-3.5 text-primary" />
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
