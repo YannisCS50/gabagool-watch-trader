@@ -10,11 +10,13 @@
 // 2. Stricter imbalance limits - stop earlier
 // 3. Ratio-based checks - max UP:DOWN ratio
 // 4. Stop loss integration
+// 5. Fill sync - stop quoting side with too many consecutive fills
 // ============================================================
 
 import { getV35Config, type V35Config } from './config.js';
 import type { V35Market, V35Quote, V35Side, V35Asset } from './types.js';
 import { getBinanceFeed, type BinancePriceFeed } from './binance-feed.js';
+import { fillSyncTracker } from './fill-sync-tracker.js';
 
 interface QuoteDecision {
   quotes: V35Quote[];
@@ -85,7 +87,25 @@ export class QuotingEngine {
     }
     
     // =========================================================================
-    // CHECK 2: ABSOLUTE IMBALANCE LIMIT (STRICT)
+    // CHECK 2: FILL SYNC (NEW!)
+    // Stop quoting if we have too many consecutive fills on one side
+    // =========================================================================
+    if (config.enableFillSync) {
+      // Configure tracker with current settings
+      fillSyncTracker.configure(config.fillSyncWindow, config.fillSyncMaxStreak);
+      
+      const syncCheck = fillSyncTracker.shouldQuote(side);
+      if (!syncCheck.allowed) {
+        return {
+          quotes: [],
+          blocked: true,
+          blockReason: `Fill sync: ${syncCheck.reason}`,
+        };
+      }
+    }
+    
+    // =========================================================================
+    // CHECK 3: ABSOLUTE IMBALANCE LIMIT (STRICT)
     // =========================================================================
     const skew = market.upQty - market.downQty;
     const unpaired = Math.abs(skew);
@@ -102,7 +122,7 @@ export class QuotingEngine {
     }
     
     // =========================================================================
-    // CHECK 3: RATIO-BASED IMBALANCE (NEW)
+    // CHECK 4: RATIO-BASED IMBALANCE
     // Max allowed ratio is 1.3:1 or 1.5:1 depending on mode
     // =========================================================================
     if (market.upQty >= 10 && market.downQty >= 10) {
@@ -124,7 +144,7 @@ export class QuotingEngine {
     }
     
     // =========================================================================
-    // CHECK 4: ONE-SIDED POSITION (CRITICAL)
+    // CHECK 5: ONE-SIDED POSITION (CRITICAL)
     // If we have 10+ shares on one side and 0 on the other, STOP immediately
     // =========================================================================
     if ((side === 'UP' && market.upQty >= 10 && market.downQty === 0) ||
@@ -137,7 +157,7 @@ export class QuotingEngine {
     }
     
     // =========================================================================
-    // CHECK 5: STOP LOSS
+    // CHECK 6: STOP LOSS
     // =========================================================================
     if (config.enableStopLoss) {
       const unrealizedLoss = this.calculateUnrealizedPnL(market);
