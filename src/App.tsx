@@ -12,6 +12,7 @@ import BotHealth from "./pages/BotHealth";
 import Observability from "./pages/Observability";
 import DataLogging from "./pages/DataLogging";
 import DatabaseExport from "./pages/DatabaseExport";
+import GabagoolGridBacktest from "./pages/GabagoolGridBacktest";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -38,6 +39,7 @@ const App = () => (
           <Route path="/observability" element={<Observability />} />
           <Route path="/data-logging" element={<DataLogging />} />
           <Route path="/database-export" element={<DatabaseExport />} />
+          <Route path="/grid-backtest" element={<GabagoolGridBacktest />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>
