@@ -94,7 +94,7 @@ export const TEST_CONFIG: V35Config = {
   gridMin: 0.15,
   gridMax: 0.85,
   gridStep: 0.05,           // 15 levels per side
-  sharesPerLevel: 3,        // Minimum for Polymarket notional requirements
+  sharesPerLevel: 5,        // Polymarket minimum is 5 shares per order
   
   // Risk limits - conservative for testing
   maxUnpairedShares: 30,    // Per document
