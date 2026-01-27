@@ -10,7 +10,6 @@ import {
   TrendingUp,
   TrendingDown
 } from 'lucide-react';
-import { formatDistanceToNow } from 'date-fns';
 
 interface MarketPosition {
   market_slug: string;
@@ -21,7 +20,6 @@ interface MarketPosition {
   down_avg: number;
   down_cost: number;
   total_fills: number;
-  last_fill: string;
   expiry_ts: number;
 }
 
@@ -31,14 +29,15 @@ function parseMarketExpiry(slug: string): number {
   return match ? parseInt(match[1], 10) * 1000 : 0;
 }
 
-// Format expiry time
+// Format expiry time in ET
 function formatExpiry(ts: number): string {
   if (!ts) return '';
   const date = new Date(ts);
   return date.toLocaleTimeString('en-US', { 
     hour: 'numeric', 
     minute: '2-digit',
-    hour12: true 
+    hour12: true,
+    timeZone: 'America/New_York'
   });
 }
 
@@ -46,18 +45,26 @@ export function V35OpenPositions() {
   const { data: positions, isLoading } = useQuery({
     queryKey: ['v35-open-positions'],
     queryFn: async () => {
-      // Get aggregated positions per market and side
+      // Get UNIQUE fills by order_id (deduplicate)
       const { data: fills, error } = await supabase
         .from('v35_fills')
-        .select('market_slug, side, price, size, created_at');
+        .select('market_slug, side, price, size, order_id');
 
       if (error) throw error;
       if (!fills || fills.length === 0) return [];
 
+      // Deduplicate by order_id - keep only one fill per order
+      const seenOrders = new Set<string>();
+      const uniqueFills = fills.filter(fill => {
+        if (seenOrders.has(fill.order_id)) return false;
+        seenOrders.add(fill.order_id);
+        return true;
+      });
+
       // Aggregate by market
       const marketMap = new Map<string, MarketPosition>();
 
-      for (const fill of fills) {
+      for (const fill of uniqueFills) {
         const slug = fill.market_slug;
         if (!marketMap.has(slug)) {
           marketMap.set(slug, {
@@ -69,7 +76,6 @@ export function V35OpenPositions() {
             down_avg: 0,
             down_cost: 0,
             total_fills: 0,
-            last_fill: fill.created_at,
             expiry_ts: parseMarketExpiry(slug),
           });
         }
@@ -87,11 +93,6 @@ export function V35OpenPositions() {
         } else if (fill.side === 'DOWN') {
           pos.down_qty += size;
           pos.down_cost += cost;
-        }
-
-        // Track most recent fill
-        if (fill.created_at > pos.last_fill) {
-          pos.last_fill = fill.created_at;
         }
       }
 
@@ -159,11 +160,6 @@ export function V35OpenPositions() {
         {positions.map((pos) => {
           const now = Date.now();
           const isExpired = pos.expiry_ts < now;
-          const isLive = !isExpired;
-          
-          // Calculate current value (assuming 0.99 mid for UP when market is up)
-          const upValue = pos.up_qty * 0.99; // Approx current value
-          const downValue = pos.down_qty * 0.01; // Approx current value
           
           return (
             <div key={pos.market_slug} className="border rounded-lg overflow-hidden">
@@ -171,12 +167,12 @@ export function V35OpenPositions() {
               <div className="bg-muted/50 px-4 py-2 flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <span className="font-medium">BTC</span>
-                  <span className="text-muted-foreground">
-                    {formatExpiry(pos.expiry_ts - 15 * 60 * 1000)}-{formatExpiry(pos.expiry_ts)}
+                  <span className="text-muted-foreground text-sm">
+                    {formatExpiry(pos.expiry_ts - 15 * 60 * 1000)}-{formatExpiry(pos.expiry_ts)} ET
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
-                  {isLive ? (
+                  {!isExpired ? (
                     <Badge variant="default" className="bg-primary">
                       <span className="mr-1 h-2 w-2 rounded-full bg-white animate-pulse inline-block" />
                       LIVE
@@ -190,7 +186,7 @@ export function V35OpenPositions() {
                 </div>
               </div>
               
-              {/* Positions Table */}
+              {/* Positions Table - matching Polymarket format */}
               <Table>
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
@@ -210,10 +206,10 @@ export function V35OpenPositions() {
                         </div>
                       </TableCell>
                       <TableCell className="text-right font-mono">
-                        {pos.up_qty.toFixed(0)}
+                        {Math.round(pos.up_qty)}
                       </TableCell>
                       <TableCell className="text-right font-mono">
-                        {(pos.up_avg * 100).toFixed(0)}¢
+                        {Math.round(pos.up_avg * 100)}¢
                       </TableCell>
                       <TableCell className="text-right font-mono text-muted-foreground">
                         ${pos.up_cost.toFixed(2)}
@@ -229,10 +225,10 @@ export function V35OpenPositions() {
                         </div>
                       </TableCell>
                       <TableCell className="text-right font-mono">
-                        {pos.down_qty.toFixed(0)}
+                        {Math.round(pos.down_qty)}
                       </TableCell>
                       <TableCell className="text-right font-mono">
-                        {(pos.down_avg * 100).toFixed(0)}¢
+                        {Math.round(pos.down_avg * 100)}¢
                       </TableCell>
                       <TableCell className="text-right font-mono text-muted-foreground">
                         ${pos.down_cost.toFixed(2)}
