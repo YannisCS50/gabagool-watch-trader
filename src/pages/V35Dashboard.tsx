@@ -32,12 +32,18 @@ interface RunnerHeartbeat {
   status: string;
   markets_count: number;
   positions_count: number;
+  trades_count?: number;
   version?: string;
   mode?: string;
   dry_run?: boolean;
   balance?: number;
   total_locked_profit?: number;
   total_unpaired?: number;
+  metadata?: {
+    mode?: string;
+    dry_run?: boolean;
+    locked_profit?: number;
+  };
 }
 
 interface V35Settlement {
@@ -187,7 +193,7 @@ export default function V35Dashboard() {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-primary">
-                ${(heartbeat?.total_locked_profit || 0).toFixed(2)}
+                ${(heartbeat?.metadata?.locked_profit ?? heartbeat?.total_locked_profit ?? 0).toFixed(2)}
               </div>
               <p className="text-xs text-muted-foreground">
                 Pre-settlement guaranteed
