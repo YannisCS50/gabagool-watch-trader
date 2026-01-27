@@ -101,17 +101,17 @@ export const TEST_CONFIG: V35Config = {
   gridStep: 0.05,           // 15 levels per side
   sharesPerLevel: 5,        // Polymarket minimum is 5 shares per order
   
-  // Risk limits - conservative for testing
-  maxUnpairedShares: 30,        // Per document
-  maxUnpairedImbalance: 30,     // Alias (used by runner)
-  maxImbalanceRatio: 2.0,       // Per document
-  maxLossPerMarket: 10,         // Per document
+  // Risk limits - INCREASED to allow ~75 shares per side
+  maxUnpairedShares: 50,        // Increased from 30
+  maxUnpairedImbalance: 50,     // Alias (used by runner)
+  maxImbalanceRatio: 2.5,       // Slightly relaxed ratio
+  maxLossPerMarket: 25,         // Increased loss tolerance
   maxConcurrentMarkets: 2,      // Per document
   maxMarkets: 2,                // Alias (used by runner)
-  maxNotionalPerMarket: 100,    // $100 max per market
-  maxTotalExposure: 200,        // $200 total
-  skewThreshold: 10,            // 10 shares before warning
-  capitalPerMarket: 50,         // $50 per market
+  maxNotionalPerMarket: 150,    // Increased: 75 shares @ $0.50 avg = ~$75 total
+  maxTotalExposure: 300,        // $300 total
+  skewThreshold: 20,            // 20 shares before warning
+  capitalPerMarket: 100,        // $100 per market
   
   // Timing - per document
   startDelayMs: 5000,       // Wait 5s after market open
