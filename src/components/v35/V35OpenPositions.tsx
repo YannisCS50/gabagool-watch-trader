@@ -26,6 +26,7 @@ interface MarketPosition {
 
 interface PositionsResponse {
   success: boolean;
+  wallet_used?: string;
   positions: MarketPosition[];
   summary: {
     total_markets: number;
@@ -36,6 +37,13 @@ interface PositionsResponse {
   };
   polymarket_raw: number;
   fills_raw: number;
+}
+
+function shortWallet(addr?: string): string | null {
+  if (!addr) return null;
+  const a = addr.trim();
+  if (a.length < 10) return a;
+  return `${a.slice(0, 6)}…${a.slice(-4)}`;
 }
 
 function parseMarketTime(slug: string): { start: string; end: string; isLive: boolean } | null {
@@ -112,6 +120,7 @@ export function V35OpenPositions() {
 
   const positions = data?.positions || [];
   const summary = data?.summary;
+  const walletUsed = shortWallet(data?.wallet_used);
 
   // Filter only markets with actual positions
   const activePositions = positions.filter(p => 
@@ -129,6 +138,7 @@ export function V35OpenPositions() {
             </CardTitle>
             <CardDescription>
               Real-time positions from Polymarket Data API
+              {walletUsed ? ` (wallet ${walletUsed})` : ''}
             </CardDescription>
           </div>
           <div className="flex items-center gap-2">

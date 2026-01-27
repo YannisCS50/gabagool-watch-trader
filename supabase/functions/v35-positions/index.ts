@@ -7,7 +7,13 @@ const corsHeaders = {
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-const WALLET_ADDRESS = '0x6031b6eed1c97e853c6e0f03ad3ce3529351f96d'; // V35 bot wallet
+
+function normalizeWalletAddress(address: string | null | undefined): string | null {
+  if (!address) return null;
+  const trimmed = address.trim();
+  if (!trimmed) return null;
+  return trimmed.toLowerCase();
+}
 
 interface PolymarketPosition {
   asset: string;
@@ -56,17 +62,17 @@ interface MarketPosition {
   locked_profit: number;
 }
 
-async function fetchPolymarketPositions(): Promise<PolymarketPosition[]> {
+async function fetchPolymarketPositions(walletAddress: string): Promise<PolymarketPosition[]> {
   const positions: PolymarketPosition[] = [];
   let cursor: string | null = null;
   let pageCount = 0;
   const maxPages = 10;
 
-  console.log(`📊 Fetching Polymarket positions for ${WALLET_ADDRESS.slice(0, 10)}...`);
+  console.log(`📊 Fetching Polymarket positions for ${walletAddress.slice(0, 10)}...`);
 
   while (pageCount < maxPages) {
     pageCount++;
-    let url = `https://data-api.polymarket.com/positions?user=${WALLET_ADDRESS}&sizeThreshold=0&limit=500`;
+    let url = `https://data-api.polymarket.com/positions?user=${walletAddress}&sizeThreshold=0&limit=500`;
     if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
 
     try {
@@ -124,6 +130,24 @@ async function fetchPolymarketPositions(): Promise<PolymarketPosition[]> {
 
   console.log(`   ✅ Fetched ${positions.length} total positions`);
   return positions;
+}
+
+async function getBotWalletAddress(supabase: any): Promise<string | null> {
+  // Single-row table in this project; still fetch latest to be robust.
+  const { data, error } = await supabase
+    .from('bot_config')
+    .select('polymarket_address, updated_at, created_at')
+    .order('updated_at', { ascending: false, nullsFirst: false })
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    console.error('❌ Error reading bot_config.polymarket_address:', error);
+    return null;
+  }
+
+  return normalizeWalletAddress(data?.polymarket_address);
 }
 
 function is15mCryptoMarket(position: PolymarketPosition): boolean {
@@ -188,8 +212,19 @@ Deno.serve(async (req) => {
   try {
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+    const walletAddress = await getBotWalletAddress(supabase);
+    if (!walletAddress) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: 'No polymarket_address configured in bot_config',
+      }), {
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
+    }
+
     // 1. Fetch real positions from Polymarket
-    const allPositions = await fetchPolymarketPositions();
+    const allPositions = await fetchPolymarketPositions(walletAddress);
     const positions15m = allPositions.filter(is15mCryptoMarket);
     
     console.log(`📈 Found ${positions15m.length} 15-min crypto positions`);
@@ -334,6 +369,7 @@ Deno.serve(async (req) => {
 
     return new Response(JSON.stringify({
       success: true,
+      wallet_used: walletAddress,
       positions: result,
       summary: {
         total_markets: result.length,
