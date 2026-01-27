@@ -1099,22 +1099,34 @@ export async function cancelOrder(orderId: string): Promise<{ success: boolean; 
 
   try {
     const client = await getClient();
-
-    // The CLOB client has a cancelOrder or cancelOrders method
     const anyClient = client as any;
 
     let result: any;
+    
+    // CRITICAL FIX: The SDK's cancelOrder method expects an object { orderID: string }
+    // not just the string. Some SDK versions have cancelOrder(orderId) but ours doesn't.
+    // Also, cancelOrders expects array of { orderID: string } objects.
     if (typeof anyClient.cancelOrder === 'function') {
-      result = await anyClient.cancelOrder(orderId);
+      // Try with object format first (SDK v5+)
+      try {
+        result = await anyClient.cancelOrder({ orderID: orderId });
+      } catch (objErr: any) {
+        // Fallback: try string format (older SDK)
+        console.log(`   Retry cancel with string format...`);
+        result = await anyClient.cancelOrder(orderId);
+      }
     } else if (typeof anyClient.cancelOrders === 'function') {
+      // cancelOrders expects array of orderIDs as strings
       result = await anyClient.cancelOrders([orderId]);
     } else {
-      // Fallback: try direct API call
-      const res = await fetch(`${CLOB_URL}/order/${orderId}`, {
+      // Fallback: direct API call with correct format
+      // The Polymarket DELETE /order endpoint expects { orderID: string } in body
+      const res = await fetch(`${CLOB_URL}/order`, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
         },
+        body: JSON.stringify({ orderID: orderId }),
       });
 
       if (!res.ok) {
@@ -1128,6 +1140,20 @@ export async function cancelOrder(orderId: string): Promise<{ success: boolean; 
     // Check for explicit failure
     if (result?.success === false || result?.error) {
       return { success: false, error: result?.error || 'Cancel failed' };
+    }
+
+    // Check if cancellation was acknowledged
+    const cancelled = result?.canceled || result?.cancelled || [];
+    if (Array.isArray(cancelled) && cancelled.includes(orderId)) {
+      console.log(`✅ Order ${orderId} cancelled`);
+      return { success: true };
+    }
+    
+    // Also check for not_canceled (order might already be filled/cancelled)
+    const notCancelled = result?.not_canceled || result?.notCancelled || [];
+    if (Array.isArray(notCancelled) && notCancelled.includes(orderId)) {
+      console.log(`⚠️ Order ${orderId} was not cancelled (may be already filled/cancelled)`);
+      return { success: true }; // Still treat as success - order is no longer active
     }
 
     console.log(`✅ Order ${orderId} cancelled`);
