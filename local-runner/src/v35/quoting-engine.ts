@@ -1,22 +1,20 @@
 // ============================================================
-// V35 QUOTING ENGINE - ENHANCED
+// V35 QUOTING ENGINE - GABAGOOL STRATEGY
 // ============================================================
-// Generates inventory-aware quotes for passive market making.
-// Places BUY orders on a grid from gridMin to gridMax.
-// Adjusts sizing based on current inventory skew.
+// Generates passive limit BUY orders on a grid for market making.
+// Places orders on BOTH UP and DOWN sides simultaneously.
 //
-// CRITICAL FIXES:
-// 1. Momentum filter - don't quote against the trend
-// 2. Stricter imbalance limits - stop earlier
-// 3. Ratio-based checks - max UP:DOWN ratio
-// 4. Stop loss integration
-// 5. Fill sync - stop quoting side with too many consecutive fills
+// KEY PRINCIPLES (from gabagool strategy document):
+// 1. NEVER filter based on momentum - reduces fills
+// 2. ALWAYS quote both sides - temporary imbalance is OK
+// 3. Trust the mathematics - combined cost < $1 = profit
+//
+// The grid naturally balances over time as prices move.
+// Temporary imbalance is EXPECTED and should be tolerated.
 // ============================================================
 
 import { getV35Config, type V35Config } from './config.js';
 import type { V35Market, V35Quote, V35Side, V35Asset } from './types.js';
-import { getBinanceFeed, type BinancePriceFeed } from './binance-feed.js';
-import { fillSyncTracker } from './fill-sync-tracker.js';
 
 interface QuoteDecision {
   quotes: V35Quote[];
@@ -26,10 +24,8 @@ interface QuoteDecision {
 
 export class QuotingEngine {
   private gridPrices: number[] = [];
-  private binanceFeed: BinancePriceFeed;
   
   constructor() {
-    this.binanceFeed = getBinanceFeed();
     this.updateGrid();
   }
   
@@ -50,7 +46,8 @@ export class QuotingEngine {
   }
   
   /**
-   * Generate quotes for one side of a market with all safety checks
+   * Generate quotes for one side of a market
+   * Per gabagool strategy: minimal filtering, trust the grid
    */
   generateQuotes(side: V35Side, market: V35Market): V35Quote[] {
     const decision = this.generateQuotesWithReason(side, market);
@@ -64,66 +61,35 @@ export class QuotingEngine {
   
   /**
    * Generate quotes with detailed reasoning
+   * SIMPLIFIED per gabagool strategy - minimal guards
    */
   generateQuotesWithReason(side: V35Side, market: V35Market): QuoteDecision {
     const config = getV35Config();
     const quotes: V35Quote[] = [];
     
     // =========================================================================
-    // CHECK 1: MOMENTUM FILTER
-    // Don't quote against the trend - we become exit liquidity
-    // =========================================================================
-    if (config.enableMomentumFilter) {
-      const canQuote = this.binanceFeed.shouldQuote(market.asset, side);
-      if (!canQuote) {
-        const trend = this.binanceFeed.getTrendDirection(market.asset);
-        const momentum = this.binanceFeed.getMomentum(market.asset);
-        return {
-          quotes: [],
-          blocked: true,
-          blockReason: `Momentum filter: ${market.asset} trending ${trend} (${momentum.toFixed(3)}%) - skipping ${side}`,
-        };
-      }
-    }
-    
-    // =========================================================================
-    // CHECK 2: FILL SYNC (NEW!)
-    // Stop quoting if we have too many consecutive fills on one side
-    // =========================================================================
-    if (config.enableFillSync) {
-      // Configure tracker with current settings
-      fillSyncTracker.configure(config.fillSyncWindow, config.fillSyncMaxStreak);
-      
-      const syncCheck = fillSyncTracker.shouldQuote(side);
-      if (!syncCheck.allowed) {
-        return {
-          quotes: [],
-          blocked: true,
-          blockReason: `Fill sync: ${syncCheck.reason}`,
-        };
-      }
-    }
-    
-    // =========================================================================
-    // CHECK 3: ABSOLUTE IMBALANCE LIMIT (STRICT)
+    // CHECK 1: ABSOLUTE UNPAIRED LIMIT (only hard stop)
+    // Per doc: maxUnpairedShares = 30 for test mode
     // =========================================================================
     const skew = market.upQty - market.downQty;
     const unpaired = Math.abs(skew);
     
-    if (unpaired > config.maxUnpairedImbalance) {
-      // This side is overweight, don't quote
-      if ((side === 'UP' && skew > 0) || (side === 'DOWN' && skew < 0)) {
+    if (unpaired > config.maxUnpairedShares) {
+      // Only block the OVERWEIGHT side, keep quoting the underweight side
+      const overweightSide = skew > 0 ? 'UP' : 'DOWN';
+      if (side === overweightSide) {
         return {
           quotes: [],
           blocked: true,
-          blockReason: `Imbalance limit: ${unpaired.toFixed(0)} shares unpaired (max ${config.maxUnpairedImbalance})`,
+          blockReason: `Unpaired limit: ${unpaired.toFixed(0)} shares (max ${config.maxUnpairedShares}) - blocking ${side}`,
         };
       }
+      // Allow underweight side to continue - this helps rebalance!
     }
     
     // =========================================================================
-    // CHECK 4: RATIO-BASED IMBALANCE
-    // Max allowed ratio is 1.3:1 or 1.5:1 depending on mode
+    // CHECK 2: RATIO LIMIT (soft limit, per doc: 2.0)
+    // Only triggers when we have significant positions on both sides
     // =========================================================================
     if (market.upQty >= 10 && market.downQty >= 10) {
       const ratio = market.upQty > market.downQty 
@@ -131,49 +97,34 @@ export class QuotingEngine {
         : market.downQty / market.upQty;
       
       if (ratio > config.maxImbalanceRatio) {
-        // Stop quoting the overweight side
         const overweightSide = market.upQty > market.downQty ? 'UP' : 'DOWN';
         if (side === overweightSide) {
           return {
             quotes: [],
             blocked: true,
-            blockReason: `Ratio limit: ${ratio.toFixed(2)}:1 (max ${config.maxImbalanceRatio}:1) - stop ${side}`,
+            blockReason: `Ratio limit: ${ratio.toFixed(2)}:1 (max ${config.maxImbalanceRatio}:1)`,
           };
         }
+        // Keep quoting underweight side to help rebalance
       }
     }
     
     // =========================================================================
-    // CHECK 5: ONE-SIDED POSITION (CRITICAL)
-    // If we have 10+ shares on one side and 0 on the other, STOP immediately
+    // CHECK 3: LOSS LIMIT (per doc: $10 for test mode)
     // =========================================================================
-    if ((side === 'UP' && market.upQty >= 10 && market.downQty === 0) ||
-        (side === 'DOWN' && market.downQty >= 10 && market.upQty === 0)) {
+    const unrealizedLoss = this.calculateUnrealizedPnL(market);
+    if (unrealizedLoss < -config.maxLossPerMarket) {
       return {
         quotes: [],
         blocked: true,
-        blockReason: `One-sided position: ${market.upQty.toFixed(0)} UP vs ${market.downQty.toFixed(0)} DOWN - STOP ${side}`,
+        blockReason: `Loss limit: Unrealized P&L $${unrealizedLoss.toFixed(2)} (max -$${config.maxLossPerMarket})`,
       };
     }
     
     // =========================================================================
-    // CHECK 6: STOP LOSS
+    // GENERATE QUOTES - Simple grid, uniform sizing
+    // Per gabagool: sharesPerLevel is constant, no skew adjustments
     // =========================================================================
-    if (config.enableStopLoss) {
-      const unrealizedLoss = this.calculateUnrealizedPnL(market);
-      if (unrealizedLoss < -config.maxLossPerMarket) {
-        return {
-          quotes: [],
-          blocked: true,
-          blockReason: `Stop loss: Unrealized P&L $${unrealizedLoss.toFixed(2)} (max -$${config.maxLossPerMarket})`,
-        };
-      }
-    }
-    
-    // =========================================================================
-    // GENERATE QUOTES
-    // =========================================================================
-    const currentCost = side === 'UP' ? market.upCost : market.downCost;
     const bestAsk = side === 'UP' ? market.upBestAsk : market.downBestAsk;
     
     for (const price of this.gridPrices) {
@@ -182,13 +133,11 @@ export class QuotingEngine {
         continue;
       }
       
-      // Calculate size with skew adjustment
-      const size = this.calculateSize(side, price, market, currentCost, config);
+      // Calculate minimum shares to meet Polymarket notional requirement
+      const minSharesForNotional = Math.ceil(1.0 / price);
+      const shares = Math.max(config.sharesPerLevel, minSharesForNotional);
       
-      // Only include if size is meaningful (>= 5 shares)
-      if (size >= 5) {
-        quotes.push({ price, size });
-      }
+      quotes.push({ price, size: shares });
     }
     
     return {
@@ -199,7 +148,7 @@ export class QuotingEngine {
   }
   
   /**
-   * Calculate unrealized P&L for stop loss check
+   * Calculate unrealized P&L for loss limit check
    */
   private calculateUnrealizedPnL(market: V35Market): number {
     // Current value if we sold everything at bid prices
@@ -214,52 +163,31 @@ export class QuotingEngine {
   }
   
   /**
-   * Calculate position size for a quote with inventory awareness
+   * Calculate locked profit (guaranteed at settlement)
+   * This is the core metric - paired shares × (1 - combined cost)
    */
-  private calculateSize(
-    side: V35Side,
-    price: number,
-    market: V35Market,
-    currentCost: number,
-    config: V35Config
-  ): number {
-    let size = config.baseSize;
-    const skew = market.upQty - market.downQty;
+  calculateLockedProfit(market: V35Market): { 
+    pairedShares: number; 
+    combinedCost: number; 
+    lockedProfit: number;
+    profitPct: number;
+  } {
+    const pairedShares = Math.min(market.upQty, market.downQty);
     
-    // Skew adjustment: reduce overweight side, boost underweight side
-    if (side === 'UP') {
-      if (skew > config.skewThreshold) {
-        // Too much UP, reduce significantly
-        size *= config.skewReduceFactor;
-      } else if (skew < -config.skewThreshold) {
-        // Too little UP, boost
-        size *= config.skewBoostFactor;
-      }
-    } else {
-      if (skew > config.skewThreshold) {
-        // Too little DOWN, boost
-        size *= config.skewBoostFactor;
-      } else if (skew < -config.skewThreshold) {
-        // Too much DOWN, reduce significantly
-        size *= config.skewReduceFactor;
-      }
+    if (pairedShares === 0) {
+      return { pairedShares: 0, combinedCost: 0, lockedProfit: 0, profitPct: 0 };
     }
     
-    // Additional reduction based on how close we are to imbalance limit
-    const unpaired = Math.abs(skew);
-    const imbalancePct = unpaired / config.maxUnpairedImbalance;
-    if (imbalancePct > 0.5) {
-      // More than 50% to limit - start reducing
-      const reductionFactor = 1 - (imbalancePct - 0.5);
-      size *= Math.max(0.2, reductionFactor);
-    }
+    // Calculate average costs
+    const avgUpCost = market.upCost / market.upQty;
+    const avgDownCost = market.downCost / market.downQty;
+    const combinedCost = avgUpCost + avgDownCost;
     
-    // Notional limit: don't exceed max per market
-    const remaining = config.maxNotionalPerMarket - currentCost;
-    const maxByNotional = remaining / price;
-    size = Math.min(size, maxByNotional);
+    // Locked profit = paired shares × (1 - combined cost)
+    const lockedProfit = pairedShares * (1 - combinedCost);
+    const profitPct = (1 - combinedCost) * 100;
     
-    return Math.max(0, Math.floor(size));
+    return { pairedShares, combinedCost, lockedProfit, profitPct };
   }
   
   /**
@@ -268,38 +196,32 @@ export class QuotingEngine {
   shouldQuoteMarket(market: V35Market): { shouldQuote: boolean; reason: string } {
     const config = getV35Config();
     
-    // Check total exposure
-    const totalCost = market.upCost + market.downCost;
-    if (totalCost >= config.maxNotionalPerMarket * 0.95) {
-      return { shouldQuote: false, reason: 'Max notional reached' };
+    // Check loss limit
+    const pnl = this.calculateUnrealizedPnL(market);
+    if (pnl < -config.maxLossPerMarket) {
+      return { shouldQuote: false, reason: `Loss limit triggered: $${pnl.toFixed(2)}` };
     }
     
-    // Check stop loss
-    if (config.enableStopLoss) {
-      const pnl = this.calculateUnrealizedPnL(market);
-      if (pnl < -config.maxLossPerMarket) {
-        return { shouldQuote: false, reason: `Stop loss triggered: $${pnl.toFixed(2)}` };
-      }
+    // Check if asset is enabled
+    if (!config.enabledAssets.includes(market.asset)) {
+      return { shouldQuote: false, reason: `Asset ${market.asset} not in enabled list` };
     }
     
     return { shouldQuote: true, reason: 'OK' };
   }
   
   /**
-   * Get current momentum state for logging
+   * Get market status summary for logging
    */
-  getMomentumState(asset: V35Asset): {
-    price: number;
-    momentum: number;
-    direction: 'UP' | 'DOWN' | 'NEUTRAL';
-    isTrending: boolean;
-  } {
-    return {
-      price: this.binanceFeed.getPrice(asset),
-      momentum: this.binanceFeed.getMomentum(asset),
-      direction: this.binanceFeed.getTrendDirection(asset),
-      isTrending: this.binanceFeed.isTrending(asset),
-    };
+  getMarketStatus(market: V35Market): string {
+    const { pairedShares, combinedCost, lockedProfit, profitPct } = this.calculateLockedProfit(market);
+    const skew = market.upQty - market.downQty;
+    const unpaired = Math.abs(skew);
+    
+    return `UP:${market.upQty.toFixed(0)} DOWN:${market.downQty.toFixed(0)} | ` +
+           `Paired:${pairedShares.toFixed(0)} Unpaired:${unpaired.toFixed(0)} | ` +
+           `Combined:$${combinedCost.toFixed(4)} | ` +
+           `Locked:$${lockedProfit.toFixed(2)} (${profitPct.toFixed(2)}%)`;
   }
   
   /**
