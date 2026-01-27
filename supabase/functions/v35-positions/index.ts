@@ -182,6 +182,32 @@ function is15mCryptoMarket(position: PolymarketPosition): boolean {
   return has15m && hasCrypto;
 }
 
+/**
+ * Parse epoch timestamp from market slug like "btc-updown-15m-1769517000"
+ */
+function getMarketEpochFromSlug(slug: string): number | null {
+  const match = slug.match(/(\d{10})$/);
+  if (!match) return null;
+  return parseInt(match[1]) * 1000; // convert to ms
+}
+
+/**
+ * Filter positions within given time window (LIVE + lookbackMs)
+ */
+function isWithinTimeWindow(position: PolymarketPosition, lookbackMs: number): boolean {
+  const slug = position.eventSlug || '';
+  const epoch = getMarketEpochFromSlug(slug);
+  if (!epoch) {
+    // If we can't parse the epoch, include it to be safe
+    return true;
+  }
+  const expiryMs = epoch + 15 * 60 * 1000; // end of 15m window
+  const now = Date.now();
+  const cutoff = now - lookbackMs;
+  // Include if: not expired yet OR expired within lookback
+  return expiryMs > cutoff;
+}
+
 function extractMarketSlug(position: PolymarketPosition): string {
   // Use eventSlug if available, otherwise derive from market title
   if (position.eventSlug) return position.eventSlug;
@@ -224,10 +250,13 @@ Deno.serve(async (req) => {
     }
 
     // 1. Fetch real positions from Polymarket
+    const LOOKBACK_MS = 2 * 60 * 60 * 1000; // 2 hours
     const allPositions = await fetchPolymarketPositions(walletAddress);
-    const positions15m = allPositions.filter(is15mCryptoMarket);
+    const positions15m = allPositions
+      .filter(is15mCryptoMarket)
+      .filter((p) => isWithinTimeWindow(p, LOOKBACK_MS));
     
-    console.log(`📈 Found ${positions15m.length} 15-min crypto positions`);
+    console.log(`📈 Found ${positions15m.length} 15-min crypto positions within 2h window`);
 
     // 2. Group Polymarket positions by market slug
     const polymarketByMarket = new Map<string, { 
@@ -265,10 +294,15 @@ Deno.serve(async (req) => {
       m.downAvg = m.downQty > 0 ? m.downCost / m.downQty : 0;
     }
 
-    // 3. Fetch v35_fills from database (deduplicated by order_id)
+    // Compute earliest relevant epoch for fills (now - 2h)
+    const earliestEpochMs = Date.now() - LOOKBACK_MS;
+    const earliestCreatedAt = new Date(earliestEpochMs).toISOString();
+
+    // 3. Fetch v35_fills from database (deduplicated by order_id), only recent ones
     const { data: fills, error: fillsError } = await supabase
       .from('v35_fills')
       .select('*')
+      .gte('created_at', earliestCreatedAt)
       .order('created_at', { ascending: false })
       .limit(5000);
 
