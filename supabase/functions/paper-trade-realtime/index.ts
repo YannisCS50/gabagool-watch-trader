@@ -932,17 +932,52 @@ async function handleWebSocket(req: Request): Promise<Response> {
     }
   };
 
-  // HTTP-based strike price capture (more reliable than WebSocket edge-to-edge)
-  const fetchChainlinkPrice = async (asset: 'BTC' | 'ETH'): Promise<number | null> => {
+  // HTTP-based strike price capture using Polymarket's official data sources
+  // Polymarket uses Chainlink Data Streams - we try multiple sources to match their strike price
+  const fetchChainlinkPrice = async (asset: 'BTC' | 'ETH' | 'SOL' | 'XRP'): Promise<number | null> => {
     try {
       const symbol = asset.toLowerCase();
-      // Use external RTDS API directly (more reliable than edge function WebSocket)
+      
+      // Method 1: Try Polymarket's ws-live-data via HTTP snapshot
+      // This is the same data source Polymarket uses for their strike prices
+      try {
+        const rtdsResponse = await fetch(`https://ws-live-data.polymarket.com/api/v1/snapshot/${symbol}/usd`, {
+          headers: { 'Accept': 'application/json' },
+        });
+        if (rtdsResponse.ok) {
+          const rtdsData = await rtdsResponse.json();
+          if (rtdsData.value || rtdsData.price) {
+            log(`📌 Got ${asset} price from Polymarket RTDS: $${(rtdsData.value || rtdsData.price).toFixed(2)}`);
+            return rtdsData.value || rtdsData.price;
+          }
+        }
+      } catch (e) {
+        // Continue to fallback
+      }
+      
+      // Method 2: Polymarket Data API (publicly accessible prices)
+      try {
+        const dataApiResponse = await fetch(`https://data-api.polymarket.com/prices?assets=${symbol}`, {
+          headers: { 'Accept': 'application/json' },
+        });
+        if (dataApiResponse.ok) {
+          const prices = await dataApiResponse.json();
+          if (prices && prices[symbol]) {
+            log(`📌 Got ${asset} price from Polymarket Data API: $${prices[symbol].toFixed(2)}`);
+            return prices[symbol];
+          }
+        }
+      } catch (e) {
+        // Continue to fallback
+      }
+      
+      // Method 3: Fallback to external rtds.xyz (may have slight price difference)
       const response = await fetch(`https://rtds.xyz/v1/current/${symbol}/usd`, {
         headers: { 'Accept': 'application/json' },
       });
       
       if (!response.ok) {
-        // Fallback: Try our chainlink-price-collector data from database
+        // Last resort: Try our chainlink-price-collector data from database
         const { data } = await supabase
           .from('strike_prices')
           .select('strike_price')
@@ -957,7 +992,11 @@ async function handleWebSocket(req: Request): Promise<Response> {
       }
       
       const data = await response.json();
-      return data.value || data.price || null;
+      const price = data.value || data.price || null;
+      if (price) {
+        log(`📌 Got ${asset} price from rtds.xyz (fallback): $${price.toFixed(2)}`);
+      }
+      return price;
     } catch (error) {
       log(`⚠️ Failed to fetch ${asset} price: ${error}`);
       return null;
@@ -1006,7 +1045,7 @@ async function handleWebSocket(req: Request): Promise<Response> {
             open_timestamp: nowMs,
             chainlink_timestamp: nowMs,
             event_start_time: market.eventStartTime,
-            source: 'realtime_bot_http',
+            source: 'polymarket_rtds',
             quality: (nowMs - startMs) < 10000 ? 'exact' : ((nowMs - startMs) < 30000 ? 'good' : 'late'),
           };
           
