@@ -1,7 +1,7 @@
 // ============================================================
 // V35 RUNNER - CIRCUIT BREAKER PROTECTED
 // ============================================================
-// Version: V35.3.0 - "Robust Hedging"
+// Version: V35.3.1 - "Safe Hedge Logging"
 // 
 // CRITICAL INVARIANTS:
 // 1. Global Circuit Breaker is the SINGLE SOURCE OF TRUTH for safety
@@ -11,8 +11,10 @@
 // 5. On startup: VALIDATE actual Polymarket positions FIRST
 // 6. If pre-existing imbalance > maxUnpaired, REFUSE to trade that market
 //
-// V35.3.0 KEY CHANGE: All safety decisions flow through CircuitBreaker.
-// When the breaker trips, ALL trading halts immediately across ALL markets.
+// V35.3.1 FIX:
+// - Fixed circular JSON error in hedge event logging
+// - Added inventory snapshot logging after each fill cycle
+// - Guard events now logged to bot_events table
 // ============================================================
 
 import '../config.js'; // Load env first
@@ -42,7 +44,7 @@ import { syncOrders, cancelAllOrders, updateOrderbook, reconcileOrders, cancelSi
 import { processFillWithHedge, logMarketFillStats } from './fill-tracker.js';
 import { getHedgeManager, resetHedgeManager } from './hedge-manager.js';
 import { getCircuitBreaker, initCircuitBreaker, resetCircuitBreaker } from './circuit-breaker.js';
-import { sendV35Heartbeat, sendV35Offline, saveV35Settlement, saveV35Fill, saveV35OrderbookSnapshots } from './backend.js';
+import { sendV35Heartbeat, sendV35Offline, saveV35Settlement, saveV35Fill, saveV35OrderbookSnapshots, saveV35InventorySnapshot, type V35InventorySnapshot } from './backend.js';
 import type { V35OrderbookSnapshot } from './types.js';
 import { ensureValidCredentials, getBalance, getOpenOrders } from '../polymarket.js';
 import { checkVpnRequired } from '../vpn-check.js';
@@ -293,6 +295,7 @@ function processWsEvent(data: any): void {
 /**
  * Handle fills received from the authenticated User WebSocket
  * TRIGGERS ACTIVE HEDGE via HedgeManager
+ * V35.3.1: Also logs inventory snapshots after each fill cycle
  */
 async function handleFillFromUserWs(fill: V35Fill): Promise<void> {
   const market = markets.get(fill.marketSlug);
@@ -335,6 +338,37 @@ async function handleFillFromUserWs(fill: V35Fill): Promise<void> {
     if (fill.orderId && currentOrders.has(fill.orderId)) {
       currentOrders.delete(fill.orderId);
     }
+    
+    // V35.3.1: Log inventory snapshot after each fill cycle
+    const unpaired = Math.abs(market.upQty - market.downQty);
+    const paired = Math.min(market.upQty, market.downQty);
+    const avgUp = market.upQty > 0 ? market.upCost / market.upQty : null;
+    const avgDown = market.downQty > 0 ? market.downCost / market.downQty : null;
+    const pairCost = (avgUp !== null && avgDown !== null) ? avgUp + avgDown : null;
+    
+    // Determine state based on imbalance
+    let state: 'BALANCED' | 'WARNING' | 'CRITICAL' = 'BALANCED';
+    if (unpaired >= 35) state = 'CRITICAL';
+    else if (unpaired >= 20) state = 'WARNING';
+    
+    const snapshot: V35InventorySnapshot = {
+      marketSlug: market.slug,
+      asset: market.asset,
+      upShares: market.upQty,
+      downShares: market.downQty,
+      avgUpCost: avgUp,
+      avgDownCost: avgDown,
+      pairedShares: paired,
+      unpairedShares: unpaired,
+      unpairedNotionalUsd: unpaired * 0.50, // Rough estimate at midpoint
+      pairCost,
+      state,
+      triggerType: hedgeResult?.hedged ? 'HEDGE' : 'FILL',
+    };
+    
+    saveV35InventorySnapshot(snapshot).catch(err => {
+      logError('Failed to save inventory snapshot:', err);
+    });
   }
 }
 

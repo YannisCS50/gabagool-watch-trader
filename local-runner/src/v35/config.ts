@@ -1,7 +1,7 @@
 // ============================================================
 // V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.3.0 - "Robust Hedging"
+// Version: V35.3.1 - "Safe Hedge Logging"
 //
 // Passive Dual-Outcome Market Maker for Polymarket 15-min options
 // 
@@ -10,15 +10,15 @@
 // At settlement: one side pays $1.00, other pays $0.00.
 // If combined cost < $1.00 -> GUARANTEED profit.
 //
-// V35.3.0 FIXES:
-// - Global Circuit Breaker with ABSOLUTE hard stops
-// - Improved hedge viability (min notional $1.50)
-// - Coordinated safety guards across all modules
-// - VERSION CONSISTENCY: All files report V35.3.0
+// V35.3.1 FIXES:
+// - Fixed circular JSON error in hedge event logging (safeStringify)
+// - Added guard event logging to bot_events table
+// - Added inventory snapshot logging after each fill cycle
+// - All safety checks now log events for debugging
 // ============================================================
 
-export const V35_VERSION = 'V35.3.0';
-export const V35_CODENAME = 'Robust Hedging';
+export const V35_VERSION = 'V35.3.1';
+export const V35_CODENAME = 'Safe Hedge Logging';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 

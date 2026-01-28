@@ -1,7 +1,7 @@
 // ============================================================
 // V35 INDEX - Re-exports all V35 modules
 // ============================================================
-// Version: V35.3.0 - "Robust Hedging"
+// Version: V35.3.1 - "Safe Hedge Logging"
 // ============================================================
 
 export * from './config.js';
@@ -13,6 +13,7 @@ export * from './fill-tracker.js';
 export * from './hedge-manager.js';
 export * from './circuit-breaker.js';
 export * from './backend.js';
+export * from './utils.js';
 
-export const V35_VERSION = 'V35.3.0';
-export const V35_NAME = 'Robust Hedging - Circuit Breaker Protected';
+export const V35_VERSION = 'V35.3.1';
+export const V35_NAME = 'Safe Hedge Logging - Fixed circular JSON + Guard logging';
