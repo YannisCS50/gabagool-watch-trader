@@ -61,7 +61,7 @@ import {
 // CONSTANTS
 // ============================================================
 
-const VERSION = 'V35.2.0';
+const VERSION = 'V35.2.1';
 const RUNNER_ID = process.env.RUNNER_ID || `v35-${os.hostname()}`;
 const RUN_ID = `v35_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
@@ -392,8 +392,8 @@ async function refreshMarkets(): Promise<void> {
     const existingPos = getCachedPosition(m.slug);
     if (existingPos) {
       const existingImbalance = Math.abs(existingPos.upShares - existingPos.downShares);
-    if (existingImbalance >= config.maxUnpairedImbalance) {
-        log(`🚨 REFUSING TO TRADE ${m.slug}: Pre-existing imbalance of ${existingImbalance.toFixed(1)} shares > max ${config.maxUnpairedImbalance}`);
+      if (existingImbalance >= config.maxUnpairedShares) {
+        log(`🚨 REFUSING TO TRADE ${m.slug}: Pre-existing imbalance of ${existingImbalance.toFixed(1)} shares > max ${config.maxUnpairedShares}`);
         log(`   UP: ${existingPos.upShares.toFixed(1)}, DOWN: ${existingPos.downShares.toFixed(1)}`);
         log(`   ⚠️ Close this position manually before the bot will trade this market`);
         continue; // Skip this market entirely
@@ -493,36 +493,52 @@ async function processMarket(market: V35Market): Promise<void> {
   const secondsToExpiry = (market.expiry.getTime() - now) / 1000;
   
   // =========================================================================
-  // V35.1.2: Sync positions from Polymarket API (source of truth)
-  // The position cache is keyed by EXACT market slug - no cross-market leakage
+  // V35.2.0 CRITICAL FIX: CONSERVATIVE POSITION SYNC
+  // =========================================================================
+  // Problem: API lags behind fills by 1-2 seconds. If we blindly trust API,
+  // we reset local tracking and think we have 0 shares → place more orders.
+  //
+  // Solution: Use the MAXIMUM of local tracking and API (conservative).
+  // This ensures we NEVER underestimate our exposure.
   // =========================================================================
   const cachedPos = getCachedPosition(market.slug);
   if (cachedPos) {
-    // Log if there's a drift between local tracking and Polymarket API
     const localUp = market.upQty;
     const localDown = market.downQty;
     const apiUp = cachedPos.upShares;
     const apiDown = cachedPos.downShares;
     
-    if (Math.abs(localUp - apiUp) > 0.1 || Math.abs(localDown - apiDown) > 0.1) {
-      log(`🔄 POSITION SYNC: Local (UP=${localUp.toFixed(0)} DOWN=${localDown.toFixed(0)}) → API (UP=${apiUp.toFixed(0)} DOWN=${apiDown.toFixed(0)})`);
+    // CONSERVATIVE: Take the HIGHER value to avoid underestimating exposure
+    const safeUpQty = Math.max(localUp, apiUp);
+    const safeDownQty = Math.max(localDown, apiDown);
+    
+    // Log drift for debugging
+    if (Math.abs(localUp - apiUp) > 1 || Math.abs(localDown - apiDown) > 1) {
+      log(`⚠️ POSITION DRIFT: Local (UP=${localUp.toFixed(0)} DOWN=${localDown.toFixed(0)}) vs API (UP=${apiUp.toFixed(0)} DOWN=${apiDown.toFixed(0)})`);
+      log(`   → Using CONSERVATIVE max: UP=${safeUpQty.toFixed(0)} DOWN=${safeDownQty.toFixed(0)}`);
     }
     
-    // Update internal state with REAL positions from Polymarket
-    market.upQty = cachedPos.upShares;
-    market.downQty = cachedPos.downShares;
-    market.upCost = cachedPos.upCost;
-    market.downCost = cachedPos.downCost;
+    // Only UPDATE if API is HIGHER (we learned about fills we missed)
+    // Never LOWER based on stale API data
+    if (apiUp > localUp) {
+      market.upQty = apiUp;
+      market.upCost = cachedPos.upCost;
+      log(`📈 API shows more UP shares than local: ${localUp.toFixed(0)} → ${apiUp.toFixed(0)}`);
+    }
+    if (apiDown > localDown) {
+      market.downQty = apiDown;
+      market.downCost = cachedPos.downCost;
+      log(`📈 API shows more DOWN shares than local: ${localDown.toFixed(0)} → ${apiDown.toFixed(0)}`);
+    }
   }
   
   // =========================================================================
-  // V35.1.2 HARD CHECK: Refuse to quote if already overexposed
-  // This is a SAFETY NET - the market discovery should have blocked us earlier
+  // V35.2.0 HARD CHECK: Refuse to quote if already overexposed
   // =========================================================================
   const currentImbalance = Math.abs(market.upQty - market.downQty);
-  if (currentImbalance >= config.maxUnpairedImbalance) {
-    log(`🛑 ${market.slug.slice(-25)}: BLOCKED - imbalance ${currentImbalance.toFixed(1)} >= max ${config.maxUnpairedImbalance}`);
-    log(`   UP: ${market.upQty.toFixed(1)}, DOWN: ${market.downQty.toFixed(1)} - Manual intervention required`);
+  if (currentImbalance >= config.maxUnpairedShares) {
+    log(`🚨 ${market.slug.slice(-25)}: BLOCKED - imbalance ${currentImbalance.toFixed(1)} >= max ${config.maxUnpairedShares}`);
+    log(`   UP: ${market.upQty.toFixed(1)}, DOWN: ${market.downQty.toFixed(1)} - HALTING ALL QUOTING`);
     await cancelAllOrders(market, config.dryRun);
     return;
   }

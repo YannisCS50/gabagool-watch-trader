@@ -278,7 +278,7 @@ export function setV35ConfigOverrides(overrides: Partial<V35Config>): V35Config 
 
 export function printV35Config(cfg: V35Config): void {
   console.log('\n' + '='.repeat(70));
-  console.log(`  V35 GABAGOOL STRATEGY — ${cfg.mode.toUpperCase()} MODE (V35.2.0 Burst-Safe)`);
+  console.log(`  V35 GABAGOOL STRATEGY — ${cfg.mode.toUpperCase()} MODE (V35.2.1 Conservative Sync)`);
   console.log('='.repeat(70));
   console.log(`
   📊 GRID (passive limit orders)
