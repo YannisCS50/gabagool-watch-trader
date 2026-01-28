@@ -108,7 +108,7 @@ export class QuotingEngine {
     // 1. Cheap side cannot LEAD expensive side (prevents unpaired loss on cheap side)
     // 2. Expensive side cannot get too far AHEAD (prevents reversal risk)
     const balanceBuffer = 5;      // Buffer to prevent flip-flopping
-    const maxGap = 30;            // Max shares the expensive side can lead by
+    const maxGap = 10;            // Max shares the expensive side can lead by
     
     // Rule 1: Block cheap side if it's leading
     if (side === cheapSide && cheapQty >= expensiveQty + balanceBuffer) {
