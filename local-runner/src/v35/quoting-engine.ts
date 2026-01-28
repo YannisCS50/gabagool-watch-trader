@@ -81,8 +81,8 @@ export class QuotingEngine {
     // EMERGENCY STOP: Only at extreme imbalance
     // With active hedging, we can be more lenient here
     // =========================================================================
-    if (imbalance > config.maxUnpairedShares) {
-      const reason = `EMERGENCY: ${imbalance.toFixed(0)} share imbalance > ${config.maxUnpairedShares} max`;
+    if (imbalance >= config.maxUnpairedShares) {
+      const reason = `EMERGENCY: ${imbalance.toFixed(0)} share imbalance >= ${config.maxUnpairedShares} max`;
       console.log(`[QuotingEngine] 🚨 ${reason}`);
       
       logV35GuardEvent({

@@ -168,49 +168,89 @@ async function placeOrderWithRetry(
  * OPTIMIZED: Cancels all orders in parallel
  */
 export async function cancelAllOrders(market: V35Market, dryRun: boolean): Promise<number> {
-  const allOrderIds = [
-    ...([...market.upOrders.keys()].map(id => ({ id, side: 'UP' as const }))),
-    ...([...market.downOrders.keys()].map(id => ({ id, side: 'DOWN' as const }))),
-  ];
-  
-  if (allOrderIds.length === 0) {
-    return 0;
+  // IMPORTANT:
+  // cancelAllOrders must cancel BOTH locally-tracked orders AND any remote open orders
+  // that we might not have in memory (common after restarts or missed WS events).
+
+  // Collect local orders
+  const localUp = [...market.upOrders.keys()];
+  const localDown = [...market.downOrders.keys()];
+
+  // Collect remote orders for both tokens
+  let remoteUp: string[] = [];
+  let remoteDown: string[] = [];
+  if (!dryRun) {
+    try {
+      const { orders, error } = await getOpenOrders();
+      if (error) {
+        console.warn(`[OrderManager] CancelAll: failed to fetch open orders: ${error}`);
+      } else {
+        remoteUp = orders
+          .filter(o => o.tokenId === market.upTokenId && o.side === 'BUY')
+          .map(o => o.orderId);
+        remoteDown = orders
+          .filter(o => o.tokenId === market.downTokenId && o.side === 'BUY')
+          .map(o => o.orderId);
+      }
+    } catch (err: any) {
+      console.warn(`[OrderManager] CancelAll: open-orders fetch threw: ${err?.message}`);
+    }
   }
-  
+
+  const upOrderIds = Array.from(new Set([...localUp, ...remoteUp]));
+  const downOrderIds = Array.from(new Set([...localDown, ...remoteDown]));
+
+  const allOrderIds = [
+    ...upOrderIds.map(id => ({ id, side: 'UP' as const })),
+    ...downOrderIds.map(id => ({ id, side: 'DOWN' as const })),
+  ];
+
+  if (allOrderIds.length === 0) return 0;
+
   if (dryRun) {
+    console.log(`[DRY] Cancel all orders (UP=${upOrderIds.length}, DOWN=${downOrderIds.length})`);
     market.upOrders.clear();
     market.downOrders.clear();
     return allOrderIds.length;
   }
-  
-  console.log(`[OrderManager] 🗑️ Cancelling ${allOrderIds.length} orders in parallel...`);
-  
-  const cancelPromises = allOrderIds.map(async ({ id, side }) => {
-    try {
-      const res = await cancelOrder(id);
-      return { id, side, success: res?.success ?? false, error: res?.error };
-    } catch (err: any) {
-      return { id, side, success: false, error: err?.message };
-    }
-  });
-  
-  const results = await Promise.all(cancelPromises);
+
+  console.log(`[OrderManager] 🗑️ Cancelling ALL orders (UP=${upOrderIds.length}, DOWN=${downOrderIds.length})...`);
+
   let cancelled = 0;
-  
-  for (const result of results) {
-    if (result.success) {
-      if (result.side === 'UP') {
-        market.upOrders.delete(result.id);
+  // Cancel in batches to reduce API rate-limit / Cloudflare failures.
+  for (let i = 0; i < allOrderIds.length; i += MAX_CONCURRENT_ORDERS) {
+    const batch = allOrderIds.slice(i, i + MAX_CONCURRENT_ORDERS);
+    const results = await Promise.all(
+      batch.map(async ({ id, side }) => {
+        try {
+          const res = await cancelOrder(id);
+          return { id, side, success: res?.success ?? false, error: res?.error };
+        } catch (err: any) {
+          return { id, side, success: false, error: err?.message };
+        }
+      })
+    );
+
+    for (const result of results) {
+      if (result.success) {
+        if (result.side === 'UP') market.upOrders.delete(result.id);
+        else market.downOrders.delete(result.id);
+        cancelled++;
       } else {
-        market.downOrders.delete(result.id);
+        console.warn(`[OrderManager] CancelAll ${result.side} failed for ${result.id}: ${result.error}`);
       }
-      cancelled++;
-    } else {
-      console.warn(`[OrderManager] CancelAll ${result.side} failed for ${result.id}: ${result.error}`);
+    }
+
+    if (i + MAX_CONCURRENT_ORDERS < allOrderIds.length) {
+      await sleep(150);
     }
   }
-  
-  console.log(`[OrderManager] ✅ Cancelled ${cancelled}/${allOrderIds.length} orders`);
+
+  // Defensive: clear local maps; reconciliation will re-add any truly remaining remote orders.
+  market.upOrders.clear();
+  market.downOrders.clear();
+
+  console.log(`[OrderManager] ✅ Cancelled ${cancelled}/${allOrderIds.length} orders (all sides)`);
   return cancelled;
 }
 
