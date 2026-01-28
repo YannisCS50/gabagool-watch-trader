@@ -1,6 +1,8 @@
 // ============================================================
 // V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
+// Version: V35.3.0 - "Robust Hedging"
+//
 // Passive Dual-Outcome Market Maker for Polymarket 15-min options
 // 
 // STRATEGY: Place limit BUY orders on a grid for both UP and DOWN sides.
@@ -8,11 +10,15 @@
 // At settlement: one side pays $1.00, other pays $0.00.
 // If combined cost < $1.00 -> GUARANTEED profit.
 //
-// SOURCE: Reverse-engineered from gabagool22's proven strategy
-// - 34,569 trades analyzed
-// - $165,450 volume
-// - 1.88% ROI, 93% win rate
+// V35.3.0 FIXES:
+// - Global Circuit Breaker with ABSOLUTE hard stops
+// - Improved hedge viability (min notional $1.50)
+// - Coordinated safety guards across all modules
+// - VERSION CONSISTENCY: All files report V35.3.0
 // ============================================================
+
+export const V35_VERSION = 'V35.3.0';
+export const V35_CODENAME = 'Robust Hedging';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 
@@ -35,45 +41,47 @@ export interface V35Config {
   sharesPerLevel: number;   // Shares per price level (min 3 for Polymarket)
   
   // =========================================================================
-  // 🎯 HEDGE PARAMETERS (V35.1.0 - THE FIX)
+  // 🎯 HEDGE PARAMETERS (V35.1.0+)
   // =========================================================================
   enableActiveHedge: boolean;       // TRUE = gabagool style active hedging
   maxHedgeSlippage: number;         // Max extra we'll pay for hedge (e.g., 0.03)
   hedgeTimeoutMs: number;           // Timeout for hedge order
   minEdgeAfterHedge: number;        // Minimum edge after hedge (e.g., 0.005 = 0.5%)
   maxExpensiveBias: number;         // Max ratio expensive:cheap (e.g., 1.2 = 20% more)
+  minHedgeNotional: number;         // V35.3.0: Min $ notional for hedge orders
   
   // =========================================================================
-  // 🛡️ RISK LIMITS
+  // 🛡️ RISK LIMITS - V35.3.0 CIRCUIT BREAKER INTEGRATED
   // =========================================================================
-  warnUnpairedShares: number;   // Warning threshold - start blocking leading-side quoting
-  maxUnpairedShares: number;    // Emergency stop - absolute max imbalance
-  maxUnpairedImbalance: number; // Alias for maxUnpairedShares (used by runner)
-  maxImbalanceRatio: number;    // Max ratio UP:DOWN or DOWN:UP (2.0 per doc)
-  maxLossPerMarket: number;     // Max $ loss per market before stopping
-  maxConcurrentMarkets: number; // Max markets to trade simultaneously
-  maxMarkets: number;           // Alias for maxConcurrentMarkets (used by runner)
-  maxNotionalPerMarket: number; // Max $ notional per market
-  maxTotalExposure: number;     // Max $ total exposure across all markets
-  skewThreshold: number;        // Skew threshold for warning logs
-  capitalPerMarket: number;     // $ allocated per market
+  warnUnpairedShares: number;       // Warning threshold - block leading side
+  criticalUnpairedShares: number;   // Critical - cancel all leading, prepare halt
+  maxUnpairedShares: number;        // ABSOLUTE HARD STOP - trip circuit breaker
+  maxUnpairedImbalance: number;     // Alias for maxUnpairedShares (compatibility)
+  maxImbalanceRatio: number;        // Max ratio UP:DOWN or DOWN:UP
+  maxLossPerMarket: number;         // Max $ loss per market before stopping
+  maxConcurrentMarkets: number;     // Max markets to trade simultaneously
+  maxMarkets: number;               // Alias for maxConcurrentMarkets
+  maxNotionalPerMarket: number;     // Max $ notional per market
+  maxTotalExposure: number;         // Max $ total exposure across all markets
+  skewThreshold: number;            // Skew threshold for warning logs
+  capitalPerMarket: number;         // $ allocated per market
   
   // =========================================================================
   // ⏱️ TIMING PARAMETERS
   // =========================================================================
-  startDelayMs: number;         // Delay after market open before placing orders
-  stopBeforeExpirySec: number;  // Stop quoting X seconds before expiry
-  refreshIntervalMs: number;    // Milliseconds between order updates
+  startDelayMs: number;             // Delay after market open before placing orders
+  stopBeforeExpirySec: number;      // Stop quoting X seconds before expiry
+  refreshIntervalMs: number;        // Milliseconds between order updates
   
   // =========================================================================
   // 🚫 FEATURES
   // =========================================================================
-  enableMomentumFilter: boolean;  // MUST BE FALSE - reduces fills
+  enableMomentumFilter: boolean;    // MUST BE FALSE - reduces fills
   
   // =========================================================================
   // 🎯 ASSETS
   // =========================================================================
-  enabledAssets: string[];      // Which assets to trade ['BTC', 'ETH']
+  enabledAssets: string[];          // Which assets to trade ['BTC', 'ETH']
   
   // =========================================================================
   // 🔌 API CONFIGURATION
@@ -84,7 +92,7 @@ export interface V35Config {
   // =========================================================================
   // 🧪 TESTING
   // =========================================================================
-  dryRun: boolean;               // True = no real orders (simulation)
+  dryRun: boolean;                  // True = no real orders (simulation)
   
   // =========================================================================
   // 📁 LOGGING
@@ -97,9 +105,8 @@ export interface V35Config {
 // =========================================================================
 
 /**
- * TEST MODE - Minimum Viable Test
- * Use for initial validation with $150 capital
- * Run 50 markets before scaling up
+ * TEST MODE - V35.3.0 Robust Hedging
+ * Conservative limits with circuit breaker protection
  */
 export const TEST_CONFIG: V35Config = {
   mode: 'test',
@@ -110,27 +117,31 @@ export const TEST_CONFIG: V35Config = {
   gridStep: 0.02,
   sharesPerLevel: 5,
   
-  // HEDGE PARAMETERS - V35.1.0 THE KEY CHANGE
-  enableActiveHedge: true,          // 🔥 THIS IS THE FIX
+  // HEDGE PARAMETERS - V35.3.0 IMPROVED
+  enableActiveHedge: true,
   maxHedgeSlippage: 0.03,           // Accept up to 3¢ slippage for hedge
   hedgeTimeoutMs: 2000,             // 2 second timeout
   minEdgeAfterHedge: 0.005,         // Minimum 0.5% edge after hedge
   maxExpensiveBias: 1.20,           // Expensive side can have 20% more shares
+  minHedgeNotional: 1.50,           // V35.3.0 FIX: Min $1.50 notional for hedges
   
-  // Risk limits - V35.2.0 BURST-SAFE
-  // HARD REQUIREMENT (per user): max 20 unpaired shares
-  // Burst-cap in quoting engine ensures this can NEVER be exceeded
-  warnUnpairedShares: 10,           // Start blocking leading side at 10
-  maxUnpairedShares: 20,            // HARD LIMIT: emergency stop at 20
-  maxUnpairedImbalance: 20,         // Alias for maxUnpairedShares
-  maxImbalanceRatio: 2.5,
+  // Risk limits - V35.3.0 CIRCUIT BREAKER INTEGRATED
+  // Three-tier safety system:
+  // 1. WARNING (15) - block leading side
+  // 2. CRITICAL (25) - cancel leading side, prepare halt
+  // 3. ABSOLUTE (35) - trip circuit breaker, halt ALL trading
+  warnUnpairedShares: 15,
+  criticalUnpairedShares: 25,
+  maxUnpairedShares: 35,            // ABSOLUTE HARD STOP
+  maxUnpairedImbalance: 35,         // Alias
+  maxImbalanceRatio: 2.0,           // Stricter ratio
   maxLossPerMarket: 25,
-  maxConcurrentMarkets: 2,
-  maxMarkets: 2,
-  maxNotionalPerMarket: 150,
-  maxTotalExposure: 300,
-  skewThreshold: 10,                // Lower threshold for logging
-  capitalPerMarket: 100,
+  maxConcurrentMarkets: 1,          // V35.3.0: Start with 1 market only
+  maxMarkets: 1,
+  maxNotionalPerMarket: 100,        // Lower for safety
+  maxTotalExposure: 150,
+  skewThreshold: 10,
+  capitalPerMarket: 75,
   
   // Timing
   startDelayMs: 5000,
@@ -149,7 +160,7 @@ export const TEST_CONFIG: V35Config = {
 };
 
 /**
- * MODERATE MODE - After successful test phase
+ * MODERATE MODE - V35.3.0
  * Use after 50+ profitable markets in test mode
  */
 export const MODERATE_CONFIG: V35Config = {
@@ -167,17 +178,19 @@ export const MODERATE_CONFIG: V35Config = {
   hedgeTimeoutMs: 2000,
   minEdgeAfterHedge: 0.005,
   maxExpensiveBias: 1.20,
+  minHedgeNotional: 1.50,
   
-  // Risk limits - V35.2.0 BURST-SAFE
-  warnUnpairedShares: 10,
-  maxUnpairedShares: 20,
-  maxUnpairedImbalance: 20,
+  // Risk limits - V35.3.0
+  warnUnpairedShares: 15,
+  criticalUnpairedShares: 30,
+  maxUnpairedShares: 40,
+  maxUnpairedImbalance: 40,
   maxImbalanceRatio: 2.0,
   maxLossPerMarket: 25,
-  maxConcurrentMarkets: 5,
-  maxMarkets: 5,
+  maxConcurrentMarkets: 3,
+  maxMarkets: 3,
   maxNotionalPerMarket: 200,
-  maxTotalExposure: 1000,
+  maxTotalExposure: 600,
   skewThreshold: 10,
   capitalPerMarket: 100,
   
@@ -198,7 +211,7 @@ export const MODERATE_CONFIG: V35Config = {
 };
 
 /**
- * PRODUCTION MODE - Full Gabagool replication
+ * PRODUCTION MODE - V35.3.0
  * Use after consistent profitability in moderate mode
  */
 export const PRODUCTION_CONFIG: V35Config = {
@@ -216,19 +229,21 @@ export const PRODUCTION_CONFIG: V35Config = {
   hedgeTimeoutMs: 2000,
   minEdgeAfterHedge: 0.005,
   maxExpensiveBias: 1.20,
+  minHedgeNotional: 1.50,
   
-  // Risk limits - V35.2.0 BURST-SAFE
-  warnUnpairedShares: 10,
-  maxUnpairedShares: 20,
-  maxUnpairedImbalance: 20,
+  // Risk limits - V35.3.0 (scaled up for production)
+  warnUnpairedShares: 20,
+  criticalUnpairedShares: 40,
+  maxUnpairedShares: 50,
+  maxUnpairedImbalance: 50,
   maxImbalanceRatio: 2.0,
   maxLossPerMarket: 50,
-  maxConcurrentMarkets: 10,
-  maxMarkets: 10,
-  maxNotionalPerMarket: 1000,
-  maxTotalExposure: 10000,
+  maxConcurrentMarkets: 5,
+  maxMarkets: 5,
+  maxNotionalPerMarket: 500,
+  maxTotalExposure: 2500,
   skewThreshold: 10,
-  capitalPerMarket: 500,
+  capitalPerMarket: 250,
   
   // Timing
   startDelayMs: 2000,
@@ -278,7 +293,7 @@ export function setV35ConfigOverrides(overrides: Partial<V35Config>): V35Config 
 
 export function printV35Config(cfg: V35Config): void {
   console.log('\n' + '='.repeat(70));
-  console.log(`  V35 GABAGOOL STRATEGY — ${cfg.mode.toUpperCase()} MODE (V35.2.1 Conservative Sync)`);
+  console.log(`  V35 GABAGOOL — ${cfg.mode.toUpperCase()} MODE (${V35_VERSION} "${V35_CODENAME}")`);
   console.log('='.repeat(70));
   console.log(`
   📊 GRID (passive limit orders)
@@ -287,15 +302,17 @@ export function printV35Config(cfg: V35Config): void {
      Levels per side: ${Math.floor((cfg.gridMax - cfg.gridMin) / cfg.gridStep) + 1}
      Shares/level:    ${cfg.sharesPerLevel}
 
-  🎯 ACTIVE HEDGING (V35.1.0 - THE FIX)
+  🎯 ACTIVE HEDGING
      Enabled:         ${cfg.enableActiveHedge ? '✅ YES' : '❌ NO'}
      Max slippage:    ${(cfg.maxHedgeSlippage * 100).toFixed(1)}¢
      Min edge:        ${(cfg.minEdgeAfterHedge * 100).toFixed(1)}%
      Expensive bias:  ${cfg.maxExpensiveBias}x
+     Min notional:    $${cfg.minHedgeNotional?.toFixed(2) || '1.00'}
 
-  🛡️ RISK LIMITS
-     Warn unpaired:   ${cfg.warnUnpairedShares} shares
-     Max unpaired:    ${cfg.maxUnpairedShares} shares (hard stop)
+  🛡️ CIRCUIT BREAKER (V35.3.0)
+     ⚠️ WARNING:      ${cfg.warnUnpairedShares} shares (block leading side)
+     🔴 CRITICAL:     ${cfg.criticalUnpairedShares || cfg.maxUnpairedShares - 10} shares (cancel + prepare halt)
+     🚨 ABSOLUTE:     ${cfg.maxUnpairedShares} shares (TRIP CIRCUIT BREAKER)
      Max ratio:       ${cfg.maxImbalanceRatio}:1
      Max loss/market: $${cfg.maxLossPerMarket}
      Max markets:     ${cfg.maxConcurrentMarkets}

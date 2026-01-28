@@ -1,18 +1,18 @@
 // ============================================================
-// V35 RUNNER - WITH MARKET ISOLATION + POSITION VALIDATION
+// V35 RUNNER - CIRCUIT BREAKER PROTECTED
 // ============================================================
-// Version: V35.1.2 - "Market Isolation"
+// Version: V35.3.0 - "Robust Hedging"
 // 
 // CRITICAL INVARIANTS:
-// 1. Each 15-minute market is COMPLETELY INDEPENDENT
-// 2. NO shares carry over between markets
-// 3. New markets ALWAYS start at 0 shares (upQty=0, downQty=0)
-// 4. On startup: VALIDATE actual Polymarket positions FIRST
-// 5. If pre-existing imbalance > maxUnpaired, REFUSE to trade that market
-// 6. Position cache is keyed by EXACT market slug (no cross-market pollution)
+// 1. Global Circuit Breaker is the SINGLE SOURCE OF TRUTH for safety
+// 2. Each 15-minute market is COMPLETELY INDEPENDENT
+// 3. NO shares carry over between markets
+// 4. New markets ALWAYS start at 0 shares (upQty=0, downQty=0)
+// 5. On startup: VALIDATE actual Polymarket positions FIRST
+// 6. If pre-existing imbalance > maxUnpaired, REFUSE to trade that market
 //
-// V35.1.2 FIX: Before trading any market, validates that we're not
-// already overexposed. Prevents catastrophic one-sided accumulation.
+// V35.3.0 KEY CHANGE: All safety decisions flow through CircuitBreaker.
+// When the breaker trips, ALL trading halts immediately across ALL markets.
 // ============================================================
 
 import '../config.js'; // Load env first
@@ -23,6 +23,8 @@ import {
   loadV35Config, 
   setV35ConfigOverrides,
   printV35Config,
+  V35_VERSION,
+  V35_CODENAME,
   type V35Mode 
 } from './config.js';
 import type { 
@@ -39,6 +41,7 @@ import { discoverMarkets, filterByAssets } from './market-discovery.js';
 import { syncOrders, cancelAllOrders, updateOrderbook, reconcileOrders, cancelSideOrders } from './order-manager.js';
 import { processFillWithHedge, logMarketFillStats } from './fill-tracker.js';
 import { getHedgeManager, resetHedgeManager } from './hedge-manager.js';
+import { getCircuitBreaker, initCircuitBreaker, resetCircuitBreaker } from './circuit-breaker.js';
 import { sendV35Heartbeat, sendV35Offline, saveV35Settlement, saveV35Fill, saveV35OrderbookSnapshots } from './backend.js';
 import type { V35OrderbookSnapshot } from './types.js';
 import { ensureValidCredentials, getBalance, getOpenOrders } from '../polymarket.js';
@@ -61,7 +64,7 @@ import {
 // CONSTANTS
 // ============================================================
 
-const VERSION = 'V35.2.1';
+const VERSION = V35_VERSION;
 const RUNNER_ID = process.env.RUNNER_ID || `v35-${os.hostname()}`;
 const RUN_ID = `v35_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
@@ -484,22 +487,31 @@ function cleanupExpiredMarkets(): void {
 }
 
 // ============================================================
-// MARKET PROCESSING
+// MARKET PROCESSING - V35.3.0 CIRCUIT BREAKER INTEGRATED
 // ============================================================
 
 async function processMarket(market: V35Market): Promise<void> {
   const config = getV35Config();
+  const circuitBreaker = getCircuitBreaker();
   const now = Date.now();
   const secondsToExpiry = (market.expiry.getTime() - now) / 1000;
   
   // =========================================================================
-  // V35.2.0 CRITICAL FIX: CONSERVATIVE POSITION SYNC
+  // V35.3.0: CIRCUIT BREAKER CHECK FIRST
   // =========================================================================
-  // Problem: API lags behind fills by 1-2 seconds. If we blindly trust API,
-  // we reset local tracking and think we have 0 shares → place more orders.
-  //
-  // Solution: Use the MAXIMUM of local tracking and API (conservative).
-  // This ensures we NEVER underestimate our exposure.
+  // If the global circuit breaker is tripped, HALT IMMEDIATELY
+  // =========================================================================
+  if (circuitBreaker.isTripped()) {
+    const state = circuitBreaker.getState();
+    log(`🚨 CIRCUIT BREAKER TRIPPED - Skipping all processing for ${market.slug.slice(-25)}`);
+    log(`   Reason: ${state.reason}`);
+    log(`   Tripped at: ${state.trippedAt ? new Date(state.trippedAt).toISOString() : 'unknown'}`);
+    await cancelAllOrders(market, config.dryRun);
+    return;
+  }
+  
+  // =========================================================================
+  // CONSERVATIVE POSITION SYNC (preserved from V35.2.0)
   // =========================================================================
   const cachedPos = getCachedPosition(market.slug);
   if (cachedPos) {
@@ -508,18 +520,13 @@ async function processMarket(market: V35Market): Promise<void> {
     const apiUp = cachedPos.upShares;
     const apiDown = cachedPos.downShares;
     
-    // CONSERVATIVE: Take the HIGHER value to avoid underestimating exposure
-    const safeUpQty = Math.max(localUp, apiUp);
-    const safeDownQty = Math.max(localDown, apiDown);
-    
     // Log drift for debugging
     if (Math.abs(localUp - apiUp) > 1 || Math.abs(localDown - apiDown) > 1) {
       log(`⚠️ POSITION DRIFT: Local (UP=${localUp.toFixed(0)} DOWN=${localDown.toFixed(0)}) vs API (UP=${apiUp.toFixed(0)} DOWN=${apiDown.toFixed(0)})`);
-      log(`   → Using CONSERVATIVE max: UP=${safeUpQty.toFixed(0)} DOWN=${safeDownQty.toFixed(0)}`);
+      log(`   → Using CONSERVATIVE max`);
     }
     
     // Only UPDATE if API is HIGHER (we learned about fills we missed)
-    // Never LOWER based on stale API data
     if (apiUp > localUp) {
       market.upQty = apiUp;
       market.upCost = cachedPos.upCost;
@@ -533,14 +540,15 @@ async function processMarket(market: V35Market): Promise<void> {
   }
   
   // =========================================================================
-  // V35.2.0 HARD CHECK: Refuse to quote if already overexposed
+  // V35.3.0: CIRCUIT BREAKER SAFETY CHECK
   // =========================================================================
-  const currentImbalance = Math.abs(market.upQty - market.downQty);
-  if (currentImbalance >= config.maxUnpairedShares) {
-    log(`🚨 ${market.slug.slice(-25)}: BLOCKED - imbalance ${currentImbalance.toFixed(1)} >= max ${config.maxUnpairedShares}`);
-    log(`   UP: ${market.upQty.toFixed(1)}, DOWN: ${market.downQty.toFixed(1)} - HALTING ALL QUOTING`);
-    await cancelAllOrders(market, config.dryRun);
-    return;
+  // This is the AUTHORITATIVE safety check. All limits are enforced here.
+  // =========================================================================
+  const safetyCheck = await circuitBreaker.checkMarket(market, config.dryRun);
+  
+  if (safetyCheck.shouldStop) {
+    log(`🚨 ${market.slug.slice(-25)}: CIRCUIT BREAKER HALT - ${safetyCheck.reason}`);
+    return; // Do not process this market at all
   }
   
   // Stop quoting if too close to expiry
@@ -548,15 +556,6 @@ async function processMarket(market: V35Market): Promise<void> {
     log(`⏱️ ${market.slug.slice(-25)}: STOP (${secondsToExpiry.toFixed(0)}s to expiry)`);
     await cancelAllOrders(market, config.dryRun);
     return;
-  }
-  
-  // PROFIT-TAKE DISABLED - per user request for "altijd quoten" strategy
-  // The bot should maintain market exposure for as long as possible to 
-  // achieve statistical balance through high fill frequency (market persistence).
-  // Stopping early reduces fill count and can create worse imbalance.
-  const earlyMetrics = calculateMarketMetrics(market);
-  if (earlyMetrics.lockedProfit > 0) {
-    log(`💰 ${market.slug.slice(-25)}: Locked $${earlyMetrics.lockedProfit.toFixed(2)} (profit-take DISABLED, continuing to quote)`);
   }
   
   // Update orderbook
@@ -568,19 +567,11 @@ async function processMarket(market: V35Market): Promise<void> {
   // Calculate metrics
   const metrics = calculateMarketMetrics(market);
   
-  // Check notional limit
-  if (market.upCost + market.downCost >= config.maxNotionalPerMarket) {
-    log(`⚠️ ${market.slug.slice(-25)}: MAX NOTIONAL REACHED`);
-  }
-  
-  // Log status with ratio and momentum info
+  // Log status
   const ratio = (metrics.upQty > 0 && metrics.downQty > 0)
     ? (metrics.upQty > metrics.downQty ? metrics.upQty / metrics.downQty : metrics.downQty / metrics.upQty)
     : 0;
   const ratioWarn = ratio > config.maxImbalanceRatio ? ` 🔴RATIO:${ratio.toFixed(1)}:1` : '';
-  const skewWarn = metrics.skew > config.skewThreshold ? ' ⚠️→UP' 
-                 : metrics.skew < -config.skewThreshold ? ' ⚠️→DOWN' 
-                 : '';
   
   // Get momentum state for this asset
   const binanceFeed = getBinanceFeed();
@@ -593,48 +584,19 @@ async function processMarket(market: V35Market): Promise<void> {
     `UP:${metrics.upQty.toFixed(0)} DOWN:${metrics.downQty.toFixed(0)} | ` +
     `Cost:$${(metrics.upCost + metrics.downCost).toFixed(0)} | ` +
     `CPP:$${metrics.combinedCost.toFixed(3)} | ` +
-    `${trendIndicator}${momentum.toFixed(2)}%${skewWarn}${ratioWarn}`
+    `${trendIndicator}${momentum.toFixed(2)}%${ratioWarn}`
   );
   
   // Sync orders if not paused
   if (!paused) {
     // =========================================================================
-    // SIMPLIFIED IMBALANCE CONTROL (V35.1.0)
+    // V35.3.0: Use circuit breaker decision for quote blocking
     // =========================================================================
-    // With active hedging, we only need emergency stop at extreme imbalance.
-    // The HedgeManager handles balance on every fill.
-    // =========================================================================
-    const imbalance = Math.abs(market.upQty - market.downQty);
+    const allowUpQuotes = !safetyCheck.shouldBlockUp;
+    const allowDownQuotes = !safetyCheck.shouldBlockDown;
     
-    let allowUpQuotes = true;
-    let allowDownQuotes = true;
-    
-    const leadingSide = market.upQty > market.downQty ? 'UP' : 'DOWN';
-
-    // =====================================================================
-    // IMBALANCE GUARD: REAL-TIME TRACKING WITH DETAILED LOGGING
-    // =====================================================================
-    log(`   ⚖️ IMBALANCE CHECK: UP=${market.upQty.toFixed(0)} DOWN=${market.downQty.toFixed(0)} | Gap=${imbalance.toFixed(0)} | Leading=${leadingSide}`);
-    
-    // WARNING threshold: immediately stop adding to the leading side.
-    // This keeps unpaired from drifting upward while we wait for natural pairing / hedges.
-    if (imbalance >= config.warnUnpairedShares) {
-      log(`   ⚠️ WARNING GUARD TRIGGERED: ${imbalance.toFixed(0)} unpaired >= ${config.warnUnpairedShares} threshold`);
-      log(`   🛑 CANCELLING all ${leadingSide} orders to prevent further imbalance...`);
-      const cancelCount = await cancelSideOrders(market, leadingSide, config.dryRun);
-      log(`   ✅ Cancelled ${cancelCount} ${leadingSide} orders (remote + local)`);
-      if (leadingSide === 'UP') allowUpQuotes = false;
-      if (leadingSide === 'DOWN') allowDownQuotes = false;
-    }
-
-    // CRITICAL threshold: hard-stop the market by cancelling ALL orders.
-    // This is the "must never" circuit breaker.
-    if (imbalance >= config.maxUnpairedShares) {
-      log(`   🚨 CRITICAL GUARD TRIGGERED: ${imbalance.toFixed(0)} unpaired >= ${config.maxUnpairedShares} max threshold`);
-      log(`   🚨 EMERGENCY: CANCELLING ALL ORDERS (UP + DOWN) via REMOTE API...`);
-      const cancelCount = await cancelAllOrders(market, config.dryRun);
-      log(`   🚨 EMERGENCY COMPLETE: Cancelled ${cancelCount} orders total — MARKET HALTED`);
-      return; // Do not place any new orders this tick
+    if (safetyCheck.reason) {
+      log(`   🛡️ Safety: ${safetyCheck.reason} | UP=${allowUpQuotes ? '✅' : '🚫'} DOWN=${allowDownQuotes ? '✅' : '🚫'}`);
     }
     
     // Generate quotes only for allowed sides
@@ -642,6 +604,7 @@ async function processMarket(market: V35Market): Promise<void> {
     const downQuotes = allowDownQuotes ? quotingEngine.generateQuotes('DOWN', market) : [];
     
     // Debug: log quote generation
+    const imbalance = Math.abs(market.upQty - market.downQty);
     if ((upQuotes.length === 0 && allowUpQuotes) || (downQuotes.length === 0 && allowDownQuotes)) {
       log(`⚠️ Quote generation: UP=${upQuotes.length}${allowUpQuotes ? '' : '(blocked)'} DOWN=${downQuotes.length}${allowDownQuotes ? '' : '(blocked)'}`);
       log(`   bestAsk: UP=$${market.upBestAsk?.toFixed(2)} DOWN=$${market.downBestAsk?.toFixed(2)}`);

@@ -1,17 +1,18 @@
 // ============================================================
 // V35 HEDGE MANAGER - ACTIVE HEDGING
 // ============================================================
-// Version: V35.1.0 - "True Gabagool"
+// Version: V35.3.0 - "Robust Hedging"
 // 
 // KEY INSIGHT: Gabagool's edge comes from ACTIVE HEDGING, not passive MM.
 // When filled on one side → IMMEDIATELY hedge the other side.
 //
-// This is the core fix that addresses the imbalance problem.
-// Instead of waiting for "natural" fills, we proactively hedge.
+// V35.3.0 FIX: Improved minimum notional check to prevent failed hedges.
+// Previous versions used $1.00 min, but with slippage this often failed.
+// Now uses configurable minHedgeNotional (default $1.50) for reliability.
 // ============================================================
 
 import { EventEmitter } from 'events';
-import { getV35Config } from './config.js';
+import { getV35Config, V35_VERSION } from './config.js';
 import type { V35Market, V35Fill, V35Side, V35Asset } from './types.js';
 import { placeOrder, cancelOrder, getOpenOrders } from '../polymarket.js';
 import { saveBotEvent, type BotEvent } from '../backend.js';
@@ -26,6 +27,7 @@ export interface HedgeViability {
   maxPrice: number;
   expectedEdge?: number;
   combinedCost?: number;
+  minNotionalRequired?: number;
 }
 
 export interface HedgeResult {
@@ -56,9 +58,10 @@ export class HedgeManager extends EventEmitter {
     const config = getV35Config();
     const ts = Date.now();
     
+    console.log(`[HedgeManager] 📦 V35.3.0 processing fill: ${fill.side} ${fill.size.toFixed(0)} @ $${fill.price.toFixed(3)}`);
+    
     if (!config.enableActiveHedge) {
       console.log('[HedgeManager] ⚠️ Active hedge DISABLED - running in legacy mode');
-      // Log disabled state
       await this.logHedgeEvent('hedge_disabled', fill, market, { reason: 'config_disabled' });
       return { hedged: false, reason: 'disabled' };
     }
@@ -81,8 +84,10 @@ export class HedgeManager extends EventEmitter {
       max_price: viability.maxPrice,
       expected_edge: viability.expectedEdge,
       combined_cost: viability.combinedCost,
+      min_notional_required: viability.minNotionalRequired,
       fill_price: fill.price,
       hedge_ask: hedgeSide === 'UP' ? market.upBestAsk : market.downBestAsk,
+      version: V35_VERSION,
     });
     
     if (!viability.viable) {
@@ -263,7 +268,7 @@ export class HedgeManager extends EventEmitter {
 
   /**
    * Place aggressive IOC (Immediate-Or-Cancel) order for hedge
-   * NOTE: We use FOK (Fill-Or-Kill) when available, otherwise GTC with quick cancel
+   * V35.3.0: Improved minimum notional check
    */
   private async placeHedgeOrder(
     market: V35Market,
@@ -274,14 +279,16 @@ export class HedgeManager extends EventEmitter {
     const config = getV35Config();
     const tokenId = side === 'UP' ? market.upTokenId : market.downTokenId;
 
-     // Polymarket enforces a ~$1.00 minimum notional for orders.
-     // If we can't meet it with the exact hedge qty, we should fail loudly.
-     if (quantity * maxPrice < 1.0) {
-       return {
-         filled: false,
-         reason: `below_min_notional: $${(quantity * maxPrice).toFixed(2)} < $1.00`,
-       };
-     }
+    // V35.3.0 FIX: Use configurable min notional (default $1.50)
+    const minNotional = config.minHedgeNotional || 1.50;
+    const orderNotional = quantity * maxPrice;
+    
+    if (orderNotional < minNotional) {
+      return {
+        filled: false,
+        reason: `below_min_notional: $${orderNotional.toFixed(2)} < $${minNotional.toFixed(2)}`,
+      };
+    }
     
     if (config.dryRun) {
       console.log(`[HedgeManager] [DRY RUN] Would place IOC order: ${quantity.toFixed(0)} ${side} @ $${maxPrice.toFixed(3)}`);
