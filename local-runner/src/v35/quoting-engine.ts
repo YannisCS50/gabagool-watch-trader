@@ -1,15 +1,17 @@
 // ============================================================
-// V35 QUOTING ENGINE - CIRCUIT BREAKER INTEGRATED
+// V35 QUOTING ENGINE - HEDGE-FIRST STRATEGY
 // ============================================================
-// Version: V35.3.0 - "Robust Hedging"
+// Version: V35.3.5 - "Hedge-First Quoting"
 //
-// V35.3.0 KEY CHANGE: Quoting engine now defers to the global
-// CircuitBreaker for all safety decisions. This ensures consistent
-// enforcement across the entire system.
+// KEY INSIGHT: The bot only profits when positions are PAIRED.
+// Unpaired shares are pure directional risk that can lose 100%.
 //
-// Previous versions had guards duplicated in multiple places,
-// leading to inconsistent enforcement when some code paths
-// bypassed certain checks.
+// V35.3.5 SOLUTION: Before placing orders on either side, check
+// if hedging is viable. If the opposite side's ask price is too
+// high (combined cost would exceed $1.00), DON'T PLACE ORDERS.
+// This prevents accumulating unhegeable fills.
+//
+// RULE: Only quote when we can GUARANTEE profitability.
 // ============================================================
 
 import { getV35Config, V35_VERSION, type V35Config } from './config.js';
@@ -17,6 +19,9 @@ import type { V35Market, V35Quote, V35Side, V35Asset } from './types.js';
 import { logV35GuardEvent } from './backend.js';
 import { getV35SidePricing } from './market-pricing.js';
 import { getCircuitBreaker } from './circuit-breaker.js';
+
+// Maximum combined cost we'll accept (leaves 2% profit margin)
+const MAX_COMBINED_COST = 0.98;
 
 interface QuoteDecision {
   quotes: V35Quote[];
@@ -79,6 +84,40 @@ export class QuotingEngine {
     const currentQty = side === 'UP' ? market.upQty : market.downQty;
     const oppositeQty = side === 'UP' ? market.downQty : market.upQty;
     const imbalance = Math.abs(market.upQty - market.downQty);
+    
+    // =========================================================================
+    // V35.3.5 HEDGE-FIRST CHECK: Only quote if hedging is viable
+    // =========================================================================
+    // Before placing any order, verify that the OPPOSITE side has viable
+    // liquidity at a price that keeps combined cost under MAX_COMBINED_COST.
+    // This prevents accumulating fills we cannot profitably hedge.
+    // =========================================================================
+    const oppositeAsk = side === 'UP' ? market.downBestAsk : market.upBestAsk;
+    
+    // For a new fill at our grid prices (average around 0.45-0.50), 
+    // we need the opposite ask to be low enough that combined < MAX_COMBINED_COST
+    // Typical grid mid = 0.50, so opposite ask must be < 0.48 for 2% margin
+    const avgGridPrice = (config.gridMin + config.gridMax) / 2;
+    const maxOppositeAsk = MAX_COMBINED_COST - avgGridPrice;
+    
+    if (oppositeAsk > 0 && oppositeAsk > maxOppositeAsk) {
+      const projectedCombined = avgGridPrice + oppositeAsk;
+      const reason = `HEDGE-FIRST: ${side} blocked - opposite ask $${oppositeAsk.toFixed(3)} too high (combined $${projectedCombined.toFixed(3)} > $${MAX_COMBINED_COST})`;
+      console.log(`[QuotingEngine] 🛡️ ${reason}`);
+      
+      logV35GuardEvent({
+        marketSlug: market.slug,
+        asset: market.asset,
+        guardType: 'HEDGE_FIRST',
+        blockedSide: side,
+        upQty: market.upQty,
+        downQty: market.downQty,
+        expensiveSide,
+        reason,
+      }).catch(() => {});
+      
+      return { quotes: [], blocked: true, blockReason: reason };
+    }
     
     // =========================================================================
     // EMERGENCY STOP: Block all quoting at extreme imbalance

@@ -1,7 +1,7 @@
 // ============================================================
-// V35 RUNNER - CIRCUIT BREAKER PROTECTED
+// V35 RUNNER - HEDGE-FIRST PROTECTED
 // ============================================================
-// Version: V35.3.4 - "Orderbook Ready Check"
+// Version: V35.3.5 - "Hedge-First Quoting"
 // 
 // CRITICAL INVARIANTS:
 // 1. Global Circuit Breaker is the SINGLE SOURCE OF TRUTH for safety
