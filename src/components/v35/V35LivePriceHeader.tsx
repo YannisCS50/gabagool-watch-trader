@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useRealtimePrices } from '@/hooks/useRealtimePrices';
+import { useChainlinkRealtime } from '@/hooks/useChainlinkRealtime';
 import { useStrikePrices } from '@/hooks/useStrikePrices';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
@@ -43,7 +43,7 @@ function extractActiveMarkets(strikePrices: Record<string, number>): ActiveMarke
 }
 
 export function V35LivePriceHeader() {
-  const { binanceConnected, getSpotPrice, getSpotTimestamp, messageCount } = useRealtimePrices(true);
+  const { btcPrice, isConnected, updateCount, lastUpdate } = useChainlinkRealtime(true);
   const { strikePrices, isLoading: strikesLoading } = useStrikePrices();
   const [tick, setTick] = useState(0);
   
@@ -53,9 +53,7 @@ export function V35LivePriceHeader() {
     return () => clearInterval(interval);
   }, []);
   
-  const btcPrice = getSpotPrice('BTC');
-  const btcTimestamp = getSpotTimestamp('BTC');
-  const isStale = btcTimestamp ? Date.now() - btcTimestamp > 5000 : true;
+  const isStale = lastUpdate ? Date.now() - lastUpdate.getTime() > 10000 : true;
   
   // Get active markets with strike prices
   const activeMarkets = extractActiveMarkets(strikePrices);
@@ -71,10 +69,10 @@ export function V35LivePriceHeader() {
         <div className="flex flex-wrap items-center justify-between gap-4">
           {/* Connection Status */}
           <div className="flex items-center gap-2">
-            {binanceConnected ? (
+            {isConnected ? (
               <Badge variant="outline" className="bg-emerald-500/10 text-emerald-500 border-emerald-500/30">
                 <Wifi className="h-3 w-3 mr-1" />
-                Live Feed
+                Chainlink Live
               </Badge>
             ) : (
               <Badge variant="outline" className="bg-destructive/10 text-destructive border-destructive/30">
@@ -83,7 +81,7 @@ export function V35LivePriceHeader() {
               </Badge>
             )}
             <span className="text-xs text-muted-foreground">
-              {messageCount.toLocaleString()} ticks
+              {updateCount.toLocaleString()} updates
             </span>
           </div>
           
