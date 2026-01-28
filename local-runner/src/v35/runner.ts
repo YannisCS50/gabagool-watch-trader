@@ -37,7 +37,7 @@ import type {
 import { createEmptyMarket, calculateMarketMetrics } from './types.js';
 import { QuotingEngine } from './quoting-engine.js';
 import { discoverMarkets, filterByAssets } from './market-discovery.js';
-import { syncOrders, cancelAllOrders, updateOrderbook } from './order-manager.js';
+import { syncOrders, cancelAllOrders, updateOrderbook, reconcileOrders } from './order-manager.js';
 import { processFill, logMarketFillStats } from './fill-tracker.js';
 import { sendV35Heartbeat, sendV35Offline, saveV35Settlement, saveV35Fill, saveV35OrderbookSnapshots } from './backend.js';
 import type { V35OrderbookSnapshot } from './types.js';
@@ -72,6 +72,10 @@ let clobSocket: WebSocket | null = null;
 const orderbookBuffer: V35OrderbookSnapshot[] = [];
 const ORDERBOOK_LOG_INTERVAL_MS = 5000; // Flush every 5 seconds
 const MAX_ORDERBOOK_BUFFER = 100; // Max before force flush
+
+// Order reconciliation timing
+let lastReconcileTime = 0;
+const RECONCILE_INTERVAL_MS = 30_000; // Reconcile with Polymarket API every 30s
 
 // ============================================================
 // LOGGING HELPERS
@@ -597,6 +601,20 @@ async function mainLoop(): Promise<void> {
       const p = getPortfolioMetrics();
       if (p.totalCost >= config.maxTotalExposure) {
         log(`⚠️ MAX TOTAL EXPOSURE REACHED: $${p.totalCost.toFixed(0)}`);
+      }
+      
+      // =================================================================
+      // ORDER RECONCILIATION - Sync local tracking with Polymarket API
+      // Runs every 30 seconds to prevent order stacking from missed fills
+      // =================================================================
+      const now = Date.now();
+      if (now - lastReconcileTime > RECONCILE_INTERVAL_MS && !config.dryRun) {
+        log('🔄 Running order reconciliation...');
+        const { cleaned, added } = await reconcileOrders(markets, config.dryRun);
+        lastReconcileTime = now;
+        if (cleaned > 0 || added > 0) {
+          log(`🔄 Reconciliation complete: ${cleaned} stale orders cleaned, ${added} missing orders added`);
+        }
       }
       
       // Process each market
