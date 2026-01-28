@@ -1,14 +1,16 @@
 import { useState, useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { useV35Realtime } from '@/hooks/useV35Realtime';
 import { MainNav } from '@/components/MainNav';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { V35LogViewer, V35FillsTable, V35ExportButton, V35StrategyPDFExport, V35OpenPositions, V35LivePriceHeader } from '@/components/v35';
+import { toast } from 'sonner';
 import { 
   Activity, 
   TrendingUp, 
@@ -21,7 +23,9 @@ import {
   CircleDot,
   CheckCircle2,
   XCircle,
-  ScrollText
+  ScrollText,
+  Power,
+  AlertTriangle
 } from 'lucide-react';
 
 interface RunnerHeartbeat {
@@ -60,9 +64,52 @@ interface V35Settlement {
 export default function V35Dashboard() {
   const [isOnline, setIsOnline] = useState(false);
   const [lastSeen, setLastSeen] = useState<Date | null>(null);
+  const queryClient = useQueryClient();
 
   // Enable realtime subscriptions
   useV35Realtime();
+
+  // Fetch bot config (strategy_enabled)
+  const { data: botConfig } = useQuery({
+    queryKey: ['bot-config'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('bot_config')
+        .select('strategy_enabled')
+        .eq('id', '00000000-0000-0000-0000-000000000001')
+        .single();
+      
+      if (error) return { strategy_enabled: false };
+      return data;
+    },
+    refetchInterval: 5000,
+  });
+
+  // Kill switch mutation
+  const killMutation = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      const { error } = await supabase
+        .from('bot_config')
+        .update({ strategy_enabled: enabled, updated_at: new Date().toISOString() })
+        .eq('id', '00000000-0000-0000-0000-000000000001');
+      
+      if (error) throw error;
+      return enabled;
+    },
+    onSuccess: (enabled) => {
+      queryClient.invalidateQueries({ queryKey: ['bot-config'] });
+      if (enabled) {
+        toast.success('Bot geactiveerd', { description: 'Strategy is nu actief' });
+      } else {
+        toast.warning('Bot gestopt!', { description: 'Alle orders worden geannuleerd' });
+      }
+    },
+    onError: (error) => {
+      toast.error('Kill switch mislukt', { description: String(error) });
+    },
+  });
+
+  const isStrategyEnabled = botConfig?.strategy_enabled ?? false;
 
   // Fetch runner heartbeat
   const { data: heartbeat } = useQuery({
@@ -132,6 +179,24 @@ export default function V35Dashboard() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            {/* Kill Switch */}
+            <Button
+              variant={isStrategyEnabled ? "destructive" : "default"}
+              size="sm"
+              onClick={() => killMutation.mutate(!isStrategyEnabled)}
+              disabled={killMutation.isPending}
+              className={isStrategyEnabled ? "bg-destructive hover:bg-destructive/90" : "bg-primary hover:bg-primary/90"}
+            >
+              {killMutation.isPending ? (
+                <Activity className="w-4 h-4 mr-1 animate-spin" />
+              ) : isStrategyEnabled ? (
+                <AlertTriangle className="w-4 h-4 mr-1" />
+              ) : (
+                <Power className="w-4 h-4 mr-1" />
+              )}
+              {isStrategyEnabled ? 'STOP BOT' : 'START BOT'}
+            </Button>
+            
             <V35StrategyPDFExport />
             <V35ExportButton />
             {heartbeat?.dry_run && (
