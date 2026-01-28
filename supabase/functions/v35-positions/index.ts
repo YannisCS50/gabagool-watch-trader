@@ -32,15 +32,12 @@ interface PolymarketPosition {
 interface MarketPosition {
   market_slug: string;
   asset: string;
-  // Polymarket data (ground truth)
   polymarket_up_qty: number;
   polymarket_up_avg: number;
   polymarket_down_qty: number;
   polymarket_down_avg: number;
-  // Current live prices from Polymarket
   live_up_price: number;
   live_down_price: number;
-  // Derived metrics (from Polymarket only)
   paired: number;
   unpaired: number;
   combined_cost: number;
@@ -48,6 +45,19 @@ interface MarketPosition {
   total_cost: number;
   current_value: number;
   unrealized_pnl: number;
+}
+
+interface ExpiredMarketPnL {
+  market_slug: string;
+  asset: string;
+  up_qty: number;
+  down_qty: number;
+  up_cost: number;
+  down_cost: number;
+  paired: number;
+  combined_cost: number;
+  realized_pnl: number;
+  expired_at: Date;
 }
 
 async function fetchPolymarketPositions(walletAddress: string): Promise<PolymarketPosition[]> {
@@ -121,7 +131,6 @@ async function fetchPolymarketPositions(walletAddress: string): Promise<Polymark
 }
 
 async function getBotWalletAddress(supabase: any): Promise<string | null> {
-  // Single-row table in this project; still fetch latest to be robust.
   const { data, error } = await supabase
     .from('bot_config')
     .select('polymarket_address, updated_at, created_at')
@@ -138,11 +147,121 @@ async function getBotWalletAddress(supabase: any): Promise<string | null> {
   return normalizeWalletAddress(data?.polymarket_address);
 }
 
+/**
+ * Calculate realized PnL from EXPIRED markets using v35_fills database.
+ * This covers markets where the runner stopped before calling saveV35Settlement.
+ */
+async function calculateRealizedPnLFromFills(
+  supabase: any, 
+  walletAddress: string
+): Promise<{ markets: ExpiredMarketPnL[]; totalRealizedPnL: number }> {
+  const now = Date.now();
+  
+  // Get all fills for this wallet, grouped by market
+  const { data: fills, error } = await supabase
+    .from('v35_fills')
+    .select('market_slug, asset, side, price, size')
+    .eq('wallet_address', walletAddress.toLowerCase());
+
+  if (error) {
+    console.error('❌ Error fetching fills for realized PnL:', error);
+    return { markets: [], totalRealizedPnL: 0 };
+  }
+
+  if (!fills || fills.length === 0) {
+    return { markets: [], totalRealizedPnL: 0 };
+  }
+
+  // Group fills by market
+  const marketFills = new Map<string, { 
+    asset: string;
+    upQty: number; upCost: number;
+    downQty: number; downCost: number;
+  }>();
+
+  for (const fill of fills) {
+    const slug = fill.market_slug || '';
+    if (!slug) continue;
+
+    if (!marketFills.has(slug)) {
+      marketFills.set(slug, {
+        asset: fill.asset || 'UNKNOWN',
+        upQty: 0, upCost: 0,
+        downQty: 0, downCost: 0,
+      });
+    }
+
+    const m = marketFills.get(slug)!;
+    const side = (fill.side || '').toUpperCase();
+    const price = parseFloat(fill.price) || 0;
+    const size = parseFloat(fill.size) || 0;
+
+    // Classify fills: UP/YES → upQty, DOWN/NO → downQty
+    if (side === 'UP' || side === 'YES') {
+      m.upQty += size;
+      m.upCost += size * price;
+    } else if (side === 'DOWN' || side === 'NO') {
+      m.downQty += size;
+      m.downCost += size * price;
+    }
+    // Ignore other sides (e.g., 'BUY'/'SELL' without directional info)
+  }
+
+  // Calculate realized PnL for EXPIRED markets only
+  const expiredMarkets: ExpiredMarketPnL[] = [];
+  let totalRealizedPnL = 0;
+
+  for (const [slug, m] of marketFills.entries()) {
+    // Parse epoch from slug
+    const match = slug.match(/(\d{10})$/);
+    if (!match) continue;
+    
+    const epochMs = parseInt(match[1]) * 1000;
+    const expiryMs = epochMs + 15 * 60 * 1000;
+    
+    // Only count EXPIRED markets
+    if (expiryMs >= now) continue;
+
+    const upAvg = m.upQty > 0 ? m.upCost / m.upQty : 0;
+    const downAvg = m.downQty > 0 ? m.downCost / m.downQty : 0;
+    const paired = Math.min(m.upQty, m.downQty);
+    const combinedCost = upAvg + downAvg;
+    
+    // Realized PnL = paired * (1 - combined_cost)
+    // This is the guaranteed profit from paired positions
+    const realizedPnL = paired > 0 && combinedCost < 1 
+      ? paired * (1 - combinedCost) 
+      : 0;
+
+    if (realizedPnL > 0 || paired > 0) {
+      expiredMarkets.push({
+        market_slug: slug,
+        asset: m.asset,
+        up_qty: m.upQty,
+        down_qty: m.downQty,
+        up_cost: m.upCost,
+        down_cost: m.downCost,
+        paired,
+        combined_cost: combinedCost,
+        realized_pnl: realizedPnL,
+        expired_at: new Date(expiryMs),
+      });
+      totalRealizedPnL += realizedPnL;
+    }
+  }
+
+  // Sort by most recent
+  expiredMarkets.sort((a, b) => b.expired_at.getTime() - a.expired_at.getTime());
+
+  console.log(`💰 Calculated realized PnL from ${expiredMarkets.length} expired markets: $${totalRealizedPnL.toFixed(2)}`);
+  
+  return { markets: expiredMarkets, totalRealizedPnL };
+}
+
 function is15mCryptoMarket(position: PolymarketPosition): boolean {
   const market = position.market.toLowerCase();
   const slug = (position.eventSlug || '').toLowerCase();
   
-  // Check for 15m market patterns
   const has15m = market.includes('15m') || 
                  market.includes('15 min') ||
                  market.includes(':00am-') ||
@@ -154,7 +273,6 @@ function is15mCryptoMarket(position: PolymarketPosition): boolean {
                  market.includes(':30pm-') ||
                  market.includes(':45pm-');
   
-  // Check for crypto assets
   const hasCrypto = market.includes('btc') || 
                     market.includes('bitcoin') ||
                     market.includes('eth') || 
@@ -170,28 +288,20 @@ function is15mCryptoMarket(position: PolymarketPosition): boolean {
   return has15m && hasCrypto;
 }
 
-/**
- * Parse epoch timestamp from market slug like "btc-updown-15m-1769517000"
- */
 function getMarketEpochFromSlug(slug: string): number | null {
   const match = slug.match(/(\d{10})$/);
   if (!match) return null;
-  return parseInt(match[1]) * 1000; // convert to ms
+  return parseInt(match[1]) * 1000;
 }
 
-/**
- * Check if market is currently LIVE (not yet expired).
- * Each 15-minute market starts fresh - expired markets do NOT carry over.
- */
 function isMarketLive(position: PolymarketPosition): boolean {
   const slug = position.eventSlug || '';
   const epoch = getMarketEpochFromSlug(slug);
   if (!epoch) {
-    // If we can't parse the epoch, exclude it (safety)
     console.log(`   ⚠️ Cannot parse epoch from slug: ${slug}, excluding`);
     return false;
   }
-  const expiryMs = epoch + 15 * 60 * 1000; // end of 15m window
+  const expiryMs = epoch + 15 * 60 * 1000;
   const now = Date.now();
   const isLive = expiryMs > now;
   if (!isLive) {
@@ -201,10 +311,7 @@ function isMarketLive(position: PolymarketPosition): boolean {
 }
 
 function extractMarketSlug(position: PolymarketPosition): string {
-  // Use eventSlug if available, otherwise derive from market title
   if (position.eventSlug) return position.eventSlug;
-  
-  // Fallback: create a slug from the market title
   return position.market.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 80);
 }
 
@@ -241,16 +348,21 @@ Deno.serve(async (req) => {
       });
     }
 
-    // 1. Fetch real positions from Polymarket - ONLY LIVE MARKETS
-    // Each 15-minute market starts fresh at 0 - expired markets don't carry over
+    // 1. Fetch LIVE positions from Polymarket
     const allPositions = await fetchPolymarketPositions(walletAddress);
     const positions15m = allPositions
       .filter(is15mCryptoMarket)
-      .filter(isMarketLive);  // Only show LIVE markets, not expired ones
+      .filter(isMarketLive);
     
     console.log(`📈 Found ${positions15m.length} LIVE 15-min crypto positions (filtered from ${allPositions.length} total)`);
 
-    // 2. Group Polymarket positions by market slug
+    // 2. Calculate REALIZED PnL from expired markets (database)
+    const { markets: expiredMarkets, totalRealizedPnL } = await calculateRealizedPnLFromFills(
+      supabase, 
+      walletAddress
+    );
+
+    // 3. Group live Polymarket positions by market slug
     const polymarketByMarket = new Map<string, { 
       upQty: number; upCost: number; upAvg: number;
       downQty: number; downCost: number; downAvg: number;
@@ -278,25 +390,22 @@ Deno.serve(async (req) => {
       if (isUp) {
         m.upQty += pos.size;
         m.upCost += pos.size * pos.avgPrice;
-        m.upCurPrice = pos.curPrice; // Current market price
+        m.upCurPrice = pos.curPrice;
         m.upCurrentValue += pos.currentValue;
       } else {
         m.downQty += pos.size;
         m.downCost += pos.size * pos.avgPrice;
-        m.downCurPrice = pos.curPrice; // Current market price
+        m.downCurPrice = pos.curPrice;
         m.downCurrentValue += pos.currentValue;
       }
     }
 
-    // Calculate averages
     for (const m of polymarketByMarket.values()) {
       m.upAvg = m.upQty > 0 ? m.upCost / m.upQty : 0;
       m.downAvg = m.downQty > 0 ? m.downCost / m.downQty : 0;
     }
 
-    // 3. Build result from Polymarket data (ground truth)
-    // NOTE: We no longer use v35_fills as they may contain fills from other traders
-    // Polymarket API is the authoritative source for current positions
+    // 4. Build result from live Polymarket data
     const result: MarketPosition[] = [];
 
     for (const [slug, pm] of polymarketByMarket.entries()) {
@@ -311,17 +420,14 @@ Deno.serve(async (req) => {
       const combined_cost = upAvg + downAvg;
       const locked_profit = combined_cost < 1 && paired > 0 ? paired * (1 - combined_cost) : 0;
 
-      // Calculate costs and values
       const upCost = polymarket_up_qty * pm.upAvg;
       const downCost = polymarket_down_qty * pm.downAvg;
       const total_cost = upCost + downCost;
       
-      // Current value based on live prices
       const upCurrentValue = pm.upCurrentValue || (polymarket_up_qty * pm.upCurPrice);
       const downCurrentValue = pm.downCurrentValue || (polymarket_down_qty * pm.downCurPrice);
       const current_value = upCurrentValue + downCurrentValue;
       
-      // Unrealized P&L
       const unrealized_pnl = current_value - total_cost;
 
       result.push({
@@ -343,10 +449,9 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Sort by most recent (based on market slug pattern if contains time)
     result.sort((a, b) => b.market_slug.localeCompare(a.market_slug));
 
-    console.log(`✅ Built ${result.length} market positions (Polymarket only, no fills DB)`);
+    console.log(`✅ Built ${result.length} live positions + ${expiredMarkets.length} expired markets`);
 
     return new Response(JSON.stringify({
       success: true,
@@ -360,7 +465,12 @@ Deno.serve(async (req) => {
         total_cost: result.reduce((s, p) => s + p.total_cost, 0),
         total_current_value: result.reduce((s, p) => s + p.current_value, 0),
         total_unrealized_pnl: result.reduce((s, p) => s + p.unrealized_pnl, 0),
+        // NEW: Realized PnL from expired markets
+        total_realized_pnl: totalRealizedPnL,
+        expired_markets_count: expiredMarkets.length,
       },
+      // NEW: Include expired markets for detailed view
+      expired_markets: expiredMarkets.slice(0, 50), // Limit to 50 most recent
       polymarket_raw: positions15m.length,
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
