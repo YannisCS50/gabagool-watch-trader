@@ -94,16 +94,15 @@ export class QuotingEngine {
     // =========================================================================
     const oppositeAsk = side === 'UP' ? market.downBestAsk : market.upBestAsk;
     
-    // V35.3.9 STRICTER HEDGE-FIRST CHECK
-    // Use the MAXIMUM grid price (worst case) instead of average.
-    // This ensures even the most expensive fills can be profitably hedged.
-    // gridMax is typically 0.55, so opposite ask must be < 0.43 for 2% margin
-    const worstCaseGridPrice = config.gridMax;
-    const maxOppositeAsk = MAX_COMBINED_COST - worstCaseGridPrice;
+    // For a new fill at our grid prices (average around 0.45-0.50), 
+    // we need the opposite ask to be low enough that combined < MAX_COMBINED_COST
+    // Typical grid mid = 0.50, so opposite ask must be < 0.48 for 2% margin
+    const avgGridPrice = (config.gridMin + config.gridMax) / 2;
+    const maxOppositeAsk = MAX_COMBINED_COST - avgGridPrice;
     
     if (oppositeAsk > 0 && oppositeAsk > maxOppositeAsk) {
-      const projectedCombined = worstCaseGridPrice + oppositeAsk;
-      const reason = `HEDGE-FIRST: ${side} blocked - opposite ask $${oppositeAsk.toFixed(3)} too high (worst case combined $${projectedCombined.toFixed(3)} > $${MAX_COMBINED_COST})`;
+      const projectedCombined = avgGridPrice + oppositeAsk;
+      const reason = `HEDGE-FIRST: ${side} blocked - opposite ask $${oppositeAsk.toFixed(3)} too high (combined $${projectedCombined.toFixed(3)} > $${MAX_COMBINED_COST})`;
       console.log(`[QuotingEngine] 🛡️ ${reason}`);
       
       logV35GuardEvent({
