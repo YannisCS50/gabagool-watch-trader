@@ -1083,6 +1083,65 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
 }
 
 // ============================================================
+// GET OPEN ORDERS
+// ============================================================
+
+/**
+ * Interface for open order from Polymarket
+ */
+export interface OpenOrder {
+  orderId: string;
+  tokenId: string;
+  side: 'BUY' | 'SELL';
+  price: number;
+  size: number;
+  sizeMatched: number;
+  status: string;
+  createdAt: number;
+}
+
+/**
+ * Fetch all open orders for the authenticated user.
+ * Used for order reconciliation to prevent order stacking.
+ */
+export async function getOpenOrders(): Promise<{ orders: OpenOrder[]; error?: string }> {
+  try {
+    const client = await getClient();
+    
+    // Use SDK's getOpenOrders method
+    const response = await (client as any).getOpenOrders();
+    
+    // Handle SDK returning error payloads
+    if (response?.error || (typeof response?.status === 'number' && response.status >= 400)) {
+      const errMsg = response?.error ?? `status=${response?.status}`;
+      console.error(`❌ getOpenOrders error: ${errMsg}`);
+      return { orders: [], error: String(errMsg) };
+    }
+    
+    // Parse response - SDK may return array directly or wrapped
+    const rawOrders = Array.isArray(response) ? response : (response?.orders || response?.data || []);
+    
+    const orders: OpenOrder[] = rawOrders.map((o: any) => ({
+      orderId: o.id || o.order_id || o.orderId,
+      tokenId: o.asset_id || o.token_id || o.tokenId,
+      side: (o.side?.toUpperCase() === 'BUY' || o.side === 'BUY') ? 'BUY' : 'SELL',
+      price: parseFloat(o.price || '0'),
+      size: parseFloat(o.original_size || o.size || '0'),
+      sizeMatched: parseFloat(o.size_matched || o.sizeMatched || '0'),
+      status: o.status || 'unknown',
+      createdAt: o.created_at ? new Date(o.created_at).getTime() : Date.now(),
+    })).filter((o: OpenOrder) => o.orderId && o.tokenId);
+    
+    console.log(`📋 Fetched ${orders.length} open orders from Polymarket`);
+    return { orders };
+  } catch (error: any) {
+    const msg = String(error?.message || error);
+    console.error('❌ Failed to fetch open orders:', msg);
+    return { orders: [], error: msg };
+  }
+}
+
+// ============================================================
 // CANCEL ORDER (v7.2.7 REV C.4.1)
 // ============================================================
 

@@ -5,11 +5,14 @@
 // Uses the existing polymarket.ts client for CLOB operations.
 //
 // OPTIMIZED: Places all orders in parallel for maximum speed.
+// 
+// FIX v35.0.2: Added order reconciliation with Polymarket API
+// to prevent order stacking when fills are missed.
 // ============================================================
 
 import { getV35Config } from './config.js';
 import type { V35Market, V35Order, V35Quote, V35Side } from './types.js';
-import { getOrderbookDepth, placeOrder, cancelOrder } from '../polymarket.js';
+import { getOrderbookDepth, placeOrder, cancelOrder, getOpenOrders, type OpenOrder } from '../polymarket.js';
 
 interface PlaceOrderResult {
   success: boolean;
@@ -21,6 +24,10 @@ interface PlaceOrderResult {
 
 // Concurrency limit for parallel order placement
 const MAX_CONCURRENT_ORDERS = 10;
+
+// Track last reconciliation time per market
+const lastReconcileTime = new Map<string, number>();
+const RECONCILE_INTERVAL_MS = 30_000; // Reconcile every 30 seconds
 
 /**
  * Sync orders for one side of a market to match target quotes
@@ -225,4 +232,122 @@ export async function updateOrderbook(market: V35Market, dryRun: boolean): Promi
   } catch (err: any) {
     console.warn(`[OrderManager] Orderbook update failed:`, err?.message);
   }
+}
+
+// ============================================================
+// ORDER RECONCILIATION - CRITICAL BUG FIX
+// ============================================================
+// Syncs local order tracking with actual Polymarket open orders.
+// Prevents order stacking when fills are missed via WebSocket.
+// ============================================================
+
+/**
+ * Reconcile local order tracking with Polymarket's actual open orders.
+ * This prevents order accumulation when fill events are missed.
+ * 
+ * Returns the number of orders cleaned up.
+ */
+export async function reconcileOrders(
+  markets: Map<string, V35Market>,
+  dryRun: boolean
+): Promise<{ cleaned: number; added: number }> {
+  if (dryRun) {
+    return { cleaned: 0, added: 0 };
+  }
+  
+  const { orders, error } = await getOpenOrders();
+  if (error) {
+    console.warn(`[OrderManager] Reconciliation failed: ${error}`);
+    return { cleaned: 0, added: 0 };
+  }
+  
+  // Build a set of all actual open order IDs from Polymarket
+  const remoteOrderIds = new Set(orders.map(o => o.orderId));
+  
+  // Build a map of tokenId -> orders for quick lookup
+  const ordersByToken = new Map<string, OpenOrder[]>();
+  for (const order of orders) {
+    if (!ordersByToken.has(order.tokenId)) {
+      ordersByToken.set(order.tokenId, []);
+    }
+    ordersByToken.get(order.tokenId)!.push(order);
+  }
+  
+  let cleaned = 0;
+  let added = 0;
+  
+  // For each market, sync local tracking with remote orders
+  for (const market of markets.values()) {
+    // Process UP side
+    const upRemoteOrders = ordersByToken.get(market.upTokenId) || [];
+    const upRemoteIds = new Set(upRemoteOrders.map(o => o.orderId));
+    
+    // Remove local orders that don't exist on Polymarket (already filled or cancelled)
+    for (const orderId of market.upOrders.keys()) {
+      if (!remoteOrderIds.has(orderId)) {
+        market.upOrders.delete(orderId);
+        cleaned++;
+      }
+    }
+    
+    // Add remote orders we don't know about (placed but not tracked locally)
+    for (const order of upRemoteOrders) {
+      if (!market.upOrders.has(order.orderId) && order.side === 'BUY') {
+        market.upOrders.set(order.orderId, {
+          orderId: order.orderId,
+          price: order.price,
+          size: order.size - order.sizeMatched,
+          side: 'UP',
+          placedAt: new Date(order.createdAt),
+        });
+        added++;
+      }
+    }
+    
+    // Process DOWN side
+    const downRemoteOrders = ordersByToken.get(market.downTokenId) || [];
+    
+    // Remove local orders that don't exist on Polymarket
+    for (const orderId of market.downOrders.keys()) {
+      if (!remoteOrderIds.has(orderId)) {
+        market.downOrders.delete(orderId);
+        cleaned++;
+      }
+    }
+    
+    // Add remote orders we don't know about
+    for (const order of downRemoteOrders) {
+      if (!market.downOrders.has(order.orderId) && order.side === 'BUY') {
+        market.downOrders.set(order.orderId, {
+          orderId: order.orderId,
+          price: order.price,
+          size: order.size - order.sizeMatched,
+          side: 'DOWN',
+          placedAt: new Date(order.createdAt),
+        });
+        added++;
+      }
+    }
+  }
+  
+  if (cleaned > 0 || added > 0) {
+    console.log(`[OrderManager] 🔄 Reconciled orders: cleaned=${cleaned} added=${added}`);
+  }
+  
+  return { cleaned, added };
+}
+
+/**
+ * Check if a market needs reconciliation (throttled)
+ */
+export function needsReconciliation(marketSlug: string): boolean {
+  const lastReconcile = lastReconcileTime.get(marketSlug) || 0;
+  return Date.now() - lastReconcile > RECONCILE_INTERVAL_MS;
+}
+
+/**
+ * Mark a market as reconciled
+ */
+export function markReconciled(marketSlug: string): void {
+  lastReconcileTime.set(marketSlug, Date.now());
 }
