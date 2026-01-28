@@ -35,9 +35,18 @@ export interface V35Config {
   sharesPerLevel: number;   // Shares per price level (min 3 for Polymarket)
   
   // =========================================================================
+  // 🎯 HEDGE PARAMETERS (V35.1.0 - THE FIX)
+  // =========================================================================
+  enableActiveHedge: boolean;       // TRUE = gabagool style active hedging
+  maxHedgeSlippage: number;         // Max extra we'll pay for hedge (e.g., 0.03)
+  hedgeTimeoutMs: number;           // Timeout for hedge order
+  minEdgeAfterHedge: number;        // Minimum edge after hedge (e.g., 0.005 = 0.5%)
+  maxExpensiveBias: number;         // Max ratio expensive:cheap (e.g., 1.2 = 20% more)
+  
+  // =========================================================================
   // 🛡️ RISK LIMITS
   // =========================================================================
-  maxUnpairedShares: number;    // Max directional exposure (30 per doc)
+  maxUnpairedShares: number;    // Emergency stop - absolute max imbalance
   maxUnpairedImbalance: number; // Alias for maxUnpairedShares (used by runner)
   maxImbalanceRatio: number;    // Max ratio UP:DOWN or DOWN:UP (2.0 per doc)
   maxLossPerMarket: number;     // Max $ loss per market before stopping
@@ -56,10 +65,9 @@ export interface V35Config {
   refreshIntervalMs: number;    // Milliseconds between order updates
   
   // =========================================================================
-  // 🚫 FEATURES - CRITICAL: KEEP DISABLED PER STRATEGY DOC
+  // 🚫 FEATURES
   // =========================================================================
-  enableMomentumFilter: boolean;  // MUST BE FALSE - reduces fills, creates imbalance
-  enableFillSync: boolean;        // MUST BE FALSE - prevents natural balancing
+  enableMomentumFilter: boolean;  // MUST BE FALSE - reduces fills
   
   // =========================================================================
   // 🎯 ASSETS
@@ -95,37 +103,39 @@ export interface V35Config {
 export const TEST_CONFIG: V35Config = {
   mode: 'test',
   
-  // Grid - INCREASED DENSITY: 41 levels per side (was 17)
-  // Analysis shows Gabagool uses 99 levels; we increase from 17 to 41 within same range
+  // Grid: 41 levels per side (2¢ step)
   gridMin: 0.10,
   gridMax: 0.90,
-  gridStep: 0.02,           // 2¢ step = 41 levels per side (was 0.05 = 17 levels)
-  sharesPerLevel: 5,        // Polymarket minimum is 5 shares per order
+  gridStep: 0.02,
+  sharesPerLevel: 5,
   
-  // Risk limits - INCREASED to allow ~75 shares per side
-  maxUnpairedShares: 50,        // Increased from 30
-  maxUnpairedImbalance: 50,     // Alias (used by runner)
-  maxImbalanceRatio: 2.5,       // Slightly relaxed ratio
-  maxLossPerMarket: 25,         // Increased loss tolerance
-  maxConcurrentMarkets: 2,      // Per document
-  maxMarkets: 2,                // Alias (used by runner)
-  maxNotionalPerMarket: 150,    // Increased: 75 shares @ $0.50 avg = ~$75 total
-  maxTotalExposure: 300,        // $300 total
-  skewThreshold: 20,            // 20 shares before warning
-  capitalPerMarket: 100,        // $100 per market
+  // HEDGE PARAMETERS - V35.1.0 THE KEY CHANGE
+  enableActiveHedge: true,          // 🔥 THIS IS THE FIX
+  maxHedgeSlippage: 0.03,           // Accept up to 3¢ slippage for hedge
+  hedgeTimeoutMs: 2000,             // 2 second timeout
+  minEdgeAfterHedge: 0.005,         // Minimum 0.5% edge after hedge
+  maxExpensiveBias: 1.20,           // Expensive side can have 20% more shares
   
-  // Timing - EXTENDED EXPOSURE: stay 90 seconds longer per market
-  startDelayMs: 5000,       // Wait 5s after market open
-  stopBeforeExpirySec: 30,  // Stop 30s before expiry (was 120s) = +90s exposure
-  refreshIntervalMs: 500,   // 500ms for near-instant imbalance control
+  // Risk limits - raised since hedge handles balance
+  maxUnpairedShares: 100,           // Emergency stop (raised - hedge handles balance)
+  maxUnpairedImbalance: 100,
+  maxImbalanceRatio: 2.5,
+  maxLossPerMarket: 25,
+  maxConcurrentMarkets: 2,
+  maxMarkets: 2,
+  maxNotionalPerMarket: 150,
+  maxTotalExposure: 300,
+  skewThreshold: 30,
+  capitalPerMarket: 100,
   
-  // CRITICAL: DISABLED per strategy document
-  // "RULE 1: Never enable momentum filtering"
-  // "RULE 2: Always quote both sides simultaneously"
+  // Timing
+  startDelayMs: 5000,
+  stopBeforeExpirySec: 30,
+  refreshIntervalMs: 500,
+  
+  // Features
   enableMomentumFilter: false,
-  enableFillSync: false,
   
-  // Assets - start with BTC only for testing
   enabledAssets: ['BTC'],
   
   clobUrl: 'https://clob.polymarket.com',
@@ -141,34 +151,39 @@ export const TEST_CONFIG: V35Config = {
 export const MODERATE_CONFIG: V35Config = {
   mode: 'moderate',
   
-  // Grid - INCREASED DENSITY: 41 levels per side
+  // Grid: 41 levels per side
   gridMin: 0.10,
   gridMax: 0.90,
-  gridStep: 0.02,           // 2¢ step = 41 levels per side
-  sharesPerLevel: 5,        // More shares per level
+  gridStep: 0.02,
+  sharesPerLevel: 5,
   
-  // Risk limits - relaxed after validation
-  maxUnpairedShares: 50,
-  maxUnpairedImbalance: 50,     // Alias (used by runner)
+  // HEDGE PARAMETERS
+  enableActiveHedge: true,
+  maxHedgeSlippage: 0.03,
+  hedgeTimeoutMs: 2000,
+  minEdgeAfterHedge: 0.005,
+  maxExpensiveBias: 1.20,
+  
+  // Risk limits
+  maxUnpairedShares: 100,
+  maxUnpairedImbalance: 100,
   maxImbalanceRatio: 2.0,
   maxLossPerMarket: 25,
   maxConcurrentMarkets: 5,
-  maxMarkets: 5,                // Alias (used by runner)
-  maxNotionalPerMarket: 200,    // $200 max per market
-  maxTotalExposure: 1000,       // $1000 total
-  skewThreshold: 15,            // 15 shares before warning
+  maxMarkets: 5,
+  maxNotionalPerMarket: 200,
+  maxTotalExposure: 1000,
+  skewThreshold: 30,
   capitalPerMarket: 100,
   
-  // Timing - EXTENDED EXPOSURE
-  startDelayMs: 3000,       // Faster entry
-  stopBeforeExpirySec: 30,  // Stop 30s before expiry (was 90s)
-  refreshIntervalMs: 3000,
+  // Timing
+  startDelayMs: 3000,
+  stopBeforeExpirySec: 30,
+  refreshIntervalMs: 500,
   
-  // CRITICAL: STILL DISABLED
+  // Features
   enableMomentumFilter: false,
-  enableFillSync: false,
   
-  // Add ETH after validation
   enabledAssets: ['BTC', 'ETH'],
   
   clobUrl: 'https://clob.polymarket.com',
@@ -184,32 +199,38 @@ export const MODERATE_CONFIG: V35Config = {
 export const PRODUCTION_CONFIG: V35Config = {
   mode: 'production',
   
-  // Grid - MAXIMUM DENSITY: 2¢ step within 5-95¢ range = 46 levels
+  // Grid: 46 levels per side (5-95¢)
   gridMin: 0.05,
   gridMax: 0.95,
-  gridStep: 0.02,           // 2¢ step = 46 levels per side
-  sharesPerLevel: 10,       // Larger positions
+  gridStep: 0.02,
+  sharesPerLevel: 10,
+  
+  // HEDGE PARAMETERS
+  enableActiveHedge: true,
+  maxHedgeSlippage: 0.03,
+  hedgeTimeoutMs: 2000,
+  minEdgeAfterHedge: 0.005,
+  maxExpensiveBias: 1.20,
   
   // Risk limits - production scale
-  maxUnpairedShares: 100,
-  maxUnpairedImbalance: 100,    // Alias (used by runner)
+  maxUnpairedShares: 200,
+  maxUnpairedImbalance: 200,
   maxImbalanceRatio: 2.0,
   maxLossPerMarket: 50,
   maxConcurrentMarkets: 10,
-  maxMarkets: 10,               // Alias (used by runner)
-  maxNotionalPerMarket: 1000,   // $1000 max per market
-  maxTotalExposure: 10000,      // $10000 total
-  skewThreshold: 25,            // 25 shares before warning
+  maxMarkets: 10,
+  maxNotionalPerMarket: 1000,
+  maxTotalExposure: 10000,
+  skewThreshold: 50,
   capitalPerMarket: 500,
   
-  // Timing - MAXIMUM EXPOSURE: stay until 15s before expiry
+  // Timing
   startDelayMs: 2000,
-  stopBeforeExpirySec: 15,  // Stop 15s before expiry (was 60s)
-  refreshIntervalMs: 500,   // 500ms for near-instant imbalance control
+  stopBeforeExpirySec: 15,
+  refreshIntervalMs: 500,
   
-  // CRITICAL: STILL DISABLED - this is the secret sauce
+  // Features
   enableMomentumFilter: false,
-  enableFillSync: false,
   
   enabledAssets: ['BTC', 'ETH'],
   
@@ -251,7 +272,7 @@ export function setV35ConfigOverrides(overrides: Partial<V35Config>): V35Config 
 
 export function printV35Config(cfg: V35Config): void {
   console.log('\n' + '='.repeat(70));
-  console.log(`  V35 GABAGOOL STRATEGY — ${cfg.mode.toUpperCase()} MODE`);
+  console.log(`  V35 GABAGOOL STRATEGY — ${cfg.mode.toUpperCase()} MODE (V35.1.0)`);
   console.log('='.repeat(70));
   console.log(`
   📊 GRID (passive limit orders)
@@ -260,39 +281,28 @@ export function printV35Config(cfg: V35Config): void {
      Levels per side: ${Math.floor((cfg.gridMax - cfg.gridMin) / cfg.gridStep) + 1}
      Shares/level:    ${cfg.sharesPerLevel}
 
+  🎯 ACTIVE HEDGING (V35.1.0 - THE FIX)
+     Enabled:         ${cfg.enableActiveHedge ? '✅ YES' : '❌ NO'}
+     Max slippage:    ${(cfg.maxHedgeSlippage * 100).toFixed(1)}¢
+     Min edge:        ${(cfg.minEdgeAfterHedge * 100).toFixed(1)}%
+     Expensive bias:  ${cfg.maxExpensiveBias}x
+
   🛡️ RISK LIMITS
-     Max unpaired:    ${cfg.maxUnpairedShares} shares
+     Max unpaired:    ${cfg.maxUnpairedShares} shares (emergency only)
      Max ratio:       ${cfg.maxImbalanceRatio}:1
      Max loss/market: $${cfg.maxLossPerMarket}
      Max markets:     ${cfg.maxConcurrentMarkets}
-     Capital/market:  $${cfg.capitalPerMarket}
      
   ⏱️ TIMING
      Start delay:     ${cfg.startDelayMs}ms after open
      Stop before exp: ${cfg.stopBeforeExpirySec}s
      Refresh:         ${cfg.refreshIntervalMs}ms
      
-  🚫 FEATURES (DISABLED per gabagool strategy)
-     Momentum filter: ${cfg.enableMomentumFilter ? '⚠️ ON' : '✓ OFF'}
-     Fill sync:       ${cfg.enableFillSync ? '⚠️ ON' : '✓ OFF'}
-     
   🎯 ASSETS
      Trading:         ${cfg.enabledAssets.join(', ')}
      
   🧪 MODE
      Dry run:         ${cfg.dryRun}
-`);
-  console.log('='.repeat(70));
-  console.log(`
-  📈 EXPECTED PERFORMANCE (based on gabagool22 data):
-     Combined cost:   ~$0.98 (target < $1.00)
-     Win rate:        ~93% of markets profitable
-     ROI per market:  ~1.9%
-     
-  ⚠️ CRITICAL RULES:
-     1. NEVER enable momentum filter - reduces fills
-     2. ALWAYS quote both sides - imbalance is temporary
-     3. Trust the math - $1 settlement is guaranteed
 `);
   console.log('='.repeat(70));
 }

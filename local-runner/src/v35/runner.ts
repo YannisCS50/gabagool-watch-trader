@@ -1,20 +1,16 @@
 // ============================================================
-// V35 RUNNER
+// V35 RUNNER - WITH ACTIVE HEDGING
 // ============================================================
-// Passive Dual-Outcome Market Maker for Polymarket 15-min options
+// Version: V35.1.0 - "True Gabagool"
 // 
 // STRATEGY:
 // 1. Discover active 15-min up/down markets
 // 2. Place limit BUY orders on a grid for both UP and DOWN sides
-// 3. When retail traders hit our orders, we accumulate both sides
-// 4. At settlement: one side pays $1.00, other pays $0.00
-// 5. If combined cost < $1.00 -> GUARANTEED profit
+// 3. When retail traders hit our orders, we accumulate one side
+// 4. IMMEDIATELY hedge the opposite side (the key fix)
+// 5. Combined cost < $1.00 -> GUARANTEED profit
 //
-// USAGE:
-//   npm run v35              # Safe mode (default)
-//   V35_MODE=moderate npm run v35
-//   V35_MODE=production npm run v35
-//   V35_DRY_RUN=true npm run v35
+// KEY INSIGHT: Gabagool's edge comes from ACTIVE HEDGING, not passive MM.
 // ============================================================
 
 import '../config.js'; // Load env first
@@ -39,7 +35,8 @@ import { QuotingEngine } from './quoting-engine.js';
 import { getV35SidePricing } from './market-pricing.js';
 import { discoverMarkets, filterByAssets } from './market-discovery.js';
 import { syncOrders, cancelAllOrders, updateOrderbook, reconcileOrders, cancelSideOrders } from './order-manager.js';
-import { processFill, logMarketFillStats } from './fill-tracker.js';
+import { processFillWithHedge, logMarketFillStats } from './fill-tracker.js';
+import { getHedgeManager, resetHedgeManager } from './hedge-manager.js';
 import { sendV35Heartbeat, sendV35Offline, saveV35Settlement, saveV35Fill, saveV35OrderbookSnapshots } from './backend.js';
 import type { V35OrderbookSnapshot } from './types.js';
 import { ensureValidCredentials, getBalance, getOpenOrders } from '../polymarket.js';
@@ -53,7 +50,7 @@ import { startUserWebSocket, stopUserWebSocket, setTokenToMarketMap, isUserWsCon
 // CONSTANTS
 // ============================================================
 
-const VERSION = 'V35.0.4';
+const VERSION = 'V35.1.0';
 const RUNNER_ID = process.env.RUNNER_ID || `v35-${os.hostname()}`;
 const RUN_ID = `v35_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
@@ -276,29 +273,48 @@ function processWsEvent(data: any): void {
 }
 
 // ============================================================
-// FILL HANDLER (from User WebSocket)
+// FILL HANDLER (from User WebSocket) - WITH ACTIVE HEDGING
 // ============================================================
 
 /**
  * Handle fills received from the authenticated User WebSocket
- * This is more reliable than scanning the public trade feed
+ * TRIGGERS ACTIVE HEDGE via HedgeManager
  */
-function handleFillFromUserWs(fill: V35Fill): void {
+async function handleFillFromUserWs(fill: V35Fill): Promise<void> {
   const market = markets.get(fill.marketSlug);
   if (!market) {
     log(`⚠️ Fill for unknown market: ${fill.marketSlug}`);
     return;
   }
 
-  // Update inventory
-  const processed = processFill(fill, markets);
+  log(`🎯 [UserWS] FILL: ${fill.side} ${fill.size.toFixed(0)} @ $${fill.price.toFixed(2)} in ${fill.marketSlug.slice(-25)}`);
+  
+  // Process fill WITH active hedging
+  const { processed, hedgeResult } = await processFillWithHedge(fill, market);
+  
   if (processed) {
-    log(`🎯 [UserWS] FILL: ${fill.side} ${fill.size.toFixed(0)} @ $${fill.price.toFixed(2)} in ${fill.marketSlug.slice(-25)}`);
-    
-    // Persist to database
+    // Persist original fill to database
     saveV35Fill(fill).catch(err => {
       logError('Failed to save fill:', err);
     });
+    
+    // If hedge was successful, also persist the hedge fill
+    if (hedgeResult?.hedged && hedgeResult.filledQty && hedgeResult.avgPrice) {
+      const hedgeSide = fill.side === 'UP' ? 'DOWN' : 'UP';
+      const hedgeFill: V35Fill = {
+        orderId: `HEDGE_${fill.orderId}`,
+        tokenId: hedgeSide === 'UP' ? market.upTokenId : market.downTokenId,
+        side: hedgeSide,
+        price: hedgeResult.avgPrice,
+        size: hedgeResult.filledQty,
+        timestamp: new Date(),
+        marketSlug: market.slug,
+        asset: market.asset,
+      };
+      saveV35Fill(hedgeFill).catch(err => {
+        logError('Failed to save hedge fill:', err);
+      });
+    }
     
     // Remove the filled order from our tracking (if we know about it)
     const currentOrders = fill.side === 'UP' ? market.upOrders : market.downOrders;
@@ -496,57 +512,22 @@ async function processMarket(market: V35Market): Promise<void> {
   // Sync orders if not paused
   if (!paused) {
     // =========================================================================
-    // ACTIVE IMBALANCE CONTROL
+    // SIMPLIFIED IMBALANCE CONTROL (V35.1.0)
     // =========================================================================
-    // If one side is leading by more than maxGap shares, CANCEL all orders on
-    // that side immediately to stop further accumulation. Resume when balanced.
+    // With active hedging, we only need emergency stop at extreme imbalance.
+    // The HedgeManager handles balance on every fill.
     // =========================================================================
-    const MAX_GAP = 10; // Strict max gap between CHEAP and EXPENSIVE sides
-
-    const pricing = getV35SidePricing(market);
-    const cheapLeadsBy = pricing.cheapQty - pricing.expensiveQty;
-    const expensiveLeadsBy = pricing.expensiveQty - pricing.cheapQty;
-    const absGap = Math.abs(pricing.expensiveQty - pricing.cheapQty);
+    const imbalance = Math.abs(market.upQty - market.downQty);
     
     let allowUpQuotes = true;
     let allowDownQuotes = true;
     
-    if (cheapLeadsBy > MAX_GAP) {
-      // The dangerous case: cheap side has more shares than expensive side.
-      // Strict rule: cancel + block the cheap side until it falls back within MAX_GAP.
-      const sideToCancel = pricing.cheapSide;
-      const otherSide = pricing.expensiveSide;
-
-      log(
-        `🛑 IMBALANCE CONTROL (cheap/expensive): CHEAP ${sideToCancel} leads by ${cheapLeadsBy.toFixed(0)} (max: ${MAX_GAP})`
-      );
-      log(
-        `   → Cancelling all ${sideToCancel} orders; allowing EXPENSIVE ${otherSide} to catch up ` +
-          `(avg UP=${pricing.avgUpPrice.toFixed(3)} / avg DOWN=${pricing.avgDownPrice.toFixed(3)})`
-      );
-
-      await cancelSideOrders(market, sideToCancel, config.dryRun);
-      if (sideToCancel === 'UP') allowUpQuotes = false;
-      if (sideToCancel === 'DOWN') allowDownQuotes = false;
-    } else if (expensiveLeadsBy > MAX_GAP) {
-      // Also strict: don't allow the expensive side to run away either.
-      const sideToCancel = pricing.expensiveSide;
-      const otherSide = pricing.cheapSide;
-
-      log(
-        `🛑 IMBALANCE CONTROL (cheap/expensive): EXPENSIVE ${sideToCancel} leads by ${expensiveLeadsBy.toFixed(0)} (max: ${MAX_GAP})`
-      );
-      log(
-        `   → Cancelling all ${sideToCancel} orders; allowing CHEAP ${otherSide} to catch up ` +
-          `(avg UP=${pricing.avgUpPrice.toFixed(3)} / avg DOWN=${pricing.avgDownPrice.toFixed(3)})`
-      );
-
-      await cancelSideOrders(market, sideToCancel, config.dryRun);
-      if (sideToCancel === 'UP') allowUpQuotes = false;
-      if (sideToCancel === 'DOWN') allowDownQuotes = false;
-    } else if (absGap > MAX_GAP) {
-      // Fallback (should be redundant, but keeps behavior robust under NaNs).
-      const leadingSide = market.upQty - market.downQty > 0 ? 'UP' : 'DOWN';
+    // Emergency stop at extreme imbalance (hedge must have failed repeatedly)
+    if (imbalance > config.maxUnpairedShares) {
+      const leadingSide = market.upQty > market.downQty ? 'UP' : 'DOWN';
+      log(`🚨 EMERGENCY STOP: ${imbalance.toFixed(0)} share imbalance > ${config.maxUnpairedShares} max`);
+      log(`   → Cancelling all ${leadingSide} orders until balance restored`);
+      
       await cancelSideOrders(market, leadingSide, config.dryRun);
       if (leadingSide === 'UP') allowUpQuotes = false;
       if (leadingSide === 'DOWN') allowDownQuotes = false;
@@ -560,7 +541,7 @@ async function processMarket(market: V35Market): Promise<void> {
     if ((upQuotes.length === 0 && allowUpQuotes) || (downQuotes.length === 0 && allowDownQuotes)) {
       log(`⚠️ Quote generation: UP=${upQuotes.length}${allowUpQuotes ? '' : '(blocked)'} DOWN=${downQuotes.length}${allowDownQuotes ? '' : '(blocked)'}`);
       log(`   bestAsk: UP=$${market.upBestAsk?.toFixed(2)} DOWN=$${market.downBestAsk?.toFixed(2)}`);
-       log(`   inventory: UP=${market.upQty} DOWN=${market.downQty} (absGap=${absGap.toFixed(0)})`);
+      log(`   inventory: UP=${market.upQty} DOWN=${market.downQty} (imbalance=${imbalance.toFixed(0)})`);
     }
     
     const upResult = await syncOrders(market, 'UP', upQuotes, config.dryRun);

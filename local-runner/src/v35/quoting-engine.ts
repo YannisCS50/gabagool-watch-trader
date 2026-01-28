@@ -1,16 +1,15 @@
 // ============================================================
-// V35 QUOTING ENGINE - GABAGOOL STRATEGY
+// V35 QUOTING ENGINE - WITH ACTIVE HEDGING
 // ============================================================
-// Generates passive limit BUY orders on a grid for market making.
-// Places orders on BOTH UP and DOWN sides simultaneously.
+// Version: V35.1.0 - "True Gabagool"
 //
-// KEY PRINCIPLES (from gabagool strategy document):
-// 1. NEVER filter based on momentum - reduces fills
-// 2. ALWAYS quote both sides - temporary imbalance is OK
-// 3. Trust the mathematics - combined cost < $1 = profit
+// SIMPLIFIED: With active hedging, quoting is much simpler.
+// The HedgeManager handles balance - we just provide liquidity.
+// Guards are minimal: only emergency stop at extreme imbalance.
 //
-// The grid naturally balances over time as prices move.
-// Temporary imbalance is EXPECTED and should be tolerated.
+// EXPENSIVE SIDE LEADS RULE:
+// - Allow expensive side to have more shares (positive EV bias)
+// - Cheap side must stay within ratio of expensive side
 // ============================================================
 
 import { getV35Config, type V35Config } from './config.js';
@@ -49,7 +48,7 @@ export class QuotingEngine {
   
   /**
    * Generate quotes for one side of a market
-   * Per gabagool strategy: minimal filtering, trust the grid
+   * SIMPLIFIED for V35.1.0 - hedge manager handles balance
    */
   generateQuotes(side: V35Side, market: V35Market): V35Quote[] {
     const decision = this.generateQuotesWithReason(side, market);
@@ -63,111 +62,75 @@ export class QuotingEngine {
   
   /**
    * Generate quotes with detailed reasoning
-   * SIMPLIFIED per gabagool strategy - minimal guards
+   * SIMPLIFIED: Only emergency stop guard, hedge handles balance
    */
   generateQuotesWithReason(side: V35Side, market: V35Market): QuoteDecision {
     const config = getV35Config();
     const quotes: V35Quote[] = [];
     
-    // =========================================================================
-    // SMART BALANCE RULE: "EXPENSIVE SIDE LEADS, CHEAP SIDE FOLLOWS"
-    // =========================================================================
-    // Problem: If we accumulate more shares on the CHEAP side, and the EXPENSIVE
-    // side wins (which is more likely), those cheap shares become worthless.
-    //
-    // Solution: Only allow the EXPENSIVE side to have unpaired shares.
-    // The cheap side must never exceed the expensive side's quantity.
-    //
-    // How it works:
-    // - Determine which side is "expensive" (higher avg price)
-    // - If this quote is for the CHEAP side and it already has >= expensive side shares,
-    //   BLOCK further quotes on the cheap side until balance is restored
-    // =========================================================================
-    
-    const skew = market.upQty - market.downQty;
-    const unpaired = Math.abs(skew);
-    const unrealizedPnL = this.calculateUnrealizedPnL(market);
-    
     const {
-      avgUpPrice,
-      avgDownPrice,
-      upLivePrice,
-      downLivePrice,
       expensiveSide,
       cheapSide,
       expensiveQty,
       cheapQty,
     } = getV35SidePricing(market);
     
-    // SMART BALANCE GUARD with TWO rules:
-    // 1. Cheap side cannot LEAD expensive side (prevents unpaired loss on cheap side)
-    // 2. Expensive side cannot get too far AHEAD (prevents reversal risk)
-    const balanceBuffer = 5;      // Buffer to prevent flip-flopping
-    const maxGap = 10;            // Max shares the expensive side can lead by
+    const imbalance = Math.abs(market.upQty - market.downQty);
     
-    // Rule 1: Block cheap side if it's leading
-    if (side === cheapSide && cheapQty >= expensiveQty + balanceBuffer) {
-      const reason = `Cheap side (${side}) cannot lead expensive side (${expensiveSide}): ${cheapQty.toFixed(0)} >= ${expensiveQty.toFixed(0)}`;
-      console.log(`[QuotingEngine] 🛡️ BALANCE GUARD: ${side} (cheap) blocked - has ${cheapQty.toFixed(0)} vs ${expensiveSide} (expensive) ${expensiveQty.toFixed(0)}`);
-      console.log(`[QuotingEngine] 📊 Prices: UP avg=${avgUpPrice.toFixed(3)} live=${upLivePrice.toFixed(3)} | DOWN avg=${avgDownPrice.toFixed(3)} live=${downLivePrice.toFixed(3)}`);
+    // =========================================================================
+    // EMERGENCY STOP: Only at extreme imbalance
+    // With active hedging, we can be more lenient here
+    // =========================================================================
+    if (imbalance > config.maxUnpairedShares) {
+      const reason = `EMERGENCY: ${imbalance.toFixed(0)} share imbalance > ${config.maxUnpairedShares} max`;
+      console.log(`[QuotingEngine] 🚨 ${reason}`);
       
-      // Log to database for verification
       logV35GuardEvent({
         marketSlug: market.slug,
         asset: market.asset,
-        guardType: 'BALANCE_GUARD',
+        guardType: 'EMERGENCY_STOP',
         blockedSide: side,
         upQty: market.upQty,
         downQty: market.downQty,
         expensiveSide,
         reason,
-      }).catch(() => {}); // Fire and forget
+      }).catch(() => {});
       
-      return {
-        quotes: [],
-        blocked: true,
-        blockReason: reason,
-      };
+      return { quotes: [], blocked: true, blockReason: reason };
     }
     
-    // Rule 2: Block expensive side if gap is too large (reversal protection)
-    const currentGap = expensiveQty - cheapQty;
-    if (side === expensiveSide && currentGap >= maxGap) {
-      const reason = `Gap too large: ${expensiveSide} leads by ${currentGap.toFixed(0)} shares (max: ${maxGap})`;
-      console.log(`[QuotingEngine] 🛡️ GAP GUARD: ${side} (expensive) blocked - gap is ${currentGap.toFixed(0)} shares (max: ${maxGap})`);
-      console.log(`[QuotingEngine] 📊 Waiting for ${cheapSide} to catch up before adding more ${expensiveSide}`);
+    // =========================================================================
+    // EXPENSIVE SIDE LEADS RULE (from V35.1.0)
+    // Allow expensive side to have more shares (positive EV bias)
+    // Cheap side must stay within ratio of expensive side
+    // =========================================================================
+    
+    if (side === cheapSide) {
+      // Cheap side: check if we'd exceed the allowed ratio
+      const maxCheapQty = expensiveQty * config.maxExpensiveBias;
       
-      // Log to database for verification
-      logV35GuardEvent({
-        marketSlug: market.slug,
-        asset: market.asset,
-        guardType: 'GAP_GUARD',
-        blockedSide: side,
-        upQty: market.upQty,
-        downQty: market.downQty,
-        expensiveSide,
-        reason,
-      }).catch(() => {}); // Fire and forget
-      
-      return {
-        quotes: [],
-        blocked: true,
-        blockReason: reason,
-      };
+      if (cheapQty >= maxCheapQty && expensiveQty > 0) {
+        const reason = `Cheap side (${side}) at limit: ${cheapQty.toFixed(0)} >= ${maxCheapQty.toFixed(0)} (${config.maxExpensiveBias}x expensive)`;
+        console.log(`[QuotingEngine] 🛡️ ${reason}`);
+        
+        logV35GuardEvent({
+          marketSlug: market.slug,
+          asset: market.asset,
+          guardType: 'EXPENSIVE_BIAS',
+          blockedSide: side,
+          upQty: market.upQty,
+          downQty: market.downQty,
+          expensiveSide,
+          reason,
+        }).catch(() => {});
+        
+        return { quotes: [], blocked: true, blockReason: reason };
+      }
     }
     
-    // Log current balance status
+    // Log current status
     if (market.upQty > 0 || market.downQty > 0) {
-      console.log(`[QuotingEngine] ⚖️ Balance: ${expensiveSide} leads (${expensiveQty.toFixed(0)}) vs ${cheapSide} (${cheapQty.toFixed(0)}) - quoting ${side} OK`);
-    }
-    
-    // Log warnings for monitoring (informational only)
-    if (unpaired > config.maxUnpairedShares) {
-      console.log(`[QuotingEngine] ⚠️ HIGH SKEW: ${unpaired.toFixed(0)} unpaired shares (on expensive side ${expensiveSide} - acceptable)`);
-    }
-    
-    if (unrealizedPnL < -config.maxLossPerMarket) {
-      console.log(`[QuotingEngine] ⚠️ UNREALIZED LOSS: $${unrealizedPnL.toFixed(2)} (threshold: -$${config.maxLossPerMarket})`);
+      console.log(`[QuotingEngine] ⚖️ Balance: ${expensiveSide}=${expensiveQty.toFixed(0)} (expensive) vs ${cheapSide}=${cheapQty.toFixed(0)} (cheap) - quoting ${side} OK`);
     }
     
     // =========================================================================
@@ -181,7 +144,6 @@ export class QuotingEngine {
     
     for (const price of sortedPrices) {
       // Skip if our bid would cross the ask (we'd become taker)
-      // Reduced margin from 1 cent to 0.5 cent to allow more grid levels
       if (bestAsk > 0 && price >= bestAsk - 0.005) {
         continue;
       }

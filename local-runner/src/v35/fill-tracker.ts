@@ -1,21 +1,82 @@
 // ============================================================
-// V35 FILL TRACKER
+// V35 FILL TRACKER - WITH ACTIVE HEDGING
 // ============================================================
+// Version: V35.1.0 - "True Gabagool"
+//
 // Tracks fills from Polymarket WebSocket or polling.
 // Updates market inventory when fills occur.
-//
-// NOTE: FillSyncTracker DISABLED per gabagool strategy:
-// "NEVER filter based on momentum - reduces fills"
-// "ALWAYS quote both sides - temporary imbalance is OK"
+// TRIGGERS HEDGE MANAGER on every fill for active hedging.
 // ============================================================
 
 import type { V35Market, V35Fill, V35Side, V35Asset } from './types.js';
 import { sendHeartbeat } from '../backend.js';
+import { getHedgeManager, type HedgeResult } from './hedge-manager.js';
 
 type FillCallback = (fill: V35Fill) => void;
+type HedgeCallback = (fill: V35Fill, market: V35Market, result: HedgeResult) => void;
+
+let onHedgeComplete: HedgeCallback | null = null;
+
+/**
+ * Register a callback for when hedges complete
+ */
+export function setHedgeCallback(callback: HedgeCallback): void {
+  onHedgeComplete = callback;
+}
 
 /**
  * Process a fill event and update market inventory
+ * TRIGGERS ACTIVE HEDGE via HedgeManager
+ */
+export async function processFillWithHedge(
+  fill: V35Fill,
+  market: V35Market
+): Promise<{ processed: boolean; hedgeResult?: HedgeResult }> {
+  // Update inventory FIRST
+  if (fill.tokenId === market.upTokenId) {
+    market.upQty += fill.size;
+    market.upCost += fill.size * fill.price;
+    market.upFills++;
+    console.log(`📥 FILL: UP ${fill.size.toFixed(0)} @ $${fill.price.toFixed(2)} in ${market.slug.slice(-25)} | Total: ${market.upQty.toFixed(0)} UP`);
+  } else if (fill.tokenId === market.downTokenId) {
+    market.downQty += fill.size;
+    market.downCost += fill.size * fill.price;
+    market.downFills++;
+    console.log(`📥 FILL: DOWN ${fill.size.toFixed(0)} @ $${fill.price.toFixed(2)} in ${market.slug.slice(-25)} | Total: ${market.downQty.toFixed(0)} DOWN`);
+  } else {
+    console.warn(`[FillTracker] Unknown token ID: ${fill.tokenId.slice(0, 20)}...`);
+    return { processed: false };
+  }
+  
+  // TRIGGER ACTIVE HEDGE
+  const hedgeManager = getHedgeManager();
+  const hedgeResult = await hedgeManager.onFill(fill, market);
+  
+  // Update inventory with hedge fill if successful
+  if (hedgeResult.hedged && hedgeResult.filledQty && hedgeResult.avgPrice) {
+    const hedgeSide = fill.side === 'UP' ? 'DOWN' : 'UP';
+    if (hedgeSide === 'UP') {
+      market.upQty += hedgeResult.filledQty;
+      market.upCost += hedgeResult.filledQty * hedgeResult.avgPrice;
+      market.upFills++;
+    } else {
+      market.downQty += hedgeResult.filledQty;
+      market.downCost += hedgeResult.filledQty * hedgeResult.avgPrice;
+      market.downFills++;
+    }
+    console.log(`🎯 HEDGE: ${hedgeSide} ${hedgeResult.filledQty.toFixed(0)} @ $${hedgeResult.avgPrice.toFixed(2)} | Combined: $${hedgeResult.combinedCost?.toFixed(3)}`);
+  }
+  
+  // Notify callback if registered
+  if (onHedgeComplete) {
+    onHedgeComplete(fill, market, hedgeResult);
+  }
+  
+  return { processed: true, hedgeResult };
+}
+
+/**
+ * Process a fill event and update market inventory (LEGACY - no hedge)
  */
 export function processFill(
   fill: V35Fill,
@@ -27,10 +88,6 @@ export function processFill(
       market.upQty += fill.size;
       market.upCost += fill.size * fill.price;
       market.upFills++;
-      
-      // FillSyncTracker DISABLED - gabagool strategy says to always quote both sides
-      // fillSyncTracker.recordFill('UP', fill.size, fill.price, market.slug);
-      
       console.log(`📥 FILL: UP ${fill.size.toFixed(0)} @ $${fill.price.toFixed(2)} in ${market.slug.slice(-25)} | Total: ${market.upQty.toFixed(0)} UP`);
       return true;
     }
@@ -39,10 +96,6 @@ export function processFill(
       market.downQty += fill.size;
       market.downCost += fill.size * fill.price;
       market.downFills++;
-      
-      // FillSyncTracker DISABLED - gabagool strategy says to always quote both sides
-      // fillSyncTracker.recordFill('DOWN', fill.size, fill.price, market.slug);
-      
       console.log(`📥 FILL: DOWN ${fill.size.toFixed(0)} @ $${fill.price.toFixed(2)} in ${market.slug.slice(-25)} | Total: ${market.downQty.toFixed(0)} DOWN`);
       return true;
     }
