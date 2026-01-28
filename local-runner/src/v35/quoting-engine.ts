@@ -68,46 +68,70 @@ export class QuotingEngine {
     const quotes: V35Quote[] = [];
     
     // =========================================================================
-    // GABAGOOL PHILOSOPHY: ALWAYS QUOTE BOTH SIDES
+    // SMART BALANCE RULE: "EXPENSIVE SIDE LEADS, CHEAP SIDE FOLLOWS"
     // =========================================================================
-    // Per user request: Remove all blocking guards. The strategy relies on
-    // volume and statistical averaging to achieve balance. Restricting quotes
-    // based on imbalance is counterproductive - it stops the bot exactly when
-    // it should continue to capture mean-reversion opportunities.
+    // Problem: If we accumulate more shares on the CHEAP side, and the EXPENSIVE
+    // side wins (which is more likely), those cheap shares become worthless.
     //
-    // OLD GUARDS (now disabled):
-    // - maxUnpairedShares: Was blocking overweight side
-    // - maxImbalanceRatio: Was blocking when ratio exceeded threshold
-    // - maxLossPerMarket: Was blocking all quotes on unrealized loss
+    // Solution: Only allow the EXPENSIVE side to have unpaired shares.
+    // The cheap side must never exceed the expensive side's quantity.
     //
-    // NEW BEHAVIOR: Log warnings but NEVER block quotes
+    // How it works:
+    // - Determine which side is "expensive" (higher avg price)
+    // - If this quote is for the CHEAP side and it already has >= expensive side shares,
+    //   BLOCK further quotes on the cheap side until balance is restored
     // =========================================================================
     
     const skew = market.upQty - market.downQty;
     const unpaired = Math.abs(skew);
     const unrealizedPnL = this.calculateUnrealizedPnL(market);
     
-    // Log warnings for monitoring, but don't block
-    if (unpaired > config.maxUnpairedShares) {
-      console.log(`[QuotingEngine] ⚠️ HIGH SKEW: ${unpaired.toFixed(0)} unpaired shares (threshold: ${config.maxUnpairedShares}) - continuing to quote ${side}`);
+    // Determine which side is expensive based on average fill price
+    const avgUpPrice = market.upQty > 0 ? market.upCost / market.upQty : 0;
+    const avgDownPrice = market.downQty > 0 ? market.downCost / market.downQty : 0;
+    
+    // Also consider live prices as a factor
+    const upLivePrice = market.upBestBid || avgUpPrice;
+    const downLivePrice = market.downBestBid || avgDownPrice;
+    
+    // Expensive side is the one with higher effective price
+    const upIsExpensive = (avgUpPrice + upLivePrice) / 2 >= (avgDownPrice + downLivePrice) / 2;
+    const expensiveSide: V35Side = upIsExpensive ? 'UP' : 'DOWN';
+    const cheapSide: V35Side = upIsExpensive ? 'DOWN' : 'UP';
+    
+    // Get quantities
+    const expensiveQty = expensiveSide === 'UP' ? market.upQty : market.downQty;
+    const cheapQty = cheapSide === 'UP' ? market.upQty : market.downQty;
+    
+    // SMART BALANCE GUARD: Block cheap side if it's leading
+    // Allow a small buffer (5 shares) to prevent flip-flopping
+    const balanceBuffer = 5;
+    if (side === cheapSide && cheapQty >= expensiveQty + balanceBuffer) {
+      console.log(`[QuotingEngine] 🛡️ BALANCE GUARD: ${side} (cheap) blocked - has ${cheapQty.toFixed(0)} vs ${expensiveSide} (expensive) ${expensiveQty.toFixed(0)}`);
+      console.log(`[QuotingEngine] 📊 Prices: UP avg=${avgUpPrice.toFixed(3)} live=${upLivePrice.toFixed(3)} | DOWN avg=${avgDownPrice.toFixed(3)} live=${downLivePrice.toFixed(3)}`);
+      return {
+        quotes: [],
+        blocked: true,
+        blockReason: `Cheap side (${side}) cannot lead expensive side (${expensiveSide}): ${cheapQty.toFixed(0)} >= ${expensiveQty.toFixed(0)}`,
+      };
     }
     
-    if (market.upQty >= 10 && market.downQty >= 10) {
-      const ratio = market.upQty > market.downQty 
-        ? market.upQty / market.downQty 
-        : market.downQty / market.upQty;
-      if (ratio > config.maxImbalanceRatio) {
-        console.log(`[QuotingEngine] ⚠️ HIGH RATIO: ${ratio.toFixed(2)}:1 (threshold: ${config.maxImbalanceRatio}:1) - continuing to quote ${side}`);
-      }
+    // Log current balance status
+    if (market.upQty > 0 || market.downQty > 0) {
+      console.log(`[QuotingEngine] ⚖️ Balance: ${expensiveSide} leads (${expensiveQty.toFixed(0)}) vs ${cheapSide} (${cheapQty.toFixed(0)}) - quoting ${side} OK`);
+    }
+    
+    // Log warnings for monitoring (informational only)
+    if (unpaired > config.maxUnpairedShares) {
+      console.log(`[QuotingEngine] ⚠️ HIGH SKEW: ${unpaired.toFixed(0)} unpaired shares (on expensive side ${expensiveSide} - acceptable)`);
     }
     
     if (unrealizedPnL < -config.maxLossPerMarket) {
-      console.log(`[QuotingEngine] ⚠️ UNREALIZED LOSS: $${unrealizedPnL.toFixed(2)} (threshold: -$${config.maxLossPerMarket}) - continuing to quote ${side}`);
+      console.log(`[QuotingEngine] ⚠️ UNREALIZED LOSS: $${unrealizedPnL.toFixed(2)} (threshold: -$${config.maxLossPerMarket})`);
     }
     
     // =========================================================================
     // GENERATE QUOTES - Simple grid, uniform sizing
-    // Per gabagool: sharesPerLevel is constant, no skew adjustments
     // PRIORITY: 35c-55c range first (lowest combined cost = highest profit)
     // =========================================================================
     const bestAsk = side === 'UP' ? market.upBestAsk : market.downBestAsk;
