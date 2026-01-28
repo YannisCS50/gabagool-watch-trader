@@ -180,20 +180,24 @@ function getMarketEpochFromSlug(slug: string): number | null {
 }
 
 /**
- * Filter positions within given time window (LIVE + lookbackMs)
+ * Check if market is currently LIVE (not yet expired).
+ * Each 15-minute market starts fresh - expired markets do NOT carry over.
  */
-function isWithinTimeWindow(position: PolymarketPosition, lookbackMs: number): boolean {
+function isMarketLive(position: PolymarketPosition): boolean {
   const slug = position.eventSlug || '';
   const epoch = getMarketEpochFromSlug(slug);
   if (!epoch) {
-    // If we can't parse the epoch, include it to be safe
-    return true;
+    // If we can't parse the epoch, exclude it (safety)
+    console.log(`   ⚠️ Cannot parse epoch from slug: ${slug}, excluding`);
+    return false;
   }
   const expiryMs = epoch + 15 * 60 * 1000; // end of 15m window
   const now = Date.now();
-  const cutoff = now - lookbackMs;
-  // Include if: not expired yet OR expired within lookback
-  return expiryMs > cutoff;
+  const isLive = expiryMs > now;
+  if (!isLive) {
+    console.log(`   🔴 EXPIRED market excluded: ${slug} (expired ${Math.round((now - expiryMs) / 1000)}s ago)`);
+  }
+  return isLive;
 }
 
 function extractMarketSlug(position: PolymarketPosition): string {
@@ -237,14 +241,14 @@ Deno.serve(async (req) => {
       });
     }
 
-    // 1. Fetch real positions from Polymarket
-    const LOOKBACK_MS = 2 * 60 * 60 * 1000; // 2 hours
+    // 1. Fetch real positions from Polymarket - ONLY LIVE MARKETS
+    // Each 15-minute market starts fresh at 0 - expired markets don't carry over
     const allPositions = await fetchPolymarketPositions(walletAddress);
     const positions15m = allPositions
       .filter(is15mCryptoMarket)
-      .filter((p) => isWithinTimeWindow(p, LOOKBACK_MS));
+      .filter(isMarketLive);  // Only show LIVE markets, not expired ones
     
-    console.log(`📈 Found ${positions15m.length} 15-min crypto positions within 2h window`);
+    console.log(`📈 Found ${positions15m.length} LIVE 15-min crypto positions (filtered from ${allPositions.length} total)`);
 
     // 2. Group Polymarket positions by market slug
     const polymarketByMarket = new Map<string, { 
