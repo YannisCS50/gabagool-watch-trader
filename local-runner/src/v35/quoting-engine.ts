@@ -141,19 +141,25 @@ export class QuotingEngine {
     }
     
     // =========================================================================
-    // WARNING THRESHOLD: Block leading side when approaching limit
+    // V35.3.6 STRICT BALANCE RULE: Only quote on the LAGGING side
     // =========================================================================
-    const isLeadingSide = (side === 'UP' && market.upQty > market.downQty) ||
-                          (side === 'DOWN' && market.downQty > market.upQty);
+    // The ONLY way to guarantee profit is to keep shares perfectly balanced.
+    // If one side has MORE shares, we MUST NOT add more to that side.
+    // We can ONLY quote on the side with FEWER shares (to catch up).
+    // If balanced (within tolerance), we can quote on either side.
+    // =========================================================================
+    const BALANCE_TOLERANCE = 3; // Allow up to 3 shares difference before blocking
+    const isLeadingSide = (side === 'UP' && market.upQty > market.downQty + BALANCE_TOLERANCE) ||
+                          (side === 'DOWN' && market.downQty > market.upQty + BALANCE_TOLERANCE);
     
-    if (imbalance >= config.warnUnpairedShares && isLeadingSide) {
-      const reason = `WARNING: ${side} is leading with ${imbalance.toFixed(0)} imbalance >= ${config.warnUnpairedShares} warn threshold`;
-      console.log(`[QuotingEngine] ⚠️ ${reason}`);
+    if (isLeadingSide) {
+      const reason = `STRICT_BALANCE: ${side} blocked - already leading (UP:${market.upQty.toFixed(0)} DOWN:${market.downQty.toFixed(0)}, tolerance:${BALANCE_TOLERANCE})`;
+      console.log(`[QuotingEngine] 🔒 ${reason}`);
       
       logV35GuardEvent({
         marketSlug: market.slug,
         asset: market.asset,
-        guardType: 'WARN_LEADING_SIDE',
+        guardType: 'STRICT_BALANCE',
         blockedSide: side,
         upQty: market.upQty,
         downQty: market.downQty,

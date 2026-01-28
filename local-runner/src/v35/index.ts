@@ -17,5 +17,5 @@ export * from './backend.js';
 export * from './utils.js';
 export * from './user-ws.js';
 
-export const V35_VERSION = 'V35.3.5';
-export const V35_NAME = 'Hedge-First Quoting - Only trade when profit is guaranteed';
+export const V35_VERSION = 'V35.3.6';
+export const V35_NAME = 'Strict Balance - Only quote on lagging side to maintain 1:1 ratio';
