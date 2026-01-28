@@ -1,19 +1,20 @@
 // ============================================================
 // V35 CIRCUIT BREAKER - HARD SAFETY SYSTEM
 // ============================================================
-// Version: V35.3.0 - "Robust Hedging"
+// Version: V35.3.1 - "Safe Hedge Logging"
 //
 // This module provides ABSOLUTE safety guarantees that cannot be bypassed.
 // When tripped, it halts ALL trading activity immediately.
 //
-// ROOT CAUSE FIX: Previous versions had guards in multiple places
-// (quoting-engine, runner, hedge-manager) but they weren't coordinated.
-// This module provides a SINGLE SOURCE OF TRUTH for safety state.
+// V35.3.1 FIX:
+// - Now logs guard events to bot_events table for debugging visibility
+// - WARNING, CRITICAL, and HALT triggers are recorded to database
 // ============================================================
 
 import { EventEmitter } from 'events';
 import { cancelAllOrders, cancelSideOrders } from './order-manager.js';
 import type { V35Market } from './types.js';
+import { logV35GuardEvent } from './backend.js';
 
 // ============================================================
 // TYPES
@@ -99,6 +100,18 @@ export class CircuitBreaker extends EventEmitter {
       const reason = `ABSOLUTE LIMIT BREACHED: ${imbalance.toFixed(0)} >= ${this.config.absoluteMaxUnpaired} shares`;
       console.log(`[CircuitBreaker] 🚨🚨🚨 ${reason}`);
       
+      // LOG GUARD EVENT TO DATABASE
+      logV35GuardEvent({
+        marketSlug: market.slug,
+        asset: market.asset,
+        guardType: 'BALANCE_GUARD',
+        blockedSide: leadingSide,
+        upQty: market.upQty,
+        downQty: market.downQty,
+        expensiveSide: leadingSide,
+        reason: `ABSOLUTE HALT: ${reason}`,
+      }).catch(() => {});
+      
       // TRIP THE BREAKER
       this.trip(reason, market.slug, market.upQty, market.downQty, imbalance);
       
@@ -120,6 +133,18 @@ export class CircuitBreaker extends EventEmitter {
     if (imbalance >= this.config.criticalThreshold) {
       const reason = `CRITICAL: ${imbalance.toFixed(0)} >= ${this.config.criticalThreshold} shares`;
       console.log(`[CircuitBreaker] 🔴 ${reason} - Cancelling ${leadingSide} orders`);
+      
+      // LOG GUARD EVENT TO DATABASE
+      logV35GuardEvent({
+        marketSlug: market.slug,
+        asset: market.asset,
+        guardType: 'BALANCE_GUARD',
+        blockedSide: leadingSide,
+        upQty: market.upQty,
+        downQty: market.downQty,
+        expensiveSide: leadingSide,
+        reason: `CRITICAL: ${reason}`,
+      }).catch(() => {});
       
       // Cancel leading side orders
       await cancelSideOrders(market, leadingSide, dryRun);
@@ -156,6 +181,18 @@ export class CircuitBreaker extends EventEmitter {
     if (imbalance >= this.config.warningThreshold) {
       const reason = `WARNING: ${imbalance.toFixed(0)} >= ${this.config.warningThreshold} shares`;
       console.log(`[CircuitBreaker] ⚠️ ${reason} - Blocking ${leadingSide} quotes`);
+      
+      // LOG GUARD EVENT TO DATABASE
+      logV35GuardEvent({
+        marketSlug: market.slug,
+        asset: market.asset,
+        guardType: 'GAP_GUARD',
+        blockedSide: leadingSide,
+        upQty: market.upQty,
+        downQty: market.downQty,
+        expensiveSide: leadingSide,
+        reason: `WARNING: ${reason}`,
+      }).catch(() => {});
       
       return {
         shouldStop: false,

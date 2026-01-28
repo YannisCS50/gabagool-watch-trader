@@ -283,6 +283,51 @@ export async function logV35GuardEvent(event: V35GuardEvent): Promise<boolean> {
 }
 
 // ============================================================
+// INVENTORY SNAPSHOT LOGGING
+// ============================================================
+
+export interface V35InventorySnapshot {
+  marketSlug: string;
+  asset: string;
+  upShares: number;
+  downShares: number;
+  avgUpCost: number | null;
+  avgDownCost: number | null;
+  pairedShares: number;
+  unpairedShares: number;
+  unpairedNotionalUsd: number;
+  pairCost: number | null;
+  state: 'BALANCED' | 'WARNING' | 'CRITICAL';
+  triggerType: 'FILL' | 'HEDGE' | 'SYNC' | 'CYCLE';
+}
+
+export async function saveV35InventorySnapshot(snapshot: V35InventorySnapshot): Promise<boolean> {
+  try {
+    const result = await callProxy<{ success: boolean }>('save-inventory-snapshot', {
+      snapshot: {
+        ts: Date.now(),
+        market_id: snapshot.marketSlug,
+        asset: snapshot.asset,
+        up_shares: snapshot.upShares,
+        down_shares: snapshot.downShares,
+        avg_up_cost: snapshot.avgUpCost,
+        avg_down_cost: snapshot.avgDownCost,
+        paired_shares: snapshot.pairedShares,
+        unpaired_shares: snapshot.unpairedShares,
+        unpaired_notional_usd: snapshot.unpairedNotionalUsd,
+        pair_cost: snapshot.pairCost,
+        state: snapshot.state,
+        trigger_type: snapshot.triggerType,
+      },
+    });
+    return result.success;
+  } catch (err: any) {
+    console.error('[V35Backend] Save inventory snapshot failed:', err?.message);
+    return false;
+  }
+}
+
+// ============================================================
 // OFFLINE NOTIFICATION
 // ============================================================
 

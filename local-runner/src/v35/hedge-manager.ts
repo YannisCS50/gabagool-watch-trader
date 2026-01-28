@@ -1,14 +1,15 @@
 // ============================================================
 // V35 HEDGE MANAGER - ACTIVE HEDGING
 // ============================================================
-// Version: V35.3.0 - "Robust Hedging"
+// Version: V35.3.1 - "Safe Hedge Logging"
 // 
 // KEY INSIGHT: Gabagool's edge comes from ACTIVE HEDGING, not passive MM.
 // When filled on one side → IMMEDIATELY hedge the other side.
 //
-// V35.3.0 FIX: Improved minimum notional check to prevent failed hedges.
-// Previous versions used $1.00 min, but with slippage this often failed.
-// Now uses configurable minHedgeNotional (default $1.50) for reliability.
+// V35.3.1 FIX:
+// - Fixed "Converting circular structure to JSON" error on hedge failures
+// - Uses safeStringify/getErrorMessage for all error logging
+// - Events now reliably persist to bot_events without crashes
 // ============================================================
 
 import { EventEmitter } from 'events';
@@ -16,6 +17,7 @@ import { getV35Config, V35_VERSION } from './config.js';
 import type { V35Market, V35Fill, V35Side, V35Asset } from './types.js';
 import { placeOrder, cancelOrder, getOpenOrders } from '../polymarket.js';
 import { saveBotEvent, type BotEvent } from '../backend.js';
+import { getErrorMessage, safeStringify } from './utils.js';
 
 // ============================================================
 // TYPES
@@ -167,6 +169,7 @@ export class HedgeManager extends EventEmitter {
   
   /**
    * Log hedge events to bot_events table for UI visibility
+   * V35.3.1: Uses safeStringify to prevent circular JSON errors
    */
   private async logHedgeEvent(
     eventType: string,
@@ -175,14 +178,36 @@ export class HedgeManager extends EventEmitter {
     data: Record<string, unknown>
   ): Promise<void> {
     try {
+      // Safely extract reason - could be a complex error object
+      let reasonCode: string | undefined;
+      if (typeof data.reason === 'string') {
+        reasonCode = data.reason.slice(0, 200);
+      } else if (data.reason) {
+        reasonCode = getErrorMessage(data.reason);
+      }
+      
+      // Build safe data object (avoid circular refs from any nested errors)
+      const safeData: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(data)) {
+        if (key === 'reason' && typeof value !== 'string') {
+          // Already handled above
+          safeData[key] = reasonCode;
+        } else if (typeof value === 'object' && value !== null && !(value instanceof Date)) {
+          // Safely stringify complex objects
+          safeData[key] = safeStringify(value, 300);
+        } else {
+          safeData[key] = value;
+        }
+      }
+      
       const event: BotEvent = {
         event_type: eventType,
         asset: fill.asset,
         market_id: market.slug,
-        reason_code: data.reason as string || undefined,
+        reason_code: reasonCode,
         ts: Date.now(),
         data: {
-          ...data,
+          ...safeData,
           order_id: fill.orderId,
           up_qty: market.upQty,
           down_qty: market.downQty,
@@ -190,7 +215,8 @@ export class HedgeManager extends EventEmitter {
       };
       await saveBotEvent(event);
     } catch (err) {
-      console.error('[HedgeManager] Failed to log hedge event:', err);
+      // Use safe stringify for error logging too
+      console.error('[HedgeManager] Failed to log hedge event:', getErrorMessage(err));
     }
   }
 
@@ -348,10 +374,11 @@ export class HedgeManager extends EventEmitter {
          avgPrice: estimatedPrice,
          reason: filledQty < quantity ? 'partial_fill' : undefined,
        };
-      
+       
     } catch (error: any) {
-      console.error(`[HedgeManager] Hedge order error:`, error?.message?.slice(0, 100));
-      return { filled: false, reason: `order_error: ${error?.message}` };
+      const errMsg = getErrorMessage(error);
+      console.error(`[HedgeManager] Hedge order error:`, errMsg);
+      return { filled: false, reason: `order_error: ${errMsg}` };
     }
   }
 }
