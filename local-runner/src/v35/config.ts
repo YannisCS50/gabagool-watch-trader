@@ -1,7 +1,7 @@
 // ============================================================
 // V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.3.2 - "Order ID Filter Fix"
+// Version: V35.3.3 - "Proactive Hedging"
 //
 // Passive Dual-Outcome Market Maker for Polymarket 15-min options
 // 
@@ -10,15 +10,14 @@
 // At settlement: one side pays $1.00, other pays $0.00.
 // If combined cost < $1.00 -> GUARANTEED profit.
 //
-// V35.3.2 CRITICAL FIX:
-// - Only accept fills for orders WE placed (order ID filtering)
-// - The User WebSocket broadcasts ALL trades in subscribed markets
-// - Without this filter, we were counting other traders' fills as ours!
-// - This caused massive phantom inventory and hedging failures
+// V35.3.3 NEW FEATURE:
+// - Proactive Rebalancer: periodically checks if unhedged positions can
+//   now be profitably hedged (when market conditions improve after fill)
+// - This catches missed hedges from rapid market movements
 // ============================================================
 
-export const V35_VERSION = 'V35.3.2';
-export const V35_CODENAME = 'Order ID Filter Fix';
+export const V35_VERSION = 'V35.3.3';
+export const V35_CODENAME = 'Proactive Hedging';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 
