@@ -14,6 +14,7 @@ import { EventEmitter } from 'events';
 import { getV35Config } from './config.js';
 import type { V35Market, V35Fill, V35Side, V35Asset } from './types.js';
 import { placeOrder, cancelOrder } from '../polymarket.js';
+import { saveBotEvent, type BotEvent } from '../backend.js';
 
 // ============================================================
 // TYPES
@@ -53,9 +54,12 @@ export class HedgeManager extends EventEmitter {
    */
   async onFill(fill: V35Fill, market: V35Market): Promise<HedgeResult> {
     const config = getV35Config();
+    const ts = Date.now();
     
     if (!config.enableActiveHedge) {
       console.log('[HedgeManager] ⚠️ Active hedge DISABLED - running in legacy mode');
+      // Log disabled state
+      await this.logHedgeEvent('hedge_disabled', fill, market, { reason: 'config_disabled' });
       return { hedged: false, reason: 'disabled' };
     }
 
@@ -67,6 +71,19 @@ export class HedgeManager extends EventEmitter {
     
     // Check if hedge is viable (still profitable)
     const viability = this.calculateHedgeViability(fill, market, hedgeSide);
+    
+    // Log viability check
+    await this.logHedgeEvent('hedge_viability', fill, market, {
+      viable: viability.viable,
+      reason: viability.reason,
+      hedge_side: hedgeSide,
+      hedge_qty: hedgeQty,
+      max_price: viability.maxPrice,
+      expected_edge: viability.expectedEdge,
+      combined_cost: viability.combinedCost,
+      fill_price: fill.price,
+      hedge_ask: hedgeSide === 'UP' ? market.upBestAsk : market.downBestAsk,
+    });
     
     if (!viability.viable) {
       console.log(`[HedgeManager] ⚠️ Hedge NOT viable: ${viability.reason}`);
@@ -80,6 +97,14 @@ export class HedgeManager extends EventEmitter {
 
     console.log(`[HedgeManager] ✅ Hedge viable: combined $${viability.combinedCost?.toFixed(3)}, edge ${((viability.expectedEdge || 0) * 100).toFixed(2)}%`);
     console.log(`[HedgeManager] 📤 Placing IOC hedge order: ${hedgeQty.toFixed(0)} ${hedgeSide} @ max $${viability.maxPrice.toFixed(3)}`);
+    
+    // Log hedge attempt
+    await this.logHedgeEvent('hedge_attempt', fill, market, {
+      hedge_side: hedgeSide,
+      hedge_qty: hedgeQty,
+      max_price: viability.maxPrice,
+      dry_run: config.dryRun,
+    });
     
     // Place aggressive IOC order for hedge
     const hedgeResult = await this.placeHedgeOrder(
@@ -98,6 +123,18 @@ export class HedgeManager extends EventEmitter {
       console.log(`[HedgeManager]    Combined: $${actualCombined.toFixed(3)} | Edge: ${(actualEdge * 100).toFixed(2)}%`);
       console.log(`[HedgeManager]    Locked profit: $${(hedgeQty * actualEdge).toFixed(3)}`);
       
+      // Log successful hedge
+      await this.logHedgeEvent('hedge_success', fill, market, {
+        hedge_side: hedgeSide,
+        hedge_qty: hedgeResult.filledQty,
+        hedge_price: hedgeResult.avgPrice,
+        combined_cost: actualCombined,
+        edge: actualEdge,
+        locked_profit: hedgeQty * actualEdge,
+        fill_side: fill.side,
+        fill_price: fill.price,
+      });
+      
       return { 
         hedged: true, 
         combinedCost: actualCombined,
@@ -109,9 +146,46 @@ export class HedgeManager extends EventEmitter {
       console.log(`[HedgeManager] ❌ HEDGE FAILED - ${hedgeResult.reason}`);
       console.log(`[HedgeManager] 🛑 Emitting cancel signal for ${fill.side} side`);
       
+      // Log failed hedge
+      await this.logHedgeEvent('hedge_failed', fill, market, {
+        hedge_side: hedgeSide,
+        hedge_qty: hedgeQty,
+        max_price: viability.maxPrice,
+        reason: hedgeResult.reason,
+      });
+      
       this.emit('cancelSide', { marketSlug: market.slug, side: fill.side });
       
       return { hedged: false, reason: hedgeResult.reason };
+    }
+  }
+  
+  /**
+   * Log hedge events to bot_events table for UI visibility
+   */
+  private async logHedgeEvent(
+    eventType: string,
+    fill: V35Fill,
+    market: V35Market,
+    data: Record<string, unknown>
+  ): Promise<void> {
+    try {
+      const event: BotEvent = {
+        event_type: eventType,
+        asset: fill.asset,
+        market_id: market.slug,
+        reason_code: data.reason as string || undefined,
+        ts: Date.now(),
+        data: {
+          ...data,
+          order_id: fill.orderId,
+          up_qty: market.upQty,
+          down_qty: market.downQty,
+        },
+      };
+      await saveBotEvent(event);
+    } catch (err) {
+      console.error('[HedgeManager] Failed to log hedge event:', err);
     }
   }
 
