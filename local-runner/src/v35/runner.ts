@@ -37,7 +37,7 @@ import type {
 import { createEmptyMarket, calculateMarketMetrics } from './types.js';
 import { QuotingEngine } from './quoting-engine.js';
 import { discoverMarkets, filterByAssets } from './market-discovery.js';
-import { syncOrders, cancelAllOrders, updateOrderbook, reconcileOrders } from './order-manager.js';
+import { syncOrders, cancelAllOrders, updateOrderbook, reconcileOrders, cancelSideOrders } from './order-manager.js';
 import { processFill, logMarketFillStats } from './fill-tracker.js';
 import { sendV35Heartbeat, sendV35Offline, saveV35Settlement, saveV35Fill, saveV35OrderbookSnapshots } from './backend.js';
 import type { V35OrderbookSnapshot } from './types.js';
@@ -478,14 +478,45 @@ async function processMarket(market: V35Market): Promise<void> {
   
   // Sync orders if not paused
   if (!paused) {
-    const upQuotes = quotingEngine.generateQuotes('UP', market);
-    const downQuotes = quotingEngine.generateQuotes('DOWN', market);
+    // =========================================================================
+    // ACTIVE IMBALANCE CONTROL
+    // =========================================================================
+    // If one side is leading by more than maxGap shares, CANCEL all orders on
+    // that side immediately to stop further accumulation. Resume when balanced.
+    // =========================================================================
+    const MAX_GAP = 10; // Maximum shares one side can lead by
+    const gap = market.upQty - market.downQty;
+    const absGap = Math.abs(gap);
+    
+    let allowUpQuotes = true;
+    let allowDownQuotes = true;
+    
+    if (absGap > MAX_GAP) {
+      const leadingSide = gap > 0 ? 'UP' : 'DOWN';
+      const laggingSide = gap > 0 ? 'DOWN' : 'UP';
+      
+      log(`🛑 IMBALANCE CONTROL: ${leadingSide} leads by ${absGap.toFixed(0)} shares (max: ${MAX_GAP})`);
+      log(`   → Cancelling all ${leadingSide} orders, allowing ${laggingSide} to catch up`);
+      
+      // Cancel all orders on the leading side
+      if (leadingSide === 'UP') {
+        await cancelSideOrders(market, 'UP', config.dryRun);
+        allowUpQuotes = false;
+      } else {
+        await cancelSideOrders(market, 'DOWN', config.dryRun);
+        allowDownQuotes = false;
+      }
+    }
+    
+    // Generate quotes only for allowed sides
+    const upQuotes = allowUpQuotes ? quotingEngine.generateQuotes('UP', market) : [];
+    const downQuotes = allowDownQuotes ? quotingEngine.generateQuotes('DOWN', market) : [];
     
     // Debug: log quote generation
-    if (upQuotes.length === 0 || downQuotes.length === 0) {
-      log(`⚠️ Quote generation: UP=${upQuotes.length} DOWN=${downQuotes.length}`);
+    if ((upQuotes.length === 0 && allowUpQuotes) || (downQuotes.length === 0 && allowDownQuotes)) {
+      log(`⚠️ Quote generation: UP=${upQuotes.length}${allowUpQuotes ? '' : '(blocked)'} DOWN=${downQuotes.length}${allowDownQuotes ? '' : '(blocked)'}`);
       log(`   bestAsk: UP=$${market.upBestAsk?.toFixed(2)} DOWN=$${market.downBestAsk?.toFixed(2)}`);
-      log(`   inventory: UP=${market.upQty} DOWN=${market.downQty} (skew=${market.upQty - market.downQty})`);
+      log(`   inventory: UP=${market.upQty} DOWN=${market.downQty} (gap=${gap.toFixed(0)})`);
     }
     
     const upResult = await syncOrders(market, 'UP', upQuotes, config.dryRun);

@@ -207,6 +207,51 @@ export async function cancelAllOrders(market: V35Market, dryRun: boolean): Promi
 }
 
 /**
+ * Cancel all orders for ONE SIDE of a market
+ * Used for active imbalance control - cancel the leading side to stop accumulation
+ */
+export async function cancelSideOrders(market: V35Market, side: V35Side, dryRun: boolean): Promise<number> {
+  const currentOrders = side === 'UP' ? market.upOrders : market.downOrders;
+  const orderIds = [...currentOrders.keys()];
+  
+  if (orderIds.length === 0) {
+    return 0;
+  }
+  
+  if (dryRun) {
+    console.log(`[DRY] Cancel all ${side} orders (${orderIds.length})`);
+    currentOrders.clear();
+    return orderIds.length;
+  }
+  
+  console.log(`[OrderManager] 🛑 Cancelling ${orderIds.length} ${side} orders (imbalance control)...`);
+  
+  const cancelPromises = orderIds.map(async (id) => {
+    try {
+      const res = await cancelOrder(id);
+      return { id, success: res?.success ?? false, error: res?.error };
+    } catch (err: any) {
+      return { id, success: false, error: err?.message };
+    }
+  });
+  
+  const results = await Promise.all(cancelPromises);
+  let cancelled = 0;
+  
+  for (const result of results) {
+    if (result.success) {
+      currentOrders.delete(result.id);
+      cancelled++;
+    } else {
+      console.warn(`[OrderManager] Cancel ${side} failed for ${result.id}: ${result.error}`);
+    }
+  }
+  
+  console.log(`[OrderManager] ✅ Cancelled ${cancelled}/${orderIds.length} ${side} orders`);
+  return cancelled;
+}
+
+/**
  * Update orderbook data for a market
  */
 export async function updateOrderbook(market: V35Market, dryRun: boolean): Promise<void> {
