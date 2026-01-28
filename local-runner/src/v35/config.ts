@@ -46,6 +46,7 @@ export interface V35Config {
   // =========================================================================
   // 🛡️ RISK LIMITS
   // =========================================================================
+  warnUnpairedShares: number;   // Warning threshold - start blocking leading-side quoting
   maxUnpairedShares: number;    // Emergency stop - absolute max imbalance
   maxUnpairedImbalance: number; // Alias for maxUnpairedShares (used by runner)
   maxImbalanceRatio: number;    // Max ratio UP:DOWN or DOWN:UP (2.0 per doc)
@@ -117,16 +118,17 @@ export const TEST_CONFIG: V35Config = {
   maxExpensiveBias: 1.20,           // Expensive side can have 20% more shares
   
   // Risk limits
-  // HARD REQUIREMENT: never allow skew > 30 shares.
-  maxUnpairedShares: 30,
-  maxUnpairedImbalance: 30,
+  // HARD REQUIREMENT: WARNING>=20, CRITICAL>=50 unpaired shares.
+  warnUnpairedShares: 20,
+  maxUnpairedShares: 50,
+  maxUnpairedImbalance: 50,
   maxImbalanceRatio: 2.5,
   maxLossPerMarket: 25,
   maxConcurrentMarkets: 2,
   maxMarkets: 2,
   maxNotionalPerMarket: 150,
   maxTotalExposure: 300,
-  skewThreshold: 30,
+  skewThreshold: 20,
   capitalPerMarket: 100,
   
   // Timing
@@ -166,16 +168,17 @@ export const MODERATE_CONFIG: V35Config = {
   maxExpensiveBias: 1.20,
   
   // Risk limits
-  // HARD REQUIREMENT: never allow skew > 30 shares.
-  maxUnpairedShares: 30,
-  maxUnpairedImbalance: 30,
+  // HARD REQUIREMENT: WARNING>=20, CRITICAL>=50 unpaired shares.
+  warnUnpairedShares: 20,
+  maxUnpairedShares: 50,
+  maxUnpairedImbalance: 50,
   maxImbalanceRatio: 2.0,
   maxLossPerMarket: 25,
   maxConcurrentMarkets: 5,
   maxMarkets: 5,
   maxNotionalPerMarket: 200,
   maxTotalExposure: 1000,
-  skewThreshold: 30,
+  skewThreshold: 20,
   capitalPerMarket: 100,
   
   // Timing
@@ -215,16 +218,17 @@ export const PRODUCTION_CONFIG: V35Config = {
   maxExpensiveBias: 1.20,
   
   // Risk limits
-  // HARD REQUIREMENT: never allow skew > 30 shares.
-  maxUnpairedShares: 30,
-  maxUnpairedImbalance: 30,
+  // HARD REQUIREMENT: WARNING>=20, CRITICAL>=50 unpaired shares.
+  warnUnpairedShares: 20,
+  maxUnpairedShares: 50,
+  maxUnpairedImbalance: 50,
   maxImbalanceRatio: 2.0,
   maxLossPerMarket: 50,
   maxConcurrentMarkets: 10,
   maxMarkets: 10,
   maxNotionalPerMarket: 1000,
   maxTotalExposure: 10000,
-  skewThreshold: 50,
+  skewThreshold: 20,
   capitalPerMarket: 500,
   
   // Timing
@@ -291,7 +295,8 @@ export function printV35Config(cfg: V35Config): void {
      Expensive bias:  ${cfg.maxExpensiveBias}x
 
   🛡️ RISK LIMITS
-     Max unpaired:    ${cfg.maxUnpairedShares} shares (emergency only)
+     Warn unpaired:   ${cfg.warnUnpairedShares} shares
+     Max unpaired:    ${cfg.maxUnpairedShares} shares (hard stop)
      Max ratio:       ${cfg.maxImbalanceRatio}:1
      Max loss/market: $${cfg.maxLossPerMarket}
      Max markets:     ${cfg.maxConcurrentMarkets}

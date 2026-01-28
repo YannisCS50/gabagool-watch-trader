@@ -392,7 +392,7 @@ async function refreshMarkets(): Promise<void> {
     const existingPos = getCachedPosition(m.slug);
     if (existingPos) {
       const existingImbalance = Math.abs(existingPos.upShares - existingPos.downShares);
-      if (existingImbalance > config.maxUnpairedImbalance) {
+    if (existingImbalance >= config.maxUnpairedImbalance) {
         log(`🚨 REFUSING TO TRADE ${m.slug}: Pre-existing imbalance of ${existingImbalance.toFixed(1)} shares > max ${config.maxUnpairedImbalance}`);
         log(`   UP: ${existingPos.upShares.toFixed(1)}, DOWN: ${existingPos.downShares.toFixed(1)}`);
         log(`   ⚠️ Close this position manually before the bot will trade this market`);
@@ -510,8 +510,8 @@ async function processMarket(market: V35Market): Promise<void> {
   // This is a SAFETY NET - the market discovery should have blocked us earlier
   // =========================================================================
   const currentImbalance = Math.abs(market.upQty - market.downQty);
-  if (currentImbalance > config.maxUnpairedImbalance) {
-    log(`🛑 ${market.slug.slice(-25)}: BLOCKED - imbalance ${currentImbalance.toFixed(1)} > max ${config.maxUnpairedImbalance}`);
+  if (currentImbalance >= config.maxUnpairedImbalance) {
+    log(`🛑 ${market.slug.slice(-25)}: BLOCKED - imbalance ${currentImbalance.toFixed(1)} >= max ${config.maxUnpairedImbalance}`);
     log(`   UP: ${market.upQty.toFixed(1)}, DOWN: ${market.downQty.toFixed(1)} - Manual intervention required`);
     await cancelAllOrders(market, config.dryRun);
     return;
@@ -583,15 +583,23 @@ async function processMarket(market: V35Market): Promise<void> {
     let allowUpQuotes = true;
     let allowDownQuotes = true;
     
-    // Emergency stop at extreme imbalance (hedge must have failed repeatedly)
-    if (imbalance > config.maxUnpairedShares) {
-      const leadingSide = market.upQty > market.downQty ? 'UP' : 'DOWN';
-      log(`🚨 EMERGENCY STOP: ${imbalance.toFixed(0)} share imbalance > ${config.maxUnpairedShares} max`);
-      log(`   → Cancelling all ${leadingSide} orders until balance restored`);
-      
+    const leadingSide = market.upQty > market.downQty ? 'UP' : 'DOWN';
+
+    // WARNING threshold: immediately stop adding to the leading side.
+    // This keeps unpaired from drifting upward while we wait for natural pairing / hedges.
+    if (imbalance >= config.warnUnpairedShares) {
+      log(`⚠️ WARNING: ${imbalance.toFixed(0)} unpaired >= ${config.warnUnpairedShares} — cancelling ${leadingSide} orders`);
       await cancelSideOrders(market, leadingSide, config.dryRun);
       if (leadingSide === 'UP') allowUpQuotes = false;
       if (leadingSide === 'DOWN') allowDownQuotes = false;
+    }
+
+    // CRITICAL threshold: hard-stop the market by cancelling ALL orders.
+    // This is the "must never" circuit breaker.
+    if (imbalance >= config.maxUnpairedShares) {
+      log(`🚨 CRITICAL STOP: ${imbalance.toFixed(0)} unpaired >= ${config.maxUnpairedShares} — cancelling ALL orders`);
+      await cancelAllOrders(market, config.dryRun);
+      return; // Do not place any new orders this tick
     }
     
     // Generate quotes only for allowed sides
