@@ -103,9 +103,13 @@ export class QuotingEngine {
     const expensiveQty = expensiveSide === 'UP' ? market.upQty : market.downQty;
     const cheapQty = cheapSide === 'UP' ? market.upQty : market.downQty;
     
-    // SMART BALANCE GUARD: Block cheap side if it's leading
-    // Allow a small buffer (5 shares) to prevent flip-flopping
-    const balanceBuffer = 5;
+    // SMART BALANCE GUARD with TWO rules:
+    // 1. Cheap side cannot LEAD expensive side (prevents unpaired loss on cheap side)
+    // 2. Expensive side cannot get too far AHEAD (prevents reversal risk)
+    const balanceBuffer = 5;      // Buffer to prevent flip-flopping
+    const maxGap = 30;            // Max shares the expensive side can lead by
+    
+    // Rule 1: Block cheap side if it's leading
     if (side === cheapSide && cheapQty >= expensiveQty + balanceBuffer) {
       console.log(`[QuotingEngine] 🛡️ BALANCE GUARD: ${side} (cheap) blocked - has ${cheapQty.toFixed(0)} vs ${expensiveSide} (expensive) ${expensiveQty.toFixed(0)}`);
       console.log(`[QuotingEngine] 📊 Prices: UP avg=${avgUpPrice.toFixed(3)} live=${upLivePrice.toFixed(3)} | DOWN avg=${avgDownPrice.toFixed(3)} live=${downLivePrice.toFixed(3)}`);
@@ -113,6 +117,18 @@ export class QuotingEngine {
         quotes: [],
         blocked: true,
         blockReason: `Cheap side (${side}) cannot lead expensive side (${expensiveSide}): ${cheapQty.toFixed(0)} >= ${expensiveQty.toFixed(0)}`,
+      };
+    }
+    
+    // Rule 2: Block expensive side if gap is too large (reversal protection)
+    const currentGap = expensiveQty - cheapQty;
+    if (side === expensiveSide && currentGap >= maxGap) {
+      console.log(`[QuotingEngine] 🛡️ GAP GUARD: ${side} (expensive) blocked - gap is ${currentGap.toFixed(0)} shares (max: ${maxGap})`);
+      console.log(`[QuotingEngine] 📊 Waiting for ${cheapSide} to catch up before adding more ${expensiveSide}`);
+      return {
+        quotes: [],
+        blocked: true,
+        blockReason: `Gap too large: ${expensiveSide} leads by ${currentGap.toFixed(0)} shares (max: ${maxGap})`,
       };
     }
     
