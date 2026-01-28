@@ -22,18 +22,14 @@ import { useEffect, useState } from 'react';
 interface MarketPosition {
   market_slug: string;
   asset: string;
+  // Polymarket data (ground truth)
   polymarket_up_qty: number;
   polymarket_up_avg: number;
   polymarket_down_qty: number;
   polymarket_down_avg: number;
   live_up_price: number;
   live_down_price: number;
-  fills_up_qty: number;
-  fills_up_avg: number;
-  fills_down_qty: number;
-  fills_down_avg: number;
-  up_qty_match: boolean;
-  down_qty_match: boolean;
+  // Derived metrics (from Polymarket only)
   paired: number;
   unpaired: number;
   combined_cost: number;
@@ -55,10 +51,8 @@ interface PositionsResponse {
     total_cost: number;
     total_current_value: number;
     total_unrealized_pnl: number;
-    mismatched_markets: number;
   };
   polymarket_raw: number;
-  fills_raw: number;
 }
 
 function shortWallet(addr?: string): string | null {
@@ -288,7 +282,6 @@ export function V35OpenPositions() {
           <div className="space-y-4">
             {sortedPositions.map((pos) => {
               const timeInfo = parseMarketTime(pos.market_slug);
-              const hasMismatch = !pos.up_qty_match || !pos.down_qty_match;
               const title = getMarketTitle(pos.asset, timeInfo);
               
               const upCost = pos.polymarket_up_qty * pos.polymarket_up_avg;
