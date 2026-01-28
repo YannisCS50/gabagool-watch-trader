@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { V35LogViewer, V35FillsTable, V35ExportButton, V35StrategyPDFExport, V35OpenPositions } from '@/components/v35';
+import { V35LogViewer, V35FillsTable, V35ExportButton, V35StrategyPDFExport, V35OpenPositions, V35LivePriceHeader } from '@/components/v35';
 import { 
   Activity, 
   TrendingUp, 
@@ -157,6 +157,9 @@ export default function V35Dashboard() {
             </Badge>
           </div>
         </div>
+
+        {/* Live Price Header */}
+        <V35LivePriceHeader />
 
         {/* Status Cards */}
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
