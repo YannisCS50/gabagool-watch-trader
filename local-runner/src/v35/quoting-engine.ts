@@ -16,6 +16,7 @@
 import { getV35Config, type V35Config } from './config.js';
 import type { V35Market, V35Quote, V35Side, V35Asset } from './types.js';
 import { logV35GuardEvent } from './backend.js';
+import { getV35SidePricing } from './market-pricing.js';
 
 interface QuoteDecision {
   quotes: V35Quote[];
@@ -87,22 +88,16 @@ export class QuotingEngine {
     const unpaired = Math.abs(skew);
     const unrealizedPnL = this.calculateUnrealizedPnL(market);
     
-    // Determine which side is expensive based on average fill price
-    const avgUpPrice = market.upQty > 0 ? market.upCost / market.upQty : 0;
-    const avgDownPrice = market.downQty > 0 ? market.downCost / market.downQty : 0;
-    
-    // Also consider live prices as a factor
-    const upLivePrice = market.upBestBid || avgUpPrice;
-    const downLivePrice = market.downBestBid || avgDownPrice;
-    
-    // Expensive side is the one with higher effective price
-    const upIsExpensive = (avgUpPrice + upLivePrice) / 2 >= (avgDownPrice + downLivePrice) / 2;
-    const expensiveSide: V35Side = upIsExpensive ? 'UP' : 'DOWN';
-    const cheapSide: V35Side = upIsExpensive ? 'DOWN' : 'UP';
-    
-    // Get quantities
-    const expensiveQty = expensiveSide === 'UP' ? market.upQty : market.downQty;
-    const cheapQty = cheapSide === 'UP' ? market.upQty : market.downQty;
+    const {
+      avgUpPrice,
+      avgDownPrice,
+      upLivePrice,
+      downLivePrice,
+      expensiveSide,
+      cheapSide,
+      expensiveQty,
+      cheapQty,
+    } = getV35SidePricing(market);
     
     // SMART BALANCE GUARD with TWO rules:
     // 1. Cheap side cannot LEAD expensive side (prevents unpaired loss on cheap side)
@@ -316,3 +311,4 @@ export class QuotingEngine {
     return [...sweetSpot, ...outer];
   }
 }
+
