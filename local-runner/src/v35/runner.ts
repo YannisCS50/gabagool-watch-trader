@@ -1,7 +1,7 @@
 // ============================================================
 // V35 RUNNER - CIRCUIT BREAKER PROTECTED
 // ============================================================
-// Version: V35.3.2 - "Order ID Filter Fix"
+// Version: V35.3.3 - "Proactive Hedging"
 // 
 // CRITICAL INVARIANTS:
 // 1. Global Circuit Breaker is the SINGLE SOURCE OF TRUTH for safety
@@ -45,6 +45,7 @@ import { syncOrders, cancelAllOrders, updateOrderbook, reconcileOrders, cancelSi
 import { processFillWithHedge, logMarketFillStats } from './fill-tracker.js';
 import { getHedgeManager, resetHedgeManager } from './hedge-manager.js';
 import { getCircuitBreaker, initCircuitBreaker, resetCircuitBreaker } from './circuit-breaker.js';
+import { getProactiveRebalancer, resetProactiveRebalancer } from './proactive-rebalancer.js';
 import { sendV35Heartbeat, sendV35Offline, saveV35Settlement, saveV35Fill, saveV35OrderbookSnapshots, saveV35InventorySnapshot, type V35InventorySnapshot } from './backend.js';
 import type { V35OrderbookSnapshot } from './types.js';
 import { ensureValidCredentials, getBalance, getOpenOrders } from '../polymarket.js';
@@ -598,6 +599,28 @@ async function processMarket(market: V35Market): Promise<void> {
   
   // Queue orderbook snapshot for logging
   queueOrderbookSnapshot(market);
+  
+  // =========================================================================
+  // V35.3.3: PROACTIVE REBALANCER
+  // =========================================================================
+  // Check if we have unhedged positions that can now be profitably hedged.
+  // This catches positions where the hedge side was too expensive at fill time
+  // but has since become viable.
+  // =========================================================================
+  const rebalancer = getProactiveRebalancer();
+  const rebalanceResult = await rebalancer.checkAndRebalance(market);
+  
+  if (rebalanceResult.attempted && rebalanceResult.hedged) {
+    log(`🔄 PROACTIVE HEDGE: ${rebalanceResult.hedgeQty?.toFixed(0)} ${rebalanceResult.hedgeSide} @ $${rebalanceResult.hedgePrice?.toFixed(3)}`);
+    // Update local position if we executed a hedge
+    if (rebalanceResult.hedgeSide === 'UP') {
+      market.upQty += rebalanceResult.hedgeQty || 0;
+      market.upCost += (rebalanceResult.hedgeQty || 0) * (rebalanceResult.hedgePrice || 0);
+    } else if (rebalanceResult.hedgeSide === 'DOWN') {
+      market.downQty += rebalanceResult.hedgeQty || 0;
+      market.downCost += (rebalanceResult.hedgeQty || 0) * (rebalanceResult.hedgePrice || 0);
+    }
+  }
   
   // Calculate metrics
   const metrics = calculateMarketMetrics(market);
