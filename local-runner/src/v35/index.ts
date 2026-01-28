@@ -1,7 +1,7 @@
 // ============================================================
 // V35 INDEX - Re-exports all V35 modules
 // ============================================================
-// Version: V35.3.1 - "Safe Hedge Logging"
+// Version: V35.3.2 - "Order ID Filter Fix"
 // ============================================================
 
 export * from './config.js';
@@ -14,6 +14,7 @@ export * from './hedge-manager.js';
 export * from './circuit-breaker.js';
 export * from './backend.js';
 export * from './utils.js';
+export * from './user-ws.js';
 
-export const V35_VERSION = 'V35.3.1';
-export const V35_NAME = 'Safe Hedge Logging - Fixed circular JSON + Guard logging';
+export const V35_VERSION = 'V35.3.2';
+export const V35_NAME = 'Order ID Filter Fix - Only accept fills for OUR orders';

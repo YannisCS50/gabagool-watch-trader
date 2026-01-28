@@ -1,6 +1,8 @@
 // ============================================================
 // V35 ORDER MANAGER
 // ============================================================
+// V35.3.2 - "Order ID Filter Fix"
+//
 // Handles order placement, cancellation, and sync with target grid.
 // Uses the existing polymarket.ts client for CLOB operations.
 //
@@ -8,11 +10,15 @@
 // 
 // FIX v35.0.2: Added order reconciliation with Polymarket API
 // to prevent order stacking when fills are missed.
+//
+// FIX V35.3.2: Registers all placed order IDs with UserWS
+// so we only accept fills for OUR orders, not other traders'.
 // ============================================================
 
 import { getV35Config } from './config.js';
 import type { V35Market, V35Order, V35Quote, V35Side } from './types.js';
 import { getOrderbookDepth, placeOrder, cancelOrder, getOpenOrders, type OpenOrder } from '../polymarket.js';
+import { registerOurOrderId, unregisterOrderId, registerOurOrderIds } from './user-ws.js';
 
 interface PlaceOrderResult {
   success: boolean;
@@ -114,12 +120,16 @@ export async function syncOrders(
           placedAt: new Date(),
         };
         currentOrders.set(result.orderId, newOrder);
+        
+        // V35.3.2: Register order ID with UserWS for fill filtering
+        registerOurOrderId(result.orderId);
+        
         placed++;
       }
     }
   }
   
-  console.log(`[OrderManager] ✅ Placed ${placed}/${quotesToPlace.length} ${side} orders`);
+  console.log(`[OrderManager] ✅ Placed ${placed}/${quotesToPlace.length} ${side} orders (registered with UserWS)`);
   
   return { placed, cancelled };
 }
@@ -422,6 +432,8 @@ export async function reconcileOrders(
     for (const orderId of market.upOrders.keys()) {
       if (!remoteOrderIds.has(orderId)) {
         market.upOrders.delete(orderId);
+        // V35.3.2: Unregister from UserWS
+        unregisterOrderId(orderId);
         cleaned++;
       }
     }
@@ -436,6 +448,8 @@ export async function reconcileOrders(
           side: 'UP',
           placedAt: new Date(order.createdAt),
         });
+        // V35.3.2: Register with UserWS so we accept fills for this order
+        registerOurOrderId(order.orderId);
         added++;
       }
     }
@@ -447,6 +461,8 @@ export async function reconcileOrders(
     for (const orderId of market.downOrders.keys()) {
       if (!remoteOrderIds.has(orderId)) {
         market.downOrders.delete(orderId);
+        // V35.3.2: Unregister from UserWS
+        unregisterOrderId(orderId);
         cleaned++;
       }
     }
@@ -461,6 +477,8 @@ export async function reconcileOrders(
           side: 'DOWN',
           placedAt: new Date(order.createdAt),
         });
+        // V35.3.2: Register with UserWS so we accept fills for this order
+        registerOurOrderId(order.orderId);
         added++;
       }
     }

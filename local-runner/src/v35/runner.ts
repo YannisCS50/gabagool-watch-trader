@@ -1,7 +1,7 @@
 // ============================================================
 // V35 RUNNER - CIRCUIT BREAKER PROTECTED
 // ============================================================
-// Version: V35.3.1 - "Safe Hedge Logging"
+// Version: V35.3.2 - "Order ID Filter Fix"
 // 
 // CRITICAL INVARIANTS:
 // 1. Global Circuit Breaker is the SINGLE SOURCE OF TRUTH for safety
@@ -11,10 +11,11 @@
 // 5. On startup: VALIDATE actual Polymarket positions FIRST
 // 6. If pre-existing imbalance > maxUnpaired, REFUSE to trade that market
 //
-// V35.3.1 FIX:
-// - Fixed circular JSON error in hedge event logging
-// - Added inventory snapshot logging after each fill cycle
-// - Guard events now logged to bot_events table
+// V35.3.2 CRITICAL FIX:
+// - Only accept fills for orders WE placed (order ID filtering)
+// - The User WebSocket broadcasts ALL trades in subscribed markets
+// - Without this filter, we counted other traders' fills as ours!
+// - This caused phantom inventory and hedging failures
 // ============================================================
 
 import '../config.js'; // Load env first
@@ -51,7 +52,7 @@ import { checkVpnRequired } from '../vpn-check.js';
 import { acquireLeaseOrHalt, releaseLease, renewLease } from '../runner-lease.js';
 import { setRunnerIdentity } from '../order-guard.js';
 import { startBinanceFeed, stopBinanceFeed, getBinanceFeed } from './binance-feed.js';
-import { startUserWebSocket, stopUserWebSocket, setTokenToMarketMap, isUserWsConnected } from './user-ws.js';
+import { startUserWebSocket, stopUserWebSocket, setTokenToMarketMap, isUserWsConnected, clearOrderIds, getOrderTrackingStats, registerOurOrderIds } from './user-ws.js';
 // CRITICAL: Position cache for real-time position sync from Polymarket API
 import { 
   startPositionCache, 
@@ -729,6 +730,15 @@ async function sendHeartbeat(): Promise<void> {
     }
   } catch {
     // Ignore balance errors
+  }
+  
+  // V35.3.2: Log order tracking stats to verify filtering is working
+  const orderStats = getOrderTrackingStats();
+  if (orderStats.fillsReceived > 0) {
+    const rejectPct = orderStats.fillsRejected > 0 
+      ? ((orderStats.fillsRejected / orderStats.fillsReceived) * 100).toFixed(0)
+      : '0';
+    log(`🔐 Order Filter Stats: ${orderStats.trackedOrders} tracked | Accepted: ${orderStats.fillsAccepted} | Rejected: ${orderStats.fillsRejected} (${rejectPct}% from other traders)`);
   }
   
   await sendV35Heartbeat({
