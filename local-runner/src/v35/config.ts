@@ -117,18 +117,19 @@ export const TEST_CONFIG: V35Config = {
   minEdgeAfterHedge: 0.005,         // Minimum 0.5% edge after hedge
   maxExpensiveBias: 1.20,           // Expensive side can have 20% more shares
   
-  // Risk limits
-  // HARD REQUIREMENT: WARNING>=20, CRITICAL>=50 unpaired shares.
-  warnUnpairedShares: 20,
-  maxUnpairedShares: 50,
-  maxUnpairedImbalance: 50,
+  // Risk limits - V35.2.0 BURST-SAFE
+  // HARD REQUIREMENT (per user): max 20 unpaired shares
+  // Burst-cap in quoting engine ensures this can NEVER be exceeded
+  warnUnpairedShares: 10,           // Start blocking leading side at 10
+  maxUnpairedShares: 20,            // HARD LIMIT: emergency stop at 20
+  maxUnpairedImbalance: 20,         // Alias for maxUnpairedShares
   maxImbalanceRatio: 2.5,
   maxLossPerMarket: 25,
   maxConcurrentMarkets: 2,
   maxMarkets: 2,
   maxNotionalPerMarket: 150,
   maxTotalExposure: 300,
-  skewThreshold: 20,
+  skewThreshold: 10,                // Lower threshold for logging
   capitalPerMarket: 100,
   
   // Timing
@@ -167,18 +168,17 @@ export const MODERATE_CONFIG: V35Config = {
   minEdgeAfterHedge: 0.005,
   maxExpensiveBias: 1.20,
   
-  // Risk limits
-  // HARD REQUIREMENT: WARNING>=20, CRITICAL>=50 unpaired shares.
-  warnUnpairedShares: 20,
-  maxUnpairedShares: 50,
-  maxUnpairedImbalance: 50,
+  // Risk limits - V35.2.0 BURST-SAFE
+  warnUnpairedShares: 10,
+  maxUnpairedShares: 20,
+  maxUnpairedImbalance: 20,
   maxImbalanceRatio: 2.0,
   maxLossPerMarket: 25,
   maxConcurrentMarkets: 5,
   maxMarkets: 5,
   maxNotionalPerMarket: 200,
   maxTotalExposure: 1000,
-  skewThreshold: 20,
+  skewThreshold: 10,
   capitalPerMarket: 100,
   
   // Timing
@@ -217,18 +217,17 @@ export const PRODUCTION_CONFIG: V35Config = {
   minEdgeAfterHedge: 0.005,
   maxExpensiveBias: 1.20,
   
-  // Risk limits
-  // HARD REQUIREMENT: WARNING>=20, CRITICAL>=50 unpaired shares.
-  warnUnpairedShares: 20,
-  maxUnpairedShares: 50,
-  maxUnpairedImbalance: 50,
+  // Risk limits - V35.2.0 BURST-SAFE
+  warnUnpairedShares: 10,
+  maxUnpairedShares: 20,
+  maxUnpairedImbalance: 20,
   maxImbalanceRatio: 2.0,
   maxLossPerMarket: 50,
   maxConcurrentMarkets: 10,
   maxMarkets: 10,
   maxNotionalPerMarket: 1000,
   maxTotalExposure: 10000,
-  skewThreshold: 20,
+  skewThreshold: 10,
   capitalPerMarket: 500,
   
   // Timing
@@ -279,7 +278,7 @@ export function setV35ConfigOverrides(overrides: Partial<V35Config>): V35Config 
 
 export function printV35Config(cfg: V35Config): void {
   console.log('\n' + '='.repeat(70));
-  console.log(`  V35 GABAGOOL STRATEGY — ${cfg.mode.toUpperCase()} MODE (V35.1.0)`);
+  console.log(`  V35 GABAGOOL STRATEGY — ${cfg.mode.toUpperCase()} MODE (V35.2.0 Burst-Safe)`);
   console.log('='.repeat(70));
   console.log(`
   📊 GRID (passive limit orders)
