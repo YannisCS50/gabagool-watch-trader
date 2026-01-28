@@ -40,7 +40,7 @@ export interface RebalanceResult {
 export class ProactiveRebalancer {
   private lastRebalanceAttempt = 0;
   private rebalanceCooldownMs = 5000; // Check every 5 seconds
-  private hedgeOrderWaitMs = 5000; // Wait 5 seconds for hedge order to fill
+  private hedgeOrderWaitMs = 1500; // Wait 1.5 seconds for hedge order to fill
   
   constructor() {}
 
