@@ -25,10 +25,21 @@ import {
 // Default cutoff: 2026-01-27 when logging started working correctly
 const DEFAULT_CUTOFF_DATE = '2026-01-27';
 
+// Fetch wallet address from bot_config
+async function getWalletAddress(): Promise<string | null> {
+  const { data } = await supabase
+    .from('bot_config')
+    .select('polymarket_address')
+    .limit(1)
+    .single();
+  return data?.polymarket_address || null;
+}
+
 async function fetchAllRecords(
   tableName: string,
   orderColumn: string = 'created_at',
-  fromDate?: string
+  fromDate?: string,
+  walletFilter?: { column: string; value: string }
 ): Promise<Record<string, unknown>[]> {
   const MAX_ROWS = 10_000_000;
   const pageSize = 1000;
@@ -45,6 +56,11 @@ async function fetchAllRecords(
     // Apply date filter if provided
     if (fromDate) {
       query = query.gte(orderColumn, `${fromDate}T00:00:00Z`);
+    }
+
+    // Apply wallet filter if provided (for v35_fills)
+    if (walletFilter) {
+      query = query.eq(walletFilter.column, walletFilter.value);
     }
 
     const { data, error } = await query.range(offset, offset + pageSize - 1);
@@ -139,18 +155,27 @@ export function V35ExportButton() {
         }
         case 'fills': {
           toast.info(`Fetching fills from ${fromDate}...`);
-          const data = await fetchAllRecords('v35_fills', 'created_at', fromDate);
+          const walletAddress = await getWalletAddress();
+          // Only export fills that belong to our wallet (filters out ghost fills)
+          const data = walletAddress 
+            ? await fetchAllRecords('v35_fills', 'created_at', fromDate, { column: 'wallet_address', value: walletAddress })
+            : await fetchAllRecords('v35_fills', 'created_at', fromDate);
           downloadCsv(data, `v35-fills-${dateStr}.csv`);
-          toast.success(`Exported ${data.length} fills`);
+          toast.success(`Exported ${data.length} fills (filtered by wallet)`);
           break;
         }
         case 'all': {
           toast.info(`Fetching all V35 data from ${fromDate}...`);
           
+          const walletAddress = await getWalletAddress();
+          
           const [orderbooks, settlements, fills, positions, events] = await Promise.all([
             fetchAllRecords('v35_orderbook_snapshots', 'created_at', fromDate),
             fetchAllRecords('v35_settlements', 'created_at', fromDate),
-            fetchAllRecords('v35_fills', 'created_at', fromDate),
+            // Filter fills by wallet to exclude ghost fills
+            walletAddress 
+              ? fetchAllRecords('v35_fills', 'created_at', fromDate, { column: 'wallet_address', value: walletAddress })
+              : fetchAllRecords('v35_fills', 'created_at', fromDate),
             fetchAllRecords('bot_positions', 'synced_at', fromDate),
             fetchAllRecords('bot_events', 'created_at', fromDate),
           ]);
@@ -158,6 +183,7 @@ export function V35ExportButton() {
           const exportData = {
             exported_at: new Date().toISOString(),
             from_date: fromDate,
+            wallet_address: walletAddress,
             summary: {
               orderbook_snapshots: orderbooks.length,
               settlements: settlements.length,
@@ -175,7 +201,7 @@ export function V35ExportButton() {
           };
 
           downloadJson(exportData, `v35-full-export-${dateStr}.json`);
-          toast.success(`Exported all V35 data (${orderbooks.length + settlements.length + fills.length} records)`);
+          toast.success(`Exported all V35 data (${orderbooks.length + settlements.length + fills.length} records, wallet-filtered)`);
           break;
         }
       }
