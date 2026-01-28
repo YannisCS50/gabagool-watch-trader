@@ -52,7 +52,7 @@ import { startUserWebSocket, stopUserWebSocket, setTokenToMarketMap, isUserWsCon
 // CONSTANTS
 // ============================================================
 
-const VERSION = 'V35.0.1';
+const VERSION = 'V35.0.2';
 const RUNNER_ID = process.env.RUNNER_ID || `v35-${os.hostname()}`;
 const RUN_ID = `v35_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
@@ -637,6 +637,11 @@ async function sendHeartbeat(): Promise<void> {
 // MAIN LOOP
 // ============================================================
 
+// Track last balance check time
+let lastBalanceCheckTime = 0;
+const BALANCE_CHECK_INTERVAL_MS = 60_000; // Check balance every 60 seconds
+const MIN_BALANCE_REQUIRED = 5; // Minimum $5 USDC to operate
+
 async function mainLoop(): Promise<void> {
   const config = getV35Config();
   
@@ -648,11 +653,41 @@ async function mainLoop(): Promise<void> {
         log(`⚠️ MAX TOTAL EXPOSURE REACHED: $${p.totalCost.toFixed(0)}`);
       }
       
+      const now = Date.now();
+      
+      // =================================================================
+      // PERIODIC BALANCE CHECK - Pause if insufficient funds
+      // =================================================================
+      if (now - lastBalanceCheckTime > BALANCE_CHECK_INTERVAL_MS && !config.dryRun) {
+        try {
+          const balanceResult = await getBalance();
+          if (typeof balanceResult.balance === 'number') {
+            balance = balanceResult.balance;
+            
+            // Auto-pause if balance too low
+            if (balance < MIN_BALANCE_REQUIRED && !paused) {
+              log(`⚠️ INSUFFICIENT BALANCE: $${balance.toFixed(2)} < $${MIN_BALANCE_REQUIRED} minimum`);
+              log(`   PAUSING trading. Add USDC to resume.`);
+              paused = true;
+            }
+            // Auto-resume if balance recovered
+            else if (balance >= MIN_BALANCE_REQUIRED && paused) {
+              log(`✅ Balance recovered: $${balance.toFixed(2)} — RESUMING trading`);
+              paused = false;
+            }
+          } else if (balanceResult.error) {
+            log(`⚠️ Balance check error: ${balanceResult.error}`);
+          }
+        } catch (err: any) {
+          log(`⚠️ Balance check failed: ${err?.message}`);
+        }
+        lastBalanceCheckTime = now;
+      }
+      
       // =================================================================
       // ORDER RECONCILIATION - Sync local tracking with Polymarket API
       // Runs every 30 seconds to prevent order stacking from missed fills
       // =================================================================
-      const now = Date.now();
       if (now - lastReconcileTime > RECONCILE_INTERVAL_MS && !config.dryRun) {
         log('🔄 Running order reconciliation...');
         const { cleaned, added } = await reconcileOrders(markets, config.dryRun);
@@ -797,6 +832,16 @@ async function main(): Promise<void> {
     if (typeof balanceResult.balance === 'number') {
       balance = balanceResult.balance;
       log(`💰 Balance: $${balance.toFixed(2)}`);
+      
+      // CRITICAL: Pause if balance is too low to place any orders
+      const MIN_BALANCE_REQUIRED = 5; // Minimum $5 USDC to operate
+      if (balance < MIN_BALANCE_REQUIRED) {
+        log(`⚠️ INSUFFICIENT BALANCE: $${balance.toFixed(2)} < $${MIN_BALANCE_REQUIRED} minimum`);
+        log(`   The bot will start PAUSED. Add USDC to resume trading.`);
+        paused = true;
+      }
+    } else if (balanceResult.error) {
+      logError(`Balance check failed: ${balanceResult.error}`);
     }
   }
   

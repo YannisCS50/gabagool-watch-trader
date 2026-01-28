@@ -10,5 +10,5 @@ export * from './order-manager.js';
 export * from './fill-tracker.js';
 export * from './backend.js';
 
-export const V35_VERSION = 'V35.0.1';
+export const V35_VERSION = 'V35.0.2';
 export const V35_NAME = 'Passive Dual-Outcome Market Maker';
