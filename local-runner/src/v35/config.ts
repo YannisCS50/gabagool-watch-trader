@@ -117,7 +117,7 @@ export const TEST_CONFIG: V35Config = {
   // Timing - EXTENDED EXPOSURE: stay 90 seconds longer per market
   startDelayMs: 5000,       // Wait 5s after market open
   stopBeforeExpirySec: 30,  // Stop 30s before expiry (was 120s) = +90s exposure
-  refreshIntervalMs: 2000,  // Reduced from 5000ms to 2000ms for faster order replacement
+  refreshIntervalMs: 500,   // 500ms for near-instant imbalance control
   
   // CRITICAL: DISABLED per strategy document
   // "RULE 1: Never enable momentum filtering"
@@ -205,7 +205,7 @@ export const PRODUCTION_CONFIG: V35Config = {
   // Timing - MAXIMUM EXPOSURE: stay until 15s before expiry
   startDelayMs: 2000,
   stopBeforeExpirySec: 15,  // Stop 15s before expiry (was 60s)
-  refreshIntervalMs: 2000,
+  refreshIntervalMs: 500,   // 500ms for near-instant imbalance control
   
   // CRITICAL: STILL DISABLED - this is the secret sauce
   enableMomentumFilter: false,

@@ -53,7 +53,7 @@ import { startUserWebSocket, stopUserWebSocket, setTokenToMarketMap, isUserWsCon
 // CONSTANTS
 // ============================================================
 
-const VERSION = 'V35.0.2';
+const VERSION = 'V35.0.4';
 const RUNNER_ID = process.env.RUNNER_ID || `v35-${os.hostname()}`;
 const RUN_ID = `v35_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
