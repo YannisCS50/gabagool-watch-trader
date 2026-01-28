@@ -13,7 +13,7 @@
 import { EventEmitter } from 'events';
 import { getV35Config } from './config.js';
 import type { V35Market, V35Fill, V35Side, V35Asset } from './types.js';
-import { placeOrder, cancelOrder } from '../polymarket.js';
+import { placeOrder, cancelOrder, getOpenOrders } from '../polymarket.js';
 import { saveBotEvent, type BotEvent } from '../backend.js';
 
 // ============================================================
@@ -205,9 +205,34 @@ export class HedgeManager extends EventEmitter {
     if (hedgeAsk <= 0 || hedgeAsk >= 1) {
       return { viable: false, reason: 'no_liquidity_on_hedge_side', maxPrice: 0 };
     }
-    
-    // Max price = best ask + slippage (but never > 0.95)
-    const maxPrice = Math.min(hedgeAsk + config.maxHedgeSlippage, 0.95);
+
+     // ---------------------------------------------------------------------
+     // CRITICAL: Don't block profitable hedges just because "ask + slippage" 
+     // crosses 1.00.
+     // Instead, cap the max hedge price so that even the WORST-case fill still
+     // respects minEdgeAfterHedge.
+     // Example:
+     //   fill 0.39, ask 0.59, slippage 0.03 -> ask+slip=0.62 would imply 1.01
+     //   but we should still hedge up to 0.605 to keep min edge (0.5%).
+     // ---------------------------------------------------------------------
+     const priceCapForMinEdge = 1 - fill.price - config.minEdgeAfterHedge;
+     if (priceCapForMinEdge <= 0) {
+       return { viable: false, reason: 'no_room_for_min_edge', maxPrice: 0 };
+     }
+
+     // Max price = min(best ask + slippage, price cap for min edge, hard safety cap)
+     const maxPrice = Math.min(hedgeAsk + config.maxHedgeSlippage, priceCapForMinEdge, 0.95);
+
+     // If we cannot even match the current ask while preserving min edge, skip.
+     if (maxPrice < hedgeAsk - 1e-9) {
+       return {
+         viable: false,
+         reason: `hedge_ask_above_cap: ask=${hedgeAsk.toFixed(3)} > cap=${maxPrice.toFixed(3)}`,
+         maxPrice,
+         combinedCost: fill.price + hedgeAsk,
+         expectedEdge: 1 - (fill.price + hedgeAsk),
+       };
+     }
     
     // Check combined cost at worst case (max price)
     const worstCaseCombined = fill.price + maxPrice;
@@ -248,6 +273,15 @@ export class HedgeManager extends EventEmitter {
   ): Promise<{ filled: boolean; filledQty?: number; avgPrice?: number; reason?: string }> {
     const config = getV35Config();
     const tokenId = side === 'UP' ? market.upTokenId : market.downTokenId;
+
+     // Polymarket enforces a ~$1.00 minimum notional for orders.
+     // If we can't meet it with the exact hedge qty, we should fail loudly.
+     if (quantity * maxPrice < 1.0) {
+       return {
+         filled: false,
+         reason: `below_min_notional: $${(quantity * maxPrice).toFixed(2)} < $1.00`,
+       };
+     }
     
     if (config.dryRun) {
       console.log(`[HedgeManager] [DRY RUN] Would place IOC order: ${quantity.toFixed(0)} ${side} @ $${maxPrice.toFixed(3)}`);
@@ -257,8 +291,9 @@ export class HedgeManager extends EventEmitter {
     }
     
     try {
-      // Place market-taking order at maxPrice
-      // Polymarket doesn't support IOC directly, so we use GTC and cancel quickly if not filled
+       // Place market-taking order at maxPrice.
+       // Polymarket doesn't support IOC directly, so we place GTC and then
+       // verify quickly + cancel if still open.
       const result = await placeOrder({
         tokenId,
         side: 'BUY',
@@ -270,27 +305,52 @@ export class HedgeManager extends EventEmitter {
       if (!result.success || !result.orderId) {
         return { filled: false, reason: result.error || 'order_placement_failed' };
       }
-      
-      // For hedge orders, we're crossing the spread so should fill immediately
-      // The actual fill price will come through the WebSocket
-      // For now, assume filled at best ask (conservative estimate)
-      const estimatedPrice = side === 'UP' ? market.upBestAsk : market.downBestAsk;
-      
-      console.log(`[HedgeManager] ✓ Hedge order placed: ${result.orderId.slice(0, 8)}... @ $${maxPrice.toFixed(3)}`);
-      
-      // TODO: In production, wait for actual fill confirmation via WebSocket
-      // For now, assume filled immediately since we're crossing the spread
-      return { 
-        filled: true, 
-        filledQty: quantity, 
-        avgPrice: estimatedPrice,
-      };
+
+       console.log(`[HedgeManager] ✓ Hedge order placed: ${result.orderId.slice(0, 8)}... @ $${maxPrice.toFixed(3)} (IOC emulation)`);
+
+       // Wait briefly, then check if the order is still open.
+       const checkDelayMs = Math.min(Math.max(150, Math.floor(config.hedgeTimeoutMs / 4)), 500);
+       await sleep(checkDelayMs);
+
+       const { orders, error } = await getOpenOrders();
+       if (error) {
+         // If we can't check, do NOT claim a fill; force-cancel to avoid drifting exposure.
+         try { await cancelOrder(result.orderId); } catch {}
+         return { filled: false, reason: `ioc_status_unknown: ${error}` };
+       }
+
+       const open = orders.find(o => o.orderId === result.orderId);
+       if (!open) {
+         // Not open anymore -> assume filled (or cancelled externally). In practice, this is the best signal we have.
+         const estimatedPrice = side === 'UP' ? market.upBestAsk : market.downBestAsk;
+         return { filled: true, filledQty: quantity, avgPrice: estimatedPrice };
+       }
+
+       const filledQty = Math.max(0, Math.min(quantity, open.sizeMatched));
+       // Cancel remaining (IOC behavior)
+       try { await cancelOrder(result.orderId); } catch {}
+
+       if (filledQty <= 0) {
+         return { filled: false, reason: 'ioc_no_fill' };
+       }
+
+       const estimatedPrice = side === 'UP' ? market.upBestAsk : market.downBestAsk;
+       return {
+         filled: true,
+         filledQty,
+         avgPrice: estimatedPrice,
+         reason: filledQty < quantity ? 'partial_fill' : undefined,
+       };
       
     } catch (error: any) {
       console.error(`[HedgeManager] Hedge order error:`, error?.message?.slice(0, 100));
       return { filled: false, reason: `order_error: ${error?.message}` };
     }
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // ============================================================
