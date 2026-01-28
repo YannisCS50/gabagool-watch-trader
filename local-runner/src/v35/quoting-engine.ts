@@ -1,12 +1,13 @@
 // ============================================================
 // V35 QUOTING ENGINE - BURST-SAFE VERSION
 // ============================================================
-// Version: V35.2.0 - "Burst-Safe Inventory"
+// Version: V35.2.1 - "Conservative Position Sync"
 //
-// CRITICAL FIX: Previous versions could place 200+ shares of orders per side.
-// If a burst sweep filled all orders, we'd instantly exceed maxUnpairedShares.
+// CRITICAL FIX V35.2.1: The runner now uses CONSERVATIVE position sync.
+// Local fill tracking is never overwritten by stale API data.
+// This prevents the "zero reset" bug that caused massive accumulation.
 //
-// NEW APPROACH: Preventative Risk Management
+// BURST-CAP (V35.2.0): Preventative Risk Management
 // - Calculate "Risk Budget" = maxUnpairedShares - currentImbalance
 // - Cap total open order qty per side to Risk Budget
 // - Even 100% burst fill cannot exceed the hard limit
