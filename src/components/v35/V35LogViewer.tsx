@@ -19,7 +19,7 @@ interface LogEntry {
   data: Record<string, unknown> | null;
 }
 
-const EVENT_TYPES = ['ALL', 'fill', 'order', 'hedge', 'signal', 'error', 'settlement', 'rebalance'] as const;
+const EVENT_TYPES = ['ALL', 'fill', 'order', 'hedge', 'hedge_viability', 'hedge_attempt', 'hedge_success', 'hedge_failed', 'hedge_disabled', 'signal', 'error', 'settlement', 'rebalance'] as const;
 const ASSETS = ['ALL', 'BTC', 'ETH', 'SOL', 'XRP'] as const;
 
 const DEFAULT_LIMIT = 300;
@@ -116,6 +116,11 @@ export function V35LogViewer() {
       case 'fill': return 'text-cyan-400 bg-cyan-500/20';
       case 'order': return 'text-blue-400 bg-blue-500/20';
       case 'hedge': return 'text-purple-400 bg-purple-500/20';
+      case 'hedge_viability': return 'text-indigo-400 bg-indigo-500/20';
+      case 'hedge_attempt': return 'text-violet-400 bg-violet-500/20';
+      case 'hedge_success': return 'text-emerald-400 bg-emerald-500/20';
+      case 'hedge_failed': return 'text-rose-400 bg-rose-500/20';
+      case 'hedge_disabled': return 'text-slate-400 bg-slate-500/20';
       case 'signal': return 'text-green-400 bg-green-500/20';
       case 'error': return 'text-red-400 bg-red-500/20';
       case 'settlement': return 'text-amber-400 bg-amber-500/20';
