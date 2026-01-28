@@ -9,7 +9,7 @@ import { config } from '../config.js';
 import type { V35Market, V35Fill, V35MarketMetrics, V35PortfolioMetrics, V35OrderbookSnapshot } from './types.js';
 
 // NOTE: Keep this in sync with runner.ts VERSION for deployment verification.
-const VERSION = 'V35.0.1';
+const VERSION = 'V35.0.2';
 
 async function callProxy<T>(action: string, data?: Record<string, unknown>): Promise<T> {
   const response = await fetch(config.backend.url, {
