@@ -46,9 +46,9 @@ export interface CircuitBreakerConfig {
 // ============================================================
 
 const DEFAULT_CONFIG: CircuitBreakerConfig = {
-  absoluteMaxUnpaired: 50,
-  warningThreshold: 20,
-  criticalThreshold: 35,
+  absoluteMaxUnpaired: 35,   // HARD LIMIT - instant halt
+  warningThreshold: 15,      // Block leading side
+  criticalThreshold: 25,     // Cancel leading side orders
   cooldownMs: 60_000,
   autoReset: false, // Manual reset required for safety
 };
