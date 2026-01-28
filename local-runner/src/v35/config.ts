@@ -116,9 +116,10 @@ export const TEST_CONFIG: V35Config = {
   minEdgeAfterHedge: 0.005,         // Minimum 0.5% edge after hedge
   maxExpensiveBias: 1.20,           // Expensive side can have 20% more shares
   
-  // Risk limits - raised since hedge handles balance
-  maxUnpairedShares: 100,           // Emergency stop (raised - hedge handles balance)
-  maxUnpairedImbalance: 100,
+  // Risk limits
+  // HARD REQUIREMENT: never allow skew > 30 shares.
+  maxUnpairedShares: 30,
+  maxUnpairedImbalance: 30,
   maxImbalanceRatio: 2.5,
   maxLossPerMarket: 25,
   maxConcurrentMarkets: 2,
@@ -165,8 +166,9 @@ export const MODERATE_CONFIG: V35Config = {
   maxExpensiveBias: 1.20,
   
   // Risk limits
-  maxUnpairedShares: 100,
-  maxUnpairedImbalance: 100,
+  // HARD REQUIREMENT: never allow skew > 30 shares.
+  maxUnpairedShares: 30,
+  maxUnpairedImbalance: 30,
   maxImbalanceRatio: 2.0,
   maxLossPerMarket: 25,
   maxConcurrentMarkets: 5,
@@ -212,9 +214,10 @@ export const PRODUCTION_CONFIG: V35Config = {
   minEdgeAfterHedge: 0.005,
   maxExpensiveBias: 1.20,
   
-  // Risk limits - production scale
-  maxUnpairedShares: 200,
-  maxUnpairedImbalance: 200,
+  // Risk limits
+  // HARD REQUIREMENT: never allow skew > 30 shares.
+  maxUnpairedShares: 30,
+  maxUnpairedImbalance: 30,
   maxImbalanceRatio: 2.0,
   maxLossPerMarket: 50,
   maxConcurrentMarkets: 10,

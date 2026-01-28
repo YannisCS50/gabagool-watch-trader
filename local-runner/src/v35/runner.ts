@@ -856,6 +856,21 @@ async function main(): Promise<void> {
   
   // Initialize quoting engine
   quotingEngine = new QuotingEngine();
+
+  // Wire HedgeManager -> immediate order cancellations when hedging is not viable / fails.
+  // This prevents runaway one-sided inventory accumulation between market loop ticks.
+  const hedgeManager = getHedgeManager();
+  hedgeManager.on('cancelSide', async ({ marketSlug, side }: { marketSlug: string; side: 'UP' | 'DOWN' }) => {
+    const m = markets.get(marketSlug);
+    if (!m) return;
+    const cfg = getV35Config();
+    log(`🛑 [HedgeManager] cancelSide: cancelling ${side} orders for ${marketSlug.slice(-25)}`);
+    try {
+      await cancelSideOrders(m, side, cfg.dryRun);
+    } catch (err: any) {
+      logError(`[HedgeManager] cancelSideOrders failed (${side})`, err);
+    }
+  });
   
   // Start Binance price feed for momentum detection
   if (config.enableMomentumFilter) {
