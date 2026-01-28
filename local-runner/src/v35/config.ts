@@ -1,25 +1,25 @@
 // ============================================================
 // V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.3.5 - "Hedge-First Quoting"
+// Version: V35.3.6 - "Strict Balance"
 //
-// Passive Dual-Outcome Market Maker for Polymarket 15-min options
+// ONLY quote on the lagging side to guarantee 1:1 share ratio.
+// Never add shares to the side that's already leading.
 // 
 // STRATEGY: Place limit BUY orders on a grid for both UP and DOWN sides.
 // When retail traders hit our orders, we accumulate both sides.
 // At settlement: one side pays $1.00, other pays $0.00.
 // If combined cost < $1.00 -> GUARANTEED profit.
 //
-// V35.3.5 FIX:
-// - HEDGE-FIRST QUOTING: Before placing orders on either side, verify
-//   that the OPPOSITE side has viable liquidity for hedging
-// - If combined cost would exceed $0.98, DON'T place orders
-// - This prevents accumulating unhegeable fills that create risk
-// - Result: Only trade when profit is GUARANTEED regardless of outcome
+// V35.3.6 FIX:
+// - STRICT BALANCE: Only quote on the side with FEWER shares
+// - If UP > DOWN, only quote on DOWN (and vice versa)
+// - This keeps shares perfectly balanced at all times
+// - No more "reversal kills" - both sides win equally
 // ============================================================
 
-export const V35_VERSION = 'V35.3.5';
-export const V35_CODENAME = 'Hedge-First Quoting';
+export const V35_VERSION = 'V35.3.6';
+export const V35_CODENAME = 'Strict Balance';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 
