@@ -212,11 +212,32 @@ export async function cancelAllOrders(market: V35Market, dryRun: boolean): Promi
  */
 export async function cancelSideOrders(market: V35Market, side: V35Side, dryRun: boolean): Promise<number> {
   const currentOrders = side === 'UP' ? market.upOrders : market.downOrders;
-  const orderIds = [...currentOrders.keys()];
+  const tokenId = side === 'UP' ? market.upTokenId : market.downTokenId;
+
+  // Local-tracked orders
+  const localOrderIds = [...currentOrders.keys()];
   
-  if (orderIds.length === 0) {
-    return 0;
+  // Also cancel *remote* open orders for this token.
+  // This is critical on restarts when local maps are empty but orders are still live on Polymarket.
+  let remoteOrderIds: string[] = [];
+  if (!dryRun) {
+    try {
+      const { orders, error } = await getOpenOrders();
+      if (error) {
+        console.warn(`[OrderManager] CancelSide: failed to fetch open orders: ${error}`);
+      } else {
+        remoteOrderIds = orders
+          .filter(o => o.tokenId === tokenId && o.side === 'BUY')
+          .map(o => o.orderId);
+      }
+    } catch (err: any) {
+      console.warn(`[OrderManager] CancelSide: open-orders fetch threw: ${err?.message}`);
+    }
   }
+
+  const orderIds = Array.from(new Set([...localOrderIds, ...remoteOrderIds]));
+
+  if (orderIds.length === 0) return 0;
   
   if (dryRun) {
     console.log(`[DRY] Cancel all ${side} orders (${orderIds.length})`);
@@ -246,6 +267,10 @@ export async function cancelSideOrders(market: V35Market, side: V35Side, dryRun:
       console.warn(`[OrderManager] Cancel ${side} failed for ${result.id}: ${result.error}`);
     }
   }
+
+  // Defensive: even if some cancels failed, clear local map so we don't think we still hold these price levels.
+  // Reconciliation will re-add any truly remaining remote orders.
+  currentOrders.clear();
   
   console.log(`[OrderManager] ✅ Cancelled ${cancelled}/${orderIds.length} ${side} orders`);
   return cancelled;
