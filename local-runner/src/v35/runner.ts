@@ -498,6 +498,16 @@ async function processMarket(market: V35Market): Promise<void> {
   // =========================================================================
   const cachedPos = getCachedPosition(market.slug);
   if (cachedPos) {
+    // Log if there's a drift between local tracking and Polymarket API
+    const localUp = market.upQty;
+    const localDown = market.downQty;
+    const apiUp = cachedPos.upShares;
+    const apiDown = cachedPos.downShares;
+    
+    if (Math.abs(localUp - apiUp) > 0.1 || Math.abs(localDown - apiDown) > 0.1) {
+      log(`🔄 POSITION SYNC: Local (UP=${localUp.toFixed(0)} DOWN=${localDown.toFixed(0)}) → API (UP=${apiUp.toFixed(0)} DOWN=${apiDown.toFixed(0)})`);
+    }
+    
     // Update internal state with REAL positions from Polymarket
     market.upQty = cachedPos.upShares;
     market.downQty = cachedPos.downShares;
@@ -585,11 +595,18 @@ async function processMarket(market: V35Market): Promise<void> {
     
     const leadingSide = market.upQty > market.downQty ? 'UP' : 'DOWN';
 
+    // =====================================================================
+    // IMBALANCE GUARD: REAL-TIME TRACKING WITH DETAILED LOGGING
+    // =====================================================================
+    log(`   ⚖️ IMBALANCE CHECK: UP=${market.upQty.toFixed(0)} DOWN=${market.downQty.toFixed(0)} | Gap=${imbalance.toFixed(0)} | Leading=${leadingSide}`);
+    
     // WARNING threshold: immediately stop adding to the leading side.
     // This keeps unpaired from drifting upward while we wait for natural pairing / hedges.
     if (imbalance >= config.warnUnpairedShares) {
-      log(`⚠️ WARNING: ${imbalance.toFixed(0)} unpaired >= ${config.warnUnpairedShares} — cancelling ${leadingSide} orders`);
-      await cancelSideOrders(market, leadingSide, config.dryRun);
+      log(`   ⚠️ WARNING GUARD TRIGGERED: ${imbalance.toFixed(0)} unpaired >= ${config.warnUnpairedShares} threshold`);
+      log(`   🛑 CANCELLING all ${leadingSide} orders to prevent further imbalance...`);
+      const cancelCount = await cancelSideOrders(market, leadingSide, config.dryRun);
+      log(`   ✅ Cancelled ${cancelCount} ${leadingSide} orders (remote + local)`);
       if (leadingSide === 'UP') allowUpQuotes = false;
       if (leadingSide === 'DOWN') allowDownQuotes = false;
     }
@@ -597,8 +614,10 @@ async function processMarket(market: V35Market): Promise<void> {
     // CRITICAL threshold: hard-stop the market by cancelling ALL orders.
     // This is the "must never" circuit breaker.
     if (imbalance >= config.maxUnpairedShares) {
-      log(`🚨 CRITICAL STOP: ${imbalance.toFixed(0)} unpaired >= ${config.maxUnpairedShares} — cancelling ALL orders`);
-      await cancelAllOrders(market, config.dryRun);
+      log(`   🚨 CRITICAL GUARD TRIGGERED: ${imbalance.toFixed(0)} unpaired >= ${config.maxUnpairedShares} max threshold`);
+      log(`   🚨 EMERGENCY: CANCELLING ALL ORDERS (UP + DOWN) via REMOTE API...`);
+      const cancelCount = await cancelAllOrders(market, config.dryRun);
+      log(`   🚨 EMERGENCY COMPLETE: Cancelled ${cancelCount} orders total — MARKET HALTED`);
       return; // Do not place any new orders this tick
     }
     
