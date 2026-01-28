@@ -259,7 +259,7 @@ export interface V35GuardEvent {
 
 export async function logV35GuardEvent(event: V35GuardEvent): Promise<boolean> {
   try {
-    const result = await callProxy<{ success: boolean }>('log-bot-event', {
+    const result = await callProxy<{ success: boolean }>('save-bot-event', {
       event: {
         event_type: 'guard',
         asset: event.asset,
