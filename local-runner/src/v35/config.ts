@@ -1,7 +1,7 @@
 // ============================================================
 // V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.3.1 - "Safe Hedge Logging"
+// Version: V35.3.2 - "Order ID Filter Fix"
 //
 // Passive Dual-Outcome Market Maker for Polymarket 15-min options
 // 
@@ -10,15 +10,15 @@
 // At settlement: one side pays $1.00, other pays $0.00.
 // If combined cost < $1.00 -> GUARANTEED profit.
 //
-// V35.3.1 FIXES:
-// - Fixed circular JSON error in hedge event logging (safeStringify)
-// - Added guard event logging to bot_events table
-// - Added inventory snapshot logging after each fill cycle
-// - All safety checks now log events for debugging
+// V35.3.2 CRITICAL FIX:
+// - Only accept fills for orders WE placed (order ID filtering)
+// - The User WebSocket broadcasts ALL trades in subscribed markets
+// - Without this filter, we were counting other traders' fills as ours!
+// - This caused massive phantom inventory and hedging failures
 // ============================================================
 
-export const V35_VERSION = 'V35.3.1';
-export const V35_CODENAME = 'Safe Hedge Logging';
+export const V35_VERSION = 'V35.3.2';
+export const V35_CODENAME = 'Order ID Filter Fix';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 

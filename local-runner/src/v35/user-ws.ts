@@ -1,9 +1,15 @@
 // ============================================================
 // V35 USER WEBSOCKET - Authenticated Fill Tracking
 // ============================================================
+// V35.3.2 - "Order ID Filter Fix"
+//
 // Connects to Polymarket's authenticated User Channel to receive
 // real-time notifications when our orders are matched (filled).
-// This is more reliable than scanning the public trade feed.
+//
+// CRITICAL FIX: Only accept fills for orders WE placed.
+// The User Channel broadcasts ALL trades in subscribed markets,
+// not just our own! Without this filter, we'd count other
+// traders' fills as our own -> massive inventory corruption.
 // ============================================================
 
 import WebSocket from 'ws';
@@ -20,6 +26,13 @@ let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 
 // Token ID to market info mapping (set by runner)
 let tokenToMarketMap: Map<string, { slug: string; side: V35Side; asset: string }> = new Map();
+
+// CRITICAL V35.3.2: Track our own order IDs to filter fills
+// Only fills matching these IDs are actually OURS
+const ourOrderIds = new Set<string>();
+let totalFillsReceived = 0;
+let ourFillsAccepted = 0;
+let otherFillsRejected = 0;
 
 function log(msg: string): void {
   const ts = new Date().toISOString().slice(11, 19);
@@ -182,9 +195,14 @@ function processUserEvent(data: any): void {
 
 /**
  * Process a trade event from the User Channel
- * This is triggered when one of our orders is matched
+ * 
+ * CRITICAL V35.3.2: Only accept fills for orders WE placed!
+ * The User Channel broadcasts ALL trades in subscribed markets.
+ * Without filtering by our order IDs, we count other traders' fills.
  */
 function processTrade(data: any): void {
+  totalFillsReceived++;
+  
   // Extract maker orders - these are OUR fills when we're the maker
   const makerOrders = data.maker_orders as Array<{
     order_id: string;
@@ -195,17 +213,27 @@ function processTrade(data: any): void {
   }> | undefined;
 
   if (!makerOrders || makerOrders.length === 0) {
-    // We might be the taker, or no maker orders in this trade
-    // Check if the taker_order_id matches one of ours
+    // Check if the taker_order_id matches one of OURS
     const takerId = data.taker_order_id;
     const assetId = data.asset_id;
     const price = parseFloat(data.price);
     const size = parseFloat(data.size);
 
     if (takerId && assetId && !isNaN(price) && !isNaN(size)) {
+      // CRITICAL: Only accept if this is OUR order
+      if (!ourOrderIds.has(takerId)) {
+        otherFillsRejected++;
+        // Log periodically to show filtering is working
+        if (otherFillsRejected % 10 === 1) {
+          log(`🚫 Rejected ${otherFillsRejected} fills from other traders (not our orders)`);
+        }
+        return;
+      }
+      
       const marketInfo = tokenToMarketMap.get(assetId);
       if (marketInfo && fillCallback) {
-        log(`🎯 TAKER FILL: ${marketInfo.side} ${size.toFixed(0)} @ $${price.toFixed(2)}`);
+        ourFillsAccepted++;
+        log(`🎯 TAKER FILL (ours): ${marketInfo.side} ${size.toFixed(0)} @ $${price.toFixed(2)} | Accepted: ${ourFillsAccepted}/${totalFillsReceived}`);
         
         const fill: V35Fill = {
           orderId: takerId,
@@ -225,6 +253,18 @@ function processTrade(data: any): void {
 
   // Process each maker order that was matched
   for (const maker of makerOrders) {
+    const orderId = maker.order_id;
+    
+    // CRITICAL V35.3.2: Only accept fills for orders WE placed!
+    if (!ourOrderIds.has(orderId)) {
+      otherFillsRejected++;
+      // Log periodically to show filtering is working
+      if (otherFillsRejected % 10 === 1) {
+        log(`🚫 Rejected ${otherFillsRejected} fills from other traders (not our orders)`);
+      }
+      continue;
+    }
+    
     const assetId = maker.asset_id;
     const marketInfo = tokenToMarketMap.get(assetId);
     
@@ -241,11 +281,12 @@ function processTrade(data: any): void {
       continue;
     }
 
-    log(`🎯 MAKER FILL: ${marketInfo.side} ${size.toFixed(0)} @ $${price.toFixed(2)} in ${marketInfo.slug.slice(-25)}`);
+    ourFillsAccepted++;
+    log(`🎯 MAKER FILL (ours): ${marketInfo.side} ${size.toFixed(0)} @ $${price.toFixed(2)} | Accepted: ${ourFillsAccepted}/${totalFillsReceived}`);
 
     if (fillCallback) {
       const fill: V35Fill = {
-        orderId: maker.order_id,
+        orderId: orderId,
         tokenId: assetId,
         side: marketInfo.side,
         price,
@@ -333,4 +374,58 @@ export function setTokenToMarketMap(
  */
 export function isUserWsConnected(): boolean {
   return userSocket?.readyState === WebSocket.OPEN;
+}
+
+// ============================================================
+// ORDER ID TRACKING (V35.3.2)
+// ============================================================
+
+/**
+ * Register an order ID as "ours" so we accept fills for it
+ * Called by OrderManager when placing orders
+ */
+export function registerOurOrderId(orderId: string): void {
+  ourOrderIds.add(orderId);
+}
+
+/**
+ * Register multiple order IDs at once
+ */
+export function registerOurOrderIds(orderIds: string[]): void {
+  for (const id of orderIds) {
+    ourOrderIds.add(id);
+  }
+}
+
+/**
+ * Remove an order ID from tracking (after cancellation or full fill)
+ */
+export function unregisterOrderId(orderId: string): void {
+  ourOrderIds.delete(orderId);
+}
+
+/**
+ * Clear all tracked order IDs (on market expiry or runner restart)
+ */
+export function clearOrderIds(): void {
+  const count = ourOrderIds.size;
+  ourOrderIds.clear();
+  log(`🗑️ Cleared ${count} tracked order IDs`);
+}
+
+/**
+ * Get current tracking stats
+ */
+export function getOrderTrackingStats(): {
+  trackedOrders: number;
+  fillsReceived: number;
+  fillsAccepted: number;
+  fillsRejected: number;
+} {
+  return {
+    trackedOrders: ourOrderIds.size,
+    fillsReceived: totalFillsReceived,
+    fillsAccepted: ourFillsAccepted,
+    fillsRejected: otherFillsRejected,
+  };
 }
