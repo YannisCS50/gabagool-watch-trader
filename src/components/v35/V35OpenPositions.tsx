@@ -100,6 +100,19 @@ interface MarketPosition {
   unrealized_pnl: number;
 }
 
+interface ExpiredMarket {
+  market_slug: string;
+  asset: string;
+  up_qty: number;
+  down_qty: number;
+  up_cost: number;
+  down_cost: number;
+  paired: number;
+  combined_cost: number;
+  realized_pnl: number;
+  expired_at: string;
+}
+
 interface PositionsResponse {
   success: boolean;
   wallet_used?: string;
@@ -112,7 +125,11 @@ interface PositionsResponse {
     total_cost: number;
     total_current_value: number;
     total_unrealized_pnl: number;
+    // NEW: Realized PnL from expired markets
+    total_realized_pnl?: number;
+    expired_markets_count?: number;
   };
+  expired_markets?: ExpiredMarket[];
   polymarket_raw: number;
 }
 
@@ -402,6 +419,16 @@ export function V35OpenPositions() {
                 {(summary.total_unrealized_pnl || 0) >= 0 ? '+' : ''}${(summary.total_unrealized_pnl || 0).toFixed(2)}
               </div>
               <div className="text-xs text-muted-foreground">Unrealized P&L</div>
+            </div>
+            {/* Realized PnL from expired markets */}
+            <div className={`rounded-xl p-4 text-center border ${(summary.total_realized_pnl || 0) > 0 ? 'bg-emerald-500/10 border-emerald-500/30' : 'bg-muted/30 border-border/50'}`}>
+              <CheckCircle2 className={`h-5 w-5 mx-auto mb-2 ${(summary.total_realized_pnl || 0) > 0 ? 'text-emerald-500' : 'text-muted-foreground'}`} />
+              <div className={`text-2xl font-bold ${(summary.total_realized_pnl || 0) > 0 ? 'text-emerald-500' : ''}`}>
+                +${(summary.total_realized_pnl || 0).toFixed(2)}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                Realized P&L ({summary.expired_markets_count || 0} markets)
+              </div>
             </div>
             <div className="bg-primary/10 rounded-xl p-4 text-center border border-primary/20">
               <DollarSign className="h-5 w-5 mx-auto mb-2 text-primary" />
