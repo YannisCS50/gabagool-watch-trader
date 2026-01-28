@@ -17,5 +17,5 @@ export * from './backend.js';
 export * from './utils.js';
 export * from './user-ws.js';
 
-export const V35_VERSION = 'V35.3.4';
-export const V35_NAME = 'Orderbook Ready Check - Skip orders until CLOB has book data';
+export const V35_VERSION = 'V35.3.5';
+export const V35_NAME = 'Hedge-First Quoting - Only trade when profit is guaranteed';
