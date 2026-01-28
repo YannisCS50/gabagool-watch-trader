@@ -17,6 +17,7 @@ interface ActiveMarket {
   slug: string;
   asset: string;
   strikePrice: number | null;
+  startTs: number;
   endTs: number;
 }
 
@@ -32,14 +33,16 @@ function extractActiveMarkets(strikePrices: Record<string, number>): ActiveMarke
     const startTs = parseInt(match[2]) * 1000;
     const endTs = startTs + 15 * 60 * 1000;
     
-    // Only include live or recent markets
+    // Include markets that are currently live OR just ended (within 5 min grace)
+    // A market is "live" if: startTs <= now < endTs
     if (now >= startTs && now < endTs + 5 * 60 * 1000) {
-      markets.push({ slug, asset, strikePrice: strike, endTs });
+      markets.push({ slug, asset, strikePrice: strike, endTs, startTs });
     }
   }
   
-  // Sort by endTs ascending (soonest first)
-  return markets.sort((a, b) => a.endTs - b.endTs);
+  // Sort by startTs descending - most recent market first
+  // This ensures we always show the CURRENT market, not an older one
+  return markets.sort((a, b) => b.startTs - a.startTs);
 }
 
 export function V35LivePriceHeader() {
