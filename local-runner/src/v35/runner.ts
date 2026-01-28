@@ -1,7 +1,7 @@
 // ============================================================
-// V35 RUNNER - WITH ACTIVE HEDGING
+// V35 RUNNER - WITH ACTIVE HEDGING + POSITION CACHE SYNC
 // ============================================================
-// Version: V35.1.0 - "True Gabagool"
+// Version: V35.1.1 - "Position Truth"
 // 
 // STRATEGY:
 // 1. Discover active 15-min up/down markets
@@ -10,7 +10,8 @@
 // 4. IMMEDIATELY hedge the opposite side (the key fix)
 // 5. Combined cost < $1.00 -> GUARANTEED profit
 //
-// KEY INSIGHT: Gabagool's edge comes from ACTIVE HEDGING, not passive MM.
+// V35.1.1 FIX: Uses Polymarket API position cache as source of truth
+// for quoting decisions. Internal counters can drift, cache cannot.
 // ============================================================
 
 import '../config.js'; // Load env first
@@ -45,12 +46,21 @@ import { acquireLeaseOrHalt, releaseLease, renewLease } from '../runner-lease.js
 import { setRunnerIdentity } from '../order-guard.js';
 import { startBinanceFeed, stopBinanceFeed, getBinanceFeed } from './binance-feed.js';
 import { startUserWebSocket, stopUserWebSocket, setTokenToMarketMap, isUserWsConnected } from './user-ws.js';
+// CRITICAL: Position cache for real-time position sync from Polymarket API
+import { 
+  startPositionCache, 
+  stopPositionCache, 
+  getCachedPosition, 
+  forceRefresh as refreshPositionCache,
+  registerMarketForCache,
+  unregisterMarketFromCache,
+} from '../position-cache.js';
 
 // ============================================================
 // CONSTANTS
 // ============================================================
 
-const VERSION = 'V35.1.0';
+const VERSION = 'V35.1.1';
 const RUNNER_ID = process.env.RUNNER_ID || `v35-${os.hostname()}`;
 const RUN_ID = `v35_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
@@ -373,6 +383,9 @@ async function refreshMarkets(): Promise<void> {
       m.expiry
     );
     
+    // CRITICAL: Register market with position cache for real-time position tracking
+    registerMarketForCache(m.slug, m.conditionId, m.upTokenId, m.downTokenId);
+    
     markets.set(m.slug, market);
     log(`➕ Added market: ${m.slug} (${m.asset}, expires ${m.expiry.toISOString()})`);
     added++;
@@ -437,6 +450,9 @@ function cleanupExpiredMarkets(): void {
       tokenToMarket.delete(market.upTokenId);
       tokenToMarket.delete(market.downTokenId);
       
+      // CRITICAL: Unregister from position cache
+      unregisterMarketFromCache(market.conditionId, market.upTokenId, market.downTokenId);
+      
       markets.delete(slug);
       removed++;
     }
@@ -455,6 +471,19 @@ async function processMarket(market: V35Market): Promise<void> {
   const config = getV35Config();
   const now = Date.now();
   const secondsToExpiry = (market.expiry.getTime() - now) / 1000;
+  
+  // =========================================================================
+  // CRITICAL FIX: Sync positions from Polymarket API (source of truth)
+  // This prevents drift between internal counters and actual positions
+  // =========================================================================
+  const cachedPos = getCachedPosition(market.slug);
+  if (cachedPos) {
+    // Update internal state with REAL positions from Polymarket
+    market.upQty = cachedPos.upShares;
+    market.downQty = cachedPos.downShares;
+    market.upCost = cachedPos.upCost;
+    market.downCost = cachedPos.downCost;
+  }
   
   // Stop quoting if too close to expiry
   if (secondsToExpiry < config.stopBeforeExpirySec) {
@@ -766,6 +795,9 @@ async function stop(): Promise<void> {
   // Stop Binance feed
   stopBinanceFeed();
   
+  // Stop position cache
+  stopPositionCache();
+  
   const config = getV35Config();
   for (const market of markets.values()) {
     await cancelAllOrders(market, config.dryRun);
@@ -879,6 +911,12 @@ async function main(): Promise<void> {
     // Give it a moment to connect
     await sleep(2000);
   }
+  
+  // CRITICAL: Start position cache BEFORE market discovery
+  // This ensures we have accurate position data when making quoting decisions
+  log('🔄 Starting position cache (real-time Polymarket position sync)...');
+  startPositionCache();
+  await sleep(1000); // Give cache time for initial fetch
   
   // Initial market discovery
   log('🔍 Discovering markets...');
