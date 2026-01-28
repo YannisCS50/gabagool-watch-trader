@@ -241,6 +241,46 @@ export async function saveV35OrderbookSnapshots(snapshots: V35OrderbookSnapshot[
 }
 
 // ============================================================
+// GUARD EVENT LOGGING
+// ============================================================
+
+export interface V35GuardEvent {
+  marketSlug: string;
+  asset: string;
+  guardType: 'BALANCE_GUARD' | 'GAP_GUARD';
+  blockedSide: 'UP' | 'DOWN';
+  upQty: number;
+  downQty: number;
+  expensiveSide: 'UP' | 'DOWN';
+  reason: string;
+}
+
+export async function logV35GuardEvent(event: V35GuardEvent): Promise<boolean> {
+  try {
+    const result = await callProxy<{ success: boolean }>('log-bot-event', {
+      event: {
+        event_type: 'guard',
+        asset: event.asset,
+        market_id: event.marketSlug,
+        reason_code: event.guardType,
+        ts: Date.now(),
+        data: {
+          blocked_side: event.blockedSide,
+          up_qty: event.upQty,
+          down_qty: event.downQty,
+          expensive_side: event.expensiveSide,
+          reason: event.reason,
+        },
+      },
+    });
+    return result.success;
+  } catch (err: any) {
+    console.error('[V35Backend] Log guard event failed:', err?.message);
+    return false;
+  }
+}
+
+// ============================================================
 // OFFLINE NOTIFICATION
 // ============================================================
 

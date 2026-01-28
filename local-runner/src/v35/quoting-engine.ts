@@ -15,6 +15,7 @@
 
 import { getV35Config, type V35Config } from './config.js';
 import type { V35Market, V35Quote, V35Side, V35Asset } from './types.js';
+import { logV35GuardEvent } from './backend.js';
 
 interface QuoteDecision {
   quotes: V35Quote[];
@@ -111,24 +112,52 @@ export class QuotingEngine {
     
     // Rule 1: Block cheap side if it's leading
     if (side === cheapSide && cheapQty >= expensiveQty + balanceBuffer) {
+      const reason = `Cheap side (${side}) cannot lead expensive side (${expensiveSide}): ${cheapQty.toFixed(0)} >= ${expensiveQty.toFixed(0)}`;
       console.log(`[QuotingEngine] 🛡️ BALANCE GUARD: ${side} (cheap) blocked - has ${cheapQty.toFixed(0)} vs ${expensiveSide} (expensive) ${expensiveQty.toFixed(0)}`);
       console.log(`[QuotingEngine] 📊 Prices: UP avg=${avgUpPrice.toFixed(3)} live=${upLivePrice.toFixed(3)} | DOWN avg=${avgDownPrice.toFixed(3)} live=${downLivePrice.toFixed(3)}`);
+      
+      // Log to database for verification
+      logV35GuardEvent({
+        marketSlug: market.slug,
+        asset: market.asset,
+        guardType: 'BALANCE_GUARD',
+        blockedSide: side,
+        upQty: market.upQty,
+        downQty: market.downQty,
+        expensiveSide,
+        reason,
+      }).catch(() => {}); // Fire and forget
+      
       return {
         quotes: [],
         blocked: true,
-        blockReason: `Cheap side (${side}) cannot lead expensive side (${expensiveSide}): ${cheapQty.toFixed(0)} >= ${expensiveQty.toFixed(0)}`,
+        blockReason: reason,
       };
     }
     
     // Rule 2: Block expensive side if gap is too large (reversal protection)
     const currentGap = expensiveQty - cheapQty;
     if (side === expensiveSide && currentGap >= maxGap) {
+      const reason = `Gap too large: ${expensiveSide} leads by ${currentGap.toFixed(0)} shares (max: ${maxGap})`;
       console.log(`[QuotingEngine] 🛡️ GAP GUARD: ${side} (expensive) blocked - gap is ${currentGap.toFixed(0)} shares (max: ${maxGap})`);
       console.log(`[QuotingEngine] 📊 Waiting for ${cheapSide} to catch up before adding more ${expensiveSide}`);
+      
+      // Log to database for verification
+      logV35GuardEvent({
+        marketSlug: market.slug,
+        asset: market.asset,
+        guardType: 'GAP_GUARD',
+        blockedSide: side,
+        upQty: market.upQty,
+        downQty: market.downQty,
+        expensiveSide,
+        reason,
+      }).catch(() => {}); // Fire and forget
+      
       return {
         quotes: [],
         blocked: true,
-        blockReason: `Gap too large: ${expensiveSide} leads by ${currentGap.toFixed(0)} shares (max: ${maxGap})`,
+        blockReason: reason,
       };
     }
     
