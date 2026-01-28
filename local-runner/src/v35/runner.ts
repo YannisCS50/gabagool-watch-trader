@@ -1,17 +1,18 @@
 // ============================================================
-// V35 RUNNER - WITH ACTIVE HEDGING + POSITION CACHE SYNC
+// V35 RUNNER - WITH MARKET ISOLATION + POSITION VALIDATION
 // ============================================================
-// Version: V35.1.1 - "Position Truth"
+// Version: V35.1.2 - "Market Isolation"
 // 
-// STRATEGY:
-// 1. Discover active 15-min up/down markets
-// 2. Place limit BUY orders on a grid for both UP and DOWN sides
-// 3. When retail traders hit our orders, we accumulate one side
-// 4. IMMEDIATELY hedge the opposite side (the key fix)
-// 5. Combined cost < $1.00 -> GUARANTEED profit
+// CRITICAL INVARIANTS:
+// 1. Each 15-minute market is COMPLETELY INDEPENDENT
+// 2. NO shares carry over between markets
+// 3. New markets ALWAYS start at 0 shares (upQty=0, downQty=0)
+// 4. On startup: VALIDATE actual Polymarket positions FIRST
+// 5. If pre-existing imbalance > maxUnpaired, REFUSE to trade that market
+// 6. Position cache is keyed by EXACT market slug (no cross-market pollution)
 //
-// V35.1.1 FIX: Uses Polymarket API position cache as source of truth
-// for quoting decisions. Internal counters can drift, cache cannot.
+// V35.1.2 FIX: Before trading any market, validates that we're not
+// already overexposed. Prevents catastrophic one-sided accumulation.
 // ============================================================
 
 import '../config.js'; // Load env first
@@ -60,7 +61,7 @@ import {
 // CONSTANTS
 // ============================================================
 
-const VERSION = 'V35.1.1';
+const VERSION = 'V35.1.2';
 const RUNNER_ID = process.env.RUNNER_ID || `v35-${os.hostname()}`;
 const RUN_ID = `v35_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
@@ -386,6 +387,25 @@ async function refreshMarkets(): Promise<void> {
     // CRITICAL: Register market with position cache for real-time position tracking
     registerMarketForCache(m.slug, m.conditionId, m.upTokenId, m.downTokenId);
     
+    // CRITICAL V35.1.2: Check if we have PRE-EXISTING positions in this market
+    // This happens when runner restarts mid-market
+    const existingPos = getCachedPosition(m.slug);
+    if (existingPos) {
+      const existingImbalance = Math.abs(existingPos.upShares - existingPos.downShares);
+      if (existingImbalance > config.maxUnpairedImbalance) {
+        log(`🚨 REFUSING TO TRADE ${m.slug}: Pre-existing imbalance of ${existingImbalance.toFixed(1)} shares > max ${config.maxUnpairedImbalance}`);
+        log(`   UP: ${existingPos.upShares.toFixed(1)}, DOWN: ${existingPos.downShares.toFixed(1)}`);
+        log(`   ⚠️ Close this position manually before the bot will trade this market`);
+        continue; // Skip this market entirely
+      }
+      // Sync existing positions to internal state
+      market.upQty = existingPos.upShares;
+      market.downQty = existingPos.downShares;
+      market.upCost = existingPos.upCost;
+      market.downCost = existingPos.downCost;
+      log(`📊 Synced existing position for ${m.slug}: UP=${existingPos.upShares.toFixed(1)} DOWN=${existingPos.downShares.toFixed(1)}`);
+    }
+    
     markets.set(m.slug, market);
     log(`➕ Added market: ${m.slug} (${m.asset}, expires ${m.expiry.toISOString()})`);
     added++;
@@ -473,8 +493,8 @@ async function processMarket(market: V35Market): Promise<void> {
   const secondsToExpiry = (market.expiry.getTime() - now) / 1000;
   
   // =========================================================================
-  // CRITICAL FIX: Sync positions from Polymarket API (source of truth)
-  // This prevents drift between internal counters and actual positions
+  // V35.1.2: Sync positions from Polymarket API (source of truth)
+  // The position cache is keyed by EXACT market slug - no cross-market leakage
   // =========================================================================
   const cachedPos = getCachedPosition(market.slug);
   if (cachedPos) {
@@ -483,6 +503,18 @@ async function processMarket(market: V35Market): Promise<void> {
     market.downQty = cachedPos.downShares;
     market.upCost = cachedPos.upCost;
     market.downCost = cachedPos.downCost;
+  }
+  
+  // =========================================================================
+  // V35.1.2 HARD CHECK: Refuse to quote if already overexposed
+  // This is a SAFETY NET - the market discovery should have blocked us earlier
+  // =========================================================================
+  const currentImbalance = Math.abs(market.upQty - market.downQty);
+  if (currentImbalance > config.maxUnpairedImbalance) {
+    log(`🛑 ${market.slug.slice(-25)}: BLOCKED - imbalance ${currentImbalance.toFixed(1)} > max ${config.maxUnpairedImbalance}`);
+    log(`   UP: ${market.upQty.toFixed(1)}, DOWN: ${market.downQty.toFixed(1)} - Manual intervention required`);
+    await cancelAllOrders(market, config.dryRun);
+    return;
   }
   
   // Stop quoting if too close to expiry
@@ -912,16 +944,29 @@ async function main(): Promise<void> {
     await sleep(2000);
   }
   
-  // CRITICAL: Start position cache BEFORE market discovery
-  // This ensures we have accurate position data when making quoting decisions
-  log('🔄 Starting position cache (real-time Polymarket position sync)...');
+  // =========================================================================
+  // V35.1.2: CRITICAL STARTUP SEQUENCE
+  // 1. Start position cache FIRST
+  // 2. Wait for initial fetch to complete
+  // 3. Only THEN discover markets (so we know pre-existing exposure)
+  // =========================================================================
+  log('🔄 Starting position cache (Polymarket API position sync)...');
   startPositionCache();
-  await sleep(1000); // Give cache time for initial fetch
+  // Give cache time to complete initial fetch - CRITICAL for position validation
+  log('⏳ Waiting for position cache initial fetch (2s)...');
+  await sleep(2000);
   
-  // Initial market discovery
-  log('🔍 Discovering markets...');
+  // Now discover markets - the discovery will check pre-existing positions
+  log('🔍 Discovering markets (will validate pre-existing positions)...');
   await refreshMarkets();
-  log(`📊 Found ${markets.size} markets to trade`);
+  log(`📊 Found ${markets.size} markets to trade (markets with excessive imbalance are excluded)`);
+  
+  if (markets.size === 0) {
+    log('⚠️ No tradeable markets found. This could mean:');
+    log('   - No active 15-min markets exist right now');
+    log('   - All markets have pre-existing imbalance > maxUnpaired');
+    log('   - Will retry on next market refresh cycle');
+  }
   
   // Build token map and connect to WebSockets
   buildTokenMap();
