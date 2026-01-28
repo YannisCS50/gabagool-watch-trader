@@ -40,6 +40,7 @@ export interface RebalanceResult {
 export class ProactiveRebalancer {
   private lastRebalanceAttempt = 0;
   private rebalanceCooldownMs = 5000; // Check every 5 seconds
+  private hedgeOrderWaitMs = 5000; // Wait 5 seconds for hedge order to fill
   
   constructor() {}
 
@@ -179,13 +180,15 @@ export class ProactiveRebalancer {
       }
       
       console.log(`[Rebalancer] ✓ Proactive hedge order placed: ${result.orderId.slice(0, 8)}...`);
+      console.log(`[Rebalancer]    Waiting ${this.hedgeOrderWaitMs}ms for fill...`);
       
-      // Wait briefly then check if filled
-      await sleep(300);
+      // Wait longer for the order to work - passive orders need time
+      await sleep(this.hedgeOrderWaitMs);
       
       const { orders, error } = await getOpenOrders();
       if (error) {
-        try { await cancelOrder(result.orderId); } catch {}
+        // Don't cancel on error - let it sit
+        console.log(`[Rebalancer] ⚠️ Could not check order status: ${error}`);
         return { attempted: true, hedged: false, reason: `status_unknown: ${error}` };
       }
       
@@ -213,31 +216,38 @@ export class ProactiveRebalancer {
         };
       }
       
-      // Partial or no fill - cancel remainder
-      const filledQty = Math.max(0, hedgeQty - (open.size || 0));
-      try { await cancelOrder(result.orderId); } catch {}
+      // Check for partial fill
+      const originalSize = open.originalSize || hedgeQty;
+      const remainingSize = open.size || 0;
+      const filledQty = Math.max(0, originalSize - remainingSize);
       
       if (filledQty > 0) {
-        console.log(`[Rebalancer] ✓ Partial proactive hedge: ${filledQty.toFixed(0)} of ${hedgeQty.toFixed(0)} filled`);
+        // Partial fill - keep the order open for more fills
+        console.log(`[Rebalancer] ✓ Partial hedge: ${filledQty.toFixed(0)} of ${hedgeQty.toFixed(0)} filled, keeping order open`);
         
         await this.logRebalanceEvent('proactive_hedge_partial', market, {
           hedge_side: needsMore,
           intended_qty: hedgeQty,
           filled_qty: filledQty,
+          remaining_qty: remainingSize,
           hedge_price: hedgeAsk,
+          order_kept_open: true,
         });
         
+        // Don't cancel - let it continue to work
         return { 
           attempted: true, 
           hedged: true,
-          reason: 'partial_fill',
+          reason: 'partial_fill_order_open',
           hedgeSide: needsMore,
           hedgeQty: filledQty,
           hedgePrice: hedgeAsk,
         };
       }
       
-      return { attempted: true, hedged: false, reason: 'no_fill' };
+      // No fill after wait - keep order open anyway, market may improve
+      console.log(`[Rebalancer] ⏳ No fill yet, keeping hedge order open to work`);
+      return { attempted: true, hedged: false, reason: 'no_fill_order_open' };
       
     } catch (error) {
       const errMsg = getErrorMessage(error);
