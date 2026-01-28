@@ -16,6 +16,7 @@ interface V35Fill {
   price: number;
   size: number;
   order_id: string | null;
+  fill_key?: string;
 }
 
 export function V35FillsTable() {
@@ -26,13 +27,24 @@ export function V35FillsTable() {
         .from('v35_fills')
         .select('*')
         .order('created_at', { ascending: false })
-        .limit(50);
+        .limit(100); // Fetch more, then dedup
 
       if (error) {
         console.error('[V35FillsTable] Error:', error);
         return [];
       }
-      return data as V35Fill[];
+      
+      // Deduplicate by fill_key in UI (paranoid safety)
+      const seen = new Set<string>();
+      const deduped: V35Fill[] = [];
+      for (const f of (data as V35Fill[])) {
+        const key = f.fill_key || `${f.order_id}|${f.side}|${f.price}|${f.size}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          deduped.push(f);
+        }
+      }
+      return deduped.slice(0, 50); // Return first 50 unique
     },
     refetchInterval: 10000,
   });

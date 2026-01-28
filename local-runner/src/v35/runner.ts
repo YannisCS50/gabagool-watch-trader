@@ -430,15 +430,13 @@ async function processMarket(market: V35Market): Promise<void> {
     return;
   }
   
-  // Profit-take: stop quoting if hedged with >$5 locked profit
+  // PROFIT-TAKE DISABLED - per user request for "altijd quoten" strategy
+  // The bot should maintain market exposure for as long as possible to 
+  // achieve statistical balance through high fill frequency (market persistence).
+  // Stopping early reduces fill count and can create worse imbalance.
   const earlyMetrics = calculateMarketMetrics(market);
-  const isHedged = earlyMetrics.paired > 0 && earlyMetrics.upQty > 0 && earlyMetrics.downQty > 0;
-  const PROFIT_TAKE_THRESHOLD = 5.0; // $5 locked profit
-  
-  if (isHedged && earlyMetrics.lockedProfit >= PROFIT_TAKE_THRESHOLD) {
-    log(`💰 ${market.slug.slice(-25)}: PROFIT TAKE! Locked $${earlyMetrics.lockedProfit.toFixed(2)} (>${PROFIT_TAKE_THRESHOLD})`);
-    await cancelAllOrders(market, config.dryRun);
-    return;
+  if (earlyMetrics.lockedProfit > 0) {
+    log(`💰 ${market.slug.slice(-25)}: Locked $${earlyMetrics.lockedProfit.toFixed(2)} (profit-take DISABLED, continuing to quote)`);
   }
   
   // Update orderbook
