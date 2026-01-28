@@ -1,26 +1,22 @@
 // ============================================================
-// V35 QUOTING ENGINE - BURST-SAFE VERSION
+// V35 QUOTING ENGINE - CIRCUIT BREAKER INTEGRATED
 // ============================================================
-// Version: V35.2.1 - "Conservative Position Sync"
+// Version: V35.3.0 - "Robust Hedging"
 //
-// CRITICAL FIX V35.2.1: The runner now uses CONSERVATIVE position sync.
-// Local fill tracking is never overwritten by stale API data.
-// This prevents the "zero reset" bug that caused massive accumulation.
+// V35.3.0 KEY CHANGE: Quoting engine now defers to the global
+// CircuitBreaker for all safety decisions. This ensures consistent
+// enforcement across the entire system.
 //
-// BURST-CAP (V35.2.0): Preventative Risk Management
-// - Calculate "Risk Budget" = maxUnpairedShares - currentImbalance
-// - Cap total open order qty per side to Risk Budget
-// - Even 100% burst fill cannot exceed the hard limit
-//
-// EXPENSIVE SIDE LEADS RULE (preserved):
-// - Allow expensive side to have more shares (positive EV bias)
-// - Cheap side must stay within ratio of expensive side
+// Previous versions had guards duplicated in multiple places,
+// leading to inconsistent enforcement when some code paths
+// bypassed certain checks.
 // ============================================================
 
-import { getV35Config, type V35Config } from './config.js';
+import { getV35Config, V35_VERSION, type V35Config } from './config.js';
 import type { V35Market, V35Quote, V35Side, V35Asset } from './types.js';
 import { logV35GuardEvent } from './backend.js';
 import { getV35SidePricing } from './market-pricing.js';
+import { getCircuitBreaker } from './circuit-breaker.js';
 
 interface QuoteDecision {
   quotes: V35Quote[];
