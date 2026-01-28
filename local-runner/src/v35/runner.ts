@@ -364,6 +364,22 @@ async function refreshMarkets(): Promise<void> {
   // Rebuild token map and reconnect if new markets were added
   if (added > 0) {
     buildTokenMap();
+
+    // IMPORTANT: On restarts we lose local order maps, but remote open orders may still exist.
+    // Reconcile immediately after adding markets so syncOrders doesn't place duplicates.
+    if (!config.dryRun) {
+      try {
+        log('🔄 Reconcile after market discovery (prevent order stacking)...');
+        const { cleaned, added: remoteAdded } = await reconcileOrders(markets, config.dryRun);
+        lastReconcileTime = Date.now();
+        if (cleaned > 0 || remoteAdded > 0) {
+          log(`🔄 Discovery reconcile: cleaned=${cleaned} added=${remoteAdded}`);
+        }
+      } catch (err: any) {
+        logError('Discovery reconcile failed (will retry in main loop):', err);
+      }
+    }
+
     // Reconnect WS with new tokens
     if (clobSocket) {
       clobSocket.close();
@@ -802,6 +818,25 @@ async function main(): Promise<void> {
   
   // Build token map and connect to WebSockets
   buildTokenMap();
+
+  // CRITICAL STARTUP HYGIENE:
+  // If the runner restarts, remote orders can still be open while our local maps are empty.
+  // Reconciling BEFORE the first processMarket() prevents duplicating the entire grid.
+  if (!config.dryRun && tokenToMarket.size > 0) {
+    try {
+      log('🔄 Initial order reconciliation (startup, prevent order stacking)...');
+      const { cleaned, added } = await reconcileOrders(markets, config.dryRun);
+      lastReconcileTime = Date.now();
+      if (cleaned > 0 || added > 0) {
+        log(`🔄 Startup reconcile: cleaned=${cleaned} added=${added}`);
+      }
+    } catch (err: any) {
+      // If reconciliation fails, it's safer to PAUSE than to potentially place a duplicate full grid.
+      paused = true;
+      logError('Startup reconciliation FAILED — PAUSING to avoid order stacking. Fix network/API and resume.', err);
+    }
+  }
+
   if (tokenToMarket.size > 0 && !config.dryRun) {
     // Connect to public CLOB WebSocket for orderbook updates
     connectToClob();
