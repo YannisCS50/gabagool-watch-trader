@@ -740,6 +740,111 @@ export function V35OpenPositions() {
             })}
           </div>
         )}
+
+        {/* Expired Markets Section */}
+        {data?.expired_markets && data.expired_markets.length > 0 && (
+          <div className="mt-8 pt-6 border-t border-border/50">
+            <h3 className="flex items-center gap-2 text-lg font-semibold mb-4">
+              <Clock className="h-5 w-5 text-muted-foreground" />
+              Afgelopen Markets ({data.expired_markets.length})
+            </h3>
+            <div className="space-y-3">
+              {data.expired_markets.map((market) => {
+                const paired = Math.min(market.up_qty, market.down_qty);
+                const unpaired = Math.abs(market.up_qty - market.down_qty);
+                const totalCost = market.up_cost + market.down_cost;
+                const pairedCost = paired * market.combined_cost;
+                const pairedProfit = paired * (1 - market.combined_cost);
+                const isProfitable = market.combined_cost < 1;
+                
+                // Extract time from slug
+                const match = market.market_slug.match(/(\d{10})$/);
+                const expiredTime = match 
+                  ? new Date(parseInt(match[1]) * 1000 + 15 * 60 * 1000).toLocaleString('nl-NL', {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      day: '2-digit',
+                      month: 'short'
+                    })
+                  : market.expired_at;
+
+                return (
+                  <div 
+                    key={market.market_slug}
+                    className={`rounded-lg border p-4 ${
+                      isProfitable 
+                        ? 'bg-emerald-500/5 border-emerald-500/20' 
+                        : 'bg-destructive/5 border-destructive/20'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className="font-mono">
+                          {market.asset}
+                        </Badge>
+                        <span className="text-sm text-muted-foreground font-mono">
+                          {expiredTime}
+                        </span>
+                        <Badge variant="secondary" className="text-xs">
+                          Expired
+                        </Badge>
+                      </div>
+                      <div className={`font-bold ${isProfitable ? 'text-emerald-500' : 'text-destructive'}`}>
+                        {market.realized_pnl > 0 ? '+' : ''}${market.realized_pnl.toFixed(2)}
+                        {market.realized_pnl === 0 && isProfitable && (
+                          <span className="text-xs text-muted-foreground ml-1">(pending claim)</span>
+                        )}
+                      </div>
+                    </div>
+                    
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                      <div>
+                        <span className="text-muted-foreground">UP:</span>
+                        <span className="ml-1 font-mono">{market.up_qty.toFixed(1)}</span>
+                        <span className="text-xs text-muted-foreground ml-1">(${market.up_cost.toFixed(2)})</span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">DOWN:</span>
+                        <span className="ml-1 font-mono">{market.down_qty.toFixed(1)}</span>
+                        <span className="text-xs text-muted-foreground ml-1">(${market.down_cost.toFixed(2)})</span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">Paired:</span>
+                        <span className="ml-1 font-mono">{paired.toFixed(1)}</span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground">CPP:</span>
+                        <span className={`ml-1 font-mono font-bold ${isProfitable ? 'text-emerald-500' : 'text-destructive'}`}>
+                          {(market.combined_cost * 100).toFixed(1)}¢
+                        </span>
+                      </div>
+                    </div>
+                    
+                    {unpaired > 0 && (
+                      <div className="mt-2 text-xs text-muted-foreground">
+                        <AlertTriangle className="h-3 w-3 inline mr-1" />
+                        {unpaired.toFixed(1)} unpaired shares (exposed to outcome)
+                      </div>
+                    )}
+                    
+                    {/* Expected profit calculation */}
+                    {isProfitable && paired > 0 && (
+                      <div className="mt-2 pt-2 border-t border-border/30 text-xs">
+                        <span className="text-muted-foreground">Expected paired profit:</span>
+                        <span className="ml-1 font-mono text-emerald-500">
+                          +${pairedProfit.toFixed(2)}
+                        </span>
+                        <span className="text-muted-foreground ml-2">
+                          ({paired.toFixed(0)} × ${(1 - market.combined_cost).toFixed(3)})
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
   );
