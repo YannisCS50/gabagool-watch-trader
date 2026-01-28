@@ -1,7 +1,7 @@
 // ============================================================
 // V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.3.3 - "Proactive Hedging"
+// Version: V35.3.4 - "Orderbook Ready Check"
 //
 // Passive Dual-Outcome Market Maker for Polymarket 15-min options
 // 
@@ -10,14 +10,14 @@
 // At settlement: one side pays $1.00, other pays $0.00.
 // If combined cost < $1.00 -> GUARANTEED profit.
 //
-// V35.3.3 NEW FEATURE:
-// - Proactive Rebalancer: periodically checks if unhedged positions can
-//   now be profitably hedged (when market conditions improve after fill)
-// - This catches missed hedges from rapid market movements
+// V35.3.4 FIX:
+// - Pre-flight check for orderbook availability before placing orders
+// - Skip order placement if CLOB returns 404 (market not active yet)
+// - Prevents spam of "orderbook depth not initialized" errors
 // ============================================================
 
-export const V35_VERSION = 'V35.3.3';
-export const V35_CODENAME = 'Proactive Hedging';
+export const V35_VERSION = 'V35.3.4';
+export const V35_CODENAME = 'Orderbook Ready Check';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 

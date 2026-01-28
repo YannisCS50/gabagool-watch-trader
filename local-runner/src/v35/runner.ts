@@ -1,7 +1,7 @@
 // ============================================================
 // V35 RUNNER - CIRCUIT BREAKER PROTECTED
 // ============================================================
-// Version: V35.3.3 - "Proactive Hedging"
+// Version: V35.3.4 - "Orderbook Ready Check"
 // 
 // CRITICAL INVARIANTS:
 // 1. Global Circuit Breaker is the SINGLE SOURCE OF TRUTH for safety

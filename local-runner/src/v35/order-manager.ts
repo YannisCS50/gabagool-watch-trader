@@ -56,6 +56,17 @@ export async function syncOrders(
   const currentOrders = side === 'UP' ? market.upOrders : market.downOrders;
   const tokenId = side === 'UP' ? market.upTokenId : market.downTokenId;
   
+  // V35.3.4: Pre-flight check for orderbook availability
+  // Skip order placement entirely if the CLOB has no book data yet (404 response)
+  const bestAsk = side === 'UP' ? market.upBestAsk : market.downBestAsk;
+  const bestBid = side === 'UP' ? market.upBestBid : market.downBestBid;
+  
+  if (bestAsk === 0 && bestBid === 0) {
+    // No orderbook data - market may not be active on CLOB yet
+    console.log(`[OrderManager] ⏳ ${side}: Orderbook not ready (bid=0, ask=0) - waiting for CLOB data`);
+    return { placed: 0, cancelled: 0 };
+  }
+  
   const targetPrices = new Set(targetQuotes.map(q => q.price));
   let cancelled = 0;
   
