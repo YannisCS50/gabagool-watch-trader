@@ -1,25 +1,24 @@
 // ============================================================
 // V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.3.7 - "Hedge Viability is King"
+// Version: V35.3.8 - "Proactive Recovery"
 //
-// Quote on BOTH sides as long as hedging remains affordable.
-// Leading side should NOT be blocked if opposite is cheap!
+// CRITICAL FIX: Proactive rebalancer now runs BEFORE circuit breaker halt,
+// allowing the bot to REDUCE imbalance even when the safety limits are tripped.
 // 
 // STRATEGY: Place limit BUY orders on a grid for both UP and DOWN sides.
 // When retail traders hit our orders, we accumulate both sides.
 // At settlement: one side pays $1.00, other pays $0.00.
 // If combined cost < $1.00 -> GUARANTEED profit.
 //
-// V35.3.7 FIX:
-// - Removed STRICT_BALANCE - it was too aggressive
-// - HEDGE_FIRST already blocks when opposite side is expensive
-// - If opposite is CHEAP (e.g., 10c), keep buying leading side!
-// - Example: UP@65c + DOWN@10c = 75c combined = 25c profit
+// V35.3.8 FIX:
+// - Proactive rebalancer runs BEFORE circuit breaker HALT check
+// - When tripped, bot still attempts to hedge the imbalance
+// - If hedge succeeds, circuit breaker may recover automatically
 // ============================================================
 
-export const V35_VERSION = 'V35.3.7';
-export const V35_CODENAME = 'Hedge Viability is King';
+export const V35_VERSION = 'V35.3.8';
+export const V35_CODENAME = 'Proactive Recovery';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 

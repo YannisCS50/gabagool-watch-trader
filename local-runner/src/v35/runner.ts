@@ -1,7 +1,7 @@
 // ============================================================
-// V35 RUNNER - HEDGE-FIRST PROTECTED
+// V35 RUNNER - PROACTIVE RECOVERY
 // ============================================================
-// Version: V35.3.5 - "Hedge-First Quoting"
+// Version: V35.3.8 - "Proactive Recovery"
 // 
 // CRITICAL INVARIANTS:
 // 1. Global Circuit Breaker is the SINGLE SOURCE OF TRUTH for safety
@@ -11,11 +11,11 @@
 // 5. On startup: VALIDATE actual Polymarket positions FIRST
 // 6. If pre-existing imbalance > maxUnpaired, REFUSE to trade that market
 //
-// V35.3.2 CRITICAL FIX:
-// - Only accept fills for orders WE placed (order ID filtering)
-// - The User WebSocket broadcasts ALL trades in subscribed markets
-// - Without this filter, we counted other traders' fills as ours!
-// - This caused phantom inventory and hedging failures
+// V35.3.8 CRITICAL FIX:
+// - Proactive rebalancer now runs BEFORE circuit breaker HALT check
+// - When circuit breaker is tripped, bot STILL attempts to reduce imbalance
+// - This allows recovery from extreme skew when market prices improve
+// - Only AFTER attempting hedge does the bot halt new quote placement
 // ============================================================
 
 import '../config.js'; // Load env first
@@ -579,13 +579,9 @@ async function processMarket(market: V35Market): Promise<void> {
   // V35.3.0: CIRCUIT BREAKER SAFETY CHECK
   // =========================================================================
   // This is the AUTHORITATIVE safety check. All limits are enforced here.
+  // V35.3.8 FIX: Even when tripped, allow PROACTIVE HEDGING to reduce imbalance!
   // =========================================================================
   const safetyCheck = await circuitBreaker.checkMarket(market, config.dryRun);
-  
-  if (safetyCheck.shouldStop) {
-    log(`🚨 ${market.slug.slice(-25)}: CIRCUIT BREAKER HALT - ${safetyCheck.reason}`);
-    return; // Do not process this market at all
-  }
   
   // Stop quoting if too close to expiry
   if (secondsToExpiry < config.stopBeforeExpirySec) {
@@ -594,18 +590,12 @@ async function processMarket(market: V35Market): Promise<void> {
     return;
   }
   
-  // Update orderbook
-  await updateOrderbook(market, config.dryRun);
-  
-  // Queue orderbook snapshot for logging
-  queueOrderbookSnapshot(market);
-  
   // =========================================================================
-  // V35.3.3: PROACTIVE REBALANCER
+  // V35.3.8: PROACTIVE REBALANCER - RUNS EVEN WHEN CIRCUIT BREAKER IS TRIPPED
   // =========================================================================
-  // Check if we have unhedged positions that can now be profitably hedged.
-  // This catches positions where the hedge side was too expensive at fill time
-  // but has since become viable.
+  // This is CRITICAL: when the circuit breaker trips due to imbalance, the ONLY
+  // way to reduce that imbalance is to BUY on the lagging side. The proactive
+  // rebalancer does exactly that - it hedges the unbalanced position.
   // =========================================================================
   const rebalancer = getProactiveRebalancer();
   const rebalanceResult = await rebalancer.checkAndRebalance(market);
@@ -620,7 +610,27 @@ async function processMarket(market: V35Market): Promise<void> {
       market.downQty += rebalanceResult.hedgeQty || 0;
       market.downCost += (rebalanceResult.hedgeQty || 0) * (rebalanceResult.hedgePrice || 0);
     }
+    // Re-check circuit breaker after hedging to see if we've recovered
+    const recheckSafety = await circuitBreaker.checkMarket(market, config.dryRun);
+    if (!recheckSafety.shouldStop && safetyCheck.shouldStop) {
+      log(`✅ CIRCUIT BREAKER RECOVERED after proactive hedge!`);
+    }
   }
+  
+  // NOW check if circuit breaker should halt further processing (new quotes)
+  if (safetyCheck.shouldStop && !rebalanceResult.hedged) {
+    log(`🚨 ${market.slug.slice(-25)}: CIRCUIT BREAKER HALT - ${safetyCheck.reason}`);
+    log(`   💡 Proactive rebalancer checked - hedge not yet viable`);
+    return; // Do not place new quotes, but we tried to hedge
+  }
+  
+  // Update orderbook
+  await updateOrderbook(market, config.dryRun);
+  
+  // Queue orderbook snapshot for logging
+  queueOrderbookSnapshot(market);
+  
+  // Note: Proactive rebalancer was already called above (before circuit breaker check)
   
   // Calculate metrics
   const metrics = calculateMarketMetrics(market);
