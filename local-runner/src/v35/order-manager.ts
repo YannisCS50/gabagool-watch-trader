@@ -29,6 +29,14 @@ const MAX_CONCURRENT_ORDERS = 10;
 const lastReconcileTime = new Map<string, number>();
 const RECONCILE_INTERVAL_MS = 30_000; // Reconcile every 30 seconds
 
+// Throttle cancel storms during imbalance control (runner can tick at 500ms)
+const lastCancelSideTime = new Map<string, number>();
+const CANCEL_SIDE_COOLDOWN_MS = 1_500;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 /**
  * Sync orders for one side of a market to match target quotes
  * OPTIMIZED: Places all new orders in parallel batches
@@ -211,6 +219,15 @@ export async function cancelAllOrders(market: V35Market, dryRun: boolean): Promi
  * Used for active imbalance control - cancel the leading side to stop accumulation
  */
 export async function cancelSideOrders(market: V35Market, side: V35Side, dryRun: boolean): Promise<number> {
+  const throttleKey = `${market.slug}:${side}`;
+  const now = Date.now();
+  const last = lastCancelSideTime.get(throttleKey) || 0;
+  if (!dryRun && now - last < CANCEL_SIDE_COOLDOWN_MS) {
+    // Avoid hammering cancel + open-orders endpoints every tick.
+    return 0;
+  }
+  lastCancelSideTime.set(throttleKey, now);
+
   const currentOrders = side === 'UP' ? market.upOrders : market.downOrders;
   const tokenId = side === 'UP' ? market.upTokenId : market.downTokenId;
 
@@ -246,25 +263,34 @@ export async function cancelSideOrders(market: V35Market, side: V35Side, dryRun:
   }
   
   console.log(`[OrderManager] 🛑 Cancelling ${orderIds.length} ${side} orders (imbalance control)...`);
-  
-  const cancelPromises = orderIds.map(async (id) => {
-    try {
-      const res = await cancelOrder(id);
-      return { id, success: res?.success ?? false, error: res?.error };
-    } catch (err: any) {
-      return { id, success: false, error: err?.message };
-    }
-  });
-  
-  const results = await Promise.all(cancelPromises);
+
   let cancelled = 0;
-  
-  for (const result of results) {
-    if (result.success) {
-      currentOrders.delete(result.id);
-      cancelled++;
-    } else {
-      console.warn(`[OrderManager] Cancel ${side} failed for ${result.id}: ${result.error}`);
+  // Cancel in batches to reduce API rate-limit / Cloudflare failures.
+  for (let i = 0; i < orderIds.length; i += MAX_CONCURRENT_ORDERS) {
+    const batch = orderIds.slice(i, i + MAX_CONCURRENT_ORDERS);
+    const results = await Promise.all(
+      batch.map(async (id) => {
+        try {
+          const res = await cancelOrder(id);
+          return { id, success: res?.success ?? false, error: res?.error };
+        } catch (err: any) {
+          return { id, success: false, error: err?.message };
+        }
+      })
+    );
+
+    for (const result of results) {
+      if (result.success) {
+        currentOrders.delete(result.id);
+        cancelled++;
+      } else {
+        console.warn(`[OrderManager] Cancel ${side} failed for ${result.id}: ${result.error}`);
+      }
+    }
+
+    // Small delay between batches to be nice to the API.
+    if (i + MAX_CONCURRENT_ORDERS < orderIds.length) {
+      await sleep(150);
     }
   }
 
