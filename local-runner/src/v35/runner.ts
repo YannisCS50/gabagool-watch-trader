@@ -36,6 +36,7 @@ import type {
 } from './types.js';
 import { createEmptyMarket, calculateMarketMetrics } from './types.js';
 import { QuotingEngine } from './quoting-engine.js';
+import { getV35SidePricing } from './market-pricing.js';
 import { discoverMarkets, filterByAssets } from './market-discovery.js';
 import { syncOrders, cancelAllOrders, updateOrderbook, reconcileOrders, cancelSideOrders } from './order-manager.js';
 import { processFill, logMarketFillStats } from './fill-tracker.js';
@@ -500,28 +501,55 @@ async function processMarket(market: V35Market): Promise<void> {
     // If one side is leading by more than maxGap shares, CANCEL all orders on
     // that side immediately to stop further accumulation. Resume when balanced.
     // =========================================================================
-    const MAX_GAP = 10; // Maximum shares one side can lead by
-    const gap = market.upQty - market.downQty;
-    const absGap = Math.abs(gap);
+    const MAX_GAP = 10; // Strict max gap between CHEAP and EXPENSIVE sides
+
+    const pricing = getV35SidePricing(market);
+    const cheapLeadsBy = pricing.cheapQty - pricing.expensiveQty;
+    const expensiveLeadsBy = pricing.expensiveQty - pricing.cheapQty;
+    const absGap = Math.abs(pricing.expensiveQty - pricing.cheapQty);
     
     let allowUpQuotes = true;
     let allowDownQuotes = true;
     
-    if (absGap > MAX_GAP) {
-      const leadingSide = gap > 0 ? 'UP' : 'DOWN';
-      const laggingSide = gap > 0 ? 'DOWN' : 'UP';
-      
-      log(`🛑 IMBALANCE CONTROL: ${leadingSide} leads by ${absGap.toFixed(0)} shares (max: ${MAX_GAP})`);
-      log(`   → Cancelling all ${leadingSide} orders, allowing ${laggingSide} to catch up`);
-      
-      // Cancel all orders on the leading side
-      if (leadingSide === 'UP') {
-        await cancelSideOrders(market, 'UP', config.dryRun);
-        allowUpQuotes = false;
-      } else {
-        await cancelSideOrders(market, 'DOWN', config.dryRun);
-        allowDownQuotes = false;
-      }
+    if (cheapLeadsBy > MAX_GAP) {
+      // The dangerous case: cheap side has more shares than expensive side.
+      // Strict rule: cancel + block the cheap side until it falls back within MAX_GAP.
+      const sideToCancel = pricing.cheapSide;
+      const otherSide = pricing.expensiveSide;
+
+      log(
+        `🛑 IMBALANCE CONTROL (cheap/expensive): CHEAP ${sideToCancel} leads by ${cheapLeadsBy.toFixed(0)} (max: ${MAX_GAP})`
+      );
+      log(
+        `   → Cancelling all ${sideToCancel} orders; allowing EXPENSIVE ${otherSide} to catch up ` +
+          `(avg UP=${pricing.avgUpPrice.toFixed(3)} / avg DOWN=${pricing.avgDownPrice.toFixed(3)})`
+      );
+
+      await cancelSideOrders(market, sideToCancel, config.dryRun);
+      if (sideToCancel === 'UP') allowUpQuotes = false;
+      if (sideToCancel === 'DOWN') allowDownQuotes = false;
+    } else if (expensiveLeadsBy > MAX_GAP) {
+      // Also strict: don't allow the expensive side to run away either.
+      const sideToCancel = pricing.expensiveSide;
+      const otherSide = pricing.cheapSide;
+
+      log(
+        `🛑 IMBALANCE CONTROL (cheap/expensive): EXPENSIVE ${sideToCancel} leads by ${expensiveLeadsBy.toFixed(0)} (max: ${MAX_GAP})`
+      );
+      log(
+        `   → Cancelling all ${sideToCancel} orders; allowing CHEAP ${otherSide} to catch up ` +
+          `(avg UP=${pricing.avgUpPrice.toFixed(3)} / avg DOWN=${pricing.avgDownPrice.toFixed(3)})`
+      );
+
+      await cancelSideOrders(market, sideToCancel, config.dryRun);
+      if (sideToCancel === 'UP') allowUpQuotes = false;
+      if (sideToCancel === 'DOWN') allowDownQuotes = false;
+    } else if (absGap > MAX_GAP) {
+      // Fallback (should be redundant, but keeps behavior robust under NaNs).
+      const leadingSide = market.upQty - market.downQty > 0 ? 'UP' : 'DOWN';
+      await cancelSideOrders(market, leadingSide, config.dryRun);
+      if (leadingSide === 'UP') allowUpQuotes = false;
+      if (leadingSide === 'DOWN') allowDownQuotes = false;
     }
     
     // Generate quotes only for allowed sides
@@ -532,7 +560,7 @@ async function processMarket(market: V35Market): Promise<void> {
     if ((upQuotes.length === 0 && allowUpQuotes) || (downQuotes.length === 0 && allowDownQuotes)) {
       log(`⚠️ Quote generation: UP=${upQuotes.length}${allowUpQuotes ? '' : '(blocked)'} DOWN=${downQuotes.length}${allowDownQuotes ? '' : '(blocked)'}`);
       log(`   bestAsk: UP=$${market.upBestAsk?.toFixed(2)} DOWN=$${market.downBestAsk?.toFixed(2)}`);
-      log(`   inventory: UP=${market.upQty} DOWN=${market.downQty} (gap=${gap.toFixed(0)})`);
+       log(`   inventory: UP=${market.upQty} DOWN=${market.downQty} (absGap=${absGap.toFixed(0)})`);
     }
     
     const upResult = await syncOrders(market, 'UP', upQuotes, config.dryRun);
