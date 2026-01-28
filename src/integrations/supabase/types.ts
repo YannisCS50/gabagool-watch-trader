@@ -6661,6 +6661,7 @@ export type Database = {
           side: string
           size: number
           token_id: string | null
+          wallet_address: string | null
         }
         Insert: {
           asset: string
@@ -6675,6 +6676,7 @@ export type Database = {
           side: string
           size: number
           token_id?: string | null
+          wallet_address?: string | null
         }
         Update: {
           asset?: string
@@ -6689,6 +6691,7 @@ export type Database = {
           side?: string
           size?: number
           token_id?: string | null
+          wallet_address?: string | null
         }
         Relationships: []
       }

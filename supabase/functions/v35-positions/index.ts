@@ -29,16 +29,6 @@ interface PolymarketPosition {
   eventSlug?: string;
 }
 
-interface V35Fill {
-  id: string;
-  market_slug: string;
-  side: string;
-  price: number;
-  size: number;
-  order_id: string;
-  created_at: string;
-}
-
 interface MarketPosition {
   market_slug: string;
   asset: string;
@@ -50,15 +40,7 @@ interface MarketPosition {
   // Current live prices from Polymarket
   live_up_price: number;
   live_down_price: number;
-  // v35_fills data (what we recorded)
-  fills_up_qty: number;
-  fills_up_avg: number;
-  fills_down_qty: number;
-  fills_down_avg: number;
-  // Discrepancy flags
-  up_qty_match: boolean;
-  down_qty_match: boolean;
-  // Derived metrics
+  // Derived metrics (from Polymarket only)
   paired: number;
   unpaired: number;
   combined_cost: number;
@@ -308,96 +290,31 @@ Deno.serve(async (req) => {
       m.downAvg = m.downQty > 0 ? m.downCost / m.downQty : 0;
     }
 
-    // Compute earliest relevant epoch for fills (now - 2h)
-    const earliestEpochMs = Date.now() - LOOKBACK_MS;
-    const earliestCreatedAt = new Date(earliestEpochMs).toISOString();
-
-    // 3. Fetch v35_fills from database (deduplicated by order_id), only recent ones
-    const { data: fills, error: fillsError } = await supabase
-      .from('v35_fills')
-      .select('*')
-      .gte('created_at', earliestCreatedAt)
-      .order('created_at', { ascending: false })
-      .limit(5000);
-
-    if (fillsError) {
-      console.error('Error fetching fills:', fillsError);
-    }
-
-    // Deduplicate fills by order_id
-    const seenOrders = new Set<string>();
-    const uniqueFills: V35Fill[] = [];
-    for (const fill of (fills || [])) {
-      const key = `${fill.order_id}-${fill.side}-${fill.price}-${fill.size}`;
-      if (!seenOrders.has(key)) {
-        seenOrders.add(key);
-        uniqueFills.push(fill as V35Fill);
-      }
-    }
-
-    console.log(`📝 Found ${fills?.length || 0} fills, ${uniqueFills.length} unique`);
-
-    // 4. Group fills by market slug
-    const fillsByMarket = new Map<string, {
-      upQty: number; upCost: number; upAvg: number;
-      downQty: number; downCost: number; downAvg: number;
-    }>();
-
-    for (const fill of uniqueFills) {
-      const slug = fill.market_slug;
-      if (!fillsByMarket.has(slug)) {
-        fillsByMarket.set(slug, {
-          upQty: 0, upCost: 0, upAvg: 0,
-          downQty: 0, downCost: 0, downAvg: 0,
-        });
-      }
-      
-      const m = fillsByMarket.get(slug)!;
-      const side = fill.side?.toUpperCase();
-      if (side === 'UP' || side === 'YES') {
-        m.upQty += fill.size;
-        m.upCost += fill.size * fill.price;
-      } else {
-        m.downQty += fill.size;
-        m.downCost += fill.size * fill.price;
-      }
-    }
-
-    // Calculate averages for fills
-    for (const m of fillsByMarket.values()) {
-      m.upAvg = m.upQty > 0 ? m.upCost / m.upQty : 0;
-      m.downAvg = m.downQty > 0 ? m.downCost / m.downQty : 0;
-    }
-
-    // 5. Build combined result
-    const allSlugs = new Set([...polymarketByMarket.keys(), ...fillsByMarket.keys()]);
+    // 3. Build result from Polymarket data (ground truth)
+    // NOTE: We no longer use v35_fills as they may contain fills from other traders
+    // Polymarket API is the authoritative source for current positions
     const result: MarketPosition[] = [];
 
-    for (const slug of allSlugs) {
-      const pm = polymarketByMarket.get(slug);
-      const fl = fillsByMarket.get(slug);
-
-      const polymarket_up_qty = pm?.upQty || 0;
-      const polymarket_down_qty = pm?.downQty || 0;
-      const fills_up_qty = fl?.upQty || 0;
-      const fills_down_qty = fl?.downQty || 0;
+    for (const [slug, pm] of polymarketByMarket.entries()) {
+      const polymarket_up_qty = pm.upQty || 0;
+      const polymarket_down_qty = pm.downQty || 0;
 
       const paired = Math.min(polymarket_up_qty, polymarket_down_qty);
       const unpaired = Math.abs(polymarket_up_qty - polymarket_down_qty);
       
-      const upAvg = pm?.upAvg || fl?.upAvg || 0;
-      const downAvg = pm?.downAvg || fl?.downAvg || 0;
+      const upAvg = pm.upAvg || 0;
+      const downAvg = pm.downAvg || 0;
       const combined_cost = upAvg + downAvg;
       const locked_profit = combined_cost < 1 && paired > 0 ? paired * (1 - combined_cost) : 0;
 
       // Calculate costs and values
-      const upCost = polymarket_up_qty * (pm?.upAvg || 0);
-      const downCost = polymarket_down_qty * (pm?.downAvg || 0);
+      const upCost = polymarket_up_qty * pm.upAvg;
+      const downCost = polymarket_down_qty * pm.downAvg;
       const total_cost = upCost + downCost;
       
       // Current value based on live prices
-      const upCurrentValue = pm?.upCurrentValue || (polymarket_up_qty * (pm?.upCurPrice || 0));
-      const downCurrentValue = pm?.downCurrentValue || (polymarket_down_qty * (pm?.downCurPrice || 0));
+      const upCurrentValue = pm.upCurrentValue || (polymarket_up_qty * pm.upCurPrice);
+      const downCurrentValue = pm.downCurrentValue || (polymarket_down_qty * pm.downCurPrice);
       const current_value = upCurrentValue + downCurrentValue;
       
       // Unrealized P&L
@@ -405,19 +322,13 @@ Deno.serve(async (req) => {
 
       result.push({
         market_slug: slug,
-        asset: pm?.asset || 'UNKNOWN',
+        asset: pm.asset || 'UNKNOWN',
         polymarket_up_qty,
-        polymarket_up_avg: pm?.upAvg || 0,
+        polymarket_up_avg: pm.upAvg,
         polymarket_down_qty,
-        polymarket_down_avg: pm?.downAvg || 0,
-        live_up_price: pm?.upCurPrice || 0,
-        live_down_price: pm?.downCurPrice || 0,
-        fills_up_qty,
-        fills_up_avg: fl?.upAvg || 0,
-        fills_down_qty,
-        fills_down_avg: fl?.downAvg || 0,
-        up_qty_match: Math.abs(polymarket_up_qty - fills_up_qty) < 1,
-        down_qty_match: Math.abs(polymarket_down_qty - fills_down_qty) < 1,
+        polymarket_down_avg: pm.downAvg,
+        live_up_price: pm.upCurPrice,
+        live_down_price: pm.downCurPrice,
         paired,
         unpaired,
         combined_cost,
@@ -431,7 +342,7 @@ Deno.serve(async (req) => {
     // Sort by most recent (based on market slug pattern if contains time)
     result.sort((a, b) => b.market_slug.localeCompare(a.market_slug));
 
-    console.log(`✅ Built ${result.length} market positions`);
+    console.log(`✅ Built ${result.length} market positions (Polymarket only, no fills DB)`);
 
     return new Response(JSON.stringify({
       success: true,
@@ -445,10 +356,8 @@ Deno.serve(async (req) => {
         total_cost: result.reduce((s, p) => s + p.total_cost, 0),
         total_current_value: result.reduce((s, p) => s + p.current_value, 0),
         total_unrealized_pnl: result.reduce((s, p) => s + p.unrealized_pnl, 0),
-        mismatched_markets: result.filter(p => !p.up_qty_match || !p.down_qty_match).length,
       },
       polymarket_raw: positions15m.length,
-      fills_raw: uniqueFills.length,
     }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' },
     });
