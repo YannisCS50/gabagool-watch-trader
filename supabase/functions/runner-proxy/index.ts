@@ -2163,6 +2163,21 @@ Deno.serve(async (req) => {
         
         const walletAddress = config?.polymarket_address?.toLowerCase() || null;
 
+        // CRITICAL: Reject fills if wallet is not configured
+        // Per user requirement: "Reject + stop" if wallet unknown
+        if (!walletAddress) {
+          console.error('[runner-proxy] ❌ FATAL: polymarket_address not configured in bot_config - REJECTING FILL');
+          console.error('[runner-proxy] ❌ This is a critical configuration error. The runner should be stopped.');
+          return new Response(JSON.stringify({ 
+            success: false, 
+            error: 'FATAL: polymarket_address not configured - cannot attribute fills',
+            fatal: true,
+          }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
         // Idempotency: build a deterministic key so the same fill cannot be inserted multiple times.
         // NOTE: We intentionally do not use created_at, because duplicates arrive at different times.
         const orderId = String(fill.order_id ?? '');

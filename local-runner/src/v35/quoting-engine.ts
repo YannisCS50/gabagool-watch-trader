@@ -1,13 +1,17 @@
 // ============================================================
-// V35 QUOTING ENGINE - WITH ACTIVE HEDGING
+// V35 QUOTING ENGINE - BURST-SAFE VERSION
 // ============================================================
-// Version: V35.1.0 - "True Gabagool"
+// Version: V35.2.0 - "Burst-Safe Inventory"
 //
-// SIMPLIFIED: With active hedging, quoting is much simpler.
-// The HedgeManager handles balance - we just provide liquidity.
-// Guards are minimal: only emergency stop at extreme imbalance.
+// CRITICAL FIX: Previous versions could place 200+ shares of orders per side.
+// If a burst sweep filled all orders, we'd instantly exceed maxUnpairedShares.
 //
-// EXPENSIVE SIDE LEADS RULE:
+// NEW APPROACH: Preventative Risk Management
+// - Calculate "Risk Budget" = maxUnpairedShares - currentImbalance
+// - Cap total open order qty per side to Risk Budget
+// - Even 100% burst fill cannot exceed the hard limit
+//
+// EXPENSIVE SIDE LEADS RULE (preserved):
 // - Allow expensive side to have more shares (positive EV bias)
 // - Cheap side must stay within ratio of expensive side
 // ============================================================
@@ -48,7 +52,7 @@ export class QuotingEngine {
   
   /**
    * Generate quotes for one side of a market
-   * SIMPLIFIED for V35.1.0 - hedge manager handles balance
+   * BURST-SAFE: Caps total order qty to risk budget
    */
   generateQuotes(side: V35Side, market: V35Market): V35Quote[] {
     const decision = this.generateQuotesWithReason(side, market);
@@ -62,7 +66,7 @@ export class QuotingEngine {
   
   /**
    * Generate quotes with detailed reasoning
-   * SIMPLIFIED: Only emergency stop guard, hedge handles balance
+   * BURST-SAFE VERSION: Limits total open order qty
    */
   generateQuotesWithReason(side: V35Side, market: V35Market): QuoteDecision {
     const config = getV35Config();
@@ -75,11 +79,12 @@ export class QuotingEngine {
       cheapQty,
     } = getV35SidePricing(market);
     
+    const currentQty = side === 'UP' ? market.upQty : market.downQty;
+    const oppositeQty = side === 'UP' ? market.downQty : market.upQty;
     const imbalance = Math.abs(market.upQty - market.downQty);
     
     // =========================================================================
-    // EMERGENCY STOP: Only at extreme imbalance
-    // With active hedging, we can be more lenient here
+    // EMERGENCY STOP: Block all quoting at extreme imbalance
     // =========================================================================
     if (imbalance >= config.maxUnpairedShares) {
       const reason = `EMERGENCY: ${imbalance.toFixed(0)} share imbalance >= ${config.maxUnpairedShares} max`;
@@ -100,13 +105,35 @@ export class QuotingEngine {
     }
     
     // =========================================================================
+    // WARNING THRESHOLD: Block leading side when approaching limit
+    // =========================================================================
+    const isLeadingSide = (side === 'UP' && market.upQty > market.downQty) ||
+                          (side === 'DOWN' && market.downQty > market.upQty);
+    
+    if (imbalance >= config.warnUnpairedShares && isLeadingSide) {
+      const reason = `WARNING: ${side} is leading with ${imbalance.toFixed(0)} imbalance >= ${config.warnUnpairedShares} warn threshold`;
+      console.log(`[QuotingEngine] ⚠️ ${reason}`);
+      
+      logV35GuardEvent({
+        marketSlug: market.slug,
+        asset: market.asset,
+        guardType: 'WARN_LEADING_SIDE',
+        blockedSide: side,
+        upQty: market.upQty,
+        downQty: market.downQty,
+        expensiveSide,
+        reason,
+      }).catch(() => {});
+      
+      return { quotes: [], blocked: true, blockReason: reason };
+    }
+    
+    // =========================================================================
     // EXPENSIVE SIDE LEADS RULE (from V35.1.0)
     // Allow expensive side to have more shares (positive EV bias)
     // Cheap side must stay within ratio of expensive side
     // =========================================================================
-    
     if (side === cheapSide) {
-      // Cheap side: check if we'd exceed the allowed ratio
       const maxCheapQty = expensiveQty * config.maxExpensiveBias;
       
       if (cheapQty >= maxCheapQty && expensiveQty > 0) {
@@ -128,19 +155,84 @@ export class QuotingEngine {
       }
     }
     
-    // Log current status
-    if (market.upQty > 0 || market.downQty > 0) {
-      console.log(`[QuotingEngine] ⚖️ Balance: ${expensiveSide}=${expensiveQty.toFixed(0)} (expensive) vs ${cheapSide}=${cheapQty.toFixed(0)} (cheap) - quoting ${side} OK`);
+    // =========================================================================
+    // 🚨 BURST-CAP: THE CRITICAL FIX
+    // =========================================================================
+    // Calculate how many NEW shares we can safely add to this side.
+    // Risk Budget = maxUnpairedShares - current imbalance (if we're the leading side)
+    //             = maxUnpairedShares + current imbalance (if we're the trailing side)
+    //
+    // But we must also account for EXISTING open orders on this side.
+    // Those could also fill, adding to our position.
+    // =========================================================================
+    
+    // Count existing open order qty on this side
+    const existingOpenOrders = side === 'UP' ? market.upOrders : market.downOrders;
+    let existingOpenQty = 0;
+    for (const order of existingOpenOrders.values()) {
+      existingOpenQty += order.size;
+    }
+    
+    // Calculate burst-safe budget
+    // If this side fills, we ADD to currentQty
+    // Worst case after fill: currentQty + openOrderQty + newOrderQty
+    // We want: |newTotal - oppositeQty| <= maxUnpairedShares
+    //
+    // If currentQty > oppositeQty (we're leading):
+    //   newTotal - oppositeQty <= maxUnpairedShares
+    //   currentQty + existingOpen + newQty - oppositeQty <= maxUnpairedShares
+    //   newQty <= maxUnpairedShares - (currentQty - oppositeQty) - existingOpen
+    //   newQty <= maxUnpairedShares - imbalance - existingOpen
+    //
+    // If currentQty <= oppositeQty (we're trailing):
+    //   oppositeQty - newTotal <= maxUnpairedShares (if we're still trailing)
+    //   OR newTotal - oppositeQty <= maxUnpairedShares (if we become leading)
+    //   Safe approach: just check worst case where we become maximally leading
+    //   newQty <= maxUnpairedShares + (oppositeQty - currentQty) - existingOpen
+    //   newQty <= maxUnpairedShares + imbalance - existingOpen
+    
+    let maxNewOrderQty: number;
+    if (currentQty > oppositeQty) {
+      // We're already leading - very limited budget
+      maxNewOrderQty = config.maxUnpairedShares - imbalance - existingOpenQty;
+    } else {
+      // We're trailing - we have more room
+      maxNewOrderQty = config.maxUnpairedShares + imbalance - existingOpenQty;
+    }
+    
+    // Clamp to non-negative
+    maxNewOrderQty = Math.max(0, maxNewOrderQty);
+    
+    console.log(`[QuotingEngine] 📊 BURST-CAP: ${side} budget=${maxNewOrderQty.toFixed(0)} (existing=${existingOpenQty.toFixed(0)}, imbalance=${imbalance.toFixed(0)}, leading=${currentQty > oppositeQty})`);
+    
+    if (maxNewOrderQty < config.sharesPerLevel) {
+      const reason = `BURST-CAP: ${side} budget exhausted (${maxNewOrderQty.toFixed(0)} < ${config.sharesPerLevel} min)`;
+      console.log(`[QuotingEngine] 🛡️ ${reason}`);
+      
+      logV35GuardEvent({
+        marketSlug: market.slug,
+        asset: market.asset,
+        guardType: 'BURST_CAP',
+        blockedSide: side,
+        upQty: market.upQty,
+        downQty: market.downQty,
+        expensiveSide,
+        reason,
+      }).catch(() => {});
+      
+      return { quotes: [], blocked: true, blockReason: reason };
     }
     
     // =========================================================================
-    // GENERATE QUOTES - Simple grid, uniform sizing
+    // GENERATE QUOTES - Capped by burst budget
     // PRIORITY: 35c-55c range first (lowest combined cost = highest profit)
     // =========================================================================
     const bestAsk = side === 'UP' ? market.upBestAsk : market.downBestAsk;
     
     // Sort grid prices: prioritize 0.35-0.55 range first (sweet spot)
     const sortedPrices = this.getPrioritizedPrices();
+    
+    let totalQuotedQty = 0;
     
     for (const price of sortedPrices) {
       // Skip if our bid would cross the ask (we'd become taker)
@@ -152,7 +244,19 @@ export class QuotingEngine {
       const minSharesForNotional = Math.ceil(1.0 / price);
       const shares = Math.max(config.sharesPerLevel, minSharesForNotional);
       
+      // Check if adding this quote would exceed our burst budget
+      if (totalQuotedQty + shares > maxNewOrderQty) {
+        // We've hit the burst cap - stop adding more quotes
+        console.log(`[QuotingEngine] 🛡️ BURST-CAP reached at ${totalQuotedQty.toFixed(0)}/${maxNewOrderQty.toFixed(0)} shares - stopping`);
+        break;
+      }
+      
       quotes.push({ price, size: shares });
+      totalQuotedQty += shares;
+    }
+    
+    if (quotes.length > 0) {
+      console.log(`[QuotingEngine] ✅ Generated ${quotes.length} ${side} quotes, total=${totalQuotedQty.toFixed(0)} shares (budget=${maxNewOrderQty.toFixed(0)})`);
     }
     
     return {
@@ -273,4 +377,3 @@ export class QuotingEngine {
     return [...sweetSpot, ...outer];
   }
 }
-
