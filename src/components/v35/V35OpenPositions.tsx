@@ -3,6 +3,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { 
   Scale, 
   AlertTriangle, 
@@ -14,10 +15,70 @@ import {
   Zap,
   DollarSign,
   Target,
-  Timer
+  Timer,
+  AlertCircle,
+  ShieldCheck,
+  ShieldAlert,
+  ShieldX
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useEffect, useState } from 'react';
+
+// =========================================================================
+// STRATEGY LIMITS (must match local-runner/src/v35/config.ts)
+// =========================================================================
+const STRATEGY_LIMITS = {
+  skewThreshold: 20,       // Warning level - shares before alert
+  maxUnpairedShares: 50,   // Critical level - max directional exposure
+  maxImbalanceRatio: 2.5,  // Max ratio UP:DOWN or DOWN:UP
+};
+
+type HealthStatus = 'OK' | 'WARNING' | 'CRITICAL';
+
+function getPositionHealth(unpaired: number, upQty: number, downQty: number): { 
+  status: HealthStatus; 
+  reason: string;
+  icon: typeof ShieldCheck;
+  colorClass: string;
+} {
+  const ratio = upQty > 0 && downQty > 0 
+    ? Math.max(upQty / downQty, downQty / upQty) 
+    : (upQty > 0 || downQty > 0 ? Infinity : 1);
+  
+  if (unpaired >= STRATEGY_LIMITS.maxUnpairedShares) {
+    return { 
+      status: 'CRITICAL', 
+      reason: `Unpaired ${unpaired.toFixed(0)} ≥ ${STRATEGY_LIMITS.maxUnpairedShares} max`,
+      icon: ShieldX,
+      colorClass: 'text-destructive'
+    };
+  }
+  
+  if (ratio > STRATEGY_LIMITS.maxImbalanceRatio && (upQty > 10 || downQty > 10)) {
+    return { 
+      status: 'CRITICAL', 
+      reason: `Ratio ${ratio.toFixed(1)}:1 > ${STRATEGY_LIMITS.maxImbalanceRatio}:1 max`,
+      icon: ShieldX,
+      colorClass: 'text-destructive'
+    };
+  }
+  
+  if (unpaired >= STRATEGY_LIMITS.skewThreshold) {
+    return { 
+      status: 'WARNING', 
+      reason: `Unpaired ${unpaired.toFixed(0)} ≥ ${STRATEGY_LIMITS.skewThreshold} threshold`,
+      icon: ShieldAlert,
+      colorClass: 'text-warning'
+    };
+  }
+  
+  return { 
+    status: 'OK', 
+    reason: 'Within strategy limits',
+    icon: ShieldCheck,
+    colorClass: 'text-primary'
+  };
+}
 
 interface MarketPosition {
   market_slug: string;
@@ -231,6 +292,64 @@ export function V35OpenPositions() {
         </div>
       </CardHeader>
       <CardContent className="space-y-6">
+        {/* Critical Alerts */}
+        {(() => {
+          const criticalMarkets = activePositions.filter(p => {
+            const health = getPositionHealth(p.unpaired, p.polymarket_up_qty, p.polymarket_down_qty);
+            return health.status === 'CRITICAL';
+          });
+          const warningMarkets = activePositions.filter(p => {
+            const health = getPositionHealth(p.unpaired, p.polymarket_up_qty, p.polymarket_down_qty);
+            return health.status === 'WARNING';
+          });
+          
+          if (criticalMarkets.length > 0) {
+            return (
+              <Alert variant="destructive" className="border-destructive/50 bg-destructive/10">
+                <AlertCircle className="h-4 w-4" />
+                <AlertTitle>Kritieke Imbalance Gedetecteerd!</AlertTitle>
+                <AlertDescription>
+                  {criticalMarkets.length} market(s) overschrijden de strategie limieten. 
+                  Bot moet orders cancellen op de leading side.
+                </AlertDescription>
+              </Alert>
+            );
+          }
+          
+          if (warningMarkets.length > 0) {
+            return (
+              <Alert className="border-warning/50 bg-warning/10">
+                <AlertTriangle className="h-4 w-4 text-warning" />
+                <AlertTitle className="text-warning">Imbalance Waarschuwing</AlertTitle>
+                <AlertDescription>
+                  {warningMarkets.length} market(s) naderen de strategie limieten (≥{STRATEGY_LIMITS.skewThreshold} unpaired).
+                </AlertDescription>
+              </Alert>
+            );
+          }
+          
+          return null;
+        })()}
+
+        {/* Strategy Limits Reference */}
+        <div className="grid grid-cols-3 gap-2 p-3 bg-muted/20 rounded-lg border border-border/50">
+          <div className="flex items-center gap-2 text-xs">
+            <ShieldCheck className="h-4 w-4 text-primary" />
+            <span className="text-muted-foreground">OK:</span>
+            <span className="font-mono">&lt;{STRATEGY_LIMITS.skewThreshold}</span>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            <ShieldAlert className="h-4 w-4 text-warning" />
+            <span className="text-muted-foreground">Warn:</span>
+            <span className="font-mono">≥{STRATEGY_LIMITS.skewThreshold}</span>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            <ShieldX className="h-4 w-4 text-destructive" />
+            <span className="text-muted-foreground">Crit:</span>
+            <span className="font-mono">≥{STRATEGY_LIMITS.maxUnpairedShares}</span>
+          </div>
+        </div>
+
         {/* Summary Stats - Polymarket style */}
         {summary && (
           <div className="grid grid-cols-2 md:grid-cols-6 gap-3">
@@ -244,11 +363,34 @@ export function V35OpenPositions() {
               <div className="text-2xl font-bold">{summary.total_paired.toFixed(0)}</div>
               <div className="text-xs text-muted-foreground">Paired</div>
             </div>
-            <div className="bg-muted/30 rounded-xl p-4 text-center">
-              <Zap className="h-5 w-5 mx-auto mb-2 text-muted-foreground" />
-              <div className="text-2xl font-bold">{summary.total_unpaired.toFixed(0)}</div>
-              <div className="text-xs text-muted-foreground">Unpaired</div>
-            </div>
+            {/* Unpaired with color coding */}
+            {(() => {
+              const worstHealth = activePositions.reduce((worst, p) => {
+                const h = getPositionHealth(p.unpaired, p.polymarket_up_qty, p.polymarket_down_qty);
+                if (h.status === 'CRITICAL') return 'CRITICAL';
+                if (h.status === 'WARNING' && worst !== 'CRITICAL') return 'WARNING';
+                return worst;
+              }, 'OK' as HealthStatus);
+              
+              const bgClass = worstHealth === 'CRITICAL' 
+                ? 'bg-destructive/10 border border-destructive/30' 
+                : worstHealth === 'WARNING' 
+                  ? 'bg-warning/10 border border-warning/30' 
+                  : 'bg-muted/30';
+              const textClass = worstHealth === 'CRITICAL' 
+                ? 'text-destructive' 
+                : worstHealth === 'WARNING' 
+                  ? 'text-warning' 
+                  : '';
+              
+              return (
+                <div className={`rounded-xl p-4 text-center ${bgClass}`}>
+                  <Zap className={`h-5 w-5 mx-auto mb-2 ${textClass || 'text-muted-foreground'}`} />
+                  <div className={`text-2xl font-bold ${textClass}`}>{summary.total_unpaired.toFixed(0)}</div>
+                  <div className="text-xs text-muted-foreground">Unpaired</div>
+                </div>
+              );
+            })()}
             <div className="bg-muted/30 rounded-xl p-4 text-center">
               <DollarSign className="h-5 w-5 mx-auto mb-2 text-muted-foreground" />
               <div className="text-2xl font-bold">${summary.total_cost?.toFixed(2) || '0.00'}</div>
@@ -283,6 +425,8 @@ export function V35OpenPositions() {
             {sortedPositions.map((pos) => {
               const timeInfo = parseMarketTime(pos.market_slug);
               const title = getMarketTitle(pos.asset, timeInfo);
+              const health = getPositionHealth(pos.unpaired, pos.polymarket_up_qty, pos.polymarket_down_qty);
+              const HealthIcon = health.icon;
               
               const upCost = pos.polymarket_up_qty * pos.polymarket_up_avg;
               const downCost = pos.polymarket_down_qty * pos.polymarket_down_avg;
@@ -293,9 +437,13 @@ export function V35OpenPositions() {
                 <div 
                   key={pos.market_slug} 
                   className={`rounded-xl border overflow-hidden transition-all ${
-                    timeInfo?.isLive 
-                      ? 'border-primary/50 bg-gradient-to-br from-primary/5 to-background shadow-lg shadow-primary/5' 
-                      : 'border-border/50 bg-card'
+                    health.status === 'CRITICAL'
+                      ? 'border-destructive/50 bg-gradient-to-br from-destructive/10 to-background shadow-lg shadow-destructive/10'
+                      : health.status === 'WARNING'
+                        ? 'border-warning/50 bg-gradient-to-br from-warning/5 to-background'
+                        : timeInfo?.isLive 
+                          ? 'border-primary/50 bg-gradient-to-br from-primary/5 to-background shadow-lg shadow-primary/5' 
+                          : 'border-border/50 bg-card'
                   }`}
                 >
                   {/* Market Header - Polymarket style */}
@@ -313,7 +461,21 @@ export function V35OpenPositions() {
                           >
                             {pos.asset}
                           </Badge>
-                          {timeInfo?.isLive && (
+                          {/* Health Status Badge */}
+                          <Badge 
+                            variant={health.status === 'OK' ? 'outline' : 'default'}
+                            className={`${
+                              health.status === 'CRITICAL' 
+                                ? 'bg-destructive text-destructive-foreground animate-pulse' 
+                                : health.status === 'WARNING'
+                                  ? 'bg-warning text-warning-foreground'
+                                  : 'bg-primary/10 text-primary border-primary/30'
+                            }`}
+                          >
+                            <HealthIcon className="h-3 w-3 mr-1" />
+                            {health.status}
+                          </Badge>
+                          {timeInfo?.isLive && health.status === 'OK' && (
                             <Badge className="bg-primary text-primary-foreground animate-pulse">
                               <Zap className="h-3 w-3 mr-1" />
                               LIVE
@@ -329,14 +491,20 @@ export function V35OpenPositions() {
                         <h3 className="font-semibold text-base leading-snug">
                           {title}
                         </h3>
-                        {timeInfo && (
-                          <div className="flex items-center gap-3 mt-2 text-xs text-muted-foreground">
-                            <span>{timeInfo.startTime} → {timeInfo.endTime} UTC</span>
-                            {timeInfo.isLive && (
-                              <CountdownTimer endTs={timeInfo.endTs} />
-                            )}
-                          </div>
-                        )}
+                        {/* Health reason + time info */}
+                        <div className="flex flex-wrap items-center gap-3 mt-2 text-xs">
+                          {health.status !== 'OK' && (
+                            <span className={health.colorClass}>{health.reason}</span>
+                          )}
+                          {timeInfo && (
+                            <>
+                              <span className="text-muted-foreground">{timeInfo.startTime} → {timeInfo.endTime} UTC</span>
+                              {timeInfo.isLive && (
+                                <CountdownTimer endTs={timeInfo.endTs} />
+                              )}
+                            </>
+                          )}
+                        </div>
                       </div>
                       
                       {/* Locked Profit Badge */}
@@ -475,9 +643,22 @@ export function V35OpenPositions() {
                         </div>
                         {pos.unpaired > 0 && (
                           <div className="flex items-center gap-1.5">
-                            <AlertTriangle className="h-3.5 w-3.5 text-warning" />
+                            <AlertTriangle className={`h-3.5 w-3.5 ${health.colorClass}`} />
                             <span className="text-muted-foreground">Unpaired:</span>
-                            <span className="font-mono font-medium">{pos.unpaired.toFixed(0)}</span>
+                            <span className={`font-mono font-medium ${health.status !== 'OK' ? health.colorClass : ''}`}>
+                              {pos.unpaired.toFixed(0)}
+                              <span className="text-muted-foreground">/{STRATEGY_LIMITS.maxUnpairedShares}</span>
+                            </span>
+                            {/* Progress bar for unpaired */}
+                            <div className="w-16 h-1.5 bg-muted rounded-full overflow-hidden">
+                              <div 
+                                className={`h-full transition-all ${
+                                  health.status === 'CRITICAL' ? 'bg-destructive' :
+                                  health.status === 'WARNING' ? 'bg-warning' : 'bg-primary'
+                                }`}
+                                style={{ width: `${Math.min(100, (pos.unpaired / STRATEGY_LIMITS.maxUnpairedShares) * 100)}%` }}
+                              />
+                            </div>
                           </div>
                         )}
                       </div>
