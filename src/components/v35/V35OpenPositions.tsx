@@ -8,6 +8,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { 
   Scale, 
   AlertTriangle, 
+  CheckCircle,
   CheckCircle2, 
   RefreshCw, 
   TrendingUp, 
