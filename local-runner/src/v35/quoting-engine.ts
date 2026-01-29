@@ -86,16 +86,27 @@ export class QuotingEngine {
     const imbalance = Math.abs(market.upQty - market.downQty);
     
     // =========================================================================
-    // V35.4.4 SMART CHEAP-SIDE SKIP
+    // V35.5.1 SMART CHEAP-SIDE SKIP - RELAXED FOR HEDGING
     // =========================================================================
     // The cheap side usually loses (market prices in expected outcome).
-    // Only buy the cheap side if the EXPENSIVE side already leads.
-    // This prevents accumulating more of the likely-losing side.
+    // HOWEVER: If we're trying to HEDGE (balance the position), we MUST
+    // allow buying the cheap side even if we already have more of it!
+    //
+    // NEW LOGIC: Only skip cheap side if:
+    //   1. We're NOT imbalanced (no need to hedge)
+    //   2. Cheap side already leads significantly
+    //
+    // If there's an imbalance, we NEED to buy the trailing side to hedge,
+    // regardless of which side is "cheap"!
     // =========================================================================
-    if (side === cheapSide && expensiveQty > 0) {
-      // We're quoting on the cheap side - only allowed if expensive leads
+    const trailingSide = market.upQty < market.downQty ? 'UP' : 'DOWN';
+    const isTrailing = side === trailingSide;
+    
+    // Only apply cheap-skip if we're NOT the trailing side (not hedging)
+    if (side === cheapSide && expensiveQty > 0 && !isTrailing) {
+      // We're quoting on the cheap side but we're NOT trailing - block it
       if (cheapQty >= expensiveQty) {
-        const reason = `CHEAP-SKIP: ${side} is cheap (${cheapSide}) and already >= expensive qty (${cheapQty.toFixed(0)} >= ${expensiveQty.toFixed(0)})`;
+        const reason = `CHEAP-SKIP: ${side} is cheap and NOT trailing (${cheapQty.toFixed(0)} >= ${expensiveQty.toFixed(0)})`;
         console.log(`[QuotingEngine] 🛡️ ${reason}`);
         
         logV35GuardEvent({
@@ -111,7 +122,12 @@ export class QuotingEngine {
         
         return { quotes: [], blocked: true, blockReason: reason };
       }
-      
+    }
+    
+    // If we're trailing, we MUST quote to hedge - no cheap-skip applies
+    if (isTrailing) {
+      console.log(`[QuotingEngine] ✅ ${side} is TRAILING (${currentQty.toFixed(0)} < ${oppositeQty.toFixed(0)}) - quoting to HEDGE`);
+    } else if (side === cheapSide && expensiveQty > cheapQty) {
       console.log(`[QuotingEngine] ✅ ${side} is cheap but expensive leads (${expensiveQty.toFixed(0)} > ${cheapQty.toFixed(0)}) - quoting to balance`);
     }
     
