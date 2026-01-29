@@ -86,6 +86,11 @@ export class ProactiveRebalancer {
     const leadingAvg = needsMore === 'UP' 
       ? (market.downQty > 0 ? market.downCost / market.downQty : 0)  // DOWN leads, use DOWN avg
       : (market.upQty > 0 ? market.upCost / market.upQty : 0);       // UP leads, use UP avg
+
+    // Backwards-compatible name used in event payloads/logging.
+    // NOTE: A previous revision referenced `existingAvg` but the variable didn't exist,
+    // crashing the main loop right before placing the hedge.
+    const existingAvg = leadingAvg;
     
     if (hedgeAsk <= 0 || hedgeAsk >= 1) {
       return { attempted: false, hedged: false, reason: 'no_liquidity' };
