@@ -77,10 +77,10 @@ export default function V35Dashboard() {
         .from('bot_config')
         .select('strategy_enabled')
         .eq('id', '00000000-0000-0000-0000-000000000001')
-        .single();
+        .maybeSingle();
       
       if (error) return { strategy_enabled: false };
-      return data;
+      return data ?? { strategy_enabled: false };
     },
     refetchInterval: 5000,
   });

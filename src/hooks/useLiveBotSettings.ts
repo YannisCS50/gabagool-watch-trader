@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 
+const SETTINGS_ROW_ID = '00000000-0000-0000-0000-000000000001';
+
 export interface LiveBotStatus {
   isReady: boolean;
   isLoading: boolean;
@@ -32,10 +34,15 @@ export function useLiveBotSettings() {
     
     try {
       // Get bot settings from database
-      const { data: settingsData } = await supabase
+      const { data: settingsData, error: settingsError } = await supabase
         .from('live_bot_settings')
         .select('is_enabled')
-        .single();
+        .eq('id', SETTINGS_ROW_ID)
+        .maybeSingle();
+
+      if (settingsError) {
+        console.warn('[useLiveBotSettings] Failed to load live_bot_settings:', settingsError);
+      }
       
       // Get bot status
       const statusRes = await supabase.functions.invoke('live-trade-bot', {
@@ -81,7 +88,7 @@ export function useLiveBotSettings() {
       const { error } = await supabase
         .from('live_bot_settings')
         .upsert({ 
-          id: '00000000-0000-0000-0000-000000000001',
+          id: SETTINGS_ROW_ID,
           is_enabled: enabled,
           updated_at: new Date().toISOString()
         });
