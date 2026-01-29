@@ -1,21 +1,21 @@
 // ============================================================
 // V35 PROACTIVE REBALANCER
 // ============================================================
-// Version: V35.5.4 - "Trailing-First Balance Fix"
+// Version: V35.5.5 - "Expensive-Side Initiative"
 //
-// V35.5.4 FIX: Always buy the TRAILING side to reduce imbalance.
-// The trailing side is simply the side with fewer shares.
-// 
-// Previous versions incorrectly used "expensive/cheap" to determine
-// what to buy, which could cause the bot to keep buying the leading
-// side (making imbalance worse) instead of the trailing side.
+// STRATEGY: The EXPENSIVE side (determined by orderbook price) always 
+// takes the initiative and is allowed to lead by up to 5 shares.
 //
 // LOGIC:
-// 1. Identify trailing side (= fewer shares)
-// 2. BUY trailing side at current ask price
-// 3. Allow combined cost up to 1.02 normally, 1.05 in emergency (gap >= 20)
+// 1. Identify expensive side (higher orderbook price = likely winner)
+// 2. Calculate: currentLead = expensiveQty - cheapQty
+// 3. If currentLead < 5 → buy expensive side until it leads by 5
+// 4. On reversal: the NEW expensive side gets bought until it leads by 5
 //
-// This ensures the bot always works to REDUCE imbalance, not increase it.
+// EXAMPLE:
+// - UP=50, DOWN=50, asks UP=0.80/DOWN=0.20 → UP is expensive, buy 5 UP
+// - After reversal (asks UP=0.45/DOWN=0.55): DOWN now expensive
+// - UP=55, DOWN=50, DOWN trails by 5 → buy 10 DOWN (5 balance + 5 lead)
 // ============================================================
 
 import { getV35Config, V35_VERSION } from './config.js';
@@ -51,13 +51,15 @@ interface CachedOrder {
 }
 
 // ============================================================
-// CONFIGURATION - NEW RELAXED LIMITS
+// CONFIGURATION - EXPENSIVE-SIDE INITIATIVE
 // ============================================================
 
 const REBALANCER_CONFIG = {
   checkIntervalMs: 500,           // Fast polling
-  minImbalanceToAct: 5,           // Min shares difference to trigger action
+  allowedExpensiveLead: 5,        // Expensive side may lead by 5 shares
   maxCombinedCost: 1.02,          // Allow up to 2% loss for directional trades
+  emergencyMaxCost: 1.05,         // Emergency: allow up to 5% loss
+  emergencyThreshold: 20,         // Gap >= 20 = emergency
   minOrderNotional: 1.50,         // Polymarket minimum
   orderHoldTimeMs: 1500,          // Min time to keep order before updating
   priceImprovementThreshold: 0.02, // Update order if price drops by 2¢
@@ -76,11 +78,23 @@ export class ProactiveRebalancer {
   /**
    * Main entry point - called from runner loop.
    * 
-   * NEW STRATEGY (V35.5.3):
-   * 1. Identify which side is "expensive" (likely winner)
-   * 2. If expensive side is trailing → place order to buy more at CURRENT ASK
-   * 3. If cheap side is trailing → place hedge order at CURRENT ASK
-   * 4. Allow combined costs up to 1.03-1.05 for directional bias
+   * V35.5.5 STRATEGY: "Expensive-Side Initiative"
+   * 
+   * The EXPENSIVE side (determined by orderbook price) always takes the lead.
+   * It is allowed to lead by up to 5 shares (allowedExpensiveLead).
+   * 
+   * Logic:
+   * 1. Identify expensive side (higher orderbook price = likely winner)
+   * 2. Calculate: currentLead = expensiveQty - cheapQty
+   * 3. If currentLead < allowedExpensiveLead → buy expensive side
+   * 4. On reversal: the NEW expensive side gets bought until it leads by 5
+   * 
+   * Example:
+   * - UP=50@0.56, DOWN=50@0.30, asks UP=0.80/DOWN=0.20
+   * - Expensive=UP, currentLead=0, target=5 → buy 5 UP
+   * - After reversal (asks UP=0.45/DOWN=0.55):
+   * - Expensive=DOWN, UP=55, DOWN=50, currentLead=-5
+   * - Need to buy 10 DOWN (5 to balance + 5 to lead)
    */
   async checkAndRebalance(market: V35Market): Promise<RebalanceResult> {
     const config = getV35Config();
@@ -92,30 +106,33 @@ export class ProactiveRebalancer {
     }
     this.lastCheckMs = now;
     
-    // Get market pricing info (based on average costs + live bids)
+    // Get market pricing info (based on orderbook)
     const pricing = getV35SidePricing(market);
     const { expensiveSide, cheapSide } = pricing;
     
     const upQty = market.upQty || 0;
     const downQty = market.downQty || 0;
-    const gap = Math.abs(upQty - downQty);
     
-    // Only act on meaningful imbalance
-    if (gap < REBALANCER_CONFIG.minImbalanceToAct) {
+    // Calculate how much the expensive side leads (or trails if negative)
+    const expensiveQty = expensiveSide === 'UP' ? upQty : downQty;
+    const cheapQty = cheapSide === 'UP' ? upQty : downQty;
+    const currentLead = expensiveQty - cheapQty; // Positive = expensive leads
+    
+    // Target: expensive side should lead by allowedExpensiveLead
+    const targetLead = REBALANCER_CONFIG.allowedExpensiveLead;
+    const sharesToBuy = targetLead - currentLead;
+    
+    // If expensive already leads by enough, nothing to do
+    if (sharesToBuy <= 0) {
       if (this.cachedOrder) {
-        await this.cancelCachedOrder('position_balanced');
+        await this.cancelCachedOrder('expensive_leads_enough');
       }
-      return { attempted: false, hedged: false, reason: 'balanced' };
+      return { 
+        attempted: false, 
+        hedged: false, 
+        reason: `expensive_leads_by_${currentLead.toFixed(0)}` 
+      };
     }
-    
-    // ================================================================
-    // V35.5.4 FIX: TRAILING SIDE ALWAYS DETERMINED BY QUANTITY
-    // ================================================================
-    // The trailing side is simply the side with FEWER shares.
-    // We ALWAYS want to buy the trailing side to reduce imbalance.
-    // This is independent of which side is "expensive" or "cheap".
-    const trailingSide: V35Side = upQty < downQty ? 'UP' : 'DOWN';
-    const leadingSide: V35Side = trailingSide === 'UP' ? 'DOWN' : 'UP';
     
     // Get current market asks
     const upAsk = market.upBestAsk || 0;
@@ -126,34 +143,32 @@ export class ProactiveRebalancer {
     }
     
     // ================================================================
-    // V35.5.4 KEY FIX: ALWAYS BUY TRAILING SIDE TO BALANCE
+    // V35.5.5: BUY EXPENSIVE SIDE TO TAKE/MAINTAIN INITIATIVE
     // ================================================================
-    // Regardless of "expensive" or "cheap" designation, we need to
-    // buy the TRAILING side to reduce imbalance. The user confirmed:
-    // "hij mag van mij wel iets meer risico nemen, ook als dat betekent
-    //  dat de combined costs naar bijvoorbeeld 1.02-1.03 gaat"
-    //
-    // So we buy the trailing side even if it's "expensive", up to
-    // the maxCombinedCost limit.
+    const targetSide = expensiveSide;
+    const targetPrice = expensiveSide === 'UP' ? upAsk : downAsk;
+    const targetQty = sharesToBuy;
     
-    const targetSide = trailingSide;
-    const targetPrice = trailingSide === 'UP' ? upAsk : downAsk;
-    const targetQty = gap;
-    
-    // Determine purpose based on price comparison
-    const purpose: 'build_winner' | 'hedge' = expensiveSide === trailingSide 
-      ? 'build_winner'  // Trailing side is expensive = build winner
-      : 'hedge';        // Trailing side is cheap = hedge
+    // Determine purpose based on current lead
+    const purpose: 'build_winner' | 'hedge' = currentLead < 0 
+      ? 'hedge'         // Expensive is trailing, need to catch up
+      : 'build_winner'; // Expensive leads but not by enough
     
     // Calculate projected combined cost
-    const leadingQty = leadingSide === 'UP' ? upQty : downQty;
-    const leadingCost = leadingSide === 'UP' ? market.upCost : market.downCost;
-    const leadingAvg = leadingQty > 0 ? leadingCost / leadingQty : 0;
-    const projectedCombined = leadingAvg + targetPrice;
+    const cheapPrice = cheapSide === 'UP' ? upAsk : downAsk;
+    const currentCheapQty = cheapSide === 'UP' ? upQty : downQty;
+    const currentCheapCost = cheapSide === 'UP' ? market.upCost : market.downCost;
+    const avgCheapPrice = currentCheapQty > 0 ? currentCheapCost / currentCheapQty : 0;
     
-    // V35.5.4: In EMERGENCY (gap >= 20), allow higher combined cost up to 1.05
-    const isEmergency = gap >= 20;
-    const effectiveMaxCost = isEmergency ? 1.05 : REBALANCER_CONFIG.maxCombinedCost;
+    // After buying, what would the combined cost be for paired shares?
+    const projectedCombined = avgCheapPrice + targetPrice;
+    
+    // Emergency mode: gap is very large
+    const gap = Math.abs(upQty - downQty);
+    const isEmergency = gap >= REBALANCER_CONFIG.emergencyThreshold;
+    const effectiveMaxCost = isEmergency 
+      ? REBALANCER_CONFIG.emergencyMaxCost 
+      : REBALANCER_CONFIG.maxCombinedCost;
     
     // Check viability
     if (projectedCombined > effectiveMaxCost) {
@@ -168,13 +183,9 @@ export class ProactiveRebalancer {
     }
     
     // Log the action
-    if (purpose === 'build_winner') {
-      console.log(`[Rebalancer] 📈 BUILDING WINNER: ${trailingSide} is trailing AND expensive (likely winner)`);
-    } else {
-      console.log(`[Rebalancer] 🔄 HEDGING: ${trailingSide} is trailing and cheap`);
-    }
-    console.log(`[Rebalancer]    Current: UP=${upQty.toFixed(0)} DOWN=${downQty.toFixed(0)} | Gap: ${gap.toFixed(0)}${isEmergency ? ' ⚠️ EMERGENCY' : ''}`);
-    console.log(`[Rebalancer]    Will buy ${targetQty.toFixed(0)} ${targetSide} @ $${targetPrice.toFixed(3)} | Combined: $${projectedCombined.toFixed(3)}`)
+    console.log(`[Rebalancer] 📈 ${purpose.toUpperCase()}: ${expensiveSide} is expensive, needs ${sharesToBuy.toFixed(0)} more to lead by ${targetLead}`);
+    console.log(`[Rebalancer]    Current: UP=${upQty.toFixed(0)} DOWN=${downQty.toFixed(0)} | Expensive=${expensiveSide} leads by ${currentLead.toFixed(0)}${isEmergency ? ' ⚠️ EMERGENCY' : ''}`);
+    console.log(`[Rebalancer]    Will buy ${targetQty.toFixed(0)} ${targetSide} @ $${targetPrice.toFixed(3)} | Combined: $${projectedCombined.toFixed(3)}`);
     
     // Check minimum notional
     if (targetQty * targetPrice < REBALANCER_CONFIG.minOrderNotional) {
