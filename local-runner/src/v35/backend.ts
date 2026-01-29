@@ -327,6 +327,82 @@ export async function saveV35InventorySnapshot(snapshot: V35InventorySnapshot): 
 }
 
 // ============================================================
+// EXPIRY SNAPSHOT LOGGING
+// ============================================================
+
+export interface V35ExpirySnapshotData {
+  marketSlug: string;
+  asset: string;
+  expiryTime: string;
+  snapshotTime: string;
+  secondsBeforeExpiry: number;
+  apiUpQty: number;
+  apiDownQty: number;
+  apiUpCost: number;
+  apiDownCost: number;
+  localUpQty: number;
+  localDownQty: number;
+  localUpCost: number;
+  localDownCost: number;
+  paired: number;
+  unpaired: number;
+  combinedCost: number;
+  lockedProfit: number;
+  avgUpPrice: number;
+  avgDownPrice: number;
+  upBestBid: number | null;
+  upBestAsk: number | null;
+  downBestBid: number | null;
+  downBestAsk: number | null;
+  combinedAsk: number | null;
+  upOrdersCount: number;
+  downOrdersCount: number;
+  wasImbalanced: boolean;
+  imbalanceRatio: number | null;
+}
+
+export async function saveV35ExpirySnapshot(data: V35ExpirySnapshotData): Promise<boolean> {
+  try {
+    const result = await callProxy<{ success: boolean }>('save-v35-expiry-snapshot', {
+      snapshot: {
+        market_slug: data.marketSlug,
+        asset: data.asset,
+        expiry_time: data.expiryTime,
+        snapshot_time: data.snapshotTime,
+        seconds_before_expiry: data.secondsBeforeExpiry,
+        api_up_qty: data.apiUpQty,
+        api_down_qty: data.apiDownQty,
+        api_up_cost: data.apiUpCost,
+        api_down_cost: data.apiDownCost,
+        local_up_qty: data.localUpQty,
+        local_down_qty: data.localDownQty,
+        local_up_cost: data.localUpCost,
+        local_down_cost: data.localDownCost,
+        paired: data.paired,
+        unpaired: data.unpaired,
+        combined_cost: data.combinedCost,
+        locked_profit: data.lockedProfit,
+        avg_up_price: data.avgUpPrice,
+        avg_down_price: data.avgDownPrice,
+        up_best_bid: data.upBestBid,
+        up_best_ask: data.upBestAsk,
+        down_best_bid: data.downBestBid,
+        down_best_ask: data.downBestAsk,
+        combined_ask: data.combinedAsk,
+        up_orders_count: data.upOrdersCount,
+        down_orders_count: data.downOrdersCount,
+        was_imbalanced: data.wasImbalanced,
+        imbalance_ratio: data.imbalanceRatio,
+      },
+    });
+    return result.success;
+  } catch (err: any) {
+    console.error('[V35Backend] Save expiry snapshot failed:', err?.message);
+    return false;
+  }
+}
+
+// ============================================================
 // OFFLINE NOTIFICATION
 // ============================================================
 

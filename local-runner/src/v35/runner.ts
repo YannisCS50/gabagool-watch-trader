@@ -48,8 +48,10 @@ import { getHedgeManager, resetHedgeManager } from './hedge-manager.js';
 import { getCircuitBreaker, initCircuitBreaker, resetCircuitBreaker } from './circuit-breaker.js';
 import { getProactiveRebalancer, resetProactiveRebalancer } from './proactive-rebalancer.js';
 import { getEmergencyRecovery, resetEmergencyRecovery, analyzeRecovery, setRecoveryConfig } from './emergency-recovery.js';
-import { sendV35Heartbeat, sendV35Offline, saveV35Settlement, saveV35Fill, saveV35OrderbookSnapshots, saveV35InventorySnapshot, type V35InventorySnapshot } from './backend.js';
+import { sendV35Heartbeat, sendV35Offline, saveV35Settlement, saveV35Fill, saveV35OrderbookSnapshots, saveV35InventorySnapshot, saveV35ExpirySnapshot, type V35InventorySnapshot, type V35ExpirySnapshotData } from './backend.js';
 import type { V35OrderbookSnapshot } from './types.js';
+// Expiry snapshot scheduler - captures market state exactly 1 second before expiry
+import { scheduleExpirySnapshot, cancelExpirySnapshot, cancelAllExpirySnapshots, setSnapshotCallback } from './expiry-snapshot.js';
 import { ensureValidCredentials, getBalance, getOpenOrders } from '../polymarket.js';
 import { checkVpnRequired } from '../vpn-check.js';
 import { acquireLeaseOrHalt, releaseLease, renewLease } from '../runner-lease.js';
@@ -448,6 +450,10 @@ async function refreshMarkets(): Promise<void> {
     }
     
     markets.set(m.slug, market);
+    
+    // V35.7.0: Schedule expiry snapshot for this market (1 second before expiry)
+    scheduleExpirySnapshot(market);
+    
     log(`➕ Added market: ${m.slug} (${m.asset}, expires ${m.expiry.toISOString()})`);
     added++;
   }
@@ -517,6 +523,9 @@ function cleanupExpiredMarkets(): void {
       
       // CRITICAL: Unregister from position cache
       unregisterMarketFromCache(market.conditionId, market.upTokenId, market.downTokenId);
+      
+      // V35.7.0: Cancel any pending expiry snapshot (though it should have fired already)
+      cancelExpirySnapshot(slug);
       
       markets.delete(slug);
       removed++;
@@ -978,6 +987,9 @@ async function stop(): Promise<void> {
   // Stop position cache
   stopPositionCache();
   
+  // V35.7.0: Cancel all scheduled expiry snapshots
+  cancelAllExpirySnapshots();
+  
   const config = getV35Config();
   for (const market of markets.values()) {
     await cancelAllOrders(market, config.dryRun);
@@ -1068,6 +1080,45 @@ async function main(): Promise<void> {
   
   // Initialize quoting engine
   quotingEngine = new QuotingEngine();
+  
+  // V35.7.0: Configure expiry snapshot callback to persist to database
+  setSnapshotCallback((snapshot) => {
+    // Convert to backend format and save
+    const snapshotData: V35ExpirySnapshotData = {
+      marketSlug: snapshot.marketSlug,
+      asset: snapshot.asset,
+      expiryTime: snapshot.expiryTime,
+      snapshotTime: snapshot.snapshotTime,
+      secondsBeforeExpiry: snapshot.secondsBeforeExpiry,
+      apiUpQty: snapshot.apiUpQty,
+      apiDownQty: snapshot.apiDownQty,
+      apiUpCost: snapshot.apiUpCost,
+      apiDownCost: snapshot.apiDownCost,
+      localUpQty: snapshot.localUpQty,
+      localDownQty: snapshot.localDownQty,
+      localUpCost: snapshot.localUpCost,
+      localDownCost: snapshot.localDownCost,
+      paired: snapshot.paired,
+      unpaired: snapshot.unpaired,
+      combinedCost: snapshot.combinedCost,
+      lockedProfit: snapshot.lockedProfit,
+      avgUpPrice: snapshot.avgUpPrice,
+      avgDownPrice: snapshot.avgDownPrice,
+      upBestBid: snapshot.upBestBid,
+      upBestAsk: snapshot.upBestAsk,
+      downBestBid: snapshot.downBestBid,
+      downBestAsk: snapshot.downBestAsk,
+      combinedAsk: snapshot.combinedAsk,
+      upOrdersCount: snapshot.upOrdersCount,
+      downOrdersCount: snapshot.downOrdersCount,
+      wasImbalanced: snapshot.wasImbalanced,
+      imbalanceRatio: snapshot.imbalanceRatio,
+    };
+    saveV35ExpirySnapshot(snapshotData).catch(err => {
+      logError('Failed to save expiry snapshot:', err);
+    });
+  });
+  log('📸 Expiry snapshot scheduler configured');
 
   // Wire HedgeManager -> immediate order cancellations when hedging is not viable / fails.
   // This prevents runaway one-sided inventory accumulation between market loop ticks.

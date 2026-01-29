@@ -1,7 +1,13 @@
 // ============================================================
 // V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.5.1 - "Authoritative Position Sync"
+// Version: V35.7.0 - "Expiry Snapshot Archiver"
+//
+// V35.7.0: Added automatic expiry snapshot archiving. Every 15-minute
+// market now gets a precise snapshot captured 1 second before expiry
+// (e.g., 12:59:59, 13:14:59). This provides accurate historical records
+// of final positions, CPP, and locked profit regardless of when the
+// cleanup code runs.
 //
 // V35.5.1: Position sync now uses Polymarket API as GROUND TRUTH.
 // Previously only synced when API > local, causing drift when
@@ -17,8 +23,8 @@
 // If combined cost < $1.00 -> GUARANTEED profit.
 // ============================================================
 
-export const V35_VERSION = 'V35.5.7';
-export const V35_CODENAME = 'Proportional Trailing Budget';
+export const V35_VERSION = 'V35.7.0';
+export const V35_CODENAME = 'Expiry Snapshot Archiver';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 

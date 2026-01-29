@@ -6,3 +6,4 @@ export { V35StrategyPDFExport } from './V35StrategyPDFExport';
 export { V35OpenPositions } from './V35OpenPositions';
 export { V35LivePriceHeader } from './V35LivePriceHeader';
 export { V35FillTimeline } from './V35FillTimeline';
+export { V35ExpirySnapshots } from './V35ExpirySnapshots';
