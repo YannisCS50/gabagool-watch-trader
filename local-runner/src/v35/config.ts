@@ -17,8 +17,8 @@
 // If combined cost < $1.00 -> GUARANTEED profit.
 // ============================================================
 
-export const V35_VERSION = 'V35.5.6';
-export const V35_CODENAME = 'Trailing Side Burst-Cap Exemption';
+export const V35_VERSION = 'V35.5.7';
+export const V35_CODENAME = 'Proportional Trailing Budget';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 
