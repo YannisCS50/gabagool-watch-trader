@@ -1,16 +1,17 @@
 // ============================================================
 // V35 HEDGE MANAGER - ACTIVE HEDGING
 // ============================================================
-// Version: V35.8.0 - "Rebalancing Cost Limits"
+// Version: V35.11.0 - "Never Ban, Always Fix"
 // 
 // KEY INSIGHT: Gabagool's edge comes from ACTIVE HEDGING, not passive MM.
 // When filled on one side → IMMEDIATELY hedge the other side.
 //
-// V35.8.0: Added flexible maxCombinedCost limits.
-// - Standard mode: Accept up to $1.02 combined cost (2% loss OK)
-// - Emergency mode: Accept up to $1.05 combined cost (5% loss OK)
-// This prevents the bot from getting stuck with unhedged exposure
-// in wide-spread markets where profitable hedges are impossible.
+// V35.11.0: Accept up to 30% loss to fix imbalance
+// - Standard mode: Accept up to $1.05 combined cost (5% loss OK)
+// - Emergency mode: Accept up to $1.30 combined cost (30% loss OK)
+// 
+// The goal is NEVER to leave a position unhedged. Accept losses
+// to prevent even larger losses from directional exposure.
 // ============================================================
 
 import { EventEmitter } from 'events';
