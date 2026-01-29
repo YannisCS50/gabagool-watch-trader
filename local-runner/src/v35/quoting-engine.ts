@@ -1,16 +1,19 @@
 // ============================================================
 // V35 QUOTING ENGINE - GABAGOOL MODE
 // ============================================================
-// Version: V35.6.0 - "True Gabagool Mode"
+// Version: V35.6.1 - "Balanced Start Fix"
 //
-// V35.6.0 MAJOR SIMPLIFICATION:
-// - REMOVED: EXPENSIVE_BIAS guard (was blocking cheap side unreasonably)
-// - SIMPLIFIED: CHEAP_SIDE_SKIP (only blocks at extreme 25+ share deficit)
-// - KEPT: EMERGENCY_STOP (hard limit safety net)
-// - KEPT: BURST_CAP (prevents order burst exceeding limits)
+// V35.6.1 FIX:
+// - FIXED: Fresh market (both sides = 0) now quotes BOTH sides equally
+// - ADDED: isBalanced check (imbalance < 1 share = balanced state)
+// - FIXED: Trailing/leading only applies when actual imbalance exists
+//
+// V35.6.0 SIMPLIFICATION (kept):
+// - REMOVED: EXPENSIVE_BIAS guard
+// - SIMPLIFIED: CHEAP_SIDE_SKIP (only at 25+ shares)
+// - KEPT: EMERGENCY_STOP, BURST_CAP
 //
 // CORE PRINCIPLE: Quote both sides equally, let the market balance.
-// Safety comes from BURST_CAP and EMERGENCY_STOP only.
 // ============================================================
 
 import { getV35Config, V35_VERSION, type V35Config } from './config.js';
@@ -81,20 +84,23 @@ export class QuotingEngine {
     const imbalance = Math.abs(market.upQty - market.downQty);
     
     // =========================================================================
-    // V35.6.0 SIMPLIFIED CHEAP-SIDE LOGIC
+    // V35.6.1 BALANCED START FIX
     // =========================================================================
     // GABAGOOL MODE: We quote BOTH sides equally by default.
-    // Only skip cheap side if we're MASSIVELY over-exposed (25+ shares ahead).
-    // This prevents becoming pure exit liquidity while allowing natural balance.
+    // 
+    // CRITICAL FIX: When both sides have 0 shares (fresh market), BOTH sides
+    // should be allowed to quote equally. Neither is "trailing" or "leading".
+    // Only apply trailing/leading logic when there's actual imbalance.
     // =========================================================================
+    const isBalanced = imbalance < 1; // Less than 1 share difference = balanced
     const trailingSide = market.upQty < market.downQty ? 'UP' : 'DOWN';
-    const isTrailing = side === trailingSide;
-    const isLeading = !isTrailing && imbalance > 0;
+    const isTrailing = !isBalanced && side === trailingSide;
+    const isLeading = !isBalanced && side !== trailingSide;
     
     // V35.6.0: Only block cheap side if we have 25+ MORE cheap shares than expensive
     // This is a safety net, not the primary balancing mechanism
     const CHEAP_SIDE_EXTREME_THRESHOLD = 25;
-    if (side === cheapSide && !isTrailing && cheapQty > expensiveQty + CHEAP_SIDE_EXTREME_THRESHOLD) {
+    if (side === cheapSide && isLeading && cheapQty > expensiveQty + CHEAP_SIDE_EXTREME_THRESHOLD) {
       const reason = `CHEAP-SKIP: ${side} has ${(cheapQty - expensiveQty).toFixed(0)} more than expensive (threshold: ${CHEAP_SIDE_EXTREME_THRESHOLD})`;
       console.log(`[QuotingEngine] 🛡️ ${reason}`);
       
@@ -186,7 +192,18 @@ export class QuotingEngine {
     //   newQty <= maxUnpairedShares + imbalance - existingOpen
     
     let maxNewOrderQty: number;
-    if (currentQty > oppositeQty) {
+    
+    // =========================================================================
+    // V35.6.1 BALANCED START FIX
+    // =========================================================================
+    // When balanced (both sides ~equal), BOTH sides get full budget.
+    // This ensures a fresh market can quote symmetrically on both sides.
+    // =========================================================================
+    if (isBalanced) {
+      // Both sides equal - each gets full budget minus their own open orders
+      maxNewOrderQty = config.maxUnpairedShares - existingOpenQty;
+      console.log(`[QuotingEngine] ⚖️ BALANCED: ${side} gets full budget ${maxNewOrderQty.toFixed(0)} (maxUnpaired=${config.maxUnpairedShares}, existing=${existingOpenQty.toFixed(0)})`);
+    } else if (currentQty > oppositeQty) {
       // We're already leading - very limited budget
       maxNewOrderQty = config.maxUnpairedShares - imbalance - existingOpenQty;
     } else {
@@ -197,23 +214,26 @@ export class QuotingEngine {
     // Clamp to non-negative
     maxNewOrderQty = Math.max(0, maxNewOrderQty);
     
-    console.log(`[QuotingEngine] 📊 BURST-CAP: ${side} budget=${maxNewOrderQty.toFixed(0)} (existing=${existingOpenQty.toFixed(0)}, imbalance=${imbalance.toFixed(0)}, leading=${currentQty > oppositeQty})`);
+    console.log(`[QuotingEngine] 📊 BURST-CAP: ${side} budget=${maxNewOrderQty.toFixed(0)} (existing=${existingOpenQty.toFixed(0)}, imbalance=${imbalance.toFixed(0)}, balanced=${isBalanced}, leading=${isLeading})`);
     
     // =========================================================================
-    // V35.5.6 KEY FIX: TRAILING SIDE IS EXEMPT FROM BURST-CAP
+    // V35.6.1 BALANCED/TRAILING EXEMPTION
     // =========================================================================
-    // The trailing side (fewer shares) MUST be able to quote to hedge.
-    // Filling the trailing side REDUCES imbalance, so burst-cap doesn't apply.
-    // Only the leading side needs burst-cap protection.
+    // - BALANCED: Both sides quote freely (fresh market start)
+    // - TRAILING: Can always quote to hedge back to balance
+    // - LEADING: Restricted by burst-cap to prevent runaway imbalance
     // =========================================================================
     if (maxNewOrderQty < config.sharesPerLevel) {
-      if (isTrailing) {
+      if (isBalanced) {
+        // Balanced but somehow still blocked? Give minimum quoting ability
+        maxNewOrderQty = config.sharesPerLevel * 4; // 4 levels = 20 shares
+        console.log(`[QuotingEngine] ⚖️ BALANCED OVERRIDE: ${side} gets minimum ${maxNewOrderQty.toFixed(0)} shares`);
+      } else if (isTrailing) {
         // V35.5.7: Allow trailing side to quote, but ONLY what's needed to balance
-        // Don't give a fixed 25 shares - that can swing the position the other way!
         const neededToBalance = imbalance;
         const buffer = config.sharesPerLevel; // One extra level as buffer
         maxNewOrderQty = Math.max(config.sharesPerLevel, neededToBalance + buffer);
-        console.log(`[QuotingEngine] 🔓 BURST-CAP OVERRIDE: ${side} is TRAILING - allowing ${maxNewOrderQty.toFixed(0)} shares (need ${neededToBalance.toFixed(0)} + ${buffer} buffer)`);
+        console.log(`[QuotingEngine] 🔓 TRAILING OVERRIDE: ${side} allowing ${maxNewOrderQty.toFixed(0)} shares (need ${neededToBalance.toFixed(0)} + ${buffer} buffer)`);
       } else {
         const reason = `BURST-CAP: ${side} budget exhausted (${maxNewOrderQty.toFixed(0)} < ${config.sharesPerLevel} min)`;
         console.log(`[QuotingEngine] 🛡️ ${reason}`);
