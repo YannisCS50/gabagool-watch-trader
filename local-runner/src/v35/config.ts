@@ -1,14 +1,15 @@
 // ============================================================
 // V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.4.4 - "Smart Cheap-Side Skip"
+// Version: V35.5.1 - "Authoritative Position Sync"
+//
+// V35.5.1: Position sync now uses Polymarket API as GROUND TRUTH.
+// Previously only synced when API > local, causing drift when
+// local state was over-counted. Now syncs in BOTH directions.
 //
 // V35.4.4: Only buy the CHEAP side if the EXPENSIVE side already
 // leads in inventory. This prevents accumulating shares on the
 // likely-losing side without a hedge lead.
-//
-// V35.4.0: Circuit breaker is MARKET-SPECIFIC - bot SKIPS to
-// next market instead of halting. NO manual intervention required.
 //
 // STRATEGY: Place limit BUY orders on a grid for both UP and DOWN sides.
 // When retail traders hit our orders, we accumulate both sides.
@@ -16,8 +17,8 @@
 // If combined cost < $1.00 -> GUARANTEED profit.
 // ============================================================
 
-export const V35_VERSION = 'V35.5.0';
-export const V35_CODENAME = 'Emergency Recovery';
+export const V35_VERSION = 'V35.5.1';
+export const V35_CODENAME = 'Authoritative Position Sync';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 
