@@ -48,6 +48,7 @@ export interface RebalanceResult {
 interface CachedOrder {
   orderId: string;
   side: V35Side;
+  filledAt?: number; // V35.9.1: Track when order was filled to prevent rapid re-orders
   price: number;
   qty: number;
   marketSlug: string;
@@ -56,7 +57,7 @@ interface CachedOrder {
 }
 
 // ============================================================
-// CONFIGURATION - V35.9.0 HYBRID MODE
+// CONFIGURATION - V35.9.1 POST-FILL COOLDOWN
 // ============================================================
 
 const REBALANCER_CONFIG = {
@@ -67,6 +68,7 @@ const REBALANCER_CONFIG = {
   emergencyThreshold: 15,         // V35.9.0: Gap >= 15 = emergency (was 20)
   minPairedForBuildWinner: 10,    // V35.9.0: Only build_winner if paired >= 10
   minOrderNotional: 1.50,         // Polymarket minimum
+  postFillCooldownMs: 3000,       // V35.9.1: Wait 3s after fill before new rebalance
   orderHoldTimeMs: 1500,          // Min time to keep order before updating
   priceImprovementThreshold: 0.02, // Update order if price drops by 2¢
 };
@@ -77,6 +79,7 @@ const REBALANCER_CONFIG = {
 
 export class ProactiveRebalancer {
   private lastCheckMs = 0;
+  private lastFillMs = 0; // V35.9.1: Track last fill time to enforce cooldown
   private cachedOrder: CachedOrder | null = null;
   
   constructor() {}
@@ -96,6 +99,13 @@ export class ProactiveRebalancer {
   async checkAndRebalance(market: V35Market): Promise<RebalanceResult> {
     const config = getV35Config();
     const now = Date.now();
+    
+    // V35.9.1: Post-fill cooldown to let API sync catch up
+    if (this.lastFillMs > 0 && now - this.lastFillMs < REBALANCER_CONFIG.postFillCooldownMs) {
+      const remaining = REBALANCER_CONFIG.postFillCooldownMs - (now - this.lastFillMs);
+      console.log(`[Rebalancer] ⏸️ Post-fill cooldown: ${(remaining/1000).toFixed(1)}s remaining`);
+      return { attempted: false, hedged: false, reason: `post_fill_cooldown: ${remaining}ms` };
+    }
     
     // Rate limit checks
     if (now - this.lastCheckMs < REBALANCER_CONFIG.checkIntervalMs) {
@@ -350,6 +360,10 @@ export class ProactiveRebalancer {
       }
       
       console.log(`[Rebalancer] 📊 STATE UPDATED: UP=${market.upQty.toFixed(0)} DOWN=${market.downQty.toFixed(0)} (added ${filledQty.toFixed(0)} ${cached.side})`);
+      
+      // V35.9.1: Set cooldown timestamp to prevent rapid re-orders
+      this.lastFillMs = now;
+      console.log(`[Rebalancer] ⏱️ Post-fill cooldown started (${REBALANCER_CONFIG.postFillCooldownMs}ms)`);
       
       await this.logEvent(`${cached.purpose}_filled`, market, {
         side: cached.side,

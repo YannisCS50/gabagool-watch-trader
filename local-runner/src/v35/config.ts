@@ -1,7 +1,11 @@
 // ============================================================
 // V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.9.0 - "Hybrid Mode + State Sync Fix"
+// Version: V35.9.1 - "Post-Fill Cooldown"
+//
+// V35.9.1 CHANGES:
+// - 3 second cooldown after rebalancer fill to prevent rapid re-orders
+// - Allows API/position-cache to sync before next rebalance decision
 //
 // V35.9.0 CHANGES:
 // - HYBRID MODE: build_winner only if paired >= 10 shares
@@ -34,8 +38,8 @@
 // If combined cost < $1.02 -> Small loss acceptable for risk reduction.
 // ============================================================
 
-export const V35_VERSION = 'V35.9.0';
-export const V35_CODENAME = 'Hybrid Mode + State Sync Fix';
+export const V35_VERSION = 'V35.9.1';
+export const V35_CODENAME = 'Post-Fill Cooldown';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 
