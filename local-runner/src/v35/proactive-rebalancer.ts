@@ -1,9 +1,15 @@
 // ============================================================
 // V35 PROACTIVE REBALANCER
 // ============================================================
-// Version: V35.10.0 - "Continuous Hedge + Smart Spread"
+// Version: V35.10.3 - "Aggressive Hedge + Tighter Limits"
 //
-// V35.10.0 MAJOR REWRITE:
+// V35.10.3 SAFETY TIGHTENING:
+// ================================================================
+// - Emergency mode triggers at 10 shares (was 15)
+// - Emergency max cost: 1.20 (was 1.15) - accept 20% loss to balance
+// - Works with circuit breaker 10/15/20 thresholds
+//
+// V35.10.0 ORIGINAL REWRITE:
 // ================================================================
 // PROBLEM 1: Bot placed orders on fixed grid far from market ask
 // SOLUTION: Now places ONE order at current ask + small offset
@@ -22,7 +28,7 @@
 // STRATEGY: Keep UP ≈ DOWN within ±5 shares tolerance.
 // - If gap > 5 → buy the LAGGING side (not expensive/cheap, just lagging)
 // - Place order AT or VERY CLOSE to current ask for max fill probability
-// - Accept losses up to 15% in emergency (1.15 combined cost)
+// - Accept losses up to 20% in emergency (1.20 combined cost)
 // ============================================================
 
 import { getV35Config, V35_VERSION } from './config.js';
@@ -68,8 +74,8 @@ const REBALANCER_CONFIG = {
   checkIntervalMs: 500,           // Fast polling
   balanceTolerance: 5,            // ±5 shares is "balanced"
   maxCombinedCost: 1.02,          // Accept up to 2% loss for balance
-  emergencyMaxCost: 1.15,         // V35.10.0: 15% loss OK in emergency
-  emergencyThreshold: 15,         // Gap >= 15 = emergency mode
+  emergencyMaxCost: 1.20,         // V35.10.3: 20% loss OK in emergency (was 1.15)
+  emergencyThreshold: 10,         // V35.10.3: Gap >= 10 = emergency mode (was 15)
   minOrderNotional: 1.05,         // Just above Polymarket $1 minimum
   postFillCooldownMs: 2000,       // V35.10.0: Reduced to 2s for faster recovery
   orderHoldTimeMs: 1000,          // Min time to keep order before updating
