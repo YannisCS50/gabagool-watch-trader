@@ -1,7 +1,11 @@
 // ============================================================
 // V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.9.1 - "Post-Fill Cooldown"
+// Version: V35.9.2 - "Bidirectional Rebalance + No Double Count"
+//
+// V35.9.2 CHANGES:
+// - Rebalancer can also buy the CHEAP side to tighten when winner lead > 5
+// - Runner no longer double-counts rebalancer fills (prevents skew amplification)
 //
 // V35.9.1 CHANGES:
 // - 3 second cooldown after rebalancer fill to prevent rapid re-orders
@@ -38,8 +42,8 @@
 // If combined cost < $1.02 -> Small loss acceptable for risk reduction.
 // ============================================================
 
-export const V35_VERSION = 'V35.9.1';
-export const V35_CODENAME = 'Post-Fill Cooldown';
+export const V35_VERSION = 'V35.9.2';
+export const V35_CODENAME = 'Bidirectional Rebalance + No Double Count';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 

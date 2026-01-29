@@ -642,13 +642,19 @@ async function processMarket(market: V35Market): Promise<void> {
   
   if (rebalanceResult.attempted && rebalanceResult.hedged) {
     log(`🔄 PROACTIVE HEDGE: ${rebalanceResult.hedgeQty?.toFixed(0)} ${rebalanceResult.hedgeSide} @ $${rebalanceResult.hedgePrice?.toFixed(3)}`);
-    // Update local position if we executed a hedge
-    if (rebalanceResult.hedgeSide === 'UP') {
-      market.upQty += rebalanceResult.hedgeQty || 0;
-      market.upCost += (rebalanceResult.hedgeQty || 0) * (rebalanceResult.hedgePrice || 0);
-    } else if (rebalanceResult.hedgeSide === 'DOWN') {
-      market.downQty += rebalanceResult.hedgeQty || 0;
-      market.downCost += (rebalanceResult.hedgeQty || 0) * (rebalanceResult.hedgePrice || 0);
+
+    // IMPORTANT:
+    // The rebalancer mutates `market` in-place when it confirms a fill.
+    // Double-applying here would exaggerate imbalance and trigger more unwanted rebalances.
+    if (!rebalanceResult.stateUpdated) {
+      // Backwards-compatibility fallback (older rebalancer versions)
+      if (rebalanceResult.hedgeSide === 'UP') {
+        market.upQty += rebalanceResult.hedgeQty || 0;
+        market.upCost += (rebalanceResult.hedgeQty || 0) * (rebalanceResult.hedgePrice || 0);
+      } else if (rebalanceResult.hedgeSide === 'DOWN') {
+        market.downQty += rebalanceResult.hedgeQty || 0;
+        market.downCost += (rebalanceResult.hedgeQty || 0) * (rebalanceResult.hedgePrice || 0);
+      }
     }
     // Re-check circuit breaker after hedging to see if we've recovered
     const recheckSafety = await circuitBreaker.checkMarket(market, config.dryRun);
