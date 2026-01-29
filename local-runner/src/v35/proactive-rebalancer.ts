@@ -58,7 +58,7 @@ interface CachedOrder {
 const REBALANCER_CONFIG = {
   checkIntervalMs: 500,           // Fast polling
   minImbalanceToAct: 5,           // Min shares difference to trigger action
-  maxCombinedCost: 1.05,          // Allow up to 5% loss for directional trades
+  maxCombinedCost: 1.02,          // Allow up to 2% loss for directional trades
   minOrderNotional: 1.50,         // Polymarket minimum
   orderHoldTimeMs: 1500,          // Min time to keep order before updating
   priceImprovementThreshold: 0.02, // Update order if price drops by 2¢
