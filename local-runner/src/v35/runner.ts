@@ -1,7 +1,7 @@
 // ============================================================
 // V35 RUNNER - SKIP TO NEXT MARKET
 // ============================================================
-// Version: V35.4.0 - "Skip to Next Market"
+// Version: V35.5.1 - "Authoritative Position Sync"
 // 
 // CRITICAL INVARIANTS:
 // 1. Circuit Breaker is now MARKET-SPECIFIC (not global)
@@ -11,11 +11,11 @@
 // 5. NO shares carry over between markets
 // 6. New markets ALWAYS start at 0 shares (upQty=0, downQty=0)
 //
-// V35.4.0 CRITICAL FIX:
-// - Circuit breaker bans ONLY the problematic market
-// - Bot continues running, waits for next market cycle
-// - Automatic ban clearing when markets expire
-// - strategy_enabled flag is NO LONGER touched on trip
+// V35.5.1 CRITICAL FIX:
+// - Position sync now uses Polymarket API as GROUND TRUTH
+// - Previously only synced when API > local (conservative)
+// - This caused massive drift when local state was over-counted
+// - Now syncs in BOTH directions: API is always authoritative
 // ============================================================
 
 import '../config.js'; // Load env first
@@ -558,31 +558,46 @@ async function processMarket(market: V35Market): Promise<void> {
   }
   
   // =========================================================================
-  // CONSERVATIVE POSITION SYNC (preserved from V35.2.0)
+  // V35.5.1: AUTHORITATIVE POSITION SYNC - API IS GROUND TRUTH
+  // =========================================================================
+  // CRITICAL FIX: Previously we only synced when API > local (conservative).
+  // This caused massive drift when local state got corrupted or double-counted.
+  // NOW: We trust Polymarket API as the single source of truth.
   // =========================================================================
   const cachedPos = getCachedPosition(market.slug);
-  if (cachedPos) {
+  if (cachedPos && cachedPos.lastFetchedAtMs > 0) {
     const localUp = market.upQty;
     const localDown = market.downQty;
     const apiUp = cachedPos.upShares;
     const apiDown = cachedPos.downShares;
     
-    // Log drift for debugging
-    if (Math.abs(localUp - apiUp) > 1 || Math.abs(localDown - apiDown) > 1) {
-      log(`⚠️ POSITION DRIFT: Local (UP=${localUp.toFixed(0)} DOWN=${localDown.toFixed(0)}) vs API (UP=${apiUp.toFixed(0)} DOWN=${apiDown.toFixed(0)})`);
-      log(`   → Using CONSERVATIVE max`);
+    const driftUp = Math.abs(localUp - apiUp);
+    const driftDown = Math.abs(localDown - apiDown);
+    
+    // Log ANY significant drift (> 1 share)
+    if (driftUp > 1 || driftDown > 1) {
+      log(`🔄 POSITION SYNC: Local (UP=${localUp.toFixed(1)} DOWN=${localDown.toFixed(1)}) → API (UP=${apiUp.toFixed(1)} DOWN=${apiDown.toFixed(1)})`);
     }
     
-    // Only UPDATE if API is HIGHER (we learned about fills we missed)
-    if (apiUp > localUp) {
+    // ALWAYS sync to API values - Polymarket is ground truth
+    // This fixes both under-counting (missed fills) AND over-counting (duplicate fills)
+    if (driftUp > 0.5) {
       market.upQty = apiUp;
       market.upCost = cachedPos.upCost;
-      log(`📈 API shows more UP shares than local: ${localUp.toFixed(0)} → ${apiUp.toFixed(0)}`);
+      if (apiUp < localUp) {
+        log(`📉 API corrected UP shares DOWN: ${localUp.toFixed(1)} → ${apiUp.toFixed(1)} (local was over-counted)`);
+      } else {
+        log(`📈 API corrected UP shares UP: ${localUp.toFixed(1)} → ${apiUp.toFixed(1)} (missed fills)`);
+      }
     }
-    if (apiDown > localDown) {
+    if (driftDown > 0.5) {
       market.downQty = apiDown;
       market.downCost = cachedPos.downCost;
-      log(`📈 API shows more DOWN shares than local: ${localDown.toFixed(0)} → ${apiDown.toFixed(0)}`);
+      if (apiDown < localDown) {
+        log(`📉 API corrected DOWN shares DOWN: ${localDown.toFixed(1)} → ${apiDown.toFixed(1)} (local was over-counted)`);
+      } else {
+        log(`📈 API corrected DOWN shares UP: ${localDown.toFixed(1)} → ${apiDown.toFixed(1)} (missed fills)`);
+      }
     }
   }
   
