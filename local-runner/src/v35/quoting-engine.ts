@@ -1,17 +1,17 @@
 // ============================================================
 // V35 QUOTING ENGINE - HEDGE-FIRST STRATEGY
 // ============================================================
-// Version: V35.3.5 - "Hedge-First Quoting"
+// Version: V35.4.2 - "Per-Level Hedge-First"
 //
 // KEY INSIGHT: The bot only profits when positions are PAIRED.
 // Unpaired shares are pure directional risk that can lose 100%.
 //
-// V35.3.5 SOLUTION: Before placing orders on either side, check
-// if hedging is viable. If the opposite side's ask price is too
-// high (combined cost would exceed $1.00), DON'T PLACE ORDERS.
-// This prevents accumulating unhegeable fills.
+// V35.4.2 SOLUTION: Evaluate hedge viability PER PRICE LEVEL.
+// For each grid price, check if (bidPrice + oppositeAsk) < 0.98.
+// This allows cheaper bids to be placed even when the opposite
+// side is expensive, maximizing fill opportunities.
 //
-// RULE: Only quote when we can GUARANTEE profitability.
+// RULE: Only quote at prices where hedge is profitable.
 // ============================================================
 
 import { getV35Config, V35_VERSION, type V35Config } from './config.js';
@@ -86,37 +86,18 @@ export class QuotingEngine {
     const imbalance = Math.abs(market.upQty - market.downQty);
     
     // =========================================================================
-    // V35.3.5 HEDGE-FIRST CHECK: Only quote if hedging is viable
+    // V35.4.2 HEDGE-FIRST CHECK: Per-price-level evaluation
     // =========================================================================
-    // Before placing any order, verify that the OPPOSITE side has viable
-    // liquidity at a price that keeps combined cost under MAX_COMBINED_COST.
-    // This prevents accumulating fills we cannot profitably hedge.
+    // Instead of blocking ALL quotes based on average grid price, we now
+    // evaluate each price level individually. This allows the bot to quote
+    // on cheaper price levels even when the opposite side is expensive.
+    // The per-level check happens in the quote generation loop below.
     // =========================================================================
     const oppositeAsk = side === 'UP' ? market.downBestAsk : market.upBestAsk;
     
-    // For a new fill at our grid prices (average around 0.45-0.50), 
-    // we need the opposite ask to be low enough that combined < MAX_COMBINED_COST
-    // Typical grid mid = 0.50, so opposite ask must be < 0.48 for 2% margin
-    const avgGridPrice = (config.gridMin + config.gridMax) / 2;
-    const maxOppositeAsk = MAX_COMBINED_COST - avgGridPrice;
-    
-    if (oppositeAsk > 0 && oppositeAsk > maxOppositeAsk) {
-      const projectedCombined = avgGridPrice + oppositeAsk;
-      const reason = `HEDGE-FIRST: ${side} blocked - opposite ask $${oppositeAsk.toFixed(3)} too high (combined $${projectedCombined.toFixed(3)} > $${MAX_COMBINED_COST})`;
-      console.log(`[QuotingEngine] 🛡️ ${reason}`);
-      
-      logV35GuardEvent({
-        marketSlug: market.slug,
-        asset: market.asset,
-        guardType: 'HEDGE_FIRST',
-        blockedSide: side,
-        upQty: market.upQty,
-        downQty: market.downQty,
-        expensiveSide,
-        reason,
-      }).catch(() => {});
-      
-      return { quotes: [], blocked: true, blockReason: reason };
+    // Log the opposite ask for visibility, but don't block globally
+    if (oppositeAsk > 0) {
+      console.log(`[QuotingEngine] 📊 ${side} hedge check: opposite ask $${oppositeAsk.toFixed(3)}, will filter per-price-level`);
     }
     
     // =========================================================================
@@ -259,6 +240,21 @@ export class QuotingEngine {
     let totalQuotedQty = 0;
     
     for (const price of sortedPrices) {
+      // =========================================================================
+      // V35.4.2 PER-LEVEL HEDGE-FIRST CHECK
+      // =========================================================================
+      // For this specific bid price, check if hedging would be profitable.
+      // Combined cost = our bid price + opposite ask
+      // Only quote if combined < MAX_COMBINED_COST (0.98)
+      // =========================================================================
+      if (oppositeAsk > 0) {
+        const projectedCombined = price + oppositeAsk;
+        if (projectedCombined > MAX_COMBINED_COST) {
+          // Skip this price level - hedge would not be profitable
+          continue;
+        }
+      }
+      
       // Skip if our bid would cross the ask (we'd become taker)
       // V35.4.1: Reduced margin from 0.5¢ to 0.2¢ for tighter quoting
       if (bestAsk > 0 && price >= bestAsk - 0.002) {
