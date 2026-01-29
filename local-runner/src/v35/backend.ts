@@ -165,7 +165,6 @@ export async function saveV35Settlement(data: V35SettlementData): Promise<boolea
         locked_profit: data.lockedProfit,
         winning_side: data.winningSide,
         pnl: data.pnl,
-        timestamp: new Date().toISOString(),
       },
     });
     return result.success;
