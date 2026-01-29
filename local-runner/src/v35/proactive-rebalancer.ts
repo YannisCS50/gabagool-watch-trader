@@ -62,13 +62,13 @@ interface CachedOrder {
 const REBALANCER_CONFIG = {
   checkIntervalMs: 500,           // Fast polling
   balanceTolerance: 5,            // ±5 shares is "balanced"
-  maxCombinedCost: 1.05,          // V35.11.0: Accept up to 5% loss for balance (was 2%)
-  emergencyMaxCost: 1.30,         // V35.11.0: 30% loss OK in emergency (was 20%)
-  emergencyThreshold: 8,          // V35.11.0: Gap >= 8 = emergency mode (was 10)
+  maxCombinedCost: 0.97,          // V35.11.1: Target 3% profit margin (was 1.05)
+  emergencyMaxCost: 1.02,         // V35.11.1: Max 2% loss in emergency (was 1.30)
+  emergencyThreshold: 8,          // Gap >= 8 = emergency mode
   minOrderNotional: 1.05,         // Just above Polymarket $1 minimum
-  postFillCooldownMs: 1500,       // V35.11.0: Faster recovery (was 2000)
-  orderHoldTimeMs: 800,           // V35.11.0: Faster updates (was 1000)
-  priceOffsetFromAsk: 0.008,      // V35.11.0: More aggressive (was 0.5¢)
+  postFillCooldownMs: 1500,       // Fast recovery
+  orderHoldTimeMs: 800,           // Fast updates
+  priceOffsetFromAsk: 0.008,      // Aggressive for fast fills
 };
 
 // ============================================================
