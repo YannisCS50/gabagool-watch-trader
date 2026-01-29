@@ -1,18 +1,16 @@
 // ============================================================
-// V35 QUOTING ENGINE - PASSIVE GABAGOOL STRATEGY
+// V35 QUOTING ENGINE - GABAGOOL MODE
 // ============================================================
-// Version: V35.5.7 - "Proportional Trailing Budget"
+// Version: V35.6.0 - "True Gabagool Mode"
 //
-// V35.5.7 KEY FIX: Trailing side budget is PROPORTIONAL to imbalance!
-// V35.5.6 gave a fixed 25-share budget which caused OVERSHOOT.
-// Now we give only (imbalance + 1 level buffer) to prevent swinging
-// from one imbalance to the opposite direction.
+// V35.6.0 MAJOR SIMPLIFICATION:
+// - REMOVED: EXPENSIVE_BIAS guard (was blocking cheap side unreasonably)
+// - SIMPLIFIED: CHEAP_SIDE_SKIP (only blocks at extreme 25+ share deficit)
+// - KEPT: EMERGENCY_STOP (hard limit safety net)
+// - KEPT: BURST_CAP (prevents order burst exceeding limits)
 //
-// Example: If imbalance is 5, trailing gets 5+5=10 shares max, not 25.
-//
-// CHEAP-SIDE SKIP:
-// Only buy the cheap side if the expensive side already leads.
-// But if the cheap side IS trailing (fewer shares), allow it anyway.
+// CORE PRINCIPLE: Quote both sides equally, let the market balance.
+// Safety comes from BURST_CAP and EMERGENCY_STOP only.
 // ============================================================
 
 import { getV35Config, V35_VERSION, type V35Config } from './config.js';
@@ -83,49 +81,35 @@ export class QuotingEngine {
     const imbalance = Math.abs(market.upQty - market.downQty);
     
     // =========================================================================
-    // V35.5.1 SMART CHEAP-SIDE SKIP - RELAXED FOR HEDGING
+    // V35.6.0 SIMPLIFIED CHEAP-SIDE LOGIC
     // =========================================================================
-    // The cheap side usually loses (market prices in expected outcome).
-    // HOWEVER: If we're trying to HEDGE (balance the position), we MUST
-    // allow buying the cheap side even if we already have more of it!
-    //
-    // NEW LOGIC: Only skip cheap side if:
-    //   1. We're NOT imbalanced (no need to hedge)
-    //   2. Cheap side already leads significantly
-    //
-    // If there's an imbalance, we NEED to buy the trailing side to hedge,
-    // regardless of which side is "cheap"!
+    // GABAGOOL MODE: We quote BOTH sides equally by default.
+    // Only skip cheap side if we're MASSIVELY over-exposed (25+ shares ahead).
+    // This prevents becoming pure exit liquidity while allowing natural balance.
     // =========================================================================
     const trailingSide = market.upQty < market.downQty ? 'UP' : 'DOWN';
     const isTrailing = side === trailingSide;
+    const isLeading = !isTrailing && imbalance > 0;
     
-    // Only apply cheap-skip if we're NOT the trailing side (not hedging)
-    if (side === cheapSide && expensiveQty > 0 && !isTrailing) {
-      // We're quoting on the cheap side but we're NOT trailing - block it
-      if (cheapQty >= expensiveQty) {
-        const reason = `CHEAP-SKIP: ${side} is cheap and NOT trailing (${cheapQty.toFixed(0)} >= ${expensiveQty.toFixed(0)})`;
-        console.log(`[QuotingEngine] 🛡️ ${reason}`);
-        
-        logV35GuardEvent({
-          marketSlug: market.slug,
-          asset: market.asset,
-          guardType: 'CHEAP_SIDE_SKIP',
-          blockedSide: side,
-          upQty: market.upQty,
-          downQty: market.downQty,
-          expensiveSide,
-          reason,
-        }).catch(() => {});
-        
-        return { quotes: [], blocked: true, blockReason: reason };
-      }
-    }
-    
-    // If we're trailing, we MUST quote to hedge - no cheap-skip applies
-    if (isTrailing) {
-      console.log(`[QuotingEngine] ✅ ${side} is TRAILING (${currentQty.toFixed(0)} < ${oppositeQty.toFixed(0)}) - quoting to HEDGE`);
-    } else if (side === cheapSide && expensiveQty > cheapQty) {
-      console.log(`[QuotingEngine] ✅ ${side} is cheap but expensive leads (${expensiveQty.toFixed(0)} > ${cheapQty.toFixed(0)}) - quoting to balance`);
+    // V35.6.0: Only block cheap side if we have 25+ MORE cheap shares than expensive
+    // This is a safety net, not the primary balancing mechanism
+    const CHEAP_SIDE_EXTREME_THRESHOLD = 25;
+    if (side === cheapSide && !isTrailing && cheapQty > expensiveQty + CHEAP_SIDE_EXTREME_THRESHOLD) {
+      const reason = `CHEAP-SKIP: ${side} has ${(cheapQty - expensiveQty).toFixed(0)} more than expensive (threshold: ${CHEAP_SIDE_EXTREME_THRESHOLD})`;
+      console.log(`[QuotingEngine] 🛡️ ${reason}`);
+      
+      logV35GuardEvent({
+        marketSlug: market.slug,
+        asset: market.asset,
+        guardType: 'CHEAP_SIDE_SKIP',
+        blockedSide: side,
+        upQty: market.upQty,
+        downQty: market.downQty,
+        expensiveSide,
+        reason,
+      }).catch(() => {});
+      
+      return { quotes: [], blocked: true, blockReason: reason };
     }
     
     // =========================================================================
@@ -157,43 +141,13 @@ export class QuotingEngine {
     }
     
     // =========================================================================
-    // V35.3.7 HEDGE-VIABILITY IS KING
+    // V35.6.0: EXPENSIVE_BIAS GUARD REMOVED
     // =========================================================================
-    // We removed STRICT_BALANCE because it was too aggressive.
-    // If the opposite side is CHEAP to hedge (combined < 98c), we should
-    // absolutely keep buying on the leading side - that's free money!
+    // This guard was causing the imbalances! By forcing the cheap side to stay
+    // under a ratio of the expensive side, we were creating one-sided positions.
     // 
-    // Example: UP at 65c, DOWN at 10c = 75c combined = 25c profit per pair
-    // The HEDGE_FIRST guard above already blocks when hedging is too expensive.
+    // GABAGOOL MODE: Both sides quote equally. Balance comes from market flow.
     // =========================================================================
-    // (No additional blocking here - HEDGE_FIRST handles affordability)
-    
-    // =========================================================================
-    // EXPENSIVE SIDE LEADS RULE (from V35.1.0)
-    // Allow expensive side to have more shares (positive EV bias)
-    // Cheap side must stay within ratio of expensive side
-    // =========================================================================
-    if (side === cheapSide) {
-      const maxCheapQty = expensiveQty * config.maxExpensiveBias;
-      
-      if (cheapQty >= maxCheapQty && expensiveQty > 0) {
-        const reason = `Cheap side (${side}) at limit: ${cheapQty.toFixed(0)} >= ${maxCheapQty.toFixed(0)} (${config.maxExpensiveBias}x expensive)`;
-        console.log(`[QuotingEngine] 🛡️ ${reason}`);
-        
-        logV35GuardEvent({
-          marketSlug: market.slug,
-          asset: market.asset,
-          guardType: 'EXPENSIVE_BIAS',
-          blockedSide: side,
-          upQty: market.upQty,
-          downQty: market.downQty,
-          expensiveSide,
-          reason,
-        }).catch(() => {});
-        
-        return { quotes: [], blocked: true, blockReason: reason };
-      }
-    }
     
     // =========================================================================
     // 🚨 BURST-CAP: THE CRITICAL FIX

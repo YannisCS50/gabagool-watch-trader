@@ -1,21 +1,22 @@
 // ============================================================
-// V35 RUNNER - SKIP TO NEXT MARKET
+// V35 RUNNER - GABAGOOL MODE
 // ============================================================
-// Version: V35.5.1 - "Authoritative Position Sync"
+// Version: V35.6.0 - "True Gabagool Mode"
 // 
-// CRITICAL INVARIANTS:
-// 1. Circuit Breaker is now MARKET-SPECIFIC (not global)
-// 2. When a market is banned, bot SKIPS to next 15-minute cycle
-// 3. NO manual intervention required - auto-recovery
-// 4. Each 15-minute market is COMPLETELY INDEPENDENT
-// 5. NO shares carry over between markets
-// 6. New markets ALWAYS start at 0 shares (upQty=0, downQty=0)
+// V35.6.0 MAJOR CHANGES:
+// 1. Orders for BOTH sides are now placed SIMULTANEOUSLY (Promise.all)
+// 2. EXPENSIVE_BIAS guard REMOVED (was causing imbalances)
+// 3. CHEAP_SIDE_SKIP simplified (only blocks at 25+ share extreme)
+// 4. Safety comes from BURST_CAP and EMERGENCY_STOP only
 //
-// V35.5.1 CRITICAL FIX:
-// - Position sync now uses Polymarket API as GROUND TRUTH
-// - Previously only synced when API > local (conservative)
-// - This caused massive drift when local state was over-counted
-// - Now syncs in BOTH directions: API is always authoritative
+// CORE PRINCIPLE: Quote both sides equally, let the market balance.
+// This matches Gabagool22's approach: high fill frequency + equal quoting.
+//
+// CRITICAL INVARIANTS:
+// 1. Circuit Breaker is MARKET-SPECIFIC (not global)
+// 2. When a market is banned, bot SKIPS to next 15-minute cycle
+// 3. Each 15-minute market is COMPLETELY INDEPENDENT
+// 4. NO shares carry over between markets
 // ============================================================
 
 import '../config.js'; // Load env first
@@ -738,11 +739,16 @@ async function processMarket(market: V35Market): Promise<void> {
       log(`   inventory: UP=${market.upQty} DOWN=${market.downQty} (imbalance=${imbalance.toFixed(0)})`);
     }
     
-    const upResult = await syncOrders(market, 'UP', upQuotes, config.dryRun);
-    const downResult = await syncOrders(market, 'DOWN', downQuotes, config.dryRun);
+    // V35.6.0: SYNC BOTH SIDES SIMULTANEOUSLY (Gabagool Mode)
+    // Previously we did UP then DOWN sequentially, which could cause timing issues.
+    // Now we place both in parallel to ensure symmetric market presence.
+    const [upResult, downResult] = await Promise.all([
+      syncOrders(market, 'UP', upQuotes, config.dryRun),
+      syncOrders(market, 'DOWN', downQuotes, config.dryRun),
+    ]);
     
     if (upResult.placed > 0 || downResult.placed > 0) {
-      log(`📝 Orders placed: UP=${upResult.placed} DOWN=${downResult.placed}`);
+      log(`📝 Orders placed: UP=${upResult.placed} DOWN=${downResult.placed} (SIMULTANEOUS)`);
     }
   }
 }
