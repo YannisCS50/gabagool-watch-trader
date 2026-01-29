@@ -1086,6 +1086,7 @@ async function main(): Promise<void> {
   quotingEngine = new QuotingEngine();
   
   // V35.7.0: Configure expiry snapshot callback to persist to database
+  // V35.8.3: Added correct PnL calculation fields
   setSnapshotCallback((snapshot) => {
     // Convert to backend format and save
     const snapshotData: V35ExpirySnapshotData = {
@@ -1117,6 +1118,11 @@ async function main(): Promise<void> {
       downOrdersCount: snapshot.downOrdersCount,
       wasImbalanced: snapshot.wasImbalanced,
       imbalanceRatio: snapshot.imbalanceRatio,
+      // NEW: Correct PnL calculation
+      totalCost: snapshot.totalCost,
+      predictedWinningSide: snapshot.predictedWinningSide,
+      predictedFinalValue: snapshot.predictedFinalValue,
+      predictedPnl: snapshot.predictedPnl,
     };
     saveV35ExpirySnapshot(snapshotData).catch(err => {
       logError('Failed to save expiry snapshot:', err);

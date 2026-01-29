@@ -6672,8 +6672,12 @@ export type Database = {
           locked_profit: number | null
           market_slug: string
           paired: number
+          predicted_final_value: number | null
+          predicted_pnl: number | null
+          predicted_winning_side: string | null
           seconds_before_expiry: number | null
           snapshot_time: string
+          total_cost: number | null
           unpaired: number
           up_best_ask: number | null
           up_best_bid: number | null
@@ -6704,8 +6708,12 @@ export type Database = {
           locked_profit?: number | null
           market_slug: string
           paired?: number
+          predicted_final_value?: number | null
+          predicted_pnl?: number | null
+          predicted_winning_side?: string | null
           seconds_before_expiry?: number | null
           snapshot_time: string
+          total_cost?: number | null
           unpaired?: number
           up_best_ask?: number | null
           up_best_bid?: number | null
@@ -6736,8 +6744,12 @@ export type Database = {
           locked_profit?: number | null
           market_slug?: string
           paired?: number
+          predicted_final_value?: number | null
+          predicted_pnl?: number | null
+          predicted_winning_side?: string | null
           seconds_before_expiry?: number | null
           snapshot_time?: string
+          total_cost?: number | null
           unpaired?: number
           up_best_ask?: number | null
           up_best_bid?: number | null

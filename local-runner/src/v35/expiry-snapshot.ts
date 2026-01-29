@@ -34,13 +34,24 @@ export interface V35ExpirySnapshot {
   localUpCost: number;
   localDownCost: number;
   
-  // Calculated metrics
+  // Calculated metrics - CORRECTED FORMULA
   paired: number;
   unpaired: number;
-  combinedCost: number;
-  lockedProfit: number;
   avgUpPrice: number;
   avgDownPrice: number;
+  
+  // PnL calculation (correct formula):
+  // totalCost = (upQty × avgUpPrice) + (downQty × avgDownPrice)
+  // finalValue = winningShares × $1.00 (loser = $0)
+  // realizedPnl = finalValue - totalCost
+  totalCost: number;           // What we paid for all shares
+  predictedWinningSide: 'UP' | 'DOWN' | null;  // Based on 99¢ price
+  predictedFinalValue: number; // Winning shares × $1.00
+  predictedPnl: number;        // finalValue - totalCost
+  
+  // Legacy field for backwards compatibility
+  combinedCost: number;        // avgUp + avgDown (for paired shares)
+  lockedProfit: number;        // DEPRECATED - use predictedPnl instead
   
   // Orderbook state at snapshot time
   upBestBid: number | null;
@@ -161,9 +172,40 @@ function captureSnapshot(market: V35Market): void {
   const apiUpCost = apiPosition?.upCost ?? market.upCost;
   const apiDownCost = apiPosition?.downCost ?? market.downCost;
   
-  // Calculate metrics from API values (ground truth)
+  // Calculate average prices
   const avgUpPrice = apiUpQty > 0 ? apiUpCost / apiUpQty : 0;
   const avgDownPrice = apiDownQty > 0 ? apiDownCost / apiDownQty : 0;
+  
+  // CORRECT PnL FORMULA:
+  // Step 1: Calculate total cost (what we paid)
+  const totalCost = apiUpCost + apiDownCost;
+  
+  // Step 2: Determine winning side from orderbook prices
+  // In the last second, winning side has 99¢ bid, losing side has 1¢ bid
+  const upBid = market.upBestBid > 0 ? market.upBestBid : null;
+  const downBid = market.downBestBid > 0 ? market.downBestBid : null;
+  
+  let predictedWinningSide: 'UP' | 'DOWN' | null = null;
+  if (upBid !== null && downBid !== null) {
+    if (upBid >= 0.90) {
+      predictedWinningSide = 'UP';
+    } else if (downBid >= 0.90) {
+      predictedWinningSide = 'DOWN';
+    }
+  }
+  
+  // Step 3: Calculate final value (winning shares × $1.00, losing = $0)
+  let predictedFinalValue = 0;
+  if (predictedWinningSide === 'UP') {
+    predictedFinalValue = apiUpQty * 1.0;  // UP wins, DOWN = $0
+  } else if (predictedWinningSide === 'DOWN') {
+    predictedFinalValue = apiDownQty * 1.0;  // DOWN wins, UP = $0
+  }
+  
+  // Step 4: Calculate PnL = value - costs
+  const predictedPnl = predictedFinalValue - totalCost;
+  
+  // Legacy metrics for backwards compatibility
   const paired = Math.min(apiUpQty, apiDownQty);
   const unpaired = Math.abs(apiUpQty - apiDownQty);
   const combinedCost = (apiUpQty > 0 && apiDownQty > 0) ? avgUpPrice + avgDownPrice : 0;
@@ -198,18 +240,26 @@ function captureSnapshot(market: V35Market): void {
     localUpCost: market.upCost,
     localDownCost: market.downCost,
     
-    // Metrics
+    // Calculated metrics - CORRECT FORMULA
     paired,
     unpaired,
-    combinedCost,
-    lockedProfit,
     avgUpPrice,
     avgDownPrice,
     
+    // PnL calculation
+    totalCost,
+    predictedWinningSide,
+    predictedFinalValue,
+    predictedPnl,
+    
+    // Legacy (backwards compat)
+    combinedCost,
+    lockedProfit,
+    
     // Orderbook
-    upBestBid: market.upBestBid > 0 ? market.upBestBid : null,
+    upBestBid: upBid,
     upBestAsk: market.upBestAsk > 0 && market.upBestAsk < 1 ? market.upBestAsk : null,
-    downBestBid: market.downBestBid > 0 ? market.downBestBid : null,
+    downBestBid: downBid,
     downBestAsk: market.downBestAsk > 0 && market.downBestAsk < 1 ? market.downBestAsk : null,
     combinedAsk,
     
@@ -222,10 +272,14 @@ function captureSnapshot(market: V35Market): void {
     imbalanceRatio,
   };
   
-  // Log summary
+  // Log summary with CORRECT PnL
+  const pnlEmoji = predictedPnl >= 0 ? '✅' : '❌';
+  const winnerStr = predictedWinningSide ?? 'UNKNOWN';
   console.log(`📸 [ExpirySnapshot] ${market.slug.slice(-25)}:`);
-  console.log(`   📊 API State: UP=${apiUpQty.toFixed(1)} DOWN=${apiDownQty.toFixed(1)}`);
-  console.log(`   💰 Paired: ${paired.toFixed(0)} | CPP: $${combinedCost.toFixed(4)} | Locked: $${lockedProfit.toFixed(2)}`);
+  console.log(`   📊 Position: UP=${apiUpQty.toFixed(1)} ($${apiUpCost.toFixed(2)}) | DOWN=${apiDownQty.toFixed(1)} ($${apiDownCost.toFixed(2)})`);
+  console.log(`   💰 Total Cost: $${totalCost.toFixed(2)}`);
+  console.log(`   🎯 Predicted Winner: ${winnerStr} → Value: $${predictedFinalValue.toFixed(2)}`);
+  console.log(`   ${pnlEmoji} Predicted PnL: $${predictedPnl >= 0 ? '+' : ''}${predictedPnl.toFixed(2)}`);
   if (unpaired >= 5) {
     console.log(`   ⚠️ Unpaired: ${unpaired.toFixed(1)} shares (ratio: ${imbalanceRatio?.toFixed(1) ?? 'N/A'}:1)`);
   }
