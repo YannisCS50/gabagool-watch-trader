@@ -71,7 +71,9 @@ type Action =
   // V35 Fills and Settlements
   | 'save-v35-fill'
   | 'save-v35-position'
-  | 'save-v35-settlement';
+  | 'save-v35-settlement'
+  // V35 Expiry Snapshots (precise end-of-market archiving)
+  | 'save-v35-expiry-snapshot';
 
 interface RequestBody {
   action: Action;
@@ -2315,6 +2317,63 @@ Deno.serve(async (req) => {
         }
 
         console.log(`[runner-proxy] 💰 Saved V35 settlement: ${settlement.market_slug} PnL=${settlement.pnl}`);
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // ============================================================
+      // V35 EXPIRY SNAPSHOTS (Precise End-of-Market Archiving)
+      // ============================================================
+      case 'save-v35-expiry-snapshot': {
+        const snapshot = data?.snapshot as Record<string, unknown> | undefined;
+        if (!snapshot) {
+          return new Response(JSON.stringify({ success: false, error: 'Missing snapshot data' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const { error } = await supabase.from('v35_expiry_snapshots').upsert({
+          market_slug: snapshot.market_slug,
+          asset: snapshot.asset,
+          expiry_time: snapshot.expiry_time,
+          snapshot_time: snapshot.snapshot_time,
+          seconds_before_expiry: snapshot.seconds_before_expiry,
+          api_up_qty: snapshot.api_up_qty,
+          api_down_qty: snapshot.api_down_qty,
+          api_up_cost: snapshot.api_up_cost,
+          api_down_cost: snapshot.api_down_cost,
+          local_up_qty: snapshot.local_up_qty,
+          local_down_qty: snapshot.local_down_qty,
+          local_up_cost: snapshot.local_up_cost,
+          local_down_cost: snapshot.local_down_cost,
+          paired: snapshot.paired,
+          unpaired: snapshot.unpaired,
+          combined_cost: snapshot.combined_cost,
+          locked_profit: snapshot.locked_profit,
+          avg_up_price: snapshot.avg_up_price,
+          avg_down_price: snapshot.avg_down_price,
+          up_best_bid: snapshot.up_best_bid,
+          up_best_ask: snapshot.up_best_ask,
+          down_best_bid: snapshot.down_best_bid,
+          down_best_ask: snapshot.down_best_ask,
+          combined_ask: snapshot.combined_ask,
+          up_orders_count: snapshot.up_orders_count,
+          down_orders_count: snapshot.down_orders_count,
+          was_imbalanced: snapshot.was_imbalanced,
+          imbalance_ratio: snapshot.imbalance_ratio,
+        }, { onConflict: 'market_slug' });
+
+        if (error) {
+          console.error('[runner-proxy] save-v35-expiry-snapshot error:', error);
+          return new Response(JSON.stringify({ success: false, error: error.message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        console.log(`[runner-proxy] 📸 Saved V35 expiry snapshot: ${snapshot.market_slug} (paired=${snapshot.paired}, CPP=$${snapshot.combined_cost})`);
         return new Response(JSON.stringify({ success: true }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });

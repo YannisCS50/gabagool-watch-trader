@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { V35LogViewer, V35FillsTable, V35ExportButton, V35StrategyPDFExport, V35OpenPositions, V35LivePriceHeader, V35DecisionLog } from '@/components/v35';
+import { V35LogViewer, V35FillsTable, V35ExportButton, V35StrategyPDFExport, V35OpenPositions, V35LivePriceHeader, V35DecisionLog, V35ExpirySnapshots } from '@/components/v35';
 import { toast } from 'sonner';
 import { 
   Activity, 
@@ -325,7 +325,7 @@ export default function V35Dashboard() {
           </CardContent>
         </Card>
 
-        {/* Tabs for Positions, Settlements, Logs, Fills */}
+        {/* Tabs for Positions, Settlements, Logs, Fills, Snapshots */}
         <Tabs defaultValue="decisions" className="space-y-4">
           <TabsList>
             <TabsTrigger value="decisions">
@@ -335,6 +335,10 @@ export default function V35Dashboard() {
             <TabsTrigger value="positions">
               <Scale className="h-4 w-4 mr-2" />
               Positions
+            </TabsTrigger>
+            <TabsTrigger value="snapshots">
+              <Clock className="h-4 w-4 mr-2" />
+              Expiry Snapshots
             </TabsTrigger>
             <TabsTrigger value="overview">
               <BarChart3 className="h-4 w-4 mr-2" />
@@ -356,6 +360,10 @@ export default function V35Dashboard() {
 
           <TabsContent value="positions">
             <V35OpenPositions />
+          </TabsContent>
+
+          <TabsContent value="snapshots">
+            <V35ExpirySnapshots />
           </TabsContent>
 
           <TabsContent value="overview">

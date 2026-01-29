@@ -6647,6 +6647,105 @@ export type Database = {
         }
         Relationships: []
       }
+      v35_expiry_snapshots: {
+        Row: {
+          api_down_cost: number
+          api_down_qty: number
+          api_up_cost: number
+          api_up_qty: number
+          asset: string
+          avg_down_price: number | null
+          avg_up_price: number | null
+          combined_ask: number | null
+          combined_cost: number | null
+          created_at: string
+          down_best_ask: number | null
+          down_best_bid: number | null
+          down_orders_count: number | null
+          expiry_time: string
+          id: string
+          imbalance_ratio: number | null
+          local_down_cost: number
+          local_down_qty: number
+          local_up_cost: number
+          local_up_qty: number
+          locked_profit: number | null
+          market_slug: string
+          paired: number
+          seconds_before_expiry: number | null
+          snapshot_time: string
+          unpaired: number
+          up_best_ask: number | null
+          up_best_bid: number | null
+          up_orders_count: number | null
+          was_imbalanced: boolean | null
+        }
+        Insert: {
+          api_down_cost?: number
+          api_down_qty?: number
+          api_up_cost?: number
+          api_up_qty?: number
+          asset: string
+          avg_down_price?: number | null
+          avg_up_price?: number | null
+          combined_ask?: number | null
+          combined_cost?: number | null
+          created_at?: string
+          down_best_ask?: number | null
+          down_best_bid?: number | null
+          down_orders_count?: number | null
+          expiry_time: string
+          id?: string
+          imbalance_ratio?: number | null
+          local_down_cost?: number
+          local_down_qty?: number
+          local_up_cost?: number
+          local_up_qty?: number
+          locked_profit?: number | null
+          market_slug: string
+          paired?: number
+          seconds_before_expiry?: number | null
+          snapshot_time: string
+          unpaired?: number
+          up_best_ask?: number | null
+          up_best_bid?: number | null
+          up_orders_count?: number | null
+          was_imbalanced?: boolean | null
+        }
+        Update: {
+          api_down_cost?: number
+          api_down_qty?: number
+          api_up_cost?: number
+          api_up_qty?: number
+          asset?: string
+          avg_down_price?: number | null
+          avg_up_price?: number | null
+          combined_ask?: number | null
+          combined_cost?: number | null
+          created_at?: string
+          down_best_ask?: number | null
+          down_best_bid?: number | null
+          down_orders_count?: number | null
+          expiry_time?: string
+          id?: string
+          imbalance_ratio?: number | null
+          local_down_cost?: number
+          local_down_qty?: number
+          local_up_cost?: number
+          local_up_qty?: number
+          locked_profit?: number | null
+          market_slug?: string
+          paired?: number
+          seconds_before_expiry?: number | null
+          snapshot_time?: string
+          unpaired?: number
+          up_best_ask?: number | null
+          up_best_bid?: number | null
+          up_orders_count?: number | null
+          was_imbalanced?: boolean | null
+        }
+        Relationships: []
+      }
       v35_fills: {
         Row: {
           asset: string
