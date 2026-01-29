@@ -1,22 +1,22 @@
 // ============================================================
 // V35 PROACTIVE REBALANCER
 // ============================================================
-// Version: V35.9.0 - "Hybrid Mode + State Sync Fix"
+// Version: V35.9.3 - "Balance-First Rebalancer"
 //
-// V35.9.0 CHANGES:
-// - HYBRID MODE: build_winner only if paired >= 10 shares
-// - STATE SYNC: Properly update market.upQty/downQty after fills
-// - EMERGENCY: 1.02 normal, 1.15 emergency (gap >= 15)
+// V35.9.3 CHANGES:
+// - CRITICAL FIX: Rebalancer now targets BALANCE, not "expensive side lead"
+// - The goal is to keep UP ≈ DOWN, with tolerance of ±5 shares
+// - If one side leads by more than 5, buy the OTHER side to catch up
+// - Removed confusing "expensive/cheap" logic that caused inverted trades
 //
-// STRATEGY: The EXPENSIVE side (determined by orderbook price) always 
-// takes the initiative and is allowed to lead by up to 5 shares.
+// STRATEGY: Keep inventory balanced. Always buy the LAGGING side.
 //
 // LOGIC:
-// 1. Identify expensive side (higher orderbook price = likely winner)
-// 2. Calculate: currentLead = expensiveQty - cheapQty
-// 3. If gap < 0 (trailing) → hedge to close the gap
-// 4. If gap >= 0 but < 5 AND paired >= 10 → build_winner to extend lead
-// 5. If paired < 10 → DO NOT build_winner, only hedge when trailing
+// 1. Calculate gap = upQty - downQty
+// 2. If |gap| <= 5 → balanced, no action needed
+// 3. If gap > 5 (UP leads) → buy DOWN to catch up
+// 4. If gap < -5 (DOWN leads) → buy UP to catch up
+// 5. HYBRID: Only take action if paired >= 10 shares (prevents speculation)
 // ============================================================
 
 import { getV35Config, V35_VERSION } from './config.js';
@@ -24,7 +24,6 @@ import type { V35Market, V35Side } from './types.js';
 import { placeOrder, getOpenOrders, cancelOrder } from '../polymarket.js';
 import { saveBotEvent, type BotEvent } from '../backend.js';
 import { getErrorMessage, safeStringify } from './utils.js';
-import { getV35SidePricing } from './market-pricing.js';
 
 // ============================================================
 // TYPES
@@ -113,36 +112,35 @@ export class ProactiveRebalancer {
     }
     this.lastCheckMs = now;
     
-    // Get market pricing info (based on orderbook)
-    const pricing = getV35SidePricing(market);
-    const { expensiveSide, cheapSide } = pricing;
-    
     const upQty = market.upQty || 0;
     const downQty = market.downQty || 0;
     const paired = Math.min(upQty, downQty);
     
-    // Calculate how much the expensive side leads (or trails if negative)
-    const expensiveQty = expensiveSide === 'UP' ? upQty : downQty;
-    const cheapQty = cheapSide === 'UP' ? upQty : downQty;
-    const currentLead = expensiveQty - cheapQty; // Positive = expensive leads
+    // ================================================================
+    // V35.9.3: BALANCE-FIRST LOGIC
+    // ================================================================
+    // Simple: gap = upQty - downQty
+    // If gap > +5 → UP leads too much → buy DOWN
+    // If gap < -5 → DOWN leads too much → buy UP
+    // If |gap| <= 5 → balanced, no action
+    const gap = upQty - downQty;
+    const maxAllowedGap = REBALANCER_CONFIG.allowedExpensiveLead; // ±5
     
-    // Target: expensive side should lead by allowedExpensiveLead
-    // NOTE: If expensive leads by MORE than target, we MUST buy the cheap side to tighten.
-    const targetLead = REBALANCER_CONFIG.allowedExpensiveLead;
-    const deltaToTarget = targetLead - currentLead;
-    
-    // If already close enough to target, nothing to do
-    // (fractional fills can cause tiny drift; avoid churn)
-    if (Math.abs(deltaToTarget) < 0.5) {
+    // If balanced, nothing to do
+    if (Math.abs(gap) <= maxAllowedGap) {
       if (this.cachedOrder) {
-        await this.cancelCachedOrder('already_on_target');
+        await this.cancelCachedOrder('already_balanced');
       }
       return {
         attempted: false,
         hedged: false,
-        reason: `on_target_lead_${targetLead.toFixed(0)} (delta=${deltaToTarget.toFixed(2)})`,
+        reason: `balanced (gap=${gap.toFixed(1)}, max=±${maxAllowedGap})`,
       };
     }
+    
+    // Determine which side to buy (the LAGGING side)
+    const buySide: V35Side = gap > 0 ? 'DOWN' : 'UP'; // If UP leads, buy DOWN
+    const targetQty = Math.abs(gap) - maxAllowedGap; // How much to buy to get within tolerance
     
     // Get current market asks
     const upAsk = market.upBestAsk || 0;
@@ -152,74 +150,49 @@ export class ProactiveRebalancer {
       return { attempted: false, hedged: false, reason: 'no_liquidity' };
     }
     
-    // ================================================================
-    // V35.9.2: DETERMINE WHICH SIDE TO BUY (BIDIRECTIONAL REBALANCE)
-    // ================================================================
-    // If expensive is trailing vs target (+5 lead), buy expensive.
-    // If expensive is leading too much (> +5), buy cheap to tighten.
-    const buySide: V35Side = deltaToTarget > 0 ? expensiveSide : cheapSide;
-    const targetQty = Math.abs(deltaToTarget);
     const targetPrice = buySide === 'UP' ? upAsk : downAsk;
 
-    // Purpose rules:
-    // - Buying cheap to tighten is ALWAYS a hedge (risk reduction).
-    // - Buying expensive while already leading (0..4) is build_winner, gated by HYBRID.
-    // - Buying expensive while trailing (<0) is hedge (always allowed).
-    let purpose: 'build_winner' | 'hedge';
-    if (buySide === cheapSide) {
-      purpose = 'hedge';
-    } else {
-      // buySide === expensiveSide
-      const isTrailing = currentLead < 0;
-      if (isTrailing) {
-        purpose = 'hedge';
-      } else {
-        // BUILD_WINNER: Extend the lead from 0-4 to 5.
-        // V35.9.0 HYBRID: Only if paired >= minPairedForBuildWinner
-        if (paired < REBALANCER_CONFIG.minPairedForBuildWinner) {
-          console.log(`[Rebalancer] ⏳ HYBRID: Skipping build_winner (paired=${paired.toFixed(0)} < ${REBALANCER_CONFIG.minPairedForBuildWinner})`);
-          return {
-            attempted: false,
-            hedged: false,
-            reason: `hybrid_skip_build_winner: paired=${paired.toFixed(0)}`,
-          };
-        }
-        purpose = 'build_winner';
-      }
+    // V35.9.3: HYBRID MODE - only rebalance if there's meaningful paired exposure
+    // This prevents speculative one-sided buying from flat
+    if (paired < REBALANCER_CONFIG.minPairedForBuildWinner) {
+      console.log(`[Rebalancer] ⏳ HYBRID: Skipping rebalance (paired=${paired.toFixed(0)} < ${REBALANCER_CONFIG.minPairedForBuildWinner})`);
+      return {
+        attempted: false,
+        hedged: false,
+        reason: `hybrid_skip: paired=${paired.toFixed(0)}`,
+      };
     }
     
-    // Calculate projected combined cost for *newly paired* shares
-    // We are buying on `buySide` to pair against the OTHER side.
-    const otherSide: V35Side = buySide === 'UP' ? 'DOWN' : 'UP';
-    const otherQty = otherSide === 'UP' ? upQty : downQty;
-    const otherCost = otherSide === 'UP' ? market.upCost : market.downCost;
-    const avgOtherPrice = otherQty > 0 ? otherCost / otherQty : 0;
-    const projectedCombined = avgOtherPrice + targetPrice;
+    // Calculate projected combined cost
+    const leadingSide: V35Side = gap > 0 ? 'UP' : 'DOWN';
+    const leadingQty = leadingSide === 'UP' ? upQty : downQty;
+    const leadingCost = leadingSide === 'UP' ? market.upCost : market.downCost;
+    const avgLeadingPrice = leadingQty > 0 ? leadingCost / leadingQty : 0;
+    const projectedCombined = avgLeadingPrice + targetPrice;
     
-    // V35.9.0: Emergency mode at gap >= 15 (was 20)
-    const gap = Math.abs(upQty - downQty);
-    const isEmergency = gap >= REBALANCER_CONFIG.emergencyThreshold;
+    // Emergency mode at large gaps
+    const absGap = Math.abs(gap);
+    const isEmergency = absGap >= REBALANCER_CONFIG.emergencyThreshold;
     const effectiveMaxCost = isEmergency 
       ? REBALANCER_CONFIG.emergencyMaxCost 
       : REBALANCER_CONFIG.maxCombinedCost;
     
     // Check viability
     if (projectedCombined > effectiveMaxCost) {
-      console.log(`[Rebalancer] ⚠️ ${purpose} too expensive: combined $${projectedCombined.toFixed(3)} > $${effectiveMaxCost.toFixed(2)}${isEmergency ? ' (emergency 1.15)' : ''}`);
+      console.log(`[Rebalancer] ⚠️ Rebalance too expensive: combined $${projectedCombined.toFixed(3)} > $${effectiveMaxCost.toFixed(2)}${isEmergency ? ' (emergency 1.15)' : ''}`);
       return {
         attempted: true,
         hedged: false,
-        reason: `${purpose}_too_expensive: ${projectedCombined.toFixed(3)}`,
+        reason: `rebalance_too_expensive: ${projectedCombined.toFixed(3)}`,
         hedgeSide: buySide,
         hedgeQty: targetQty,
       };
     }
     
     // Log the action
-    console.log(`[Rebalancer] 📈 ${purpose.toUpperCase()}: targetLead=${targetLead}, currentLead=${currentLead.toFixed(0)}, delta=${deltaToTarget.toFixed(0)}${isEmergency ? ' ⚠️ EMERGENCY' : ''}`);
-    console.log(`[Rebalancer]    Pricing: expensive=${expensiveSide}, cheap=${cheapSide}`);
+    console.log(`[Rebalancer] 📈 REBALANCE: gap=${gap.toFixed(0)} (max ±${maxAllowedGap})${isEmergency ? ' ⚠️ EMERGENCY' : ''}`);
     console.log(`[Rebalancer]    State: UP=${upQty.toFixed(0)} DOWN=${downQty.toFixed(0)} | Paired=${paired.toFixed(0)}`);
-    console.log(`[Rebalancer]    Will buy ${targetQty.toFixed(0)} ${buySide} @ $${targetPrice.toFixed(3)} | Combined: $${projectedCombined.toFixed(3)}`);
+    console.log(`[Rebalancer]    Will buy ${targetQty.toFixed(0)} ${buySide} @ $${targetPrice.toFixed(3)} to balance | Combined: $${projectedCombined.toFixed(3)}`);
     
     // Check minimum notional
     if (targetQty * targetPrice < REBALANCER_CONFIG.minOrderNotional) {
@@ -251,7 +224,7 @@ export class ProactiveRebalancer {
     
     const tokenId = buySide === 'UP' ? market.upTokenId : market.downTokenId;
     
-    console.log(`[Rebalancer] 🎯 PLACING ${purpose.toUpperCase()} ORDER`);
+    console.log(`[Rebalancer] 🎯 PLACING REBALANCE ORDER`);
     console.log(`[Rebalancer]    ${targetQty.toFixed(0)} ${buySide} @ $${targetPrice.toFixed(3)} (CURRENT ASK)`);
     
     if (config.dryRun) {
@@ -277,29 +250,25 @@ export class ProactiveRebalancer {
       // Cache the order
       this.cachedOrder = {
         orderId: result.orderId,
-          side: buySide,
+        side: buySide,
         price: targetPrice,
         qty: targetQty,
         marketSlug: market.slug,
         placedAt: now,
-        purpose,
+        purpose: 'hedge', // All rebalance orders are hedges (risk reduction)
       };
       
-      console.log(`[Rebalancer] ✓ Order placed: ${result.orderId.slice(0, 8)}... (${purpose})`);
+      console.log(`[Rebalancer] ✓ Order placed: ${result.orderId.slice(0, 8)}...`);
       
-      await this.logEvent(`${purpose}_order_placed`, market, {
-          side: buySide,
+      await this.logEvent(`rebalance_order_placed`, market, {
+        side: buySide,
         qty: targetQty,
         price: targetPrice,
-        purpose,
         order_id: result.orderId,
         up_qty: upQty,
         down_qty: downQty,
-        expensive_side: expensiveSide,
-          cheap_side: cheapSide,
-          current_lead: currentLead,
-          target_lead: targetLead,
-          delta_to_target: deltaToTarget,
+        gap: gap,
+        target_gap: maxAllowedGap,
       });
       
       return {

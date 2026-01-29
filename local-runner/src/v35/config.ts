@@ -1,7 +1,13 @@
 // ============================================================
 // V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.9.2 - "Bidirectional Rebalance + No Double Count"
+// Version: V35.9.3 - "Balance-First Rebalancer"
+//
+// V35.9.3 CHANGES:
+// - CRITICAL FIX: Removed confusing "expensive/cheap" logic
+// - Rebalancer now targets BALANCE (UP ≈ DOWN ±5 shares)
+// - If one side leads, buy the OTHER (lagging) side to catch up
+// - No more price-based side determination causing inverted trades
 //
 // V35.9.2 CHANGES:
 // - Rebalancer can also buy the CHEAP side to tighten when winner lead > 5
@@ -42,8 +48,8 @@
 // If combined cost < $1.02 -> Small loss acceptable for risk reduction.
 // ============================================================
 
-export const V35_VERSION = 'V35.9.2';
-export const V35_CODENAME = 'Bidirectional Rebalance + No Double Count';
+export const V35_VERSION = 'V35.9.3';
+export const V35_CODENAME = 'Balance-First Rebalancer';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 
