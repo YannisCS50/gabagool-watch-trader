@@ -1,14 +1,14 @@
 // ============================================================
 // V35 QUOTING ENGINE - PASSIVE GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.5.4 - "Trailing-Side-Hedge Emergency Fix"
+// Version: V35.5.6 - "Trailing Side Burst-Cap Exemption"
 //
-// V35.5.4 KEY FIX: In EMERGENCY (imbalance >= maxUnpairedShares),
-// the TRAILING side must STILL be able to quote to hedge.
-// Only the LEADING side is blocked.
+// V35.5.6 KEY FIX: Trailing side is EXEMPT from burst-cap!
+// The burst-cap was blocking the trailing side even when it
+// MUST quote to hedge. This caused unrecoverable imbalances.
 //
-// This fixes the bug where both sides were blocked in emergency,
-// making it impossible for the bot to rebalance.
+// The trailing side (fewer shares) is ALWAYS allowed to quote
+// because filling it REDUCES imbalance, not increases it.
 //
 // CHEAP-SIDE SKIP:
 // Only buy the cheap side if the expensive side already leads.
@@ -245,22 +245,36 @@ export class QuotingEngine {
     
     console.log(`[QuotingEngine] 📊 BURST-CAP: ${side} budget=${maxNewOrderQty.toFixed(0)} (existing=${existingOpenQty.toFixed(0)}, imbalance=${imbalance.toFixed(0)}, leading=${currentQty > oppositeQty})`);
     
+    // =========================================================================
+    // V35.5.6 KEY FIX: TRAILING SIDE IS EXEMPT FROM BURST-CAP
+    // =========================================================================
+    // The trailing side (fewer shares) MUST be able to quote to hedge.
+    // Filling the trailing side REDUCES imbalance, so burst-cap doesn't apply.
+    // Only the leading side needs burst-cap protection.
+    // =========================================================================
     if (maxNewOrderQty < config.sharesPerLevel) {
-      const reason = `BURST-CAP: ${side} budget exhausted (${maxNewOrderQty.toFixed(0)} < ${config.sharesPerLevel} min)`;
-      console.log(`[QuotingEngine] 🛡️ ${reason}`);
-      
-      logV35GuardEvent({
-        marketSlug: market.slug,
-        asset: market.asset,
-        guardType: 'BURST_CAP',
-        blockedSide: side,
-        upQty: market.upQty,
-        downQty: market.downQty,
-        expensiveSide,
-        reason,
-      }).catch(() => {});
-      
-      return { quotes: [], blocked: true, blockReason: reason };
+      if (isTrailing) {
+        // V35.5.6: Allow trailing side to quote even with budget exhausted
+        // Set a reasonable fallback budget (enough for 5 levels)
+        maxNewOrderQty = config.sharesPerLevel * 5;
+        console.log(`[QuotingEngine] 🔓 BURST-CAP OVERRIDE: ${side} is TRAILING - allowing ${maxNewOrderQty} shares for hedging`);
+      } else {
+        const reason = `BURST-CAP: ${side} budget exhausted (${maxNewOrderQty.toFixed(0)} < ${config.sharesPerLevel} min)`;
+        console.log(`[QuotingEngine] 🛡️ ${reason}`);
+        
+        logV35GuardEvent({
+          marketSlug: market.slug,
+          asset: market.asset,
+          guardType: 'BURST_CAP',
+          blockedSide: side,
+          upQty: market.upQty,
+          downQty: market.downQty,
+          expensiveSide,
+          reason,
+        }).catch(() => {});
+        
+        return { quotes: [], blocked: true, blockReason: reason };
+      }
     }
     
     // =========================================================================
