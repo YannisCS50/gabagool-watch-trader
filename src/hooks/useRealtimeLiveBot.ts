@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 
+const SETTINGS_ROW_ID = '00000000-0000-0000-0000-000000000001';
+
 interface RealtimeLiveTrade {
   market: string;
   outcome: string;
@@ -66,10 +68,16 @@ export function useRealtimeLiveBot() {
   useEffect(() => {
     const fetchEnabled = async () => {
       try {
-        const { data } = await supabase
+        const { data, error } = await supabase
           .from('live_bot_settings')
           .select('is_enabled')
-          .single();
+          .eq('id', SETTINGS_ROW_ID)
+          .maybeSingle();
+
+        if (error) {
+          console.warn('[useRealtimeLiveBot] Failed to load live_bot_settings:', error);
+        }
+
         setIsEnabledState(data?.is_enabled ?? false);
       } catch {
         // Ignore errors
@@ -80,13 +88,15 @@ export function useRealtimeLiveBot() {
 
   const setEnabled = useCallback(async (enabled: boolean) => {
     try {
-      await supabase
+      const { error } = await supabase
         .from('live_bot_settings')
         .upsert({ 
-          id: '00000000-0000-0000-0000-000000000001',
+          id: SETTINGS_ROW_ID,
           is_enabled: enabled,
           updated_at: new Date().toISOString()
         });
+
+      if (error) throw error;
       setIsEnabledState(enabled);
     } catch (err) {
       console.error('Error setting enabled state:', err);
