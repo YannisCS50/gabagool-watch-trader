@@ -16,8 +16,8 @@
 // If combined cost < $1.00 -> GUARANTEED profit.
 // ============================================================
 
-export const V35_VERSION = 'V35.4.5';
-export const V35_CODENAME = 'Tighter Circuit Breaker';
+export const V35_VERSION = 'V35.5.0';
+export const V35_CODENAME = 'Emergency Recovery';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 
