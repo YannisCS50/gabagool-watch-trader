@@ -39,8 +39,11 @@ export interface RebalanceResult {
 
 export class ProactiveRebalancer {
   private lastRebalanceAttempt = 0;
-  private rebalanceCooldownMs = 5000; // Check every 5 seconds
+  private rebalanceCooldownMs = 2000; // Check every 2 seconds for faster response to reversals
   private hedgeOrderWaitMs = 1500; // Wait 1.5 seconds for hedge order to fill
+  
+  // Track best opportunity seen - helps recognize reversals
+  private bestOpportunity: { ts: number; combinedCost: number; hedgeSide: V35Side } | null = null;
   
   constructor() {}
 
@@ -87,12 +90,25 @@ export class ProactiveRebalancer {
     const projectedCombined = existingAvg + hedgeAsk;
     const projectedEdge = 1 - projectedCombined;
     
+    // Track the best opportunity we've seen (for reversal detection)
+    if (!this.bestOpportunity || projectedCombined < this.bestOpportunity.combinedCost) {
+      const improved = this.bestOpportunity 
+        ? `(improved from $${this.bestOpportunity.combinedCost.toFixed(3)})` 
+        : '(first check)';
+      console.log(`[Rebalancer] 📊 New best opportunity: combined $${projectedCombined.toFixed(3)} ${improved}`);
+      this.bestOpportunity = { ts: Date.now(), combinedCost: projectedCombined, hedgeSide: needsMore };
+    }
+    
+    // Log current state every check - helps track reversals
+    console.log(`[Rebalancer] 📈 Monitoring: UP=${upQty.toFixed(0)} DOWN=${downQty.toFixed(0)} | Gap=${gap.toFixed(0)} | Combined=$${projectedCombined.toFixed(3)} | Edge=${(projectedEdge * 100).toFixed(2)}%`);
+    
     if (projectedEdge < config.minEdgeAfterHedge) {
-      console.log(`[Rebalancer] ⏳ Hedge not yet viable: combined $${projectedCombined.toFixed(3)} (edge ${(projectedEdge * 100).toFixed(2)}%)`);
+      // Still log but CONTINUE MONITORING - don't give up!
+      console.log(`[Rebalancer] ⏳ Waiting for better price... need combined < $${(1 - config.minEdgeAfterHedge).toFixed(3)}`);
       return { 
         attempted: true, 
         hedged: false, 
-        reason: `edge_too_low: ${(projectedEdge * 100).toFixed(2)}%`,
+        reason: `waiting_for_reversal: combined $${projectedCombined.toFixed(3)}`,
         hedgeSide: needsMore,
         hedgeQty,
         combinedCost: projectedCombined,
@@ -310,4 +326,14 @@ export function getProactiveRebalancer(): ProactiveRebalancer {
 
 export function resetProactiveRebalancer(): void {
   rebalancerInstance = null;
+}
+
+/**
+ * Reset opportunity tracking when entering a new market
+ * This ensures we start fresh and don't carry over stale data
+ */
+export function resetOpportunityTracking(): void {
+  if (rebalancerInstance) {
+    (rebalancerInstance as any).bestOpportunity = null;
+  }
 }
