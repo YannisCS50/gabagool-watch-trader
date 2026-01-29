@@ -46,6 +46,7 @@ import { processFillWithHedge, logMarketFillStats } from './fill-tracker.js';
 import { getHedgeManager, resetHedgeManager } from './hedge-manager.js';
 import { getCircuitBreaker, initCircuitBreaker, resetCircuitBreaker } from './circuit-breaker.js';
 import { getProactiveRebalancer, resetProactiveRebalancer } from './proactive-rebalancer.js';
+import { getEmergencyRecovery, resetEmergencyRecovery, analyzeRecovery, setRecoveryConfig } from './emergency-recovery.js';
 import { sendV35Heartbeat, sendV35Offline, saveV35Settlement, saveV35Fill, saveV35OrderbookSnapshots, saveV35InventorySnapshot, type V35InventorySnapshot } from './backend.js';
 import type { V35OrderbookSnapshot } from './types.js';
 import { ensureValidCredentials, getBalance, getOpenOrders } from '../polymarket.js';
@@ -624,6 +625,39 @@ async function processMarket(market: V35Market): Promise<void> {
     const recheckSafety = await circuitBreaker.checkMarket(market, config.dryRun);
     if (!recheckSafety.shouldStop && safetyCheck.shouldStop) {
       log(`✅ CIRCUIT BREAKER RECOVERED after proactive hedge!`);
+    }
+  }
+  
+  // =========================================================================
+  // V35.5.0: EMERGENCY RECOVERY MODE - MINIMIZE LOSS WHEN PROFITABLE HEDGE ISN'T POSSIBLE
+  // =========================================================================
+  // If proactive rebalancer couldn't hedge (combined cost would be > $1.00),
+  // check if we should still recover to MINIMIZE MAX LOSS.
+  // This buys on the losing side even at a loss to lock in a smaller guaranteed loss.
+  // =========================================================================
+  const unpaired = Math.abs(market.upQty - market.downQty);
+  if (!rebalanceResult.hedged && unpaired >= 20) { // Only when significantly imbalanced
+    const emergencyRecovery = getEmergencyRecovery();
+    const recoveryResult = await emergencyRecovery.checkAndRecover(market);
+    
+    if (recoveryResult.attempted) {
+      if (recoveryResult.success) {
+        log(`🚨 EMERGENCY RECOVERY executed: ${recoveryResult.analysis?.sharesToBuy.toFixed(0)} shares bought`);
+        log(`   Max loss reduced by: $${(-(recoveryResult.analysis?.lossReduction || 0)).toFixed(2)}`);
+        // Update local position
+        const trailingSide = recoveryResult.analysis?.leadingSide === 'UP' ? 'DOWN' : 'UP';
+        if (trailingSide === 'UP') {
+          market.upQty += recoveryResult.filledQty || 0;
+          market.upCost += (recoveryResult.filledQty || 0) * (recoveryResult.analysis?.buyPrice || 0);
+        } else {
+          market.downQty += recoveryResult.filledQty || 0;
+          market.downCost += (recoveryResult.filledQty || 0) * (recoveryResult.analysis?.buyPrice || 0);
+        }
+      } else if (recoveryResult.analysis) {
+        log(`⏳ Emergency recovery analyzed: ${recoveryResult.reason}`);
+        log(`   Current max loss: $${recoveryResult.analysis.currentMaxLoss.toFixed(2)}`);
+        log(`   Would lock in: $${recoveryResult.analysis.lockedLossAfterRecovery.toFixed(2)}`);
+      }
     }
   }
   
