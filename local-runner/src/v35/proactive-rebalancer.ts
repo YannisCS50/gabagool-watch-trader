@@ -1,34 +1,23 @@
 // ============================================================
 // V35 PROACTIVE REBALANCER
 // ============================================================
-// Version: V35.10.3 - "Aggressive Hedge + Tighter Limits"
+// Version: V35.11.0 - "Never Ban, Always Fix"
 //
-// V35.10.3 SAFETY TIGHTENING:
+// V35.11.0 PHILOSOPHY:
 // ================================================================
-// - Emergency mode triggers at 10 shares (was 15)
-// - Emergency max cost: 1.20 (was 1.15) - accept 20% loss to balance
-// - Works with circuit breaker 10/15/20 thresholds
+// NEVER GIVE UP ON A MARKET. Always try to fix the imbalance.
 //
-// V35.10.0 ORIGINAL REWRITE:
-// ================================================================
-// PROBLEM 1: Bot placed orders on fixed grid far from market ask
-// SOLUTION: Now places ONE order at current ask + small offset
-//
-// PROBLEM 2: "Paired >= 10" guard blocked all rebalancing from flat
-// SOLUTION: Removed this guard. ANY imbalance > 5 triggers rebalance.
-//
-// PROBLEM 3: No continuous hedging - only hedged on new fills
-// SOLUTION: Now actively seeks hedges for EXISTING unhedged exposure
-//           every loop iteration, not just after fills.
-//
-// PROBLEM 4: With 10 UP @ 36c and UP now at 13c, bot didn't re-hedge
-// SOLUTION: Rebalancer now ALWAYS tries to buy lagging side if gap > 5,
-//           regardless of "paired" volume or original entry prices.
+// KEY CHANGES:
+// - Emergency mode triggers at 8 shares (was 10)
+// - Emergency max cost: 1.30 (was 1.20) - accept 30% loss to balance
+// - NEVER STOPS TRYING until market expires
+// - If rebalance fails, logs reason but tries again next cycle
 //
 // STRATEGY: Keep UP ≈ DOWN within ±5 shares tolerance.
-// - If gap > 5 → buy the LAGGING side (not expensive/cheap, just lagging)
-// - Place order AT or VERY CLOSE to current ask for max fill probability
-// - Accept losses up to 20% in emergency (1.20 combined cost)
+// - If gap > 5 → buy the LAGGING side immediately
+// - If gap > 8 → EMERGENCY MODE: accept up to 30% loss
+// - Place order AT current ask + offset for fast fills
+// - NEVER ban the market, ALWAYS keep trying
 // ============================================================
 
 import { getV35Config, V35_VERSION } from './config.js';
@@ -67,19 +56,19 @@ interface CachedOrder {
 }
 
 // ============================================================
-// CONFIGURATION - V35.10.0 SMART SPREAD PLACEMENT
+// CONFIGURATION - V35.11.0 NEVER GIVE UP
 // ============================================================
 
 const REBALANCER_CONFIG = {
   checkIntervalMs: 500,           // Fast polling
   balanceTolerance: 5,            // ±5 shares is "balanced"
-  maxCombinedCost: 1.02,          // Accept up to 2% loss for balance
-  emergencyMaxCost: 1.20,         // V35.10.3: 20% loss OK in emergency (was 1.15)
-  emergencyThreshold: 10,         // V35.10.3: Gap >= 10 = emergency mode (was 15)
+  maxCombinedCost: 1.05,          // V35.11.0: Accept up to 5% loss for balance (was 2%)
+  emergencyMaxCost: 1.30,         // V35.11.0: 30% loss OK in emergency (was 20%)
+  emergencyThreshold: 8,          // V35.11.0: Gap >= 8 = emergency mode (was 10)
   minOrderNotional: 1.05,         // Just above Polymarket $1 minimum
-  postFillCooldownMs: 2000,       // V35.10.0: Reduced to 2s for faster recovery
-  orderHoldTimeMs: 1000,          // Min time to keep order before updating
-  priceOffsetFromAsk: 0.005,      // V35.10.0: Place order 0.5¢ above ask for speed
+  postFillCooldownMs: 1500,       // V35.11.0: Faster recovery (was 2000)
+  orderHoldTimeMs: 800,           // V35.11.0: Faster updates (was 1000)
+  priceOffsetFromAsk: 0.008,      // V35.11.0: More aggressive (was 0.5¢)
 };
 
 // ============================================================

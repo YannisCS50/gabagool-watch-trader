@@ -1,32 +1,28 @@
 // ============================================================
 // V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.10.1 - "Auto-Redeem + Enhanced PnL"
+// Version: V35.11.0 - "Never Ban, Always Fix"
 //
-// V35.10.1 CHANGES:
+// V35.11.0 CRITICAL CHANGES:
 // ================================================================
-// 1. Added auto-claim loop for winning positions (every 5 min)
-// 2. Dashboard now shows per-market P&L with winner indicator
-// 3. Win rate and cumulative stats from expiry snapshots
+// CORE PHILOSOPHY: NEVER BAN A MARKET, ALWAYS FIX THE IMBALANCE
 //
-// V35.10.0 MAJOR CHANGES:
-// ================================================================
-// 1. REMOVED "paired >= 10" guard that blocked rebalancing from flat
-// 2. Rebalancer now places orders AT current ask (not fixed grid)
-// 3. Continuous hedging: ANY imbalance > 5 shares triggers rebalance
-// 4. Smart spread following: orders track the ask, not static levels
-// 5. Emergency mode allows up to 15% loss for risk reduction
+// 1. PRE-TRADE CHECK: Before any fill, verify hedge is possible
+//    - If hedge side ask > viability cap → BLOCK the fill side FIRST
+// 2. POST-FILL BLOCK: After hedge fails, immediately block leading side
+//    - Leading side stays blocked until gap < 5 shares
+// 3. 30% LOSS TOLERANCE: Accept up to 30% loss to fix imbalance
+//    - emergencyMaxCost = 1.30 (was 1.20)
+// 4. NO MARKET BANNING: Circuit breaker never bans, only blocks leading
+//    - Keeps trying to rebalance until expiry
+// 5. CONTINUOUS REBALANCING: Rebalancer runs every 500ms
+//    - Always buying lagging side to close gap
 //
-// PHILOSOPHY CHANGE:
-// - OLD: Place limit orders on grid, hope market comes to us
-// - NEW: Actively buy the lagging side AT market price to balance
-//
-// This ensures the bot ALWAYS works towards balance, even from flat
-// positions or when one side has old exposure at bad prices.
+// This ensures imbalances are FIXED, not abandoned via bans.
 // ============================================================
 
-export const V35_VERSION = 'V35.10.1';
-export const V35_CODENAME = 'Auto-Redeem + Enhanced PnL';
+export const V35_VERSION = 'V35.11.0';
+export const V35_CODENAME = 'Never Ban, Always Fix';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 
@@ -127,13 +123,13 @@ export const TEST_CONFIG: V35Config = {
   gridStep: 0.02,
   sharesPerLevel: 5,
   
-  // HEDGE PARAMETERS - V35.10.0 AGGRESSIVE CONTINUOUS HEDGE
+  // HEDGE PARAMETERS - V35.11.0 NEVER BAN, ALWAYS FIX
   enableActiveHedge: true,
-  maxHedgeSlippage: 0.08,           // Accept up to 8¢ slippage for hedge
+  maxHedgeSlippage: 0.10,           // V35.11.0: Accept up to 10¢ slippage for hedge
   hedgeTimeoutMs: 2000,             // 2 second timeout
-  minEdgeAfterHedge: -0.15,         // Accept up to 15% loss for hedge
-  maxCombinedCost: 1.02,            // Standard: 2% loss OK
-  maxCombinedCostEmergency: 1.15,   // V35.10.0: 15% loss OK in emergency
+  minEdgeAfterHedge: -0.30,         // V35.11.0: Accept up to 30% loss for hedge
+  maxCombinedCost: 1.05,            // V35.11.0: Standard: 5% loss OK (was 2%)
+  maxCombinedCostEmergency: 1.30,   // V35.11.0: 30% loss OK in emergency (was 15%)
   maxExpensiveBias: 1.50,           // Expensive side can have 50% more shares
   minHedgeNotional: 1.05,           // Just above exchange min
   

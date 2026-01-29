@@ -1,17 +1,29 @@
 // ============================================================
 // V35 CIRCUIT BREAKER - MARKET-SPECIFIC SAFETY SYSTEM
 // ============================================================
-// Version: V35.4.0 - "Skip to Next Market"
+// Version: V35.11.0 - "Never Ban, Always Fix"
 //
-// CRITICAL CHANGE: Circuit breaker is now MARKET-SPECIFIC.
-// When tripped, it ONLY bans the problematic market, NOT the entire bot.
-// The bot automatically skips to the next 15-minute market.
+// V35.11.0 CRITICAL CHANGE: NO MORE BANNING!
+// ================================================================
+// Instead of banning a market when limits are breached, the circuit
+// breaker now PERMANENTLY BLOCKS the leading side and lets the
+// rebalancer keep working to fix the imbalance.
 //
-// V35.4.0 FIX:
-// - Tripping bans ONLY the specific market that caused the issue
-// - Bot continues trading other markets and waits for next market cycle
-// - Automatic reset when a new market slug is detected
-// - strategy_enabled flag is NO LONGER touched (bot stays running)
+// OLD BEHAVIOR (banned):
+// - At 20 shares imbalance → market banned, bot skips to next cycle
+// - Position left unmanaged until expiry
+//
+// NEW BEHAVIOR (always fix):
+// - At 20 shares imbalance → leading side blocked FOREVER
+// - Rebalancer keeps trying to buy lagging side (up to 30% loss)
+// - Position actively managed until expiry
+//
+// THRESHOLDS (unchanged):
+// - 10 shares: WARNING → block leading side
+// - 15 shares: CRITICAL → cancel leading orders + block
+// - 20 shares: EXTREME → permanent block, aggressive rebalancing
+//
+// THE BOT NEVER GIVES UP. IT ALWAYS TRIES TO FIX.
 // ============================================================
 
 import { EventEmitter } from 'events';
@@ -27,34 +39,33 @@ export interface CircuitBreakerState {
   tripped: boolean;
   trippedAt: number | null;
   reason: string | null;
-  bannedMarketSlug: string | null;  // Only THIS market is banned
+  bannedMarketSlug: string | null;  // DEPRECATED: kept for compatibility, always null now
   upQty: number;
   downQty: number;
   imbalance: number;
 }
 
 export interface CircuitBreakerConfig {
-  // ABSOLUTE HARD LIMITS - These CANNOT be exceeded
-  // V35.10.3: Tightened from 15/25/35 → 10/15/20
-  absoluteMaxUnpaired: number;      // 20 shares - instant halt for THIS MARKET
+  // THRESHOLDS - These control blocking behavior (NOT banning)
+  absoluteMaxUnpaired: number;      // 20 shares - permanent block for leading side
   warningThreshold: number;         // 10 shares - block leading side
-  criticalThreshold: number;        // 15 shares - cancel all, prepare halt
+  criticalThreshold: number;        // 15 shares - cancel all leading orders
   
-  // RECOVERY
-  cooldownMs: number;               // Time before auto-reset (if enabled)
-  autoReset: boolean;               // Whether to auto-reset after cooldown
+  // RECOVERY (kept for compatibility, but auto-recovery happens when balanced)
+  cooldownMs: number;
+  autoReset: boolean;
 }
 
 // ============================================================
-// DEFAULT CONFIG - CONSERVATIVE
+// DEFAULT CONFIG - V35.11.0 NEVER BAN
 // ============================================================
 
 const DEFAULT_CONFIG: CircuitBreakerConfig = {
-  absoluteMaxUnpaired: 20,   // V35.10.3: HARD LIMIT - instant halt for this market
-  warningThreshold: 10,      // V35.10.3: Block leading side
-  criticalThreshold: 15,     // V35.10.3: Cancel leading side orders
+  absoluteMaxUnpaired: 20,   // Permanent block threshold (NOT ban)
+  warningThreshold: 10,      // Block leading side
+  criticalThreshold: 15,     // Cancel leading side orders
   cooldownMs: 60_000,
-  autoReset: true, // V35.4.0: Auto-reset when new market starts
+  autoReset: true,
 };
 
 // ============================================================
@@ -73,10 +84,10 @@ export class CircuitBreaker extends EventEmitter {
     imbalance: 0,
   };
   
-  // Track violations per market
-  private marketViolations = new Map<string, number>();
+  // V35.11.0: Track BLOCKED markets (still trying to fix, NOT banned)
+  private blockedMarkets = new Set<string>();
   
-  // V35.4.0: Track banned markets (skip these, wait for next)
+  // DEPRECATED: bannedMarkets kept for API compatibility but never used
   private bannedMarkets = new Set<string>();
   
   constructor(config?: Partial<CircuitBreakerConfig>) {
@@ -85,31 +96,44 @@ export class CircuitBreaker extends EventEmitter {
   }
   
   /**
-   * V35.4.0: Check if a specific market is banned (skip it, wait for next)
+   * V35.11.0: Check if a specific market is banned
+   * ALWAYS returns FALSE - we never ban anymore, we just block leading side
    */
   isMarketBanned(marketSlug: string): boolean {
-    return this.bannedMarkets.has(marketSlug);
+    // V35.11.0: NEVER return true - we don't ban markets anymore
+    return false;
   }
   
   /**
-   * V35.4.0: Clear ban for a specific market (called when market expires)
+   * V35.11.0: Check if leading side is blocked for this market
+   */
+  isLeadingSideBlocked(marketSlug: string): boolean {
+    return this.blockedMarkets.has(marketSlug);
+  }
+  
+  /**
+   * V35.11.0: Clear block for a specific market (called when balanced or expired)
+   */
+  clearMarketBlock(marketSlug: string): void {
+    if (this.blockedMarkets.has(marketSlug)) {
+      console.log(`[CircuitBreaker] ✅ Clearing block for market: ${marketSlug.slice(-25)}`);
+      this.blockedMarkets.delete(marketSlug);
+    }
+    // Also clear from legacy banned set for compatibility
+    this.bannedMarkets.delete(marketSlug);
+  }
+  
+  /**
+   * DEPRECATED: Kept for compatibility, now calls clearMarketBlock
    */
   clearMarketBan(marketSlug: string): void {
-    if (this.bannedMarkets.has(marketSlug)) {
-      console.log(`[CircuitBreaker] ✅ Clearing ban for expired market: ${marketSlug.slice(-25)}`);
-      this.bannedMarkets.delete(marketSlug);
-      
-      // If this was the currently-tripped market, reset the state
-      if (this.state.bannedMarketSlug === marketSlug) {
-        this.reset();
-      }
-    }
+    this.clearMarketBlock(marketSlug);
   }
   
   /**
-   * Check market state and trip breaker if necessary
-   * Returns TRUE if trading should STOP for THIS MARKET
-   * V35.4.0: Now market-specific - other markets can continue trading
+   * Check market state and determine blocking behavior
+   * V35.11.0: NEVER returns shouldStop=true, only blocks leading side
+   * Returns TRUE if trading should STOP for THIS MARKET - but now always FALSE
    */
   async checkMarket(market: V35Market, dryRun: boolean): Promise<{
     shouldStop: boolean;
@@ -117,16 +141,6 @@ export class CircuitBreaker extends EventEmitter {
     shouldBlockDown: boolean;
     reason: string | null;
   }> {
-    // V35.4.0: If this specific market is banned, skip it immediately
-    if (this.bannedMarkets.has(market.slug)) {
-      return {
-        shouldStop: true,
-        shouldBlockUp: true,
-        shouldBlockDown: true,
-        reason: `Market banned - waiting for next cycle`,
-      };
-    }
-    
     const imbalance = Math.abs(market.upQty - market.downQty);
     const leadingSide = market.upQty > market.downQty ? 'UP' : 'DOWN';
     
@@ -134,12 +148,35 @@ export class CircuitBreaker extends EventEmitter {
     console.log(`[CircuitBreaker] 🔍 ${market.slug.slice(-25)} | UP=${market.upQty.toFixed(0)} DOWN=${market.downQty.toFixed(0)} | Imbalance=${imbalance.toFixed(0)}`);
     
     // =========================================================================
-    // LEVEL 1: ABSOLUTE HARD STOP (35 shares) - BAN THIS MARKET ONLY
+    // V35.11.0: CHECK IF BALANCED - CLEAR ANY BLOCKS
+    // =========================================================================
+    if (imbalance < this.config.warningThreshold) {
+      // Market is healthy - clear any blocks
+      if (this.blockedMarkets.has(market.slug)) {
+        console.log(`[CircuitBreaker] ✅ Imbalance resolved (${imbalance.toFixed(0)} < ${this.config.warningThreshold}), clearing block`);
+        this.blockedMarkets.delete(market.slug);
+        this.marketViolations.set(market.slug, 0);
+      }
+      
+      return {
+        shouldStop: false,  // V35.11.0: NEVER stop
+        shouldBlockUp: false,
+        shouldBlockDown: false,
+        reason: null,
+      };
+    }
+    
+    // =========================================================================
+    // LEVEL 1: EXTREME IMBALANCE (20+ shares) - PERMANENT BLOCK + AGGRESSIVE REBALANCE
+    // V35.11.0: NO BAN, just permanent block until fixed
     // =========================================================================
     if (imbalance >= this.config.absoluteMaxUnpaired) {
-      const reason = `ABSOLUTE LIMIT BREACHED: ${imbalance.toFixed(0)} >= ${this.config.absoluteMaxUnpaired} shares`;
-      console.log(`[CircuitBreaker] 🚨🚨🚨 ${reason}`);
-      console.log(`[CircuitBreaker] ⏭️ BANNING this market, will skip to next cycle`);
+      const reason = `EXTREME IMBALANCE: ${imbalance.toFixed(0)} >= ${this.config.absoluteMaxUnpaired} shares - BLOCKING ${leadingSide}, REBALANCING`;
+      console.log(`[CircuitBreaker] 🚨 ${reason}`);
+      console.log(`[CircuitBreaker] 🔧 NOT banning - will keep trying to fix via rebalancer`);
+      
+      // Mark as blocked (NOT banned)
+      this.blockedMarkets.add(market.slug);
       
       // LOG GUARD EVENT TO DATABASE
       logV35GuardEvent({
@@ -150,30 +187,31 @@ export class CircuitBreaker extends EventEmitter {
         upQty: market.upQty,
         downQty: market.downQty,
         expensiveSide: leadingSide,
-        reason: `MARKET BANNED: ${reason}`,
+        reason: `EXTREME (trying to fix): ${reason}`,
       }).catch(() => {});
       
-      // V35.4.0: Ban THIS market only, don't stop entire bot
-      this.banMarket(market.slug, reason, market.upQty, market.downQty, imbalance);
-      
-      // EMERGENCY: Cancel ALL orders for this market immediately
-      console.log(`[CircuitBreaker] 🚨 EMERGENCY CANCEL for ${market.slug.slice(-25)}...`);
-      await this.emergencyCancel(market, dryRun);
+      // Cancel ALL orders for leading side
+      console.log(`[CircuitBreaker] 🛑 Cancelling ${leadingSide} orders, rebalancer will buy ${leadingSide === 'UP' ? 'DOWN' : 'UP'}...`);
+      await cancelSideOrders(market, leadingSide, dryRun);
       
       return {
-        shouldStop: true,
-        shouldBlockUp: true,
-        shouldBlockDown: true,
+        shouldStop: false,  // V35.11.0: NEVER STOP! Let rebalancer work
+        shouldBlockUp: leadingSide === 'UP',
+        shouldBlockDown: leadingSide === 'DOWN',
         reason,
       };
     }
     
     // =========================================================================
-    // LEVEL 2: CRITICAL (35 shares) - Cancel leading side, prepare for halt
+    // LEVEL 2: CRITICAL (15 shares) - Cancel leading side, block, keep trying
+    // V35.11.0: NO BAN even with repeated violations
     // =========================================================================
     if (imbalance >= this.config.criticalThreshold) {
       const reason = `CRITICAL: ${imbalance.toFixed(0)} >= ${this.config.criticalThreshold} shares`;
-      console.log(`[CircuitBreaker] 🔴 ${reason} - Cancelling ${leadingSide} orders`);
+      console.log(`[CircuitBreaker] 🔴 ${reason} - Cancelling ${leadingSide} orders, rebalancer active`);
+      
+      // Mark as blocked
+      this.blockedMarkets.add(market.slug);
       
       // LOG GUARD EVENT TO DATABASE
       logV35GuardEvent({
@@ -184,32 +222,23 @@ export class CircuitBreaker extends EventEmitter {
         upQty: market.upQty,
         downQty: market.downQty,
         expensiveSide: leadingSide,
-        reason: `CRITICAL: ${reason}`,
+        reason: `CRITICAL (fixing): ${reason}`,
       }).catch(() => {});
       
       // Cancel leading side orders
       await cancelSideOrders(market, leadingSide, dryRun);
       
-      // Track violation count
+      // Track violation count (for logging only, no longer triggers ban)
       const violations = (this.marketViolations.get(market.slug) || 0) + 1;
       this.marketViolations.set(market.slug, violations);
       
-      // If 3+ violations in a row, trip the breaker
+      // V35.11.0: REMOVED ban on repeated violations - just keep trying
       if (violations >= 3) {
-        const tripReason = `REPEATED CRITICAL VIOLATIONS: ${violations}x in ${market.slug}`;
-        this.trip(tripReason, market.slug, market.upQty, market.downQty, imbalance);
-        await this.emergencyCancel(market, dryRun);
-        
-        return {
-          shouldStop: true,
-          shouldBlockUp: true,
-          shouldBlockDown: true,
-          reason: tripReason,
-        };
+        console.log(`[CircuitBreaker] ⚠️ ${violations} critical violations, but NOT banning - rebalancer will keep trying`);
       }
       
       return {
-        shouldStop: false,
+        shouldStop: false,  // V35.11.0: NEVER STOP
         shouldBlockUp: leadingSide === 'UP',
         shouldBlockDown: leadingSide === 'DOWN',
         reason,
@@ -255,36 +284,45 @@ export class CircuitBreaker extends EventEmitter {
   }
   
   /**
-   * V35.4.0: Ban a specific market (skip to next cycle)
-   * Does NOT stop the entire bot - only this market
+   * V35.11.0: Block a market's leading side (NOT ban!)
+   * The rebalancer will keep trying to fix the imbalance
    */
-  private banMarket(marketSlug: string, reason: string, upQty: number, downQty: number, imbalance: number): void {
-    this.bannedMarkets.add(marketSlug);
+  private blockMarket(marketSlug: string, reason: string, upQty: number, downQty: number, imbalance: number): void {
+    this.blockedMarkets.add(marketSlug);
     
     this.state = {
       tripped: true,
       trippedAt: Date.now(),
       reason,
-      bannedMarketSlug: marketSlug,
+      bannedMarketSlug: null,  // V35.11.0: Never set bannedMarketSlug anymore
       upQty,
       downQty,
       imbalance,
     };
     
-    console.log(`[CircuitBreaker] ⛔ MARKET BANNED: ${marketSlug.slice(-25)}`);
+    const leadingSide = upQty > downQty ? 'UP' : 'DOWN';
+    console.log(`[CircuitBreaker] 🔧 MARKET BLOCKED: ${marketSlug.slice(-25)}`);
     console.log(`[CircuitBreaker]    Reason: ${reason}`);
     console.log(`[CircuitBreaker]    State: UP=${upQty.toFixed(0)} DOWN=${downQty.toFixed(0)} Imbalance=${imbalance.toFixed(0)}`);
-    console.log(`[CircuitBreaker]    ⏭️ Bot will SKIP this market and continue with next cycle`);
-    console.log(`[CircuitBreaker]    ✅ NO MANUAL INTERVENTION REQUIRED`);
+    console.log(`[CircuitBreaker]    ✅ ${leadingSide} blocked, rebalancer buying ${leadingSide === 'UP' ? 'DOWN' : 'UP'}`);
+    console.log(`[CircuitBreaker]    ⏳ Will keep trying until balanced or market expires`);
     
-    this.emit('marketBanned', { marketSlug, reason, imbalance });
+    this.emit('marketBlocked', { marketSlug, reason, imbalance });
   }
   
   /**
-   * Legacy trip method (kept for compatibility, now calls banMarket)
+   * DEPRECATED: banMarket - now just calls blockMarket
+   */
+  private banMarket(marketSlug: string, reason: string, upQty: number, downQty: number, imbalance: number): void {
+    // V35.11.0: Redirect to blockMarket (no more banning)
+    this.blockMarket(marketSlug, reason, upQty, downQty, imbalance);
+  }
+  
+  /**
+   * DEPRECATED: trip - now just calls blockMarket
    */
   private trip(reason: string, marketSlug: string, upQty: number, downQty: number, imbalance: number): void {
-    this.banMarket(marketSlug, reason, upQty, downQty, imbalance);
+    this.blockMarket(marketSlug, reason, upQty, downQty, imbalance);
   }
   
   /**
@@ -343,10 +381,12 @@ export class CircuitBreaker extends EventEmitter {
   }
   
   /**
-   * V35.4.0: Check if tripped for a SPECIFIC market
+   * V35.11.0: Check if tripped for a SPECIFIC market
+   * ALWAYS returns FALSE - we don't trip/ban anymore
    */
   isTrippedForMarket(marketSlug: string): boolean {
-    return this.bannedMarkets.has(marketSlug);
+    // V35.11.0: Never return true - we don't ban
+    return false;
   }
   
   /**
@@ -357,10 +397,17 @@ export class CircuitBreaker extends EventEmitter {
   }
   
   /**
-   * Get list of all banned markets
+   * Get list of all blocked markets (NOT banned - they're still being worked on)
+   */
+  getBlockedMarkets(): string[] {
+    return Array.from(this.blockedMarkets);
+  }
+  
+  /**
+   * DEPRECATED: getBannedMarkets - returns empty array now
    */
   getBannedMarkets(): string[] {
-    return Array.from(this.bannedMarkets);
+    return [];  // V35.11.0: No markets are ever banned anymore
   }
   
   /**
@@ -383,7 +430,8 @@ export class CircuitBreaker extends EventEmitter {
       imbalance: 0,
     };
     
-    this.bannedMarkets.clear();
+    this.blockedMarkets.clear();
+    this.bannedMarkets.clear();  // Legacy, kept for compatibility
     this.marketViolations.clear();
     this.emit('reset');
   }
