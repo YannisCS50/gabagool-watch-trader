@@ -1,11 +1,16 @@
 // ============================================================
 // V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.8.0 - "Rebalancing Cost Limits"
+// Version: V35.8.2 - "Aggressive Rebalance"
+//
+// V35.8.2: CRITICAL FIX - In wide-spread markets (e.g., 0.28/0.72),
+// combined costs reach $1.10-1.15. Previous 1.05 cap was blocking
+// ALL hedges. Now: emergency cap = 1.15, allowing rebalancing even
+// at a 15% loss. RISK REDUCTION > PER-TRADE PROFITABILITY.
 //
 // V35.8.0: Added maxCombinedCost for flexible hedging. In wide-spread
 // markets, the bot now accepts small losses (up to 2%) to reduce
-// inventory risk. Emergency mode allows up to 5% loss.
+// inventory risk. Emergency mode allows up to 15% loss.
 //
 // V35.7.0: Added automatic expiry snapshot archiving. Every 15-minute
 // market now gets a precise snapshot captured 1 second before expiry
@@ -24,8 +29,8 @@
 // If combined cost < $1.02 -> Small loss acceptable for risk reduction.
 // ============================================================
 
-export const V35_VERSION = 'V35.8.1';
-export const V35_CODENAME = 'Authoritative Sync Fix';
+export const V35_VERSION = 'V35.8.2';
+export const V35_CODENAME = 'Aggressive Rebalance';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 
@@ -126,15 +131,15 @@ export const TEST_CONFIG: V35Config = {
   gridStep: 0.02,
   sharesPerLevel: 5,
   
-  // HEDGE PARAMETERS - V35.8.0 FLEXIBLE COST LIMITS
+  // HEDGE PARAMETERS - V35.8.2 AGGRESSIVE REBALANCE
   enableActiveHedge: true,
-  maxHedgeSlippage: 0.05,           // Accept up to 5¢ slippage for hedge
+  maxHedgeSlippage: 0.08,           // Accept up to 8¢ slippage for hedge
   hedgeTimeoutMs: 2000,             // 2 second timeout
-  minEdgeAfterHedge: -0.02,         // Accept up to 2% loss for hedge (risk reduction)
-  maxCombinedCost: 1.02,            // V35.8.0: Accept 2% combined cost loss
-  maxCombinedCostEmergency: 1.05,   // V35.8.0: Accept 5% loss in emergency
-  maxExpensiveBias: 1.20,           // Expensive side can have 20% more shares
-  minHedgeNotional: 1.50,           // Min $1.50 notional for hedges
+  minEdgeAfterHedge: -0.15,         // Accept up to 15% loss for hedge (risk reduction priority)
+  maxCombinedCost: 1.02,            // Standard: 2% loss OK
+  maxCombinedCostEmergency: 1.15,   // V35.8.2: 15% loss OK in emergency (RISK REDUCTION!)
+  maxExpensiveBias: 1.50,           // Expensive side can have 50% more shares
+  minHedgeNotional: 1.05,           // V35.8.2: Lower to $1.05 (just above exchange min)
   
   // Risk limits - V35.4.5 TIGHTER CIRCUIT BREAKER
   // Three-tier safety system:
@@ -183,15 +188,15 @@ export const MODERATE_CONFIG: V35Config = {
   gridStep: 0.02,
   sharesPerLevel: 5,
   
-  // HEDGE PARAMETERS - V35.8.0 FLEXIBLE COST LIMITS
+  // HEDGE PARAMETERS - V35.8.2 AGGRESSIVE REBALANCE
   enableActiveHedge: true,
-  maxHedgeSlippage: 0.05,
+  maxHedgeSlippage: 0.08,
   hedgeTimeoutMs: 2000,
-  minEdgeAfterHedge: -0.02,
+  minEdgeAfterHedge: -0.15,
   maxCombinedCost: 1.02,
-  maxCombinedCostEmergency: 1.05,
-  maxExpensiveBias: 1.20,
-  minHedgeNotional: 1.50,
+  maxCombinedCostEmergency: 1.15,
+  maxExpensiveBias: 1.50,
+  minHedgeNotional: 1.05,
   
   // Risk limits - V35.3.0
   warnUnpairedShares: 15,
@@ -236,15 +241,15 @@ export const PRODUCTION_CONFIG: V35Config = {
   gridStep: 0.02,
   sharesPerLevel: 10,
   
-  // HEDGE PARAMETERS - V35.8.0 FLEXIBLE COST LIMITS
+  // HEDGE PARAMETERS - V35.8.2 AGGRESSIVE REBALANCE
   enableActiveHedge: true,
-  maxHedgeSlippage: 0.05,
+  maxHedgeSlippage: 0.08,
   hedgeTimeoutMs: 2000,
-  minEdgeAfterHedge: -0.02,
+  minEdgeAfterHedge: -0.15,
   maxCombinedCost: 1.02,
-  maxCombinedCostEmergency: 1.05,
-  maxExpensiveBias: 1.20,
-  minHedgeNotional: 1.50,
+  maxCombinedCostEmergency: 1.15,
+  maxExpensiveBias: 1.50,
+  minHedgeNotional: 1.05,
   
   // Risk limits - V35.3.0 (scaled up for production)
   warnUnpairedShares: 20,
