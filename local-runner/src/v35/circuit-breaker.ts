@@ -35,9 +35,10 @@ export interface CircuitBreakerState {
 
 export interface CircuitBreakerConfig {
   // ABSOLUTE HARD LIMITS - These CANNOT be exceeded
-  absoluteMaxUnpaired: number;      // 35 shares - instant halt for THIS MARKET
-  warningThreshold: number;         // 15 shares - block leading side
-  criticalThreshold: number;        // 25 shares - cancel all, prepare halt
+  // V35.10.3: Tightened from 15/25/35 → 10/15/20
+  absoluteMaxUnpaired: number;      // 20 shares - instant halt for THIS MARKET
+  warningThreshold: number;         // 10 shares - block leading side
+  criticalThreshold: number;        // 15 shares - cancel all, prepare halt
   
   // RECOVERY
   cooldownMs: number;               // Time before auto-reset (if enabled)
@@ -49,9 +50,9 @@ export interface CircuitBreakerConfig {
 // ============================================================
 
 const DEFAULT_CONFIG: CircuitBreakerConfig = {
-  absoluteMaxUnpaired: 35,   // HARD LIMIT - instant halt for this market
-  warningThreshold: 15,      // Block leading side
-  criticalThreshold: 25,     // Cancel leading side orders
+  absoluteMaxUnpaired: 20,   // V35.10.3: HARD LIMIT - instant halt for this market
+  warningThreshold: 10,      // V35.10.3: Block leading side
+  criticalThreshold: 15,     // V35.10.3: Cancel leading side orders
   cooldownMs: 60_000,
   autoReset: true, // V35.4.0: Auto-reset when new market starts
 };
