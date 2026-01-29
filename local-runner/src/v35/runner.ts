@@ -1,21 +1,21 @@
 // ============================================================
-// V35 RUNNER - PROACTIVE RECOVERY
+// V35 RUNNER - SKIP TO NEXT MARKET
 // ============================================================
-// Version: V35.3.8 - "Proactive Recovery"
+// Version: V35.4.0 - "Skip to Next Market"
 // 
 // CRITICAL INVARIANTS:
-// 1. Global Circuit Breaker is the SINGLE SOURCE OF TRUTH for safety
-// 2. Each 15-minute market is COMPLETELY INDEPENDENT
-// 3. NO shares carry over between markets
-// 4. New markets ALWAYS start at 0 shares (upQty=0, downQty=0)
-// 5. On startup: VALIDATE actual Polymarket positions FIRST
-// 6. If pre-existing imbalance > maxUnpaired, REFUSE to trade that market
+// 1. Circuit Breaker is now MARKET-SPECIFIC (not global)
+// 2. When a market is banned, bot SKIPS to next 15-minute cycle
+// 3. NO manual intervention required - auto-recovery
+// 4. Each 15-minute market is COMPLETELY INDEPENDENT
+// 5. NO shares carry over between markets
+// 6. New markets ALWAYS start at 0 shares (upQty=0, downQty=0)
 //
-// V35.3.8 CRITICAL FIX:
-// - Proactive rebalancer now runs BEFORE circuit breaker HALT check
-// - When circuit breaker is tripped, bot STILL attempts to reduce imbalance
-// - This allows recovery from extreme skew when market prices improve
-// - Only AFTER attempting hedge does the bot halt new quote placement
+// V35.4.0 CRITICAL FIX:
+// - Circuit breaker bans ONLY the problematic market
+// - Bot continues running, waits for next market cycle
+// - Automatic ban clearing when markets expire
+// - strategy_enabled flag is NO LONGER touched on trip
 // ============================================================
 
 import '../config.js'; // Load env first
@@ -479,6 +479,7 @@ async function refreshMarkets(): Promise<void> {
 
 function cleanupExpiredMarkets(): void {
   const now = Date.now();
+  const circuitBreaker = getCircuitBreaker();
   let removed = 0;
   
   for (const [slug, market] of markets.entries()) {
@@ -488,6 +489,9 @@ function cleanupExpiredMarkets(): void {
       
       log(`🏁 SETTLED ${slug.slice(-35)}`);
       log(`   Paired: ${metrics.paired.toFixed(0)} | Combined: $${metrics.combinedCost.toFixed(3)} | Locked: $${metrics.lockedProfit.toFixed(2)}`);
+      
+      // V35.4.0: Clear any ban for this market (it's expired, we'll get a new one)
+      circuitBreaker.clearMarketBan(slug);
       
       // Determine winning side (we don't know actual outcome, so log as unknown)
       saveV35Settlement({
@@ -519,6 +523,13 @@ function cleanupExpiredMarkets(): void {
   
   if (removed > 0) {
     log(`🗑️ Removed ${removed} expired markets`);
+    
+    // V35.4.0: Check if circuit breaker can be fully reset (no more banned markets)
+    const bannedMarkets = circuitBreaker.getBannedMarkets();
+    if (bannedMarkets.length === 0 && circuitBreaker.isTripped()) {
+      log(`✅ All banned markets expired - circuit breaker auto-reset`);
+      circuitBreaker.reset();
+    }
   }
 }
 
@@ -533,15 +544,14 @@ async function processMarket(market: V35Market): Promise<void> {
   const secondsToExpiry = (market.expiry.getTime() - now) / 1000;
   
   // =========================================================================
-  // V35.3.0: CIRCUIT BREAKER CHECK FIRST
+  // V35.4.0: CHECK IF THIS SPECIFIC MARKET IS BANNED
   // =========================================================================
-  // If the global circuit breaker is tripped, HALT IMMEDIATELY
+  // If this market is banned, skip it and wait for next cycle
+  // Other markets can still trade normally
   // =========================================================================
-  if (circuitBreaker.isTripped()) {
-    const state = circuitBreaker.getState();
-    log(`🚨 CIRCUIT BREAKER TRIPPED - Skipping all processing for ${market.slug.slice(-25)}`);
-    log(`   Reason: ${state.reason}`);
-    log(`   Tripped at: ${state.trippedAt ? new Date(state.trippedAt).toISOString() : 'unknown'}`);
+  if (circuitBreaker.isMarketBanned(market.slug)) {
+    log(`⏭️ SKIPPING banned market: ${market.slug.slice(-25)}`);
+    log(`   → Waiting for market to expire, then next cycle starts fresh`);
     await cancelAllOrders(market, config.dryRun);
     return;
   }
