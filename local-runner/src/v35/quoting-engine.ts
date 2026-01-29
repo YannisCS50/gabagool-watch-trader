@@ -1,27 +1,27 @@
 // ============================================================
-// V35 QUOTING ENGINE - HEDGE-FIRST STRATEGY
+// V35 QUOTING ENGINE - PASSIVE GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.4.2 - "Per-Level Hedge-First"
+// Version: V35.4.4 - "Smart Cheap-Side Skip"
 //
-// KEY INSIGHT: The bot only profits when positions are PAIRED.
-// Unpaired shares are pure directional risk that can lose 100%.
+// KEY INSIGHT: In a passive strategy, the CHEAP side usually loses.
+// The market prices in the expected outcome - cheap = likely loser.
 //
-// V35.4.2 SOLUTION: Evaluate hedge viability PER PRICE LEVEL.
-// For each grid price, check if (bidPrice + oppositeAsk) < 0.98.
-// This allows cheaper bids to be placed even when the opposite
-// side is expensive, maximizing fill opportunities.
+// V35.4.4 RULE: Only buy the cheap side if the EXPENSIVE side
+// already leads in our inventory. This way:
+// - We never accumulate more of the likely-losing side
+// - We only buy cheap to BALANCE an existing expensive-side lead
+// - No arbitrary 98¢ hedge check - pure inventory-based logic
 //
-// RULE: Only quote at prices where hedge is profitable.
+// EXAMPLE:
+//   UP=30¢ (cheap), DOWN=70¢ (expensive)
+//   If we have DOWN > UP → BUY UP to balance ✅
+//   If we have UP >= DOWN → SKIP UP, don't add to likely loser ❌
 // ============================================================
 
 import { getV35Config, V35_VERSION, type V35Config } from './config.js';
 import type { V35Market, V35Quote, V35Side, V35Asset } from './types.js';
 import { logV35GuardEvent } from './backend.js';
 import { getV35SidePricing } from './market-pricing.js';
-import { getCircuitBreaker } from './circuit-breaker.js';
-
-// Maximum combined cost we'll accept (leaves 2% profit margin)
-const MAX_COMBINED_COST = 0.98;
 
 interface QuoteDecision {
   quotes: V35Quote[];
@@ -86,18 +86,33 @@ export class QuotingEngine {
     const imbalance = Math.abs(market.upQty - market.downQty);
     
     // =========================================================================
-    // V35.4.2 HEDGE-FIRST CHECK: Per-price-level evaluation
+    // V35.4.4 SMART CHEAP-SIDE SKIP
     // =========================================================================
-    // Instead of blocking ALL quotes based on average grid price, we now
-    // evaluate each price level individually. This allows the bot to quote
-    // on cheaper price levels even when the opposite side is expensive.
-    // The per-level check happens in the quote generation loop below.
+    // The cheap side usually loses (market prices in expected outcome).
+    // Only buy the cheap side if the EXPENSIVE side already leads.
+    // This prevents accumulating more of the likely-losing side.
     // =========================================================================
-    const oppositeAsk = side === 'UP' ? market.downBestAsk : market.upBestAsk;
-    
-    // Log the opposite ask for visibility, but don't block globally
-    if (oppositeAsk > 0) {
-      console.log(`[QuotingEngine] 📊 ${side} hedge check: opposite ask $${oppositeAsk.toFixed(3)}, will filter per-price-level`);
+    if (side === cheapSide && expensiveQty > 0) {
+      // We're quoting on the cheap side - only allowed if expensive leads
+      if (cheapQty >= expensiveQty) {
+        const reason = `CHEAP-SKIP: ${side} is cheap (${cheapSide}) and already >= expensive qty (${cheapQty.toFixed(0)} >= ${expensiveQty.toFixed(0)})`;
+        console.log(`[QuotingEngine] 🛡️ ${reason}`);
+        
+        logV35GuardEvent({
+          marketSlug: market.slug,
+          asset: market.asset,
+          guardType: 'CHEAP_SIDE_SKIP',
+          blockedSide: side,
+          upQty: market.upQty,
+          downQty: market.downQty,
+          expensiveSide,
+          reason,
+        }).catch(() => {});
+        
+        return { quotes: [], blocked: true, blockReason: reason };
+      }
+      
+      console.log(`[QuotingEngine] ✅ ${side} is cheap but expensive leads (${expensiveQty.toFixed(0)} > ${cheapQty.toFixed(0)}) - quoting to balance`);
     }
     
     // =========================================================================
@@ -240,20 +255,7 @@ export class QuotingEngine {
     let totalQuotedQty = 0;
     
     for (const price of sortedPrices) {
-      // =========================================================================
-      // V35.4.2 PER-LEVEL HEDGE-FIRST CHECK
-      // =========================================================================
-      // For this specific bid price, check if hedging would be profitable.
-      // Combined cost = our bid price + opposite ask
-      // Only quote if combined < MAX_COMBINED_COST (0.98)
-      // =========================================================================
-      if (oppositeAsk > 0) {
-        const projectedCombined = price + oppositeAsk;
-        if (projectedCombined > MAX_COMBINED_COST) {
-          // Skip this price level - hedge would not be profitable
-          continue;
-        }
-      }
+      // V35.4.4: No per-level hedge check - CHEAP_SIDE_SKIP handles this smarter
       
       // Skip if our bid would cross the ask (we'd become taker)
       // V35.4.1: Reduced margin from 0.5¢ to 0.2¢ for tighter quoting

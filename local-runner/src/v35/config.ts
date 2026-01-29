@@ -1,11 +1,11 @@
 // ============================================================
 // V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.4.2 - "Per-Level Hedge-First"
+// Version: V35.4.4 - "Smart Cheap-Side Skip"
 //
-// V35.4.2: Evaluate hedge viability PER PRICE LEVEL instead of
-// globally. This allows cheaper bids to be placed even when the
-// opposite side is expensive, maximizing fill opportunities.
+// V35.4.4: Only buy the CHEAP side if the EXPENSIVE side already
+// leads in inventory. This prevents accumulating shares on the
+// likely-losing side without a hedge lead.
 //
 // V35.4.0: Circuit breaker is MARKET-SPECIFIC - bot SKIPS to
 // next market instead of halting. NO manual intervention required.
@@ -16,8 +16,8 @@
 // If combined cost < $1.00 -> GUARANTEED profit.
 // ============================================================
 
-export const V35_VERSION = 'V35.4.3';
-export const V35_CODENAME = 'Extended Grid 5-95';
+export const V35_VERSION = 'V35.4.4';
+export const V35_CODENAME = 'Smart Cheap-Side Skip';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 
