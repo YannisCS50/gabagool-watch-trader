@@ -1,15 +1,14 @@
 // ============================================================
 // V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.4.0 - "Skip to Next Market"
+// Version: V35.4.2 - "Per-Level Hedge-First"
 //
-// CRITICAL FIX: When circuit breaker trips, bot now SKIPS to the
-// next 15-minute market instead of halting completely.
-// 
-// - Circuit breaker is now MARKET-SPECIFIC
-// - Bot stays running and waits for next cycle
-// - NO manual intervention required
-// - Banned market auto-clears when it expires
+// V35.4.2: Evaluate hedge viability PER PRICE LEVEL instead of
+// globally. This allows cheaper bids to be placed even when the
+// opposite side is expensive, maximizing fill opportunities.
+//
+// V35.4.0: Circuit breaker is MARKET-SPECIFIC - bot SKIPS to
+// next market instead of halting. NO manual intervention required.
 //
 // STRATEGY: Place limit BUY orders on a grid for both UP and DOWN sides.
 // When retail traders hit our orders, we accumulate both sides.
@@ -17,8 +16,8 @@
 // If combined cost < $1.00 -> GUARANTEED profit.
 // ============================================================
 
-export const V35_VERSION = 'V35.4.0';
-export const V35_CODENAME = 'Skip to Next Market';
+export const V35_VERSION = 'V35.4.2';
+export const V35_CODENAME = 'Per-Level Hedge-First';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 
