@@ -1,7 +1,11 @@
 // ============================================================
 // V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.7.0 - "Expiry Snapshot Archiver"
+// Version: V35.8.0 - "Rebalancing Cost Limits"
+//
+// V35.8.0: Added maxCombinedCost for flexible hedging. In wide-spread
+// markets, the bot now accepts small losses (up to 2%) to reduce
+// inventory risk. Emergency mode allows up to 5% loss.
 //
 // V35.7.0: Added automatic expiry snapshot archiving. Every 15-minute
 // market now gets a precise snapshot captured 1 second before expiry
@@ -13,18 +17,15 @@
 // Previously only synced when API > local, causing drift when
 // local state was over-counted. Now syncs in BOTH directions.
 //
-// V35.4.4: Only buy the CHEAP side if the EXPENSIVE side already
-// leads in inventory. This prevents accumulating shares on the
-// likely-losing side without a hedge lead.
-//
 // STRATEGY: Place limit BUY orders on a grid for both UP and DOWN sides.
 // When retail traders hit our orders, we accumulate both sides.
 // At settlement: one side pays $1.00, other pays $0.00.
 // If combined cost < $1.00 -> GUARANTEED profit.
+// If combined cost < $1.02 -> Small loss acceptable for risk reduction.
 // ============================================================
 
-export const V35_VERSION = 'V35.7.0';
-export const V35_CODENAME = 'Expiry Snapshot Archiver';
+export const V35_VERSION = 'V35.8.0';
+export const V35_CODENAME = 'Rebalancing Cost Limits';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 
@@ -52,7 +53,9 @@ export interface V35Config {
   enableActiveHedge: boolean;       // TRUE = gabagool style active hedging
   maxHedgeSlippage: number;         // Max extra we'll pay for hedge (e.g., 0.03)
   hedgeTimeoutMs: number;           // Timeout for hedge order
-  minEdgeAfterHedge: number;        // Minimum edge after hedge (e.g., 0.005 = 0.5%)
+  minEdgeAfterHedge: number;        // Minimum edge after hedge (e.g., -0.02 = accept 2% loss)
+  maxCombinedCost: number;          // V35.8.0: Max combined cost for hedge ($1.02 = 2% loss OK)
+  maxCombinedCostEmergency: number; // V35.8.0: Max combined cost in emergency ($1.05)
   maxExpensiveBias: number;         // Max ratio expensive:cheap (e.g., 1.2 = 20% more)
   minHedgeNotional: number;         // V35.3.0: Min $ notional for hedge orders
   
@@ -123,13 +126,15 @@ export const TEST_CONFIG: V35Config = {
   gridStep: 0.02,
   sharesPerLevel: 5,
   
-  // HEDGE PARAMETERS - V35.3.0 IMPROVED
+  // HEDGE PARAMETERS - V35.8.0 FLEXIBLE COST LIMITS
   enableActiveHedge: true,
-  maxHedgeSlippage: 0.03,           // Accept up to 3¢ slippage for hedge
+  maxHedgeSlippage: 0.05,           // Accept up to 5¢ slippage for hedge
   hedgeTimeoutMs: 2000,             // 2 second timeout
-  minEdgeAfterHedge: 0.005,         // Minimum 0.5% edge after hedge
+  minEdgeAfterHedge: -0.02,         // Accept up to 2% loss for hedge (risk reduction)
+  maxCombinedCost: 1.02,            // V35.8.0: Accept 2% combined cost loss
+  maxCombinedCostEmergency: 1.05,   // V35.8.0: Accept 5% loss in emergency
   maxExpensiveBias: 1.20,           // Expensive side can have 20% more shares
-  minHedgeNotional: 1.50,           // V35.3.0 FIX: Min $1.50 notional for hedges
+  minHedgeNotional: 1.50,           // Min $1.50 notional for hedges
   
   // Risk limits - V35.4.5 TIGHTER CIRCUIT BREAKER
   // Three-tier safety system:
@@ -178,11 +183,13 @@ export const MODERATE_CONFIG: V35Config = {
   gridStep: 0.02,
   sharesPerLevel: 5,
   
-  // HEDGE PARAMETERS
+  // HEDGE PARAMETERS - V35.8.0 FLEXIBLE COST LIMITS
   enableActiveHedge: true,
-  maxHedgeSlippage: 0.03,
+  maxHedgeSlippage: 0.05,
   hedgeTimeoutMs: 2000,
-  minEdgeAfterHedge: 0.005,
+  minEdgeAfterHedge: -0.02,
+  maxCombinedCost: 1.02,
+  maxCombinedCostEmergency: 1.05,
   maxExpensiveBias: 1.20,
   minHedgeNotional: 1.50,
   
@@ -229,11 +236,13 @@ export const PRODUCTION_CONFIG: V35Config = {
   gridStep: 0.02,
   sharesPerLevel: 10,
   
-  // HEDGE PARAMETERS
+  // HEDGE PARAMETERS - V35.8.0 FLEXIBLE COST LIMITS
   enableActiveHedge: true,
-  maxHedgeSlippage: 0.03,
+  maxHedgeSlippage: 0.05,
   hedgeTimeoutMs: 2000,
-  minEdgeAfterHedge: 0.005,
+  minEdgeAfterHedge: -0.02,
+  maxCombinedCost: 1.02,
+  maxCombinedCostEmergency: 1.05,
   maxExpensiveBias: 1.20,
   minHedgeNotional: 1.50,
   
