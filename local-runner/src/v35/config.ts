@@ -16,8 +16,8 @@
 // If combined cost < $1.00 -> GUARANTEED profit.
 // ============================================================
 
-export const V35_VERSION = 'V35.4.4';
-export const V35_CODENAME = 'Smart Cheap-Side Skip';
+export const V35_VERSION = 'V35.4.5';
+export const V35_CODENAME = 'Tighter Circuit Breaker';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 
@@ -124,22 +124,22 @@ export const TEST_CONFIG: V35Config = {
   maxExpensiveBias: 1.20,           // Expensive side can have 20% more shares
   minHedgeNotional: 1.50,           // V35.3.0 FIX: Min $1.50 notional for hedges
   
-  // Risk limits - V35.3.0 CIRCUIT BREAKER INTEGRATED
+  // Risk limits - V35.4.5 TIGHTER CIRCUIT BREAKER
   // Three-tier safety system:
-  // 1. WARNING (15) - block leading side
-  // 2. CRITICAL (25) - cancel leading side, prepare halt
-  // 3. ABSOLUTE (35) - trip circuit breaker, halt ALL trading
-  warnUnpairedShares: 15,
-  criticalUnpairedShares: 25,
-  maxUnpairedShares: 35,            // ABSOLUTE HARD STOP
-  maxUnpairedImbalance: 35,         // Alias
+  // 1. WARNING (10) - block leading side
+  // 2. CRITICAL (15) - cancel leading side, prepare halt
+  // 3. ABSOLUTE (20) - trip circuit breaker, halt ALL trading
+  warnUnpairedShares: 10,
+  criticalUnpairedShares: 15,
+  maxUnpairedShares: 20,            // ABSOLUTE HARD STOP - TIGHTER!
+  maxUnpairedImbalance: 20,         // Alias
   maxImbalanceRatio: 2.0,           // Stricter ratio
   maxLossPerMarket: 25,
   maxConcurrentMarkets: 1,          // V35.3.0: Start with 1 market only
   maxMarkets: 1,
   maxNotionalPerMarket: 100,        // Lower for safety
   maxTotalExposure: 150,
-  skewThreshold: 10,
+  skewThreshold: 8,
   capitalPerMarket: 75,
   
   // Timing

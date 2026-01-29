@@ -4,6 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { 
   Scale, 
   AlertTriangle, 
@@ -19,18 +20,22 @@ import {
   AlertCircle,
   ShieldCheck,
   ShieldAlert,
-  ShieldX
+  ShieldX,
+  ChevronDown,
+  Activity
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useEffect, useState } from 'react';
+import { V35FillTimeline } from './V35FillTimeline';
 
 // =========================================================================
-// STRATEGY LIMITS (must match local-runner/src/v35/config.ts)
+// STRATEGY LIMITS (must match local-runner/src/v35/config.ts V35.4.5)
 // =========================================================================
 const STRATEGY_LIMITS = {
-  skewThreshold: 20,       // Warning level - shares before alert
-  maxUnpairedShares: 50,   // Critical level - max directional exposure
-  maxImbalanceRatio: 2.5,  // Max ratio UP:DOWN or DOWN:UP
+  skewThreshold: 10,       // Warning level - shares before alert
+  criticalThreshold: 15,   // Critical level - cancel leading side
+  maxUnpairedShares: 20,   // ABSOLUTE HARD STOP - tighter!
+  maxImbalanceRatio: 2.0,  // Max ratio UP:DOWN or DOWN:UP
 };
 
 type HealthStatus = 'OK' | 'WARNING' | 'CRITICAL';
@@ -45,10 +50,21 @@ function getPositionHealth(unpaired: number, upQty: number, downQty: number): {
     ? Math.max(upQty / downQty, downQty / upQty) 
     : (upQty > 0 || downQty > 0 ? Infinity : 1);
   
+  // ABSOLUTE HARD STOP at 20
   if (unpaired >= STRATEGY_LIMITS.maxUnpairedShares) {
     return { 
       status: 'CRITICAL', 
-      reason: `Unpaired ${unpaired.toFixed(0)} ≥ ${STRATEGY_LIMITS.maxUnpairedShares} max`,
+      reason: `HALT! Unpaired ${unpaired.toFixed(0)} ≥ ${STRATEGY_LIMITS.maxUnpairedShares} absolute max`,
+      icon: ShieldX,
+      colorClass: 'text-destructive'
+    };
+  }
+  
+  // Critical at 15
+  if (unpaired >= STRATEGY_LIMITS.criticalThreshold) {
+    return { 
+      status: 'CRITICAL', 
+      reason: `Critical: Unpaired ${unpaired.toFixed(0)} ≥ ${STRATEGY_LIMITS.criticalThreshold}`,
       icon: ShieldX,
       colorClass: 'text-destructive'
     };
@@ -63,6 +79,7 @@ function getPositionHealth(unpaired: number, upQty: number, downQty: number): {
     };
   }
   
+  // Warning at 10
   if (unpaired >= STRATEGY_LIMITS.skewThreshold) {
     return { 
       status: 'WARNING', 
@@ -348,7 +365,7 @@ export function V35OpenPositions() {
           return null;
         })()}
 
-        {/* Strategy Limits Reference */}
+        {/* Strategy Limits Reference - Updated for V35.4.5 */}
         <div className="grid grid-cols-3 gap-2 p-3 bg-muted/20 rounded-lg border border-border/50">
           <div className="flex items-center gap-2 text-xs">
             <ShieldCheck className="h-4 w-4 text-primary" />
@@ -363,7 +380,7 @@ export function V35OpenPositions() {
           <div className="flex items-center gap-2 text-xs">
             <ShieldX className="h-4 w-4 text-destructive" />
             <span className="text-muted-foreground">Crit:</span>
-            <span className="font-mono">≥{STRATEGY_LIMITS.maxUnpairedShares}</span>
+            <span className="font-mono">≥{STRATEGY_LIMITS.criticalThreshold}</span>
           </div>
         </div>
 
@@ -735,6 +752,26 @@ export function V35OpenPositions() {
                       );
                     })()}
                   </div>
+                  
+                  {/* Timeline for LIVE markets */}
+                  {timeInfo?.isLive && (
+                    <Collapsible>
+                      <CollapsibleTrigger asChild>
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          className="w-full rounded-none border-t border-border/50 gap-2"
+                        >
+                          <Activity className="h-4 w-4" />
+                          Toon Fill Timeline
+                          <ChevronDown className="h-4 w-4 ml-auto transition-transform duration-200 group-data-[state=open]:rotate-180" />
+                        </Button>
+                      </CollapsibleTrigger>
+                      <CollapsibleContent className="p-4 bg-muted/10">
+                        <V35FillTimeline marketSlug={pos.market_slug} asset={pos.asset} />
+                      </CollapsibleContent>
+                    </Collapsible>
+                  )}
                 </div>
               );
             })}
