@@ -260,7 +260,8 @@ export class QuotingEngine {
     
     for (const price of sortedPrices) {
       // Skip if our bid would cross the ask (we'd become taker)
-      if (bestAsk > 0 && price >= bestAsk - 0.005) {
+      // V35.4.1: Reduced margin from 0.5¢ to 0.2¢ for tighter quoting
+      if (bestAsk > 0 && price >= bestAsk - 0.002) {
         continue;
       }
       
