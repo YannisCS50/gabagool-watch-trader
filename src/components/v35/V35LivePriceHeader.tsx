@@ -1,8 +1,10 @@
 import { useState, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useChainlinkRealtime } from '@/hooks/useChainlinkRealtime';
 import { useStrikePrices } from '@/hooks/useStrikePrices';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
+import { supabase } from '@/integrations/supabase/client';
 import { 
   Activity, 
   TrendingUp, 
@@ -10,8 +12,18 @@ import {
   Target,
   Wifi,
   WifiOff,
-  Zap
+  Zap,
+  Scale,
+  ArrowUp,
+  ArrowDown
 } from 'lucide-react';
+
+interface PositionSummary {
+  upQty: number;
+  downQty: number;
+  imbalance: number;
+  trailingSide: 'UP' | 'DOWN' | null;
+}
 
 interface ActiveMarket {
   slug: string;
@@ -49,6 +61,27 @@ export function V35LivePriceHeader() {
   const { btcPrice, isConnected, updateCount, lastUpdate } = useChainlinkRealtime(true);
   const { strikePrices, isLoading: strikesLoading } = useStrikePrices();
   const [tick, setTick] = useState(0);
+  
+  // Fetch live positions for share imbalance
+  const { data: positionData } = useQuery<PositionSummary>({
+    queryKey: ['v35-position-summary'],
+    queryFn: async () => {
+      const { data, error } = await supabase.functions.invoke('v35-positions');
+      if (error || !data?.positions?.length) {
+        return { upQty: 0, downQty: 0, imbalance: 0, trailingSide: null };
+      }
+      // Sum all positions
+      let upQty = 0, downQty = 0;
+      for (const pos of data.positions) {
+        upQty += pos.polymarket_up_qty || 0;
+        downQty += pos.polymarket_down_qty || 0;
+      }
+      const imbalance = Math.abs(upQty - downQty);
+      const trailingSide = upQty < downQty ? 'UP' : downQty < upQty ? 'DOWN' : null;
+      return { upQty, downQty, imbalance, trailingSide };
+    },
+    refetchInterval: 5000,
+  });
   
   // Force re-render every 100ms for smooth price updates
   useEffect(() => {
@@ -140,12 +173,38 @@ export function V35LivePriceHeader() {
                 <Badge 
                   className={`text-lg px-3 py-1 ${
                     delta >= 0 
-                      ? 'bg-emerald-500 text-white' 
-                      : 'bg-rose-500 text-white'
+                      ? 'bg-emerald-500/90 text-white' 
+                      : 'bg-rose-500/90 text-white'
                   }`}
                 >
                   {delta >= 0 ? 'UP' : 'DOWN'}
                 </Badge>
+              </div>
+            )}
+            
+            {/* Share Imbalance - NEW */}
+            {positionData && (positionData.upQty > 0 || positionData.downQty > 0) && (
+              <div className="text-center border-l border-border/50 pl-6">
+                <div className="text-xs text-muted-foreground mb-0.5 flex items-center gap-1">
+                  <Scale className="h-3 w-3" />
+                  Shares
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="text-emerald-500 font-mono text-sm flex items-center gap-0.5">
+                    <ArrowUp className="h-3 w-3" />
+                    {positionData.upQty.toFixed(0)}
+                  </span>
+                  <span className="text-muted-foreground">/</span>
+                  <span className="text-rose-500 font-mono text-sm flex items-center gap-0.5">
+                    <ArrowDown className="h-3 w-3" />
+                    {positionData.downQty.toFixed(0)}
+                  </span>
+                </div>
+                {positionData.trailingSide && positionData.imbalance >= 5 && (
+                  <div className={`text-xs mt-0.5 ${positionData.imbalance >= 15 ? 'text-destructive animate-pulse' : positionData.imbalance >= 10 ? 'text-warning' : 'text-muted-foreground'}`}>
+                    {positionData.trailingSide} trailing by {positionData.imbalance.toFixed(0)}
+                  </div>
+                )}
               </div>
             )}
           </div>
