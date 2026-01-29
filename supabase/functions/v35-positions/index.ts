@@ -175,18 +175,18 @@ async function fetchPolymarketPositions(walletAddress: string): Promise<Polymark
 async function getBotWalletAddress(supabase: any): Promise<string | null> {
   const { data, error } = await supabase
     .from('bot_config')
-    .select('polymarket_address, updated_at, created_at')
-    .order('updated_at', { ascending: false, nullsFirst: false })
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .select('polymarket_address')
+    .not('polymarket_address', 'is', null)
+    .limit(1);
 
   if (error) {
     console.error('❌ Error reading bot_config.polymarket_address:', error);
     return null;
   }
 
-  return normalizeWalletAddress(data?.polymarket_address);
+  // data is an array, get first item
+  const row = Array.isArray(data) && data.length > 0 ? data[0] : null;
+  return normalizeWalletAddress(row?.polymarket_address);
 }
 
 /**
