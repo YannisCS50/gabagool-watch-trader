@@ -6,6 +6,46 @@ const corsHeaders = {
 };
 
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
+
+// Cache for orderbook prices to avoid repeated calls
+const orderbookPriceCache = new Map<string, { bestBid: number; bestAsk: number; fetchedAt: number }>();
+
+/**
+ * Fetch live orderbook price for a token ID from Polymarket CLOB
+ */
+async function fetchOrderbookPrice(tokenId: string): Promise<{ bestBid: number; bestAsk: number }> {
+  // Check cache (valid for 5 seconds)
+  const cached = orderbookPriceCache.get(tokenId);
+  if (cached && Date.now() - cached.fetchedAt < 5000) {
+    return { bestBid: cached.bestBid, bestAsk: cached.bestAsk };
+  }
+
+  try {
+    const res = await fetch(`https://clob.polymarket.com/book?token_id=${encodeURIComponent(tokenId)}`, {
+      headers: { Accept: 'application/json' },
+    });
+    
+    if (!res.ok) {
+      console.log(`⚠️ Orderbook fetch failed for ${tokenId.slice(0, 12)}...: ${res.status}`);
+      return { bestBid: 0, bestAsk: 0 };
+    }
+
+    const book = await res.json();
+    const bids = book?.bids ?? [];
+    const asks = book?.asks ?? [];
+    
+    const bestBid = bids.length > 0 ? parseFloat(bids[0].price) : 0;
+    const bestAsk = asks.length > 0 ? parseFloat(asks[0].price) : 0;
+    
+    // Cache result
+    orderbookPriceCache.set(tokenId, { bestBid, bestAsk, fetchedAt: Date.now() });
+    
+    return { bestBid, bestAsk };
+  } catch (e) {
+    console.error(`❌ Error fetching orderbook for ${tokenId.slice(0, 12)}...:`, e);
+    return { bestBid: 0, bestAsk: 0 };
+  }
+}
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
 
 function normalizeWalletAddress(address: string | null | undefined): string | null {
@@ -27,6 +67,7 @@ interface PolymarketPosition {
   currentValue: number;
   curPrice: number;
   eventSlug?: string;
+  tokenId?: string; // Token ID for orderbook lookup
 }
 
 interface MarketPosition {
@@ -112,6 +153,7 @@ async function fetchPolymarketPositions(walletAddress: string): Promise<Polymark
             currentValue: parseFloat(p.currentValue) || 0,
             curPrice: parseFloat(p.curPrice) || 0,
             eventSlug: p.eventSlug || p.slug || undefined,
+            tokenId: p.tokenId || undefined, // Capture token ID for orderbook lookup
           });
         }
       }
@@ -368,6 +410,7 @@ Deno.serve(async (req) => {
       downQty: number; downCost: number; downAvg: number;
       upCurPrice: number; downCurPrice: number;
       upCurrentValue: number; downCurrentValue: number;
+      upTokenId: string; downTokenId: string;
       asset: string;
     }>();
 
@@ -382,6 +425,7 @@ Deno.serve(async (req) => {
           downQty: 0, downCost: 0, downAvg: 0,
           upCurPrice: 0, downCurPrice: 0,
           upCurrentValue: 0, downCurrentValue: 0,
+          upTokenId: '', downTokenId: '',
           asset,
         });
       }
@@ -392,11 +436,13 @@ Deno.serve(async (req) => {
         m.upCost += pos.size * pos.avgPrice;
         m.upCurPrice = pos.curPrice;
         m.upCurrentValue += pos.currentValue;
+        if (pos.tokenId) m.upTokenId = pos.tokenId;
       } else {
         m.downQty += pos.size;
         m.downCost += pos.size * pos.avgPrice;
         m.downCurPrice = pos.curPrice;
         m.downCurrentValue += pos.currentValue;
+        if (pos.tokenId) m.downTokenId = pos.tokenId;
       }
     }
 
@@ -404,6 +450,75 @@ Deno.serve(async (req) => {
       m.upAvg = m.upQty > 0 ? m.upCost / m.upQty : 0;
       m.downAvg = m.downQty > 0 ? m.downCost / m.downQty : 0;
     }
+
+    // Fetch live orderbook prices for sides with curPrice = 0
+    // This happens when we only have position on one side
+    const orderbookFetches: Promise<void>[] = [];
+    for (const [slug, pm] of polymarketByMarket.entries()) {
+      // If we have UP position but no DOWN curPrice, and we have a tokenId to look up
+      if (pm.upQty > 0 && pm.downCurPrice === 0 && pm.upTokenId) {
+        // We need to find the DOWN token ID - it's typically the complement
+        // For now, we'll try to derive it from the strike_prices table or market metadata
+      }
+      
+      // If we have DOWN position but no UP curPrice
+      if (pm.downQty > 0 && pm.upCurPrice === 0 && pm.downTokenId) {
+        // Similar logic
+      }
+    }
+
+    // Fetch missing prices from get-market-tokens for active markets
+    for (const [slug, pm] of polymarketByMarket.entries()) {
+      // Only fetch if we're missing a price and have an imbalance
+      const hasMissingPrice = (pm.upQty > 0 && pm.downCurPrice === 0) || 
+                              (pm.downQty > 0 && pm.upCurPrice === 0);
+      if (!hasMissingPrice) continue;
+
+      orderbookFetches.push((async () => {
+        try {
+          // Call our own get-market-tokens function to get both token IDs
+          const marketRes = await fetch(`${SUPABASE_URL}/functions/v1/get-market-tokens`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+            },
+            body: JSON.stringify({ slug }),
+          });
+
+          if (!marketRes.ok) {
+            console.log(`⚠️ get-market-tokens failed for ${slug}: ${marketRes.status}`);
+            return;
+          }
+
+          const marketData = await marketRes.json();
+          const upTokenId = marketData.upTokenId;
+          const downTokenId = marketData.downTokenId;
+
+          // Fetch orderbook for the missing side
+          if (pm.upQty > 0 && pm.downCurPrice === 0 && downTokenId) {
+            const { bestBid } = await fetchOrderbookPrice(downTokenId);
+            if (bestBid > 0) {
+              pm.downCurPrice = bestBid;
+              console.log(`📊 Fetched DOWN price for ${slug}: $${bestBid.toFixed(3)}`);
+            }
+          }
+          
+          if (pm.downQty > 0 && pm.upCurPrice === 0 && upTokenId) {
+            const { bestBid } = await fetchOrderbookPrice(upTokenId);
+            if (bestBid > 0) {
+              pm.upCurPrice = bestBid;
+              console.log(`📊 Fetched UP price for ${slug}: $${bestBid.toFixed(3)}`);
+            }
+          }
+        } catch (e) {
+          console.error(`❌ Error fetching market tokens for ${slug}:`, e);
+        }
+      })());
+    }
+
+    // Wait for all orderbook fetches to complete
+    await Promise.all(orderbookFetches);
 
     // 4. Build result from live Polymarket data
     const result: MarketPosition[] = [];
