@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { Separator } from '@/components/ui/separator';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { V35LogViewer, V35FillsTable, V35ExportButton, V35StrategyPDFExport, V35OpenPositions, V35LivePriceHeader, V35DecisionLog, V35ExpirySnapshots } from '@/components/v35';
+import { V35LogViewer, V35FillsTable, V35ExportButton, V35StrategyPDFExport, V35OpenPositions, V35LivePriceHeader, V35DecisionLog, V35ExpirySnapshots, V35MarketPnLTable } from '@/components/v35';
 import { toast } from 'sonner';
 import { 
   Activity, 
@@ -326,8 +326,12 @@ export default function V35Dashboard() {
         </Card>
 
         {/* Tabs for Positions, Settlements, Logs, Fills, Snapshots */}
-        <Tabs defaultValue="decisions" className="space-y-4">
+        <Tabs defaultValue="pnl" className="space-y-4">
           <TabsList>
+            <TabsTrigger value="pnl">
+              <DollarSign className="h-4 w-4 mr-2" />
+              P&L
+            </TabsTrigger>
             <TabsTrigger value="decisions">
               <Brain className="h-4 w-4 mr-2" />
               Decisions
@@ -353,6 +357,10 @@ export default function V35Dashboard() {
               Fills
             </TabsTrigger>
           </TabsList>
+
+          <TabsContent value="pnl">
+            <V35MarketPnLTable />
+          </TabsContent>
 
           <TabsContent value="decisions">
             <V35DecisionLog />

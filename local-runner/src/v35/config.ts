@@ -1,7 +1,13 @@
 // ============================================================
 // V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.10.0 - "Continuous Hedge + Smart Spread"
+// Version: V35.10.1 - "Auto-Redeem + Enhanced PnL"
+//
+// V35.10.1 CHANGES:
+// ================================================================
+// 1. Added auto-claim loop for winning positions (every 5 min)
+// 2. Dashboard now shows per-market P&L with winner indicator
+// 3. Win rate and cumulative stats from expiry snapshots
 //
 // V35.10.0 MAJOR CHANGES:
 // ================================================================
@@ -19,8 +25,8 @@
 // positions or when one side has old exposure at bad prices.
 // ============================================================
 
-export const V35_VERSION = 'V35.10.0';
-export const V35_CODENAME = 'Continuous Hedge + Smart Spread';
+export const V35_VERSION = 'V35.10.1';
+export const V35_CODENAME = 'Auto-Redeem + Enhanced PnL';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 
