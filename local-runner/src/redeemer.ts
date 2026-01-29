@@ -464,10 +464,23 @@ async function redeemDirectEOA(position: RedeemablePosition): Promise<ClaimResul
     const indexSets = [1, 2];
     const parentCollectionId = ethers.utils.hexZeroPad('0x00', 32);
 
-    // Get gas estimate
+    // Get gas estimate - V35.10.4: Polygon requires minimum 25 gwei priority fee
     const feeData = await provider.getFeeData();
-    const maxPriority = feeData.maxPriorityFeePerGas || ethers.utils.parseUnits('30', 'gwei');
-    const maxFee = feeData.maxFeePerGas || ethers.utils.parseUnits('60', 'gwei');
+    
+    // Polygon minimum is 25 gwei, use 30 gwei as safe default
+    const MIN_PRIORITY_GWEI = 30;
+    const MIN_MAX_FEE_GWEI = 100;
+    
+    const rpcPriority = feeData.maxPriorityFeePerGas || ethers.BigNumber.from(0);
+    const rpcMaxFee = feeData.maxFeePerGas || ethers.BigNumber.from(0);
+    
+    // Use the HIGHER of RPC suggestion or our minimum
+    const minPriorityWei = ethers.utils.parseUnits(String(MIN_PRIORITY_GWEI), 'gwei');
+    const minMaxFeeWei = ethers.utils.parseUnits(String(MIN_MAX_FEE_GWEI), 'gwei');
+    
+    const maxPriority = rpcPriority.gt(minPriorityWei) ? rpcPriority : minPriorityWei;
+    const maxFee = rpcMaxFee.gt(minMaxFeeWei) ? rpcMaxFee : minMaxFeeWei;
+    
     const gasPriceGwei = parseFloat(ethers.utils.formatUnits(maxPriority, 'gwei'));
 
     // Conservative default gas limit; avoid calling estimateGas when balance is low.
