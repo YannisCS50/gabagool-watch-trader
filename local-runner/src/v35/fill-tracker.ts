@@ -1,11 +1,14 @@
 // ============================================================
 // V35 FILL TRACKER - WITH ACTIVE HEDGING
 // ============================================================
-// Version: V35.1.0 - "True Gabagool"
+// Version: V35.8.0 - "Rebalancing Cost Limits"
 //
 // Tracks fills from Polymarket WebSocket or polling.
 // Updates market inventory when fills occur.
 // TRIGGERS HEDGE MANAGER on every fill for active hedging.
+//
+// V35.8.0: Passes isEmergency flag to HedgeManager when imbalance
+// is critical, allowing higher cost tolerance for risk reduction.
 // ============================================================
 
 import type { V35Market, V35Fill, V35Side, V35Asset } from './types.js';
@@ -65,8 +68,12 @@ export async function processFillWithHedge(
   console.log(`   📊 AFTER FILL: UP=${afterFillUp.toFixed(0)} DOWN=${afterFillDown.toFixed(0)} | Paired=${afterFillPaired.toFixed(0)} | Unpaired=${afterFillImbalance.toFixed(0)}`);
   
   // TRIGGER ACTIVE HEDGE
+  // V35.8.0: Pass isEmergency flag if unpaired is critical
+  const config = await import('./config.js').then(m => m.getV35Config());
+  const isEmergency = afterFillImbalance >= config.criticalUnpairedShares;
+  
   const hedgeManager = getHedgeManager();
-  const hedgeResult = await hedgeManager.onFill(fill, market);
+  const hedgeResult = await hedgeManager.onFill(fill, market, isEmergency);
   
   // Update inventory with hedge fill if successful
   if (hedgeResult.hedged && hedgeResult.filledQty && hedgeResult.avgPrice) {

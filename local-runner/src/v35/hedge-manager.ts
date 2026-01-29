@@ -1,15 +1,16 @@
 // ============================================================
 // V35 HEDGE MANAGER - ACTIVE HEDGING
 // ============================================================
-// Version: V35.3.1 - "Safe Hedge Logging"
+// Version: V35.8.0 - "Rebalancing Cost Limits"
 // 
 // KEY INSIGHT: Gabagool's edge comes from ACTIVE HEDGING, not passive MM.
 // When filled on one side → IMMEDIATELY hedge the other side.
 //
-// V35.3.1 FIX:
-// - Fixed "Converting circular structure to JSON" error on hedge failures
-// - Uses safeStringify/getErrorMessage for all error logging
-// - Events now reliably persist to bot_events without crashes
+// V35.8.0: Added flexible maxCombinedCost limits.
+// - Standard mode: Accept up to $1.02 combined cost (2% loss OK)
+// - Emergency mode: Accept up to $1.05 combined cost (5% loss OK)
+// This prevents the bot from getting stuck with unhedged exposure
+// in wide-spread markets where profitable hedges are impossible.
 // ============================================================
 
 import { EventEmitter } from 'events';
@@ -55,12 +56,17 @@ export class HedgeManager extends EventEmitter {
   /**
    * CORE FUNCTION: Called on every fill
    * This is the gabagool secret sauce
+   * @param isEmergency - If true, use emergency cost limits (higher tolerance)
    */
-  async onFill(fill: V35Fill, market: V35Market): Promise<HedgeResult> {
+  async onFill(fill: V35Fill, market: V35Market, isEmergency: boolean = false): Promise<HedgeResult> {
     const config = getV35Config();
     const ts = Date.now();
     
-    console.log(`[HedgeManager] 📦 V35.3.0 processing fill: ${fill.side} ${fill.size.toFixed(0)} @ $${fill.price.toFixed(3)}`);
+    // V35.8.0: Use emergency limits if flagged or if imbalance is critical
+    const unpaired = Math.abs(market.upQty - market.downQty);
+    const useEmergencyLimits = isEmergency || unpaired >= config.criticalUnpairedShares;
+    
+    console.log(`[HedgeManager] 📦 V35.8.0 processing fill: ${fill.side} ${fill.size.toFixed(0)} @ $${fill.price.toFixed(3)}${useEmergencyLimits ? ' [EMERGENCY MODE]' : ''}`);
     
     if (!config.enableActiveHedge) {
       console.log('[HedgeManager] ⚠️ Active hedge DISABLED - running in legacy mode');
@@ -74,8 +80,8 @@ export class HedgeManager extends EventEmitter {
     console.log(`[HedgeManager] 📥 Fill received: ${fill.side} ${fill.size.toFixed(0)} @ $${fill.price.toFixed(3)}`);
     console.log(`[HedgeManager] 🎯 Need to hedge: ${hedgeQty.toFixed(0)} ${hedgeSide} shares`);
     
-    // Check if hedge is viable (still profitable)
-    const viability = this.calculateHedgeViability(fill, market, hedgeSide);
+    // Check if hedge is viable (using emergency limits if needed)
+    const viability = this.calculateHedgeViability(fill, market, hedgeSide, useEmergencyLimits);
     
     // Log viability check
     await this.logHedgeEvent('hedge_viability', fill, market, {
@@ -221,14 +227,22 @@ export class HedgeManager extends EventEmitter {
   }
 
   /**
-   * Check if hedge is still profitable BEFORE placing order
+   * Check if hedge is viable BEFORE placing order
+   * V35.8.0: Uses maxCombinedCost instead of minEdge for flexibility
+   * @param useEmergencyLimits - If true, use higher cost tolerance
    */
   private calculateHedgeViability(
     fill: V35Fill, 
     market: V35Market, 
-    hedgeSide: V35Side
+    hedgeSide: V35Side,
+    useEmergencyLimits: boolean = false
   ): HedgeViability {
     const config = getV35Config();
+    
+    // V35.8.0: Select cost limit based on mode
+    const maxCombinedCost = useEmergencyLimits 
+      ? config.maxCombinedCostEmergency 
+      : config.maxCombinedCost;
     
     // Get current best ask on hedge side
     const hedgeAsk = hedgeSide === 'UP' ? market.upBestAsk : market.downBestAsk;
@@ -237,51 +251,48 @@ export class HedgeManager extends EventEmitter {
       return { viable: false, reason: 'no_liquidity_on_hedge_side', maxPrice: 0 };
     }
 
-     // ---------------------------------------------------------------------
-     // CRITICAL: Don't block profitable hedges just because "ask + slippage" 
-     // crosses 1.00.
-     // Instead, cap the max hedge price so that even the WORST-case fill still
-     // respects minEdgeAfterHedge.
-     // Example:
-     //   fill 0.39, ask 0.59, slippage 0.03 -> ask+slip=0.62 would imply 1.01
-     //   but we should still hedge up to 0.605 to keep min edge (0.5%).
-     // ---------------------------------------------------------------------
-     const priceCapForMinEdge = 1 - fill.price - config.minEdgeAfterHedge;
-     if (priceCapForMinEdge <= 0) {
-       return { viable: false, reason: 'no_room_for_min_edge', maxPrice: 0 };
-     }
-
-     // Max price = min(best ask + slippage, price cap for min edge, hard safety cap)
-     const maxPrice = Math.min(hedgeAsk + config.maxHedgeSlippage, priceCapForMinEdge, 0.95);
-
-     // If we cannot even match the current ask while preserving min edge, skip.
-     if (maxPrice < hedgeAsk - 1e-9) {
-       return {
-         viable: false,
-         reason: `hedge_ask_above_cap: ask=${hedgeAsk.toFixed(3)} > cap=${maxPrice.toFixed(3)}`,
-         maxPrice,
-         combinedCost: fill.price + hedgeAsk,
-         expectedEdge: 1 - (fill.price + hedgeAsk),
-       };
-     }
+    // ---------------------------------------------------------------------
+    // V35.8.0: Use maxCombinedCost as the primary constraint
+    // This allows small losses (e.g., 2%) for risk reduction
+    // ---------------------------------------------------------------------
+    // Max hedge price = maxCombinedCost - fill.price
+    // e.g., fill=0.47, maxCombinedCost=1.02 -> maxHedge=0.55
+    const priceCapFromCombined = maxCombinedCost - fill.price;
     
-    // Check combined cost at worst case (max price)
-    const worstCaseCombined = fill.price + maxPrice;
-    const worstCaseEdge = 1 - worstCaseCombined;
-    
-    if (worstCaseEdge < config.minEdgeAfterHedge) {
+    if (priceCapFromCombined <= 0) {
       return { 
         viable: false, 
-        reason: `edge_too_low: ${(worstCaseEdge * 100).toFixed(2)}% < min ${(config.minEdgeAfterHedge * 100).toFixed(2)}%`,
+        reason: `fill_price_too_high: fill=${fill.price.toFixed(3)} >= maxCC=${maxCombinedCost.toFixed(3)}`, 
+        maxPrice: 0 
+      };
+    }
+
+    // Max price = min(ask + slippage, price cap from combined cost, hard safety cap)
+    const maxPrice = Math.min(
+      hedgeAsk + config.maxHedgeSlippage, 
+      priceCapFromCombined, 
+      0.95
+    );
+
+    // If we cannot even match the current ask, skip
+    if (maxPrice < hedgeAsk - 1e-9) {
+      return {
+        viable: false,
+        reason: `hedge_ask_above_cap: ask=${hedgeAsk.toFixed(3)} > cap=${maxPrice.toFixed(3)} (maxCC=${maxCombinedCost.toFixed(2)})`,
         maxPrice,
-        combinedCost: worstCaseCombined,
-        expectedEdge: worstCaseEdge,
+        combinedCost: fill.price + hedgeAsk,
+        expectedEdge: 1 - (fill.price + hedgeAsk),
       };
     }
     
-    // Expected combined (at best ask, not worst case)
+    // Calculate expected outcome
     const expectedCombined = fill.price + hedgeAsk;
     const expectedEdge = 1 - expectedCombined;
+    
+    // Log if we're accepting a loss
+    if (expectedEdge < 0) {
+      console.log(`[HedgeManager] ⚠️ Accepting loss hedge: combined=$${expectedCombined.toFixed(3)} (loss ${(-expectedEdge * 100).toFixed(1)}%)`);
+    }
     
     return { 
       viable: true, 
