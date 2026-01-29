@@ -1,7 +1,12 @@
 // ============================================================
 // V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.8.2 - "Aggressive Rebalance"
+// Version: V35.9.0 - "Hybrid Mode + State Sync Fix"
+//
+// V35.9.0 CHANGES:
+// - HYBRID MODE: build_winner only if paired >= 10 shares
+// - STATE SYNC: Rebalancer updates market inventory after fills
+// - EMERGENCY: 1.02 normal, 1.15 emergency (gap >= 15)
 //
 // V35.8.2: CRITICAL FIX - In wide-spread markets (e.g., 0.28/0.72),
 // combined costs reach $1.10-1.15. Previous 1.05 cap was blocking
@@ -29,8 +34,8 @@
 // If combined cost < $1.02 -> Small loss acceptable for risk reduction.
 // ============================================================
 
-export const V35_VERSION = 'V35.8.2';
-export const V35_CODENAME = 'Aggressive Rebalance';
+export const V35_VERSION = 'V35.9.0';
+export const V35_CODENAME = 'Hybrid Mode + State Sync Fix';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 
