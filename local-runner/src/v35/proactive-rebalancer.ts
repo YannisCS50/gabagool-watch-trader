@@ -71,23 +71,29 @@ export class ProactiveRebalancer {
       return { attempted: false, hedged: false, reason: 'balanced' };
     }
     
-    // Determine which side needs hedging
+    // Determine which side needs hedging (the side with FEWER shares)
     const needsMore: V35Side = upQty < downQty ? 'UP' : 'DOWN';
     const hedgeQty = gap;
     
     // Get current prices
     const hedgeAsk = needsMore === 'UP' ? market.upBestAsk : market.downBestAsk;
-    const existingAvg = needsMore === 'UP' 
-      ? (market.downQty > 0 ? market.downCost / market.downQty : 0)
-      : (market.upQty > 0 ? market.upCost / market.upQty : 0);
+    
+    // CRITICAL FIX: We need the average cost of the LEADING side (the one we have MORE of)
+    // because that's what we're trying to hedge against!
+    // If we have more UP, we need to buy DOWN to hedge, so we compare:
+    //   - UP avg (what we paid for the leading side)
+    //   - DOWN ask (what we'd pay for the hedge)
+    const leadingAvg = needsMore === 'UP' 
+      ? (market.downQty > 0 ? market.downCost / market.downQty : 0)  // DOWN leads, use DOWN avg
+      : (market.upQty > 0 ? market.upCost / market.upQty : 0);       // UP leads, use UP avg
     
     if (hedgeAsk <= 0 || hedgeAsk >= 1) {
       return { attempted: false, hedged: false, reason: 'no_liquidity' };
     }
     
     // Check if hedging now would be profitable
-    // Combined cost = existing avg + hedge ask
-    const projectedCombined = existingAvg + hedgeAsk;
+    // Combined cost = leading side avg + hedge side ask
+    const projectedCombined = leadingAvg + hedgeAsk;
     const projectedEdge = 1 - projectedCombined;
     
     // Track the best opportunity we've seen (for reversal detection)
@@ -100,7 +106,8 @@ export class ProactiveRebalancer {
     }
     
     // Log current state every check - helps track reversals
-    console.log(`[Rebalancer] 📈 Monitoring: UP=${upQty.toFixed(0)} DOWN=${downQty.toFixed(0)} | Gap=${gap.toFixed(0)} | Combined=$${projectedCombined.toFixed(3)} | Edge=${(projectedEdge * 100).toFixed(2)}%`);
+    const leadingSide = needsMore === 'UP' ? 'DOWN' : 'UP';
+    console.log(`[Rebalancer] 📈 Monitoring: UP=${upQty.toFixed(0)} DOWN=${downQty.toFixed(0)} | Gap=${gap.toFixed(0)} | ${leadingSide} avg=$${leadingAvg.toFixed(3)} + ${needsMore} ask=$${hedgeAsk.toFixed(3)} = Combined=$${projectedCombined.toFixed(3)} | Edge=${(projectedEdge * 100).toFixed(2)}%`);
     
     if (projectedEdge < config.minEdgeAfterHedge) {
       // Still log but CONTINUE MONITORING - don't give up!
@@ -119,7 +126,7 @@ export class ProactiveRebalancer {
     // Max price with slippage buffer
     const maxPrice = Math.min(
       hedgeAsk + config.maxHedgeSlippage,
-      1 - existingAvg - config.minEdgeAfterHedge,
+      1 - leadingAvg - config.minEdgeAfterHedge,
       0.95
     );
     
