@@ -359,6 +359,11 @@ export interface V35ExpirySnapshotData {
   downOrdersCount: number;
   wasImbalanced: boolean;
   imbalanceRatio: number | null;
+  // NEW: Correct PnL calculation fields
+  totalCost: number;
+  predictedWinningSide: 'UP' | 'DOWN' | null;
+  predictedFinalValue: number;
+  predictedPnl: number;
 }
 
 export async function saveV35ExpirySnapshot(data: V35ExpirySnapshotData): Promise<boolean> {
@@ -393,6 +398,11 @@ export async function saveV35ExpirySnapshot(data: V35ExpirySnapshotData): Promis
         down_orders_count: data.downOrdersCount,
         was_imbalanced: data.wasImbalanced,
         imbalance_ratio: data.imbalanceRatio,
+        // NEW: Correct PnL calculation
+        total_cost: data.totalCost,
+        predicted_winning_side: data.predictedWinningSide,
+        predicted_final_value: data.predictedFinalValue,
+        predicted_pnl: data.predictedPnl,
       },
     });
     return result.success;

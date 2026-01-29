@@ -2363,6 +2363,11 @@ Deno.serve(async (req) => {
           down_orders_count: snapshot.down_orders_count,
           was_imbalanced: snapshot.was_imbalanced,
           imbalance_ratio: snapshot.imbalance_ratio,
+          // NEW: Correct PnL calculation fields
+          total_cost: snapshot.total_cost,
+          predicted_winning_side: snapshot.predicted_winning_side,
+          predicted_final_value: snapshot.predicted_final_value,
+          predicted_pnl: snapshot.predicted_pnl,
         }, { onConflict: 'market_slug' });
 
         if (error) {
@@ -2373,7 +2378,11 @@ Deno.serve(async (req) => {
           });
         }
 
-        console.log(`[runner-proxy] 📸 Saved V35 expiry snapshot: ${snapshot.market_slug} (paired=${snapshot.paired}, CPP=$${snapshot.combined_cost})`);
+        // Log with correct PnL
+        const pnlStr = snapshot.predicted_pnl != null 
+          ? `PnL=$${Number(snapshot.predicted_pnl) >= 0 ? '+' : ''}${Number(snapshot.predicted_pnl).toFixed(2)}`
+          : `CPP=$${snapshot.combined_cost}`;
+        console.log(`[runner-proxy] 📸 Saved V35 expiry snapshot: ${snapshot.market_slug} (${snapshot.predicted_winning_side ?? 'TBD'} wins, ${pnlStr})`);
         return new Response(JSON.stringify({ success: true }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
