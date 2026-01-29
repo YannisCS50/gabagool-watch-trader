@@ -16,8 +16,8 @@
 // If combined cost < $1.00 -> GUARANTEED profit.
 // ============================================================
 
-export const V35_VERSION = 'V35.4.2';
-export const V35_CODENAME = 'Per-Level Hedge-First';
+export const V35_VERSION = 'V35.4.3';
+export const V35_CODENAME = 'Extended Grid 5-95';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 
@@ -110,9 +110,9 @@ export interface V35Config {
 export const TEST_CONFIG: V35Config = {
   mode: 'test',
   
-  // Grid: 41 levels per side (2¢ step)
-  gridMin: 0.10,
-  gridMax: 0.90,
+  // Grid: 46 levels per side (2¢ step, 5-95¢)
+  gridMin: 0.05,
+  gridMax: 0.95,
   gridStep: 0.02,
   sharesPerLevel: 5,
   
@@ -165,9 +165,9 @@ export const TEST_CONFIG: V35Config = {
 export const MODERATE_CONFIG: V35Config = {
   mode: 'moderate',
   
-  // Grid: 41 levels per side
-  gridMin: 0.10,
-  gridMax: 0.90,
+  // Grid: 46 levels per side (5-95¢)
+  gridMin: 0.05,
+  gridMax: 0.95,
   gridStep: 0.02,
   sharesPerLevel: 5,
   
