@@ -1,19 +1,29 @@
 // ============================================================
 // V35 QUOTING ENGINE - GABAGOOL MODE
 // ============================================================
-// Version: V35.6.1 - "Balanced Start Fix"
+// Version: V35.10.0 - "Smart Spread Following"
 //
-// V35.6.1 FIX:
-// - FIXED: Fresh market (both sides = 0) now quotes BOTH sides equally
-// - ADDED: isBalanced check (imbalance < 1 share = balanced state)
-// - FIXED: Trailing/leading only applies when actual imbalance exists
+// V35.10.0 MAJOR CHANGES:
+// ================================================================
+// PROBLEM: Fixed grid (35-55c) placed orders FAR from market ask,
+//          reducing fill probability significantly.
 //
-// V35.6.0 SIMPLIFICATION (kept):
-// - REMOVED: EXPENSIVE_BIAS guard
-// - SIMPLIFIED: CHEAP_SIDE_SKIP (only at 25+ shares)
-// - KEPT: EMERGENCY_STOP, BURST_CAP
+// SOLUTION: "Smart Spread" quoting - place orders NEAR the current
+//           best bid, not on fixed grid levels. This maximizes
+//           fill probability while still being a maker (not taker).
 //
-// CORE PRINCIPLE: Quote both sides equally, let the market balance.
+// NEW STRATEGY:
+// 1. Get current best bid for each side
+// 2. Place orders at: bestBid, bestBid - 1¢, bestBid - 2¢, etc.
+// 3. This keeps us competitive in the book
+// 4. Still respect BURST-CAP to prevent excessive exposure
+// ================================================================
+//
+// V35.6.1 FIX (kept):
+// - Fresh market (both sides = 0) now quotes BOTH sides equally
+// - BALANCED/TRAILING exemptions for burst-cap
+//
+// CORE PRINCIPLE: Quote competitively near the spread to maximize fills.
 // ============================================================
 
 import { getV35Config, V35_VERSION, type V35Config } from './config.js';
@@ -27,6 +37,13 @@ interface QuoteDecision {
   blockReason: string | null;
 }
 
+// V35.10.0: Smart spread configuration
+const SMART_SPREAD_CONFIG = {
+  numLevels: 4,           // How many price levels to quote (4 levels = 20 shares at 5/level)
+  levelStep: 0.01,        // Step between levels (1¢)
+  minBidFromAsk: 0.002,   // Minimum distance from ask (0.2¢ anti-crossing margin)
+};
+
 export class QuotingEngine {
   private gridPrices: number[] = [];
   
@@ -36,6 +53,7 @@ export class QuotingEngine {
   
   /**
    * Regenerate grid prices from current config
+   * NOTE: V35.10.0 uses smart spread, but grid is kept for fallback
    */
   updateGrid(): void {
     const config = getV35Config();
@@ -52,7 +70,7 @@ export class QuotingEngine {
   
   /**
    * Generate quotes for one side of a market
-   * BURST-SAFE: Caps total order qty to risk budget
+   * V35.10.0: Uses SMART SPREAD placement near current bid
    */
   generateQuotes(side: V35Side, market: V35Market): V35Quote[] {
     const decision = this.generateQuotesWithReason(side, market);
@@ -66,7 +84,7 @@ export class QuotingEngine {
   
   /**
    * Generate quotes with detailed reasoning
-   * BURST-SAFE VERSION: Limits total open order qty
+   * V35.10.0: SMART SPREAD - quotes near current bid, not fixed grid
    */
   generateQuotesWithReason(side: V35Side, market: V35Market): QuoteDecision {
     const config = getV35Config();
@@ -84,21 +102,16 @@ export class QuotingEngine {
     const imbalance = Math.abs(market.upQty - market.downQty);
     
     // =========================================================================
-    // V35.6.1 BALANCED START FIX
+    // BALANCED STATE DETECTION
     // =========================================================================
-    // GABAGOOL MODE: We quote BOTH sides equally by default.
-    // 
-    // CRITICAL FIX: When both sides have 0 shares (fresh market), BOTH sides
-    // should be allowed to quote equally. Neither is "trailing" or "leading".
-    // Only apply trailing/leading logic when there's actual imbalance.
-    // =========================================================================
-    const isBalanced = imbalance < 1; // Less than 1 share difference = balanced
+    const isBalanced = imbalance < 1;
     const trailingSide = market.upQty < market.downQty ? 'UP' : 'DOWN';
     const isTrailing = !isBalanced && side === trailingSide;
     const isLeading = !isBalanced && side !== trailingSide;
     
-    // V35.6.0: Only block cheap side if we have 25+ MORE cheap shares than expensive
-    // This is a safety net, not the primary balancing mechanism
+    // =========================================================================
+    // CHEAP SIDE EXTREME BLOCK (25+ shares lead)
+    // =========================================================================
     const CHEAP_SIDE_EXTREME_THRESHOLD = 25;
     if (side === cheapSide && isLeading && cheapQty > expensiveQty + CHEAP_SIDE_EXTREME_THRESHOLD) {
       const reason = `CHEAP-SKIP: ${side} has ${(cheapQty - expensiveQty).toFixed(0)} more than expensive (threshold: ${CHEAP_SIDE_EXTREME_THRESHOLD})`;
@@ -119,15 +132,12 @@ export class QuotingEngine {
     }
     
     // =========================================================================
-    // EMERGENCY STOP: Block NEW quoting at extreme imbalance
-    // V35.5.4 FIX: But ALLOW trailing side to quote (for hedging)
+    // EMERGENCY STOP AT EXTREME IMBALANCE
     // =========================================================================
     if (imbalance >= config.maxUnpairedShares) {
-      // V35.5.4: If we're the trailing side, we MUST be able to quote to hedge
       if (isTrailing) {
         console.log(`[QuotingEngine] 🚨 EMERGENCY but ${side} is TRAILING - allowing hedge quotes`);
       } else {
-        // Only block the LEADING side
         const reason = `EMERGENCY: ${imbalance.toFixed(0)} share imbalance >= ${config.maxUnpairedShares} max`;
         console.log(`[QuotingEngine] 🚨 ${reason} - blocking LEADING side ${side}`);
         
@@ -147,93 +157,41 @@ export class QuotingEngine {
     }
     
     // =========================================================================
-    // V35.6.0: EXPENSIVE_BIAS GUARD REMOVED
+    // BURST-CAP CALCULATION
     // =========================================================================
-    // This guard was causing the imbalances! By forcing the cheap side to stay
-    // under a ratio of the expensive side, we were creating one-sided positions.
-    // 
-    // GABAGOOL MODE: Both sides quote equally. Balance comes from market flow.
-    // =========================================================================
-    
-    // =========================================================================
-    // 🚨 BURST-CAP: THE CRITICAL FIX
-    // =========================================================================
-    // Calculate how many NEW shares we can safely add to this side.
-    // Risk Budget = maxUnpairedShares - current imbalance (if we're the leading side)
-    //             = maxUnpairedShares + current imbalance (if we're the trailing side)
-    //
-    // But we must also account for EXISTING open orders on this side.
-    // Those could also fill, adding to our position.
-    // =========================================================================
-    
-    // Count existing open order qty on this side
     const existingOpenOrders = side === 'UP' ? market.upOrders : market.downOrders;
     let existingOpenQty = 0;
     for (const order of existingOpenOrders.values()) {
       existingOpenQty += order.size;
     }
     
-    // Calculate burst-safe budget
-    // If this side fills, we ADD to currentQty
-    // Worst case after fill: currentQty + openOrderQty + newOrderQty
-    // We want: |newTotal - oppositeQty| <= maxUnpairedShares
-    //
-    // If currentQty > oppositeQty (we're leading):
-    //   newTotal - oppositeQty <= maxUnpairedShares
-    //   currentQty + existingOpen + newQty - oppositeQty <= maxUnpairedShares
-    //   newQty <= maxUnpairedShares - (currentQty - oppositeQty) - existingOpen
-    //   newQty <= maxUnpairedShares - imbalance - existingOpen
-    //
-    // If currentQty <= oppositeQty (we're trailing):
-    //   oppositeQty - newTotal <= maxUnpairedShares (if we're still trailing)
-    //   OR newTotal - oppositeQty <= maxUnpairedShares (if we become leading)
-    //   Safe approach: just check worst case where we become maximally leading
-    //   newQty <= maxUnpairedShares + (oppositeQty - currentQty) - existingOpen
-    //   newQty <= maxUnpairedShares + imbalance - existingOpen
-    
     let maxNewOrderQty: number;
     
-    // =========================================================================
-    // V35.6.1 BALANCED START FIX
-    // =========================================================================
-    // When balanced (both sides ~equal), BOTH sides get full budget.
-    // This ensures a fresh market can quote symmetrically on both sides.
-    // =========================================================================
     if (isBalanced) {
-      // Both sides equal - each gets full budget minus their own open orders
       maxNewOrderQty = config.maxUnpairedShares - existingOpenQty;
-      console.log(`[QuotingEngine] ⚖️ BALANCED: ${side} gets full budget ${maxNewOrderQty.toFixed(0)} (maxUnpaired=${config.maxUnpairedShares}, existing=${existingOpenQty.toFixed(0)})`);
+      console.log(`[QuotingEngine] ⚖️ BALANCED: ${side} gets full budget ${maxNewOrderQty.toFixed(0)}`);
     } else if (currentQty > oppositeQty) {
-      // We're already leading - very limited budget
       maxNewOrderQty = config.maxUnpairedShares - imbalance - existingOpenQty;
     } else {
-      // We're trailing - we have more room
       maxNewOrderQty = config.maxUnpairedShares + imbalance - existingOpenQty;
     }
     
-    // Clamp to non-negative
     maxNewOrderQty = Math.max(0, maxNewOrderQty);
     
-    console.log(`[QuotingEngine] 📊 BURST-CAP: ${side} budget=${maxNewOrderQty.toFixed(0)} (existing=${existingOpenQty.toFixed(0)}, imbalance=${imbalance.toFixed(0)}, balanced=${isBalanced}, leading=${isLeading})`);
+    console.log(`[QuotingEngine] 📊 BURST-CAP: ${side} budget=${maxNewOrderQty.toFixed(0)} (existing=${existingOpenQty.toFixed(0)}, imbalance=${imbalance.toFixed(0)})`);
     
     // =========================================================================
-    // V35.6.1 BALANCED/TRAILING EXEMPTION
-    // =========================================================================
-    // - BALANCED: Both sides quote freely (fresh market start)
-    // - TRAILING: Can always quote to hedge back to balance
-    // - LEADING: Restricted by burst-cap to prevent runaway imbalance
+    // TRAILING/BALANCED EXEMPTION
     // =========================================================================
     if (maxNewOrderQty < config.sharesPerLevel) {
       if (isBalanced) {
-        // Balanced but somehow still blocked? Give minimum quoting ability
-        maxNewOrderQty = config.sharesPerLevel * 4; // 4 levels = 20 shares
+        maxNewOrderQty = config.sharesPerLevel * SMART_SPREAD_CONFIG.numLevels;
         console.log(`[QuotingEngine] ⚖️ BALANCED OVERRIDE: ${side} gets minimum ${maxNewOrderQty.toFixed(0)} shares`);
       } else if (isTrailing) {
-        // V35.5.7: Allow trailing side to quote, but ONLY what's needed to balance
         const neededToBalance = imbalance;
-        const buffer = config.sharesPerLevel; // One extra level as buffer
+        const buffer = config.sharesPerLevel;
         maxNewOrderQty = Math.max(config.sharesPerLevel, neededToBalance + buffer);
-        console.log(`[QuotingEngine] 🔓 TRAILING OVERRIDE: ${side} allowing ${maxNewOrderQty.toFixed(0)} shares (need ${neededToBalance.toFixed(0)} + ${buffer} buffer)`);
+        console.log(`[QuotingEngine] 🔓 TRAILING OVERRIDE: ${side} allowing ${maxNewOrderQty.toFixed(0)} shares`);
       } else {
         const reason = `BURST-CAP: ${side} budget exhausted (${maxNewOrderQty.toFixed(0)} < ${config.sharesPerLevel} min)`;
         console.log(`[QuotingEngine] 🛡️ ${reason}`);
@@ -254,42 +212,55 @@ export class QuotingEngine {
     }
     
     // =========================================================================
-    // GENERATE QUOTES - Capped by burst budget
-    // PRIORITY: 35c-55c range first (lowest combined cost = highest profit)
+    // V35.10.0: SMART SPREAD QUOTE GENERATION
     // =========================================================================
+    // Instead of fixed grid, place orders NEAR the current best bid
+    // This keeps us competitive and increases fill probability
+    // =========================================================================
+    
+    const bestBid = side === 'UP' ? market.upBestBid : market.downBestBid;
     const bestAsk = side === 'UP' ? market.upBestAsk : market.downBestAsk;
     
-    // Sort grid prices: prioritize 0.35-0.55 range first (sweet spot)
-    const sortedPrices = this.getPrioritizedPrices();
+    // If no market data, fall back to mid-range prices
+    const fallbackPrice = 0.50;
+    const startingBid = bestBid > 0 ? bestBid : fallbackPrice;
     
     let totalQuotedQty = 0;
     
-    for (const price of sortedPrices) {
-      // V35.4.4: No per-level hedge check - CHEAP_SIDE_SKIP handles this smarter
+    for (let level = 0; level < SMART_SPREAD_CONFIG.numLevels; level++) {
+      // Calculate price for this level (starting at best bid, stepping down)
+      const levelPrice = Math.round((startingBid - (level * SMART_SPREAD_CONFIG.levelStep)) * 100) / 100;
       
-      // Skip if our bid would cross the ask (we'd become taker)
-      // V35.4.1: Reduced margin from 0.5¢ to 0.2¢ for tighter quoting
-      if (bestAsk > 0 && price >= bestAsk - 0.002) {
+      // Skip if price is too low or too high
+      if (levelPrice < config.gridMin || levelPrice > config.gridMax) {
         continue;
       }
       
-      // Calculate minimum shares to meet Polymarket notional requirement
-      const minSharesForNotional = Math.ceil(1.0 / price);
+      // Anti-crossing check: don't bid too close to ask
+      if (bestAsk > 0 && levelPrice >= bestAsk - SMART_SPREAD_CONFIG.minBidFromAsk) {
+        console.log(`[QuotingEngine] ⚠️ Level ${level} ($${levelPrice.toFixed(2)}) too close to ask ($${bestAsk.toFixed(2)}), skipping`);
+        continue;
+      }
+      
+      // Calculate shares for this level
+      const minSharesForNotional = Math.ceil(1.0 / levelPrice);
       const shares = Math.max(config.sharesPerLevel, minSharesForNotional);
       
-      // Check if adding this quote would exceed our burst budget
+      // Check burst cap
       if (totalQuotedQty + shares > maxNewOrderQty) {
-        // We've hit the burst cap - stop adding more quotes
-        console.log(`[QuotingEngine] 🛡️ BURST-CAP reached at ${totalQuotedQty.toFixed(0)}/${maxNewOrderQty.toFixed(0)} shares - stopping`);
+        console.log(`[QuotingEngine] 🛡️ BURST-CAP reached at ${totalQuotedQty.toFixed(0)}/${maxNewOrderQty.toFixed(0)} shares`);
         break;
       }
       
-      quotes.push({ price, size: shares });
+      quotes.push({ price: levelPrice, size: shares });
       totalQuotedQty += shares;
     }
     
     if (quotes.length > 0) {
-      console.log(`[QuotingEngine] ✅ Generated ${quotes.length} ${side} quotes, total=${totalQuotedQty.toFixed(0)} shares (budget=${maxNewOrderQty.toFixed(0)})`);
+      const priceRange = quotes.length > 1 
+        ? `$${quotes[quotes.length - 1].price.toFixed(2)}-$${quotes[0].price.toFixed(2)}`
+        : `$${quotes[0].price.toFixed(2)}`;
+      console.log(`[QuotingEngine] ✅ Generated ${quotes.length} ${side} quotes @ ${priceRange}, total=${totalQuotedQty.toFixed(0)} shares (bid=$${startingBid.toFixed(2)})`);
     }
     
     return {
@@ -303,20 +274,15 @@ export class QuotingEngine {
    * Calculate unrealized P&L for loss limit check
    */
   private calculateUnrealizedPnL(market: V35Market): number {
-    // Current value if we sold everything at bid prices
     const upValue = market.upQty * (market.upBestBid || 0);
     const downValue = market.downQty * (market.downBestBid || 0);
     const currentValue = upValue + downValue;
-    
-    // Total cost
     const totalCost = market.upCost + market.downCost;
-    
     return currentValue - totalCost;
   }
   
   /**
    * Calculate locked profit (guaranteed at settlement)
-   * This is the core metric - paired shares × (1 - combined cost)
    */
   calculateLockedProfit(market: V35Market): { 
     pairedShares: number; 
@@ -330,12 +296,10 @@ export class QuotingEngine {
       return { pairedShares: 0, combinedCost: 0, lockedProfit: 0, profitPct: 0 };
     }
     
-    // Calculate average costs
     const avgUpCost = market.upCost / market.upQty;
     const avgDownCost = market.downCost / market.downQty;
     const combinedCost = avgUpCost + avgDownCost;
     
-    // Locked profit = paired shares × (1 - combined cost)
     const lockedProfit = pairedShares * (1 - combinedCost);
     const profitPct = (1 - combinedCost) * 100;
     
@@ -348,13 +312,11 @@ export class QuotingEngine {
   shouldQuoteMarket(market: V35Market): { shouldQuote: boolean; reason: string } {
     const config = getV35Config();
     
-    // Check loss limit
     const pnl = this.calculateUnrealizedPnL(market);
     if (pnl < -config.maxLossPerMarket) {
       return { shouldQuote: false, reason: `Loss limit triggered: $${pnl.toFixed(2)}` };
     }
     
-    // Check if asset is enabled
     if (!config.enabledAssets.includes(market.asset)) {
       return { shouldQuote: false, reason: `Asset ${market.asset} not in enabled list` };
     }
@@ -377,36 +339,9 @@ export class QuotingEngine {
   }
   
   /**
-   * Get the current grid prices
+   * Get the current grid prices (for fallback)
    */
   getGridPrices(): number[] {
     return [...this.gridPrices];
-  }
-  
-  /**
-   * Get grid prices sorted by priority (sweet spot 35c-55c first)
-   * This ensures the most profitable price levels are quoted first
-   */
-  private getPrioritizedPrices(): number[] {
-    const sweetSpotMin = 0.35;
-    const sweetSpotMax = 0.55;
-    
-    // Separate into sweet spot and outer prices
-    const sweetSpot: number[] = [];
-    const outer: number[] = [];
-    
-    for (const price of this.gridPrices) {
-      if (price >= sweetSpotMin && price <= sweetSpotMax) {
-        sweetSpot.push(price);
-      } else {
-        outer.push(price);
-      }
-    }
-    
-    // Sort sweet spot by distance from center (0.45 is optimal)
-    sweetSpot.sort((a, b) => Math.abs(a - 0.45) - Math.abs(b - 0.45));
-    
-    // Return sweet spot first, then outer prices
-    return [...sweetSpot, ...outer];
   }
 }
