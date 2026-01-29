@@ -90,6 +90,9 @@ export class CircuitBreaker extends EventEmitter {
   // DEPRECATED: bannedMarkets kept for API compatibility but never used
   private bannedMarkets = new Set<string>();
   
+  // Track violation count per market (for logging)
+  private marketViolations = new Map<string, number>();
+  
   constructor(config?: Partial<CircuitBreakerConfig>) {
     super();
     this.config = { ...DEFAULT_CONFIG, ...config };
