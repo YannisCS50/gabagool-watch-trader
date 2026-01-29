@@ -148,42 +148,64 @@ export class ProactiveRebalancer {
       return { attempted: false, hedged: false, reason: 'no_liquidity' };
     }
     
-    // V35.10.0: Use current ask + small offset for fast fills
+    // V35.11.0: Use current ask + small offset for fast fills
     const baseAsk = buySide === 'UP' ? upAsk : downAsk;
     const targetPrice = Math.min(baseAsk + REBALANCER_CONFIG.priceOffsetFromAsk, 0.95);
     
-    // Calculate projected combined cost using the LEADING side's average cost
-    const leadingSide: V35Side = gap > 0 ? 'UP' : 'DOWN';
-    const leadingQty = leadingSide === 'UP' ? upQty : downQty;
-    const leadingCost = leadingSide === 'UP' ? market.upCost : market.downCost;
-    const avgLeadingPrice = leadingQty > 0 ? leadingCost / leadingQty : 0.50;
-    const projectedCombined = avgLeadingPrice + targetPrice;
+    // Calculate current averages for BOTH sides
+    const avgUpPrice = upQty > 0 ? (market.upCost || 0) / upQty : 0.50;
+    const avgDownPrice = downQty > 0 ? (market.downCost || 0) / downQty : 0.50;
     
-    // Emergency mode at large gaps
-    const absGap = Math.abs(gap);
-    const isEmergency = absGap >= REBALANCER_CONFIG.emergencyThreshold;
-    const effectiveMaxCost = isEmergency 
-      ? REBALANCER_CONFIG.emergencyMaxCost 
-      : REBALANCER_CONFIG.maxCombinedCost;
+    // ================================================================
+    // V35.11.0: SMART AVERAGE IMPROVEMENT RULE
+    // ================================================================
+    // If ask < current avg for the lagging side → ALWAYS BUY!
+    // This IMPROVES the position (lowers avg) AND balances inventory.
+    // Win-win situation - don't block it!
+    // ================================================================
+    const laggingAvg = buySide === 'UP' ? avgUpPrice : avgDownPrice;
+    const improvesPriceAvg = targetPrice < laggingAvg;
     
-    // Check viability
-    if (projectedCombined > effectiveMaxCost) {
-      console.log(`[Rebalancer] ⚠️ Rebalance too expensive: combined $${projectedCombined.toFixed(3)} > $${effectiveMaxCost.toFixed(2)}${isEmergency ? ' (emergency 1.15)' : ''}`);
-      return {
-        attempted: true,
-        hedged: false,
-        reason: `rebalance_too_expensive: ${projectedCombined.toFixed(3)}`,
-        hedgeSide: buySide,
-        hedgeQty: targetQty,
-      };
+    if (improvesPriceAvg) {
+      // Log the smart buy decision
+      console.log(`[Rebalancer] 🎯 SMART BUY: ${buySide} ask ($${targetPrice.toFixed(3)}) < avg ($${laggingAvg.toFixed(3)}) → IMPROVES POSITION + BALANCES`);
+      // Skip the combined cost check - this is a no-brainer buy!
+    } else {
+      // Standard combined cost viability check
+      const leadingSide: V35Side = gap > 0 ? 'UP' : 'DOWN';
+      const leadingQty = leadingSide === 'UP' ? upQty : downQty;
+      const leadingCost = leadingSide === 'UP' ? market.upCost : market.downCost;
+      const avgLeadingPrice = leadingQty > 0 ? leadingCost / leadingQty : 0.50;
+      const projectedCombined = avgLeadingPrice + targetPrice;
+      
+      // Emergency mode at large gaps
+      const absGap = Math.abs(gap);
+      const isEmergency = absGap >= REBALANCER_CONFIG.emergencyThreshold;
+      const effectiveMaxCost = isEmergency 
+        ? REBALANCER_CONFIG.emergencyMaxCost 
+        : REBALANCER_CONFIG.maxCombinedCost;
+      
+      // Check viability (only if NOT improving avg)
+      if (projectedCombined > effectiveMaxCost) {
+        console.log(`[Rebalancer] ⚠️ Rebalance too expensive: combined $${projectedCombined.toFixed(3)} > $${effectiveMaxCost.toFixed(2)}${isEmergency ? ' (emergency)' : ''}`);
+        return {
+          attempted: true,
+          hedged: false,
+          reason: `rebalance_too_expensive: ${projectedCombined.toFixed(3)}`,
+          hedgeSide: buySide,
+          hedgeQty: targetQty,
+        };
+      }
     }
     
-    // Log the action
+    // Log the action (calculate these for logging even if we skipped cost check)
+    const absGap = Math.abs(gap);
+    const isEmergency = absGap >= REBALANCER_CONFIG.emergencyThreshold;
     const paired = Math.min(upQty, downQty);
-    console.log(`[Rebalancer] 📈 REBALANCE: gap=${gap.toFixed(0)} (max ±${maxAllowedGap})${isEmergency ? ' ⚠️ EMERGENCY' : ''}`);
+    console.log(`[Rebalancer] 📈 REBALANCE: gap=${gap.toFixed(0)} (max ±${maxAllowedGap})${isEmergency ? ' ⚠️ EMERGENCY' : ''}${improvesPriceAvg ? ' 🎯 AVG-IMPROVE' : ''}`);
     console.log(`[Rebalancer]    State: UP=${upQty.toFixed(0)} DOWN=${downQty.toFixed(0)} | Paired=${paired.toFixed(0)}`);
-    console.log(`[Rebalancer]    Buying ${targetQty.toFixed(0)} ${buySide} @ $${targetPrice.toFixed(3)} (ask=$${baseAsk.toFixed(3)}) | Combined: $${projectedCombined.toFixed(3)}`);
-    
+    console.log(`[Rebalancer]    Buying ${targetQty.toFixed(0)} ${buySide} @ $${targetPrice.toFixed(3)} (ask=$${baseAsk.toFixed(3)}, avgLagging=$${laggingAvg.toFixed(3)})`);
+
     // Check minimum notional
     if (targetQty * targetPrice < REBALANCER_CONFIG.minOrderNotional) {
       return {
