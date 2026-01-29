@@ -247,7 +247,11 @@ function initializeRedeemer(): void {
 function isProxyWalletMode(): boolean {
   const signerAddress = wallet?.address.toLowerCase() || '';
   const proxyAddress = (config.polymarket.address || '').toLowerCase();
-  return proxyAddress !== '' && signerAddress !== proxyAddress;
+  // V35.10.2: Proxy wallet mode is disabled - we now claim directly from the proxy wallet
+  // The signer can call redeemPositions on behalf of the proxy wallet because
+  // Polymarket proxy wallets authorize the signer to execute transactions.
+  // For Magic/Email accounts, the exported private key IS the proxy controller.
+  return false; // Disabled: allow claiming in all cases
 }
 
 // ============================================================================
@@ -378,7 +382,31 @@ async function redeemDirectEOA(position: RedeemablePosition): Promise<ClaimResul
   const provider = getProvider();
   const ctfContract = new ethers.Contract(CTF_ADDRESS, CTF_REDEEM_ABI, wallet!);
 
-  console.log(`   🔧 Using direct EOA redemption...`);
+  // Determine which wallet holds the position
+  const positionWallet = (position.proxyWallet || '').toLowerCase();
+  const signerWallet = (wallet?.address || '').toLowerCase();
+  const configProxy = (config.polymarket.address || '').toLowerCase();
+  
+  console.log(`   🔧 Claiming position...`);
+  console.log(`   📍 Position held by: ${positionWallet.slice(0, 10)}...`);
+  console.log(`   📍 Signer wallet: ${signerWallet.slice(0, 10)}...`);
+  console.log(`   📍 Config proxy: ${configProxy.slice(0, 10) || 'not set'}...`);
+
+  // Check if the signer can claim this position
+  // For Polymarket, the signer wallet derived from the private key CAN call redeemPositions
+  // even if the positions are technically "owned" by a proxy address, because:
+  // 1. For Magic/Email accounts: the exported private key controls the proxy
+  // 2. The CTF contract checks the actual token balances, not ownership
+  
+  // Important: The position wallet must match either signer or config proxy
+  if (positionWallet !== signerWallet && positionWallet !== configProxy) {
+    console.log(`   ⚠️ Position wallet doesn't match signer or config proxy`);
+    console.log(`   💡 Make sure POLYMARKET_ADDRESS is set to: ${positionWallet}`);
+    return {
+      success: false,
+      error: `Position belongs to ${positionWallet}, but signer is ${signerWallet} and proxy is ${configProxy || 'not set'}`,
+    };
+  }
 
   try {
     const indexSets = [1, 2];

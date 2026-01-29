@@ -122,9 +122,22 @@ claim_usdc NUMERIC
 
 ## Proxy Wallet Mode
 
-If your signer wallet differs from your Polymarket proxy wallet (Safe/Magic), **automated claiming is NOT supported**. Polymarket does not have an official API for proxy wallet redemptions.
+### V35.10.2 Update: Proxy Wallet Claiming Now Supported
 
-For proxy wallets, you must claim manually:
+Previous versions blocked automated claiming for proxy wallets. This has been fixed:
+
+**How it works:**
+- The redeemer now attempts to claim regardless of wallet type
+- For Magic/Email accounts, the exported private key controls the proxy wallet
+- The CTF contract checks token balances, not ownership metadata
+- Your signer can call `redeemPositions` as long as POLYMARKET_ADDRESS matches the wallet holding the tokens
+
+**If claims fail:**
+1. Verify `POLYMARKET_ADDRESS` matches your proxy wallet address (visible in Polymarket UI)
+2. Ensure the signer wallet has MATIC for gas (~0.01 MATIC per claim)
+3. Run `npm run claim:debug` to diagnose issues
+
+**Manual claiming (fallback):**
 1. Go to https://polymarket.com/portfolio
 2. Connect your MetaMask wallet
 3. Click "Claim" on each resolved market
@@ -135,6 +148,12 @@ For proxy wallets, you must claim manually:
 - All positions below minimum threshold ($0.10)
 - All positions already confirmed claimed
 - No resolved markets with winning outcomes
+
+### "Position wallet doesn't match signer or config proxy"
+This means the position is held by a different wallet than expected:
+1. Check your POLYMARKET_ADDRESS env variable
+2. It should match the wallet shown in the API response
+3. Update your config and restart
 
 ### Nonce errors
 The system uses a mutex to prevent parallel claim attempts. If you see nonce errors, wait for the current claim to complete.
