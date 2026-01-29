@@ -74,6 +74,10 @@ interface ClaimResult {
   blockNumber?: number;
   usdcReceived?: number;
   error?: string;
+  /** If false, we should NOT schedule retries for this failure */
+  retryable?: boolean;
+  /** Optional machine-ish error code for easier filtering */
+  errorCode?: string;
 }
 
 interface ClaimLogEntry {
@@ -239,8 +243,8 @@ function initializeRedeemer(): void {
     console.log(`\n✅ Signer = Proxy (EOA mode) - direct claiming supported`);
   } else {
     console.log(`\n🔐 Signer ≠ Proxy (Proxy wallet mode)`);
-    console.log(`   Automated claiming NOT supported for proxy wallets`);
-    console.log(`   Claims must be done via https://polymarket.com/portfolio`);
+    console.log(`   ✅ Automated claiming supported (V35.10.2+)`);
+    console.log(`   ⚠️  Ensure SIGNER has enough MATIC for gas (not the proxy)`);
   }
 }
 
@@ -252,6 +256,46 @@ function isProxyWalletMode(): boolean {
   // Polymarket proxy wallets authorize the signer to execute transactions.
   // For Magic/Email accounts, the exported private key IS the proxy controller.
   return false; // Disabled: allow claiming in all cases
+}
+
+// ============================================================================
+// ERROR CLASSIFICATION / GAS PRECHECK
+// ============================================================================
+
+function isInsufficientFundsError(err: any): boolean {
+  const code = String(err?.code || '').toUpperCase();
+  const msg = String(err?.message || err || '').toLowerCase();
+  return code === 'INSUFFICIENT_FUNDS' || msg.includes('insufficient funds');
+}
+
+function buildInsufficientFundsMessage(address: string): string {
+  // Keep it short, but actionable; the logs already show the address.
+  return `insufficient_funds_gas: fund signer wallet with MATIC for gas (send ~0.02 MATIC to ${address})`;
+}
+
+function classifyClaimError(err: any): { message: string; retryable: boolean; code?: string } {
+  if (isInsufficientFundsError(err)) {
+    return {
+      message: buildInsufficientFundsMessage(wallet?.address || 'SIGNER'),
+      retryable: false,
+      code: 'INSUFFICIENT_FUNDS',
+    };
+  }
+
+  const msg = String(err?.message || err || 'unknown_error');
+
+  // Nonce / temporary RPC issues -> retryable
+  const lower = msg.toLowerCase();
+  if (lower.includes('nonce') || lower.includes('replacement fee too low') || lower.includes('already known')) {
+    return { message: msg, retryable: true, code: String(err?.code || 'NONCE') };
+  }
+
+  if (lower.includes('timeout') || lower.includes('rate') || lower.includes('429') || lower.includes('gateway') || lower.includes('temporarily')) {
+    return { message: msg, retryable: true, code: String(err?.code || 'TRANSIENT') };
+  }
+
+  // Default: retryable (keeps existing behaviour)
+  return { message: msg, retryable: true, code: String(err?.code || 'UNKNOWN') };
 }
 
 // ============================================================================
@@ -409,6 +453,14 @@ async function redeemDirectEOA(position: RedeemablePosition): Promise<ClaimResul
   }
 
   try {
+    // ----------------------------------------------------------------------
+    // Preflight: ensure signer has enough MATIC for gas.
+    // The error in your screenshot happens during estimateGas when the signer
+    // balance is too low.
+    // ----------------------------------------------------------------------
+    const signer = wallet!.address;
+    const balanceWei = await provider.getBalance(signer);
+
     const indexSets = [1, 2];
     const parentCollectionId = ethers.utils.hexZeroPad('0x00', 32);
 
@@ -417,6 +469,21 @@ async function redeemDirectEOA(position: RedeemablePosition): Promise<ClaimResul
     const maxPriority = feeData.maxPriorityFeePerGas || ethers.utils.parseUnits('30', 'gwei');
     const maxFee = feeData.maxFeePerGas || ethers.utils.parseUnits('60', 'gwei');
     const gasPriceGwei = parseFloat(ethers.utils.formatUnits(maxPriority, 'gwei'));
+
+    // Conservative default gas limit; avoid calling estimateGas when balance is low.
+    const conservativeGasLimit = ethers.BigNumber.from(300_000);
+    const worstCaseCostWei = conservativeGasLimit.mul(maxFee);
+
+    if (balanceWei.lt(worstCaseCostWei)) {
+      const msg = buildInsufficientFundsMessage(signer);
+      console.log(`   ❌ Direct redeem precheck failed: ${msg}`);
+      return {
+        success: false,
+        error: msg,
+        retryable: false,
+        errorCode: 'INSUFFICIENT_FUNDS',
+      };
+    }
 
     console.log(`   ⛽ Gas: priority=${gasPriceGwei.toFixed(1)} gwei`);
 
@@ -503,8 +570,8 @@ async function redeemDirectEOA(position: RedeemablePosition): Promise<ClaimResul
     };
 
   } catch (error: any) {
-    const msg = error?.message || String(error);
-    console.error(`   ❌ Direct redeem failed: ${msg}`);
+    const classified = classifyClaimError(error);
+    console.error(`   ❌ Direct redeem failed: ${classified.message}`);
     
     // Update tx history if we have a hash
     const lastEntry = claimTxHistory[claimTxHistory.length - 1];
@@ -515,7 +582,9 @@ async function redeemDirectEOA(position: RedeemablePosition): Promise<ClaimResul
 
     return {
       success: false,
-      error: msg,
+      error: classified.message,
+      retryable: classified.retryable,
+      errorCode: classified.code,
     };
   }
 }
@@ -585,6 +654,13 @@ async function claimPositionWithLogging(position: RedeemablePosition): Promise<C
 
   // Handle retry logic
   if (!result.success) {
+    // If explicitly non-retryable (e.g., insufficient MATIC for gas), do not spam retries.
+    if (result.retryable === false) {
+      pendingRetries.delete(position.conditionId);
+      console.log(`   ⛔ Not retrying (non-retryable): ${result.errorCode || 'error'}`);
+      return result;
+    }
+
     const currentRetry = pendingRetries.get(position.conditionId);
     const retryCount = (currentRetry?.retryCount || 0) + 1;
     
