@@ -24,8 +24,8 @@
 // If combined cost < $1.02 -> Small loss acceptable for risk reduction.
 // ============================================================
 
-export const V35_VERSION = 'V35.8.0';
-export const V35_CODENAME = 'Rebalancing Cost Limits';
+export const V35_VERSION = 'V35.8.1';
+export const V35_CODENAME = 'Authoritative Sync Fix';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 

@@ -1,13 +1,15 @@
 // ============================================================
 // V35 RUNNER - GABAGOOL MODE
 // ============================================================
-// Version: V35.6.0 - "True Gabagool Mode"
+// Version: V35.8.1 - "Authoritative Sync Fix"
 // 
-// V35.6.0 MAJOR CHANGES:
-// 1. Orders for BOTH sides are now placed SIMULTANEOUSLY (Promise.all)
-// 2. EXPENSIVE_BIAS guard REMOVED (was causing imbalances)
-// 3. CHEAP_SIDE_SKIP simplified (only blocks at 25+ share extreme)
-// 4. Safety comes from BURST_CAP and EMERGENCY_STOP only
+// V35.8.1 CRITICAL FIX:
+// - Position sync now ALWAYS fires when cache has data (removed lastFetchedAtMs > 0 check)
+// - Added explicit sync logging to debug drift issues
+// - Cache state logged periodically for transparency
+//
+// V35.8.0 CHANGES:
+// - maxCombinedCost limits for flexible hedging ($1.02 standard, $1.05 emergency)
 //
 // CORE PRINCIPLE: Quote both sides equally, let the market balance.
 // This matches Gabagool22's approach: high fill frequency + equal quoting.
@@ -568,14 +570,20 @@ async function processMarket(market: V35Market): Promise<void> {
   }
   
   // =========================================================================
-  // V35.5.1: AUTHORITATIVE POSITION SYNC - API IS GROUND TRUTH
+  // V35.8.1: AUTHORITATIVE POSITION SYNC - API IS GROUND TRUTH
   // =========================================================================
-  // CRITICAL FIX: Previously we only synced when API > local (conservative).
-  // This caused massive drift when local state got corrupted or double-counted.
-  // NOW: We trust Polymarket API as the single source of truth.
+  // CRITICAL FIX V35.8.1: The sync was not firing because lastFetchedAtMs was
+  // being checked incorrectly. Now we ALWAYS sync if we have cached data.
+  // 
+  // The position cache refreshes every 1 second from Polymarket API.
+  // If we have ANY cached data, it's more accurate than local state.
   // =========================================================================
   const cachedPos = getCachedPosition(market.slug);
-  if (cachedPos && cachedPos.lastFetchedAtMs > 0) {
+  
+  // V35.8.1: Log cache status for debugging
+  const cacheAge = cachedPos ? (Date.now() - cachedPos.lastFetchedAtMs) : -1;
+  
+  if (cachedPos) {
     const localUp = market.upQty;
     const localDown = market.downQty;
     const apiUp = cachedPos.upShares;
@@ -584,31 +592,27 @@ async function processMarket(market: V35Market): Promise<void> {
     const driftUp = Math.abs(localUp - apiUp);
     const driftDown = Math.abs(localDown - apiDown);
     
-    // Log ANY significant drift (> 1 share)
-    if (driftUp > 1 || driftDown > 1) {
-      log(`🔄 POSITION SYNC: Local (UP=${localUp.toFixed(1)} DOWN=${localDown.toFixed(1)}) → API (UP=${apiUp.toFixed(1)} DOWN=${apiDown.toFixed(1)})`);
+    // V35.8.1: Log cache state every 30 seconds for debugging
+    const shouldLogCacheState = Math.random() < 0.03; // ~3% of calls = roughly every 30s at 1s intervals
+    if (shouldLogCacheState || driftUp > 1 || driftDown > 1) {
+      log(`🔄 POSITION STATE: Local (UP=${localUp.toFixed(1)} DOWN=${localDown.toFixed(1)}) | API (UP=${apiUp.toFixed(1)} DOWN=${apiDown.toFixed(1)}) | Cache age: ${cacheAge}ms`);
     }
     
-    // ALWAYS sync to API values - Polymarket is ground truth
+    // ALWAYS sync to API values if there's ANY drift - Polymarket is ground truth
     // This fixes both under-counting (missed fills) AND over-counting (duplicate fills)
     if (driftUp > 0.5) {
+      log(`📊 SYNC UP: ${localUp.toFixed(1)} → ${apiUp.toFixed(1)} (drift=${driftUp.toFixed(1)})`);
       market.upQty = apiUp;
       market.upCost = cachedPos.upCost;
-      if (apiUp < localUp) {
-        log(`📉 API corrected UP shares DOWN: ${localUp.toFixed(1)} → ${apiUp.toFixed(1)} (local was over-counted)`);
-      } else {
-        log(`📈 API corrected UP shares UP: ${localUp.toFixed(1)} → ${apiUp.toFixed(1)} (missed fills)`);
-      }
     }
     if (driftDown > 0.5) {
+      log(`📊 SYNC DOWN: ${localDown.toFixed(1)} → ${apiDown.toFixed(1)} (drift=${driftDown.toFixed(1)})`);
       market.downQty = apiDown;
       market.downCost = cachedPos.downCost;
-      if (apiDown < localDown) {
-        log(`📉 API corrected DOWN shares DOWN: ${localDown.toFixed(1)} → ${apiDown.toFixed(1)} (local was over-counted)`);
-      } else {
-        log(`📈 API corrected DOWN shares UP: ${localDown.toFixed(1)} → ${apiDown.toFixed(1)} (missed fills)`);
-      }
     }
+  } else {
+    // V35.8.1: Log when cache is not available
+    log(`⚠️ No cached position for ${market.slug.slice(-25)} - using local state`);
   }
   
   // =========================================================================
