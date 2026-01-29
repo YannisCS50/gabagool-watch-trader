@@ -1,14 +1,14 @@
 // ============================================================
 // V35 QUOTING ENGINE - PASSIVE GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.5.6 - "Trailing Side Burst-Cap Exemption"
+// Version: V35.5.7 - "Proportional Trailing Budget"
 //
-// V35.5.6 KEY FIX: Trailing side is EXEMPT from burst-cap!
-// The burst-cap was blocking the trailing side even when it
-// MUST quote to hedge. This caused unrecoverable imbalances.
+// V35.5.7 KEY FIX: Trailing side budget is PROPORTIONAL to imbalance!
+// V35.5.6 gave a fixed 25-share budget which caused OVERSHOOT.
+// Now we give only (imbalance + 1 level buffer) to prevent swinging
+// from one imbalance to the opposite direction.
 //
-// The trailing side (fewer shares) is ALWAYS allowed to quote
-// because filling it REDUCES imbalance, not increases it.
+// Example: If imbalance is 5, trailing gets 5+5=10 shares max, not 25.
 //
 // CHEAP-SIDE SKIP:
 // Only buy the cheap side if the expensive side already leads.
@@ -254,10 +254,12 @@ export class QuotingEngine {
     // =========================================================================
     if (maxNewOrderQty < config.sharesPerLevel) {
       if (isTrailing) {
-        // V35.5.6: Allow trailing side to quote even with budget exhausted
-        // Set a reasonable fallback budget (enough for 5 levels)
-        maxNewOrderQty = config.sharesPerLevel * 5;
-        console.log(`[QuotingEngine] 🔓 BURST-CAP OVERRIDE: ${side} is TRAILING - allowing ${maxNewOrderQty} shares for hedging`);
+        // V35.5.7: Allow trailing side to quote, but ONLY what's needed to balance
+        // Don't give a fixed 25 shares - that can swing the position the other way!
+        const neededToBalance = imbalance;
+        const buffer = config.sharesPerLevel; // One extra level as buffer
+        maxNewOrderQty = Math.max(config.sharesPerLevel, neededToBalance + buffer);
+        console.log(`[QuotingEngine] 🔓 BURST-CAP OVERRIDE: ${side} is TRAILING - allowing ${maxNewOrderQty.toFixed(0)} shares (need ${neededToBalance.toFixed(0)} + ${buffer} buffer)`);
       } else {
         const reason = `BURST-CAP: ${side} budget exhausted (${maxNewOrderQty.toFixed(0)} < ${config.sharesPerLevel} min)`;
         console.log(`[QuotingEngine] 🛡️ ${reason}`);
