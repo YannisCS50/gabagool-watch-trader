@@ -1,55 +1,26 @@
 // ============================================================
 // V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.9.3 - "Balance-First Rebalancer"
+// Version: V35.10.0 - "Continuous Hedge + Smart Spread"
 //
-// V35.9.3 CHANGES:
-// - CRITICAL FIX: Removed confusing "expensive/cheap" logic
-// - Rebalancer now targets BALANCE (UP ≈ DOWN ±5 shares)
-// - If one side leads, buy the OTHER (lagging) side to catch up
-// - No more price-based side determination causing inverted trades
+// V35.10.0 MAJOR CHANGES:
+// ================================================================
+// 1. REMOVED "paired >= 10" guard that blocked rebalancing from flat
+// 2. Rebalancer now places orders AT current ask (not fixed grid)
+// 3. Continuous hedging: ANY imbalance > 5 shares triggers rebalance
+// 4. Smart spread following: orders track the ask, not static levels
+// 5. Emergency mode allows up to 15% loss for risk reduction
 //
-// V35.9.2 CHANGES:
-// - Rebalancer can also buy the CHEAP side to tighten when winner lead > 5
-// - Runner no longer double-counts rebalancer fills (prevents skew amplification)
+// PHILOSOPHY CHANGE:
+// - OLD: Place limit orders on grid, hope market comes to us
+// - NEW: Actively buy the lagging side AT market price to balance
 //
-// V35.9.1 CHANGES:
-// - 3 second cooldown after rebalancer fill to prevent rapid re-orders
-// - Allows API/position-cache to sync before next rebalance decision
-//
-// V35.9.0 CHANGES:
-// - HYBRID MODE: build_winner only if paired >= 10 shares
-// - STATE SYNC: Rebalancer updates market inventory after fills
-// - EMERGENCY: 1.02 normal, 1.15 emergency (gap >= 15)
-//
-// V35.8.2: CRITICAL FIX - In wide-spread markets (e.g., 0.28/0.72),
-// combined costs reach $1.10-1.15. Previous 1.05 cap was blocking
-// ALL hedges. Now: emergency cap = 1.15, allowing rebalancing even
-// at a 15% loss. RISK REDUCTION > PER-TRADE PROFITABILITY.
-//
-// V35.8.0: Added maxCombinedCost for flexible hedging. In wide-spread
-// markets, the bot now accepts small losses (up to 2%) to reduce
-// inventory risk. Emergency mode allows up to 15% loss.
-//
-// V35.7.0: Added automatic expiry snapshot archiving. Every 15-minute
-// market now gets a precise snapshot captured 1 second before expiry
-// (e.g., 12:59:59, 13:14:59). This provides accurate historical records
-// of final positions, CPP, and locked profit regardless of when the
-// cleanup code runs.
-//
-// V35.5.1: Position sync now uses Polymarket API as GROUND TRUTH.
-// Previously only synced when API > local, causing drift when
-// local state was over-counted. Now syncs in BOTH directions.
-//
-// STRATEGY: Place limit BUY orders on a grid for both UP and DOWN sides.
-// When retail traders hit our orders, we accumulate both sides.
-// At settlement: one side pays $1.00, other pays $0.00.
-// If combined cost < $1.00 -> GUARANTEED profit.
-// If combined cost < $1.02 -> Small loss acceptable for risk reduction.
+// This ensures the bot ALWAYS works towards balance, even from flat
+// positions or when one side has old exposure at bad prices.
 // ============================================================
 
-export const V35_VERSION = 'V35.9.3';
-export const V35_CODENAME = 'Balance-First Rebalancer';
+export const V35_VERSION = 'V35.10.0';
+export const V35_CODENAME = 'Continuous Hedge + Smart Spread';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 
@@ -79,7 +50,7 @@ export interface V35Config {
   hedgeTimeoutMs: number;           // Timeout for hedge order
   minEdgeAfterHedge: number;        // Minimum edge after hedge (e.g., -0.02 = accept 2% loss)
   maxCombinedCost: number;          // V35.8.0: Max combined cost for hedge ($1.02 = 2% loss OK)
-  maxCombinedCostEmergency: number; // V35.8.0: Max combined cost in emergency ($1.05)
+  maxCombinedCostEmergency: number; // V35.8.0: Max combined cost in emergency ($1.15)
   maxExpensiveBias: number;         // Max ratio expensive:cheap (e.g., 1.2 = 20% more)
   minHedgeNotional: number;         // V35.3.0: Min $ notional for hedge orders
   
@@ -134,12 +105,12 @@ export interface V35Config {
 }
 
 // =========================================================================
-// PRESET CONFIGURATIONS - BASED ON GABAGOOL STRATEGY DOCUMENT
+// PRESET CONFIGURATIONS - V35.10.0 CONTINUOUS HEDGE MODE
 // =========================================================================
 
 /**
- * TEST MODE - V35.3.0 Robust Hedging
- * Conservative limits with circuit breaker protection
+ * TEST MODE - V35.10.0 Continuous Hedge
+ * Actively balances positions at market prices
  */
 export const TEST_CONFIG: V35Config = {
   mode: 'test',
@@ -150,30 +121,26 @@ export const TEST_CONFIG: V35Config = {
   gridStep: 0.02,
   sharesPerLevel: 5,
   
-  // HEDGE PARAMETERS - V35.8.2 AGGRESSIVE REBALANCE
+  // HEDGE PARAMETERS - V35.10.0 AGGRESSIVE CONTINUOUS HEDGE
   enableActiveHedge: true,
   maxHedgeSlippage: 0.08,           // Accept up to 8¢ slippage for hedge
   hedgeTimeoutMs: 2000,             // 2 second timeout
-  minEdgeAfterHedge: -0.15,         // Accept up to 15% loss for hedge (risk reduction priority)
+  minEdgeAfterHedge: -0.15,         // Accept up to 15% loss for hedge
   maxCombinedCost: 1.02,            // Standard: 2% loss OK
-  maxCombinedCostEmergency: 1.15,   // V35.8.2: 15% loss OK in emergency (RISK REDUCTION!)
+  maxCombinedCostEmergency: 1.15,   // V35.10.0: 15% loss OK in emergency
   maxExpensiveBias: 1.50,           // Expensive side can have 50% more shares
-  minHedgeNotional: 1.05,           // V35.8.2: Lower to $1.05 (just above exchange min)
+  minHedgeNotional: 1.05,           // Just above exchange min
   
-  // Risk limits - V35.4.5 TIGHTER CIRCUIT BREAKER
-  // Three-tier safety system:
-  // 1. WARNING (10) - block leading side
-  // 2. CRITICAL (15) - cancel leading side, prepare halt
-  // 3. ABSOLUTE (20) - trip circuit breaker, halt ALL trading
+  // Risk limits - V35.10.0 (same tiers)
   warnUnpairedShares: 10,
   criticalUnpairedShares: 15,
-  maxUnpairedShares: 20,            // ABSOLUTE HARD STOP - TIGHTER!
-  maxUnpairedImbalance: 20,         // Alias
-  maxImbalanceRatio: 2.0,           // Stricter ratio
+  maxUnpairedShares: 20,
+  maxUnpairedImbalance: 20,
+  maxImbalanceRatio: 2.0,
   maxLossPerMarket: 25,
-  maxConcurrentMarkets: 1,          // V35.3.0: Start with 1 market only
+  maxConcurrentMarkets: 1,
   maxMarkets: 1,
-  maxNotionalPerMarket: 100,        // Lower for safety
+  maxNotionalPerMarket: 100,
   maxTotalExposure: 150,
   skewThreshold: 8,
   capitalPerMarket: 75,
@@ -195,7 +162,7 @@ export const TEST_CONFIG: V35Config = {
 };
 
 /**
- * MODERATE MODE - V35.3.0
+ * MODERATE MODE - V35.10.0
  * Use after 50+ profitable markets in test mode
  */
 export const MODERATE_CONFIG: V35Config = {
@@ -207,7 +174,7 @@ export const MODERATE_CONFIG: V35Config = {
   gridStep: 0.02,
   sharesPerLevel: 5,
   
-  // HEDGE PARAMETERS - V35.8.2 AGGRESSIVE REBALANCE
+  // HEDGE PARAMETERS - V35.10.0 CONTINUOUS HEDGE
   enableActiveHedge: true,
   maxHedgeSlippage: 0.08,
   hedgeTimeoutMs: 2000,
@@ -217,7 +184,7 @@ export const MODERATE_CONFIG: V35Config = {
   maxExpensiveBias: 1.50,
   minHedgeNotional: 1.05,
   
-  // Risk limits - V35.3.0
+  // Risk limits
   warnUnpairedShares: 15,
   criticalUnpairedShares: 30,
   maxUnpairedShares: 40,
@@ -248,7 +215,7 @@ export const MODERATE_CONFIG: V35Config = {
 };
 
 /**
- * PRODUCTION MODE - V35.3.0
+ * PRODUCTION MODE - V35.10.0
  * Use after consistent profitability in moderate mode
  */
 export const PRODUCTION_CONFIG: V35Config = {
@@ -260,7 +227,7 @@ export const PRODUCTION_CONFIG: V35Config = {
   gridStep: 0.02,
   sharesPerLevel: 10,
   
-  // HEDGE PARAMETERS - V35.8.2 AGGRESSIVE REBALANCE
+  // HEDGE PARAMETERS - V35.10.0 CONTINUOUS HEDGE
   enableActiveHedge: true,
   maxHedgeSlippage: 0.08,
   hedgeTimeoutMs: 2000,
@@ -270,7 +237,7 @@ export const PRODUCTION_CONFIG: V35Config = {
   maxExpensiveBias: 1.50,
   minHedgeNotional: 1.05,
   
-  // Risk limits - V35.3.0 (scaled up for production)
+  // Risk limits
   warnUnpairedShares: 20,
   criticalUnpairedShares: 40,
   maxUnpairedShares: 50,
@@ -341,14 +308,14 @@ export function printV35Config(cfg: V35Config): void {
      Levels per side: ${Math.floor((cfg.gridMax - cfg.gridMin) / cfg.gridStep) + 1}
      Shares/level:    ${cfg.sharesPerLevel}
 
-  🎯 ACTIVE HEDGING
+  🎯 ACTIVE HEDGING (V35.10.0 CONTINUOUS MODE)
      Enabled:         ${cfg.enableActiveHedge ? '✅ YES' : '❌ NO'}
      Max slippage:    ${(cfg.maxHedgeSlippage * 100).toFixed(1)}¢
      Min edge:        ${(cfg.minEdgeAfterHedge * 100).toFixed(1)}%
-     Expensive bias:  ${cfg.maxExpensiveBias}x
+     Max combined:    $${cfg.maxCombinedCost.toFixed(2)} (emergency: $${cfg.maxCombinedCostEmergency.toFixed(2)})
      Min notional:    $${cfg.minHedgeNotional?.toFixed(2) || '1.00'}
 
-  🛡️ CIRCUIT BREAKER (V35.3.0)
+  🛡️ CIRCUIT BREAKER
      ⚠️ WARNING:      ${cfg.warnUnpairedShares} shares (block leading side)
      🔴 CRITICAL:     ${cfg.criticalUnpairedShares || cfg.maxUnpairedShares - 10} shares (cancel + prepare halt)
      🚨 ABSOLUTE:     ${cfg.maxUnpairedShares} shares (TRIP CIRCUIT BREAKER)
