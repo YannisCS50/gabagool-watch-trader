@@ -1,21 +1,18 @@
 // ============================================================
 // V35 QUOTING ENGINE - PASSIVE GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.4.4 - "Smart Cheap-Side Skip"
+// Version: V35.5.4 - "Trailing-Side-Hedge Emergency Fix"
 //
-// KEY INSIGHT: In a passive strategy, the CHEAP side usually loses.
-// The market prices in the expected outcome - cheap = likely loser.
+// V35.5.4 KEY FIX: In EMERGENCY (imbalance >= maxUnpairedShares),
+// the TRAILING side must STILL be able to quote to hedge.
+// Only the LEADING side is blocked.
 //
-// V35.4.4 RULE: Only buy the cheap side if the EXPENSIVE side
-// already leads in our inventory. This way:
-// - We never accumulate more of the likely-losing side
-// - We only buy cheap to BALANCE an existing expensive-side lead
-// - No arbitrary 98¢ hedge check - pure inventory-based logic
+// This fixes the bug where both sides were blocked in emergency,
+// making it impossible for the bot to rebalance.
 //
-// EXAMPLE:
-//   UP=30¢ (cheap), DOWN=70¢ (expensive)
-//   If we have DOWN > UP → BUY UP to balance ✅
-//   If we have UP >= DOWN → SKIP UP, don't add to likely loser ❌
+// CHEAP-SIDE SKIP:
+// Only buy the cheap side if the expensive side already leads.
+// But if the cheap side IS trailing (fewer shares), allow it anyway.
 // ============================================================
 
 import { getV35Config, V35_VERSION, type V35Config } from './config.js';
@@ -132,24 +129,31 @@ export class QuotingEngine {
     }
     
     // =========================================================================
-    // EMERGENCY STOP: Block all quoting at extreme imbalance
+    // EMERGENCY STOP: Block NEW quoting at extreme imbalance
+    // V35.5.4 FIX: But ALLOW trailing side to quote (for hedging)
     // =========================================================================
     if (imbalance >= config.maxUnpairedShares) {
-      const reason = `EMERGENCY: ${imbalance.toFixed(0)} share imbalance >= ${config.maxUnpairedShares} max`;
-      console.log(`[QuotingEngine] 🚨 ${reason}`);
-      
-      logV35GuardEvent({
-        marketSlug: market.slug,
-        asset: market.asset,
-        guardType: 'EMERGENCY_STOP',
-        blockedSide: side,
-        upQty: market.upQty,
-        downQty: market.downQty,
-        expensiveSide,
-        reason,
-      }).catch(() => {});
-      
-      return { quotes: [], blocked: true, blockReason: reason };
+      // V35.5.4: If we're the trailing side, we MUST be able to quote to hedge
+      if (isTrailing) {
+        console.log(`[QuotingEngine] 🚨 EMERGENCY but ${side} is TRAILING - allowing hedge quotes`);
+      } else {
+        // Only block the LEADING side
+        const reason = `EMERGENCY: ${imbalance.toFixed(0)} share imbalance >= ${config.maxUnpairedShares} max`;
+        console.log(`[QuotingEngine] 🚨 ${reason} - blocking LEADING side ${side}`);
+        
+        logV35GuardEvent({
+          marketSlug: market.slug,
+          asset: market.asset,
+          guardType: 'EMERGENCY_STOP',
+          blockedSide: side,
+          upQty: market.upQty,
+          downQty: market.downQty,
+          expensiveSide,
+          reason,
+        }).catch(() => {});
+        
+        return { quotes: [], blocked: true, blockReason: reason };
+      }
     }
     
     // =========================================================================

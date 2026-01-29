@@ -1,22 +1,21 @@
 // ============================================================
 // V35 PROACTIVE REBALANCER
 // ============================================================
-// Version: V35.5.3 - "Dynamic Market-Price Rebalancer"
+// Version: V35.5.4 - "Trailing-First Balance Fix"
 //
-// NEW STRATEGY: Buy at current market prices, not calculated "safe" prices.
-// The EXPENSIVE side (likely winner) should LEAD the position.
-// Then we hedge with the CHEAP side.
+// V35.5.4 FIX: Always buy the TRAILING side to reduce imbalance.
+// The trailing side is simply the side with fewer shares.
+// 
+// Previous versions incorrectly used "expensive/cheap" to determine
+// what to buy, which could cause the bot to keep buying the leading
+// side (making imbalance worse) instead of the trailing side.
 //
 // LOGIC:
-// 1. Identify expensive side (=likely winner based on market price)
-// 2. If expensive side is trailing → BUY expensive at current ask
-// 3. Then hedge by buying cheap side
-// 4. Allow combined cost up to ~1.03-1.05 for directional trades
+// 1. Identify trailing side (= fewer shares)
+// 2. BUY trailing side at current ask price
+// 3. Allow combined cost up to 1.02 normally, 1.05 in emergency (gap >= 20)
 //
-// CONSTRAINTS:
-// - Expensive side may lead beyond exposure limits
-// - Cheap side must stay within limits
-// - Use market prices (real orderbook), not calculated theoretical prices
+// This ensures the bot always works to REDUCE imbalance, not increase it.
 // ============================================================
 
 import { getV35Config, V35_VERSION } from './config.js';
@@ -93,9 +92,9 @@ export class ProactiveRebalancer {
     }
     this.lastCheckMs = now;
     
-    // Get market pricing info
+    // Get market pricing info (based on average costs + live bids)
     const pricing = getV35SidePricing(market);
-    const { expensiveSide, cheapSide, expensiveQty, cheapQty } = pricing;
+    const { expensiveSide, cheapSide } = pricing;
     
     const upQty = market.upQty || 0;
     const downQty = market.downQty || 0;
@@ -109,7 +108,12 @@ export class ProactiveRebalancer {
       return { attempted: false, hedged: false, reason: 'balanced' };
     }
     
-    // Determine what we need
+    // ================================================================
+    // V35.5.4 FIX: TRAILING SIDE ALWAYS DETERMINED BY QUANTITY
+    // ================================================================
+    // The trailing side is simply the side with FEWER shares.
+    // We ALWAYS want to buy the trailing side to reduce imbalance.
+    // This is independent of which side is "expensive" or "cheap".
     const trailingSide: V35Side = upQty < downQty ? 'UP' : 'DOWN';
     const leadingSide: V35Side = trailingSide === 'UP' ? 'DOWN' : 'UP';
     
@@ -122,57 +126,55 @@ export class ProactiveRebalancer {
     }
     
     // ================================================================
-    // V35.5.3 NEW LOGIC: EXPENSIVE SIDE SHOULD LEAD
+    // V35.5.4 KEY FIX: ALWAYS BUY TRAILING SIDE TO BALANCE
     // ================================================================
-    // If the expensive side (likely winner) is trailing, buy more of it!
-    // If the cheap side is trailing, buy it as a hedge.
+    // Regardless of "expensive" or "cheap" designation, we need to
+    // buy the TRAILING side to reduce imbalance. The user confirmed:
+    // "hij mag van mij wel iets meer risico nemen, ook als dat betekent
+    //  dat de combined costs naar bijvoorbeeld 1.02-1.03 gaat"
+    //
+    // So we buy the trailing side even if it's "expensive", up to
+    // the maxCombinedCost limit.
     
-    let targetSide: V35Side;
-    let targetPrice: number;
-    let targetQty: number;
-    let purpose: 'build_winner' | 'hedge';
+    const targetSide = trailingSide;
+    const targetPrice = trailingSide === 'UP' ? upAsk : downAsk;
+    const targetQty = gap;
     
-    if (expensiveSide === trailingSide) {
-      // Expensive side is trailing - we WANT to buy more of the winner!
-      // This is directional trading - accept higher combined cost
-      targetSide = expensiveSide;
-      targetPrice = expensiveSide === 'UP' ? upAsk : downAsk;
-      targetQty = gap;
-      purpose = 'build_winner';
-      
-      console.log(`[Rebalancer] 📈 BUILDING WINNER: ${expensiveSide} is trailing but expensive (likely winner)`);
-      console.log(`[Rebalancer]    Current: UP=${upQty.toFixed(0)} DOWN=${downQty.toFixed(0)} | Gap: ${gap.toFixed(0)}`);
-      console.log(`[Rebalancer]    Will buy ${targetQty.toFixed(0)} ${targetSide} @ $${targetPrice.toFixed(3)} (current ask)`);
-      
-    } else {
-      // Cheap side is trailing - buy it to hedge
-      targetSide = cheapSide;
-      targetPrice = cheapSide === 'UP' ? upAsk : downAsk;
-      targetQty = gap;
-      purpose = 'hedge';
-      
-      // Calculate projected combined cost after hedge
-      const leadingAvg = leadingSide === 'UP' 
-        ? (upQty > 0 ? market.upCost / upQty : 0)
-        : (downQty > 0 ? market.downCost / downQty : 0);
-      const projectedCombined = leadingAvg + targetPrice;
-      
-      // Check if hedge is viable (allow up to maxCombinedCost)
-      if (projectedCombined > REBALANCER_CONFIG.maxCombinedCost) {
-        console.log(`[Rebalancer] ⚠️ Hedge too expensive: combined $${projectedCombined.toFixed(3)} > $${REBALANCER_CONFIG.maxCombinedCost}`);
-        return { 
-          attempted: true, 
-          hedged: false, 
-          reason: `hedge_too_expensive: ${projectedCombined.toFixed(3)}`,
-          hedgeSide: targetSide,
-          hedgeQty: targetQty,
-        };
-      }
-      
-      console.log(`[Rebalancer] 🔄 HEDGING: ${cheapSide} is trailing and cheap`);
-      console.log(`[Rebalancer]    Current: UP=${upQty.toFixed(0)} DOWN=${downQty.toFixed(0)} | Gap: ${gap.toFixed(0)}`);
-      console.log(`[Rebalancer]    Will buy ${targetQty.toFixed(0)} ${targetSide} @ $${targetPrice.toFixed(3)} | Combined: $${projectedCombined.toFixed(3)}`);
+    // Determine purpose based on price comparison
+    const purpose: 'build_winner' | 'hedge' = expensiveSide === trailingSide 
+      ? 'build_winner'  // Trailing side is expensive = build winner
+      : 'hedge';        // Trailing side is cheap = hedge
+    
+    // Calculate projected combined cost
+    const leadingQty = leadingSide === 'UP' ? upQty : downQty;
+    const leadingCost = leadingSide === 'UP' ? market.upCost : market.downCost;
+    const leadingAvg = leadingQty > 0 ? leadingCost / leadingQty : 0;
+    const projectedCombined = leadingAvg + targetPrice;
+    
+    // V35.5.4: In EMERGENCY (gap >= 20), allow higher combined cost up to 1.05
+    const isEmergency = gap >= 20;
+    const effectiveMaxCost = isEmergency ? 1.05 : REBALANCER_CONFIG.maxCombinedCost;
+    
+    // Check viability
+    if (projectedCombined > effectiveMaxCost) {
+      console.log(`[Rebalancer] ⚠️ ${purpose} too expensive: combined $${projectedCombined.toFixed(3)} > $${effectiveMaxCost.toFixed(2)}${isEmergency ? ' (emergency limit)' : ''}`);
+      return { 
+        attempted: true, 
+        hedged: false, 
+        reason: `${purpose}_too_expensive: ${projectedCombined.toFixed(3)}`,
+        hedgeSide: targetSide,
+        hedgeQty: targetQty,
+      };
     }
+    
+    // Log the action
+    if (purpose === 'build_winner') {
+      console.log(`[Rebalancer] 📈 BUILDING WINNER: ${trailingSide} is trailing AND expensive (likely winner)`);
+    } else {
+      console.log(`[Rebalancer] 🔄 HEDGING: ${trailingSide} is trailing and cheap`);
+    }
+    console.log(`[Rebalancer]    Current: UP=${upQty.toFixed(0)} DOWN=${downQty.toFixed(0)} | Gap: ${gap.toFixed(0)}${isEmergency ? ' ⚠️ EMERGENCY' : ''}`);
+    console.log(`[Rebalancer]    Will buy ${targetQty.toFixed(0)} ${targetSide} @ $${targetPrice.toFixed(3)} | Combined: $${projectedCombined.toFixed(3)}`)
     
     // Check minimum notional
     if (targetQty * targetPrice < REBALANCER_CONFIG.minOrderNotional) {
