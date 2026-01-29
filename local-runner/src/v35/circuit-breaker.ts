@@ -1,14 +1,17 @@
 // ============================================================
-// V35 CIRCUIT BREAKER - HARD SAFETY SYSTEM
+// V35 CIRCUIT BREAKER - MARKET-SPECIFIC SAFETY SYSTEM
 // ============================================================
-// Version: V35.3.1 - "Safe Hedge Logging"
+// Version: V35.4.0 - "Skip to Next Market"
 //
-// This module provides ABSOLUTE safety guarantees that cannot be bypassed.
-// When tripped, it halts ALL trading activity immediately.
+// CRITICAL CHANGE: Circuit breaker is now MARKET-SPECIFIC.
+// When tripped, it ONLY bans the problematic market, NOT the entire bot.
+// The bot automatically skips to the next 15-minute market.
 //
-// V35.3.1 FIX:
-// - Now logs guard events to bot_events table for debugging visibility
-// - WARNING, CRITICAL, and HALT triggers are recorded to database
+// V35.4.0 FIX:
+// - Tripping bans ONLY the specific market that caused the issue
+// - Bot continues trading other markets and waits for next market cycle
+// - Automatic reset when a new market slug is detected
+// - strategy_enabled flag is NO LONGER touched (bot stays running)
 // ============================================================
 
 import { EventEmitter } from 'events';
@@ -24,7 +27,7 @@ export interface CircuitBreakerState {
   tripped: boolean;
   trippedAt: number | null;
   reason: string | null;
-  marketSlug: string | null;
+  bannedMarketSlug: string | null;  // Only THIS market is banned
   upQty: number;
   downQty: number;
   imbalance: number;
@@ -32,9 +35,9 @@ export interface CircuitBreakerState {
 
 export interface CircuitBreakerConfig {
   // ABSOLUTE HARD LIMITS - These CANNOT be exceeded
-  absoluteMaxUnpaired: number;      // 50 shares - instant halt
-  warningThreshold: number;         // 20 shares - block leading side
-  criticalThreshold: number;        // 35 shares - cancel all, prepare halt
+  absoluteMaxUnpaired: number;      // 35 shares - instant halt for THIS MARKET
+  warningThreshold: number;         // 15 shares - block leading side
+  criticalThreshold: number;        // 25 shares - cancel all, prepare halt
   
   // RECOVERY
   cooldownMs: number;               // Time before auto-reset (if enabled)
@@ -46,11 +49,11 @@ export interface CircuitBreakerConfig {
 // ============================================================
 
 const DEFAULT_CONFIG: CircuitBreakerConfig = {
-  absoluteMaxUnpaired: 35,   // HARD LIMIT - instant halt
+  absoluteMaxUnpaired: 35,   // HARD LIMIT - instant halt for this market
   warningThreshold: 15,      // Block leading side
   criticalThreshold: 25,     // Cancel leading side orders
   cooldownMs: 60_000,
-  autoReset: false, // Manual reset required for safety
+  autoReset: true, // V35.4.0: Auto-reset when new market starts
 };
 
 // ============================================================
@@ -63,7 +66,7 @@ export class CircuitBreaker extends EventEmitter {
     tripped: false,
     trippedAt: null,
     reason: null,
-    marketSlug: null,
+    bannedMarketSlug: null,
     upQty: 0,
     downQty: 0,
     imbalance: 0,
@@ -72,14 +75,40 @@ export class CircuitBreaker extends EventEmitter {
   // Track violations per market
   private marketViolations = new Map<string, number>();
   
+  // V35.4.0: Track banned markets (skip these, wait for next)
+  private bannedMarkets = new Set<string>();
+  
   constructor(config?: Partial<CircuitBreakerConfig>) {
     super();
     this.config = { ...DEFAULT_CONFIG, ...config };
   }
   
   /**
+   * V35.4.0: Check if a specific market is banned (skip it, wait for next)
+   */
+  isMarketBanned(marketSlug: string): boolean {
+    return this.bannedMarkets.has(marketSlug);
+  }
+  
+  /**
+   * V35.4.0: Clear ban for a specific market (called when market expires)
+   */
+  clearMarketBan(marketSlug: string): void {
+    if (this.bannedMarkets.has(marketSlug)) {
+      console.log(`[CircuitBreaker] ✅ Clearing ban for expired market: ${marketSlug.slice(-25)}`);
+      this.bannedMarkets.delete(marketSlug);
+      
+      // If this was the currently-tripped market, reset the state
+      if (this.state.bannedMarketSlug === marketSlug) {
+        this.reset();
+      }
+    }
+  }
+  
+  /**
    * Check market state and trip breaker if necessary
-   * Returns TRUE if trading should STOP
+   * Returns TRUE if trading should STOP for THIS MARKET
+   * V35.4.0: Now market-specific - other markets can continue trading
    */
   async checkMarket(market: V35Market, dryRun: boolean): Promise<{
     shouldStop: boolean;
@@ -87,6 +116,16 @@ export class CircuitBreaker extends EventEmitter {
     shouldBlockDown: boolean;
     reason: string | null;
   }> {
+    // V35.4.0: If this specific market is banned, skip it immediately
+    if (this.bannedMarkets.has(market.slug)) {
+      return {
+        shouldStop: true,
+        shouldBlockUp: true,
+        shouldBlockDown: true,
+        reason: `Market banned - waiting for next cycle`,
+      };
+    }
+    
     const imbalance = Math.abs(market.upQty - market.downQty);
     const leadingSide = market.upQty > market.downQty ? 'UP' : 'DOWN';
     
@@ -94,11 +133,12 @@ export class CircuitBreaker extends EventEmitter {
     console.log(`[CircuitBreaker] 🔍 ${market.slug.slice(-25)} | UP=${market.upQty.toFixed(0)} DOWN=${market.downQty.toFixed(0)} | Imbalance=${imbalance.toFixed(0)}`);
     
     // =========================================================================
-    // LEVEL 1: ABSOLUTE HARD STOP (50 shares)
+    // LEVEL 1: ABSOLUTE HARD STOP (35 shares) - BAN THIS MARKET ONLY
     // =========================================================================
     if (imbalance >= this.config.absoluteMaxUnpaired) {
       const reason = `ABSOLUTE LIMIT BREACHED: ${imbalance.toFixed(0)} >= ${this.config.absoluteMaxUnpaired} shares`;
       console.log(`[CircuitBreaker] 🚨🚨🚨 ${reason}`);
+      console.log(`[CircuitBreaker] ⏭️ BANNING this market, will skip to next cycle`);
       
       // LOG GUARD EVENT TO DATABASE
       logV35GuardEvent({
@@ -109,14 +149,14 @@ export class CircuitBreaker extends EventEmitter {
         upQty: market.upQty,
         downQty: market.downQty,
         expensiveSide: leadingSide,
-        reason: `ABSOLUTE HALT: ${reason}`,
+        reason: `MARKET BANNED: ${reason}`,
       }).catch(() => {});
       
-      // TRIP THE BREAKER
-      this.trip(reason, market.slug, market.upQty, market.downQty, imbalance);
+      // V35.4.0: Ban THIS market only, don't stop entire bot
+      this.banMarket(market.slug, reason, market.upQty, market.downQty, imbalance);
       
-      // EMERGENCY: Cancel ALL orders immediately via API
-      console.log(`[CircuitBreaker] 🚨 EMERGENCY CANCEL - fetching ALL open orders from Polymarket API...`);
+      // EMERGENCY: Cancel ALL orders for this market immediately
+      console.log(`[CircuitBreaker] 🚨 EMERGENCY CANCEL for ${market.slug.slice(-25)}...`);
       await this.emergencyCancel(market, dryRun);
       
       return {
@@ -214,26 +254,36 @@ export class CircuitBreaker extends EventEmitter {
   }
   
   /**
-   * Trip the circuit breaker
+   * V35.4.0: Ban a specific market (skip to next cycle)
+   * Does NOT stop the entire bot - only this market
    */
-  private trip(reason: string, marketSlug: string, upQty: number, downQty: number, imbalance: number): void {
+  private banMarket(marketSlug: string, reason: string, upQty: number, downQty: number, imbalance: number): void {
+    this.bannedMarkets.add(marketSlug);
+    
     this.state = {
       tripped: true,
       trippedAt: Date.now(),
       reason,
-      marketSlug,
+      bannedMarketSlug: marketSlug,
       upQty,
       downQty,
       imbalance,
     };
     
-    console.log(`[CircuitBreaker] 🚨🚨🚨 CIRCUIT BREAKER TRIPPED 🚨🚨🚨`);
+    console.log(`[CircuitBreaker] ⛔ MARKET BANNED: ${marketSlug.slice(-25)}`);
     console.log(`[CircuitBreaker]    Reason: ${reason}`);
-    console.log(`[CircuitBreaker]    Market: ${marketSlug}`);
     console.log(`[CircuitBreaker]    State: UP=${upQty.toFixed(0)} DOWN=${downQty.toFixed(0)} Imbalance=${imbalance.toFixed(0)}`);
-    console.log(`[CircuitBreaker]    ALL TRADING HALTED - Manual reset required`);
+    console.log(`[CircuitBreaker]    ⏭️ Bot will SKIP this market and continue with next cycle`);
+    console.log(`[CircuitBreaker]    ✅ NO MANUAL INTERVENTION REQUIRED`);
     
-    this.emit('tripped', this.state);
+    this.emit('marketBanned', { marketSlug, reason, imbalance });
+  }
+  
+  /**
+   * Legacy trip method (kept for compatibility, now calls banMarket)
+   */
+  private trip(reason: string, marketSlug: string, upQty: number, downQty: number, imbalance: number): void {
+    this.banMarket(marketSlug, reason, upQty, downQty, imbalance);
   }
   
   /**
@@ -285,10 +335,17 @@ export class CircuitBreaker extends EventEmitter {
   }
   
   /**
-   * Check if breaker is tripped
+   * Check if breaker is tripped (for any market)
    */
   isTripped(): boolean {
     return this.state.tripped;
+  }
+  
+  /**
+   * V35.4.0: Check if tripped for a SPECIFIC market
+   */
+  isTrippedForMarket(marketSlug: string): boolean {
+    return this.bannedMarkets.has(marketSlug);
   }
   
   /**
@@ -299,24 +356,33 @@ export class CircuitBreaker extends EventEmitter {
   }
   
   /**
-   * Manual reset (requires explicit action)
+   * Get list of all banned markets
+   */
+  getBannedMarkets(): string[] {
+    return Array.from(this.bannedMarkets);
+  }
+  
+  /**
+   * Manual reset (clears all bans)
    */
   reset(): void {
-    if (!this.state.tripped) return;
+    if (!this.state.tripped && this.bannedMarkets.size === 0) return;
     
-    console.log(`[CircuitBreaker] ⚡ MANUAL RESET - Clearing tripped state`);
+    console.log(`[CircuitBreaker] ⚡ RESET - Clearing all bans`);
     console.log(`[CircuitBreaker]    Previous state: ${JSON.stringify(this.state)}`);
+    console.log(`[CircuitBreaker]    Banned markets cleared: ${Array.from(this.bannedMarkets).join(', ')}`);
     
     this.state = {
       tripped: false,
       trippedAt: null,
       reason: null,
-      marketSlug: null,
+      bannedMarketSlug: null,
       upQty: 0,
       downQty: 0,
       imbalance: 0,
     };
     
+    this.bannedMarkets.clear();
     this.marketViolations.clear();
     this.emit('reset');
   }

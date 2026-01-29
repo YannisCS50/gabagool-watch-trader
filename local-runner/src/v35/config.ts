@@ -1,24 +1,24 @@
 // ============================================================
 // V35 CONFIGURATION - GABAGOOL STRATEGY
 // ============================================================
-// Version: V35.3.8 - "Proactive Recovery"
+// Version: V35.4.0 - "Skip to Next Market"
 //
-// CRITICAL FIX: Proactive rebalancer now runs BEFORE circuit breaker halt,
-// allowing the bot to REDUCE imbalance even when the safety limits are tripped.
+// CRITICAL FIX: When circuit breaker trips, bot now SKIPS to the
+// next 15-minute market instead of halting completely.
 // 
+// - Circuit breaker is now MARKET-SPECIFIC
+// - Bot stays running and waits for next cycle
+// - NO manual intervention required
+// - Banned market auto-clears when it expires
+//
 // STRATEGY: Place limit BUY orders on a grid for both UP and DOWN sides.
 // When retail traders hit our orders, we accumulate both sides.
 // At settlement: one side pays $1.00, other pays $0.00.
 // If combined cost < $1.00 -> GUARANTEED profit.
-//
-// V35.3.8 FIX:
-// - Proactive rebalancer runs BEFORE circuit breaker HALT check
-// - When tripped, bot still attempts to hedge the imbalance
-// - If hedge succeeds, circuit breaker may recover automatically
 // ============================================================
 
-export const V35_VERSION = 'V35.3.8';
-export const V35_CODENAME = 'Proactive Recovery';
+export const V35_VERSION = 'V35.4.0';
+export const V35_CODENAME = 'Skip to Next Market';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 
