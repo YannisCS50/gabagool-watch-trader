@@ -69,6 +69,8 @@ import {
   registerMarketForCache,
   unregisterMarketFromCache,
 } from '../position-cache.js';
+// Auto-claim redeemer for winning positions
+import { startAutoClaimLoop, stopAutoClaimLoop } from '../redeemer.js';
 
 // ============================================================
 // CONSTANTS
@@ -1235,6 +1237,12 @@ async function main(): Promise<void> {
     flushOrderbookBuffer().catch(err => logError('Orderbook flush failed:', err));
   }, ORDERBOOK_LOG_INTERVAL_MS);
   
+  // V35.10.1: Start auto-claim loop for winning positions (every 5 minutes)
+  if (!config.dryRun) {
+    log('💰 Starting auto-claim loop for winning positions (every 5 min)...');
+    startAutoClaimLoop(5 * 60 * 1000);
+  }
+  
   // Handle shutdown
   const shutdown = async () => {
     console.log('\n');
@@ -1242,6 +1250,8 @@ async function main(): Promise<void> {
     clearInterval(heartbeatInterval);
     clearInterval(leaseRenewInterval);
     clearInterval(orderbookFlushInterval);
+    // Stop auto-claim loop
+    stopAutoClaimLoop();
     // Final flush before shutdown
     await flushOrderbookBuffer();
     await stop();
