@@ -1,16 +1,17 @@
 // ============================================================
 // V36 PAIR TRACKER - INDEPENDENT PAIR LIFECYCLE MANAGEMENT
 // ============================================================
-// Version: V36.3.0 - "Single Maker Placement"
+// Version: V36.3.1 - "Race Condition Fix"
+//
+// V36.3.1 CRITICAL FIX:
+// - Set makerPlaced=true BEFORE async placeOrder call
+// - This prevents race conditions where REST + WebSocket both try to place
+// - If order fails, we reset makerPlaced=false to allow retry
 //
 // V36.3.0 CRITICAL FIX:
 // - MAKER ORDER IS PLACED ONLY ONCE - in openPair() after taker fill
 // - onFill() now only tracks fills, does NOT place maker orders
 // - This prevents the double-ordering bug that wiped the account
-//
-// V36.2.9 CHANGES:
-// - Immediate maker placement after REST API confirms taker fill
-// - No WebSocket dependency for critical path
 //
 // CORE CONCEPT:
 // Each trade is an INDEPENDENT "Pair" with its own lifecycle:
@@ -382,8 +383,10 @@ export class PairTracker {
   }
   
   /**
-   * V36.3.0: Place maker order - PRIVATE METHOD
+   * V36.3.1: Place maker order - PRIVATE METHOD
    * This is the ONLY place a maker order is created!
+   * 
+   * CRITICAL FIX: Set makerPlaced=true BEFORE the async call to prevent race conditions
    */
   private async placeMakerOrder(
     pair: PendingPair,
@@ -392,17 +395,24 @@ export class PairTracker {
     takerFilledSize: number
   ): Promise<{ success: boolean; error?: string }> {
     
-    // V36.3.0: CRITICAL - Check if maker was already placed
+    // V36.3.1: CRITICAL - Check AND SET flag atomically BEFORE async work
+    // This prevents race conditions where two calls both pass the check
     if (pair.makerPlaced) {
       console.log(`[PairTracker] ⚠️ Maker already placed for ${pair.id} - skipping duplicate!`);
       return { success: true }; // Already done, not an error
     }
+    
+    // V36.3.1: SET FLAG IMMEDIATELY before any async work!
+    // If we fail later, we'll set it back to false
+    pair.makerPlaced = true;
+    console.log(`[PairTracker] 🔒 Locked makerPlaced=true for ${pair.id} (preventing race conditions)`);
     
     // Calculate maker price: targetCpp - takerFillPrice
     const makerPrice = this.config.targetCpp - takerFilledPrice;
     
     if (makerPrice < 0.05) {
       console.log(`[PairTracker] ⚠️ Maker price too low: $${makerPrice.toFixed(3)}`);
+      pair.makerPlaced = false; // Release lock on failure
       return { success: false, error: 'maker_price_too_low' };
     }
     
@@ -423,14 +433,14 @@ export class PairTracker {
       
       if (!makerResult.success || !makerResult.orderId) {
         console.log(`[PairTracker] ❌ Maker order failed: ${makerResult.error}`);
+        pair.makerPlaced = false; // Release lock on failure
         return { success: false, error: makerResult.error || 'maker_failed' };
       }
       
       // Register order ID for WebSocket
       registerOurOrderId(makerResult.orderId);
       
-      // V36.3.0: Mark maker as placed IMMEDIATELY to prevent any duplicate
-      pair.makerPlaced = true;
+      // Update pair state (makerPlaced already true)
       pair.makerOrderId = makerResult.orderId;
       pair.makerPrice = clampedMakerPrice;
       pair.status = 'WAITING_HEDGE';
@@ -456,6 +466,7 @@ export class PairTracker {
       
     } catch (err: any) {
       console.error(`[PairTracker] Error placing maker:`, err?.message);
+      pair.makerPlaced = false; // Release lock on failure
       return { success: false, error: err?.message };
     }
   }
