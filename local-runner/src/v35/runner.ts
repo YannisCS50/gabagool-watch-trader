@@ -906,26 +906,29 @@ async function processMarket(market: V35Market): Promise<void> {
       logCombinedBook(combinedBook, market.asset);
     }
 
-    // DISABLED: Don't place passive quotes in pair-based mode
-    // The pair tracker handles all entries via taker + maker pairs
-    const upQuotes: V35Quote[] = [];
-    const downQuotes: V35Quote[] = [];
+    // =========================================================================
+    // V36.2.8 FIX: DO NOT CALL syncOrders IN PAIR-BASED MODE!
+    // =========================================================================
+    // The old code passed empty quote arrays to syncOrders, which then:
+    // 1. Detected that NO target prices exist (empty set)
+    // 2. Cancelled ALL existing orders (because they weren't in target)
+    // 
+    // This broke V36 pair-based trading because:
+    // - PairTracker places maker limit orders
+    // - syncOrders immediately cancels them!
+    // 
+    // FIX: Skip syncOrders entirely in pair-based mode.
+    // PairTracker is solely responsible for order lifecycle management.
+    // =========================================================================
     
     // Debug: log quote generation (V36.1: passive quotes disabled, pair-based only)
     const imbalance = Math.abs(market.upQty - market.downQty);
-    log(`   📦 V36.1 Mode: Passive quotes disabled, using pair-based entries only`);
+    log(`   📦 V36.2.8 Mode: Passive quotes + syncOrders DISABLED`);
     log(`   📊 Inventory: UP=${market.upQty.toFixed(0)} DOWN=${market.downQty.toFixed(0)} (imbalance=${imbalance.toFixed(0)})`);
     log(`   💰 Best asks: UP=$${market.upBestAsk?.toFixed(2)} DOWN=$${market.downBestAsk?.toFixed(2)}`);
+    log(`   🎯 PairTracker manages all orders - no grid sync`);
     
-    // V36: SYNC BOTH SIDES SIMULTANEOUSLY
-    const [upResult, downResult] = await Promise.all([
-      syncOrders(market, 'UP', upQuotes, config.dryRun),
-      syncOrders(market, 'DOWN', downQuotes, config.dryRun),
-    ]);
-    
-    if (upResult.placed > 0 || downResult.placed > 0) {
-      log(`📝 Orders placed: UP=${upResult.placed} DOWN=${downResult.placed} (V36.1 PAIR-BASED)`);
-    }
+    // NO syncOrders call - PairTracker handles everything
   }
 }
 
