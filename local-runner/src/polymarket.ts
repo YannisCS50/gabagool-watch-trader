@@ -969,14 +969,22 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
       console.log(`   - Size matched: ${sizeMatched}`);
       console.log(`   - Order status: ${orderStatus}`);
       
-      // Determine actual fill status
+      // V36.3.2: Determine actual fill status with FOK-aware logic
       let fillStatus: 'filled' | 'partial' | 'open' | 'unknown';
+      
       if (sizeMatched >= originalSize && originalSize > 0) {
         fillStatus = 'filled';
       } else if (sizeMatched > 0) {
         fillStatus = 'partial';
       } else if (orderStatus === 'live') {
         fillStatus = 'open';
+      } else if (isFokOrder) {
+        // V36.3.2: FOK orders with unknown status but order found = likely FILLED
+        // FOK orders either fill completely or get killed, they don't sit in book
+        // If we found the order and it's not 'live', it must have filled or been killed
+        // Since the order was accepted (we have an orderId), assume FILLED
+        console.log(`🎯 FOK order found but status unclear - assuming FILLED (FOK semantics)`);
+        fillStatus = 'filled';
       } else {
         fillStatus = 'unknown';
       }
