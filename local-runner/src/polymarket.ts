@@ -953,6 +953,9 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
     console.log(`   Status from response: ${resp?.status || 'unknown'}`);
 
     // Now verify the order exists and get fill status
+    // V36.2.10: FOK orders disappear immediately after fill - special handling!
+    const isFokOrder = order.orderType === 'FOK';
+    
     try {
       console.log(`🔍 Verifying order ${orderId} via getOrder()...`);
       const orderDetails = await client.getOrder(orderId);
@@ -984,12 +987,26 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
         success: true,
         orderId,
         avgPrice: order.price,
-        filledSize: sizeMatched > 0 ? sizeMatched : undefined,
+        filledSize: sizeMatched > 0 ? sizeMatched : order.size,
         status: fillStatus,
       };
     } catch (verifyError: any) {
       console.warn(`⚠️ Could not verify order: ${verifyError?.message}`);
-      // Order was placed but we couldn't verify - return as pending
+      
+      // V36.2.10: FOK orders that can't be found = FILLED (they disappear immediately)
+      // FOK = Fill or Kill - if order was accepted but not found, it filled completely
+      if (isFokOrder) {
+        console.log(`🎯 FOK order not found in book - assuming FILLED (FOK semantics)`);
+        return {
+          success: true,
+          orderId,
+          avgPrice: order.price,
+          filledSize: order.size,
+          status: 'filled',
+        };
+      }
+      
+      // GTC/GTD orders: if we can't verify, return as pending
       return {
         success: true,
         orderId,
