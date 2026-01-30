@@ -208,12 +208,20 @@ export class PairTracker {
     
     // Get current prices
     const expensiveAsk = expensiveSide === 'UP' ? market.upBestAsk : market.downBestAsk;
-    const cheapBid = expensiveSide === 'UP' ? market.downBestBid : market.upBestBid;
     const cheapSide: V35Side = expensiveSide === 'UP' ? 'DOWN' : 'UP';
-    
-    // Calculate target maker price
-    const makerPrice = Math.max(0.05, cheapBid - this.config.makerPriceOffset);
-    
+    const cheapBid = cheapSide === 'UP' ? market.upBestBid : market.downBestBid;
+    const cheapAsk = cheapSide === 'UP' ? market.upBestAsk : market.downBestAsk;
+
+    // === V36.1 STRATEGY (per jouw framework) ===
+    // We target a fixed combined cost (CPP) by setting the maker price as:
+    //   makerPrice = targetCpp - takerAsk
+    // This can be well below the current bid (that's fine: it's a passive bid).
+    // We still avoid accidentally crossing the spread (turning into taker) via a small anti-cross buffer.
+    const makerAntiCross = 0.002; // 0.2¢ anti-cross margin
+    const makerTarget = this.config.targetCpp - expensiveAsk;
+    const makerMax = cheapAsk > 0 && cheapAsk < 1 ? Math.max(0.05, cheapAsk - makerAntiCross) : 0.95;
+    const makerPrice = Math.max(0.05, Math.min(makerTarget, makerMax));
+
     // Check if combined cost is acceptable
     const projectedCpp = expensiveAsk + makerPrice;
     
@@ -231,8 +239,8 @@ export class PairTracker {
     
     console.log(`[PairTracker] 🎯 Opening pair ${pairId}`);
     console.log(`[PairTracker]    TAKER: ${size} ${expensiveSide} @ $${expensiveAsk.toFixed(3)}`);
-    console.log(`[PairTracker]    MAKER: ${size} ${cheapSide} @ $${makerPrice.toFixed(3)} (bid=$${cheapBid.toFixed(3)})`);
-    console.log(`[PairTracker]    Target CPP: $${projectedCpp.toFixed(3)}`);
+    console.log(`[PairTracker]    MAKER: ${size} ${cheapSide} @ $${makerPrice.toFixed(3)} (bid=$${cheapBid.toFixed(3)} ask=$${cheapAsk.toFixed(3)})`);
+    console.log(`[PairTracker]    Target CPP: $${this.config.targetCpp.toFixed(3)} | Projected CPP now: $${projectedCpp.toFixed(3)}`);
     
     if (config.dryRun) {
       console.log(`[PairTracker] [DRY RUN] Would open pair`);
@@ -275,7 +283,7 @@ export class PairTracker {
       console.log(`[PairTracker] ✓ Maker placed: ${makerResult.orderId.slice(0, 8)}...`);
       
       // Create pair record
-      const pair: PendingPair = {
+        const pair: PendingPair = {
         id: pairId,
         marketSlug: market.slug,
         asset: market.asset,
@@ -294,7 +302,7 @@ export class PairTracker {
         status: 'PENDING_ENTRY',
         createdAt: Date.now(),
         updatedAt: Date.now(),
-        targetCpp: projectedCpp,
+          targetCpp: this.config.targetCpp,
       };
       
       this.pairs.set(pairId, pair);
