@@ -512,16 +512,46 @@ export class PairTracker {
   }
   
   /**
-   * V36.2: NO TIMEOUT - maker order stays open until:
-   * 1. It fills naturally
-   * 2. Emergency hedge is triggered by Binance reversal ($30 move)
+   * V36.2: Check for stale pairs that need cleanup
    * 
-   * This method is kept for interface compatibility but does nothing.
+   * PENDING_ENTRY pairs: If taker order didn't fill within 60s, 
+   * the order probably failed/expired. Cancel the pair.
+   * 
+   * WAITING_HEDGE pairs: Maker order stays open indefinitely.
+   * Only emergency hedge (Binance $30 reversal) can close them.
    */
   async checkTimeouts(_market: V35Market): Promise<void> {
-    // V36.2: Maker orders stay open indefinitely
-    // Only emergency hedge (Binance $30 reversal) can close them
-    // NO timeout-based emergency hedges
+    const now = Date.now();
+    const PENDING_ENTRY_TIMEOUT_MS = 60_000; // 60 seconds for taker to fill
+    
+    for (const pair of this.pairs.values()) {
+      // Check stale PENDING_ENTRY pairs (taker never filled)
+      if (pair.status === 'PENDING_ENTRY') {
+        const age = now - pair.createdAt;
+        
+        if (age > PENDING_ENTRY_TIMEOUT_MS) {
+          console.log(`[PairTracker] 🗑️ Cleaning stale PENDING_ENTRY: ${pair.id} (age: ${Math.round(age / 1000)}s)`);
+          console.log(`[PairTracker]    Taker order ${pair.takerOrderId?.slice(0, 8)}... never filled - cancelling pair`);
+          
+          // Try to cancel the taker order if it exists
+          if (pair.takerOrderId) {
+            try {
+              await cancelOrder(pair.takerOrderId);
+              console.log(`[PairTracker]    ✓ Cancelled stale taker order`);
+            } catch (err) {
+              // Order might already be expired/cancelled
+              console.log(`[PairTracker]    ⚠️ Could not cancel (already expired?)`);
+            }
+          }
+          
+          pair.status = 'CANCELLED';
+          pair.updatedAt = now;
+        }
+      }
+      
+      // WAITING_HEDGE pairs: No timeout - maker stays open until fill or emergency
+      // This is intentional for V36.2
+    }
   }
   
   /**
