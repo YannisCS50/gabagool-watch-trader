@@ -1,7 +1,7 @@
 // ============================================================
 // V36 INDEX - Re-exports all V35/V36 modules
 // ============================================================
-// Version: V36.0.0 - "Professional Market Making"
+// Version: V36.1.0 - "Pair-Based Market Making"
 // ============================================================
 
 export * from './config.js';
@@ -23,5 +23,9 @@ export * from './combined-book.js';
 export * from './depth-parser.js';
 export * from './v36-quoting-engine.js';
 
-export const V35_VERSION = 'V36.0.0';
-export const V35_NAME = 'Professional Market Making - Combined Book Analysis';
+// V36.1: Pair-based market making with stop-loss
+export * from './pair-tracker.js';
+export * from './reversal-detector.js';
+
+export const V35_VERSION = 'V36.1.0';
+export const V35_NAME = 'Pair-Based Market Making with Binance Stop-Loss';
