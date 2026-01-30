@@ -117,6 +117,33 @@ export async function processFillWithHedge(
 }
 
 /**
+ * V36 pair-based mode: update inventory ONLY (no active hedge).
+ *
+ * Rationale: In V36, hedging is performed via PairTracker maker limit orders
+ * (or emergency hedges). The legacy HedgeManager IOC hedge conflicts with that.
+ */
+export function processFillInventoryOnly(fill: V35Fill, market: V35Market): boolean {
+  if (fill.tokenId === market.upTokenId) {
+    market.upQty += fill.size;
+    market.upCost += fill.size * fill.price;
+    market.upFills++;
+    console.log(`📥 [V36] FILL: UP +${fill.size.toFixed(0)} @ $${fill.price.toFixed(2)} in ${market.slug.slice(-25)}`);
+    return true;
+  }
+
+  if (fill.tokenId === market.downTokenId) {
+    market.downQty += fill.size;
+    market.downCost += fill.size * fill.price;
+    market.downFills++;
+    console.log(`📥 [V36] FILL: DOWN +${fill.size.toFixed(0)} @ $${fill.price.toFixed(2)} in ${market.slug.slice(-25)}`);
+    return true;
+  }
+
+  console.warn(`[FillTracker] ❌ Unknown token ID: ${fill.tokenId.slice(0, 20)}...`);
+  return false;
+}
+
+/**
  * Process a fill event and update market inventory (LEGACY - no hedge)
  */
 export function processFill(
