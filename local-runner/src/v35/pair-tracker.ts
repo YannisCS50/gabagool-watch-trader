@@ -1,12 +1,12 @@
 // ============================================================
 // V36 PAIR TRACKER - INDEPENDENT PAIR LIFECYCLE MANAGEMENT
 // ============================================================
-// Version: V36.2.5 - "Parallel Pairs + Maker Debug"
+// Version: V36.2.6 - "Minimum Order Value"
 //
-// V36.2.5 CHANGES:
-// - REVERT: Allow parallel pairs again (stacking limit orders is fine!)
-// - ADD: Extra logging around maker order placement to debug issues
-// - FIX: Log MAKER_PLACED event to database for visibility
+// V36.2.6 CHANGES:
+// - ADD: Minimum order value check ($1.00) - auto-adjust size
+// - ADD: Extra logging around maker order placement
+// - REVERT: Allow parallel pairs (stacking limit orders is fine!)
 //
 // V36.2.2 CHANGES:
 // - FIX: Create pair BEFORE placing order to avoid race condition
@@ -240,7 +240,50 @@ export class PairTracker {
     
     // Get current prices
     const expensiveAsk = expensiveSide === 'UP' ? market.upBestAsk : market.downBestAsk;
+    const cheapAsk = expensiveSide === 'UP' ? market.downBestAsk : market.upBestAsk;
     const cheapSide: V35Side = expensiveSide === 'UP' ? 'DOWN' : 'UP';
+    
+    // =========================================================================
+    // V36.2.5: MINIMUM ORDER VALUE CHECK ($1.00)
+    // =========================================================================
+    // Polymarket requires minimum order value of $1.00
+    // At low prices (e.g., 2¢), we need more shares: $1.00 / $0.02 = 50 shares
+    // But we cap at maxSharesPerPair to avoid excessive exposure
+    // If we can't meet the minimum, skip this pair
+    // =========================================================================
+    const MIN_ORDER_VALUE = 1.00;
+    const MAX_ORDER_VALUE = 1.05; // Don't go much above $1 for cheap side edge cases
+    
+    const takerOrderValue = size * expensiveAsk;
+    const makerOrderValue = size * cheapAsk;
+    
+    // Adjust size if order value is too low
+    if (takerOrderValue < MIN_ORDER_VALUE || makerOrderValue < MIN_ORDER_VALUE) {
+      const minSharesForTaker = Math.ceil(MIN_ORDER_VALUE / expensiveAsk);
+      const minSharesForMaker = Math.ceil(MIN_ORDER_VALUE / cheapAsk);
+      const requiredSize = Math.max(minSharesForTaker, minSharesForMaker);
+      
+      if (requiredSize > this.config.maxSharesPerPair) {
+        console.log(`[PairTracker] ⚠️ Cannot meet $1 minimum: need ${requiredSize} shares but max is ${this.config.maxSharesPerPair}`);
+        console.log(`[PairTracker]    Prices: expensive=$${expensiveAsk.toFixed(3)} cheap=$${cheapAsk.toFixed(3)}`);
+        // Still proceed but cap at max - the exchange might reject, but we try
+        size = this.config.maxSharesPerPair;
+      } else {
+        console.log(`[PairTracker] 📈 Adjusting size for $1 minimum: ${size} → ${requiredSize} shares`);
+        size = requiredSize;
+      }
+    }
+    
+    // Cap order value at MAX_ORDER_VALUE for cheap side (which determines our loss exposure)
+    const adjustedMakerValue = size * cheapAsk;
+    if (adjustedMakerValue > MAX_ORDER_VALUE && cheapAsk < 0.10) {
+      // Only reduce if we're dealing with very cheap prices
+      const cappedSize = Math.floor(MAX_ORDER_VALUE / cheapAsk);
+      if (cappedSize >= Math.ceil(MIN_ORDER_VALUE / expensiveAsk)) {
+        console.log(`[PairTracker] 📉 Capping size to limit cheap side exposure: ${size} → ${cappedSize} shares`);
+        size = cappedSize;
+      }
+    }
     
     // V36.2: NO CPP CHECK - we ALWAYS buy the expensive side
     // The maker price will be calculated AFTER the fill based on actual fill price
