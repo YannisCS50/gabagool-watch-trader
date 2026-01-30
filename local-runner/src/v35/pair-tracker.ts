@@ -82,6 +82,7 @@ export interface PairTrackerConfig {
   minSharesPerPair: number;          // Minimum shares per pair
   maxSharesPerPair: number;          // Maximum shares per pair
   makerTimeoutMs: number;            // Cancel maker if not filled after this
+  startupDelayMs: number;            // Wait after market open before first pair
 }
 
 const DEFAULT_CONFIG: PairTrackerConfig = {
@@ -94,6 +95,7 @@ const DEFAULT_CONFIG: PairTrackerConfig = {
   minSharesPerPair: 5,
   maxSharesPerPair: 20,
   makerTimeoutMs: 30_000,
+  startupDelayMs: 30_000,            // 30 seconds observation period
 };
 
 // ============================================================
@@ -104,9 +106,52 @@ export class PairTracker {
   private config: PairTrackerConfig;
   private pairs: Map<string, PendingPair> = new Map();
   private pairCounter = 0;
+  private marketStartTimes: Map<string, number> = new Map(); // Track when each market started
   
   constructor(config: Partial<PairTrackerConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
+  }
+  
+  /**
+   * Register when a market window starts (for startup delay calculation)
+   */
+  registerMarketStart(marketSlug: string): void {
+    if (!this.marketStartTimes.has(marketSlug)) {
+      this.marketStartTimes.set(marketSlug, Date.now());
+      console.log(`[PairTracker] 📍 Registered market start: ${marketSlug} | Waiting ${this.config.startupDelayMs / 1000}s before trading`);
+    }
+  }
+  
+  /**
+   * Check if startup delay has passed for this market
+   */
+  isStartupDelayComplete(marketSlug: string): boolean {
+    const startTime = this.marketStartTimes.get(marketSlug);
+    if (!startTime) {
+      // First time seeing this market, register it
+      this.registerMarketStart(marketSlug);
+      return false;
+    }
+    
+    const elapsed = Date.now() - startTime;
+    const complete = elapsed >= this.config.startupDelayMs;
+    
+    if (!complete) {
+      const remaining = Math.ceil((this.config.startupDelayMs - elapsed) / 1000);
+      // Only log every 5 seconds to avoid spam
+      if (remaining % 5 === 0 || remaining <= 3) {
+        console.log(`[PairTracker] ⏳ Startup delay: ${remaining}s remaining for ${marketSlug}`);
+      }
+    }
+    
+    return complete;
+  }
+  
+  /**
+   * Clear market start time (for cleanup when market ends)
+   */
+  clearMarketStart(marketSlug: string): void {
+    this.marketStartTimes.delete(marketSlug);
   }
   
   /**
@@ -148,6 +193,11 @@ export class PairTracker {
     size: number
   ): Promise<{ success: boolean; pairId?: string; error?: string }> {
     const config = getV35Config();
+    
+    // Check startup delay - wait for market to stabilize
+    if (!this.isStartupDelayComplete(market.slug)) {
+      return { success: false, error: 'startup_delay_active' };
+    }
     
     // Validate
     if (!this.canOpenNewPair()) {
@@ -491,6 +541,7 @@ export class PairTracker {
   reset(): void {
     this.pairs.clear();
     this.pairCounter = 0;
+    this.marketStartTimes.clear();
   }
 }
 
