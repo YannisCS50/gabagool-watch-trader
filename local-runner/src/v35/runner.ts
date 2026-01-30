@@ -1,17 +1,18 @@
 // ============================================================
-// V36 RUNNER - PROFESSIONAL MARKET MAKING
+// V36 RUNNER - PAIR-BASED MARKET MAKING
 // ============================================================
-// Version: V36.0.0 - "Professional Market Making"
+// Version: V36.1.0 - "Pair-Based Market Making with Binance Stop-Loss"
 // 
-// V36.0.0 KEY CHANGES:
-// - FULL ORDERBOOK DEPTH parsing (not just top-of-book)
-// - UP + DOWN treated as ONE COMBINED BOOK
-// - Only quotes when EDGE exists (combined ask < $1.00)
-// - Depth-aware sizing based on available liquidity
+// V36.1.0 KEY CHANGES:
+// - PAIR-BASED trading: Taker on expensive → Maker on cheap
+// - BINANCE STOP-LOSS: Detects reversals and triggers emergency hedges
+// - Independent pair lifecycle tracking
+// - Replaces symmetric passive quoting that caused exit liquidity
 //
-// CORE INSIGHT: UP + DOWN outcomes are intrinsically linked.
-// If askUp + askDown < $1.00, there's profit to be made.
-// We quote both sides and lock in the edge at settlement.
+// CORE INSIGHT: Follow the winner, not the loser.
+// 1. Enter via TAKER on expensive (winning) side
+// 2. Hedge via MAKER limit on cheap (losing) side
+// 3. If Binance reverses → Emergency TAKER hedge to lock in small loss
 //
 // CRITICAL INVARIANTS:
 // 1. Circuit Breaker is MARKET-SPECIFIC (not global)
@@ -55,6 +56,9 @@ import type { V35OrderbookSnapshot } from './types.js';
 import { getV36QuotingEngine, resetV36QuotingEngine } from './v36-quoting-engine.js';
 import { parseBookEvent, type ParsedDepth } from './depth-parser.js';
 import { buildCombinedBook, logCombinedBook } from './combined-book.js';
+// V36.1: Pair-based market making with Binance stop-loss
+import { getPairTracker, resetPairTracker } from './pair-tracker.js';
+import { getReversalDetector, resetReversalDetector } from './reversal-detector.js';
 // Expiry snapshot scheduler - captures market state exactly 1 second before expiry
 import { scheduleExpirySnapshot, cancelExpirySnapshot, cancelAllExpirySnapshots, setSnapshotCallback } from './expiry-snapshot.js';
 import { ensureValidCredentials, getBalance, getOpenOrders } from '../polymarket.js';
@@ -322,13 +326,12 @@ function processWsEvent(data: any): void {
 }
 
 // ============================================================
-// FILL HANDLER (from User WebSocket) - WITH ACTIVE HEDGING
+// FILL HANDLER (from User WebSocket) - WITH PAIR TRACKING
 // ============================================================
 
 /**
  * Handle fills received from the authenticated User WebSocket
- * TRIGGERS ACTIVE HEDGE via HedgeManager
- * V35.3.1: Also logs inventory snapshots after each fill cycle
+ * V36.1: Now also updates PairTracker for pair-based lifecycle
  */
 async function handleFillFromUserWs(fill: V35Fill): Promise<void> {
   const market = markets.get(fill.marketSlug);
@@ -339,7 +342,18 @@ async function handleFillFromUserWs(fill: V35Fill): Promise<void> {
 
   log(`🎯 [UserWS] FILL: ${fill.side} ${fill.size.toFixed(0)} @ $${fill.price.toFixed(2)} in ${fill.marketSlug.slice(-25)}`);
   
-  // Process fill WITH active hedging
+  // V36.1: Check if this fill belongs to a tracked pair
+  const pairTracker = getPairTracker();
+  const { pairUpdated, pair } = await pairTracker.onFill(fill, market);
+  
+  if (pairUpdated && pair) {
+    log(`   📦 Pair ${pair.id} updated: ${pair.status}`);
+    if (pair.actualCpp) {
+      log(`   💰 CPP: $${pair.actualCpp.toFixed(3)} | P&L: $${(pair.pnl || 0).toFixed(2)}`);
+    }
+  }
+  
+  // Process fill WITH active hedging (legacy V35 system for non-pair fills)
   const { processed, hedgeResult } = await processFillWithHedge(fill, market);
   
   if (processed) {
@@ -515,6 +529,7 @@ async function refreshMarkets(): Promise<void> {
 function cleanupExpiredMarkets(): void {
   const now = Date.now();
   const circuitBreaker = getCircuitBreaker();
+  const pairTracker = getPairTracker();
   let removed = 0;
   
   for (const [slug, market] of markets.entries()) {
@@ -524,6 +539,12 @@ function cleanupExpiredMarkets(): void {
       
       log(`🏁 SETTLED ${slug.slice(-35)}`);
       log(`   Paired: ${metrics.paired.toFixed(0)} | Combined: $${metrics.combinedCost.toFixed(3)} | Locked: $${metrics.lockedProfit.toFixed(2)}`);
+      
+      // V36.1: Log pair tracker stats for this market before cleanup
+      const pairStats = pairTracker.getStats();
+      if (pairStats.completedPairs > 0) {
+        log(`   📦 Pairs: ${pairStats.completedPairs} completed | P&L: $${pairStats.totalPnl.toFixed(2)} | Avg CPP: $${pairStats.avgCpp.toFixed(3)}`);
+      }
       
       // V35.4.0: Clear any ban for this market (it's expired, we'll get a new one)
       circuitBreaker.clearMarketBan(slug);
@@ -558,6 +579,9 @@ function cleanupExpiredMarkets(): void {
       removed++;
     }
   }
+  
+  // V36.1: Clean up completed pairs (older than 5 minutes)
+  pairTracker.cleanup();
   
   if (removed > 0) {
     log(`🗑️ Removed ${removed} expired markets`);
@@ -734,7 +758,35 @@ async function processMarket(market: V35Market): Promise<void> {
   // Queue orderbook snapshot for logging
   queueOrderbookSnapshot(market);
   
-  // Note: Proactive rebalancer was already called above (before circuit breaker check)
+  // =========================================================================
+  // V36.1: REVERSAL DETECTOR - CHECK FOR BINANCE REVERSALS
+  // =========================================================================
+  // This runs on every market tick and checks if Binance is signaling a reversal.
+  // If detected, it triggers emergency hedges on pending pairs.
+  // =========================================================================
+  const reversalDetector = getReversalDetector();
+  const reversalResult = await reversalDetector.checkForReversals(market);
+  
+  if (reversalResult.reversalDetected) {
+    log(`🚨 REVERSAL DETECTED: Binance ${market.asset} reversing!`);
+    if (reversalResult.emergencyTriggered) {
+      log(`   ✅ Emergency hedge triggered`);
+    } else {
+      log(`   ⚠️ Emergency hedge failed: ${reversalResult.reason || 'unknown'}`);
+    }
+  }
+  
+  // =========================================================================
+  // V36.1: PAIR TRACKER - CHECK TIMEOUTS
+  // =========================================================================
+  const pairTracker = getPairTracker();
+  await pairTracker.checkTimeouts(market);
+  
+  // Log pair tracker stats periodically
+  const pairStats = pairTracker.getStats();
+  if (pairStats.activePairs > 0 || pairStats.completedPairs > 0) {
+    log(`   📦 Pairs: ${pairStats.activePairs} active | ${pairStats.completedPairs} completed | P&L: $${pairStats.totalPnl.toFixed(2)}`);
+  }
   
   // Calculate metrics
   const metrics = calculateMarketMetrics(market);
@@ -762,9 +814,44 @@ async function processMarket(market: V35Market): Promise<void> {
   // Sync orders if not paused
   if (!paused) {
     // =========================================================================
-    // V36: USE COMBINED BOOK ANALYSIS FOR QUOTING
+    // V36.1: PAIR-BASED ENTRY LOGIC
+    // =========================================================================
+    // Instead of symmetric quoting, we now:
+    // 1. Identify which side is "expensive" (likely winner)
+    // 2. Open a pair: TAKER on expensive, MAKER on cheap
     // =========================================================================
     const v36Engine = getV36QuotingEngine();
+    const combinedBook = v36Engine.getCombinedBook(market.slug);
+    
+    if (combinedBook && combinedBook.hasEdge) {
+      // Determine expensive side based on current asks
+      const upAsk = market.upBestAsk || 1;
+      const downAsk = market.downBestAsk || 1;
+      const expensiveSide: 'UP' | 'DOWN' = upAsk > downAsk ? 'UP' : 'DOWN';
+      
+      // Check if we can open a new pair
+      if (pairTracker.canOpenNewPair()) {
+        const pairSize = Math.max(5, Math.min(15, Math.floor(10))); // 5-15 shares per pair
+        
+        log(`   🎯 V36.1: Edge detected (${(combinedBook.edge * 100).toFixed(1)}¢) - opening pair on ${expensiveSide}`);
+        
+        const pairResult = await pairTracker.openPair(market, expensiveSide, pairSize);
+        
+        if (pairResult.success) {
+          log(`   ✅ Pair ${pairResult.pairId} opened`);
+        } else {
+          log(`   ⚠️ Pair open failed: ${pairResult.error}`);
+        }
+      } else {
+        log(`   ⏸️ Max pairs reached (${pairStats.activePairs}/${5}) - waiting for fills`);
+      }
+    }
+    
+    // =========================================================================
+    // V36 FALLBACK: USE COMBINED BOOK ANALYSIS FOR QUOTING
+    // =========================================================================
+    // Keep the existing V36 quoting as fallback for markets without pairs
+    // =========================================================================
     const v36Result = v36Engine.generateQuotes(market);
     
     // Apply circuit breaker constraints on top of V36 decision
@@ -775,7 +862,7 @@ async function processMarket(market: V35Market): Promise<void> {
       log(`   🛡️ Safety: ${safetyCheck.reason} | UP=${allowUpQuotes ? '✅' : '🚫'} DOWN=${allowDownQuotes ? '✅' : '🚫'}`);
     }
     
-    // Use V36 quotes if available, otherwise fall back to V35
+    // Use V36 quotes if available
     let upQuotes = v36Result.upQuotes;
     let downQuotes = v36Result.downQuotes;
     
@@ -809,7 +896,7 @@ async function processMarket(market: V35Market): Promise<void> {
     ]);
     
     if (upResult.placed > 0 || downResult.placed > 0) {
-      log(`📝 Orders placed: UP=${upResult.placed} DOWN=${downResult.placed} (V36 COMBINED BOOK)`);
+      log(`📝 Orders placed: UP=${upResult.placed} DOWN=${downResult.placed} (V36.1 PAIR-BASED)`);
     }
   }
 }
