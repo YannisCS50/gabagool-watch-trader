@@ -1,27 +1,30 @@
 // ============================================================
 // V36 RUNNER - PAIR-BASED MARKET MAKING
 // ============================================================
-// Version: V36.2.5 - "Parallel Pairs + Maker Debug"
+// Version: V36.2.6 - "Minimum Order Value"
 //
-// V36.2.5 KEY CHANGES:
-// - REVERT: Allow parallel pairs (stacking limit orders is fine!)
-// - ADD: Better logging to debug maker order issues
-// - DISABLED: HedgeManager auto-hedging on fills
-// - ENABLED: PairTracker is the ONLY system placing orders
+// V36.2.6 KEY CHANGES:
+// - ADD: Minimum order value check ($1.00) - adjusts size automatically
+// - ADD: Better logging for pair matching debug
 //
-// V36.2.0 KEY CHANGES:
-// - PAIR-BASED trading: Taker on expensive → Maker on cheap
-// - NO CPP CHECK on entry: Always enter, maker price = targetCpp - fillPrice
-// - BINANCE STOP-LOSS: Detects reversals and triggers emergency hedges
+// ============================================================
+// V36 STRATEGY SUMMARY (Taker-Maker Pair Trading)
+// ============================================================
+// 1. TAKER on expensive side: 10 shares market order
+// 2. MAKER on cheap side: 10 shares limit @ (targetCpp - takerFillPrice)
+// 3. Pairs are tracked - orders are NOT cancelled
+// 4. Exception: Binance reversal ($30 move) triggers emergency hedge
+// 5. Minimum order value: $1.00 - size adjusted at low prices
 //
-// CORE INSIGHT: Follow the winner, not the loser.
-// 1. Enter via TAKER on expensive (winning) side (always executes)
-// 2. Hedge via MAKER limit at: $0.95 - takerFillPrice
-// 3. If Binance reverses → Emergency TAKER hedge to lock in small loss
+// INVARIANT: expensive_side_shares >= cheap_side_shares
+// (taker fills first, maker waits for fill)
+// ============================================================
 //
-// CRITICAL INVARIANT:
-// - UP shares >= DOWN shares (taker fills first, maker waits)
-// - If DOWN > UP, something is BROKEN
+// DISABLED LEGACY COMPONENTS:
+// - Circuit Breaker (V35 inventory guards)
+// - ProactiveRebalancer (V35 auto-buying lagging side)
+// - EmergencyRecovery (V35 auto-buying lagging side)
+// - HedgeManager auto-hedging on fills
 // ============================================================
 
 import '../config.js'; // Load env first
