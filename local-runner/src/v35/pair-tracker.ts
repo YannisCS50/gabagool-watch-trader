@@ -1,7 +1,12 @@
 // ============================================================
 // V36 PAIR TRACKER - INDEPENDENT PAIR LIFECYCLE MANAGEMENT
 // ============================================================
-// Version: V36.1.0 - "Pair-Based Market Making"
+// Version: V36.2.2 - "Race-Condition Safe Pair Matching"
+//
+// V36.2.2 CHANGES:
+// - FIX: Create pair BEFORE placing order to avoid race condition
+// - FIX: Match fills on side+status when orderId not yet set
+// - The WebSocket fill can arrive before placeOrder() returns!
 //
 // CORE CONCEPT:
 // Each trade is an INDEPENDENT "Pair" with its own lifecycle:
@@ -236,6 +241,34 @@ export class PairTracker {
       return { success: false, error: 'dry_run' };
     }
     
+    // V36.2.2: Create pair FIRST, then place order to avoid race condition
+    // The fill can arrive via WebSocket before placeOrder() returns!
+    const pair: PendingPair = {
+      id: pairId,
+      marketSlug: market.slug,
+      asset: market.asset,
+      conditionId: market.conditionId,
+      
+      takerSide: expensiveSide,
+      takerPrice: expensiveAsk,
+      takerSize: size,
+      takerOrderId: undefined, // Will be set after order is placed
+      
+      // Maker will be set after taker fill
+      makerSide: cheapSide,
+      makerPrice: 0, // Will be calculated after fill
+      makerSize: size,
+      makerOrderId: undefined,
+      
+      status: 'PENDING_ENTRY',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      targetCpp: this.config.targetCpp,
+    };
+    
+    // Store pair BEFORE placing order so onFill can find it
+    this.pairs.set(pairId, pair);
+    
     // 1. Place TAKER order on expensive side (market buy)
     try {
       const takerResult = await placeOrder({
@@ -248,41 +281,19 @@ export class PairTracker {
       
       if (!takerResult.success || !takerResult.orderId) {
         console.log(`[PairTracker] ❌ Taker order failed: ${takerResult.error}`);
+        // Remove the pair we pre-created
+        this.pairs.delete(pairId);
         return { success: false, error: takerResult.error || 'taker_failed' };
       }
       
       // CRITICAL: Register order ID so user-ws recognizes fills as ours!
       registerOurOrderId(takerResult.orderId);
+      
+      // NOW set the takerOrderId on the pair (it already exists in the map)
+      pair.takerOrderId = takerResult.orderId;
+      pair.updatedAt = Date.now();
+      
       console.log(`[PairTracker] ✓ Taker placed & registered: ${takerResult.orderId.slice(0, 8)}...`);
-      
-      // V36.2: Do NOT place maker yet - wait for taker fill
-      // The maker will be placed in onFill() after we know the actual fill price
-      
-      // Create pair record (no maker yet)
-      const pair: PendingPair = {
-        id: pairId,
-        marketSlug: market.slug,
-        asset: market.asset,
-        conditionId: market.conditionId,
-        
-        takerSide: expensiveSide,
-        takerPrice: expensiveAsk,
-        takerSize: size,
-        takerOrderId: takerResult.orderId,
-        
-        // Maker will be set after taker fill
-        makerSide: cheapSide,
-        makerPrice: 0, // Will be calculated after fill
-        makerSize: size,
-        makerOrderId: undefined,
-        
-        status: 'PENDING_ENTRY',
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        targetCpp: this.config.targetCpp,
-      };
-      
-      this.pairs.set(pairId, pair);
       
       // Log event
       logV35GuardEvent({
@@ -300,6 +311,8 @@ export class PairTracker {
       
     } catch (err: any) {
       console.error(`[PairTracker] Error opening pair:`, err?.message);
+      // Remove the pair we pre-created
+      this.pairs.delete(pairId);
       return { success: false, error: err?.message };
     }
   }
@@ -318,8 +331,21 @@ export class PairTracker {
     for (const pair of this.pairs.values()) {
       if (pair.marketSlug !== market.slug) continue;
       
-      // Check taker fill - V36.2: NOW place the maker order
-      if (pair.takerOrderId === fill.orderId && pair.status === 'PENDING_ENTRY') {
+      // Check taker fill - V36.2.2: Match on orderId OR on side (for race condition)
+      // The fill can arrive before openPair() sets the orderId, so we also match
+      // on takerSide + PENDING_ENTRY status when orderId is not yet set
+      const isTakerOrderIdMatch = pair.takerOrderId && pair.takerOrderId === fill.orderId;
+      const isTakerSideMatch = !pair.takerOrderId && 
+                                pair.status === 'PENDING_ENTRY' && 
+                                pair.takerSide === fill.side &&
+                                !pair.takerFilledAt; // Not already filled
+      
+      if ((isTakerOrderIdMatch || isTakerSideMatch) && pair.status === 'PENDING_ENTRY') {
+        // If we matched on side, update the orderId now that we know it
+        if (isTakerSideMatch && fill.orderId) {
+          pair.takerOrderId = fill.orderId;
+          console.log(`[PairTracker] 🔗 Linked fill orderId to pair: ${fill.orderId.slice(0, 8)}...`);
+        }
         pair.takerFilledAt = Date.now();
         pair.takerFilledPrice = fill.price;
         pair.takerFilledSize = fill.size;
