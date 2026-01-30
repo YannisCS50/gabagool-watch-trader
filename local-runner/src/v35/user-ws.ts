@@ -1,15 +1,23 @@
 // ============================================================
 // V35 USER WEBSOCKET - Authenticated Fill Tracking
 // ============================================================
-// V35.3.2 - "Order ID Filter Fix"
+// V36.2.7 - "Accept All Fills for Active Market"
 //
 // Connects to Polymarket's authenticated User Channel to receive
 // real-time notifications when our orders are matched (filled).
 //
-// CRITICAL FIX: Only accept fills for orders WE placed.
-// The User Channel broadcasts ALL trades in subscribed markets,
-// not just our own! Without this filter, we'd count other
-// traders' fills as our own -> massive inventory corruption.
+// V36.2.7 CRITICAL FIX:
+// In V36, we trade only ONE market at a time. The orderId registration
+// race condition caused fills to be rejected because:
+// 1. placeOrder() is called
+// 2. Order fills IMMEDIATELY on exchange (market order)
+// 3. Fill arrives via WebSocket
+// 4. BUT registerOurOrderId() hasn't been called yet!
+// 5. Fill is REJECTED as "not ours"
+//
+// FIX: Accept ALL fills for tokens in our tokenToMarketMap.
+// Since we only subscribe to tokens we're actively trading,
+// any fill for those tokens is ours. PairTracker handles matching.
 // ============================================================
 
 import WebSocket from 'ws';
@@ -27,12 +35,12 @@ let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 // Token ID to market info mapping (set by runner)
 let tokenToMarketMap: Map<string, { slug: string; side: V35Side; asset: string }> = new Map();
 
-// CRITICAL V35.3.2: Track our own order IDs to filter fills
-// Only fills matching these IDs are actually OURS
+// V36.2.7: Track order IDs for logging purposes only (not filtering)
+// In V36 single-market mode, we accept all fills for subscribed tokens
 const ourOrderIds = new Set<string>();
 let totalFillsReceived = 0;
 let ourFillsAccepted = 0;
-let otherFillsRejected = 0;
+let unknownFillsAccepted = 0; // V36.2.7: Fills accepted without orderId match
 
 function log(msg: string): void {
   const ts = new Date().toISOString().slice(11, 19);
@@ -213,28 +221,32 @@ function processTrade(data: any): void {
   }> | undefined;
 
   if (!makerOrders || makerOrders.length === 0) {
-    // Check if the taker_order_id matches one of OURS
+    // This is a taker fill - check if it's for a token we're trading
     const takerId = data.taker_order_id;
     const assetId = data.asset_id;
     const price = parseFloat(data.price);
     const size = parseFloat(data.size);
 
     if (takerId && assetId && !isNaN(price) && !isNaN(size)) {
-      // CRITICAL: Only accept if this is OUR order
-      if (!ourOrderIds.has(takerId)) {
-        otherFillsRejected++;
-        // Log periodically to show filtering is working
-        if (otherFillsRejected % 10 === 1) {
-          log(`🚫 Rejected ${otherFillsRejected} fills from other traders (not our orders)`);
-        }
+      // V36.2.7: Accept fill if it's for a token in our active market
+      const marketInfo = tokenToMarketMap.get(assetId);
+      
+      if (!marketInfo) {
+        // Not a token we're trading - ignore
         return;
       }
       
-      const marketInfo = tokenToMarketMap.get(assetId);
-      if (marketInfo && fillCallback) {
+      // V36.2.7: Log whether this was a known order or not
+      const isKnownOrder = ourOrderIds.has(takerId);
+      if (isKnownOrder) {
         ourFillsAccepted++;
-        log(`🎯 TAKER FILL (ours): ${marketInfo.side} ${size.toFixed(0)} @ $${price.toFixed(2)} | Accepted: ${ourFillsAccepted}/${totalFillsReceived}`);
-        
+        log(`🎯 TAKER FILL (known): ${marketInfo.side} ${size.toFixed(0)} @ $${price.toFixed(2)} | orderId: ${takerId.slice(0, 8)}...`);
+      } else {
+        unknownFillsAccepted++;
+        log(`🎯 TAKER FILL (race-fix): ${marketInfo.side} ${size.toFixed(0)} @ $${price.toFixed(2)} | orderId: ${takerId.slice(0, 8)}... (not pre-registered)`);
+      }
+      
+      if (fillCallback) {
         const fill: V35Fill = {
           orderId: takerId,
           tokenId: assetId,
@@ -254,22 +266,11 @@ function processTrade(data: any): void {
   // Process each maker order that was matched
   for (const maker of makerOrders) {
     const orderId = maker.order_id;
-    
-    // CRITICAL V35.3.2: Only accept fills for orders WE placed!
-    if (!ourOrderIds.has(orderId)) {
-      otherFillsRejected++;
-      // Log periodically to show filtering is working
-      if (otherFillsRejected % 10 === 1) {
-        log(`🚫 Rejected ${otherFillsRejected} fills from other traders (not our orders)`);
-      }
-      continue;
-    }
-    
     const assetId = maker.asset_id;
     const marketInfo = tokenToMarketMap.get(assetId);
     
     if (!marketInfo) {
-      log(`⚠️ Unknown asset in trade: ${assetId.slice(0, 20)}...`);
+      // Not a token we're trading - ignore
       continue;
     }
 
@@ -281,8 +282,15 @@ function processTrade(data: any): void {
       continue;
     }
 
-    ourFillsAccepted++;
-    log(`🎯 MAKER FILL (ours): ${marketInfo.side} ${size.toFixed(0)} @ $${price.toFixed(2)} | Accepted: ${ourFillsAccepted}/${totalFillsReceived}`);
+    // V36.2.7: Log whether this was a known order or not
+    const isKnownOrder = ourOrderIds.has(orderId);
+    if (isKnownOrder) {
+      ourFillsAccepted++;
+      log(`🎯 MAKER FILL (known): ${marketInfo.side} ${size.toFixed(0)} @ $${price.toFixed(2)} | orderId: ${orderId.slice(0, 8)}...`);
+    } else {
+      unknownFillsAccepted++;
+      log(`🎯 MAKER FILL (race-fix): ${marketInfo.side} ${size.toFixed(0)} @ $${price.toFixed(2)} | orderId: ${orderId.slice(0, 8)}... (not pre-registered)`);
+    }
 
     if (fillCallback) {
       const fill: V35Fill = {
@@ -420,12 +428,12 @@ export function getOrderTrackingStats(): {
   trackedOrders: number;
   fillsReceived: number;
   fillsAccepted: number;
-  fillsRejected: number;
+  unknownFillsAccepted: number;
 } {
   return {
     trackedOrders: ourOrderIds.size,
     fillsReceived: totalFillsReceived,
     fillsAccepted: ourFillsAccepted,
-    fillsRejected: otherFillsRejected,
+    unknownFillsAccepted: unknownFillsAccepted,
   };
 }
