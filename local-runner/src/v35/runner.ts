@@ -1,11 +1,11 @@
 // ============================================================
 // V36 RUNNER - PAIR-BASED MARKET MAKING
 // ============================================================
-// Version: V36.2.3 - "No Legacy Guards"
+// Version: V36.2.4 - "One-at-a-Time Entries"
 //
-// V36.2.1 KEY CHANGES:
-// - DISABLED: ProactiveRebalancer (was buying on lagging side independently)
-// - DISABLED: EmergencyRecovery (was buying on lagging side independently)
+// V36.2.4 KEY CHANGES:
+// - FIX: PairTracker now waits for taker fill before opening new pair
+// - FIX: Added MAKER_PLACED logging for visibility
 // - DISABLED: HedgeManager auto-hedging on fills
 // - ENABLED: PairTracker is the ONLY system placing orders
 //

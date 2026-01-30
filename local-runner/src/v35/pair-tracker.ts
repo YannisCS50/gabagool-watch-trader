@@ -1,7 +1,11 @@
 // ============================================================
 // V36 PAIR TRACKER - INDEPENDENT PAIR LIFECYCLE MANAGEMENT
 // ============================================================
-// Version: V36.2.2 - "Race-Condition Safe Pair Matching"
+// Version: V36.2.4 - "One-at-a-Time Pair Entries"
+//
+// V36.2.4 CHANGES:
+// - FIX: Only allow ONE pending entry at a time (wait for taker fill)
+// - FIX: Log MAKER_PLACED event to database for visibility
 //
 // V36.2.2 CHANGES:
 // - FIX: Create pair BEFORE placing order to avoid race condition
@@ -158,10 +162,22 @@ export class PairTracker {
   
   /**
    * Check if we can open a new pair
+   * V36.2.4: Also block if ANY pair is still in PENDING_ENTRY (awaiting taker fill)
+   * This prevents opening multiple pairs before the first taker fill arrives.
    */
   canOpenNewPair(): boolean {
-    const activePairs = this.getActivePairs().length;
-    return activePairs < this.config.maxPendingPairs;
+    const activePairs = this.getActivePairs();
+    
+    // V36.2.4: Block if we have any PENDING_ENTRY pairs (awaiting taker fill)
+    // This ensures we wait for the taker to fill before opening a new pair
+    const pendingEntry = activePairs.filter(p => p.status === 'PENDING_ENTRY');
+    if (pendingEntry.length > 0) {
+      console.log(`[PairTracker] ⏳ Waiting for ${pendingEntry.length} taker fill(s) before opening new pair`);
+      return false;
+    }
+    
+    // Also check total active pairs limit
+    return activePairs.length < this.config.maxPendingPairs;
   }
   
   /**
@@ -396,6 +412,18 @@ export class PairTracker {
           
           console.log(`[PairTracker] ✓ Maker placed & registered: ${makerResult.orderId.slice(0, 8)}...`);
           console.log(`[PairTracker]    Projected CPP: $${(fill.price + clampedMakerPrice).toFixed(3)}`);
+          
+          // V36.2.4: Log maker placement to database for visibility
+          logV35GuardEvent({
+            marketSlug: market.slug,
+            asset: market.asset,
+            guardType: 'MAKER_PLACED',
+            blockedSide: null,
+            upQty: market.upQty,
+            downQty: market.downQty,
+            expensiveSide: pair.takerSide,
+            reason: `Pair ${pair.id}: MAKER ${pair.makerSide} @ $${clampedMakerPrice.toFixed(3)} placed (CPP target: $${(fill.price + clampedMakerPrice).toFixed(3)})`,
+          }).catch(() => {});
           
           return { pairUpdated: true, pair };
           
