@@ -21,8 +21,8 @@
 // This ensures imbalances are FIXED, not abandoned via bans.
 // ============================================================
 
-export const V35_VERSION = 'V35.11.0';
-export const V35_CODENAME = 'Never Ban, Always Fix';
+export const V35_VERSION = 'V35.12.0';
+export const V35_CODENAME = 'Follow the Winner';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 
