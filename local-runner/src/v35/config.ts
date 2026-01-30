@@ -21,8 +21,8 @@
 // This ensures imbalances are FIXED, not abandoned via bans.
 // ============================================================
 
-export const V35_VERSION = 'V35.12.0';
-export const V35_CODENAME = 'Follow the Winner';
+export const V35_VERSION = 'V36.0.0';
+export const V35_CODENAME = 'Professional Market Making';
 
 export type V35Mode = 'test' | 'moderate' | 'production';
 
