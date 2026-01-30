@@ -7,6 +7,7 @@ import pkg from 'ethers';
 const { Wallet } = pkg;
 import { config } from './config.js';
 import { guardOrderPlacement, logBlockedOrder, isOrderAuthorized } from './order-guard.js';
+import { getClobTimeOffsetSeconds, withDateNowOffset } from './clob-time.js';
 
 const CLOB_URL = 'https://clob.polymarket.com';
 const CHAIN_ID = 137; // Polygon mainnet
@@ -295,7 +296,8 @@ async function validateCredentialsManually(
 
   try {
     const requestPath = '/auth/api-keys';
-    const timestampSeconds = String(Math.floor(Date.now() / 1000));
+    const offsetSeconds = await getClobTimeOffsetSeconds();
+    const timestampSeconds = String(Math.floor(Date.now() / 1000) + offsetSeconds);
 
     const secretBytes = Buffer.from(sanitizeBase64Secret(apiCreds.secret), 'base64');
     if (!secretBytes?.length) {
@@ -769,7 +771,18 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
     console.log(`   - API Key (owner): ${effectiveApiKey.slice(0, 12)}...`);
     console.log(`   - Order maker (Safe): ${config.polymarket.address}`);
     console.log(`   - Order signer (EOA): ${signer.address}`);
-    console.log(`   - Current timestamp (s): ${Math.floor(Date.now() / 1000)}`);
+
+    // Sync to CLOB server time to avoid "order too old" when VPS/container clock drifts.
+    let clobOffsetSeconds = await getClobTimeOffsetSeconds();
+    const localTs = Math.floor(Date.now() / 1000);
+    const adjustedTs = localTs + clobOffsetSeconds;
+    if (clobOffsetSeconds) {
+      console.log(`   - Current timestamp (s): ${localTs} (local)`);
+      console.log(`   - CLOB /time offset (s): ${clobOffsetSeconds >= 0 ? '+' : ''}${clobOffsetSeconds}`);
+      console.log(`   - Current timestamp (s): ${adjustedTs} (server-synced)`);
+    } else {
+      console.log(`   - Current timestamp (s): ${localTs}`);
+    }
 
     // Verify API key format (should be UUID)
     const apiKeyIsUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(effectiveApiKey);
@@ -794,7 +807,8 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
     console.log(`   - Using order type: ${orderTypeLabel}`);
 
     const postOnce = async (c: ClobClient) =>
-      c.createAndPostOrder(
+      withDateNowOffset(clobOffsetSeconds, async () =>
+        c.createAndPostOrder(
         {
           tokenID: order.tokenId,
           price: adjustedPrice, // Use improved price
@@ -806,6 +820,7 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
           negRisk: false,   // Set based on market type
         },
         effectiveOrderType // Use FOK for immediate fills
+        )
       );
 
     let response = await postOnce(client);
@@ -818,6 +833,18 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
       derivedCreds = await deriveApiCredentials();
       const freshClient = await getClient();
       response = await postOnce(freshClient);
+    }
+
+    // If the SDK returns "order too old" it usually means clock drift.
+    // Force-refresh CLOB server time and retry once.
+    {
+      const probe = (response as any)?.data ?? response;
+      const msg = String(probe?.errorMsg || probe?.error || '').toLowerCase();
+      if (msg.includes('order too old')) {
+        console.warn(`⚠️ Detected "order too old" — refreshing CLOB server time and retrying once...`);
+        clobOffsetSeconds = await getClobTimeOffsetSeconds({ force: true });
+        response = await postOnce(client);
+      }
     }
 
     // Capture response details; only print them verbosely when something looks wrong.
