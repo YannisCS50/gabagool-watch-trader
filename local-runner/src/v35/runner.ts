@@ -1,11 +1,11 @@
 // ============================================================
 // V36 RUNNER - PAIR-BASED MARKET MAKING
 // ============================================================
-// Version: V36.2.6 - "Minimum Order Value"
+// Version: V36.2.7 - "Fill Matching Fix"
 //
-// V36.2.6 KEY CHANGES:
-// - ADD: Minimum order value check ($1.00) - adjusts size automatically
-// - ADD: Better logging for pair matching debug
+// V36.2.7 KEY CHANGES:
+// - FIX: Relaxed fill matching - allows side match even when orderId is set
+// - This fixes the issue where fills were not matched to pairs
 //
 // ============================================================
 // V36 STRATEGY SUMMARY (Taker-Maker Pair Trading)

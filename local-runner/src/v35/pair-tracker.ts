@@ -404,16 +404,22 @@ export class PairTracker {
         continue;
       }
       
-      // Check taker fill - V36.2.2: Match on orderId OR on side (for race condition)
-      // The fill can arrive before openPair() sets the orderId, so we also match
-      // on takerSide + PENDING_ENTRY status when orderId is not yet set
+      // Check taker fill - V36.2.7: Match on orderId FIRST, then on side as fallback
+      // V36.2.7 FIX: The previous logic failed when:
+      // - orderId was set (placeOrder returned fast)
+      // - BUT the fill had a DIFFERENT orderId (WebSocket timing issue)
+      // Now we:
+      // 1. First try exact orderId match
+      // 2. Then allow side match EVEN IF orderId is set (as long as not filled yet)
       const isTakerOrderIdMatch = pair.takerOrderId && pair.takerOrderId === fill.orderId;
-      const isTakerSideMatch = !pair.takerOrderId && 
-                                pair.status === 'PENDING_ENTRY' && 
+      
+      // V36.2.7: Relaxed side match - allows matching even when orderId is set
+      // This handles the case where placeOrder returns but the fill's orderId doesn't match
+      const isTakerSideMatch = pair.status === 'PENDING_ENTRY' && 
                                 pair.takerSide === fill.side &&
                                 !pair.takerFilledAt; // Not already filled
       
-      // V36.2.5: Log matching details
+      // V36.2.7: Log matching details
       console.log(`[PairTracker]    Match check: orderIdMatch=${isTakerOrderIdMatch} sideMatch=${isTakerSideMatch}`);
       console.log(`[PairTracker]    Details: pair.takerOrderId=${pair.takerOrderId?.slice(0, 12) || 'null'} fill.orderId=${fill.orderId?.slice(0, 12)}`);
       console.log(`[PairTracker]    Details: pair.takerSide=${pair.takerSide} fill.side=${fill.side} pair.takerFilledAt=${pair.takerFilledAt || 'null'}`);
