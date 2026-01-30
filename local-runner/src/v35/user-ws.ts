@@ -211,6 +211,9 @@ function processUserEvent(data: any): void {
 function processTrade(data: any): void {
   totalFillsReceived++;
   
+  // V36.2.8: Debug log ALL trade events to understand structure
+  log(`📥 Trade event #${totalFillsReceived}: ${JSON.stringify(data).slice(0, 500)}`);
+  
   // Extract maker orders - these are OUR fills when we're the maker
   const makerOrders = data.maker_orders as Array<{
     order_id: string;
@@ -220,46 +223,69 @@ function processTrade(data: any): void {
     outcome: string;
   }> | undefined;
 
-  if (!makerOrders || makerOrders.length === 0) {
-    // This is a taker fill - check if it's for a token we're trading
-    const takerId = data.taker_order_id;
-    const assetId = data.asset_id;
-    const price = parseFloat(data.price);
-    const size = parseFloat(data.size);
-
-    if (takerId && assetId && !isNaN(price) && !isNaN(size)) {
-      // V36.2.7: Accept fill if it's for a token in our active market
-      const marketInfo = tokenToMarketMap.get(assetId);
-      
-      if (!marketInfo) {
-        // Not a token we're trading - ignore
-        return;
-      }
-      
-      // V36.2.7: Log whether this was a known order or not
-      const isKnownOrder = ourOrderIds.has(takerId);
-      if (isKnownOrder) {
-        ourFillsAccepted++;
-        log(`🎯 TAKER FILL (known): ${marketInfo.side} ${size.toFixed(0)} @ $${price.toFixed(2)} | orderId: ${takerId.slice(0, 8)}...`);
-      } else {
-        unknownFillsAccepted++;
-        log(`🎯 TAKER FILL (race-fix): ${marketInfo.side} ${size.toFixed(0)} @ $${price.toFixed(2)} | orderId: ${takerId.slice(0, 8)}... (not pre-registered)`);
-      }
-      
-      if (fillCallback) {
-        const fill: V35Fill = {
-          orderId: takerId,
-          tokenId: assetId,
-          side: marketInfo.side,
-          price,
-          size,
-          timestamp: new Date(),
-          marketSlug: marketInfo.slug,
-          asset: marketInfo.asset,
-        };
-        fillCallback(fill);
+  // =========================================================================
+  // V36.2.8: TAKER FILL DETECTION
+  // =========================================================================
+  // When WE are the taker, the trade event structure is:
+  // - taker_order_id: OUR order ID
+  // - asset_id: The token we're buying
+  // - price: Fill price
+  // - size: Fill size
+  // - maker_orders: Array of THEIR maker orders we matched against
+  // 
+  // CRITICAL: We must check taker_order_id FIRST, before checking maker_orders
+  // because a taker trade will have BOTH taker_order_id AND maker_orders!
+  // =========================================================================
+  
+  const takerId = data.taker_order_id;
+  const takerAssetId = data.asset_id;
+  const takerPrice = parseFloat(data.price);
+  const takerSize = parseFloat(data.size);
+  
+  // Check if this is OUR taker fill
+  if (takerId && takerAssetId) {
+    const isOurTakerOrder = ourOrderIds.has(takerId);
+    const takerMarketInfo = tokenToMarketMap.get(takerAssetId);
+    
+    // V36.2.8: Accept if EITHER we registered this order ID, OR it's for a token we're trading
+    if (isOurTakerOrder || takerMarketInfo) {
+      if (!isNaN(takerPrice) && !isNaN(takerSize) && takerSize > 0) {
+        const marketInfo = takerMarketInfo || tokenToMarketMap.get(takerAssetId);
+        
+        if (marketInfo) {
+          if (isOurTakerOrder) {
+            ourFillsAccepted++;
+            log(`🎯 TAKER FILL (known): ${marketInfo.side} ${takerSize.toFixed(0)} @ $${takerPrice.toFixed(2)} | orderId: ${takerId.slice(0, 8)}...`);
+          } else {
+            unknownFillsAccepted++;
+            log(`🎯 TAKER FILL (race-fix): ${marketInfo.side} ${takerSize.toFixed(0)} @ $${takerPrice.toFixed(2)} | orderId: ${takerId.slice(0, 8)}... (not pre-registered)`);
+          }
+          
+          if (fillCallback) {
+            const fill: V35Fill = {
+              orderId: takerId,
+              tokenId: takerAssetId,
+              side: marketInfo.side,
+              price: takerPrice,
+              size: takerSize,
+              timestamp: new Date(),
+              marketSlug: marketInfo.slug,
+              asset: marketInfo.asset,
+            };
+            fillCallback(fill);
+          }
+          
+          // IMPORTANT: Return here to avoid double-processing as maker
+          // (taker trades may also have maker_orders, but those are THEIR orders)
+          return;
+        }
       }
     }
+  }
+  
+  // No taker fill detected, check for maker fills
+  if (!makerOrders || makerOrders.length === 0) {
+    // No maker orders either - this trade doesn't involve us
     return;
   }
 

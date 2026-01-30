@@ -1,11 +1,12 @@
 // ============================================================
 // V36 RUNNER - PAIR-BASED MARKET MAKING
 // ============================================================
-// Version: V36.2.7 - "Fill Matching Fix"
+// Version: V36.2.8 - "Taker Fill Detection Fix"
 //
-// V36.2.7 KEY CHANGES:
-// - FIX: Relaxed fill matching - allows side match even when orderId is set
-// - This fixes the issue where fills were not matched to pairs
+// V36.2.8 KEY CHANGES:
+// - FIX: Taker fill detection now checks taker_order_id FIRST
+// - Added debug logging to understand WebSocket trade event structure
+// - Accepts taker fills based on orderId OR token mapping
 //
 // ============================================================
 // V36 STRATEGY SUMMARY (Taker-Maker Pair Trading)
