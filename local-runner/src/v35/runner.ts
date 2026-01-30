@@ -1,24 +1,27 @@
 // ============================================================
 // V36 RUNNER - PAIR-BASED MARKET MAKING
 // ============================================================
-// Version: V36.1.0 - "Pair-Based Market Making with Binance Stop-Loss"
+// Version: V36.2.1 - "Pure Pair-Based Mode"
 // 
-// V36.1.0 KEY CHANGES:
+// V36.2.1 KEY CHANGES:
+// - DISABLED: ProactiveRebalancer (was buying on lagging side independently)
+// - DISABLED: EmergencyRecovery (was buying on lagging side independently)
+// - DISABLED: HedgeManager auto-hedging on fills
+// - ENABLED: PairTracker is the ONLY system placing orders
+//
+// V36.2.0 KEY CHANGES:
 // - PAIR-BASED trading: Taker on expensive → Maker on cheap
+// - NO CPP CHECK on entry: Always enter, maker price = targetCpp - fillPrice
 // - BINANCE STOP-LOSS: Detects reversals and triggers emergency hedges
-// - Independent pair lifecycle tracking
-// - Replaces symmetric passive quoting that caused exit liquidity
 //
 // CORE INSIGHT: Follow the winner, not the loser.
-// 1. Enter via TAKER on expensive (winning) side
-// 2. Hedge via MAKER limit on cheap (losing) side
+// 1. Enter via TAKER on expensive (winning) side (always executes)
+// 2. Hedge via MAKER limit at: $0.95 - takerFillPrice
 // 3. If Binance reverses → Emergency TAKER hedge to lock in small loss
 //
-// CRITICAL INVARIANTS:
-// 1. Circuit Breaker is MARKET-SPECIFIC (not global)
-// 2. When a market is banned, bot SKIPS to next 15-minute cycle
-// 3. Each 15-minute market is COMPLETELY INDEPENDENT
-// 4. NO shares carry over between markets
+// CRITICAL INVARIANT:
+// - UP shares >= DOWN shares (taker fills first, maker waits)
+// - If DOWN > UP, something is BROKEN
 // ============================================================
 
 import '../config.js'; // Load env first
@@ -355,15 +358,24 @@ async function handleFillFromUserWs(fill: V35Fill): Promise<void> {
     }
   }
   
-  // V36 (pair-based) fills should NOT go through the legacy HedgeManager IOC hedge.
-  // That system evaluates "hedge viability" against the current ask and can block/cancel,
-  // which conflicts with the V36 design (maker limit hedge stays open until filled).
+  // =========================================================================
+  // V36.2: ALL FILLS GO THROUGH INVENTORY-ONLY UPDATE
+  // =========================================================================
+  // In V36.2 pair-based mode, the PairTracker handles ALL hedging.
+  // Legacy HedgeManager IOC hedges are disabled because they would place
+  // orders outside the pair tracking system, breaking the invariant.
+  // 
+  // ALL fills (pair or not) should only update inventory, not auto-hedge.
+  // =========================================================================
   let processed = false;
   let hedgeResult: any = undefined;
-  if (isPairFill) {
-    processed = processFillInventoryOnly(fill, market);
-  } else {
-    ({ processed, hedgeResult } = await processFillWithHedge(fill, market));
+  
+  // V36.2: Always use inventory-only processing, no legacy auto-hedge
+  processed = processFillInventoryOnly(fill, market);
+  
+  // Update pair tracker if this is a pair fill
+  if (isPairFill && pair) {
+    // Pair status already updated in pairTracker.onFill() above
   }
   
   if (processed) {
@@ -690,14 +702,17 @@ async function processMarket(market: V35Market): Promise<void> {
   }
   
   // =========================================================================
-  // V35.3.8: PROACTIVE REBALANCER - RUNS EVEN WHEN CIRCUIT BREAKER IS TRIPPED
+  // V36.2: PROACTIVE REBALANCER - DISABLED IN PAIR-BASED MODE
   // =========================================================================
-  // This is CRITICAL: when the circuit breaker trips due to imbalance, the ONLY
-  // way to reduce that imbalance is to BUY on the lagging side. The proactive
-  // rebalancer does exactly that - it hedges the unbalanced position.
+  // In V36.2 pair-based mode, the PairTracker handles ALL entries.
+  // The ProactiveRebalancer would buy on the "lagging" side independently,
+  // creating untracked exposure and breaking the pair invariant (UP >= DOWN).
+  // 
+  // DISABLED: Do not run proactive rebalancer in pair-based mode.
   // =========================================================================
-  const rebalancer = getProactiveRebalancer();
-  const rebalanceResult = await rebalancer.checkAndRebalance(market);
+  const rebalanceResult = { attempted: false, hedged: false } as any;
+  // const rebalancer = getProactiveRebalancer();
+  // const rebalanceResult = await rebalancer.checkAndRebalance(market);
   
   if (rebalanceResult.attempted && rebalanceResult.hedged) {
     log(`🔄 PROACTIVE HEDGE: ${rebalanceResult.hedgeQty?.toFixed(0)} ${rebalanceResult.hedgeSide} @ $${rebalanceResult.hedgePrice?.toFixed(3)}`);
@@ -723,37 +738,20 @@ async function processMarket(market: V35Market): Promise<void> {
   }
   
   // =========================================================================
-  // V35.5.0: EMERGENCY RECOVERY MODE - MINIMIZE LOSS WHEN PROFITABLE HEDGE ISN'T POSSIBLE
+  // V36.2: EMERGENCY RECOVERY - DISABLED IN PAIR-BASED MODE
   // =========================================================================
-  // If proactive rebalancer couldn't hedge (combined cost would be > $1.00),
-  // check if we should still recover to MINIMIZE MAX LOSS.
-  // This buys on the losing side even at a loss to lock in a smaller guaranteed loss.
+  // In V36.2 pair-based mode, emergency hedging is handled by the PairTracker
+  // via Binance reversal detection. The legacy emergency recovery would buy
+  // on the "lagging" side independently, breaking the pair invariant.
+  // 
+  // DISABLED: Do not run emergency recovery in pair-based mode.
   // =========================================================================
-  const unpaired = Math.abs(market.upQty - market.downQty);
-  if (!rebalanceResult.hedged && unpaired >= 20) { // Only when significantly imbalanced
-    const emergencyRecovery = getEmergencyRecovery();
-    const recoveryResult = await emergencyRecovery.checkAndRecover(market);
-    
-    if (recoveryResult.attempted) {
-      if (recoveryResult.success) {
-        log(`🚨 EMERGENCY RECOVERY executed: ${recoveryResult.analysis?.sharesToBuy.toFixed(0)} shares bought`);
-        log(`   Max loss reduced by: $${(-(recoveryResult.analysis?.lossReduction || 0)).toFixed(2)}`);
-        // Update local position
-        const trailingSide = recoveryResult.analysis?.leadingSide === 'UP' ? 'DOWN' : 'UP';
-        if (trailingSide === 'UP') {
-          market.upQty += recoveryResult.filledQty || 0;
-          market.upCost += (recoveryResult.filledQty || 0) * (recoveryResult.analysis?.buyPrice || 0);
-        } else {
-          market.downQty += recoveryResult.filledQty || 0;
-          market.downCost += (recoveryResult.filledQty || 0) * (recoveryResult.analysis?.buyPrice || 0);
-        }
-      } else if (recoveryResult.analysis) {
-        log(`⏳ Emergency recovery analyzed: ${recoveryResult.reason}`);
-        log(`   Current max loss: $${recoveryResult.analysis.currentMaxLoss.toFixed(2)}`);
-        log(`   Would lock in: $${recoveryResult.analysis.lockedLossAfterRecovery.toFixed(2)}`);
-      }
-    }
-  }
+  // const unpaired = Math.abs(market.upQty - market.downQty);
+  // if (!rebalanceResult.hedged && unpaired >= 20) {
+  //   const emergencyRecovery = getEmergencyRecovery();
+  //   const recoveryResult = await emergencyRecovery.checkAndRecover(market);
+  //   ...
+  // }
   
   // NOW check if circuit breaker should halt further processing (new quotes)
   if (safetyCheck.shouldStop && !rebalanceResult.hedged) {
