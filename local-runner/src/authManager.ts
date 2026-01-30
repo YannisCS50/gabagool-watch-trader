@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import { ClobClient } from '@polymarket/clob-client';
-import { Wallet } from 'ethers';
+import pkg from 'ethers';
+const { Wallet } = pkg;
 import { config } from './config.js';
 
 const CLOB_URL = 'https://clob.polymarket.com';

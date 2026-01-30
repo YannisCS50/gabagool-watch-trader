@@ -5,8 +5,8 @@
  * All other runners can log, monitor, and simulate, but cannot spend real money.
  */
 
-// The ONLY runner authorized to place real orders
-const AUTHORIZED_RUNNER = 'v29-response';
+// Runners authorized to place real orders
+const AUTHORIZED_RUNNERS = ['v29-response', 'v35'];
 
 // Current runner context - must be set at startup
 let currentRunner: string | null = null;
@@ -17,9 +17,9 @@ let currentRunner: string | null = null;
 export function setRunnerIdentity(runnerId: string): void {
   currentRunner = runnerId;
   console.log(`[ORDER-GUARD] Runner identity set to: ${runnerId}`);
-  if (runnerId !== AUTHORIZED_RUNNER) {
+  if (!AUTHORIZED_RUNNERS.includes(runnerId)) {
     console.log(`[ORDER-GUARD] ⚠️  WARNING: This runner (${runnerId}) is NOT authorized to place real orders!`);
-    console.log(`[ORDER-GUARD] ⚠️  Only '${AUTHORIZED_RUNNER}' can execute trades. Orders will be BLOCKED.`);
+    console.log(`[ORDER-GUARD] ⚠️  Only ${AUTHORIZED_RUNNERS.join(', ')} can execute trades. Orders will be BLOCKED.`);
   } else {
     console.log(`[ORDER-GUARD] ✅ This runner is authorized to place real orders.`);
   }
@@ -30,7 +30,7 @@ export function setRunnerIdentity(runnerId: string): void {
  * Returns true only for v29-response.
  */
 export function isOrderAuthorized(): boolean {
-  return currentRunner === AUTHORIZED_RUNNER;
+  return currentRunner !== null && AUTHORIZED_RUNNERS.includes(currentRunner);
 }
 
 /**
@@ -54,11 +54,11 @@ export function guardOrderPlacement(orderDetails: string): boolean {
     throw new Error('ORDER_GUARD: Runner identity not set. Call setRunnerIdentity() at startup.');
   }
   
-  if (currentRunner !== AUTHORIZED_RUNNER) {
+  if (!AUTHORIZED_RUNNERS.includes(currentRunner)) {
     console.log(`[ORDER-GUARD] 🚫 BLOCKED ORDER from ${currentRunner}:`);
     console.log(`[ORDER-GUARD]    ${orderDetails}`);
-    console.log(`[ORDER-GUARD]    Only '${AUTHORIZED_RUNNER}' can place real orders.`);
-    throw new Error(`ORDER_GUARD: Runner '${currentRunner}' is not authorized to place orders. Only '${AUTHORIZED_RUNNER}' can trade.`);
+    console.log(`[ORDER-GUARD]    Only ${AUTHORIZED_RUNNERS.join(', ')} can place real orders.`);
+    throw new Error(`ORDER_GUARD: Runner '${currentRunner}' is not authorized to place orders. Only ${AUTHORIZED_RUNNERS.join(', ')} can trade.`);
   }
   
   return true;

@@ -1,0 +1,149 @@
+================================================================================
+V35 PASSIEVE MARKET MAKER - WAAROM KOOPT DE BOT NIET MEER UP SHARES?
+================================================================================
+Datum: 2026-01-27
+Versie: V35.0.0 (Gabagool Strategy)
+
+================================================================================
+1. DE KERN: PASSIEVE MARKET MAKING
+================================================================================
+
+De V35 bot is een PASSIEVE market maker (maker-only). Dit betekent:
+
+WAT DE BOT WEL DOET:
+- Plaatst limit BUY orders op een grid ($0.10 - $0.90)
+- Wacht tot verkopers zijn orders "hitten"
+- Biedt liquiditeit aan de markt
+
+WAT DE BOT NIET DOET:
+- Koopt tegen de huidige marktprijs (taker orders)
+- Actief herbalanceren bij scheefgroei
+- De ask-prijs betalen om te balanceren
+
+================================================================================
+2. CONCRETE VOORBEELDEN UIT RECENTE MARKETS
+================================================================================
+
+VOORBEELD 1: btc-updown-15m-1769536800 (LIVE MARKET)
+-----------------------------------------------------
+UP shares:   10 @ avg $0.375
+DOWN shares: 25 @ avg $0.55
+Imbalance:   15 shares meer DOWN dan UP
+
+Combined cost: 92.5¢ per paar (10 paired shares)
+
+RISICO-SCENARIO'S:
+✅ Als DOWN wint: 
+   - 10 paired × $0.075 profit = +$0.75 
+   - 15 unpaired DOWN × $1 payout = +$15.00
+   - TOTAAL: +$15.75
+
+❌ Als UP wint: 
+   - 10 paired × $0.075 profit = +$0.75 
+   - 15 unpaired DOWN × $0.55 verlies = -$8.25
+   - TOTAAL: -$7.50
+
+WAAROM GEEN EXTRA UP GEKOCHT?
+De bot heeft UP bids staan op $0.10, $0.15, $0.20, etc. Maar de marktprijs 
+voor UP is momenteel ~$0.685-0.885. Niemand verkoopt UP shares aan de bot 
+voor $0.35 of lager, dus de orders worden niet gevuld.
+
+
+VOORBEELD 2: btc-updown-15m-1769531400 (EXPIRED)
+-------------------------------------------------
+UP shares:   0
+DOWN shares: 10 @ avg $0.0999
+Imbalance:   100% eenzijdig DOWN
+
+Resultaat: -$0.999 verlies (DOWN werd waardeloos)
+
+Dit is een extreem geval waar de bot alleen DOWN fills kreeg en helemaal 
+geen UP. De markt settelde waarschijnlijk UP, waardoor alle 10 DOWN shares 
+waardeloos werden.
+
+
+VOORBEELD 3: btc-updown-15m-1769535900 (SETTLED - UP WON)
+----------------------------------------------------------
+UP shares:   14.925 @ avg $0.5733
+DOWN shares: 10 @ avg $0.425
+Combined cost: 99.83¢ per paar
+
+live_up_price: $1.00 (UP won!)
+live_down_price: $0.00
+
+Hier won UP en was er een klein overschot aan UP shares (4.925), wat 
+resulteerde in een kleine winst op de unpaired UP.
+
+================================================================================
+3. RELEVANTE INSTELLINGEN
+================================================================================
+
+// local-runner/src/v35/config.ts
+
+GRID PARAMETERS:
+- gridMin: 0.10           // Laagste bid-prijs
+- gridMax: 0.90           // Hoogste bid-prijs  
+- gridStep: 0.05          // Stap tussen prijsniveaus (17 levels)
+- sharesPerLevel: 5       // Shares per prijsniveau
+
+RISK LIMITS:
+- maxUnpairedShares: 50   // Max scheefgroei voordat quoting stopt voor die kant
+- maxImbalanceRatio: 2.5  // Max ratio UP:DOWN of DOWN:UP
+- maxLossPerMarket: $25   // Max verlies per markt
+
+KRITIEKE FEATURES (UITGESCHAKELD per Gabagool strategie):
+- enableMomentumFilter: false   // Geen trend-filtering
+- enableFillSync: false         // Geen fill-synchronisatie
+
+================================================================================
+4. HET PROBLEEM
+================================================================================
+
+De strategie vertrouwt erop dat OVER TIJD de markt vanzelf beide kanten raakt. 
+Maar in snelbewegende markten kan dit leiden tot:
+
+1. EENZIJDIGE POSITIES
+   - Alleen UP of alleen DOWN fills
+   - Geen balans tussen beide kanten
+
+2. ONGEBALANCEERDE EXPOSURE BIJ SETTLEMENT
+   - Te veel shares aan de "verkeerde" kant
+   - Risico op significant verlies
+
+3. VERLIEZEN BIJ "VERKEERDE" UITKOMST
+   - Als de overgekochte kant verliest, zijn die shares waardeloos
+   - De paired profit is niet genoeg om het unpaired verlies te dekken
+
+================================================================================
+5. MOGELIJKE OPLOSSING: AGGRESSIVE REBALANCE
+================================================================================
+
+Een optionele 'enableAggressiveRebalance' feature zou:
+
+1. DETECTIE
+   - Monitoren wanneer skew > X shares (bijv. 15 shares verschil)
+   - Triggeren wanneer imbalance te groot wordt
+
+2. ACTIE
+   - Taker orders plaatsen tegen de ask-prijs
+   - Underweight kant actief bijkopen
+
+3. TRADE-OFF
+   - Kosten: hogere spread/fees (je betaalt de ask i.p.v. de bid)
+   - Voordeel: gegarandeerde balans, minder risico op eenzijdig verlies
+
+================================================================================
+6. CONCLUSIE
+================================================================================
+
+De passieve maker-strategie leidt tot imbalances omdat:
+
+1. De bot WACHT op sells tegen zijn lage bids
+2. Als de markt de andere kant op beweegt, krijgt hij geen fills
+3. De bot blijft scheef tot de markt terugkomt naar zijn bid-prijzen
+
+Dit is BY DESIGN van de Gabagool strategie: vertrouw op de wet van grote 
+getallen dat over veel markets de balans zich vanzelf herstelt. Maar voor 
+individuele markets kan dit leiden tot verliezen.
+
+================================================================================

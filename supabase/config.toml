@@ -80,3 +80,12 @@ verify_jwt = false
 
 [functions.backfill-price-paths]
 verify_jwt = false
+
+[functions.database-export]
+verify_jwt = false
+
+[functions.v35-positions]
+verify_jwt = false
+
+[functions.gabagool-grid-backtest]
+verify_jwt = false

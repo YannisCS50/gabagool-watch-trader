@@ -3025,45 +3025,60 @@ export type Database = {
         Row: {
           balance: number | null
           created_at: string
+          dry_run: boolean | null
           id: string
           ip_address: string | null
           last_heartbeat: string
           markets_active: number | null
           markets_count: number | null
+          metadata: Json | null
+          mode: string | null
           positions_count: number | null
           runner_id: string
           runner_type: string
           status: string
+          total_locked_profit: number | null
+          total_unpaired: number | null
           trades_count: number | null
           version: string | null
         }
         Insert: {
           balance?: number | null
           created_at?: string
+          dry_run?: boolean | null
           id?: string
           ip_address?: string | null
           last_heartbeat?: string
           markets_active?: number | null
           markets_count?: number | null
+          metadata?: Json | null
+          mode?: string | null
           positions_count?: number | null
           runner_id: string
           runner_type?: string
           status?: string
+          total_locked_profit?: number | null
+          total_unpaired?: number | null
           trades_count?: number | null
           version?: string | null
         }
         Update: {
           balance?: number | null
           created_at?: string
+          dry_run?: boolean | null
           id?: string
           ip_address?: string | null
           last_heartbeat?: string
           markets_active?: number | null
           markets_count?: number | null
+          metadata?: Json | null
+          mode?: string | null
           positions_count?: number | null
           runner_id?: string
           runner_type?: string
           status?: string
+          total_locked_profit?: number | null
+          total_unpaired?: number | null
           trades_count?: number | null
           version?: string | null
         }
@@ -6629,6 +6644,333 @@ export type Database = {
           up_best_ask?: number | null
           up_best_bid?: number | null
           z_price?: number | null
+        }
+        Relationships: []
+      }
+      v35_expiry_snapshots: {
+        Row: {
+          api_down_cost: number
+          api_down_qty: number
+          api_up_cost: number
+          api_up_qty: number
+          asset: string
+          avg_down_price: number | null
+          avg_up_price: number | null
+          combined_ask: number | null
+          combined_cost: number | null
+          created_at: string
+          down_best_ask: number | null
+          down_best_bid: number | null
+          down_orders_count: number | null
+          expiry_time: string
+          id: string
+          imbalance_ratio: number | null
+          local_down_cost: number
+          local_down_qty: number
+          local_up_cost: number
+          local_up_qty: number
+          locked_profit: number | null
+          market_slug: string
+          paired: number
+          predicted_final_value: number | null
+          predicted_pnl: number | null
+          predicted_winning_side: string | null
+          seconds_before_expiry: number | null
+          snapshot_time: string
+          total_cost: number | null
+          unpaired: number
+          up_best_ask: number | null
+          up_best_bid: number | null
+          up_orders_count: number | null
+          was_imbalanced: boolean | null
+        }
+        Insert: {
+          api_down_cost?: number
+          api_down_qty?: number
+          api_up_cost?: number
+          api_up_qty?: number
+          asset: string
+          avg_down_price?: number | null
+          avg_up_price?: number | null
+          combined_ask?: number | null
+          combined_cost?: number | null
+          created_at?: string
+          down_best_ask?: number | null
+          down_best_bid?: number | null
+          down_orders_count?: number | null
+          expiry_time: string
+          id?: string
+          imbalance_ratio?: number | null
+          local_down_cost?: number
+          local_down_qty?: number
+          local_up_cost?: number
+          local_up_qty?: number
+          locked_profit?: number | null
+          market_slug: string
+          paired?: number
+          predicted_final_value?: number | null
+          predicted_pnl?: number | null
+          predicted_winning_side?: string | null
+          seconds_before_expiry?: number | null
+          snapshot_time: string
+          total_cost?: number | null
+          unpaired?: number
+          up_best_ask?: number | null
+          up_best_bid?: number | null
+          up_orders_count?: number | null
+          was_imbalanced?: boolean | null
+        }
+        Update: {
+          api_down_cost?: number
+          api_down_qty?: number
+          api_up_cost?: number
+          api_up_qty?: number
+          asset?: string
+          avg_down_price?: number | null
+          avg_up_price?: number | null
+          combined_ask?: number | null
+          combined_cost?: number | null
+          created_at?: string
+          down_best_ask?: number | null
+          down_best_bid?: number | null
+          down_orders_count?: number | null
+          expiry_time?: string
+          id?: string
+          imbalance_ratio?: number | null
+          local_down_cost?: number
+          local_down_qty?: number
+          local_up_cost?: number
+          local_up_qty?: number
+          locked_profit?: number | null
+          market_slug?: string
+          paired?: number
+          predicted_final_value?: number | null
+          predicted_pnl?: number | null
+          predicted_winning_side?: string | null
+          seconds_before_expiry?: number | null
+          snapshot_time?: string
+          total_cost?: number | null
+          unpaired?: number
+          up_best_ask?: number | null
+          up_best_bid?: number | null
+          up_orders_count?: number | null
+          was_imbalanced?: boolean | null
+        }
+        Relationships: []
+      }
+      v35_fills: {
+        Row: {
+          asset: string
+          created_at: string
+          fill_key: string
+          fill_ts: string
+          fill_type: string | null
+          id: string
+          market_slug: string
+          order_id: string | null
+          price: number
+          side: string
+          size: number
+          token_id: string | null
+          wallet_address: string | null
+        }
+        Insert: {
+          asset: string
+          created_at?: string
+          fill_key: string
+          fill_ts: string
+          fill_type?: string | null
+          id?: string
+          market_slug: string
+          order_id?: string | null
+          price: number
+          side: string
+          size: number
+          token_id?: string | null
+          wallet_address?: string | null
+        }
+        Update: {
+          asset?: string
+          created_at?: string
+          fill_key?: string
+          fill_ts?: string
+          fill_type?: string | null
+          id?: string
+          market_slug?: string
+          order_id?: string | null
+          price?: number
+          side?: string
+          size?: number
+          token_id?: string | null
+          wallet_address?: string | null
+        }
+        Relationships: []
+      }
+      v35_orderbook_snapshots: {
+        Row: {
+          asset: string
+          combined_ask: number | null
+          combined_mid: number | null
+          created_at: string
+          down_asks: Json | null
+          down_best_ask: number | null
+          down_best_bid: number | null
+          down_bids: Json | null
+          edge: number | null
+          id: string
+          market_slug: string
+          seconds_to_expiry: number | null
+          spot_price: number | null
+          strike_price: number | null
+          ts: number
+          up_asks: Json | null
+          up_best_ask: number | null
+          up_best_bid: number | null
+          up_bids: Json | null
+        }
+        Insert: {
+          asset: string
+          combined_ask?: number | null
+          combined_mid?: number | null
+          created_at?: string
+          down_asks?: Json | null
+          down_best_ask?: number | null
+          down_best_bid?: number | null
+          down_bids?: Json | null
+          edge?: number | null
+          id?: string
+          market_slug: string
+          seconds_to_expiry?: number | null
+          spot_price?: number | null
+          strike_price?: number | null
+          ts: number
+          up_asks?: Json | null
+          up_best_ask?: number | null
+          up_best_bid?: number | null
+          up_bids?: Json | null
+        }
+        Update: {
+          asset?: string
+          combined_ask?: number | null
+          combined_mid?: number | null
+          created_at?: string
+          down_asks?: Json | null
+          down_best_ask?: number | null
+          down_best_bid?: number | null
+          down_bids?: Json | null
+          edge?: number | null
+          id?: string
+          market_slug?: string
+          seconds_to_expiry?: number | null
+          spot_price?: number | null
+          strike_price?: number | null
+          ts?: number
+          up_asks?: Json | null
+          up_best_ask?: number | null
+          up_best_bid?: number | null
+          up_bids?: Json | null
+        }
+        Relationships: []
+      }
+      v35_positions: {
+        Row: {
+          asset: string
+          combined_cost: number
+          created_at: string
+          down_cost: number
+          down_qty: number
+          id: string
+          locked_profit: number
+          market_slug: string
+          paired: number
+          seconds_to_expiry: number | null
+          timestamp: string
+          unpaired: number
+          up_cost: number
+          up_qty: number
+        }
+        Insert: {
+          asset: string
+          combined_cost?: number
+          created_at?: string
+          down_cost?: number
+          down_qty?: number
+          id?: string
+          locked_profit?: number
+          market_slug: string
+          paired?: number
+          seconds_to_expiry?: number | null
+          timestamp?: string
+          unpaired?: number
+          up_cost?: number
+          up_qty?: number
+        }
+        Update: {
+          asset?: string
+          combined_cost?: number
+          created_at?: string
+          down_cost?: number
+          down_qty?: number
+          id?: string
+          locked_profit?: number
+          market_slug?: string
+          paired?: number
+          seconds_to_expiry?: number | null
+          timestamp?: string
+          unpaired?: number
+          up_cost?: number
+          up_qty?: number
+        }
+        Relationships: []
+      }
+      v35_settlements: {
+        Row: {
+          asset: string
+          combined_cost: number | null
+          created_at: string
+          down_cost: number | null
+          down_qty: number | null
+          id: string
+          locked_profit: number | null
+          market_slug: string
+          paired: number | null
+          pnl: number | null
+          unpaired: number | null
+          up_cost: number | null
+          up_qty: number | null
+          winning_side: string | null
+        }
+        Insert: {
+          asset: string
+          combined_cost?: number | null
+          created_at?: string
+          down_cost?: number | null
+          down_qty?: number | null
+          id?: string
+          locked_profit?: number | null
+          market_slug: string
+          paired?: number | null
+          pnl?: number | null
+          unpaired?: number | null
+          up_cost?: number | null
+          up_qty?: number | null
+          winning_side?: string | null
+        }
+        Update: {
+          asset?: string
+          combined_cost?: number | null
+          created_at?: string
+          down_cost?: number | null
+          down_qty?: number | null
+          id?: string
+          locked_profit?: number | null
+          market_slug?: string
+          paired?: number | null
+          pnl?: number | null
+          unpaired?: number | null
+          up_cost?: number | null
+          up_qty?: number | null
+          winning_side?: string | null
         }
         Relationships: []
       }

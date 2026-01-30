@@ -10,7 +10,8 @@
  */
 
 import { config } from '../src/config.js';
-import { ethers, Wallet } from 'ethers';
+import pkg from 'ethers';
+const { ethers, Wallet } = pkg;
 import {
   getProvider,
   getBlockNumber,

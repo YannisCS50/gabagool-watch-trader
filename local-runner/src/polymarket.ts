@@ -3,9 +3,11 @@ import './v29/http-agent.js';
 
 import crypto from 'node:crypto';
 import { ClobClient, Side, OrderType } from '@polymarket/clob-client';
-import { Wallet } from 'ethers';
+import pkg from 'ethers';
+const { Wallet } = pkg;
 import { config } from './config.js';
 import { guardOrderPlacement, logBlockedOrder, isOrderAuthorized } from './order-guard.js';
+import { getClobTimeOffsetSeconds, withDateNowOffset } from './clob-time.js';
 
 const CLOB_URL = 'https://clob.polymarket.com';
 const CHAIN_ID = 137; // Polygon mainnet
@@ -294,7 +296,8 @@ async function validateCredentialsManually(
 
   try {
     const requestPath = '/auth/api-keys';
-    const timestampSeconds = String(Math.floor(Date.now() / 1000));
+    const offsetSeconds = await getClobTimeOffsetSeconds();
+    const timestampSeconds = String(Math.floor(Date.now() / 1000) + offsetSeconds);
 
     const secretBytes = Buffer.from(sanitizeBase64Secret(apiCreds.secret), 'base64');
     if (!secretBytes?.length) {
@@ -768,7 +771,18 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
     console.log(`   - API Key (owner): ${effectiveApiKey.slice(0, 12)}...`);
     console.log(`   - Order maker (Safe): ${config.polymarket.address}`);
     console.log(`   - Order signer (EOA): ${signer.address}`);
-    console.log(`   - Current timestamp (s): ${Math.floor(Date.now() / 1000)}`);
+
+    // Sync to CLOB server time to avoid "order too old" when VPS/container clock drifts.
+    let clobOffsetSeconds = await getClobTimeOffsetSeconds();
+    const localTs = Math.floor(Date.now() / 1000);
+    const adjustedTs = localTs + clobOffsetSeconds;
+    if (clobOffsetSeconds) {
+      console.log(`   - Current timestamp (s): ${localTs} (local)`);
+      console.log(`   - CLOB /time offset (s): ${clobOffsetSeconds >= 0 ? '+' : ''}${clobOffsetSeconds}`);
+      console.log(`   - Current timestamp (s): ${adjustedTs} (server-synced)`);
+    } else {
+      console.log(`   - Current timestamp (s): ${localTs}`);
+    }
 
     // Verify API key format (should be UUID)
     const apiKeyIsUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(effectiveApiKey);
@@ -793,7 +807,8 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
     console.log(`   - Using order type: ${orderTypeLabel}`);
 
     const postOnce = async (c: ClobClient) =>
-      c.createAndPostOrder(
+      withDateNowOffset(clobOffsetSeconds, async () =>
+        c.createAndPostOrder(
         {
           tokenID: order.tokenId,
           price: adjustedPrice, // Use improved price
@@ -805,6 +820,7 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
           negRisk: false,   // Set based on market type
         },
         effectiveOrderType // Use FOK for immediate fills
+        )
       );
 
     let response = await postOnce(client);
@@ -817,6 +833,18 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
       derivedCreds = await deriveApiCredentials();
       const freshClient = await getClient();
       response = await postOnce(freshClient);
+    }
+
+    // If the SDK returns "order too old" it usually means clock drift.
+    // Force-refresh CLOB server time and retry once.
+    {
+      const probe = (response as any)?.data ?? response;
+      const msg = String(probe?.errorMsg || probe?.error || '').toLowerCase();
+      if (msg.includes('order too old')) {
+        console.warn(`⚠️ Detected "order too old" — refreshing CLOB server time and retrying once...`);
+        clobOffsetSeconds = await getClobTimeOffsetSeconds({ force: true });
+        response = await postOnce(client);
+      }
     }
 
     // Capture response details; only print them verbosely when something looks wrong.
@@ -925,6 +953,9 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
     console.log(`   Status from response: ${resp?.status || 'unknown'}`);
 
     // Now verify the order exists and get fill status
+    // V36.2.10: FOK orders disappear immediately after fill - special handling!
+    const isFokOrder = order.orderType === 'FOK';
+    
     try {
       console.log(`🔍 Verifying order ${orderId} via getOrder()...`);
       const orderDetails = await client.getOrder(orderId);
@@ -938,14 +969,22 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
       console.log(`   - Size matched: ${sizeMatched}`);
       console.log(`   - Order status: ${orderStatus}`);
       
-      // Determine actual fill status
+      // V36.3.2: Determine actual fill status with FOK-aware logic
       let fillStatus: 'filled' | 'partial' | 'open' | 'unknown';
+      
       if (sizeMatched >= originalSize && originalSize > 0) {
         fillStatus = 'filled';
       } else if (sizeMatched > 0) {
         fillStatus = 'partial';
       } else if (orderStatus === 'live') {
         fillStatus = 'open';
+      } else if (isFokOrder) {
+        // V36.3.2: FOK orders with unknown status but order found = likely FILLED
+        // FOK orders either fill completely or get killed, they don't sit in book
+        // If we found the order and it's not 'live', it must have filled or been killed
+        // Since the order was accepted (we have an orderId), assume FILLED
+        console.log(`🎯 FOK order found but status unclear - assuming FILLED (FOK semantics)`);
+        fillStatus = 'filled';
       } else {
         fillStatus = 'unknown';
       }
@@ -956,12 +995,26 @@ export async function placeOrder(order: OrderRequest): Promise<OrderResponse> {
         success: true,
         orderId,
         avgPrice: order.price,
-        filledSize: sizeMatched > 0 ? sizeMatched : undefined,
+        filledSize: sizeMatched > 0 ? sizeMatched : order.size,
         status: fillStatus,
       };
     } catch (verifyError: any) {
       console.warn(`⚠️ Could not verify order: ${verifyError?.message}`);
-      // Order was placed but we couldn't verify - return as pending
+      
+      // V36.2.10: FOK orders that can't be found = FILLED (they disappear immediately)
+      // FOK = Fill or Kill - if order was accepted but not found, it filled completely
+      if (isFokOrder) {
+        console.log(`🎯 FOK order not found in book - assuming FILLED (FOK semantics)`);
+        return {
+          success: true,
+          orderId,
+          avgPrice: order.price,
+          filledSize: order.size,
+          status: 'filled',
+        };
+      }
+      
+      // GTC/GTD orders: if we can't verify, return as pending
       return {
         success: true,
         orderId,
@@ -1082,6 +1135,65 @@ export async function getBalance(): Promise<{ usdc: number; error?: string }> {
 }
 
 // ============================================================
+// GET OPEN ORDERS
+// ============================================================
+
+/**
+ * Interface for open order from Polymarket
+ */
+export interface OpenOrder {
+  orderId: string;
+  tokenId: string;
+  side: 'BUY' | 'SELL';
+  price: number;
+  size: number;
+  sizeMatched: number;
+  status: string;
+  createdAt: number;
+}
+
+/**
+ * Fetch all open orders for the authenticated user.
+ * Used for order reconciliation to prevent order stacking.
+ */
+export async function getOpenOrders(): Promise<{ orders: OpenOrder[]; error?: string }> {
+  try {
+    const client = await getClient();
+    
+    // Use SDK's getOpenOrders method
+    const response = await (client as any).getOpenOrders();
+    
+    // Handle SDK returning error payloads
+    if (response?.error || (typeof response?.status === 'number' && response.status >= 400)) {
+      const errMsg = response?.error ?? `status=${response?.status}`;
+      console.error(`❌ getOpenOrders error: ${errMsg}`);
+      return { orders: [], error: String(errMsg) };
+    }
+    
+    // Parse response - SDK may return array directly or wrapped
+    const rawOrders = Array.isArray(response) ? response : (response?.orders || response?.data || []);
+    
+    const orders: OpenOrder[] = rawOrders.map((o: any) => ({
+      orderId: o.id || o.order_id || o.orderId,
+      tokenId: o.asset_id || o.token_id || o.tokenId,
+      side: (o.side?.toUpperCase() === 'BUY' || o.side === 'BUY') ? 'BUY' : 'SELL',
+      price: parseFloat(o.price || '0'),
+      size: parseFloat(o.original_size || o.size || '0'),
+      sizeMatched: parseFloat(o.size_matched || o.sizeMatched || '0'),
+      status: o.status || 'unknown',
+      createdAt: o.created_at ? new Date(o.created_at).getTime() : Date.now(),
+    })).filter((o: OpenOrder) => o.orderId && o.tokenId);
+    
+    console.log(`📋 Fetched ${orders.length} open orders from Polymarket`);
+    return { orders };
+  } catch (error: any) {
+    const msg = String(error?.message || error);
+    console.error('❌ Failed to fetch open orders:', msg);
+    return { orders: [], error: msg };
+  }
+}
+
+// ============================================================
 // CANCEL ORDER (v7.2.7 REV C.4.1)
 // ============================================================
 
@@ -1098,22 +1210,34 @@ export async function cancelOrder(orderId: string): Promise<{ success: boolean; 
 
   try {
     const client = await getClient();
-
-    // The CLOB client has a cancelOrder or cancelOrders method
     const anyClient = client as any;
 
     let result: any;
+    
+    // CRITICAL FIX: The SDK's cancelOrder method expects an object { orderID: string }
+    // not just the string. Some SDK versions have cancelOrder(orderId) but ours doesn't.
+    // Also, cancelOrders expects array of { orderID: string } objects.
     if (typeof anyClient.cancelOrder === 'function') {
-      result = await anyClient.cancelOrder(orderId);
+      // Try with object format first (SDK v5+)
+      try {
+        result = await anyClient.cancelOrder({ orderID: orderId });
+      } catch (objErr: any) {
+        // Fallback: try string format (older SDK)
+        console.log(`   Retry cancel with string format...`);
+        result = await anyClient.cancelOrder(orderId);
+      }
     } else if (typeof anyClient.cancelOrders === 'function') {
+      // cancelOrders expects array of orderIDs as strings
       result = await anyClient.cancelOrders([orderId]);
     } else {
-      // Fallback: try direct API call
-      const res = await fetch(`${CLOB_URL}/order/${orderId}`, {
+      // Fallback: direct API call with correct format
+      // The Polymarket DELETE /order endpoint expects { orderID: string } in body
+      const res = await fetch(`${CLOB_URL}/order`, {
         method: 'DELETE',
         headers: {
           'Content-Type': 'application/json',
         },
+        body: JSON.stringify({ orderID: orderId }),
       });
 
       if (!res.ok) {
@@ -1127,6 +1251,20 @@ export async function cancelOrder(orderId: string): Promise<{ success: boolean; 
     // Check for explicit failure
     if (result?.success === false || result?.error) {
       return { success: false, error: result?.error || 'Cancel failed' };
+    }
+
+    // Check if cancellation was acknowledged
+    const cancelled = result?.canceled || result?.cancelled || [];
+    if (Array.isArray(cancelled) && cancelled.includes(orderId)) {
+      console.log(`✅ Order ${orderId} cancelled`);
+      return { success: true };
+    }
+    
+    // Also check for not_canceled (order might already be filled/cancelled)
+    const notCancelled = result?.not_canceled || result?.notCancelled || [];
+    if (Array.isArray(notCancelled) && notCancelled.includes(orderId)) {
+      console.log(`⚠️ Order ${orderId} was not cancelled (may be already filled/cancelled)`);
+      return { success: true }; // Still treat as success - order is no longer active
     }
 
     console.log(`✅ Order ${orderId} cancelled`);
