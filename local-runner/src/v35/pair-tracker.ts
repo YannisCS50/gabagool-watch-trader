@@ -1,10 +1,11 @@
 // ============================================================
 // V36 PAIR TRACKER - INDEPENDENT PAIR LIFECYCLE MANAGEMENT
 // ============================================================
-// Version: V36.2.4 - "One-at-a-Time Pair Entries"
+// Version: V36.2.5 - "Parallel Pairs + Maker Debug"
 //
-// V36.2.4 CHANGES:
-// - FIX: Only allow ONE pending entry at a time (wait for taker fill)
+// V36.2.5 CHANGES:
+// - REVERT: Allow parallel pairs again (stacking limit orders is fine!)
+// - ADD: Extra logging around maker order placement to debug issues
 // - FIX: Log MAKER_PLACED event to database for visibility
 //
 // V36.2.2 CHANGES:
@@ -162,22 +163,24 @@ export class PairTracker {
   
   /**
    * Check if we can open a new pair
-   * V36.2.4: Also block if ANY pair is still in PENDING_ENTRY (awaiting taker fill)
-   * This prevents opening multiple pairs before the first taker fill arrives.
+   * V36.2.5: Allow parallel pairs - stacking limit orders is fine!
+   * Only limit on total active pairs, not pending entries.
    */
   canOpenNewPair(): boolean {
     const activePairs = this.getActivePairs();
+    const count = activePairs.length;
     
-    // V36.2.4: Block if we have any PENDING_ENTRY pairs (awaiting taker fill)
-    // This ensures we wait for the taker to fill before opening a new pair
-    const pendingEntry = activePairs.filter(p => p.status === 'PENDING_ENTRY');
-    if (pendingEntry.length > 0) {
-      console.log(`[PairTracker] ⏳ Waiting for ${pendingEntry.length} taker fill(s) before opening new pair`);
+    // V36.2.5: Log current state for debugging
+    const pending = activePairs.filter(p => p.status === 'PENDING_ENTRY').length;
+    const waiting = activePairs.filter(p => p.status === 'WAITING_HEDGE').length;
+    
+    if (count >= this.config.maxPendingPairs) {
+      console.log(`[PairTracker] 🛑 Max pairs reached: ${count}/${this.config.maxPendingPairs} (pending=${pending}, waiting=${waiting})`);
       return false;
     }
     
-    // Also check total active pairs limit
-    return activePairs.length < this.config.maxPendingPairs;
+    console.log(`[PairTracker] ✅ Can open pair: ${count}/${this.config.maxPendingPairs} (pending=${pending}, waiting=${waiting})`);
+    return true;
   }
   
   /**
@@ -343,9 +346,20 @@ export class PairTracker {
     pairUpdated: boolean;
     pair?: PendingPair;
   }> {
+    // V36.2.5: Enhanced debug logging
+    console.log(`[PairTracker] 🔍 onFill called: ${fill.side} ${fill.size.toFixed(0)} @ $${fill.price.toFixed(2)} | orderId: ${fill.orderId?.slice(0, 12)}...`);
+    console.log(`[PairTracker]    Looking for pairs in market: ${market.slug}`);
+    console.log(`[PairTracker]    Total pairs in tracker: ${this.pairs.size}`);
+    
     // Find matching pair
     for (const pair of this.pairs.values()) {
-      if (pair.marketSlug !== market.slug) continue;
+      // V36.2.5: Log each pair we're checking
+      console.log(`[PairTracker]    Checking pair ${pair.id}: market=${pair.marketSlug.slice(-20)} status=${pair.status} takerSide=${pair.takerSide} takerOrderId=${pair.takerOrderId?.slice(0, 12) || 'NOT_SET'}`);
+      
+      if (pair.marketSlug !== market.slug) {
+        console.log(`[PairTracker]    ❌ Market mismatch: ${pair.marketSlug} vs ${market.slug}`);
+        continue;
+      }
       
       // Check taker fill - V36.2.2: Match on orderId OR on side (for race condition)
       // The fill can arrive before openPair() sets the orderId, so we also match
@@ -355,6 +369,11 @@ export class PairTracker {
                                 pair.status === 'PENDING_ENTRY' && 
                                 pair.takerSide === fill.side &&
                                 !pair.takerFilledAt; // Not already filled
+      
+      // V36.2.5: Log matching details
+      console.log(`[PairTracker]    Match check: orderIdMatch=${isTakerOrderIdMatch} sideMatch=${isTakerSideMatch}`);
+      console.log(`[PairTracker]    Details: pair.takerOrderId=${pair.takerOrderId?.slice(0, 12) || 'null'} fill.orderId=${fill.orderId?.slice(0, 12)}`);
+      console.log(`[PairTracker]    Details: pair.takerSide=${pair.takerSide} fill.side=${fill.side} pair.takerFilledAt=${pair.takerFilledAt || 'null'}`);
       
       if ((isTakerOrderIdMatch || isTakerSideMatch) && pair.status === 'PENDING_ENTRY') {
         // If we matched on side, update the orderId now that we know it
