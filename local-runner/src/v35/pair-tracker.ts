@@ -331,14 +331,19 @@ export class PairTracker {
     // Store pair BEFORE placing order so onFill can find it
     this.pairs.set(pairId, pair);
     
-    // 1. Place TAKER order on expensive side (market buy)
+    // 1. Place TAKER order on expensive side (MARKET buy - must fill immediately!)
+    // V36.2.10: Use FOK (Fill or Kill) to guarantee immediate fill or rejection
+    // Also increase price buffer to 3¢ above ask to ensure crossing the spread
     try {
+      const takerPrice = Math.min(0.99, expensiveAsk + 0.03); // 3¢ above ask, max 99¢
+      console.log(`[PairTracker] 🚀 Placing TAKER (FOK): ${size} ${expensiveSide} @ $${takerPrice.toFixed(3)} (ask=$${expensiveAsk.toFixed(3)})`);
+      
       const takerResult = await placeOrder({
         tokenId: takerTokenId,
         side: 'BUY',
-        price: expensiveAsk + 0.01, // Slightly above ask for immediate fill
+        price: takerPrice,
         size,
-        orderType: 'GTC',
+        orderType: 'FOK', // Fill or Kill - immediate fill or cancel
       });
       
       if (!takerResult.success || !takerResult.orderId) {
