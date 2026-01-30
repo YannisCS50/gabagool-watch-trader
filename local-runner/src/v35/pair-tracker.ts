@@ -355,9 +355,80 @@ export class PairTracker {
       pair.takerOrderId = takerResult.orderId;
       pair.updatedAt = Date.now();
       
-      console.log(`[PairTracker] ✓ Taker placed & registered: ${takerResult.orderId.slice(0, 8)}...`);
+      console.log(`[PairTracker] ✓ Taker placed: ${takerResult.orderId.slice(0, 8)}... status=${takerResult.status}`);
       
-      // Log event
+      // =========================================================================
+      // V36.2.9: IMMEDIATE MAKER PLACEMENT - NO WEBSOCKET DEPENDENCY
+      // =========================================================================
+      // placeOrder() now returns fill status directly via REST API verification.
+      // If taker is filled, place maker IMMEDIATELY without waiting for WebSocket.
+      // This eliminates the race condition that was breaking the strategy.
+      // =========================================================================
+      
+      if (takerResult.status === 'filled' || takerResult.status === 'partial') {
+        const filledSize = takerResult.filledSize || size;
+        const filledPrice = takerResult.avgPrice || expensiveAsk;
+        
+        console.log(`[PairTracker] 🎯 Taker FILLED immediately: ${filledSize} @ $${filledPrice.toFixed(3)}`);
+        
+        // Calculate maker price: $1.00 - takerPrice - $0.05 = $0.95 - takerPrice
+        const makerPrice = this.config.targetCpp - filledPrice;
+        
+        if (makerPrice < 0.05) {
+          console.log(`[PairTracker] ⚠️ Maker price too low: $${makerPrice.toFixed(3)} - skipping`);
+          pair.status = 'CANCELLED';
+          return { success: false, error: 'maker_price_too_low' };
+        }
+        
+        const clampedMakerPrice = Math.min(0.95, Math.max(0.05, makerPrice));
+        const makerTokenId = pair.makerSide === 'UP' ? market.upTokenId : market.downTokenId;
+        
+        console.log(`[PairTracker] 📝 Placing MAKER immediately: ${pair.makerSide} @ $${clampedMakerPrice.toFixed(3)}`);
+        console.log(`[PairTracker]    Calculation: $${this.config.targetCpp.toFixed(2)} - $${filledPrice.toFixed(3)} = $${makerPrice.toFixed(3)}`);
+        
+        const makerResult = await placeOrder({
+          tokenId: makerTokenId,
+          side: 'BUY',
+          price: clampedMakerPrice,
+          size: filledSize,
+          orderType: 'GTC',
+        });
+        
+        if (!makerResult.success || !makerResult.orderId) {
+          console.log(`[PairTracker] ❌ Maker order failed: ${makerResult.error}`);
+          pair.status = 'CANCELLED';
+          return { success: false, error: makerResult.error || 'maker_failed' };
+        }
+        
+        registerOurOrderId(makerResult.orderId);
+        
+        pair.takerFilledAt = Date.now();
+        pair.takerFilledPrice = filledPrice;
+        pair.takerFilledSize = filledSize;
+        pair.makerOrderId = makerResult.orderId;
+        pair.makerPrice = clampedMakerPrice;
+        pair.status = 'WAITING_HEDGE';
+        pair.updatedAt = Date.now();
+        
+        console.log(`[PairTracker] ✓ PAIR COMPLETE: Taker ${expensiveSide} @ $${filledPrice.toFixed(2)} + Maker ${pair.makerSide} @ $${clampedMakerPrice.toFixed(2)}`);
+        console.log(`[PairTracker]    Projected CPP: $${(filledPrice + clampedMakerPrice).toFixed(3)}`);
+        
+        // Log to database
+        logV35GuardEvent({
+          marketSlug: market.slug,
+          asset: market.asset,
+          guardType: 'MAKER_PLACED',
+          blockedSide: null,
+          upQty: market.upQty,
+          downQty: market.downQty,
+          expensiveSide,
+          reason: `Pair ${pairId}: TAKER filled @ $${filledPrice.toFixed(2)}, MAKER ${pair.makerSide} @ $${clampedMakerPrice.toFixed(2)} placed (CPP: $${(filledPrice + clampedMakerPrice).toFixed(3)})`,
+        }).catch(() => {});
+        
+        return { success: true, pairId };
+      }
+      
+      // Taker not filled yet - log event and wait for WebSocket
       logV35GuardEvent({
         marketSlug: market.slug,
         asset: market.asset,
@@ -366,7 +437,7 @@ export class PairTracker {
         upQty: market.upQty,
         downQty: market.downQty,
         expensiveSide,
-        reason: `Pair ${pairId}: ${size} shares TAKER placed, awaiting fill for MAKER`,
+        reason: `Pair ${pairId}: ${size} shares TAKER placed (status=${takerResult.status}), awaiting fill for MAKER`,
       }).catch(() => {});
       
       return { success: true, pairId };
