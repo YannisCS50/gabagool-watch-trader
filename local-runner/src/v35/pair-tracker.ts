@@ -92,6 +92,7 @@ export interface PairTrackerConfig {
   minSharesPerPair: number;          // Minimum shares per pair
   maxSharesPerPair: number;          // Maximum shares per pair
   startupDelayMs: number;            // Wait after market open before first pair
+  pairCooldownMs: number;            // V36.3.1: Cooldown between opening new pairs
 }
 
 const DEFAULT_CONFIG: PairTrackerConfig = {
@@ -102,6 +103,7 @@ const DEFAULT_CONFIG: PairTrackerConfig = {
   minSharesPerPair: 5,
   maxSharesPerPair: 20,
   startupDelayMs: 60_000,            // 1 MINUTE observation period
+  pairCooldownMs: 5_000,             // V36.3.1: 5 seconds between new pairs (for testing)
 };
 
 // ============================================================
@@ -113,6 +115,7 @@ export class PairTracker {
   private pairs: Map<string, PendingPair> = new Map();
   private pairCounter = 0;
   private marketStartTimes: Map<string, number> = new Map();
+  private lastPairOpenedAt: number = 0;  // V36.3.1: Track last pair open time
   
   constructor(config: Partial<PairTrackerConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -159,7 +162,7 @@ export class PairTracker {
   }
   
   /**
-   * Check if we can open a new pair
+   * Check if we can open a new pair (respects max pairs AND cooldown)
    */
   canOpenNewPair(): boolean {
     const activePairs = this.getActivePairs();
@@ -167,6 +170,14 @@ export class PairTracker {
     
     const pending = activePairs.filter(p => p.status === 'PENDING_ENTRY').length;
     const waiting = activePairs.filter(p => p.status === 'WAITING_HEDGE').length;
+    
+    // V36.3.1: Check cooldown
+    const timeSinceLastPair = Date.now() - this.lastPairOpenedAt;
+    if (timeSinceLastPair < this.config.pairCooldownMs) {
+      const remaining = Math.ceil((this.config.pairCooldownMs - timeSinceLastPair) / 1000);
+      console.log(`[PairTracker] ⏳ Pair cooldown: ${remaining}s remaining`);
+      return false;
+    }
     
     if (count >= this.config.maxPendingPairs) {
       console.log(`[PairTracker] 🛑 Max pairs reached: ${count}/${this.config.maxPendingPairs} (pending=${pending}, waiting=${waiting})`);
@@ -301,6 +312,7 @@ export class PairTracker {
     };
     
     this.pairs.set(pairId, pair);
+    this.lastPairOpenedAt = Date.now();  // V36.3.1: Start cooldown timer
     
     // Place TAKER order (FOK - Fill or Kill)
     try {
