@@ -229,8 +229,14 @@ export class PairTracker {
     
     // Validate
     if (!this.canOpenNewPair()) {
-      return { success: false, error: `max_pairs_reached: ${this.config.maxPendingPairs}` };
+      return { success: false, error: `max_pairs_reached_or_cooldown` };
     }
+    
+    // V36.3.4: SET COOLDOWN TIMER IMMEDIATELY at entry point
+    // This prevents rapid-fire calls from bypassing the cooldown
+    // even if later checks fail (dry run, price cap, etc.)
+    this.lastPairOpenedAt = Date.now();
+    console.log(`[PairTracker] ⏱️ Cooldown started - next pair allowed in ${this.config.pairCooldownMs / 1000}s`);
     
     size = Math.max(this.config.minSharesPerPair, Math.min(size, this.config.maxSharesPerPair));
     
@@ -319,7 +325,7 @@ export class PairTracker {
     };
     
     this.pairs.set(pairId, pair);
-    this.lastPairOpenedAt = Date.now();  // V36.3.1: Start cooldown timer
+    // V36.3.4: Cooldown now set at start of openPair(), not here
     
     // Place TAKER order (FOK - Fill or Kill)
     try {
