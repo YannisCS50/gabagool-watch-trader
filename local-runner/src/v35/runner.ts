@@ -841,8 +841,16 @@ async function processMarket(market: V35Market): Promise<void> {
       // Get prices for pair calculation
       const takerPrice = expensiveSide === 'UP' ? upAsk : downAsk;
       const cheapBid = cheapSide === 'UP' ? (market.upBestBid || 0) : (market.downBestBid || 0);
-      const makerOffset = 0.01; // Place 1¢ below bid
-      const makerPrice = Math.max(0.05, cheapBid - makerOffset);
+      const cheapAsk = cheapSide === 'UP' ? (market.upBestAsk || 1) : (market.downBestAsk || 1);
+
+      // === V36.1 STRATEGY (per jouw framework) ===
+      // We set the maker price to hit a fixed target CPP, not "bid-1¢".
+      // makerPrice = targetCpp - takerAsk (passive bid; may be far below current bid)
+      const targetCpp = 0.95;
+      const makerAntiCross = 0.002; // 0.2¢ buffer so we don't accidentally become taker
+      const makerTarget = targetCpp - takerPrice;
+      const makerMax = cheapAsk > 0 && cheapAsk < 1 ? Math.max(0.05, cheapAsk - makerAntiCross) : 0.95;
+      const makerPrice = Math.max(0.05, Math.min(makerTarget, makerMax));
       
       // Calculate projected CPP
       const projectedCpp = takerPrice + makerPrice;
@@ -850,8 +858,8 @@ async function processMarket(market: V35Market): Promise<void> {
       
       log(`   📊 V36.1 Pair Analysis:`);
       log(`      TAKER ${expensiveSide} @ $${takerPrice.toFixed(3)}`);
-      log(`      MAKER ${cheapSide} @ $${makerPrice.toFixed(3)} (bid=$${cheapBid.toFixed(3)})`);
-      log(`      Projected CPP: $${projectedCpp.toFixed(3)} | Edge: ${(projectedEdge * 100).toFixed(1)}¢`);
+      log(`      MAKER ${cheapSide} @ $${makerPrice.toFixed(3)} (bid=$${cheapBid.toFixed(3)} ask=$${cheapAsk.toFixed(3)})`);
+      log(`      Target CPP: $${targetCpp.toFixed(3)} | Projected CPP now: $${projectedCpp.toFixed(3)} | Edge: ${(projectedEdge * 100).toFixed(1)}¢`);
       
       // V36.1: Open pair if projected CPP is acceptable
       const maxCppForEntry = 0.98;
@@ -880,23 +888,16 @@ async function processMarket(market: V35Market): Promise<void> {
     // When running in pair mode, we don't want additional passive quotes
     // that could create untracked exposure. Skip the V36 quoting engine.
     // =========================================================================
-    const v36Result = v36Engine.generateQuotes(market);
-    
+    // Keep combined-book logging (visibility) but do NOT run quote generation.
+    const combinedBook = v36Engine.getCombinedBook(market.slug);
+    if (combinedBook) {
+      logCombinedBook(combinedBook, market.asset);
+    }
+
     // DISABLED: Don't place passive quotes in pair-based mode
     // The pair tracker handles all entries via taker + maker pairs
     const upQuotes: V35Quote[] = [];
     const downQuotes: V35Quote[] = [];
-    
-    // Log V36 decision
-    if (v36Result.combinedBook) {
-      const edge = v36Result.combinedBook.edge;
-      const hasEdge = v36Result.combinedBook.hasEdge;
-      log(`   📊 V36: Edge ${(edge * 100).toFixed(1)}¢ | Combined ask $${v36Result.combinedBook.combinedBestAsk.toFixed(3)} | ${hasEdge ? '✅ TRADEABLE' : '❌ NO EDGE'}`);
-    }
-    
-    if (v36Result.blockedReason) {
-      log(`   ⏸️ V36 blocked: ${v36Result.blockedReason}`);
-    }
     
     // Debug: log quote generation (V36.1: passive quotes disabled, pair-based only)
     const imbalance = Math.abs(market.upQty - market.downQty);
