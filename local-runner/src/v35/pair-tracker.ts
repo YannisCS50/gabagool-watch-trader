@@ -271,6 +271,13 @@ export class PairTracker {
       }
     }
     
+    // V36.3.3: Block taker orders above $0.95 - no profit margin possible
+    const MAX_TAKER_PRICE = 0.95;
+    if (expensiveAsk > MAX_TAKER_PRICE) {
+      console.log(`[PairTracker] 🚫 Expensive side @ $${expensiveAsk.toFixed(3)} > $${MAX_TAKER_PRICE.toFixed(2)} cap - no edge`);
+      return { success: false, error: 'expensive_side_above_cap' };
+    }
+    
     // Create pair ID
     const pairId = `pair_${Date.now()}_${++this.pairCounter}`;
     
@@ -316,7 +323,8 @@ export class PairTracker {
     
     // Place TAKER order (FOK - Fill or Kill)
     try {
-      const takerPrice = Math.min(0.99, expensiveAsk + 0.03);
+      // V36.3.3: Cap taker price at $0.95 (was $0.99)
+      const takerPrice = Math.min(MAX_TAKER_PRICE, expensiveAsk + 0.03);
       console.log(`[PairTracker] 🚀 Placing TAKER (FOK): ${size} ${expensiveSide} @ $${takerPrice.toFixed(3)}`);
       
       const takerResult = await placeOrder({
