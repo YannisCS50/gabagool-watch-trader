@@ -225,13 +225,6 @@ export class ReversalDetector {
       priceHistorySize,
     };
   }
-    
-    return {
-      lastCheckMs: this.lastCheckMs,
-      lastEmergencyMs: this.lastEmergencyMs,
-      momentumByAsset,
-    };
-  }
   
   /**
    * Configure thresholds
