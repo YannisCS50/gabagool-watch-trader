@@ -1,8 +1,8 @@
 // ============================================================
 // V36 RUNNER - PAIR-BASED MARKET MAKING
 // ============================================================
-// Version: V36.2.1 - "Pure Pair-Based Mode"
-// 
+// Version: V36.2.3 - "No Legacy Guards"
+//
 // V36.2.1 KEY CHANGES:
 // - DISABLED: ProactiveRebalancer (was buying on lagging side independently)
 // - DISABLED: EmergencyRecovery (was buying on lagging side independently)
@@ -687,12 +687,19 @@ async function processMarket(market: V35Market): Promise<void> {
   }
   
   // =========================================================================
-  // V35.3.0: CIRCUIT BREAKER SAFETY CHECK
+  // V36.2.3: CIRCUIT BREAKER - DISABLED IN PAIR-BASED MODE
   // =========================================================================
-  // This is the AUTHORITATIVE safety check. All limits are enforced here.
-  // V35.3.8 FIX: Even when tripped, allow PROACTIVE HEDGING to reduce imbalance!
+  // In V36 pair-based mode, the PairTracker manages its own exposure.
+  // The legacy circuit breaker interferes by:
+  // 1. Blocking trades when UP > DOWN (which is EXPECTED in pair mode!)
+  // 2. Calling the disabled rebalancer
+  // 3. Logging useless BALANCE_GUARD events
+  //
+  // DISABLED: Skip circuit breaker checks entirely in pair-based mode.
+  // The PairTracker enforces its own limits (maxPendingPairs).
   // =========================================================================
-  const safetyCheck = await circuitBreaker.checkMarket(market, config.dryRun);
+  // const safetyCheck = await circuitBreaker.checkMarket(market, config.dryRun);
+  const safetyCheck = { shouldStop: false, shouldBlockUp: false, shouldBlockDown: false, reason: null };
   
   // Stop quoting if too close to expiry
   if (secondsToExpiry < config.stopBeforeExpirySec) {
@@ -730,11 +737,11 @@ async function processMarket(market: V35Market): Promise<void> {
         market.downCost += (rebalanceResult.hedgeQty || 0) * (rebalanceResult.hedgePrice || 0);
       }
     }
-    // Re-check circuit breaker after hedging to see if we've recovered
-    const recheckSafety = await circuitBreaker.checkMarket(market, config.dryRun);
-    if (!recheckSafety.shouldStop && safetyCheck.shouldStop) {
-      log(`✅ CIRCUIT BREAKER RECOVERED after proactive hedge!`);
-    }
+    // Re-check circuit breaker after hedging - DISABLED in V36.2.3
+    // const recheckSafety = await circuitBreaker.checkMarket(market, config.dryRun);
+    // if (!recheckSafety.shouldStop && safetyCheck.shouldStop) {
+    //   log(`✅ CIRCUIT BREAKER RECOVERED after proactive hedge!`);
+    // }
   }
   
   // =========================================================================
@@ -753,12 +760,12 @@ async function processMarket(market: V35Market): Promise<void> {
   //   ...
   // }
   
-  // NOW check if circuit breaker should halt further processing (new quotes)
-  if (safetyCheck.shouldStop && !rebalanceResult.hedged) {
-    log(`🚨 ${market.slug.slice(-25)}: CIRCUIT BREAKER HALT - ${safetyCheck.reason}`);
-    log(`   💡 Proactive rebalancer checked - hedge not yet viable`);
-    return; // Do not place new quotes, but we tried to hedge
-  }
+  // V36.2.3: Circuit breaker halt check DISABLED - pair tracker manages exposure
+  // if (safetyCheck.shouldStop && !rebalanceResult.hedged) {
+  //   log(`🚨 ${market.slug.slice(-25)}: CIRCUIT BREAKER HALT - ${safetyCheck.reason}`);
+  //   log(`   💡 Proactive rebalancer checked - hedge not yet viable`);
+  //   return; // Do not place new quotes, but we tried to hedge
+  // }
   
   // Update orderbook
   await updateOrderbook(market, config.dryRun);
