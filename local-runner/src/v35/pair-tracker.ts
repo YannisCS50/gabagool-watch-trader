@@ -102,7 +102,7 @@ const DEFAULT_CONFIG: PairTrackerConfig = {
   emergencyTakerOffset: 0.005,
   minSharesPerPair: 5,
   maxSharesPerPair: 20,
-  startupDelayMs: 30_000,            // 30 seconds observation period
+  startupDelayMs: 60_000,            // 1 MINUTE observation period
 };
 
 // ============================================================
