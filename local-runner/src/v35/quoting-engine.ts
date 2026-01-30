@@ -1,41 +1,45 @@
 // ============================================================
 // V35 QUOTING ENGINE - GABAGOOL MODE
 // ============================================================
-// Version: V35.10.0 - "Smart Spread Following"
+// Version: V35.11.4 - "Hard 100-Share Cap"
 //
-// V35.10.0 MAJOR CHANGES:
+// V35.11.4 CRITICAL CHANGES:
 // ================================================================
-// PROBLEM: Fixed grid (35-55c) placed orders FAR from market ask,
-//          reducing fill probability significantly.
+// ABSOLUTE RULE: MAX 100 SHARES PER SIDE. NO EXCEPTIONS.
 //
-// SOLUTION: "Smart Spread" quoting - place orders NEAR the current
-//           best bid, not on fixed grid levels. This maximizes
-//           fill probability while still being a maker (not taker).
+// Every order placement MUST check against the exposure ledger's
+// hard cap of 100 shares. This is calculated as:
+//   effectiveExposure = positionShares + openOrderShares + pendingShares
 //
-// NEW STRATEGY:
-// 1. Get current best bid for each side
-// 2. Place orders at: bestBid, bestBid - 1¢, bestBid - 2¢, etc.
-// 3. This keeps us competitive in the book
-// 4. Still respect BURST-CAP to prevent excessive exposure
+// If effectiveExposure + newOrderQty > 100 → CLAMP or BLOCK
 // ================================================================
 //
-// V35.6.1 FIX (kept):
-// - Fresh market (both sides = 0) now quotes BOTH sides equally
-// - BALANCED/TRAILING exemptions for burst-cap
+// V35.10.0 KEPT:
+// - Smart spread quoting near best bid
+// - 4 price levels with 1¢ step
 //
-// CORE PRINCIPLE: Quote competitively near the spread to maximize fills.
+// CORE PRINCIPLE: Never exceed 100 shares per side, ever.
 // ============================================================
 
 import { getV35Config, V35_VERSION, type V35Config } from './config.js';
 import type { V35Market, V35Quote, V35Side, V35Asset } from './types.js';
 import { logV35GuardEvent } from './backend.js';
 import { getV35SidePricing } from './market-pricing.js';
+import { 
+  checkCapWithEffectiveExposure, 
+  getEffectiveExposure,
+  EXPOSURE_CAP_CONFIG,
+  type Side as LedgerSide 
+} from '../exposure-ledger.js';
 
 interface QuoteDecision {
   quotes: V35Quote[];
   blocked: boolean;
   blockReason: string | null;
 }
+
+// V35.11.4: HARD CAP - absolute maximum shares per side
+const HARD_CAP_PER_SIDE = 100;
 
 // V35.10.0: Smart spread configuration
 const SMART_SPREAD_CONFIG = {
@@ -102,12 +106,40 @@ export class QuotingEngine {
     const imbalance = Math.abs(market.upQty - market.downQty);
     
     // =========================================================================
+    // V35.11.4: HARD 100-SHARE CAP CHECK (FIRST!)
+    // =========================================================================
+    // This is the ABSOLUTE rule: never exceed 100 shares per side.
+    // Check BEFORE any other logic.
+    // =========================================================================
+    const ledgerSide: LedgerSide = side === 'UP' ? 'UP' : 'DOWN';
+    const exposure = getEffectiveExposure(market.conditionId, market.asset);
+    const effectiveShares = side === 'UP' ? exposure.effectiveUp : exposure.effectiveDown;
+    const remainingCap = HARD_CAP_PER_SIDE - effectiveShares;
+    
+    console.log(`[QuotingEngine] 🔒 HARD-CAP CHECK: ${side} effective=${effectiveShares.toFixed(0)}/${HARD_CAP_PER_SIDE} remaining=${remainingCap.toFixed(0)}`);
+    
+    if (remainingCap <= 0) {
+      const reason = `HARD-CAP: ${side} at ${effectiveShares.toFixed(0)}/${HARD_CAP_PER_SIDE} shares - NO MORE ORDERS`;
+      console.log(`[QuotingEngine] 🚫 ${reason}`);
+      
+      logV35GuardEvent({
+        marketSlug: market.slug,
+        asset: market.asset,
+        guardType: 'HARD_CAP_BLOCK',
+        blockedSide: side,
+        upQty: market.upQty,
+        downQty: market.downQty,
+        expensiveSide,
+        reason,
+      }).catch(() => {});
+      
+      return { quotes: [], blocked: true, blockReason: reason };
+    }
+    
+    // =========================================================================
     // V35.11.3: STRICT BALANCE-FIRST LOGIC
     // =========================================================================
-    // PHILOSOPHY: Never let either side run away. Block leading side IMMEDIATELY.
-    // The rebalancer handles catching up - quoting engine should NOT.
-    // =========================================================================
-    const isBalanced = imbalance < 5;  // V35.11.3: Use 5-share tolerance (was 1)
+    const isBalanced = imbalance < 5;
     const trailingSide = market.upQty < market.downQty ? 'UP' : 'DOWN';
     const leadingSide = market.upQty > market.downQty ? 'UP' : 'DOWN';
     const isTrailing = !isBalanced && side === trailingSide;
@@ -115,9 +147,6 @@ export class QuotingEngine {
     
     // =========================================================================
     // V35.11.3: IMMEDIATE BLOCK ON LEADING SIDE (threshold: 5 shares)
-    // =========================================================================
-    // This is the KEY fix: we block the leading side MUCH earlier to prevent
-    // the runaway imbalance. Before, we only blocked at 20-25 shares!
     // =========================================================================
     const LEADING_BLOCK_THRESHOLD = 5;
     if (isLeading && imbalance >= LEADING_BLOCK_THRESHOLD) {
@@ -238,6 +267,10 @@ export class QuotingEngine {
     
     let totalQuotedQty = 0;
     
+    // V35.11.4: Apply HARD CAP as additional constraint
+    const effectiveBudget = Math.min(maxNewOrderQty, remainingCap);
+    console.log(`[QuotingEngine] 📊 EFFECTIVE BUDGET: min(burstCap=${maxNewOrderQty.toFixed(0)}, hardCap=${remainingCap.toFixed(0)}) = ${effectiveBudget.toFixed(0)}`);
+    
     for (let level = 0; level < SMART_SPREAD_CONFIG.numLevels; level++) {
       // Calculate price for this level (starting at best bid, stepping down)
       const levelPrice = Math.round((startingBid - (level * SMART_SPREAD_CONFIG.levelStep)) * 100) / 100;
@@ -257,9 +290,15 @@ export class QuotingEngine {
       const minSharesForNotional = Math.ceil(1.0 / levelPrice);
       const shares = Math.max(config.sharesPerLevel, minSharesForNotional);
       
-      // Check burst cap
-      if (totalQuotedQty + shares > maxNewOrderQty) {
-        console.log(`[QuotingEngine] 🛡️ BURST-CAP reached at ${totalQuotedQty.toFixed(0)}/${maxNewOrderQty.toFixed(0)} shares`);
+      // V35.11.4: Check against EFFECTIVE BUDGET (includes hard cap)
+      if (totalQuotedQty + shares > effectiveBudget) {
+        const clampedShares = Math.floor(effectiveBudget - totalQuotedQty);
+        if (clampedShares >= 3) {  // Minimum 3 shares for Polymarket
+          quotes.push({ price: levelPrice, size: clampedShares });
+          totalQuotedQty += clampedShares;
+          console.log(`[QuotingEngine] 🔒 HARD-CAP: Clamped to ${clampedShares} shares at $${levelPrice.toFixed(2)}`);
+        }
+        console.log(`[QuotingEngine] 🔒 BUDGET EXHAUSTED at ${totalQuotedQty.toFixed(0)}/${effectiveBudget.toFixed(0)} shares`);
         break;
       }
       
