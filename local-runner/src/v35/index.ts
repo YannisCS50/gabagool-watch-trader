@@ -1,7 +1,7 @@
 // ============================================================
-// V35 INDEX - Re-exports all V35 modules
+// V36 INDEX - Re-exports all V35/V36 modules
 // ============================================================
-// Version: V35.5.0 - "Emergency Recovery"
+// Version: V36.0.0 - "Professional Market Making"
 // ============================================================
 
 export * from './config.js';
@@ -18,5 +18,10 @@ export * from './backend.js';
 export * from './utils.js';
 export * from './user-ws.js';
 
-export const V35_VERSION = 'V35.5.0';
-export const V35_NAME = 'Emergency Recovery - Minimize loss when hedge isnt profitable';
+// V36: New professional market making modules
+export * from './combined-book.js';
+export * from './depth-parser.js';
+export * from './v36-quoting-engine.js';
+
+export const V35_VERSION = 'V36.0.0';
+export const V35_NAME = 'Professional Market Making - Combined Book Analysis';

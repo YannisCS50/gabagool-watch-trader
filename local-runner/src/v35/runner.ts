@@ -1,18 +1,17 @@
 // ============================================================
-// V35 RUNNER - GABAGOOL MODE
+// V36 RUNNER - PROFESSIONAL MARKET MAKING
 // ============================================================
-// Version: V35.8.1 - "Authoritative Sync Fix"
+// Version: V36.0.0 - "Professional Market Making"
 // 
-// V35.8.1 CRITICAL FIX:
-// - Position sync now ALWAYS fires when cache has data (removed lastFetchedAtMs > 0 check)
-// - Added explicit sync logging to debug drift issues
-// - Cache state logged periodically for transparency
+// V36.0.0 KEY CHANGES:
+// - FULL ORDERBOOK DEPTH parsing (not just top-of-book)
+// - UP + DOWN treated as ONE COMBINED BOOK
+// - Only quotes when EDGE exists (combined ask < $1.00)
+// - Depth-aware sizing based on available liquidity
 //
-// V35.8.0 CHANGES:
-// - maxCombinedCost limits for flexible hedging ($1.02 standard, $1.05 emergency)
-//
-// CORE PRINCIPLE: Quote both sides equally, let the market balance.
-// This matches Gabagool22's approach: high fill frequency + equal quoting.
+// CORE INSIGHT: UP + DOWN outcomes are intrinsically linked.
+// If askUp + askDown < $1.00, there's profit to be made.
+// We quote both sides and lock in the edge at settlement.
 //
 // CRITICAL INVARIANTS:
 // 1. Circuit Breaker is MARKET-SPECIFIC (not global)
@@ -52,6 +51,10 @@ import { getProactiveRebalancer, resetProactiveRebalancer } from './proactive-re
 import { getEmergencyRecovery, resetEmergencyRecovery, analyzeRecovery, setRecoveryConfig } from './emergency-recovery.js';
 import { sendV35Heartbeat, sendV35Offline, saveV35Settlement, saveV35Fill, saveV35OrderbookSnapshots, saveV35InventorySnapshot, saveV35ExpirySnapshot, type V35InventorySnapshot, type V35ExpirySnapshotData } from './backend.js';
 import type { V35OrderbookSnapshot } from './types.js';
+// V36: Import new depth-aware modules
+import { getV36QuotingEngine, resetV36QuotingEngine } from './v36-quoting-engine.js';
+import { parseBookEvent, type ParsedDepth } from './depth-parser.js';
+import { buildCombinedBook, logCombinedBook } from './combined-book.js';
 // Expiry snapshot scheduler - captures market state exactly 1 second before expiry
 import { scheduleExpirySnapshot, cancelExpirySnapshot, cancelAllExpirySnapshots, setSnapshotCallback } from './expiry-snapshot.js';
 import { ensureValidCredentials, getBalance, getOpenOrders } from '../polymarket.js';
@@ -91,6 +94,9 @@ let running = false;
 let paused = false;
 let balance = 0;
 let clobSocket: WebSocket | null = null;
+
+// V36: Full orderbook depth storage per token
+const orderbookDepth = new Map<string, ParsedDepth>();
 
 // Orderbook snapshot buffer (batched logging)
 const orderbookBuffer: V35OrderbookSnapshot[] = [];
@@ -133,6 +139,17 @@ function queueOrderbookSnapshot(market: V35Market): void {
     : null;
   const edge = combinedAsk && combinedAsk < 1.0 ? 1.0 - combinedAsk : null;
   
+  // V36: Get full depth data from cache
+  const upDepth = orderbookDepth.get(market.upTokenId);
+  const downDepth = orderbookDepth.get(market.downTokenId);
+  
+  // Extract top 5 levels for logging
+  const topN = 5;
+  const upBids = upDepth?.bids.slice(0, topN) ?? [];
+  const upAsks = upDepth?.asks.slice(0, topN) ?? [];
+  const downBids = downDepth?.bids.slice(0, topN) ?? [];
+  const downAsks = downDepth?.asks.slice(0, topN) ?? [];
+  
   const snapshot: V35OrderbookSnapshot = {
     ts: now,
     marketSlug: market.slug,
@@ -144,12 +161,11 @@ function queueOrderbookSnapshot(market: V35Market): void {
     combinedAsk,
     combinedMid,
     edge,
-    // Full depth: we store top 5 levels from tracked orders as proxy
-    // In production, CLOB WebSocket should provide full book
-    upBids: [],
-    upAsks: [],
-    downBids: [],
-    downAsks: [],
+    // V36: Now with actual depth data!
+    upBids,
+    upAsks,
+    downBids,
+    downAsks,
     spotPrice: null, // TODO: integrate Chainlink feed
     strikePrice: null, // TODO: parse from market slug
     secondsToExpiry: Math.round(secondsToExpiry),
@@ -259,35 +275,42 @@ function processWsEvent(data: any): void {
     const market = markets.get(marketInfo.slug);
     if (!market) return;
 
-    const asks = (data.asks || []) as any[];
-    const bids = (data.bids || []) as any[];
+    const rawAsks = (data.asks || []) as any[];
+    const rawBids = (data.bids || []) as any[];
 
-    const parsePrice = (level: any): number | null => {
-      const raw = Array.isArray(level) ? level[0] : level?.price;
-      const n = typeof raw === 'number' ? raw : parseFloat(raw);
-      return Number.isFinite(n) ? n : null;
-    };
-
-    let bestBid: number | null = null;
-    let bestAsk: number | null = null;
-
-    for (const level of bids) {
-      const p = parsePrice(level);
-      if (p !== null && (bestBid === null || p > bestBid)) bestBid = p;
-    }
-    for (const level of asks) {
-      const p = parsePrice(level);
-      if (p !== null && (bestAsk === null || p < bestAsk)) bestAsk = p;
-    }
-
+    // =========================================================================
+    // V36: PARSE FULL ORDERBOOK DEPTH (not just top-of-book)
+    // =========================================================================
+    const depth = parseBookEvent({
+      event_type: 'book',
+      asset_id: assetId,
+      bids: rawBids,
+      asks: rawAsks,
+    });
+    
+    // Store full depth for later analysis
+    orderbookDepth.set(assetId, depth);
+    
+    // Update V36 quoting engine with full depth
+    const v36Engine = getV36QuotingEngine();
+    v36Engine.updateDepth(market.slug, marketInfo.side, rawBids, rawAsks);
+    
+    // Also update market best bid/ask for backwards compatibility
     if (marketInfo.side === 'UP') {
-      if (bestBid !== null) market.upBestBid = bestBid;
-      if (bestAsk !== null) market.upBestAsk = bestAsk;
+      if (depth.bestBid > 0) market.upBestBid = depth.bestBid;
+      if (depth.bestAsk < 1) market.upBestAsk = depth.bestAsk;
     } else {
-      if (bestBid !== null) market.downBestBid = bestBid;
-      if (bestAsk !== null) market.downBestAsk = bestAsk;
+      if (depth.bestBid > 0) market.downBestBid = depth.bestBid;
+      if (depth.bestAsk < 1) market.downBestAsk = depth.bestAsk;
     }
     market.lastUpdated = new Date();
+    
+    // Log depth summary periodically (every ~10 updates)
+    if (Math.random() < 0.1) {
+      const bidLevels = depth.bids.length;
+      const askLevels = depth.asks.length;
+      log(`📚 DEPTH ${marketInfo.side}: ${bidLevels} bids / ${askLevels} asks | Best: $${depth.bestBid.toFixed(2)}/$${depth.bestAsk.toFixed(2)} | Total: ${depth.bidDepth.toFixed(0)}/${depth.askDepth.toFixed(0)} shares`);
+    }
   }
 
   // IMPORTANT: Do NOT infer fills from the public market WebSocket.
@@ -739,8 +762,12 @@ async function processMarket(market: V35Market): Promise<void> {
   // Sync orders if not paused
   if (!paused) {
     // =========================================================================
-    // V35.3.0: Use circuit breaker decision for quote blocking
+    // V36: USE COMBINED BOOK ANALYSIS FOR QUOTING
     // =========================================================================
+    const v36Engine = getV36QuotingEngine();
+    const v36Result = v36Engine.generateQuotes(market);
+    
+    // Apply circuit breaker constraints on top of V36 decision
     const allowUpQuotes = !safetyCheck.shouldBlockUp;
     const allowDownQuotes = !safetyCheck.shouldBlockDown;
     
@@ -748,9 +775,24 @@ async function processMarket(market: V35Market): Promise<void> {
       log(`   🛡️ Safety: ${safetyCheck.reason} | UP=${allowUpQuotes ? '✅' : '🚫'} DOWN=${allowDownQuotes ? '✅' : '🚫'}`);
     }
     
-    // Generate quotes only for allowed sides
-    const upQuotes = allowUpQuotes ? quotingEngine.generateQuotes('UP', market) : [];
-    const downQuotes = allowDownQuotes ? quotingEngine.generateQuotes('DOWN', market) : [];
+    // Use V36 quotes if available, otherwise fall back to V35
+    let upQuotes = v36Result.upQuotes;
+    let downQuotes = v36Result.downQuotes;
+    
+    // Apply circuit breaker blocks
+    if (!allowUpQuotes) upQuotes = [];
+    if (!allowDownQuotes) downQuotes = [];
+    
+    // Log V36 decision
+    if (v36Result.combinedBook) {
+      const edge = v36Result.combinedBook.edge;
+      const hasEdge = v36Result.combinedBook.hasEdge;
+      log(`   📊 V36: Edge ${(edge * 100).toFixed(1)}¢ | Combined ask $${v36Result.combinedBook.combinedBestAsk.toFixed(3)} | ${hasEdge ? '✅ TRADEABLE' : '❌ NO EDGE'}`);
+    }
+    
+    if (v36Result.blockedReason) {
+      log(`   ⏸️ V36 blocked: ${v36Result.blockedReason}`);
+    }
     
     // Debug: log quote generation
     const imbalance = Math.abs(market.upQty - market.downQty);
@@ -760,16 +802,14 @@ async function processMarket(market: V35Market): Promise<void> {
       log(`   inventory: UP=${market.upQty} DOWN=${market.downQty} (imbalance=${imbalance.toFixed(0)})`);
     }
     
-    // V35.6.0: SYNC BOTH SIDES SIMULTANEOUSLY (Gabagool Mode)
-    // Previously we did UP then DOWN sequentially, which could cause timing issues.
-    // Now we place both in parallel to ensure symmetric market presence.
+    // V36: SYNC BOTH SIDES SIMULTANEOUSLY
     const [upResult, downResult] = await Promise.all([
       syncOrders(market, 'UP', upQuotes, config.dryRun),
       syncOrders(market, 'DOWN', downQuotes, config.dryRun),
     ]);
     
     if (upResult.placed > 0 || downResult.placed > 0) {
-      log(`📝 Orders placed: UP=${upResult.placed} DOWN=${downResult.placed} (SIMULTANEOUS)`);
+      log(`📝 Orders placed: UP=${upResult.placed} DOWN=${downResult.placed} (V36 COMBINED BOOK)`);
     }
   }
 }
