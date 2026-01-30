@@ -815,22 +815,27 @@ async function processMarket(market: V35Market): Promise<void> {
   // Sync orders if not paused
   if (!paused) {
     // =========================================================================
-    // V36.1: PAIR-BASED ENTRY LOGIC - TAKER EXPENSIVE + MAKER CHEAP
+    // V36.2: PAIR-BASED ENTRY LOGIC - TAKER ALWAYS EXECUTES
     // =========================================================================
     // STRATEGY:
     // 1. Identify expensive side (higher ask = likely winner)
-    // 2. Calculate: TAKER price (expensive ask) + MAKER price (cheap bid - offset)
-    // 3. If projected CPP < 0.98 → OPEN PAIR
+    // 2. ALWAYS place TAKER on expensive side (no CPP check!)
+    // 3. After taker fills, place MAKER at: targetCpp - fillPrice
     //
-    // This works EVEN when combined ask > $1.00!
-    // Example: DOWN ask $0.87 + UP maker @ $0.10 = $0.97 ✅
+    // V36.2 CHANGES:
+    // - NO pre-entry CPP check - taker is ALWAYS placed
+    // - Maker price calculated AFTER fill based on actual fill price
+    // - Only BTC allowed
     // =========================================================================
     const v36Engine = getV36QuotingEngine();
     const pairTracker = getPairTracker();
     
-    // Check startup delay first
-    if (!pairTracker.isStartupDelayComplete(market.slug)) {
-      log(`   ⏳ V36.1: Startup delay active - observing market...`);
+    // Only BTC
+    if (market.asset !== 'BTC') {
+      log(`   ⚠️ V36.2: Skipping non-BTC market (${market.asset})`);
+    } else if (!pairTracker.isStartupDelayComplete(market.slug)) {
+      // Check startup delay first
+      log(`   ⏳ V36.2: Startup delay active - observing market...`);
     } else {
       // Determine expensive side based on current asks
       const upAsk = market.upBestAsk || 1;
@@ -838,46 +843,35 @@ async function processMarket(market: V35Market): Promise<void> {
       const expensiveSide: 'UP' | 'DOWN' = downAsk > upAsk ? 'DOWN' : 'UP';
       const cheapSide: 'UP' | 'DOWN' = expensiveSide === 'UP' ? 'DOWN' : 'UP';
       
-      // Get prices for pair calculation
+      // Get prices for logging only
       const takerPrice = expensiveSide === 'UP' ? upAsk : downAsk;
       const cheapBid = cheapSide === 'UP' ? (market.upBestBid || 0) : (market.downBestBid || 0);
       const cheapAsk = cheapSide === 'UP' ? (market.upBestAsk || 1) : (market.downBestAsk || 1);
-
-      // === V36.1 STRATEGY (per jouw framework) ===
-      // We set the maker price to hit a fixed target CPP, not "bid-1¢".
-      // makerPrice = targetCpp - takerAsk (passive bid; may be far below current bid)
+      
+      // V36.2: Log analysis (no CPP check - we always enter)
       const targetCpp = 0.95;
-      const makerAntiCross = 0.002; // 0.2¢ buffer so we don't accidentally become taker
-      const makerTarget = targetCpp - takerPrice;
-      const makerMax = cheapAsk > 0 && cheapAsk < 1 ? Math.max(0.05, cheapAsk - makerAntiCross) : 0.95;
-      const makerPrice = Math.max(0.05, Math.min(makerTarget, makerMax));
+      const projectedMakerPrice = targetCpp - takerPrice;
+      const projectedCpp = takerPrice + Math.max(0.05, projectedMakerPrice);
       
-      // Calculate projected CPP
-      const projectedCpp = takerPrice + makerPrice;
-      const projectedEdge = 1.0 - projectedCpp;
+      log(`   📊 V36.2 Pair Analysis:`);
+      log(`      TAKER ${expensiveSide} @ ~$${takerPrice.toFixed(3)} (market order)`);
+      log(`      MAKER ${cheapSide} @ ~$${projectedMakerPrice.toFixed(3)} (after fill: $0.95 - fillPrice)`);
+      log(`      Target CPP: $${targetCpp.toFixed(3)} | Estimated: $${projectedCpp.toFixed(3)}`);
       
-      log(`   📊 V36.1 Pair Analysis:`);
-      log(`      TAKER ${expensiveSide} @ $${takerPrice.toFixed(3)}`);
-      log(`      MAKER ${cheapSide} @ $${makerPrice.toFixed(3)} (bid=$${cheapBid.toFixed(3)} ask=$${cheapAsk.toFixed(3)})`);
-      log(`      Target CPP: $${targetCpp.toFixed(3)} | Projected CPP now: $${projectedCpp.toFixed(3)} | Edge: ${(projectedEdge * 100).toFixed(1)}¢`);
-      
-      // V36.1: Open pair if projected CPP is acceptable
-      const maxCppForEntry = 0.98;
-      if (projectedCpp <= maxCppForEntry && pairTracker.canOpenNewPair()) {
+      // V36.2: ALWAYS open pair if we can (no CPP check)
+      if (pairTracker.canOpenNewPair()) {
         const pairSize = Math.max(5, Math.min(15, 10)); // 5-15 shares per pair
         
-        log(`   🎯 V36.1: Edge OK (${(projectedEdge * 100).toFixed(1)}¢) - opening pair!`);
+        log(`   🎯 V36.2: Opening pair (no CPP check - always enter!)`);
         
         const pairResult = await pairTracker.openPair(market, expensiveSide, pairSize);
         
         if (pairResult.success) {
-          log(`   ✅ Pair ${pairResult.pairId} opened`);
+          log(`   ✅ Pair ${pairResult.pairId} opened - awaiting taker fill`);
         } else {
           log(`   ⚠️ Pair open failed: ${pairResult.error}`);
         }
-      } else if (projectedCpp > maxCppForEntry) {
-        log(`   ❌ V36.1: CPP too high ($${projectedCpp.toFixed(3)} > $${maxCppForEntry.toFixed(2)}) - NO TRADE`);
-      } else if (!pairTracker.canOpenNewPair()) {
+      } else {
         log(`   ⏸️ Max pairs reached (${pairStats.activePairs}/${5}) - waiting for fills`);
       }
     }

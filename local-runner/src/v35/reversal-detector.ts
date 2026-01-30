@@ -1,7 +1,7 @@
 // ============================================================
 // V36 REVERSAL DETECTOR - BINANCE-BASED STOP-LOSS
 // ============================================================
-// Version: V36.1.0 - "Binance Lead Indicator"
+// Version: V36.2.0 - "$30 Binance Trigger"
 //
 // CORE CONCEPT:
 // Binance price feed LEADS Polymarket by a few seconds.
@@ -10,8 +10,8 @@
 // 2. We need to EMERGENCY HEDGE before the Polymarket price updates
 // 3. This prevents holding an unhedged losing position
 //
-// TRIGGER CONDITIONS:
-// - Binance shows >0.20% move in the WRONG direction
+// V36.2 TRIGGER CONDITIONS:
+// - Binance moves $30+ in the WRONG direction in 1-2 seconds
 // - We have pending pairs waiting for maker fill
 // - The maker order hasn't filled yet
 //
@@ -31,11 +31,11 @@ import { logV35GuardEvent } from './backend.js';
 // ============================================================
 
 export interface ReversalDetectorConfig {
-  // Threshold for detecting reversals (percentage)
-  reversalThresholdPct: number;      // e.g., 0.20 = 0.20%
+  // V36.2: Dollar threshold for detecting reversals (absolute USD)
+  reversalThresholdUsd: number;      // e.g., 30 = $30
   
-  // Minimum momentum to consider it a trend
-  minMomentumPct: number;            // e.g., 0.10 = 0.10%
+  // Time window to detect the reversal (ms)
+  reversalWindowMs: number;          // e.g., 2000 = 2 seconds
   
   // How often to check for reversals (ms)
   checkIntervalMs: number;
@@ -45,9 +45,9 @@ export interface ReversalDetectorConfig {
 }
 
 const DEFAULT_CONFIG: ReversalDetectorConfig = {
-  reversalThresholdPct: 0.20,
-  minMomentumPct: 0.10,
-  checkIntervalMs: 200,
+  reversalThresholdUsd: 30,          // $30 move triggers emergency
+  reversalWindowMs: 2000,            // Within 1-2 seconds
+  checkIntervalMs: 100,              // Check every 100ms for fast detection
   cooldownAfterEmergencyMs: 5000,
 };
 
@@ -59,7 +59,8 @@ export class ReversalDetector {
   private config: ReversalDetectorConfig;
   private lastCheckMs = 0;
   private lastEmergencyMs = 0;
-  private previousMomentum: Map<V35Asset, number> = new Map();
+  // V36.2: Track price history for $30 detection
+  private priceHistory: Map<V35Asset, { price: number; ts: number }[]> = new Map();
   
   constructor(config: Partial<ReversalDetectorConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -92,13 +93,20 @@ export class ReversalDetector {
       return { reversalDetected: false, emergencyTriggered: false, reason: 'binance_unhealthy' };
     }
     
-    // Get current momentum
-    const momentum = binance.getMomentum(market.asset);
-    const direction = binance.getTrendDirection(market.asset);
-    const previousMomentum = this.previousMomentum.get(market.asset) || 0;
+    // V36.2: Get current price and update history
+    const currentPrice = binance.getPrice(market.asset);
+    if (!currentPrice) {
+      return { reversalDetected: false, emergencyTriggered: false, reason: 'no_binance_price' };
+    }
     
-    // Store for next check
-    this.previousMomentum.set(market.asset, momentum);
+    // Update price history
+    const history = this.priceHistory.get(market.asset) || [];
+    history.push({ price: currentPrice, ts: now });
+    
+    // Keep only last 5 seconds of history
+    const cutoff = now - 5000;
+    const filteredHistory = history.filter(h => h.ts > cutoff);
+    this.priceHistory.set(market.asset, filteredHistory);
     
     // Get pair tracker
     const pairTracker = getPairTracker();
@@ -111,7 +119,7 @@ export class ReversalDetector {
     
     // Check each pending pair for reversal risk
     for (const pair of activePairs) {
-      const reversalResult = await this.checkPairReversal(pair, market, momentum, direction, previousMomentum);
+      const reversalResult = await this.checkPairReversal(pair, market, currentPrice, filteredHistory);
       
       if (reversalResult.emergencyTriggered) {
         this.lastEmergencyMs = now;
@@ -124,40 +132,49 @@ export class ReversalDetector {
   
   /**
    * Check if a specific pair needs emergency hedging
+   * V36.2: Check for $30 move in 1-2 seconds
    */
   private async checkPairReversal(
     pair: PendingPair,
     market: V35Market,
-    currentMomentum: number,
-    direction: 'UP' | 'DOWN' | 'NEUTRAL',
-    previousMomentum: number
+    currentPrice: number,
+    priceHistory: { price: number; ts: number }[]
   ): Promise<{
     reversalDetected: boolean;
     emergencyTriggered: boolean;
     reason?: string;
   }> {
+    const now = Date.now();
+    
+    // Find prices from 1-2 seconds ago
+    const windowStart = now - this.config.reversalWindowMs;
+    const oldPrices = priceHistory.filter(h => h.ts >= windowStart - 500 && h.ts <= windowStart + 500);
+    
+    if (oldPrices.length === 0) {
+      return { reversalDetected: false, emergencyTriggered: false, reason: 'no_history' };
+    }
+    
+    // Get the oldest price in our window
+    const oldestPrice = oldPrices[0].price;
+    const priceChange = currentPrice - oldestPrice;
+    const absPriceChange = Math.abs(priceChange);
+    
     // Determine which direction is BAD for our position
-    // If we bought the expensive side (e.g., UP), a DOWN move is bad
-    // If we bought the expensive side (e.g., DOWN), an UP move is bad
-    const badDirection: 'UP' | 'DOWN' = pair.takerSide === 'UP' ? 'DOWN' : 'UP';
+    // If we bought the expensive side (e.g., UP), a price DROP is bad (DOWN wins)
+    // If we bought the expensive side (e.g., DOWN), a price RISE is bad (UP wins)
+    const isBadMove = (pair.takerSide === 'UP' && priceChange < 0) || 
+                      (pair.takerSide === 'DOWN' && priceChange > 0);
     
-    // Check if momentum is moving against us
-    const isBadDirection = direction === badDirection;
-    const momentumChange = Math.abs(currentMomentum - previousMomentum);
-    const isStrongMove = Math.abs(currentMomentum) >= this.config.minMomentumPct;
-    
-    // REVERSAL DETECTION:
-    // 1. Momentum is in the BAD direction
-    // 2. Momentum is strong enough
-    // 3. Momentum changed significantly (sudden move)
-    const isReversal = isBadDirection && isStrongMove && momentumChange >= this.config.reversalThresholdPct;
+    // V36.2: Check if move exceeds $30 threshold AND is in bad direction
+    const isReversal = isBadMove && absPriceChange >= this.config.reversalThresholdUsd;
     
     if (!isReversal) {
       return { reversalDetected: false, emergencyTriggered: false };
     }
     
-    console.log(`[ReversalDetector] 🚨 REVERSAL DETECTED for ${pair.id}!`);
-    console.log(`[ReversalDetector]    Binance: ${direction} ${currentMomentum.toFixed(3)}% (change: ${momentumChange.toFixed(3)}%)`);
+    const direction = priceChange > 0 ? 'UP' : 'DOWN';
+    console.log(`[ReversalDetector] 🚨 $${absPriceChange.toFixed(0)} REVERSAL DETECTED for ${pair.id}!`);
+    console.log(`[ReversalDetector]    Binance: $${oldestPrice.toFixed(0)} → $${currentPrice.toFixed(0)} (${direction} $${absPriceChange.toFixed(0)} in ${this.config.reversalWindowMs}ms)`);
     console.log(`[ReversalDetector]    Our position: ${pair.takerSide} is now at risk!`);
     
     // Log the event
@@ -169,7 +186,7 @@ export class ReversalDetector {
       upQty: market.upQty,
       downQty: market.downQty,
       expensiveSide: pair.takerSide,
-      reason: `Binance reversal: ${direction} ${currentMomentum.toFixed(3)}%`,
+      reason: `Binance $${absPriceChange.toFixed(0)} reversal: ${direction} in ${this.config.reversalWindowMs}ms`,
     }).catch(() => {});
     
     // Get current ask for emergency hedge
@@ -194,14 +211,20 @@ export class ReversalDetector {
   getStatus(): {
     lastCheckMs: number;
     lastEmergencyMs: number;
-    momentumByAsset: Record<string, number>;
+    priceHistorySize: Record<string, number>;
   } {
-    const binance = getBinanceFeed();
-    const momentumByAsset: Record<string, number> = {};
+    const priceHistorySize: Record<string, number> = {};
     
-    for (const [asset, momentum] of this.previousMomentum.entries()) {
-      momentumByAsset[asset] = momentum;
+    for (const [asset, history] of this.priceHistory.entries()) {
+      priceHistorySize[asset] = history.length;
     }
+    
+    return {
+      lastCheckMs: this.lastCheckMs,
+      lastEmergencyMs: this.lastEmergencyMs,
+      priceHistorySize,
+    };
+  }
     
     return {
       lastCheckMs: this.lastCheckMs,
@@ -223,7 +246,7 @@ export class ReversalDetector {
   reset(): void {
     this.lastCheckMs = 0;
     this.lastEmergencyMs = 0;
-    this.previousMomentum.clear();
+    this.priceHistory.clear();
   }
 }
 
