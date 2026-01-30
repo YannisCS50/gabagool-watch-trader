@@ -96,7 +96,7 @@ export interface PairTrackerConfig {
 }
 
 const DEFAULT_CONFIG: PairTrackerConfig = {
-  maxPendingPairs: 5,
+  maxPendingPairs: 25,               // V36.2.10: Increased - reversals don't block new pairs
   targetCpp: 0.95,
   emergencyMaxCpp: 1.05,
   emergencyTakerOffset: 0.005,
