@@ -75,26 +75,21 @@ export interface PendingPair {
 export interface PairTrackerConfig {
   maxPendingPairs: number;           // Max concurrent pairs
   targetCpp: number;                 // Target combined cost (e.g., 0.95)
-  maxCppForEntry: number;            // Max combined cost to enter
   emergencyMaxCpp: number;           // Max combined cost for emergency hedge
-  makerPriceOffset: number;          // Offset below bid for maker (e.g., 0.01)
   emergencyTakerOffset: number;      // Offset above ask for emergency (e.g., 0.005)
   minSharesPerPair: number;          // Minimum shares per pair
   maxSharesPerPair: number;          // Maximum shares per pair
-  makerTimeoutMs: number;            // Cancel maker if not filled after this
   startupDelayMs: number;            // Wait after market open before first pair
+  // NOTE: NO makerTimeoutMs - maker order stays until fill or emergency
 }
 
 const DEFAULT_CONFIG: PairTrackerConfig = {
   maxPendingPairs: 5,
   targetCpp: 0.95,
-  maxCppForEntry: 0.98,
   emergencyMaxCpp: 1.05,
-  makerPriceOffset: 0.01,
   emergencyTakerOffset: 0.005,
   minSharesPerPair: 5,
   maxSharesPerPair: 20,
-  makerTimeoutMs: 30_000,
   startupDelayMs: 30_000,            // 30 seconds observation period
 };
 
@@ -181,7 +176,13 @@ export class PairTracker {
   }
   
   /**
-   * Open a new pair with a TAKER order on the expensive side
+   * Open a new pair: ALWAYS execute TAKER on expensive side
+   * Maker limit order will be placed AFTER taker fill (see onFill)
+   * 
+   * V36.2 CHANGES:
+   * - NO CPP check for entry - taker is ALWAYS placed
+   * - Maker price calculated AFTER taker fill: targetCpp - fillPrice
+   * - Only BTC markets allowed
    * 
    * @param market - The market to trade
    * @param expensiveSide - Which side is expensive (likely winner)
@@ -193,6 +194,11 @@ export class PairTracker {
     size: number
   ): Promise<{ success: boolean; pairId?: string; error?: string }> {
     const config = getV35Config();
+    
+    // ONLY BTC
+    if (market.asset !== 'BTC') {
+      return { success: false, error: 'only_btc_allowed' };
+    }
     
     // Check startup delay - wait for market to stabilize
     if (!this.isStartupDelayComplete(market.slug)) {
@@ -209,38 +215,19 @@ export class PairTracker {
     // Get current prices
     const expensiveAsk = expensiveSide === 'UP' ? market.upBestAsk : market.downBestAsk;
     const cheapSide: V35Side = expensiveSide === 'UP' ? 'DOWN' : 'UP';
-    const cheapBid = cheapSide === 'UP' ? market.upBestBid : market.downBestBid;
-    const cheapAsk = cheapSide === 'UP' ? market.upBestAsk : market.downBestAsk;
-
-    // === V36.1 STRATEGY (per jouw framework) ===
-    // We target a fixed combined cost (CPP) by setting the maker price as:
-    //   makerPrice = targetCpp - takerAsk
-    // This can be well below the current bid (that's fine: it's a passive bid).
-    // We still avoid accidentally crossing the spread (turning into taker) via a small anti-cross buffer.
-    const makerAntiCross = 0.002; // 0.2¢ anti-cross margin
-    const makerTarget = this.config.targetCpp - expensiveAsk;
-    const makerMax = cheapAsk > 0 && cheapAsk < 1 ? Math.max(0.05, cheapAsk - makerAntiCross) : 0.95;
-    const makerPrice = Math.max(0.05, Math.min(makerTarget, makerMax));
-
-    // Check if combined cost is acceptable
-    const projectedCpp = expensiveAsk + makerPrice;
     
-    if (projectedCpp > this.config.maxCppForEntry) {
-      console.log(`[PairTracker] ❌ CPP too high: $${projectedCpp.toFixed(3)} > $${this.config.maxCppForEntry.toFixed(2)}`);
-      return { success: false, error: `cpp_too_high: ${projectedCpp.toFixed(3)}` };
-    }
+    // V36.2: NO CPP CHECK - we ALWAYS buy the expensive side
+    // The maker price will be calculated AFTER the fill based on actual fill price
     
     // Create pair ID
     const pairId = `pair_${Date.now()}_${++this.pairCounter}`;
     
-    // Get token IDs
+    // Get token ID for taker
     const takerTokenId = expensiveSide === 'UP' ? market.upTokenId : market.downTokenId;
-    const makerTokenId = cheapSide === 'UP' ? market.upTokenId : market.downTokenId;
     
-    console.log(`[PairTracker] 🎯 Opening pair ${pairId}`);
-    console.log(`[PairTracker]    TAKER: ${size} ${expensiveSide} @ $${expensiveAsk.toFixed(3)}`);
-    console.log(`[PairTracker]    MAKER: ${size} ${cheapSide} @ $${makerPrice.toFixed(3)} (bid=$${cheapBid.toFixed(3)} ask=$${cheapAsk.toFixed(3)})`);
-    console.log(`[PairTracker]    Target CPP: $${this.config.targetCpp.toFixed(3)} | Projected CPP now: $${projectedCpp.toFixed(3)}`);
+    console.log(`[PairTracker] 🎯 Opening pair ${pairId} (V36.2 - no CPP check)`);
+    console.log(`[PairTracker]    TAKER: ${size} ${expensiveSide} @ market (~$${expensiveAsk.toFixed(3)})`);
+    console.log(`[PairTracker]    MAKER: Will be placed AFTER taker fill at targetCpp - fillPrice`);
     
     if (config.dryRun) {
       console.log(`[PairTracker] [DRY RUN] Would open pair`);
@@ -252,7 +239,7 @@ export class PairTracker {
       const takerResult = await placeOrder({
         tokenId: takerTokenId,
         side: 'BUY',
-        price: expensiveAsk + 0.005, // Slightly above ask for immediate fill
+        price: expensiveAsk + 0.01, // Slightly above ask for immediate fill
         size,
         orderType: 'GTC',
       });
@@ -264,26 +251,11 @@ export class PairTracker {
       
       console.log(`[PairTracker] ✓ Taker placed: ${takerResult.orderId.slice(0, 8)}...`);
       
-      // 2. Place MAKER limit order on cheap side
-      const makerResult = await placeOrder({
-        tokenId: makerTokenId,
-        side: 'BUY',
-        price: makerPrice,
-        size,
-        orderType: 'GTC',
-      });
+      // V36.2: Do NOT place maker yet - wait for taker fill
+      // The maker will be placed in onFill() after we know the actual fill price
       
-      if (!makerResult.success || !makerResult.orderId) {
-        console.log(`[PairTracker] ⚠️ Maker order failed: ${makerResult.error}`);
-        // Cancel taker order since we can't hedge
-        await cancelOrder(takerResult.orderId);
-        return { success: false, error: makerResult.error || 'maker_failed' };
-      }
-      
-      console.log(`[PairTracker] ✓ Maker placed: ${makerResult.orderId.slice(0, 8)}...`);
-      
-      // Create pair record
-        const pair: PendingPair = {
+      // Create pair record (no maker yet)
+      const pair: PendingPair = {
         id: pairId,
         marketSlug: market.slug,
         asset: market.asset,
@@ -294,15 +266,16 @@ export class PairTracker {
         takerSize: size,
         takerOrderId: takerResult.orderId,
         
+        // Maker will be set after taker fill
         makerSide: cheapSide,
-        makerPrice: makerPrice,
+        makerPrice: 0, // Will be calculated after fill
         makerSize: size,
-        makerOrderId: makerResult.orderId,
+        makerOrderId: undefined,
         
         status: 'PENDING_ENTRY',
         createdAt: Date.now(),
         updatedAt: Date.now(),
-          targetCpp: this.config.targetCpp,
+        targetCpp: this.config.targetCpp,
       };
       
       this.pairs.set(pairId, pair);
@@ -316,7 +289,7 @@ export class PairTracker {
         upQty: market.upQty,
         downQty: market.downQty,
         expensiveSide,
-        reason: `Pair ${pairId}: ${size} shares, CPP target $${projectedCpp.toFixed(3)}`,
+        reason: `Pair ${pairId}: ${size} shares TAKER placed, awaiting fill for MAKER`,
       }).catch(() => {});
       
       return { success: true, pairId };
@@ -329,6 +302,9 @@ export class PairTracker {
   
   /**
    * Handle a fill event - update pair status
+   * 
+   * V36.2: When taker fills, NOW place the maker limit order
+   * Maker price = targetCpp - takerFillPrice
    */
   async onFill(fill: V35Fill, market: V35Market): Promise<{
     pairUpdated: boolean;
@@ -338,16 +314,63 @@ export class PairTracker {
     for (const pair of this.pairs.values()) {
       if (pair.marketSlug !== market.slug) continue;
       
-      // Check taker fill
+      // Check taker fill - V36.2: NOW place the maker order
       if (pair.takerOrderId === fill.orderId && pair.status === 'PENDING_ENTRY') {
         pair.takerFilledAt = Date.now();
         pair.takerFilledPrice = fill.price;
         pair.takerFilledSize = fill.size;
-        pair.status = 'WAITING_HEDGE';
         pair.updatedAt = Date.now();
         
         console.log(`[PairTracker] 🎯 Taker FILLED: ${pair.id} | ${fill.size} ${pair.takerSide} @ $${fill.price.toFixed(3)}`);
-        return { pairUpdated: true, pair };
+        
+        // V36.2: Calculate maker price based on ACTUAL fill price
+        // makerPrice = targetCpp - takerFillPrice
+        const makerPrice = this.config.targetCpp - fill.price;
+        
+        // Validate maker price (must be between 5¢ and 95¢)
+        if (makerPrice < 0.05) {
+          console.log(`[PairTracker] ⚠️ Maker price too low: $${makerPrice.toFixed(3)} - skipping`);
+          pair.status = 'CANCELLED';
+          return { pairUpdated: true, pair };
+        }
+        
+        const clampedMakerPrice = Math.min(0.95, Math.max(0.05, makerPrice));
+        
+        console.log(`[PairTracker] 📝 Placing MAKER: ${pair.makerSide} @ $${clampedMakerPrice.toFixed(3)}`);
+        console.log(`[PairTracker]    Calculation: $${this.config.targetCpp.toFixed(2)} - $${fill.price.toFixed(3)} = $${makerPrice.toFixed(3)}`);
+        
+        // Get token ID for maker
+        const makerTokenId = pair.makerSide === 'UP' ? market.upTokenId : market.downTokenId;
+        
+        try {
+          const makerResult = await placeOrder({
+            tokenId: makerTokenId,
+            side: 'BUY',
+            price: clampedMakerPrice,
+            size: fill.size, // Same size as filled taker
+            orderType: 'GTC',
+          });
+          
+          if (!makerResult.success || !makerResult.orderId) {
+            console.log(`[PairTracker] ❌ Maker order failed: ${makerResult.error}`);
+            pair.status = 'CANCELLED';
+            return { pairUpdated: true, pair };
+          }
+          
+          pair.makerOrderId = makerResult.orderId;
+          pair.makerPrice = clampedMakerPrice;
+          pair.status = 'WAITING_HEDGE';
+          
+          console.log(`[PairTracker] ✓ Maker placed: ${makerResult.orderId.slice(0, 8)}...`);
+          console.log(`[PairTracker]    Projected CPP: $${(fill.price + clampedMakerPrice).toFixed(3)}`);
+          
+          return { pairUpdated: true, pair };
+          
+        } catch (err: any) {
+          console.error(`[PairTracker] Error placing maker:`, err?.message);
+          pair.status = 'CANCELLED';
+          return { pairUpdated: true, pair };
+        }
       }
       
       // Check maker fill
@@ -479,24 +502,16 @@ export class PairTracker {
   }
   
   /**
-   * Check for stale maker orders and handle timeouts
+   * V36.2: NO TIMEOUT - maker order stays open until:
+   * 1. It fills naturally
+   * 2. Emergency hedge is triggered by Binance reversal ($30 move)
+   * 
+   * This method is kept for interface compatibility but does nothing.
    */
-  async checkTimeouts(market: V35Market): Promise<void> {
-    const now = Date.now();
-    
-    for (const pair of this.getMarketPairs(market.slug)) {
-      if (pair.status !== 'WAITING_HEDGE') continue;
-      
-      const waitingTime = now - (pair.takerFilledAt || pair.createdAt);
-      
-      if (waitingTime >= this.config.makerTimeoutMs) {
-        console.log(`[PairTracker] ⏰ Maker timeout for ${pair.id}: ${(waitingTime / 1000).toFixed(0)}s`);
-        
-        // Get current ask for emergency hedge
-        const currentAsk = pair.makerSide === 'UP' ? market.upBestAsk : market.downBestAsk;
-        await this.triggerEmergencyHedge(pair, market, currentAsk);
-      }
-    }
+  async checkTimeouts(_market: V35Market): Promise<void> {
+    // V36.2: Maker orders stay open indefinitely
+    // Only emergency hedge (Binance $30 reversal) can close them
+    // NO timeout-based emergency hedges
   }
   
   /**
