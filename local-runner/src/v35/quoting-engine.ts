@@ -1,24 +1,27 @@
 // ============================================================
 // V35 QUOTING ENGINE - GABAGOOL MODE
 // ============================================================
-// Version: V35.11.4 - "Hard 100-Share Cap"
+// Version: V35.12.0 - "Directional Bias (Follow the Winner)"
 //
-// V35.11.4 CRITICAL CHANGES:
+// V35.12.0 CRITICAL CHANGES:
 // ================================================================
-// ABSOLUTE RULE: MAX 100 SHARES PER SIDE. NO EXCEPTIONS.
+// CORE INSIGHT: Gabagool ends with MORE shares in the WINNING direction.
+// We were doing the opposite - accumulating cheap (losing) shares.
 //
-// Every order placement MUST check against the exposure ledger's
-// hard cap of 100 shares. This is calculated as:
-//   effectiveExposure = positionShares + openOrderShares + pendingShares
+// NEW STRATEGY: FOLLOW THE MARKET
+// 1. Expensive side (price > 0.50) = likely WINNER → quote AGGRESSIVELY
+// 2. Cheap side (price < 0.50) = likely LOSER → quote CONSERVATIVELY
+// 3. When spread > 15¢ → STOP quoting cheap side entirely
+// 4. Size ratio: Quote 3x more shares on expensive side
 //
-// If effectiveExposure + newOrderQty > 100 → CLAMP or BLOCK
+// This ensures we accumulate the WINNING side, not the losing side.
 // ================================================================
 //
-// V35.10.0 KEPT:
-// - Smart spread quoting near best bid
-// - 4 price levels with 1¢ step
+// V35.11.4 KEPT:
+// - Hard 100-share cap per side
+// - Effective exposure tracking
 //
-// CORE PRINCIPLE: Never exceed 100 shares per side, ever.
+// CORE PRINCIPLE: Follow the winner, avoid the loser.
 // ============================================================
 
 import { getV35Config, V35_VERSION, type V35Config } from './config.js';
@@ -40,6 +43,23 @@ interface QuoteDecision {
 
 // V35.11.4: HARD CAP - absolute maximum shares per side
 const HARD_CAP_PER_SIDE = 100;
+
+// V35.12.0: DIRECTIONAL BIAS CONFIGURATION
+const DIRECTIONAL_CONFIG = {
+  // Price thresholds
+  expensiveThreshold: 0.50,     // Above this = likely winner
+  cheapThreshold: 0.50,         // Below this = likely loser
+  
+  // Spread threshold to STOP quoting cheap side
+  maxSpreadForCheapSide: 0.15,  // If spread > 15¢, stop quoting cheap side
+  
+  // Size multipliers
+  expensiveSideMultiplier: 3.0, // Quote 3x more on expensive (winning) side
+  cheapSideMultiplier: 0.5,     // Quote 0.5x on cheap (losing) side
+  
+  // Price limits for cheap side (don't buy likely losers at high prices)
+  maxCheapSidePrice: 0.40,      // Don't quote cheap side above $0.40
+};
 
 // V35.10.0: Smart spread configuration
 const SMART_SPREAD_CONFIG = {
@@ -99,6 +119,8 @@ export class QuotingEngine {
       cheapSide,
       expensiveQty,
       cheapQty,
+      upLivePrice,
+      downLivePrice,
     } = getV35SidePricing(market);
     
     const currentQty = side === 'UP' ? market.upQty : market.downQty;
@@ -106,10 +128,61 @@ export class QuotingEngine {
     const imbalance = Math.abs(market.upQty - market.downQty);
     
     // =========================================================================
-    // V35.11.4: HARD 100-SHARE CAP CHECK (FIRST!)
+    // V35.12.0: DIRECTIONAL BIAS - DETECT WINNER VS LOSER
     // =========================================================================
-    // This is the ABSOLUTE rule: never exceed 100 shares per side.
-    // Check BEFORE any other logic.
+    const sidePrice = side === 'UP' ? upLivePrice : downLivePrice;
+    const otherPrice = side === 'UP' ? downLivePrice : upLivePrice;
+    const spread = Math.abs(sidePrice - otherPrice);
+    const isExpensiveSide = side === expensiveSide;
+    const isCheapSide = side === cheapSide;
+    
+    console.log(`[QuotingEngine] 🎯 DIRECTIONAL: ${side} price=$${sidePrice.toFixed(2)} isExpensive=${isExpensiveSide} spread=${(spread * 100).toFixed(1)}¢`);
+    
+    // =========================================================================
+    // V35.12.0: CHEAP SIDE RESTRICTIONS (likely loser)
+    // =========================================================================
+    if (isCheapSide) {
+      // Rule 1: Don't quote cheap side if spread is too wide (market has spoken)
+      if (spread > DIRECTIONAL_CONFIG.maxSpreadForCheapSide) {
+        const reason = `DIRECTIONAL: ${side} is CHEAP side, spread ${(spread * 100).toFixed(1)}¢ > ${(DIRECTIONAL_CONFIG.maxSpreadForCheapSide * 100).toFixed(0)}¢ max - SKIP`;
+        console.log(`[QuotingEngine] 🚫 ${reason}`);
+        
+        logV35GuardEvent({
+          marketSlug: market.slug,
+          asset: market.asset,
+          guardType: 'DIRECTIONAL_CHEAP_SKIP',
+          blockedSide: side,
+          upQty: market.upQty,
+          downQty: market.downQty,
+          expensiveSide,
+          reason,
+        }).catch(() => {});
+        
+        return { quotes: [], blocked: true, blockReason: reason };
+      }
+      
+      // Rule 2: Don't buy cheap side at prices above threshold
+      if (sidePrice > DIRECTIONAL_CONFIG.maxCheapSidePrice) {
+        const reason = `DIRECTIONAL: ${side} price $${sidePrice.toFixed(2)} > $${DIRECTIONAL_CONFIG.maxCheapSidePrice.toFixed(2)} max for cheap side - SKIP`;
+        console.log(`[QuotingEngine] 🚫 ${reason}`);
+        
+        logV35GuardEvent({
+          marketSlug: market.slug,
+          asset: market.asset,
+          guardType: 'DIRECTIONAL_PRICE_SKIP',
+          blockedSide: side,
+          upQty: market.upQty,
+          downQty: market.downQty,
+          expensiveSide,
+          reason,
+        }).catch(() => {});
+        
+        return { quotes: [], blocked: true, blockReason: reason };
+      }
+    }
+    
+    // =========================================================================
+    // V35.11.4: HARD 100-SHARE CAP CHECK
     // =========================================================================
     const ledgerSide: LedgerSide = side === 'UP' ? 'UP' : 'DOWN';
     const exposure = getEffectiveExposure(market.conditionId, market.asset);
@@ -288,7 +361,20 @@ export class QuotingEngine {
       
       // Calculate shares for this level
       const minSharesForNotional = Math.ceil(1.0 / levelPrice);
-      const shares = Math.max(config.sharesPerLevel, minSharesForNotional);
+      let shares = Math.max(config.sharesPerLevel, minSharesForNotional);
+      
+      // =========================================================================
+      // V35.12.0: DIRECTIONAL SIZE ADJUSTMENT
+      // =========================================================================
+      // Quote MORE on expensive (winning) side, LESS on cheap (losing) side
+      // =========================================================================
+      if (isExpensiveSide) {
+        shares = Math.round(shares * DIRECTIONAL_CONFIG.expensiveSideMultiplier);
+        console.log(`[QuotingEngine] 🎯 EXPENSIVE SIDE BOOST: ${side} shares=${shares} (3x)`);
+      } else if (isCheapSide) {
+        shares = Math.max(3, Math.round(shares * DIRECTIONAL_CONFIG.cheapSideMultiplier));
+        console.log(`[QuotingEngine] ⚠️ CHEAP SIDE REDUCED: ${side} shares=${shares} (0.5x)`);
+      }
       
       // V35.11.4: Check against EFFECTIVE BUDGET (includes hard cap)
       if (totalQuotedQty + shares > effectiveBudget) {
