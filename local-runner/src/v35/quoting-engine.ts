@@ -102,25 +102,32 @@ export class QuotingEngine {
     const imbalance = Math.abs(market.upQty - market.downQty);
     
     // =========================================================================
-    // BALANCED STATE DETECTION
+    // V35.11.3: STRICT BALANCE-FIRST LOGIC
     // =========================================================================
-    const isBalanced = imbalance < 1;
+    // PHILOSOPHY: Never let either side run away. Block leading side IMMEDIATELY.
+    // The rebalancer handles catching up - quoting engine should NOT.
+    // =========================================================================
+    const isBalanced = imbalance < 5;  // V35.11.3: Use 5-share tolerance (was 1)
     const trailingSide = market.upQty < market.downQty ? 'UP' : 'DOWN';
+    const leadingSide = market.upQty > market.downQty ? 'UP' : 'DOWN';
     const isTrailing = !isBalanced && side === trailingSide;
-    const isLeading = !isBalanced && side !== trailingSide;
+    const isLeading = !isBalanced && side === leadingSide;
     
     // =========================================================================
-    // CHEAP SIDE EXTREME BLOCK (25+ shares lead)
+    // V35.11.3: IMMEDIATE BLOCK ON LEADING SIDE (threshold: 5 shares)
     // =========================================================================
-    const CHEAP_SIDE_EXTREME_THRESHOLD = 25;
-    if (side === cheapSide && isLeading && cheapQty > expensiveQty + CHEAP_SIDE_EXTREME_THRESHOLD) {
-      const reason = `CHEAP-SKIP: ${side} has ${(cheapQty - expensiveQty).toFixed(0)} more than expensive (threshold: ${CHEAP_SIDE_EXTREME_THRESHOLD})`;
-      console.log(`[QuotingEngine] 🛡️ ${reason}`);
+    // This is the KEY fix: we block the leading side MUCH earlier to prevent
+    // the runaway imbalance. Before, we only blocked at 20-25 shares!
+    // =========================================================================
+    const LEADING_BLOCK_THRESHOLD = 5;
+    if (isLeading && imbalance >= LEADING_BLOCK_THRESHOLD) {
+      const reason = `LEADING-BLOCK: ${side} leads by ${imbalance.toFixed(0)} shares (threshold: ${LEADING_BLOCK_THRESHOLD})`;
+      console.log(`[QuotingEngine] 🛑 ${reason}`);
       
       logV35GuardEvent({
         marketSlug: market.slug,
         asset: market.asset,
-        guardType: 'CHEAP_SIDE_SKIP',
+        guardType: 'LEADING_BLOCK',
         blockedSide: side,
         upQty: market.upQty,
         downQty: market.downQty,
@@ -132,14 +139,13 @@ export class QuotingEngine {
     }
     
     // =========================================================================
-    // EMERGENCY STOP AT EXTREME IMBALANCE
+    // EMERGENCY STOP AT EXTREME IMBALANCE (for both sides as safety net)
     // =========================================================================
     if (imbalance >= config.maxUnpairedShares) {
-      if (isTrailing) {
-        console.log(`[QuotingEngine] 🚨 EMERGENCY but ${side} is TRAILING - allowing hedge quotes`);
-      } else {
+      // Only allow trailing side to quote (rebalancer will handle it)
+      if (!isTrailing) {
         const reason = `EMERGENCY: ${imbalance.toFixed(0)} share imbalance >= ${config.maxUnpairedShares} max`;
-        console.log(`[QuotingEngine] 🚨 ${reason} - blocking LEADING side ${side}`);
+        console.log(`[QuotingEngine] 🚨 ${reason} - blocking ${side}`);
         
         logV35GuardEvent({
           marketSlug: market.slug,
@@ -154,6 +160,7 @@ export class QuotingEngine {
         
         return { quotes: [], blocked: true, blockReason: reason };
       }
+      console.log(`[QuotingEngine] 🚨 EMERGENCY but ${side} is TRAILING - allowing limited quotes`);
     }
     
     // =========================================================================
@@ -181,18 +188,22 @@ export class QuotingEngine {
     console.log(`[QuotingEngine] 📊 BURST-CAP: ${side} budget=${maxNewOrderQty.toFixed(0)} (existing=${existingOpenQty.toFixed(0)}, imbalance=${imbalance.toFixed(0)})`);
     
     // =========================================================================
-    // TRAILING/BALANCED EXEMPTION
+    // V35.11.3: STRICT BURST-CAP - NO MORE TRAILING OVERRIDE
+    // =========================================================================
+    // REMOVED: The "trailing override" was causing runaway imbalances!
+    // It gave the trailing side too much budget, which then became leading,
+    // which gave the OTHER side budget, causing an infinite feedback loop.
+    //
+    // NEW APPROACH: Let the REBALANCER handle catching up, not the quoting engine.
+    // The quoting engine should ONLY quote when there's genuine budget available.
     // =========================================================================
     if (maxNewOrderQty < config.sharesPerLevel) {
       if (isBalanced) {
-        maxNewOrderQty = config.sharesPerLevel * SMART_SPREAD_CONFIG.numLevels;
-        console.log(`[QuotingEngine] ⚖️ BALANCED OVERRIDE: ${side} gets minimum ${maxNewOrderQty.toFixed(0)} shares`);
-      } else if (isTrailing) {
-        const neededToBalance = imbalance;
-        const buffer = config.sharesPerLevel;
-        maxNewOrderQty = Math.max(config.sharesPerLevel, neededToBalance + buffer);
-        console.log(`[QuotingEngine] 🔓 TRAILING OVERRIDE: ${side} allowing ${maxNewOrderQty.toFixed(0)} shares`);
+        // Only in balanced state, give both sides a small equal budget
+        maxNewOrderQty = config.sharesPerLevel;  // V35.11.3: Reduced from numLevels * sharesPerLevel
+        console.log(`[QuotingEngine] ⚖️ BALANCED: ${side} gets ${maxNewOrderQty.toFixed(0)} shares`);
       } else {
+        // V35.11.3: NO TRAILING OVERRIDE! Budget exhausted = stop quoting.
         const reason = `BURST-CAP: ${side} budget exhausted (${maxNewOrderQty.toFixed(0)} < ${config.sharesPerLevel} min)`;
         console.log(`[QuotingEngine] 🛡️ ${reason}`);
         
