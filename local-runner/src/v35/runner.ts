@@ -39,6 +39,7 @@ import type {
   V35PortfolioMetrics,
   V35Asset,
   V35Fill,
+  V35Quote,
 } from './types.js';
 import { createEmptyMarket, calculateMarketMetrics } from './types.js';
 import { QuotingEngine } from './quoting-engine.js';
@@ -814,26 +815,50 @@ async function processMarket(market: V35Market): Promise<void> {
   // Sync orders if not paused
   if (!paused) {
     // =========================================================================
-    // V36.1: PAIR-BASED ENTRY LOGIC
+    // V36.1: PAIR-BASED ENTRY LOGIC - TAKER EXPENSIVE + MAKER CHEAP
     // =========================================================================
-    // Instead of symmetric quoting, we now:
-    // 1. Identify which side is "expensive" (likely winner)
-    // 2. Open a pair: TAKER on expensive, MAKER on cheap
+    // STRATEGY:
+    // 1. Identify expensive side (higher ask = likely winner)
+    // 2. Calculate: TAKER price (expensive ask) + MAKER price (cheap bid - offset)
+    // 3. If projected CPP < 0.98 → OPEN PAIR
+    //
+    // This works EVEN when combined ask > $1.00!
+    // Example: DOWN ask $0.87 + UP maker @ $0.10 = $0.97 ✅
     // =========================================================================
     const v36Engine = getV36QuotingEngine();
-    const combinedBook = v36Engine.getCombinedBook(market.slug);
+    const pairTracker = getPairTracker();
     
-    if (combinedBook && combinedBook.hasEdge) {
+    // Check startup delay first
+    if (!pairTracker.isStartupDelayComplete(market.slug)) {
+      log(`   ⏳ V36.1: Startup delay active - observing market...`);
+    } else {
       // Determine expensive side based on current asks
       const upAsk = market.upBestAsk || 1;
       const downAsk = market.downBestAsk || 1;
-      const expensiveSide: 'UP' | 'DOWN' = upAsk > downAsk ? 'UP' : 'DOWN';
+      const expensiveSide: 'UP' | 'DOWN' = downAsk > upAsk ? 'DOWN' : 'UP';
+      const cheapSide: 'UP' | 'DOWN' = expensiveSide === 'UP' ? 'DOWN' : 'UP';
       
-      // Check if we can open a new pair
-      if (pairTracker.canOpenNewPair()) {
-        const pairSize = Math.max(5, Math.min(15, Math.floor(10))); // 5-15 shares per pair
+      // Get prices for pair calculation
+      const takerPrice = expensiveSide === 'UP' ? upAsk : downAsk;
+      const cheapBid = cheapSide === 'UP' ? (market.upBestBid || 0) : (market.downBestBid || 0);
+      const makerOffset = 0.01; // Place 1¢ below bid
+      const makerPrice = Math.max(0.05, cheapBid - makerOffset);
+      
+      // Calculate projected CPP
+      const projectedCpp = takerPrice + makerPrice;
+      const projectedEdge = 1.0 - projectedCpp;
+      
+      log(`   📊 V36.1 Pair Analysis:`);
+      log(`      TAKER ${expensiveSide} @ $${takerPrice.toFixed(3)}`);
+      log(`      MAKER ${cheapSide} @ $${makerPrice.toFixed(3)} (bid=$${cheapBid.toFixed(3)})`);
+      log(`      Projected CPP: $${projectedCpp.toFixed(3)} | Edge: ${(projectedEdge * 100).toFixed(1)}¢`);
+      
+      // V36.1: Open pair if projected CPP is acceptable
+      const maxCppForEntry = 0.98;
+      if (projectedCpp <= maxCppForEntry && pairTracker.canOpenNewPair()) {
+        const pairSize = Math.max(5, Math.min(15, 10)); // 5-15 shares per pair
         
-        log(`   🎯 V36.1: Edge detected (${(combinedBook.edge * 100).toFixed(1)}¢) - opening pair on ${expensiveSide}`);
+        log(`   🎯 V36.1: Edge OK (${(projectedEdge * 100).toFixed(1)}¢) - opening pair!`);
         
         const pairResult = await pairTracker.openPair(market, expensiveSide, pairSize);
         
@@ -842,33 +867,25 @@ async function processMarket(market: V35Market): Promise<void> {
         } else {
           log(`   ⚠️ Pair open failed: ${pairResult.error}`);
         }
-      } else {
+      } else if (projectedCpp > maxCppForEntry) {
+        log(`   ❌ V36.1: CPP too high ($${projectedCpp.toFixed(3)} > $${maxCppForEntry.toFixed(2)}) - NO TRADE`);
+      } else if (!pairTracker.canOpenNewPair()) {
         log(`   ⏸️ Max pairs reached (${pairStats.activePairs}/${5}) - waiting for fills`);
       }
     }
     
     // =========================================================================
-    // V36 FALLBACK: USE COMBINED BOOK ANALYSIS FOR QUOTING
+    // V36 FALLBACK: PASSIVE QUOTING (disabled in pair-based mode)
     // =========================================================================
-    // Keep the existing V36 quoting as fallback for markets without pairs
+    // When running in pair mode, we don't want additional passive quotes
+    // that could create untracked exposure. Skip the V36 quoting engine.
     // =========================================================================
     const v36Result = v36Engine.generateQuotes(market);
     
-    // Apply circuit breaker constraints on top of V36 decision
-    const allowUpQuotes = !safetyCheck.shouldBlockUp;
-    const allowDownQuotes = !safetyCheck.shouldBlockDown;
-    
-    if (safetyCheck.reason) {
-      log(`   🛡️ Safety: ${safetyCheck.reason} | UP=${allowUpQuotes ? '✅' : '🚫'} DOWN=${allowDownQuotes ? '✅' : '🚫'}`);
-    }
-    
-    // Use V36 quotes if available
-    let upQuotes = v36Result.upQuotes;
-    let downQuotes = v36Result.downQuotes;
-    
-    // Apply circuit breaker blocks
-    if (!allowUpQuotes) upQuotes = [];
-    if (!allowDownQuotes) downQuotes = [];
+    // DISABLED: Don't place passive quotes in pair-based mode
+    // The pair tracker handles all entries via taker + maker pairs
+    const upQuotes: V35Quote[] = [];
+    const downQuotes: V35Quote[] = [];
     
     // Log V36 decision
     if (v36Result.combinedBook) {
@@ -881,13 +898,11 @@ async function processMarket(market: V35Market): Promise<void> {
       log(`   ⏸️ V36 blocked: ${v36Result.blockedReason}`);
     }
     
-    // Debug: log quote generation
+    // Debug: log quote generation (V36.1: passive quotes disabled, pair-based only)
     const imbalance = Math.abs(market.upQty - market.downQty);
-    if ((upQuotes.length === 0 && allowUpQuotes) || (downQuotes.length === 0 && allowDownQuotes)) {
-      log(`⚠️ Quote generation: UP=${upQuotes.length}${allowUpQuotes ? '' : '(blocked)'} DOWN=${downQuotes.length}${allowDownQuotes ? '' : '(blocked)'}`);
-      log(`   bestAsk: UP=$${market.upBestAsk?.toFixed(2)} DOWN=$${market.downBestAsk?.toFixed(2)}`);
-      log(`   inventory: UP=${market.upQty} DOWN=${market.downQty} (imbalance=${imbalance.toFixed(0)})`);
-    }
+    log(`   📦 V36.1 Mode: Passive quotes disabled, using pair-based entries only`);
+    log(`   📊 Inventory: UP=${market.upQty.toFixed(0)} DOWN=${market.downQty.toFixed(0)} (imbalance=${imbalance.toFixed(0)})`);
+    log(`   💰 Best asks: UP=$${market.upBestAsk?.toFixed(2)} DOWN=$${market.downBestAsk?.toFixed(2)}`);
     
     // V36: SYNC BOTH SIDES SIMULTANEOUSLY
     const [upResult, downResult] = await Promise.all([
