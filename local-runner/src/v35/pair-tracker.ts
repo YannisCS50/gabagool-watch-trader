@@ -18,6 +18,8 @@ import { placeOrder, cancelOrder, getOpenOrders } from '../polymarket.js';
 import { getBinanceFeed } from './binance-feed.js';
 import { logV35GuardEvent } from './backend.js';
 import { getV35Config } from './config.js';
+// CRITICAL: Register our order IDs so fills are recognized as ours!
+import { registerOurOrderId } from './user-ws.js';
 
 // ============================================================
 // TYPES
@@ -249,7 +251,9 @@ export class PairTracker {
         return { success: false, error: takerResult.error || 'taker_failed' };
       }
       
-      console.log(`[PairTracker] ✓ Taker placed: ${takerResult.orderId.slice(0, 8)}...`);
+      // CRITICAL: Register order ID so user-ws recognizes fills as ours!
+      registerOurOrderId(takerResult.orderId);
+      console.log(`[PairTracker] ✓ Taker placed & registered: ${takerResult.orderId.slice(0, 8)}...`);
       
       // V36.2: Do NOT place maker yet - wait for taker fill
       // The maker will be placed in onFill() after we know the actual fill price
@@ -357,11 +361,14 @@ export class PairTracker {
             return { pairUpdated: true, pair };
           }
           
+          // CRITICAL: Register order ID so user-ws recognizes fills as ours!
+          registerOurOrderId(makerResult.orderId);
+          
           pair.makerOrderId = makerResult.orderId;
           pair.makerPrice = clampedMakerPrice;
           pair.status = 'WAITING_HEDGE';
           
-          console.log(`[PairTracker] ✓ Maker placed: ${makerResult.orderId.slice(0, 8)}...`);
+          console.log(`[PairTracker] ✓ Maker placed & registered: ${makerResult.orderId.slice(0, 8)}...`);
           console.log(`[PairTracker]    Projected CPP: $${(fill.price + clampedMakerPrice).toFixed(3)}`);
           
           return { pairUpdated: true, pair };
@@ -476,10 +483,13 @@ export class PairTracker {
         return { success: false, error: result.error || 'emergency_failed' };
       }
       
+      // CRITICAL: Register order ID so user-ws recognizes fills as ours!
+      registerOurOrderId(result.orderId);
+      
       pair.emergencyOrderId = result.orderId;
       pair.updatedAt = Date.now();
       
-      console.log(`[PairTracker] ✓ Emergency order placed: ${result.orderId.slice(0, 8)}...`);
+      console.log(`[PairTracker] ✓ Emergency order placed & registered: ${result.orderId.slice(0, 8)}...`);
       
       // Log event
       logV35GuardEvent({
