@@ -1,11 +1,11 @@
 // ============================================================
 // V36 RUNNER - PAIR-BASED MARKET MAKING
 // ============================================================
-// Version: V36.2.4 - "One-at-a-Time Entries"
+// Version: V36.2.5 - "Parallel Pairs + Maker Debug"
 //
-// V36.2.4 KEY CHANGES:
-// - FIX: PairTracker now waits for taker fill before opening new pair
-// - FIX: Added MAKER_PLACED logging for visibility
+// V36.2.5 KEY CHANGES:
+// - REVERT: Allow parallel pairs (stacking limit orders is fine!)
+// - ADD: Better logging to debug maker order issues
 // - DISABLED: HedgeManager auto-hedging on fills
 // - ENABLED: PairTracker is the ONLY system placing orders
 //
