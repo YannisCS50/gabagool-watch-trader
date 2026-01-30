@@ -46,7 +46,7 @@ import { QuotingEngine } from './quoting-engine.js';
 import { getV35SidePricing } from './market-pricing.js';
 import { discoverMarkets, filterByAssets } from './market-discovery.js';
 import { syncOrders, cancelAllOrders, updateOrderbook, reconcileOrders, cancelSideOrders } from './order-manager.js';
-import { processFillWithHedge, logMarketFillStats } from './fill-tracker.js';
+import { processFillWithHedge, processFillInventoryOnly, logMarketFillStats } from './fill-tracker.js';
 import { getHedgeManager, resetHedgeManager } from './hedge-manager.js';
 import { getCircuitBreaker, initCircuitBreaker, resetCircuitBreaker } from './circuit-breaker.js';
 import { getProactiveRebalancer, resetProactiveRebalancer } from './proactive-rebalancer.js';
@@ -346,16 +346,25 @@ async function handleFillFromUserWs(fill: V35Fill): Promise<void> {
   // V36.1: Check if this fill belongs to a tracked pair
   const pairTracker = getPairTracker();
   const { pairUpdated, pair } = await pairTracker.onFill(fill, market);
+  const isPairFill = !!(pairUpdated && pair);
   
-  if (pairUpdated && pair) {
+  if (isPairFill && pair) {
     log(`   📦 Pair ${pair.id} updated: ${pair.status}`);
     if (pair.actualCpp) {
       log(`   💰 CPP: $${pair.actualCpp.toFixed(3)} | P&L: $${(pair.pnl || 0).toFixed(2)}`);
     }
   }
   
-  // Process fill WITH active hedging (legacy V35 system for non-pair fills)
-  const { processed, hedgeResult } = await processFillWithHedge(fill, market);
+  // V36 (pair-based) fills should NOT go through the legacy HedgeManager IOC hedge.
+  // That system evaluates "hedge viability" against the current ask and can block/cancel,
+  // which conflicts with the V36 design (maker limit hedge stays open until filled).
+  let processed = false;
+  let hedgeResult: any = undefined;
+  if (isPairFill) {
+    processed = processFillInventoryOnly(fill, market);
+  } else {
+    ({ processed, hedgeResult } = await processFillWithHedge(fill, market));
+  }
   
   if (processed) {
     // Persist original fill to database
